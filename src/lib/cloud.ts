@@ -2,7 +2,7 @@
 // `CloudEvent`, rovik-client): a message's files going up to its host, a
 // project being pushed there, a remote chat's changes looking different
 // after its result came in or landed, or its project synced, and a chat's
-// move to a host. And the move's commands (6.8).
+// move to a host or back. And the moves' commands (6.8).
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -16,6 +16,13 @@ export type CloudEvent =
       type: 'moving';
       dialogId: string;
       /** "pausing", "pushing", "uploading", "importing", then "moved", "failed" or "cancelled". */
+      step: string;
+      message?: string;
+    }
+  | {
+      type: 'movingBack';
+      dialogId: string;
+      /** "pausing", "fetching", "releasing", "pulling", "landing", then "moved", "failed" or "cancelled". */
       step: string;
       message?: string;
     };
@@ -47,12 +54,23 @@ export const movePreflight = (dialogId: string, host: string) =>
 export const moveChat = (dialogId: string, host: string, start: StartRequest | null) =>
   invoke<void>('cloud_move_chat', { dialogId, host, start });
 
-/** "Cancel move": the chat is local again. */
+/**
+ * Moves the chat back from its host. `start` is how a Continue would start
+ * it: its run picks up here with it, if it paused for the move.
+ */
+export const moveBack = (dialogId: string, start: StartRequest | null) =>
+  invoke<void>('cloud_move_back', { dialogId, start });
+
+/**
+ * "Cancel move": the chat stays where it was. A move back can't be cancelled
+ * once its host has let the chat go.
+ */
 export const cancelMove = (dialogId: string) => invoke<void>('cloud_cancel_move', { dialogId });
 
-/** The latest step of a chat's move that `event` reports, if it reports one. */
+/** The latest step of a chat's move, there or back, that `event` reports, if it reports one. */
 export function moveStep(event: CloudEvent, dialogId: string): string | null {
-  return event.type === 'moving' && event.dialogId === dialogId ? event.step : null;
+  const moves = event.type === 'moving' || event.type === 'movingBack';
+  return moves && event.dialogId === dialogId ? event.step : null;
 }
 
 /** Whether the isolation bar of chat `dialogId` should look again after `event`. */

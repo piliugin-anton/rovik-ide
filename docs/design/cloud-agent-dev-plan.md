@@ -2161,3 +2161,52 @@ Tasks add notes here when reality differs from the plan.
   - `rovik-client` depends on `uuid` for the moves' ids. The dialog that
     shows the preflight and the progress is U02's; `lib/cloud.ts` has
     the commands and the event's type.
+- **M07, moving back.**
+  - `Remote::move_back` (`remote/back.rs`) keeps the move in the chat's
+    `cloud_moves` row too, direction `back`: `locked`, `paused`,
+    `fetched`, `released`, then `forgetting` after the flip, until
+    `ChatForget` reaches the host. The lock leaves the chat on its host:
+    `Remote` refuses its writes there (and its subagents' chats'), while
+    approvals, answers and Stop still go through.
+  - The result comes before the release, not after it as 6.8 orders it:
+    `WorkResult`, the fetch and the import as the chat's store, through
+    the results' queue (`Job::Back`). A failure up to the release leaves
+    the chat on its host as it was, and a crash after it needs no result.
+    The queue passes over the chat's other results while it moves and
+    refuses its Land, so nothing lands by itself or is reported to a host
+    about to let the chat go. Its changes wait with the result's reason
+    ("Not landed: the run didn't finish." after a pause), or "Ready to
+    land: this chat moved back from <host>."
+  - `AgentPause` with an empty host pauses for a move back: the pause
+    names no host, and the transcript says "Moved back to this computer."
+    The run goes on here with `ContinueRun` when the chat's last row is a
+    move's pause (`agent_run::paused_for_move`), whatever `AgentPause`
+    answered, or with `Resume` for tool calls without results.
+  - After the flip the chat's changes wait where its runs here can see
+    them: isolation on (the start's `isolate`, else the app's setting)
+    and its view mounts, which opening and closing it tries. Otherwise
+    they land first (`chats::land_now`); if they don't, they wait with
+    their conflicts, and the run doesn't go on by itself.
+  - `ChatForget` deletes a released chat's rows and its files, and answers
+    whether the daemon knew the chat. A chat not released is refused. The
+    worktree and `state.json`'s entry stay for R01's cleanup; a later
+    import from that computer clears them (K36).
+  - A move back cut short is settled on the next connection: `forgetting`
+    sends `ChatForget`; otherwise `ChatOwner` decides. Released, or
+    unknown to the host, it's finished from the last pull; not released,
+    it's dropped and the chat stays there. A move back asked for again
+    takes up its row and asks `ChatOwner` first, so a release whose answer
+    was lost is finished too.
+  - "Cancel move" stops a move back at its next step until the release,
+    and is refused after it. It drops a `forgetting` row; a move there
+    replaces one, since its import clears the old stay, and another host
+    keeps the released rows until its cleanup.
+  - Progress is `CloudEvent::MovingBack`: `pausing`, `fetching`,
+    `releasing`, `pulling`, `landing`, then `moved`, `failed` or
+    `cancelled`. `cloud_move_back` and `lib/cloud.ts`'s `moveBack` start
+    it; `moveStep` reports both directions.
+  - Both moves now take `Remote`'s lock on the chat before they write its
+    row: a connection's settling of moves cut short could otherwise take
+    a move just begun for one, and undo it.
+  - `App::local` closes the overlays a failed test left open: they're the
+    process's, by the chat's id, and pointed at that test's folders.

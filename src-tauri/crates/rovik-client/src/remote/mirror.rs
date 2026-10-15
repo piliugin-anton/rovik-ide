@@ -91,6 +91,24 @@ impl Remote {
         self.pull_later(host, chat, DEBOUNCE);
     }
 
+    /// Pulls the chat's changes now, all of them, once a pull going ends:
+    /// a move back's last pull (6.8). One asked for meanwhile comes after.
+    pub(super) async fn pull_now(&self, host: &str, chat: &str) -> Result<(), String> {
+        while !self.start_pulling(chat, false) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let pulled = self.pull(host, chat).await;
+        if self.pull_again(chat) {
+            let (me, host, chat) = (self.me.clone(), host.to_string(), chat.to_string());
+            rovik_core::rt::spawn(async move {
+                if let Some(remote) = me.upgrade() {
+                    remote.keep_pulling(&host, &chat).await;
+                }
+            });
+        }
+        pulled
+    }
+
     /// The chat's pull, once it's going, and those asked for meanwhile.
     async fn keep_pulling(&self, host: &str, chat: &str) {
         loop {

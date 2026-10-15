@@ -36,6 +36,13 @@ const MAX_RECHECKS: u32 = 2;
 pub(super) enum Job {
     /// A chat's result, from its host.
     Import { host: String, result: ChatResult },
+    /// A chat moving back: its last result, committed there and imported
+    /// here to wait (remote/back.rs).
+    Back {
+        host: String,
+        dialog_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// The open project changed: its results that waited for it land.
     Opened,
     /// The bar's Land; `keep_chat`: Land anyway.
@@ -105,7 +112,7 @@ impl Remote {
 
     /// The newest results on `host`, of every chat or of one, into the
     /// queue, which passes over those already imported.
-    async fn ask_results(&self, host: &str, chat: Option<&str>) {
+    pub(super) async fn ask_results(&self, host: &str, chat: Option<&str>) {
         let Some(client) = self.hosts.client(host).filter(takes_projects) else {
             return;
         };
@@ -125,6 +132,8 @@ impl Remote {
 
     async fn work(&self, job: Job) {
         match job {
+            // Its move back brings its result.
+            Job::Import { result, .. } if self.lock().moving.contains(&result.dialog_id) => {}
             Job::Import { host, result } => {
                 let chat = result.dialog_id.clone();
                 if let Err(e) = self.import(&host, result).await {
@@ -139,7 +148,20 @@ impl Remote {
                 }
                 self.changed(&chat);
             }
+            Job::Back {
+                host,
+                dialog_id,
+                reply,
+            } => {
+                let _ = reply.send(self.take_back(&host, &dialog_id).await);
+                self.changed(&dialog_id);
+            }
             Job::Opened => self.land_waiting().await,
+            Job::Land {
+                dialog_id, reply, ..
+            } if self.is_moving_back(&dialog_id) => {
+                let _ = reply.send(Err(LandError::Failed(super::back::MOVING_BACK.into())));
+            }
             Job::Land {
                 dialog_id,
                 keep_chat,
@@ -219,6 +241,50 @@ impl Remote {
         Ok(())
     }
 
+    /// The chat's last result before it moves back (6.8): its worktree
+    /// committed as it is, and imported as its store here unless it is
+    /// already. It waits there, for the reason its run's outcome gives, or
+    /// for the user: never landed by itself, nor told to its host, which is
+    /// about to let the chat go.
+    async fn take_back(&self, host: &str, dialog_id: &str) -> Result<(), String> {
+        let client = self.client(host).map_err(|fail| fail.message)?;
+        let ask = Request::WorkResult {
+            dialog_id: dialog_id.to_string(),
+        };
+        let result: ChatResult = client.request(ask).await.map_err(|fail| fail.message)?;
+        let (project, root) = self
+            .project_of(dialog_id)
+            .await?
+            .ok_or("its project has no folder on this computer")?;
+        let mirrored = self.mirror_state(dialog_id).await?.unwrap_or_default();
+        if mirrored.imported_result.as_deref() != Some(result.commit.as_str()) {
+            let commit = Oid::from_str(&result.commit).map_err(|e| e.message().to_string())?;
+            let dir = shadow::dir(&self.core.paths.data_dir, &project);
+            let opened = {
+                let dir = dir.clone();
+                rt::spawn_blocking(move || Shadow::open(&dir, &root))
+            };
+            let shadow = opened.await.map_err(|e| e.to_string())??;
+            let fetched = client.fetch(&project, &dir, &[commit]).await;
+            fetched.map_err(|fail| fail.message)?;
+            let told = result.clone();
+            let imported = rt::spawn_blocking(move || shadow.import(&told));
+            imported
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            self.saw(dialog_id, &result).await;
+        }
+        if chats::exists(dialog_id) && !import::resolving(dialog_id) {
+            let reason = result
+                .pending
+                .clone()
+                .unwrap_or_else(|| format!("Ready to land: this chat moved back from {host}."));
+            import::wait(dialog_id, &reason);
+        }
+        Ok(())
+    }
+
     /// Lands the chat's imported result by itself, or has it wait: for
     /// the reason its run's outcome gives, or for its project to open.
     async fn decide(&self, dialog_id: &str, project: &str, pending: Option<&str>) {
@@ -255,7 +321,14 @@ impl Remote {
         let Some((open, _)) = self.lock().open.clone() else {
             return;
         };
-        let remote: Vec<String> = self.lock().chats.keys().cloned().collect();
+        let remote: Vec<String> = {
+            let state = self.lock();
+            let chats = state.chats.keys();
+            chats
+                .filter(|c| !state.backs.contains_key(*c))
+                .cloned()
+                .collect()
+        };
         for chat in remote {
             let ready = chats::pending(&chat).is_some_and(|p| p.reason == import::READY);
             let project = self.project_of(&chat).await.ok().flatten();

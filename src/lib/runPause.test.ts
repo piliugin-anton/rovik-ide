@@ -8,6 +8,10 @@ test('a move names where the chat went, not a stuck agent', () => {
   assert.equal(text, 'Moved to build-server.');
 });
 
+test('a move back names no host', () => {
+  assert.equal(pauseText({ kind: 'move', toolCalls: 7 }), 'Moved back to this computer.');
+});
+
 test('a pause for an upgrade says so', () => {
   assert.equal(pauseText({ kind: 'drain', toolCalls: 3 }), 'Paused for an upgrade.');
 });

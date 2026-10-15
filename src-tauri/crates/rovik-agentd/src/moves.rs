@@ -11,6 +11,10 @@
 //!   asks, and from which move, for a move cut short.
 //! - **`ChatRelease`**: the computer took the chat back. Its rows are only
 //!   read from then on, for the computer's last pull, until `ChatForget`.
+//! - **`ChatForget`**: the computer has the rows of the chat it took back,
+//!   which go then, with its files. Its worktree stays until the cleanup
+//!   collects it (R01), and so does what `state.json` keeps of it, which a
+//!   later import from that computer clears (K36).
 
 use crate::daemon::Daemon;
 use crate::store::{Moved, Place, ProjectState};
@@ -153,6 +157,38 @@ pub async fn release(
         .map_err(internal)?;
     daemon.store.release(dialog_id, store::now_ms());
     log::info!("{dialog_id} went back to its computer");
+    Ok(Response::Bool(true))
+}
+
+/// `ChatForget`: the rows of a chat its computer took back go, with its
+/// files. Refused for a chat that isn't released. Whether the daemon knew
+/// the chat: forgotten twice, or never here, it's done all the same.
+pub async fn forget(daemon: &Daemon, dialog_id: &str) -> Result<Response, Fail> {
+    // Never between an import's clearing and its rows.
+    let _one = daemon.imports.lock().await;
+    let Some(owned) = daemon.store.ownership(dialog_id) else {
+        return Ok(Response::Bool(false));
+    };
+    if !owned.released {
+        return Err(bad_request(
+            "This chat is still on the server: release it first.",
+        ));
+    }
+    api::remove_chat_and_children_files(&daemon.core, dialog_id)
+        .await
+        .map_err(internal)?;
+    let id = dialog_id.to_string();
+    daemon
+        .core
+        .db
+        .write(move |c| {
+            let tx = c.transaction().map_err(|e| e.to_string())?;
+            store::delete_subtree(&tx, &id)?;
+            tx.commit().map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(internal)?;
+    log::info!("{dialog_id}'s rows went: its computer has them");
     Ok(Response::Bool(true))
 }
 

@@ -6,6 +6,12 @@
 //! is finished or undone from its row once its host answers. A cancelled
 //! move whose host may have the chat keeps its row, step `cancelled`, until
 //! the release it queued reaches that host.
+//!
+//! A move back leaves the chat on its host until its flip, which puts it
+//! and its subagents' chats here and drops the mirror's row. One cut short
+//! before the host released the chat is dropped, the chat still there; one
+//! after is finished. Its row stays after the flip, step `forgetting`,
+//! until `ChatForget` reaches the host.
 
 use super::location::{self, Location};
 use super::store::{err, now_ms, DbResult};
@@ -25,6 +31,14 @@ pub const IMPORTING: &str = "importing";
 /// Cancelled, with a release queued for the host, which may have the chat.
 pub const CANCELLED: &str = "cancelled";
 
+/// The steps a move back reaches after `LOCKED` and `PAUSED`, in order:
+/// its last result is in the chat's store here (`FETCHED`) before the host
+/// releases the chat, after which the move can only be finished.
+pub const FETCHED: &str = "fetched";
+pub const RELEASED: &str = "released";
+/// The chat is here again, and its host is yet to forget it.
+pub const FORGETTING: &str = "forgetting";
+
 /// A chat's move while it goes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloudMove {
@@ -38,7 +52,9 @@ pub struct CloudMove {
 
 /// Locks the chat for its move to `host`, with `move_id`: it and its
 /// subagents' chats are `moving` from now on. Refused for a chat that isn't
-/// here, or whose earlier move isn't over.
+/// here, or whose earlier move isn't over. A move back whose host is yet to
+/// forget the chat gives way: an import clears what the chat left there
+/// (K36), and another host keeps it until its own cleanup.
 pub fn lock(conn: &mut Connection, dialog_id: &str, host: &str, move_id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     match location::of_chat(&tx, dialog_id)? {
@@ -47,17 +63,64 @@ pub fn lock(conn: &mut Connection, dialog_id: &str, host: &str, move_id: &str) -
         Location::Host(on) => return Err(format!("This chat is on {on}.")),
         Location::Released => return Err("This chat went back to its computer.".into()),
     }
-    if of_chat(&tx, dialog_id)?.is_some() {
-        return Err("This chat's last move isn't over: cancel it first.".into());
+    match of_chat(&tx, dialog_id)? {
+        Some(going) if going.step == FORGETTING => forget(&tx, dialog_id)?,
+        Some(going) => return Err(unfinished(&going)),
+        None => {}
     }
     location::set_in(&tx, dialog_id, &Location::Moving(host.to_string()))?;
-    tx.execute(
+    insert(&tx, dialog_id, host, move_id, THERE)?;
+    tx.commit().map_err(err)
+}
+
+/// Locks the chat for its move back from `host`, with `move_id`. It stays
+/// on the host until the flip; the app refuses its writes meanwhile. A move
+/// back from `host` cut short goes on instead, its row as it was. Refused
+/// for a chat that isn't on `host`, or whose move there isn't over.
+pub fn lock_back(
+    conn: &mut Connection,
+    dialog_id: &str,
+    host: &str,
+    move_id: &str,
+) -> DbResult<()> {
+    let tx = conn.transaction().map_err(err)?;
+    match location::of_chat(&tx, dialog_id)? {
+        Location::Host(on) if on == host => {}
+        Location::Host(on) => return Err(format!("This chat is on {on}.")),
+        Location::Here => return Err("This chat is on this computer already.".into()),
+        Location::Moving(to) => return Err(format!("This chat is moving to {to}.")),
+        Location::Released => return Err("This chat went back to its computer.".into()),
+    }
+    match of_chat(&tx, dialog_id)? {
+        Some(going) if going.direction == BACK && going.host == host => {}
+        Some(going) => return Err(unfinished(&going)),
+        None => insert(&tx, dialog_id, host, move_id, BACK)?,
+    }
+    tx.commit().map_err(err)
+}
+
+fn insert(
+    conn: &Connection,
+    dialog_id: &str,
+    host: &str,
+    move_id: &str,
+    way: &str,
+) -> DbResult<()> {
+    conn.execute(
         "INSERT INTO cloud_moves (dialog_id, host, move_id, direction, step, started_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![dialog_id, host, move_id, THERE, LOCKED, now_ms()],
+        params![dialog_id, host, move_id, way, LOCKED, now_ms()],
     )
-    .map_err(err)?;
-    tx.commit().map_err(err)
+    .map(drop)
+    .map_err(err)
+}
+
+/// Why a chat with a move going can't start another.
+fn unfinished(going: &CloudMove) -> String {
+    match going.direction.as_str() {
+        BACK => format!("This chat's move back from {} isn't over yet.", going.host),
+        _ => "This chat's last move isn't over: cancel it first.".into(),
+    }
 }
 
 /// The step the chat's move reached.
@@ -114,6 +177,20 @@ pub fn flip(conn: &mut Connection, dialog_id: &str, host: &str, rev: i64) -> DbR
     tx.commit().map_err(err)
 }
 
+/// The flip of a move back: the chat and its subagents' chats are here,
+/// the mirror's row goes, and the move waits for its host to forget them.
+pub fn flip_back(conn: &mut Connection, dialog_id: &str) -> DbResult<()> {
+    let tx = conn.transaction().map_err(err)?;
+    location::set_in(&tx, dialog_id, &Location::Here)?;
+    tx.execute(
+        "DELETE FROM mirror_state WHERE dialog_id = ?1",
+        params![dialog_id],
+    )
+    .map_err(err)?;
+    step(&tx, dialog_id, FORGETTING)?;
+    tx.commit().map_err(err)
+}
+
 /// The move undone: the chat is here again, and its move over.
 pub fn roll_back(conn: &mut Connection, dialog_id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
@@ -135,7 +212,8 @@ pub fn cancel(conn: &mut Connection, dialog_id: &str) -> DbResult<()> {
     tx.commit().map_err(err)
 }
 
-/// The move's row goes: what it queued reached its host.
+/// The move's row goes: what it queued reached its host, or a move back
+/// was undone before its host released the chat, which stays there.
 pub fn forget(conn: &Connection, dialog_id: &str) -> DbResult<()> {
     conn.execute(
         "DELETE FROM cloud_moves WHERE dialog_id = ?1",
@@ -212,6 +290,41 @@ mod tests {
         assert_eq!(at(&conn), (on.clone(), on));
         assert_eq!(mirror::state(&conn, "chat").unwrap().unwrap().rev, 42);
         assert!(of_chat(&conn, "chat").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_move_back_keeps_the_chat_on_its_host_until_its_flip() {
+        let mut conn = db();
+        let refused = lock_back(&mut conn, "chat", "server", "b1").unwrap_err();
+        assert!(refused.contains("on this computer already"), "{refused}");
+        lock(&mut conn, "chat", "server", "m1").unwrap();
+        flip(&mut conn, "chat", "server", 42).unwrap();
+
+        lock_back(&mut conn, "chat", "server", "b1").unwrap();
+        let on = Location::Host("server".into());
+        assert_eq!(at(&conn), (on.clone(), on.clone()));
+        let row = of_chat(&conn, "chat").unwrap().unwrap();
+        assert_eq!((row.direction.as_str(), row.step.as_str()), (BACK, LOCKED));
+        let elsewhere = lock_back(&mut conn, "chat", "other", "b2").unwrap_err();
+        assert!(elsewhere.contains("on server"), "{elsewhere}");
+        step(&conn, "chat", RELEASED).unwrap();
+        // Cut short: it goes on from where it was.
+        lock_back(&mut conn, "chat", "server", "b2").unwrap();
+        let row = of_chat(&conn, "chat").unwrap().unwrap();
+        assert_eq!((row.move_id.as_str(), row.step.as_str()), ("b1", RELEASED));
+
+        flip_back(&mut conn, "chat").unwrap();
+        assert_eq!(at(&conn), (Location::Here, Location::Here));
+        assert!(mirror::state(&conn, "chat").unwrap().is_none());
+        assert_eq!(of_chat(&conn, "chat").unwrap().unwrap().step, FORGETTING);
+
+        // A move there needn't wait for the host to forget the chat.
+        lock(&mut conn, "chat", "server", "m2").unwrap();
+        let row = of_chat(&conn, "chat").unwrap().unwrap();
+        assert_eq!(
+            (row.direction.as_str(), row.move_id.as_str()),
+            (THERE, "m2")
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ import type { RunPause } from '../types';
 export function pauseText(pause: RunPause): string {
   switch (pause.kind) {
     case 'move':
-      return pause.host ? `Moved to ${pause.host}.` : 'Moved.';
+      return pause.host ? `Moved to ${pause.host}.` : 'Moved back to this computer.';
     case 'drain':
       return 'Paused for an upgrade.';
     case 'loop':

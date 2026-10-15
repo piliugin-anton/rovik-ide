@@ -131,6 +131,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         // The daemon's own groups: it answers these itself.
         Request::ChatOwner { .. }
         | Request::ChatRelease { .. }
+        | Request::ChatForget { .. }
         | Request::ProjectEnsure { .. }
         | Request::WorkSync { .. }
         | Request::WorkResult { .. }

@@ -23,9 +23,10 @@ pub enum Request {
     },
     /// Pauses the chat's run for its move to `host` (6.8), at the run's
     /// next safe point: once its tool calls have their results and its
-    /// subagents are done. Answers when the run has ended: whether it
-    /// paused for the move, which `ContinueRun` continues where the chat
-    /// goes. False when no run went. → `Bool`.
+    /// subagents are done. `host` is empty for a move back to the chat's
+    /// computer. Answers when the run has ended: whether it paused for the
+    /// move, which `ContinueRun` continues where the chat goes. False when
+    /// no run went. → `Bool`.
     AgentPause {
         dialog_id: String,
         host: String,
@@ -106,6 +107,13 @@ pub enum Request {
         dialog_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         move_id: Option<String>,
+    },
+    /// Deletes the rows of a chat its computer took back (6.8), which has
+    /// them all: its last pull came after the release. Refused for a chat
+    /// the daemon hasn't released. → `Bool`, whether the daemon knew the
+    /// chat.
+    ChatForget {
+        dialog_id: String,
     },
 
     // CLM: a chat's context file and its revisions.
@@ -272,6 +280,7 @@ impl Request {
             | Request::ChatSetModel { dialog_id, .. }
             | Request::ChatDelete { dialog_id }
             | Request::ChatRelease { dialog_id, .. }
+            | Request::ChatForget { dialog_id }
             | Request::ClmSetMode { dialog_id, .. }
             | Request::ClmReset { dialog_id }
             | Request::ClmRestoreRevision { dialog_id, .. }

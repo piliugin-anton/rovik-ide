@@ -1,6 +1,7 @@
-//! Chats moved to the real daemon (M04, 6.8): the bundle a computer sends,
-//! imported once per move, with its worktree, owned by that computer;
-//! `ChatOwner`; and `ChatRelease`, after which the chat is only read.
+//! Chats moved to the real daemon (M04, M07, 6.8): the bundle a computer
+//! sends, imported once per move, with its worktree, owned by that
+//! computer; `ChatOwner`; `ChatRelease`, after which the chat is only read;
+//! and `ChatForget`, after which its rows are gone.
 
 mod common;
 
@@ -270,6 +271,47 @@ async fn a_released_chat_is_only_read() {
         .collect();
     assert_eq!(pulled[0], "u1");
     assert_eq!(page.changes.dialogs[0].title, "Moved");
+}
+
+async fn forget(client: &Client, chat: &str) -> Result<bool, Fail> {
+    let forget = Request::ChatForget {
+        dialog_id: chat.into(),
+    };
+    client.request(forget).await
+}
+
+/// 6.8: the rows of a chat its computer took back go when that computer
+/// has them all, and not before it let the chat go. Its worktree stays for
+/// the cleanup (R01), and the daemon still knows whose it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_is_forgotten_only_once_its_computer_took_it_back() {
+    let setup = Setup::new().await;
+    let bundle = bundle(&setup, rows("Moved", vec![row("u1", "user", "Go")]).await).await;
+    import(&setup.client, "move-1", &bundle).await.unwrap();
+
+    let early = forget(&setup.client, CHAT).await.unwrap_err();
+    assert_eq!(early.code, FailCode::BadRequest, "{early}");
+    assert!(early.message.contains("release it first"), "{early}");
+    let desk = client_as(&setup.daemon, OTHER, &setup.daemon.other_token).await;
+    let theirs = forget(&desk, CHAT).await.unwrap_err();
+    assert_eq!(theirs.code, FailCode::NotOwner, "{theirs}");
+    assert_eq!(ids(&setup), ["u1"]);
+
+    assert_eq!(release(&setup.client, None).await, Ok(true));
+    assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
+    assert!(ids(&setup).is_empty());
+    let left: i64 = setup
+        .db()
+        .query_row("SELECT COUNT(*) FROM dialogs WHERE id = ?1", [CHAT], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(left, 0, "the chat's row went too");
+    assert!(worktree(&setup).is_dir(), "the cleanup takes the worktree");
+    assert!(owner(&setup.client).await.is_some_and(|o| o.released));
+    // Told again, or of a chat it never had, it's done all the same.
+    assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
+    assert_eq!(forget(&setup.client, "chat-never").await, Ok(false));
 }
 
 /// K36: a chat its computer took back can move here again, and what its

@@ -1,12 +1,13 @@
-//! Moving a chat to the real daemon (M06, 6.8): a run going pauses for the
-//! move and goes on there, nothing starts in the chat while it moves, its
-//! files go with it, and a move the app left unfinished is finished or
-//! undone once the host answers, or cancelled while it can't.
+//! Moving a chat to the real daemon and back (M06, M07, 6.8): a run going
+//! pauses for the move and goes on where the chat went, nothing starts in
+//! the chat while it moves, its files go with it, its changes come back to
+//! wait here, and a move the app left unfinished is finished or undone once
+//! the host answers, or cancelled while it can't.
 
 mod common;
 
-use common::app::{App, HOST};
-use common::project::{ended, message, start, unattended, Setup, CHAT, PROJECT};
+use common::app::{landed, App, HOST};
+use common::project::{ended, message, start, unattended, writes, Setup, CHAT, PROJECT};
 use common::{messages_in, until};
 use rovik_client::shadow::Shadow;
 use rovik_client::CloudEvent;
@@ -16,11 +17,12 @@ use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::moves::{self, CloudMove};
 use rovik_core::chat_db::store::{self, NewMessage};
 use rovik_core::chat_db::{attachments, mirror, sync};
+use rovik_core::overlay::chats;
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::packs::snapshot_ref;
 use rovik_protocol::sync::{ChatBundle, Imported, Ownership};
 use rovik_protocol::work::Project;
-use rovik_protocol::{Request, Response};
+use rovik_protocol::{FailCode, Request, Response};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,16 +45,88 @@ fn pdf_file() -> Vec<u8> {
         .to_vec()
 }
 
-/// The steps of moves the app reports on `cloud-event`.
+/// The steps of moves the app reports on `cloud-event`, a move back's as
+/// "back <step>".
 fn moves_of(app: &App) -> Arc<Mutex<Vec<(String, Option<String>)>>> {
     let steps: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::default();
     let seen = Arc::clone(&steps);
-    app.remote.on_cloud(Arc::new(move |event| {
-        if let CloudEvent::Moving { step, message, .. } = event {
-            seen.lock().unwrap().push((step, message));
+    app.remote.on_cloud(Arc::new(move |event| match event {
+        CloudEvent::Moving { step, message, .. } => seen.lock().unwrap().push((step, message)),
+        CloudEvent::MovingBack { step, message, .. } => {
+            seen.lock().unwrap().push((format!("back {step}"), message))
         }
+        _ => {}
     }));
     steps
+}
+
+fn steps(moves: &Mutex<Vec<(String, Option<String>)>>) -> Vec<String> {
+    moves
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(s, _)| s.clone())
+        .collect()
+}
+
+/// A command that waits for the user's approval.
+fn asks() -> Permissions {
+    Permissions {
+        command_approval: ApprovalRule {
+            required: true,
+            by: Approver::User,
+        },
+        ..unattended()
+    }
+}
+
+fn ls(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": "ls" }),
+    }
+}
+
+/// Waits until the app was asked to approve tool call `id`.
+async fn asked(app: &App, id: &str) {
+    until(&format!("the approval of {id} asked"), || {
+        let asked = events(app)
+            .into_iter()
+            .any(|e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == id);
+        asked.then_some(())
+    })
+    .await;
+}
+
+fn approve(id: &str) -> Request {
+    Request::AgentResolveApproval {
+        dialog_id: CHAT.into(),
+        tool_call_id: id.into(),
+        decision: ApprovalDecision::Allow,
+    }
+}
+
+/// The chat moved to the daemon from the app, with nothing running.
+async fn moved_there(app: &App) {
+    app.remote.move_chat(CHAT, HOST, None).await.unwrap();
+    assert_eq!(where_is(app).await, Location::Host(HOST.into()));
+}
+
+/// A run on the daemon that wrote `notes.txt`, waiting for the approval
+/// of its next command (`c2`), and a model that goes on with `then` once
+/// the chat is back.
+async fn writing_there(
+    app: &App,
+    setup: &Setup,
+    then: Vec<Reply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let mut replies = vec![writes("c1", "notes.txt", "from the server\n"), ls("c2")];
+    replies.extend(then);
+    let (url, seen) = model(replies).await;
+    app.remote.start(start(setup, &url, asks())).await.unwrap();
+    asked(app, "c2").await;
+    (url, seen)
 }
 
 fn events(app: &App) -> Vec<Value> {
@@ -382,4 +456,187 @@ async fn a_chats_image_and_pdf_reach_the_model_after_its_move() {
     let sent = requests[1].to_string();
     assert!(sent.contains("data:image/png;base64,"), "the image");
     assert!(sent.contains("data:application/pdf;base64,"), "the PDF");
+}
+
+/// 6.8's move back: the run pauses there once its command has its result,
+/// nothing starts in the chat meanwhile, the daemon refuses its writes
+/// once it let the chat go and forgets its rows after the last pull, and
+/// the chat's changes wait here while its run goes on, in a view of its
+/// own that has them, and land when it ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_moved_back_waits_with_its_changes_and_its_run_goes_on_here() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let moves = moves_of(&app);
+    moved_there(&app).await;
+    let here = vec![ls("c3"), Reply::Text("Done here.")];
+    let (url, seen) = writing_there(&app, &setup, here).await;
+
+    let (remote, template) = (app.remote.clone(), start(&setup, &url, asks()));
+    let moving = tokio::spawn(async move { remote.move_back(CHAT, Some(template)).await });
+    until("the move back waiting for the run", || {
+        steps(&moves)
+            .contains(&"back pausing".to_string())
+            .then_some(())
+    })
+    .await;
+    let next = app.remote.start(message(&setup, &url, "u2")).await;
+    let fail = next.unwrap_err();
+    assert!(fail.message.contains("moving back"), "{fail}");
+    let rename = Request::ChatRename {
+        dialog_id: CHAT.into(),
+        title: "Renamed".into(),
+    };
+    assert!(app.remote.route(CHAT, rename.clone()).await.is_err());
+    // What the run waits on is still answered there.
+    let answered = app.remote.route(CHAT, approve("c2")).await;
+    assert_eq!(answered, Ok(Response::Bool(true)));
+    moving.await.unwrap().unwrap();
+
+    assert_eq!(where_is(&app).await, Location::Here);
+    assert!(app.remote.host_of(CHAT).is_none());
+    assert!(its_move(&app).await.is_none(), "the daemon forgot the chat");
+    let moved: Vec<String> = steps(&moves)
+        .into_iter()
+        .filter(|s| s.starts_with("back "))
+        .collect();
+    assert_eq!(
+        moved,
+        [
+            "back pausing",
+            "back fetching",
+            "back releasing",
+            "back pulling",
+            "back moved"
+        ]
+    );
+    // The daemon let the chat go: its writes are refused, and its rows
+    // went once the app had them all.
+    let refused = setup.client.request::<()>(rename).await.unwrap_err();
+    assert_eq!(refused.code, FailCode::NotOwner, "{refused}");
+    assert!(setup.daemon.rows(CHAT).is_empty());
+    let here = app.test.core.paths.data_dir.join("chats.db");
+    let rows = messages_in(&here, CHAT);
+    assert!(
+        format!("{rows:?}").contains(r#"\"paused\":{\"kind\":\"move\""#),
+        "the pause for the move came back: {rows:?}"
+    );
+
+    // Its changes wait here as a local isolated chat's do.
+    let pending = chats::pending(CHAT).expect("its changes wait");
+    assert_eq!(pending.reason, "Not landed: the run didn't finish.");
+    let changed: Vec<String> = chats::changes(CHAT)
+        .iter()
+        .map(|c| c.path().to_string())
+        .collect();
+    assert_eq!(changed, ["notes.txt"]);
+    assert!(!setup.project.join("notes.txt").exists());
+    // Its run goes on here, in a view that has them.
+    asked(&app, "c3").await;
+    let listed = app.remote.route(CHAT, approve("c3")).await;
+    assert_eq!(listed, Ok(Response::Bool(true)));
+    assert_eq!(landed(&setup, "notes.txt").await, "from the server\n");
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 4, "two requests there, two here");
+    assert!(
+        requests[3].to_string().contains("notes.txt"),
+        "the command here listed the chat's file: {}",
+        requests[3]
+    );
+}
+
+/// Where the chat's runs here couldn't see its changes, they land before
+/// its run goes on, in the project.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_moved_back_without_isolation_lands_its_changes_first() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let moves = moves_of(&app);
+    moved_there(&app).await;
+    let (url, seen) = writing_there(&app, &setup, vec![Reply::Text("Done here.")]).await;
+
+    let mut template = start(&setup, &url, asks());
+    template.isolate = Some(false);
+    let remote = app.remote.clone();
+    let moving = tokio::spawn(async move { remote.move_back(CHAT, Some(template)).await });
+    until("the move back waiting for the run", || {
+        steps(&moves)
+            .contains(&"back pausing".to_string())
+            .then_some(())
+    })
+    .await;
+    app.remote.route(CHAT, approve("c2")).await.unwrap();
+    moving.await.unwrap().unwrap();
+
+    assert!(steps(&moves).contains(&"back landing".to_string()));
+    assert!(!chats::exists(CHAT), "nothing waits");
+    let file = setup.project.join("notes.txt");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "from the server\n");
+    until("the run going on here", || {
+        (seen.lock().unwrap().len() == 3).then_some(())
+    })
+    .await;
+}
+
+/// The app killed after the daemon let the chat go: the daemon keeps its
+/// rows, and the next start finishes the move back with them, then has
+/// the daemon forget them (K51).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_back_cut_short_after_its_release_finishes_at_the_next_start() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    // A turn there the app doesn't hear of.
+    let app = app.restart(&setup).await;
+    let (url, _) = model(vec![Reply::Text("Hello from there.")]).await;
+    let turn = Request::AgentStart(start(&setup, &url, unattended()));
+    setup.client.call(turn).await.unwrap();
+    ended(&setup.client).await;
+    // Cut short after the release.
+    let locked = app.test.core.db.write(|c| {
+        moves::lock_back(c, CHAT, HOST, "back-1")?;
+        moves::step(c, CHAT, moves::RELEASED)
+    });
+    locked.await.unwrap();
+    let release = Request::ChatRelease {
+        dialog_id: CHAT.into(),
+        move_id: None,
+    };
+    assert!(setup.client.request::<bool>(release).await.unwrap());
+    let there = setup.daemon.data.join("data/chats.db");
+    let theirs = messages_in(&there, CHAT);
+    assert_eq!(theirs.len(), 2, "the daemon keeps the chat's rows");
+
+    let app = app.restart(&setup).await;
+    app.connect(&setup).await;
+    until_at(&app, Location::Here).await;
+    let here = app.test.core.paths.data_dir.join("chats.db");
+    assert_eq!(messages_in(&here, CHAT), theirs);
+    assert!(app.remote.host_of(CHAT).is_none());
+    assert!(messages_in(&there, CHAT).is_empty(), "then it forgot them");
+}
+
+/// Cut short before the daemon let the chat go: the move back is dropped,
+/// and the chat stays there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_back_cut_short_before_its_release_leaves_the_chat_there() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let app = app.restart(&setup).await;
+    let locked = app.test.core.db.write(|c| {
+        moves::lock_back(c, CHAT, HOST, "back-1")?;
+        moves::step(c, CHAT, moves::PAUSED)
+    });
+    locked.await.unwrap();
+
+    app.connect(&setup).await;
+    until_at(&app, Location::Host(HOST.into())).await;
+    assert_eq!(app.remote.host_of(CHAT).as_deref(), Some(HOST));
+    let owned = owner_there(&setup).await.unwrap();
+    assert!(!owned.released);
 }

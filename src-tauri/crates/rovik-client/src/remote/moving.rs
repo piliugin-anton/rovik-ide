@@ -147,17 +147,23 @@ impl Remote {
     ) -> Result<(), Fail> {
         let client = self.ready(host)?;
         let (project, root) = self.movable(dialog_id).await?;
-        let move_id = uuid::Uuid::new_v4().to_string();
-        let (chat, to, id) = (dialog_id.to_string(), host.to_string(), move_id.clone());
-        self.core
-            .db
-            .write(move |c| moves::lock(c, &chat, &to, &id))
-            .await
-            .map_err(|e| Fail::new(FailCode::BadRequest, e))?;
+        // Before its row, which a connection's settling then leaves alone.
         {
             let mut state = self.lock();
-            state.moving.insert(dialog_id.to_string());
+            if !state.moving.insert(dialog_id.to_string()) {
+                return Err(Fail::new(
+                    FailCode::BadRequest,
+                    format!("This chat is moving to {host} already."),
+                ));
+            }
             state.cancels.remove(dialog_id);
+        }
+        let move_id = uuid::Uuid::new_v4().to_string();
+        let (chat, to, id) = (dialog_id.to_string(), host.to_string(), move_id.clone());
+        let locked = self.core.db.write(move |c| moves::lock(c, &chat, &to, &id));
+        if let Err(e) = locked.await {
+            self.lock().moving.remove(dialog_id);
+            return Err(Fail::new(FailCode::BadRequest, e));
         }
         let place = (project.as_str(), root);
         let moved = self
@@ -198,10 +204,25 @@ impl Remote {
         Ok(())
     }
 
-    /// "Cancel move": the chat is here again. A move going now stops at
+    /// "Cancel move": the chat is where it was. A move going now stops at
     /// its next step; one cut short, whose host can't be asked, is undone
-    /// here, with a release queued for the host if it may have the chat.
+    /// here, with a release queued for the host if it may have the chat. A
+    /// move back can't be cancelled once its host released the chat: it's
+    /// finished when the host is next connected.
     pub async fn cancel_move(&self, dialog_id: &str) -> Result<(), Fail> {
+        let id = dialog_id.to_string();
+        let going = self.core.db.read(move |c| moves::of_chat(c, &id));
+        let going = going.await.map_err(internal)?;
+        let back = going.as_ref().filter(|m| m.direction == moves::BACK);
+        if let Some(back) = back.filter(|m| m.step == moves::RELEASED) {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                format!(
+                    "This chat's move back is past its last step on {}: it can't be cancelled.",
+                    back.host
+                ),
+            ));
+        }
         {
             let mut state = self.lock();
             if state.moving.contains(dialog_id) {
@@ -209,12 +230,26 @@ impl Remote {
                 return Ok(());
             }
         }
-        let id = dialog_id.to_string();
-        let going = self.core.db.read(move |c| moves::of_chat(c, &id));
-        let Some(going) = going.await.map_err(internal)? else {
+        let Some(going) = going else {
             return Ok(());
         };
         let id = dialog_id.to_string();
+        if going.direction == moves::BACK {
+            // Before the release the chat is still there, as it was; once
+            // here, its host keeps its rows until its own cleanup.
+            let dropped = self.core.db.write(move |c| moves::forget(c, &id));
+            dropped.await.map_err(internal)?;
+            if going.step != moves::FORGETTING {
+                if let Some(cloud) = self.cloud() {
+                    cloud(CloudEvent::MovingBack {
+                        dialog_id: dialog_id.to_string(),
+                        step: "cancelled".into(),
+                        message: None,
+                    });
+                }
+            }
+            return Ok(());
+        }
         let undone = match going.step.as_str() {
             moves::CANCELLED => return Ok(()),
             moves::IMPORTING => self.core.db.write(move |c| moves::cancel(c, &id)).await,
@@ -225,9 +260,10 @@ impl Remote {
         Ok(())
     }
 
-    /// The moves to `host` that the app left unfinished, once it's
+    /// The moves to and from `host` that the app left unfinished, once it's
     /// connected: a cancelled one's release goes; one cut short is finished
-    /// if the host has the chat from that move, and undone if not.
+    /// if the host has the chat from that move, and undone if not. A move
+    /// back is settled as remote/back.rs says.
     pub(super) async fn finish_moves(&self, host: &str) {
         let on = host.to_string();
         let left = self.core.db.read(move |c| moves::with_host(c, &on)).await;
@@ -238,12 +274,16 @@ impl Remote {
         let Ok(client) = self.client(host) else {
             return;
         };
-        for going in left.into_iter().filter(|m| m.direction == moves::THERE) {
+        for going in left {
             if self.lock().moving.contains(&going.dialog_id) {
                 continue;
             }
-            if let Err(fail) = self.finish_move(&client, &going).await {
-                log::warn!("{}'s move to {host} waits: {fail}", going.dialog_id);
+            let finished = match going.direction.as_str() {
+                moves::BACK => self.finish_back_cut_short(&client, &going).await,
+                _ => self.finish_move(&client, &going).await,
+            };
+            if let Err(fail) = finished {
+                log::warn!("{}'s move with {host} waits: {fail}", going.dialog_id);
             }
         }
     }
@@ -539,7 +579,7 @@ impl Remote {
 
     /// `host`'s connection, if it can take a chat: ready, and its Rovik as
     /// new as this app's (4.5).
-    fn ready(&self, host: &str) -> Result<Client, Fail> {
+    pub(super) fn ready(&self, host: &str) -> Result<Client, Fail> {
         let client = self.client(host)?;
         if client.state() != HostState::Ready {
             return Err(Fail::new(
@@ -559,14 +599,14 @@ impl Remote {
         Ok(client)
     }
 
-    async fn step(&self, dialog_id: &str, step: &'static str) -> Result<(), Fail> {
+    pub(super) async fn step(&self, dialog_id: &str, step: &'static str) -> Result<(), Fail> {
         let id = dialog_id.to_string();
         let stepped = self.core.db.write(move |c| moves::step(c, &id, step));
         stepped.await.map_err(internal)
     }
 
     /// Fails once "Cancel move" was asked.
-    fn not_cancelled(&self, dialog_id: &str) -> Result<(), Fail> {
+    pub(super) fn not_cancelled(&self, dialog_id: &str) -> Result<(), Fail> {
         match self.lock().cancels.contains(dialog_id) {
             true => Err(Fail::new(FailCode::BadRequest, CANCELLED)),
             false => Ok(()),
@@ -585,4 +625,4 @@ impl Remote {
 }
 
 /// What a cancelled move fails with.
-const CANCELLED: &str = "The move was cancelled.";
+pub(super) const CANCELLED: &str = "The move was cancelled.";

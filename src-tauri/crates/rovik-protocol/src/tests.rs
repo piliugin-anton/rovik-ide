@@ -468,6 +468,9 @@ fn every_request_round_trips() {
                 dialog_id: "d".into(),
                 move_id: Some("m".into()),
             },
+            Request::ChatForget {
+                dialog_id: "d".into(),
+            },
             Request::BlobsMissing {
                 ids: vec!["a".repeat(64), "b".repeat(64)],
             },

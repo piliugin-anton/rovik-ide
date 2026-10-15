@@ -196,7 +196,7 @@ export interface RunPause {
   toolCalls: number;
   /** A loop's: why it looked stuck. */
   reason?: string;
-  /** A move's: where the chat went. */
+  /** A move's: where the chat went, none for a move back to this computer. */
   host?: string;
 }
 

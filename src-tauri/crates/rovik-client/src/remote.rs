@@ -21,7 +21,7 @@ use rovik_core::{project_profile, Core};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::ChatSync;
-use rovik_protocol::{features, Event, Fail, FailCode, Request, Response};
+use rovik_protocol::{features, Access, Event, Fail, FailCode, Request, Response};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
+mod back;
 mod bar;
 mod mirror;
 mod moving;
@@ -72,6 +73,15 @@ pub enum CloudEvent {
     /// "pushing", "uploading", "importing"), then "moved", "failed" with
     /// why, or "cancelled".
     Moving {
+        dialog_id: String,
+        step: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+    /// A chat's move back from its host (6.8): the step it's at
+    /// ("pausing", "fetching", "releasing", "pulling", "landing"), then
+    /// "moved", "failed" with why, or "cancelled".
+    MovingBack {
         dialog_id: String,
         step: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,10 +142,13 @@ struct State {
     running: HashMap<String, String>,
     /// Each mirrored chat's pulls (remote/mirror.rs).
     pulls: HashMap<String, mirror::Pulls>,
-    /// The chats whose move goes now, and those of them asked to cancel
-    /// (remote/moving.rs).
+    /// The chats whose move there or back goes now, and those of them
+    /// asked to cancel (remote/moving.rs, remote/back.rs).
     moving: HashSet<String>,
     cancels: HashSet<String>,
+    /// The chats moving back, their subagents' chats with them, by their
+    /// lead's chat: what would change them is refused.
+    backs: HashMap<String, String>,
     /// The sends whose files are going up, by chat: Stop cancels one.
     uploads: HashMap<String, oneshot::Sender<()>>,
     /// The project open in the app: its id and folder (6.5).
@@ -264,6 +277,11 @@ impl Remote {
         let Some(host) = self.host_of(dialog_id) else {
             return rovik_core::dispatch(&self.core, request).await;
         };
+        // What the run waits on is still answered (6.8).
+        let writes = matches!(request.target(), Some((_, Access::Write)));
+        if writes && self.is_moving_back(dialog_id) {
+            return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
+        }
         // Stop during a send's upload cancels the send (6.11).
         if matches!(request, Request::AgentStop { .. }) {
             if let Some(cancel) = self.lock().uploads.remove(dialog_id) {
@@ -306,13 +324,16 @@ impl Remote {
 
     /// Deletes a chat. A remote chat's rows here go, and its host keeps its
     /// own until M08 tells it. A chat moving to a host is refused, as
-    /// `dispatch` refuses it.
+    /// `dispatch` refuses it, and so is one moving back.
     pub async fn delete(&self, dialog_id: &str) -> Result<(), Fail> {
         if self.host_of(dialog_id).is_none() {
             let delete = Request::ChatDelete {
                 dialog_id: dialog_id.to_string(),
             };
             return rovik_core::dispatch(&self.core, delete).await.map(drop);
+        }
+        if self.is_moving_back(dialog_id) {
+            return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
         api::chat_delete_dialog(&self.core, dialog_id.to_string())
             .await
@@ -351,6 +372,9 @@ impl Remote {
         let Some(host) = self.host_of(&request.dialog_id) else {
             return rovik_core::dispatch(&self.core, Request::AgentStart(request)).await;
         };
+        if self.is_moving_back(&request.dialog_id) {
+            return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
+        }
         let client = self.client(&host)?;
         agent_run::check_project(&self.core.db, &request.dialog_id, request.root.as_deref())
             .await

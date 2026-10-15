@@ -36,6 +36,8 @@ impl App {
     /// move (6.8).
     pub async fn local(setup: &mut Setup) -> App {
         let overlays = chats::TEST_DATA.clone().lock_owned().await;
+        // What a test that failed left open, in its own data folder.
+        chats::close_all();
         let test = TestCore::new();
         let data = test.core.paths.data_dir.clone();
         chats::init(&data);

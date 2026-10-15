@@ -23,10 +23,13 @@ test('transfers leave the bar alone', () => {
   assert.equal(barChanged(uploading, 'chat-1'), false);
 });
 
-test("a move's steps are its chat's alone, and leave the bar alone", () => {
+test("a move's steps, there or back, are its chat's alone, and leave the bar alone", () => {
   const moving: CloudEvent = { type: 'moving', dialogId: 'chat-1', step: 'importing' };
   assert.equal(moveStep(moving, 'chat-1'), 'importing');
   assert.equal(moveStep(moving, 'chat-2'), null);
+  const back: CloudEvent = { type: 'movingBack', dialogId: 'chat-1', step: 'pulling' };
+  assert.equal(moveStep(back, 'chat-1'), 'pulling');
+  assert.equal(barChanged(back, 'chat-1'), false);
   assert.equal(moveStep(changed, 'chat-1'), null);
   assert.equal(barChanged(moving, 'chat-1'), false);
 });

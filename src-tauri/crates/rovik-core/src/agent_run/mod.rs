@@ -893,15 +893,16 @@ pub fn agent_set_effort(
         .set_effort(&profile_id, options, dialog_id.as_deref())
 }
 
-/// Pauses the chat's run for a move to or from `host` (6.8): at its next
-/// safe point, where a checkpoint pause happens, once its subagents are
-/// done, and with no summary asked of the model (K29). Stop still stops it
-/// at once. Returns when the run has ended: whether it paused for the
-/// move, which `ContinueRun` then continues. False when no run went.
+/// Pauses the chat's run for a move to `host` (6.8), or back to its
+/// computer when `host` is empty: at its next safe point, where a
+/// checkpoint pause happens, once its subagents are done, and with no
+/// summary asked of the model (K29). Stop still stops it at once. Returns
+/// when the run has ended: whether it paused for the move, which
+/// `ContinueRun` then continues. False when no run went.
 pub async fn agent_pause(core: &Core, dialog_id: String, host: String) -> Result<bool, String> {
     let request = PauseRequest {
         kind: MOVE,
-        host: Some(host),
+        host: Some(host).filter(|h| !h.is_empty()),
     };
     if !core.agents.pause(&dialog_id, request) {
         return Ok(false);
@@ -945,6 +946,12 @@ async fn last_paused_for(core: &Core, dialog_id: &str, kind: &str) -> Result<boo
     let meta = last.messages.last().and_then(|m| m.meta.as_ref());
     let paused = meta.and_then(|meta| meta.pointer("/paused/kind")?.as_str());
     Ok(paused == Some(kind))
+}
+
+/// Whether the chat's last stored message is a pause for a move, which a
+/// `ContinueRun` continues where the chat went (6.8).
+pub async fn paused_for_move(core: &Core, dialog_id: &str) -> Result<bool, String> {
+    last_paused_for(core, dialog_id, MOVE).await
 }
 
 /// Whether the chat's last step has tool calls without results, which a

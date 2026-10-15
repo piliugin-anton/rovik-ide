@@ -52,16 +52,19 @@ pub struct Daemon {
 impl Daemon {
     /// `computer`'s request: the computer the token named. A chat another
     /// computer moved here is refused, its subagents' chats with it,
-    /// whatever the request (D16, 4.2), and so is anything but a read of a
-    /// chat the computer took back (6.8). A request that changed a chat
-    /// tells its computer (`ChatChanged`, 6.3).
+    /// whatever the request (D16, 4.2), and so is anything but a read, a
+    /// release or `ChatForget` of a chat the computer took back (6.8). A
+    /// request that changed a chat tells its computer (`ChatChanged`, 6.3).
     pub async fn answer(&self, computer: &str, request: Request) -> Result<Response, Fail> {
         let mut changes = None;
         if let Some((target, access)) = request.target() {
             let lead = self.lead_of(target).await?;
             self.store.check_owner(computer, &lead)?;
-            let releasing = matches!(request, Request::ChatRelease { .. });
-            if access != Access::Read && !releasing && self.store.is_released(&lead) {
+            let taking_back = matches!(
+                request,
+                Request::ChatRelease { .. } | Request::ChatForget { .. }
+            );
+            if access != Access::Read && !taking_back && self.store.is_released(&lead) {
                 let why = rovik_core::refusal(&Location::Released, access);
                 return Err(Fail::new(FailCode::NotOwner, why.unwrap_or_default()));
             }
@@ -142,6 +145,7 @@ impl Daemon {
             Request::ChatRelease { dialog_id, move_id } => {
                 moves::release(self, &dialog_id, move_id).await
             }
+            Request::ChatForget { dialog_id } => moves::forget(self, &dialog_id).await,
             // The chat's worktree goes with its rows.
             Request::ChatDelete { dialog_id } => {
                 let delete = Request::ChatDelete {

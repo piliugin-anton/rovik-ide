@@ -236,7 +236,22 @@ pub async fn cloud_move_chat(
         .map_err(|fail| fail.message)
 }
 
-/// "Cancel move": the chat is local again (6.8).
+/// Moves the chat back from its host (6.8). `start` is how the app would
+/// start it: its run picks up here with it, if it paused for the move.
+/// Progress comes on `cloud-event`.
+#[tauri::command]
+pub async fn cloud_move_back(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+    start: Option<StartRequest>,
+) -> Result<(), String> {
+    remote
+        .move_back(&dialog_id, start)
+        .await
+        .map_err(|fail| fail.message)
+}
+
+/// "Cancel move": the chat is where it was before its move (6.8).
 #[tauri::command]
 pub async fn cloud_cancel_move(
     remote: State<'_, Arc<Remote>>,

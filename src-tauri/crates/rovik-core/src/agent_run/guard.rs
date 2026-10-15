@@ -100,7 +100,8 @@ pub struct PauseInfo {
     /// loop's). A move or a drain has none, so it asks nothing (K29).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The host a chat moves to, which the transcript names.
+    /// The host a chat moves to, which the transcript names: none for a
+    /// move back to its computer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
 }

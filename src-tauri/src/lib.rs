@@ -124,6 +124,7 @@ pub fn run() {
             commands::chat::chat_resync_dialog,
             commands::chat::cloud_move_preflight,
             commands::chat::cloud_move_chat,
+            commands::chat::cloud_move_back,
             commands::chat::cloud_cancel_move,
             commands::chat::chat_search,
             commands::chat::chat_messages_answered,
