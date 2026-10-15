@@ -1,11 +1,19 @@
 //! Heavy commands' slots (workload): which chat comes first, how many run at
 //! once, and what runs now.
 
+use super::call;
 use rovik_core::workload::{self, WorkloadStatus};
+use rovik_core::Core;
+use rovik_protocol::Request;
+use tauri::State;
 
+/// The chat the user is looking at: its commands come first.
 #[tauri::command]
-pub fn workload_focus(dialog_id: Option<String>) {
-    workload::workload_focus(dialog_id);
+pub async fn workload_focus(
+    core: State<'_, Core>,
+    dialog_id: Option<String>,
+) -> Result<(), String> {
+    call(&core, Request::WorkloadFocus { dialog_id }).await
 }
 
 /// `None`: auto. A number: that many slots, as the user set it; kept for

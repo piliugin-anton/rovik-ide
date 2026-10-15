@@ -417,7 +417,8 @@ async fn a_rounds_commands_survive_waiting_for_approval() {
                 h.dialog_id.clone(),
                 "b1".into(),
                 ApprovalDecision::Allow,
-            );
+            )
+            .await;
         }
         outcome = h.run_end().await;
     }

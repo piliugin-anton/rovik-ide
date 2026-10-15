@@ -1,13 +1,15 @@
 //! Context Language Models (clm): a chat's context as a file the agent
 //! edits, and its revisions.
 
+use super::call;
 use rovik_core::clm::{self, store::RevisionRow, ClmStatus};
 use rovik_core::Core;
+use rovik_protocol::Request;
 use tauri::State;
 
 #[tauri::command]
 pub async fn clm_status(core: State<'_, Core>, dialog_id: String) -> Result<ClmStatus, String> {
-    clm::status(&core.db, &core.vfs, dialog_id).await
+    call(&core, Request::ClmStatus { dialog_id }).await
 }
 
 #[tauri::command]
@@ -16,13 +18,13 @@ pub async fn clm_set_mode(
     dialog_id: String,
     mode: String,
 ) -> Result<(), String> {
-    clm::set_mode(&core.db, dialog_id, mode).await
+    call(&core, Request::ClmSetMode { dialog_id, mode }).await
 }
 
 /// Drops the agent's context; the chat is sent as stored again.
 #[tauri::command]
 pub async fn clm_reset(core: State<'_, Core>, dialog_id: String) -> Result<(), String> {
-    clm::reset(&core.db, &core.vfs, &dialog_id).await
+    call(&core, Request::ClmReset { dialog_id }).await
 }
 
 #[tauri::command]
@@ -30,7 +32,7 @@ pub async fn clm_list_revisions(
     core: State<'_, Core>,
     dialog_id: String,
 ) -> Result<Vec<RevisionRow>, String> {
-    clm::list_revisions(&core.db, dialog_id).await
+    call(&core, Request::ClmListRevisions { dialog_id }).await
 }
 
 #[tauri::command]
@@ -39,7 +41,7 @@ pub async fn clm_read_revision(
     dialog_id: String,
     number: u64,
 ) -> Result<String, String> {
-    clm::revision_text(&core.db, &core.vfs, &dialog_id, number).await
+    call(&core, Request::ClmReadRevision { dialog_id, number }).await
 }
 
 /// Puts revision `number` back as the context file: it's read back like an
@@ -50,9 +52,7 @@ pub async fn clm_restore_revision(
     dialog_id: String,
     number: u64,
 ) -> Result<(), String> {
-    clm::restore_revision(&core.db, &core.vfs, &dialog_id, number)
-        .await
-        .map(|_| ())
+    call(&core, Request::ClmRestoreRevision { dialog_id, number }).await
 }
 
 #[tauri::command]

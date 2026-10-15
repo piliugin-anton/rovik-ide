@@ -14,6 +14,7 @@ pub mod clm;
 pub mod code_search;
 pub mod command_tool;
 pub mod core;
+mod dispatch;
 mod edit_file;
 pub mod file_guard;
 pub mod merge;
@@ -38,3 +39,4 @@ pub mod vfs;
 pub mod workload;
 
 pub use crate::core::{Core, EventSink, Paths};
+pub use crate::dispatch::dispatch;

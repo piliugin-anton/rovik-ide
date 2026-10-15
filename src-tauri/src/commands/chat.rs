@@ -1,12 +1,14 @@
 //! Chat data: chats, their messages and projects (chat_db/api.rs), and the
 //! files attached in the chat input.
 
+use super::call;
 use rovik_core::chat_db::search::SearchHit;
 use rovik_core::chat_db::store::{
     ChatModel, Cursor, DialogPage, MessagePage, MessagePatch, NewDialog, NewMessage,
 };
 use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
+use rovik_protocol::Request;
 use tauri::ipc::InvokeBody;
 use tauri::State;
 
@@ -136,7 +138,7 @@ pub async fn chat_update_message(
     message_id: String,
     patch: MessagePatch,
 ) -> Result<(), String> {
-    api::chat_update_message(&core.db, message_id, patch).await
+    call(&core, Request::ChatUpdateMessage { message_id, patch }).await
 }
 
 #[tauri::command]
@@ -145,12 +147,12 @@ pub async fn chat_rename_dialog(
     dialog_id: String,
     title: String,
 ) -> Result<(), String> {
-    api::chat_rename_dialog(&core.db, dialog_id, title).await
+    call(&core, Request::ChatRename { dialog_id, title }).await
 }
 
 #[tauri::command]
 pub async fn chat_delete_dialog(core: State<'_, Core>, dialog_id: String) -> Result<(), String> {
-    api::chat_delete_dialog(&core, dialog_id).await
+    call(&core, Request::ChatDelete { dialog_id }).await
 }
 
 #[tauri::command]
@@ -225,7 +227,7 @@ pub async fn chat_set_model(
     dialog_id: String,
     model: ChatModel,
 ) -> Result<(), String> {
-    api::chat_set_model(&core.db, dialog_id, model).await
+    call(&core, Request::ChatSetModel { dialog_id, model }).await
 }
 
 /// The chat's saved model and effort, if any.

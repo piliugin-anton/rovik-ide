@@ -509,7 +509,7 @@ async fn stop_on_the_lead_stops_its_scouts() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let core = h.core.clone();
     assert!(core.agents.is_running(&child));
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "stopped");
     let result = h.task_result("t1").await;
     assert!(
@@ -559,12 +559,7 @@ async fn a_scouts_approval_shows_in_the_lead_chat() {
     assert_ne!(child, h.dialog_id);
 
     let core = h.core.clone();
-    assert!(agent_resolve_approval(
-        &core,
-        child,
-        "s1".into(),
-        ApprovalDecision::Allow
-    ));
+    assert!(agent_resolve_approval(&core, child, "s1".into(), ApprovalDecision::Allow).await);
     assert_eq!(h.run_end().await, "done");
     assert!(h.task_result("t1").await.content.contains("Status: done"));
 }
@@ -1408,7 +1403,7 @@ async fn landing_and_discarding_wait_for_running_subagents() {
         .unwrap();
     assert!(refused.contains("1 subagent at work"));
     // Stop: the scout ends with the run, and nothing holds the chat.
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "stopped");
     assert_eq!(core.agents.running_children(&h.dialog_id), 0);
     assert!(
@@ -1449,7 +1444,7 @@ async fn stopping_one_of_three_scouts_stops_only_it() {
     let b = started["childDialogId"].as_str().unwrap().to_string();
     tokio::time::sleep(Duration::from_millis(150)).await;
     let core = h.core.clone();
-    assert!(agent_stop(&core, b));
+    assert!(agent_stop(&core, b).await);
     assert_eq!(h.run_end().await, "done");
     let status = |c: &str, m: &MessageRow| {
         m.meta.as_ref().unwrap()["subagent"]["status"]
@@ -6628,7 +6623,7 @@ async fn redo_puts_each_path_back_as_the_chat_had_it() {
         joined.content
     );
     let core = h.core.clone();
-    agent_stop(&core, h.dialog_id.clone());
+    agent_stop(&core, h.dialog_id.clone()).await;
     assert_eq!(h.run_end().await, "stopped");
 
     let id = h.dialog_id.clone();
@@ -6888,7 +6883,7 @@ async fn stop_during_a_group_retries_no_worker() {
     }
     assert_eq!(h.events_of("subagentStarted").len(), 2);
     let core = h.core.clone();
-    agent_stop(&core, h.dialog_id.clone());
+    agent_stop(&core, h.dialog_id.clone()).await;
     assert_eq!(h.run_end().await, "stopped");
     // No third worker was started for a retry.
     assert_eq!(h.events_of("subagentStarted").len(), 2);
@@ -6939,7 +6934,7 @@ async fn stop_on_the_lead_while_its_scout_waits_for_an_approval() {
         .await;
     let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
     let core = h.core.clone();
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "stopped");
     let result = h.task_result("t1").await;
     assert!(
@@ -6949,7 +6944,7 @@ async fn stop_on_the_lead_while_its_scout_waits_for_an_approval() {
     );
     let state = &core.agents;
     assert!(!state.is_running(&child) && !state.is_running(&h.dialog_id));
-    let status = serde_json::to_value(agent_status(&core)).unwrap();
+    let status = serde_json::to_value(agent_status(&core).await).unwrap();
     assert_eq!(status["approvals"], json!([]), "no approval left waiting");
     assert_eq!(status["subagents"], json!([]));
 }
@@ -7256,7 +7251,7 @@ async fn stop_in_the_middle_of_a_repair_round() {
     let fixer_chat = fixer["childDialogId"].as_str().unwrap().to_string();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let core = h.core.clone();
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "verify-stopped");
     let state = &core.agents;
     assert!(!state.is_running(&fixer_chat) && !state.is_running(&h.dialog_id));
@@ -7373,7 +7368,7 @@ async fn plan_checks_see_the_chats_view_in_an_isolated_chat() {
         .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     let core = h.core.clone();
-    agent_stop(&core, h.dialog_id.clone());
+    agent_stop(&core, h.dialog_id.clone()).await;
     assert_eq!(h.run_end().await, "stopped");
     assert!(h.file("src/only_here.rs").is_none(), "not in the project");
 
@@ -7446,12 +7441,7 @@ async fn a_plan_review_waits_for_its_approval_and_goes_on() {
     assert!(h.plan_files().is_empty());
     let core = h.core.clone();
     let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
-    assert!(agent_resolve_approval(
-        &core,
-        child,
-        "r1".into(),
-        ApprovalDecision::Allow
-    ));
+    assert!(agent_resolve_approval(&core, child, "r1".into(), ApprovalDecision::Allow).await);
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
     let saved = result_of(&messages, "p1");
@@ -8198,12 +8188,7 @@ async fn waiting_for_an_approval_doesnt_spend_the_wall() {
     // Longer than its whole budget (0.25 minutes).
     tokio::time::sleep(Duration::from_secs(16)).await;
     let core = h.core.clone();
-    assert!(agent_resolve_approval(
-        &core,
-        child,
-        "s1".into(),
-        ApprovalDecision::Allow
-    ));
+    assert!(agent_resolve_approval(&core, child, "s1".into(), ApprovalDecision::Allow).await);
     h.run_end().await;
     let results = h.child_results("t1").await;
     assert!(results["s1"].contains('x'), "{}", results["s1"]);
@@ -8248,7 +8233,7 @@ async fn an_error_before_the_batch_starts_unregisters_launched_children() {
     }
     let state = &h.core.agents;
     assert_eq!(state.running_children(&h.dialog_id), 0);
-    let status = serde_json::to_value(agent_status(&h.core)).unwrap();
+    let status = serde_json::to_value(agent_status(&h.core).await).unwrap();
     assert_eq!(status["subagents"], json!([]), "{status}");
 }
 
@@ -9504,7 +9489,7 @@ async fn stop_during_the_join_keeps_finished_copies() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let core = h.core.clone();
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     let result = h.result_when_ready("g1").await;
     assert_eq!(h.run_end().await, "stopped");
     let text = &result.content;

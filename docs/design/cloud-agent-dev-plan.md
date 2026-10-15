@@ -1402,3 +1402,11 @@ Tasks add notes here when reality differs from the plan.
   tasks, as additive changes. `Response` has one variant per kind of
   value, which a caller takes with `TryFrom` (`bool::try_from(reply)`).
   A token travels as a `Secret`, whose `Debug` doesn't show it.
+- **P02, async commands.** The commands that now go through `dispatch`
+  are async, and return a `Result` as Tauri requires of async commands
+  that take the app's state: `agent_stop`, `agent_status` and the others
+  that were synchronous answer the frontend the same values. An
+  operation's own error travels as `FailCode::Internal` with its text.
+  The e2e suites call `dispatch` through stand-ins with the operations'
+  names in the harness, so the suites' only change is an `.await` on
+  those calls.

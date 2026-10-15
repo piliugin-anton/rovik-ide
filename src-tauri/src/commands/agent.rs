@@ -1,20 +1,22 @@
 //! The agent's runs (agent_run), and the requests the frontend makes itself
 //! (agent.rs).
 
+use super::call;
 use rovik_core::agent::{
     self, ChatParams, ChatStreamEvent, ContextEstimate, OpenAIChatOptions, ReasoningEffort,
     RemoteModel, WireChatMessage,
 };
 use rovik_core::agent_run::plan::{CurrentChecklist, QuestionsOutcome};
-use rovik_core::agent_run::{self, AgentConfig, AgentStatus, ApprovalDecision, StartRequest};
+use rovik_core::agent_run::{AgentConfig, AgentStatus, ApprovalDecision, StartRequest};
 use rovik_core::chat_request::ChatRequests;
 use rovik_core::Core;
+use rovik_protocol::Request;
 use tauri::ipc::Channel;
 use tauri::State;
 
 #[tauri::command]
-pub fn agent_configure(core: State<'_, Core>, config: AgentConfig) {
-    agent_run::agent_configure(&core, config);
+pub async fn agent_configure(core: State<'_, Core>, config: AgentConfig) -> Result<(), String> {
+    call(&core, Request::AgentConfigure(config)).await
 }
 
 /// Starts a run in the chat. Returns its id, or None when there was nothing
@@ -24,52 +26,67 @@ pub async fn agent_start(
     core: State<'_, Core>,
     request: StartRequest,
 ) -> Result<Option<String>, String> {
-    agent_run::agent_start(&core, request).await
+    call(&core, Request::AgentStart(request)).await
 }
 
 /// A reasoning effort the user picked for a model (src/lib/reasoning.ts) in
 /// a chat: runs using that model follow it. Returns how many runs it reached.
 #[tauri::command]
-pub fn agent_set_effort(
+pub async fn agent_set_effort(
     core: State<'_, Core>,
     profile_id: String,
     options: Option<OpenAIChatOptions>,
     dialog_id: Option<String>,
-) -> usize {
-    agent_run::agent_set_effort(&core, profile_id, options, dialog_id)
+) -> Result<usize, String> {
+    let request = Request::AgentSetEffort {
+        profile_id,
+        options,
+        dialog_id,
+    };
+    call(&core, request).await
 }
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
 /// what it waits on is answered "no").
 #[tauri::command]
-pub fn agent_stop(core: State<'_, Core>, dialog_id: String) -> bool {
-    agent_run::agent_stop(&core, dialog_id)
+pub async fn agent_stop(core: State<'_, Core>, dialog_id: String) -> Result<bool, String> {
+    call(&core, Request::AgentStop { dialog_id }).await
 }
 
 #[tauri::command]
-pub fn agent_resolve_approval(
+pub async fn agent_resolve_approval(
     core: State<'_, Core>,
     dialog_id: String,
     tool_call_id: String,
     decision: ApprovalDecision,
-) -> bool {
-    agent_run::agent_resolve_approval(&core, dialog_id, tool_call_id, decision)
+) -> Result<bool, String> {
+    let request = Request::AgentResolveApproval {
+        dialog_id,
+        tool_call_id,
+        decision,
+    };
+    call(&core, request).await
 }
 
 #[tauri::command]
-pub fn agent_answer_questions(
+pub async fn agent_answer_questions(
     core: State<'_, Core>,
     dialog_id: String,
     tool_call_id: String,
     outcome: QuestionsOutcome,
-) -> bool {
-    agent_run::agent_answer_questions(&core, dialog_id, tool_call_id, outcome)
+) -> Result<bool, String> {
+    let request = Request::AgentAnswerQuestions {
+        dialog_id,
+        tool_call_id,
+        outcome,
+    };
+    call(&core, request).await
 }
 
 /// What's going on right now, for a frontend that (re)starts mid-run.
 #[tauri::command]
-pub fn agent_status(core: State<'_, Core>) -> AgentStatus {
-    agent_run::agent_status(&core)
+pub async fn agent_status(core: State<'_, Core>) -> Result<AgentStatus, String> {
+    call(&core, Request::AgentStatus).await
 }
 
 /// The chat's current checklist, as the backend computes it.
@@ -78,7 +95,7 @@ pub async fn chat_checklist(
     core: State<'_, Core>,
     dialog_id: String,
 ) -> Result<Option<CurrentChecklist>, String> {
-    agent_run::chat_checklist(&core, dialog_id).await
+    call(&core, Request::ChatChecklist { dialog_id }).await
 }
 
 /// The checklist panel's dismiss ✕. Returns the chat's checklist after it.
@@ -88,7 +105,11 @@ pub async fn chat_dismiss_checklist(
     dialog_id: String,
     message_id: String,
 ) -> Result<Option<CurrentChecklist>, String> {
-    agent_run::chat_dismiss_checklist(&core, dialog_id, message_id).await
+    let request = Request::ChatDismissChecklist {
+        dialog_id,
+        message_id,
+    };
+    call(&core, request).await
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title),

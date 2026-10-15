@@ -87,6 +87,8 @@ pub enum FailCode {
     BadRequest,
     /// The reply is over `MAX_FRAME`: repeat the call through `POST /call`.
     TooLarge,
+    /// The operation itself failed; `message` is its error, as the app's
+    /// command returns it for a local chat.
     Internal,
 }
 

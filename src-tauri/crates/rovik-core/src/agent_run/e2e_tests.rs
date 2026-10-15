@@ -6,6 +6,7 @@ use super::permissions::{ChecklistMode, Permissions};
 use super::*;
 use crate::chat_db::store::{self, MessageRow, NewDialog};
 use crate::testing::{effort, model, model_routed, route_of, Reply, TempDir, TestCore};
+use rovik_protocol::{Fail, Request, Response};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,78 @@ mod repair_tests;
 #[cfg(test)]
 #[path = "context_e2e_tests.rs"]
 mod context_tests;
+
+/*
+ * The operations, as the app and the daemon call them: through `dispatch`.
+ * These stand in for agent_run's functions of the same names, so every
+ * suite's starts, stops and answers take that path (P02).
+ */
+
+async fn through<T>(core: &Core, request: Request) -> Result<T, String>
+where
+    T: TryFrom<Response, Error = Fail>,
+{
+    crate::dispatch(core, request)
+        .await
+        .and_then(T::try_from)
+        .map_err(|fail| fail.message)
+}
+
+async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
+    through(core, Request::AgentStart(request)).await
+}
+
+async fn agent_stop(core: &Core, dialog_id: String) -> bool {
+    through(core, Request::AgentStop { dialog_id })
+        .await
+        .unwrap()
+}
+
+async fn agent_resolve_approval(
+    core: &Core,
+    dialog_id: String,
+    tool_call_id: String,
+    decision: ApprovalDecision,
+) -> bool {
+    let request = Request::AgentResolveApproval {
+        dialog_id,
+        tool_call_id,
+        decision,
+    };
+    through(core, request).await.unwrap()
+}
+
+async fn agent_answer_questions(
+    core: &Core,
+    dialog_id: String,
+    tool_call_id: String,
+    outcome: QuestionsOutcome,
+) -> bool {
+    let request = Request::AgentAnswerQuestions {
+        dialog_id,
+        tool_call_id,
+        outcome,
+    };
+    through(core, request).await.unwrap()
+}
+
+async fn agent_status(core: &Core) -> AgentStatus {
+    through(core, Request::AgentStatus).await.unwrap()
+}
+
+async fn agent_set_effort(
+    core: &Core,
+    profile_id: String,
+    options: Option<OpenAIChatOptions>,
+    dialog_id: Option<String>,
+) -> usize {
+    let request = Request::AgentSetEffort {
+        profile_id,
+        options,
+        dialog_id,
+    };
+    through(core, request).await.unwrap()
+}
 
 /*
  * The host
@@ -278,12 +351,15 @@ async fn a_denied_edit_is_reported_to_the_model() {
         .ends_with("a.txt"));
 
     let core = h.core.clone();
-    assert!(agent_resolve_approval(
-        &core,
-        h.dialog_id.clone(),
-        "e1".into(),
-        ApprovalDecision::Deny
-    ));
+    assert!(
+        agent_resolve_approval(
+            &core,
+            h.dialog_id.clone(),
+            "e1".into(),
+            ApprovalDecision::Deny
+        )
+        .await
+    );
     assert_eq!(h.run_end().await, "done");
 
     assert_eq!(h.file("a.txt").as_deref(), Some("one\ntwo\n"));
@@ -341,7 +417,8 @@ async fn a_partly_accepted_edit_writes_only_those_changes() {
             total: 2,
             rejected,
         },
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nthree\n"));
     let messages = h.messages().await;
@@ -452,7 +529,8 @@ async fn an_approved_edit_merges_with_a_change_made_while_it_waited() {
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nTHREE\n"));
     let messages = h.messages().await;
@@ -488,7 +566,8 @@ async fn a_partly_accepted_edit_keeps_a_change_made_while_it_waited() {
             total: 1,
             rejected: Vec::new(),
         },
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("a.txt").as_deref(), Some("ONE\ntwo\nthree\nfour\n"));
 }
@@ -516,7 +595,8 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     // The same call is asked again, against the file as it is now.
     for _ in 0..200 {
         if h.events_of("approvalRequested").len() >= 2 {
@@ -532,7 +612,8 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Deny,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("a.txt").as_deref(), Some("uno\ntwo\n"));
 }
@@ -957,7 +1038,7 @@ async fn stop_ends_a_run_waiting_for_approval() {
     .await;
     assert!(again.is_err());
 
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "stopped");
     let messages = h.messages().await;
     let result = messages.iter().find(|m| m.role == "tool").unwrap();
@@ -1127,12 +1208,7 @@ async fn plan_mode_asks_and_saves_the_plan() {
     let outcome: plan::QuestionsOutcome =
         serde_json::from_value(json!({ "answers": [{ "kind": "option", "label": "SQLite" }] }))
             .unwrap();
-    assert!(agent_answer_questions(
-        &core,
-        h.dialog_id.clone(),
-        "q1".into(),
-        outcome
-    ));
+    assert!(agent_answer_questions(&core, h.dialog_id.clone(), "q1".into(), outcome).await);
     assert_eq!(h.run_end().await, "done");
 
     let saved = h
@@ -1203,7 +1279,8 @@ async fn a_resumed_chat_asks_again_then_continues() {
         h.dialog_id.clone(),
         "l1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(
         roles(&h.messages().await),
@@ -1293,7 +1370,8 @@ async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
         h.dialog_id.clone(),
         "r2".into(),
         ApprovalDecision::Deny,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
 
     let messages = h.messages().await;
@@ -1355,13 +1433,13 @@ async fn a_reply_repeating_itself_is_cut_and_the_model_told() {
 
 impl Harness {
     /// The effort picked in this chat's selector.
-    fn pick_effort(&self, level: &str) -> usize {
-        self.pick_effort_with(effort(level))
+    async fn pick_effort(&self, level: &str) -> usize {
+        self.pick_effort_with(effort(level)).await
     }
 
-    fn pick_effort_with(&self, options: Option<crate::agent::OpenAIChatOptions>) -> usize {
+    async fn pick_effort_with(&self, options: Option<crate::agent::OpenAIChatOptions>) -> usize {
         let core = self.core.clone();
-        agent_set_effort(&core, "p::m".into(), options, Some(self.dialog_id.clone()))
+        agent_set_effort(&core, "p::m".into(), options, Some(self.dialog_id.clone())).await
     }
 }
 
@@ -1398,7 +1476,8 @@ async fn a_stuck_request_is_asked_again_with_a_new_effort() {
             "other::model".into(),
             effort("low"),
             Some(h.dialog_id.clone())
-        ),
+        )
+        .await,
         0
     );
     assert_eq!(
@@ -1407,16 +1486,17 @@ async fn a_stuck_request_is_asked_again_with_a_new_effort() {
             "p::m".into(),
             effort("medium"),
             Some("another-chat".into())
-        ),
+        )
+        .await,
         1
     );
     let same_level = serde_json::from_value(json!({ "reasoning_effort": "high", "reasoning_formats": ["reasoning_effort", "reasoning"] })).unwrap();
-    h.pick_effort_with(Some(same_level));
+    h.pick_effort_with(Some(same_level)).await;
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(seen.lock().unwrap().len(), 1, "nothing asked again yet");
 
     // Picked here: the request is long past "still waiting", so it's asked again.
-    assert_eq!(h.pick_effort("low"), 1);
+    assert_eq!(h.pick_effort("low").await, 1);
     assert_eq!(h.run_end().await, "done");
 
     let requests = seen.lock().unwrap().clone();
@@ -1451,7 +1531,7 @@ async fn an_effort_picked_early_waits_until_the_request_is_stuck() {
     h.start(request).await;
     requests_seen(&seen, 1).await;
     // Picked right away: the model may still answer, so it isn't cut short...
-    h.pick_effort("low");
+    h.pick_effort("low").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(seen.lock().unwrap().len(), 1);
     // ...until it's past the usual wait.
@@ -1487,13 +1567,14 @@ async fn an_effort_picked_mid_run_applies_to_the_next_request() {
     h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
     let core = h.core.clone();
-    h.pick_effort("low");
+    h.pick_effort("low").await;
     agent_resolve_approval(
         &core,
         h.dialog_id.clone(),
         "r1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
@@ -1514,7 +1595,7 @@ async fn a_reply_under_way_is_not_thrown_away_for_a_new_effort() {
     .await;
 
     // Silent since: stalled, but part of the reply is there.
-    h.pick_effort("low");
+    h.pick_effort("low").await;
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(
         seen.lock().unwrap().len(),
@@ -1523,7 +1604,7 @@ async fn a_reply_under_way_is_not_thrown_away_for_a_new_effort() {
     );
 
     let core = h.core.clone();
-    agent_stop(&core, h.dialog_id.clone());
+    agent_stop(&core, h.dialog_id.clone()).await;
     assert_eq!(h.run_end().await, "stopped");
     let messages = h.messages().await;
     assert_eq!(messages[1].content, "Part of the answer");
@@ -1604,12 +1685,13 @@ async fn every_call_of_a_turn_gets_a_result_when_stopped_midway() {
         h.dialog_id.clone(),
         "c1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     h.wait_for("approval c2", |e| {
         e["type"] == "approvalRequested" && e["request"]["toolCallId"] == "c2"
     })
     .await;
-    agent_stop(&core, h.dialog_id.clone());
+    agent_stop(&core, h.dialog_id.clone()).await;
     assert_eq!(h.run_end().await, "stopped");
 
     let messages = h.messages().await;
@@ -1784,21 +1866,11 @@ async fn plan_mode_refuses_changes_and_extra_questions() {
         .await;
         let outcome: plan::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "whatever" })).unwrap();
-        assert!(agent_answer_questions(
-            &core,
-            h.dialog_id.clone(),
-            id.into(),
-            outcome
-        ));
+        assert!(agent_answer_questions(&core, h.dialog_id.clone(), id.into(), outcome).await);
         // Answering twice does nothing.
         let again: plan::QuestionsOutcome =
             serde_json::from_value(json!({ "reply": "again" })).unwrap();
-        assert!(!agent_answer_questions(
-            &core,
-            h.dialog_id.clone(),
-            id.into(),
-            again
-        ));
+        assert!(!agent_answer_questions(&core, h.dialog_id.clone(), id.into(), again).await);
     }
     assert_eq!(h.run_end().await, "done");
 
@@ -1862,7 +1934,7 @@ async fn stop_while_a_question_waits_ends_the_run() {
     h.wait_for("questionsAsked", |e| e["type"] == "questionsAsked")
         .await;
     let core = h.core.clone();
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "stopped");
     assert_eq!(h.events_of("questionsSettled").len(), 1);
     let answer = result_of(&h.messages().await, "q1").clone();
@@ -3114,20 +3186,27 @@ async fn a_new_file_is_approved_whole_and_an_allowed_edit_is_recorded_as_reviewe
         h.dialog_id.clone(),
         "w1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     // Unknown and repeated answers do nothing.
-    assert!(!agent_resolve_approval(
-        &core,
-        h.dialog_id.clone(),
-        "w1".into(),
-        ApprovalDecision::Deny
-    ));
-    assert!(!agent_resolve_approval(
-        &core,
-        h.dialog_id.clone(),
-        "nope".into(),
-        ApprovalDecision::Allow
-    ));
+    assert!(
+        !agent_resolve_approval(
+            &core,
+            h.dialog_id.clone(),
+            "w1".into(),
+            ApprovalDecision::Deny
+        )
+        .await
+    );
+    assert!(
+        !agent_resolve_approval(
+            &core,
+            h.dialog_id.clone(),
+            "nope".into(),
+            ApprovalDecision::Allow
+        )
+        .await
+    );
     assert_eq!(h.run_end().await, "done");
     assert_eq!(h.file("dir/new.txt").as_deref(), Some("hello"));
     let written = h.events_of("fileWritten");
@@ -3194,7 +3273,8 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
         h.dialog_id.clone(),
         "e2".into(),
         ApprovalDecision::Deny,
-    );
+    )
+    .await;
     // The reviewer failed: the user decides.
     let asked = h
         .wait_for("approval e3", |e| {
@@ -3213,7 +3293,8 @@ async fn the_ai_reviewer_can_reject_and_falls_back_to_the_user() {
         h.dialog_id.clone(),
         "e3".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
 
     let messages = h.messages().await;
@@ -3261,7 +3342,8 @@ async fn no_reviewer_model_means_the_user_approves() {
         h.dialog_id.clone(),
         "r1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
 }
 
@@ -3418,18 +3500,18 @@ async fn runs_in_two_chats_go_on_independently() {
     .await;
 
     let core = a.core.clone();
-    let status = agent_status(&core);
+    let status = agent_status(&core).await;
     assert_eq!(status.runs.len(), 1, "A still runs");
     assert!(
-        !agent_stop(&core, b_id.clone()),
+        !agent_stop(&core, b_id.clone()).await,
         "B is done: nothing to stop"
     );
-    assert!(agent_stop(&core, a.dialog_id.clone()));
+    assert!(agent_stop(&core, a.dialog_id.clone()).await);
     a.wait_for("A ends", |e| {
         e["type"] == "runEnded" && e["dialogId"] == a.dialog_id.as_str()
     })
     .await;
-    assert!(agent_status(&core).runs.is_empty());
+    assert!(agent_status(&core).await.runs.is_empty());
 }
 
 #[tokio::test]
@@ -3449,7 +3531,7 @@ async fn status_lists_what_a_run_waits_on() {
     h.wait_for("approval", |e| e["type"] == "approvalRequested")
         .await;
     let core = h.core.clone();
-    let status = agent_status(&core);
+    let status = agent_status(&core).await;
     assert_eq!(status.runs[0].dialog_id, h.dialog_id);
     assert_eq!(status.approvals[0].tool_call_id, "r1");
     assert!(status.questions.is_empty());
@@ -3458,9 +3540,10 @@ async fn status_lists_what_a_run_waits_on() {
         h.dialog_id.clone(),
         "r1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     h.run_end().await;
-    let status = agent_status(&core);
+    let status = agent_status(&core).await;
     assert!(status.runs.is_empty() && status.approvals.is_empty());
 }
 
@@ -3473,7 +3556,10 @@ async fn a_chat_that_doesnt_exist_cant_start() {
     let core = h.core.clone();
     let started = agent_start(&core, request).await;
     assert!(started.is_err());
-    assert!(agent_status(&core).runs.is_empty(), "not left registered");
+    assert!(
+        agent_status(&core).await.runs.is_empty(),
+        "not left registered"
+    );
     assert!(seen.lock().unwrap().is_empty());
 }
 
@@ -3756,7 +3842,8 @@ async fn a_resume_after_restart_supersedes_waiting_checks() {
         h.dialog_id.clone(),
         "l1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     let v = verification_of(&h.messages().await, &ids[0]);
     assert_eq!(v["status"], "superseded", "{v}");
@@ -3999,7 +4086,7 @@ async fn a_lead_that_errors_or_is_stopped_drops_the_carry() {
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let core = h.core.clone();
-    assert!(agent_stop(&core, h.dialog_id.clone()));
+    assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "stopped");
     assert!(!state.has_carry(&h.dialog_id));
 }
@@ -4398,7 +4485,8 @@ async fn reads_that_need_approval_are_asked_one_at_a_time() {
             h.dialog_id.clone(),
             id.into(),
             ApprovalDecision::Allow,
-        );
+        )
+        .await;
     }
     assert_eq!(h.run_end().await, "done");
     assert!(parallel::batches_of(&h.dialog_id).is_empty());
@@ -4612,7 +4700,7 @@ async fn stop_before_a_batch_records_every_call_as_stopped() {
     })
     .await;
     let core = h.core.clone();
-    agent_stop(&core, h.dialog_id.clone());
+    agent_stop(&core, h.dialog_id.clone()).await;
     assert_eq!(h.run_end().await, "stopped");
     assert!(
         parallel::batches_of(&h.dialog_id).is_empty(),
@@ -4660,7 +4748,8 @@ async fn reads_after_an_approved_edit_run_together_and_see_the_edit() {
         h.dialog_id.clone(),
         "e1".into(),
         ApprovalDecision::Allow,
-    );
+    )
+    .await;
     assert_eq!(h.run_end().await, "done");
     assert_eq!(ids(&parallel::batches_of(&h.dialog_id)), [["r1", "r2"]]);
     let messages = h.messages().await;
@@ -5021,19 +5110,25 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
     while state.lock().approvals.len() < 2 {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert!(agent_resolve_approval(
-        &core,
-        "chat-a".into(),
-        "function-call-1".into(),
-        ApprovalDecision::Allow
-    ));
+    assert!(
+        agent_resolve_approval(
+            &core,
+            "chat-a".into(),
+            "function-call-1".into(),
+            ApprovalDecision::Allow
+        )
+        .await
+    );
     assert!(matches!(a.await.unwrap(), ApprovalDecision::Allow));
     assert!(!b.is_finished(), "the other chat still waits");
-    assert!(agent_resolve_approval(
-        &core,
-        "chat-b".into(),
-        "function-call-1".into(),
-        ApprovalDecision::Deny
-    ));
+    assert!(
+        agent_resolve_approval(
+            &core,
+            "chat-b".into(),
+            "function-call-1".into(),
+            ApprovalDecision::Deny
+        )
+        .await
+    );
     assert!(matches!(b.await.unwrap(), ApprovalDecision::Deny));
 }
