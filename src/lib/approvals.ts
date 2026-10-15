@@ -141,6 +141,13 @@ export function pendingApproval(dialogId: string, toolCallId: string): PendingAp
   return state.pending[keyOf(dialogId, toolCallId)];
 }
 
+/** The chats an approval waits in: a subagent's counts for its lead's chat. */
+export function chatsWaitingOnApprovals(): Record<string, true> {
+  const chats: Record<string, true> = {};
+  for (const p of Object.values(state.pending)) chats[p.parentDialogId ?? p.dialogId] = true;
+  return chats;
+}
+
 /** Every approval a chat waits on (a subagent's, shown on its block). */
 export function pendingApprovalsOf(dialogId: string): PendingApproval[] {
   return Object.values(state.pending).filter((p) => p.dialogId === dialogId);

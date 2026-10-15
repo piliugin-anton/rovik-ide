@@ -2546,3 +2546,12 @@ Tasks add notes here when reality differs from the plan.
   - Not done here: the chat list's badges (U03), the guards on writes to
     remote chats (U04), and the manual check of a move and a move back on
     a real host.
+- **U03, the chat list's badges.**
+  - `lib/chatBadges.ts` gives each row its badges: "Waiting for you" while
+    an approval or a question waits in the chat, or an approval in one of
+    its subagents (counted for its lead), local or remote alike, as the
+    approval and question events and `agent_status` fill those stores;
+    the host's name on a chat there, "· offline" or "· needs a newer app"
+    when the host can't be reached; and "Moving…" during a move.
+  - They sit on the row's date line, so the rows keep their fixed heights.
+    The hosts and their connections come from U02's `cloud` store.

@@ -67,6 +67,7 @@ import IsolationBar from './IsolationBar';
 import { overlayStatus } from '../lib/overlay';
 import { barChanged, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
 import ChatLocation from './ChatLocation';
+import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
   dismissChecklist,
@@ -2664,6 +2665,9 @@ export default function ChatPanel(props: ChatProps) {
     return active?.id === dialogId ? active : store.state.list.items.find((d) => d.id === dialogId);
   }
 
+  /** The chats an approval or a question waits in, for the list's badges (U03). */
+  const waitingIds = createMemo(waitingChats);
+
   /** Why the open chat can't change now: one that's moving is read-only (U02). */
   const readOnly = () => readOnlyReason(activeDialog()?.place, cloud.hosts);
 
@@ -3649,6 +3653,8 @@ export default function ChatPanel(props: ChatProps) {
             loading={loadingHistory() || (store.state.list.loading && !store.state.list.loaded)}
             unreadIds={store.state.unread}
             runningIds={runningListIds()}
+            waitingIds={waitingIds()}
+            hosts={cloud.hosts}
             onSelect={(row) => void selectRow(row)}
             onDelete={(dialog) => void confirmAndDeleteDialog(dialog)}
             onNearEnd={() => {

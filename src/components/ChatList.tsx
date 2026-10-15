@@ -7,6 +7,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  For,
   Index,
   on,
   onCleanup,
@@ -14,6 +15,8 @@ import {
   Show,
 } from 'solid-js';
 import type { DialogSummary } from '../types';
+import { chatBadges } from '../lib/chatBadges';
+import type { HostSummary } from '../lib/cloud';
 import type { Highlighted } from '../lib/chatSearch';
 import HighlightedText from './HighlightedText';
 
@@ -45,6 +48,10 @@ export default function ChatList(props: {
   unreadIds?: Record<string, true>;
   /** Chats with an agent run going on (spinner indicator), by dialog id. */
   runningIds?: Record<string, true>;
+  /** Chats an approval or a question waits in, by dialog id. */
+  waitingIds?: Record<string, true>;
+  /** The cloud hosts, for the badges of chats on them. */
+  hosts?: HostSummary[];
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let searchRef: HTMLInputElement | undefined;
@@ -250,8 +257,23 @@ export default function ChatList(props: {
                         </span>
                       )}
                     </Show>
-                    <span class="chat-history-item-date">
-                      {new Date(entry().row.dialog.updatedAt).toLocaleString()}
+                    <span class="chat-history-item-meta">
+                      <span class="chat-history-item-date">
+                        {new Date(entry().row.dialog.updatedAt).toLocaleString()}
+                      </span>
+                      <For
+                        each={chatBadges(
+                          entry().row.dialog,
+                          !!props.waitingIds?.[entry().row.dialog.id],
+                          props.hosts ?? []
+                        )}
+                      >
+                        {(badge) => (
+                          <span class={`chat-badge ${badge.kind}`} title={badge.title}>
+                            {badge.label}
+                          </span>
+                        )}
+                      </For>
                     </span>
                   </button>
                   <button

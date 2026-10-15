@@ -8801,3 +8801,54 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--error);
   overflow-wrap: anywhere;
 }
+
+/* The chat list's badges (ChatList.tsx, lib/chatBadges.ts) */
+
+.chat-history-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chat-history-item-meta .chat-history-item-date {
+  flex-shrink: 0;
+}
+
+.chat-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 13px;
+  color: var(--fg-dim);
+}
+
+.chat-badge.waiting {
+  flex-shrink: 0;
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.chat-badge.cloud {
+  color: var(--success);
+}
+
+.chat-badge.offline {
+  color: var(--error);
+}
+
+.chat-badge.moving {
+  color: var(--warning);
+}
+
+.chat-badge.cloud::before,
+.chat-badge.offline::before {
+  content: '☁ ';
+}
