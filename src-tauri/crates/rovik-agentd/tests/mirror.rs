@@ -291,21 +291,28 @@ async fn every_stored_message_reaches_a_chat_opened_before_its_pull() {
     let watcher = App::new(&daemon).await;
     watcher.settled(&daemon).await;
     let mut stored: Vec<String> = daemon.rows(CHAT).into_iter().map(|r| r.id).collect();
-    let announced: Vec<Value> = watcher
-        .events()
-        .into_iter()
-        .filter(|e| e["type"] == "messagesAdded")
-        .collect();
-    let mut ids: Vec<String> = announced
-        .iter()
-        .flat_map(|e| e["messages"].as_array().unwrap())
-        .map(|m| m["id"].as_str().unwrap().to_string())
-        .collect();
-    // A pull brings rows in the order they changed, not the chat's.
-    ids.sort();
     stored.sort();
     assert_eq!(stored.len(), 4, "{stored:?}");
-    assert_eq!(ids, stored, "{announced:?}");
+    let announced = || -> Vec<Value> {
+        let events = watcher.events().into_iter();
+        events.filter(|e| e["type"] == "messagesAdded").collect()
+    };
+    let ids = |announced: &[Value]| -> Vec<String> {
+        let mut ids: Vec<String> = announced
+            .iter()
+            .flat_map(|e| e["messages"].as_array().unwrap())
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        // A pull brings rows in the order they changed, not the chat's.
+        ids.sort();
+        ids
+    };
+    // The frontend hears of rows just after they're written.
+    let announced = until("every stored row announced", || {
+        let announced = announced();
+        (ids(&announced) == stored).then_some(announced)
+    })
+    .await;
     assert!(
         announced.iter().all(|e| e["rowsHere"] == true),
         "{announced:?}"

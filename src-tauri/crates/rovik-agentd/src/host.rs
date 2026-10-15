@@ -5,13 +5,10 @@
 use crate::cli::VERSION;
 use crate::daemon::{Daemon, MIN_PROTOCOL};
 use crate::home;
+use crate::limits::{AdminFile, ADMIN_FILE};
 use rovik_protocol::host::{HostInfo, Install};
 use rovik_protocol::PROTOCOL;
-use serde::Deserialize;
 use std::path::Path;
-
-/// Rovik's install for the whole server (D17), when there is one.
-const INSTALL_CONFIG: &str = "/etc/rovik/agentd.toml";
 
 pub async fn info(daemon: &Daemon) -> HostInfo {
     let mounted = daemon.core.vfs.mountpoint().is_some();
@@ -32,7 +29,7 @@ pub async fn info(daemon: &Daemon) -> HostInfo {
         virtual_files_problem: problem,
         chrome: rovik_core::browser_tools::chrome_path().map(|p| p.to_string_lossy().into_owned()),
         user_namespaces: user_namespaces(Path::new("/proc/sys")),
-        install: install(Path::new(INSTALL_CONFIG)),
+        install: install(Path::new(ADMIN_FILE)),
         other_daemons: other_daemons(Path::new("/proc"), home::uid()),
     })
     .await
@@ -54,16 +51,11 @@ pub fn user_namespaces(sys: &Path) -> bool {
         && read("kernel/apparmor_restrict_unprivileged_userns").as_deref() != Some("1")
 }
 
+/// Rovik's install for the whole server (D17), when there is one.
 pub fn install(config: &Path) -> Option<Install> {
-    #[derive(Deserialize)]
-    struct Agentd {
-        #[serde(default)]
-        admins: Vec<String>,
-    }
-    let text = std::fs::read_to_string(config).ok()?;
-    let agentd: Agentd = toml::from_str(&text).ok()?;
+    let file = AdminFile::read(config).ok()??;
     Some(Install {
-        admins: agentd.admins,
+        admins: file.admins,
     })
 }
 

@@ -1,0 +1,692 @@
+//! Rovik on a server for everyone (5.3, D17, H07), and the commands sudo
+//! lets people run afterwards.
+//!
+//! `install --admin USER`, as root: the first deploy runs it through sudo,
+//! or shows it for someone with root to run. It copies the binary to
+//! `/opt/rovik/bin/rovik-agentd-<version>`, with `rovik-agentd` a link to
+//! it; writes `/etc/rovik/agentd.toml` naming USER administrator, the
+//! limits sized to the machine (5.5); writes the system unit
+//! `rovik-agentd@.service`, its limits drop-in and `rovik.slice`; puts the
+//! administrators in the `rovik-admin` group; installs the sudoers rule once
+//! `visudo` takes it; and enables USER's daemon. Run again, it installs the
+//! binary it's given and rewrites the units, keeping the settings.
+//!
+//! `user start|stop|restart|status`, through sudo, which lets everyone run
+//! them: they act on the daemon of the user sudo runs them for
+//! (`SUDO_UID`), and on no one else's.
+//!
+//! `admin limits|add|remove|upgrade|uninstall`, through sudo, which lets
+//! the `rovik-admin` group run them; the caller must also be one of the
+//! administrators `agentd.toml` names.
+//!
+//! Without systemd, as in a container, the binary and the settings are
+//! installed, and the app starts the daemon when it connects. `--root DIR`
+//! puts `/` at DIR, and prints each command that would change the system
+//! instead of running it: for tests, and for a look before the real thing.
+
+use crate::cli::VERSION;
+use crate::home::{self, Passwd};
+use crate::limits::{check_user_name, AdminFile, ADMIN_FILE};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+pub const BIN_DIR: &str = "/opt/rovik/bin";
+/// The installed binary, a link to the current version.
+pub const INSTALLED: &str = "/opt/rovik/bin/rovik-agentd";
+pub const UNIT: &str = "/etc/systemd/system/rovik-agentd@.service";
+pub const DROP_IN: &str = "/etc/systemd/system/rovik-agentd@.service.d/limits.conf";
+pub const SLICE: &str = "/etc/systemd/system/rovik.slice";
+pub const SUDOERS: &str = "/etc/sudoers.d/rovik";
+/// Who may run the admin commands through sudo.
+pub const ADMIN_GROUP: &str = "rovik-admin";
+/// Where systemd keeps the instances that start at boot.
+const WANTS: &str = "/etc/systemd/system/multi-user.target.wants";
+
+/// The system unit, one instance per user (5.3).
+pub fn unit() -> String {
+    format!(
+        "\
+[Unit]
+Description=Rovik agent daemon for %i
+
+[Service]
+User=%i
+ExecStart={INSTALLED} serve
+Slice=rovik.slice
+PrivateTmp=yes
+# A command killed for using too much memory doesn't stop the daemon,
+# and the daemon is the last process picked: it sets its children's
+# score back to 0, which needs no privilege.
+OOMPolicy=continue
+OOMScoreAdjust=-500
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
+/// Each daemon's caps, from `agentd.toml`.
+pub fn drop_in(file: &AdminFile) -> String {
+    let mut text = String::from(
+        "# From /etc/rovik/agentd.toml: change it with `rovik-agentd admin limits`.\n\
+         [Service]\n",
+    );
+    if let Some(memory) = &file.memory_max {
+        text.push_str(&format!("MemoryMax={memory}\n"));
+    }
+    if let Some(tasks) = file.tasks_max {
+        text.push_str(&format!("TasksMax={tasks}\n"));
+    }
+    if let Some(quota) = &file.cpu_quota {
+        text.push_str(&format!("CPUQuota={quota}\n"));
+    }
+    text
+}
+
+/// The caps on all of Rovik, from `agentd.toml`.
+pub fn slice(file: &AdminFile) -> String {
+    let mut text = String::from(
+        "# From /etc/rovik/agentd.toml: change it with `rovik-agentd admin limits`.\n\
+         [Unit]\n\
+         Description=Rovik's agent daemons, together\n\
+         \n\
+         [Slice]\n",
+    );
+    if let Some(memory) = &file.total_memory_max {
+        text.push_str(&format!("MemoryMax={memory}\n"));
+    }
+    if let Some(quota) = &file.total_cpu_quota {
+        text.push_str(&format!("CPUQuota={quota}\n"));
+    }
+    text
+}
+
+/// Everyone runs the `user` commands, the administrators the `admin` ones,
+/// without a password; the binary itself says who may do what.
+pub fn sudoers() -> String {
+    format!(
+        "\
+# Rovik (rovik-agentd install): everyone starts and stops their own daemon,
+# and Rovik's administrators run its admin commands.
+ALL ALL=(root) NOPASSWD: {INSTALLED} user *
+%{ADMIN_GROUP} ALL=(root) NOPASSWD: {INSTALLED} admin *
+"
+    )
+}
+
+/// A user's instance of the unit.
+pub fn instance(user: &str) -> String {
+    format!("rovik-agentd@{user}.service")
+}
+
+/// The system the commands change: `/`, or a folder in its place.
+pub struct System {
+    root: PathBuf,
+}
+
+impl System {
+    pub fn new(root: Option<PathBuf>) -> System {
+        System {
+            root: root.unwrap_or_else(|| PathBuf::from("/")),
+        }
+    }
+
+    fn live(&self) -> bool {
+        self.root == Path::new("/")
+    }
+
+    /// `absolute` under the root.
+    fn path(&self, absolute: &str) -> PathBuf {
+        self.root.join(absolute.trim_start_matches('/'))
+    }
+
+    /// Whether systemd runs the system.
+    fn systemd(&self) -> bool {
+        self.path("/run/systemd/system").is_dir()
+    }
+
+    /// Runs a command that changes the system; under another root, says it.
+    fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+        let shown = std::iter::once(program)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !self.live() {
+            println!("would run: {shown}");
+            return Ok(String::new());
+        }
+        let out = Command::new(program)
+            .args(args)
+            .output()
+            .map_err(|e| format!("{shown}: {e}"))?;
+        match out.status.success() {
+            true => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+            false => Err(format!(
+                "{shown}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+        }
+    }
+
+    /// The first of `programs` on the PATH; under another root, the first.
+    fn which<'a>(&self, programs: &[&'a str]) -> Option<&'a str> {
+        if !self.live() {
+            return programs.first().copied();
+        }
+        programs.iter().copied().find(|p| on_path(p))
+    }
+
+    /// Writes a file all at once: a new one beside it, renamed over it.
+    fn write(&self, absolute: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
+        let (temp, path) = self.beside(absolute)?;
+        let written = std::fs::write(&temp, bytes)
+            .and_then(|()| std::fs::set_permissions(&temp, PermissionsExt::from_mode(mode)))
+            .and_then(|()| std::fs::rename(&temp, &path));
+        written.map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            format!("{}: {e}", path.display())
+        })
+    }
+
+    /// Copies `from` to `absolute`, the same way.
+    fn copy(&self, from: &Path, absolute: &str, mode: u32) -> Result<(), String> {
+        let (temp, path) = self.beside(absolute)?;
+        let copied = std::fs::copy(from, &temp)
+            .and_then(|_| std::fs::set_permissions(&temp, PermissionsExt::from_mode(mode)))
+            .and_then(|()| std::fs::rename(&temp, &path));
+        copied.map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            format!("{} to {}: {e}", from.display(), path.display())
+        })
+    }
+
+    /// Points the link `absolute` at `target`, the same way.
+    fn link(&self, absolute: &str, target: &str) -> Result<(), String> {
+        let (temp, path) = self.beside(absolute)?;
+        let _ = std::fs::remove_file(&temp);
+        std::os::unix::fs::symlink(target, &temp)
+            .and_then(|()| std::fs::rename(&temp, &path))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The new file's name beside `absolute`, its folder made, and the
+    /// path. The name has a dot, which keeps sudo from reading a sudoers
+    /// file before it's whole.
+    fn beside(&self, absolute: &str) -> Result<(PathBuf, PathBuf), String> {
+        let path = self.path(absolute);
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+            return Err(format!("{absolute} isn't a file's path"));
+        };
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o755)
+            .create(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+        let temp = dir.join(format!(".{}.new", name.to_string_lossy()));
+        Ok((temp, path))
+    }
+
+    fn remove(&self, absolute: &str) -> Result<(), String> {
+        let path = self.path(absolute);
+        let removed = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&path),
+            Ok(_) => std::fs::remove_file(&path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        };
+        removed.map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
+/// `install --admin ADMIN`: see the module's comment. `binary` is the file
+/// to install, this one unless told.
+pub fn install(sys: &System, admin: &str, binary: Option<PathBuf>) -> Result<(), String> {
+    if sys.live() && euid() != 0 {
+        return Err(format!(
+            "install changes the system for everyone: run it as root, as in \
+             sudo {} install --admin {admin}",
+            this_binary()
+        ));
+    }
+    let account = regular_user(admin)?;
+    let from = match binary {
+        Some(file) => file,
+        None => std::env::current_exe().map_err(|e| e.to_string())?,
+    };
+    install_binary(sys, &from, VERSION)?;
+    let mut file = match AdminFile::read(&sys.path(ADMIN_FILE))? {
+        Some(file) => file,
+        None => AdminFile::sized_for(&account.name, total_memory()),
+    };
+    if !file.admins.contains(&account.name) {
+        file.admins.push(account.name.clone());
+    }
+    write_settings(sys, &file)?;
+    admin_group(sys, &file.admins)?;
+    write_sudoers(sys)?;
+    if sys.systemd() {
+        sys.run("systemctl", &["daemon-reload"])?;
+        sys.run("systemctl", &["enable", "--now", &instance(&account.name)])?;
+        println!(
+            "Rovik {VERSION} is installed, and {}'s daemon runs.",
+            account.name
+        );
+    } else {
+        println!(
+            "Rovik {VERSION} is installed. There's no systemd here: the app starts each \
+             user's daemon when it connects."
+        );
+    }
+    println!("Its administrators: {}.", file.admins.join(", "));
+    Ok(())
+}
+
+/// `user ACTION`: the caller's own daemon.
+pub fn user(sys: &System, args: &[String]) -> Result<(), String> {
+    let caller = caller(sys)?;
+    let [action] = args else {
+        return Err("user takes one of start, stop, restart or status".into());
+    };
+    if !sys.systemd() {
+        return Err("There's no systemd here: the app starts your daemon when it connects.".into());
+    }
+    let unit = instance(&caller.name);
+    let done = match action.as_str() {
+        "start" => sys.run("systemctl", &["enable", "--now", &unit]),
+        "stop" => sys.run("systemctl", &["disable", "--now", &unit]),
+        "restart" => sys.run("systemctl", &["restart", &unit]),
+        "status" => {
+            // `is-active` fails for a daemon that doesn't run, which is an
+            // answer here.
+            let state = sys.run("systemctl", &["is-active", &unit]);
+            println!("{}", state.unwrap_or_else(|_| "inactive".into()).trim());
+            return Ok(());
+        }
+        other => {
+            return Err(format!(
+                "user takes one of start, stop, restart or status, not {other}"
+            ))
+        }
+    };
+    done.map(|_| ())
+}
+
+/// `admin ...`: the limits, the administrators, upgrades and removal.
+pub fn admin(sys: &System, args: &[String]) -> Result<(), String> {
+    let caller = caller(sys)?;
+    let mut file = AdminFile::read(&sys.path(ADMIN_FILE))?.ok_or("Rovik isn't installed here.")?;
+    if !file.admins.contains(&caller.name) {
+        return Err(format!(
+            "Only Rovik's administrators here run admin commands: {}.",
+            file.admins.join(", ")
+        ));
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        [] | ["limits"] => {
+            for (key, value) in file.limits() {
+                println!("{key} = {value}");
+            }
+            Ok(())
+        }
+        ["limits", settings @ ..] => {
+            for setting in settings {
+                let (key, value) = setting
+                    .split_once('=')
+                    .ok_or_else(|| format!("{setting}: a limit is set as name=value"))?;
+                file.set(key.trim(), value.trim())?;
+            }
+            write_settings(sys, &file)?;
+            if sys.systemd() {
+                sys.run("systemctl", &["daemon-reload"])?;
+            }
+            println!("The new limits apply to each daemon when it next starts.");
+            Ok(())
+        }
+        ["add", user] => {
+            let account = regular_user(user)?;
+            if !file.admins.contains(&account.name) {
+                file.admins.push(account.name);
+            }
+            write_settings(sys, &file)?;
+            admin_group(sys, &file.admins)
+        }
+        ["remove", user] => {
+            if !file.admins.iter().any(|a| a == user) {
+                return Err(format!("{user} isn't one of Rovik's administrators."));
+            }
+            if file.admins.len() == 1 {
+                return Err("Rovik keeps at least one administrator: add another first.".into());
+            }
+            file.admins.retain(|a| a != user);
+            write_settings(sys, &file)?;
+            leave_group(sys, user)
+        }
+        ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller),
+        ["uninstall"] => uninstall(sys),
+        _ => Err(
+            "admin takes: limits [name=value ...], add USER, remove USER, upgrade FILE, \
+             uninstall"
+                .into(),
+        ),
+    }
+}
+
+/// `admin upgrade FILE`: the build beside the installed ones, the link
+/// moved to it, and the daemons that ran started again. Releases are to be
+/// checked against the key compiled into this binary (B02); until they're
+/// signed, only a server whose `agentd.toml` allows unsigned builds takes
+/// one (B03). The daemons restart rather than drain (R02 drains them).
+fn upgrade(sys: &System, file: &AdminFile, from: &Path, caller: &Passwd) -> Result<(), String> {
+    if !file.allow_unsigned {
+        return Err(format!(
+            "Upgrades take a signed release, and none is signed yet. To install a build of \
+             your own, set allow_unsigned = true in {ADMIN_FILE}."
+        ));
+    }
+    let version = version_of(sys, from, caller)?;
+    install_binary(sys, from, &version)?;
+    if sys.systemd() {
+        sys.run("systemctl", &["try-restart", "rovik-agentd@*.service"])?;
+    }
+    println!("Rovik {version} is installed, and the daemons that ran start again on it.");
+    Ok(())
+}
+
+/// `admin uninstall`: every daemon stopped, and Rovik's files gone. Each
+/// user's folders stay: their chats are in them.
+fn uninstall(sys: &System) -> Result<(), String> {
+    if sys.systemd() {
+        let wants = std::fs::read_dir(sys.path(WANTS))
+            .into_iter()
+            .flatten()
+            .flatten();
+        for entry in wants {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("rovik-agentd@") && name.ends_with(".service") {
+                sys.run("systemctl", &["disable", "--now", &name])?;
+            }
+        }
+    }
+    for path in [SUDOERS, UNIT, DROP_IN, SLICE, BIN_DIR, ADMIN_FILE] {
+        sys.remove(path)?;
+    }
+    for dir in [
+        "/etc/systemd/system/rovik-agentd@.service.d",
+        "/etc/rovik",
+        "/opt/rovik",
+    ] {
+        sys.remove(dir)?;
+    }
+    if sys.systemd() {
+        sys.run("systemctl", &["daemon-reload"])?;
+    }
+    if let Some(tool) = sys.which(&["groupdel", "delgroup"]) {
+        let _ = sys.run(tool, &[ADMIN_GROUP]);
+    }
+    println!(
+        "Rovik is gone from this server. Each user's ~/.rovik and ~/.local/share/rovik \
+         stay: their chats are there."
+    );
+    Ok(())
+}
+
+/// The binary at `from` as `rovik-agentd-<version>`, and the link to it.
+fn install_binary(sys: &System, from: &Path, version: &str) -> Result<(), String> {
+    let name = format!("rovik-agentd-{version}");
+    sys.copy(from, &format!("{BIN_DIR}/{name}"), 0o755)?;
+    sys.link(INSTALLED, &name)
+}
+
+/// `agentd.toml`, and the units made from it.
+fn write_settings(sys: &System, file: &AdminFile) -> Result<(), String> {
+    file.check()?;
+    sys.write(ADMIN_FILE, file.to_toml().as_bytes(), 0o644)?;
+    sys.write(UNIT, unit().as_bytes(), 0o644)?;
+    sys.write(DROP_IN, drop_in(file).as_bytes(), 0o644)?;
+    sys.write(SLICE, slice(file).as_bytes(), 0o644)
+}
+
+/// The `rovik-admin` group, with the administrators in it.
+fn admin_group(sys: &System, admins: &[String]) -> Result<(), String> {
+    let exists = sys.live()
+        && Command::new("getent")
+            .args(["group", ADMIN_GROUP])
+            .output()
+            .is_ok_and(|o| o.status.success());
+    if !exists {
+        match sys.which(&["groupadd", "addgroup"]) {
+            Some("groupadd") => sys.run("groupadd", &["--system", ADMIN_GROUP])?,
+            Some(tool) => sys.run(tool, &["-S", ADMIN_GROUP])?,
+            None => {
+                return Err("There's no groupadd or addgroup to make the rovik-admin group.".into())
+            }
+        };
+    }
+    for admin in admins {
+        match sys.which(&["usermod", "addgroup"]) {
+            Some("usermod") => sys.run("usermod", &["-a", "-G", ADMIN_GROUP, admin])?,
+            Some(tool) => sys.run(tool, &[admin, ADMIN_GROUP])?,
+            None => {
+                return Err(format!(
+                    "There's no usermod or addgroup to add {admin} to rovik-admin."
+                ))
+            }
+        };
+    }
+    Ok(())
+}
+
+fn leave_group(sys: &System, user: &str) -> Result<(), String> {
+    match sys.which(&["gpasswd", "deluser"]) {
+        Some("gpasswd") => sys.run("gpasswd", &["-d", user, ADMIN_GROUP]).map(|_| ()),
+        Some(tool) => sys.run(tool, &[user, ADMIN_GROUP]).map(|_| ()),
+        None => Err(format!(
+            "There's no gpasswd or deluser to take {user} out of rovik-admin."
+        )),
+    }
+}
+
+/// The sudoers rule, put in place once `visudo` takes it: a broken file in
+/// `/etc/sudoers.d` would lock everyone out of sudo.
+fn write_sudoers(sys: &System) -> Result<(), String> {
+    let Some(visudo) = ["visudo", "/usr/sbin/visudo", "/sbin/visudo"]
+        .into_iter()
+        .find(|p| on_path(p) || Path::new(p).is_file())
+    else {
+        println!(
+            "There's no visudo, so no sudoers rule: users need someone with root to start \
+             their daemons."
+        );
+        return Ok(());
+    };
+    let (temp, path) = sys.beside(SUDOERS)?;
+    std::fs::write(&temp, sudoers())
+        .and_then(|()| std::fs::set_permissions(&temp, PermissionsExt::from_mode(0o440)))
+        .map_err(|e| format!("{}: {e}", temp.display()))?;
+    let checked = Command::new(visudo)
+        .arg("-c")
+        .arg("-q")
+        .arg("-f")
+        .arg(&temp)
+        .output();
+    match checked {
+        Ok(out) if out.status.success() => {
+            std::fs::rename(&temp, &path).map_err(|e| format!("{}: {e}", path.display()))
+        }
+        Ok(out) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(format!(
+                "visudo refused the sudoers rule: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(format!("{visudo}: {e}"))
+        }
+    }
+}
+
+/// The user sudo runs the command for (`SUDO_UID`, which sudo sets and
+/// no one else can).
+fn caller(sys: &System) -> Result<Passwd, String> {
+    let through_sudo = format!("Run it through sudo, as in: sudo {INSTALLED} user start");
+    if sys.live() && euid() != 0 {
+        return Err(through_sudo);
+    }
+    let uid = std::env::var("SUDO_UID")
+        .ok()
+        .and_then(|u| u.parse::<u32>().ok())
+        .ok_or(through_sudo)?;
+    if uid == 0 {
+        return Err(
+            "root has no daemon: run it through sudo as the user whose daemon it is.".into(),
+        );
+    }
+    let account = home::passwd_of(uid).ok_or(format!("There's no user with id {uid} here."))?;
+    check_user_name(&account.name)?;
+    Ok(account)
+}
+
+/// A user who can have a daemon: one that exists, and isn't root.
+fn regular_user(name: &str) -> Result<Passwd, String> {
+    check_user_name(name)?;
+    let account = home::passwd_named(name).ok_or(format!("There's no user {name} here."))?;
+    if account.uid == 0 {
+        return Err(
+            "Name a regular user: the daemon never runs as root, so root can't be Rovik's \
+             administrator."
+                .into(),
+        );
+    }
+    Ok(account)
+}
+
+/// What `from version` says, run as the administrator, not as root.
+fn version_of(sys: &System, from: &Path, caller: &Passwd) -> Result<String, String> {
+    let mut command = Command::new(from);
+    command.arg("version");
+    if sys.live() {
+        command.uid(caller.uid).gid(caller.gid);
+    }
+    let out = command
+        .output()
+        .map_err(|e| format!("{}: {e}", from.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let version = text
+        .strip_prefix("rovik-agentd ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .filter(|v| {
+            v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c))
+        })
+        .ok_or_else(|| format!("{} isn't a rovik-agentd build.", from.display()))?;
+    Ok(version.to_string())
+}
+
+fn euid() -> u32 {
+    // SAFETY: geteuid can't fail.
+    unsafe { libc::geteuid() }
+}
+
+fn this_binary() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "rovik-agentd".into())
+}
+
+fn on_path(program: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+}
+
+/// The machine's memory, from /proc/meminfo; 4 GiB when it can't be read.
+fn total_memory() -> u64 {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+        .map(|kb| kb << 10)
+        .unwrap_or(4 << 30)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// H07: the sudoers rule passes `visudo -c`, where there's a visudo.
+    #[test]
+    fn the_sudoers_file_passes_visudo() {
+        let Some(visudo) = ["visudo", "/usr/sbin/visudo"]
+            .into_iter()
+            .find(|p| on_path(p) || Path::new(p).is_file())
+        else {
+            return;
+        };
+        let dir = rovik_core::testing::temp_dir();
+        let file = dir.0.join("rovik");
+        std::fs::write(&file, sudoers()).unwrap();
+        let out = Command::new(visudo)
+            .arg("-c")
+            .arg("-f")
+            .arg(&file)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{said}");
+    }
+
+    /// The units as systemd reads them, where `systemd-analyze` is there:
+    /// no warning about any line.
+    #[test]
+    fn systemd_takes_the_units() {
+        if !on_path("systemd-analyze") {
+            return;
+        }
+        let dir = rovik_core::testing::temp_dir();
+        let mut file = AdminFile::sized_for("ann", 16 << 30);
+        file.cpu_quota = Some("200%".into());
+        file.total_cpu_quota = Some("800%".into());
+        // verify wants ExecStart's program to be there.
+        let unit_text = unit().replace(INSTALLED, "/bin/true");
+        std::fs::write(dir.0.join("rovik-agentd@ann.service"), unit_text).unwrap();
+        std::fs::create_dir(dir.0.join("rovik-agentd@ann.service.d")).unwrap();
+        std::fs::write(
+            dir.0.join("rovik-agentd@ann.service.d/limits.conf"),
+            drop_in(&file),
+        )
+        .unwrap();
+        std::fs::write(dir.0.join("rovik.slice"), slice(&file)).unwrap();
+        let out = Command::new("systemd-analyze")
+            .arg("verify")
+            .arg(dir.0.join("rovik.slice"))
+            .arg(dir.0.join("rovik-agentd@ann.service"))
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && said.trim().is_empty(), "{said}");
+    }
+
+    #[test]
+    fn the_units_carry_the_limits() {
+        let mut file = AdminFile::sized_for("ann", 8 << 30);
+        assert_eq!(
+            drop_in(&file).lines().skip(2).collect::<Vec<_>>(),
+            ["MemoryMax=4096M", "TasksMax=4096"]
+        );
+        file.set("cpu_quota", "150%").unwrap();
+        file.set("total_cpu_quota", "400%").unwrap();
+        assert!(drop_in(&file).ends_with("CPUQuota=150%\n"));
+        assert!(slice(&file).ends_with("MemoryMax=6553M\nCPUQuota=400%\n"));
+        assert!(unit().contains("ExecStart=/opt/rovik/bin/rovik-agentd serve\n"));
+        assert!(unit().contains("PrivateTmp=yes\n"));
+        assert_eq!(instance("ann"), "rovik-agentd@ann.service");
+    }
+}

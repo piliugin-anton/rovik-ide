@@ -7,6 +7,8 @@ use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::events::Events;
 use crate::home::{self, Home};
+use crate::host;
+use crate::limits::{AdminFile, Caps, ADMIN_FILE};
 use crate::logfile;
 use crate::packs::Projects;
 use crate::restart;
@@ -15,9 +17,10 @@ use crate::server::{self, OwnUser};
 use crate::store::Store;
 use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
-use rovik_core::{process, rt, Core, EventSink, Paths};
-use std::path::PathBuf;
+use rovik_core::{process, rt, workload, Core, EventSink, Paths};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub fn serve(options: Options) -> Result<(), String> {
     // 1. While the process is still single-threaded: it sets the
@@ -37,8 +40,15 @@ pub fn serve(options: Options) -> Result<(), String> {
     // 3. The agent's temporary files, out of a shared /tmp (K13).
     std::env::set_var("TMPDIR", home.tmp());
 
-    // 4. The computers' token hashes, read only here.
+    // 4. The computers' token hashes, read only here; and on a team
+    //    server, the administrators' limits (5.5).
     let tokens = Tokens::new(&config.tokens)?;
+    let admin = AdminFile::read(Path::new(ADMIN_FILE))?.unwrap_or_default();
+    let limits = Limits {
+        caps: Caps::new(&admin, vec![home.root.clone(), home.share.clone()]),
+        admin,
+        user_slots: config.max_slots,
+    };
 
     // 5. The runtime and the core.
     let socket = options.socket.unwrap_or_else(|| home.socket());
@@ -46,6 +56,7 @@ pub fn serve(options: Options) -> Result<(), String> {
         home,
         socket,
         tokens,
+        limits,
         options.same_machine,
         options.no_virtual_files,
     ));
@@ -55,10 +66,19 @@ pub fn serve(options: Options) -> Result<(), String> {
     result
 }
 
+/// What a team server's administrators and the user set (5.5).
+struct Limits {
+    admin: AdminFile,
+    caps: Caps,
+    /// The slots the user's config.toml asks for.
+    user_slots: Option<usize>,
+}
+
 async fn run(
     home: Home,
     socket: PathBuf,
     tokens: Tokens,
+    limits: Limits,
     same_machine: bool,
     no_virtual_files: bool,
 ) -> Result<(), String> {
@@ -92,6 +112,9 @@ async fn run(
     core.agents
         .set_markers_resolver(Arc::new(move |chat| results::marked_left(&marks, chat)));
     core.agents.set_on_server();
+    // The heavy-work slots, again whenever other users' daemons start or
+    // stop.
+    tokio::spawn(apply_slots(limits.admin, limits.user_slots));
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {
@@ -111,6 +134,7 @@ async fn run(
         same_machine,
         virtual_files_problem,
         imports: tokio::sync::Mutex::new(()),
+        caps: limits.caps,
     });
 
     // 7. The runs the last process left going (5.4).
@@ -161,6 +185,24 @@ async fn mount_virtual_files(core: &Core, at: PathBuf) -> Option<String> {
             Some(problem.message())
         }
         Err(e) => Some(e.to_string()),
+    }
+}
+
+/// The heavy-work slots (5.5): the user's number, or one while other users'
+/// daemons run here, else the machine's rule; the administrators' cap over
+/// all. Other daemons are looked for each minute.
+async fn apply_slots(admin: AdminFile, user: Option<usize>) {
+    let mut last = None;
+    loop {
+        let others = rt::spawn_blocking(|| host::other_daemons(Path::new("/proc"), home::uid()));
+        let slots = admin.slots(user, others.await.unwrap_or(0));
+        if last != Some(slots) {
+            log::info!("heavy-work slots: {slots:?}");
+            workload::set_manual_slots(slots.manual);
+            workload::set_slot_cap(slots.cap);
+            last = Some(slots);
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
 

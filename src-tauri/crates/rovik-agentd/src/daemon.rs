@@ -7,6 +7,7 @@ use crate::auth::Tokens;
 use crate::changes;
 use crate::events::Events;
 use crate::host;
+use crate::limits::Caps;
 use crate::moves;
 use crate::packs::Projects;
 use crate::results::{self, Results};
@@ -47,6 +48,8 @@ pub struct Daemon {
     pub virtual_files_problem: Option<String>,
     /// One chat's import or release at a time (6.8).
     pub imports: tokio::sync::Mutex<()>,
+    /// A team server's caps on this user's worktrees and disk (5.5).
+    pub caps: Caps,
 }
 
 impl Daemon {

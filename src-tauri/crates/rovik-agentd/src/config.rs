@@ -1,8 +1,10 @@
 //! config.toml: the computers that may connect, by their token's hash
-//! (D5), and the log level. It's read once, at start-up (5.2), so a
-//! computer added later takes a restart:
+//! (D5), the log level, and the heavy-work slots its user wants, which a
+//! team server's administrators may cap (5.5). It's read once, at start-up
+//! (5.2), so a computer added later takes a restart:
 //!
 //!   log_level = "info"
+//!   max_slots = 2
 //!
 //!   [tokens]
 //!   laptop-4f2a = "<the SHA-256 of laptop-4f2a's token, in hex>"
@@ -19,6 +21,9 @@ pub struct Config {
     /// Each computer's id and its token's SHA-256.
     #[serde(default)]
     pub tokens: BTreeMap<String, String>,
+    /// Heavy-work slots at once; the machine's own rule when unset.
+    #[serde(default)]
+    pub max_slots: Option<usize>,
 }
 
 impl Config {

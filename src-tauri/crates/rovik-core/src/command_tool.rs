@@ -78,6 +78,7 @@ fn shell_command(command: &str) -> Command {
         .unwrap_or_else(|| "/bin/sh".to_string());
     let mut cmd = Command::new(shell);
     cmd.args(["-c", command]);
+    crate::process::ordinary_oom_score(&mut cmd);
     cmd
 }
 
@@ -375,6 +376,21 @@ pub async fn run_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A daemon at -500 starts its commands at 0 (5.3). Lowering this
+    /// process's score takes privilege: without it, there's nothing to see.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn commands_start_with_an_ordinary_oom_score() {
+        let own = "/proc/self/oom_score_adj";
+        if std::fs::write(own, "-500").is_err() {
+            return;
+        }
+        let out = shell_command("cat /proc/self/oom_score_adj").output();
+        let _ = std::fs::write(own, "0");
+        let out = out.unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0");
+    }
 
     #[cfg(not(windows))]
     #[test]

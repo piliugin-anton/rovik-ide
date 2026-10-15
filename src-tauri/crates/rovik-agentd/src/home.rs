@@ -163,22 +163,48 @@ pub fn home_dir() -> Option<PathBuf> {
         .or_else(|| passwd().map(|p| p.home))
 }
 
-/// The account's name, home and shell, from the passwd database.
+/// An account's name, ids, home and shell, from the passwd database.
 pub struct Passwd {
     pub name: String,
+    pub uid: u32,
+    pub gid: u32,
     pub home: PathBuf,
     pub shell: String,
 }
 
+/// This process's account.
 pub fn passwd() -> Option<Passwd> {
+    passwd_of(uid())
+}
+
+/// The account with id `uid`.
+pub fn passwd_of(uid: u32) -> Option<Passwd> {
+    // SAFETY: getpwuid_r fills the entry and its strings in the buffers
+    // `lookup` gives it.
+    lookup(|entry, buf, len, found| unsafe { libc::getpwuid_r(uid, entry, buf, len, found) })
+}
+
+/// The account named `name`.
+pub fn passwd_named(name: &str) -> Option<Passwd> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: as in `passwd_of`; `name` outlives the call.
+    lookup(|entry, buf, len, found| unsafe {
+        libc::getpwnam_r(name.as_ptr(), entry, buf, len, found)
+    })
+}
+
+type Found = *mut libc::passwd;
+
+fn lookup(
+    get: impl FnOnce(*mut libc::passwd, *mut libc::c_char, usize, *mut Found) -> libc::c_int,
+) -> Option<Passwd> {
     use std::ffi::CStr;
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
-    // SAFETY: an all-zero passwd is a valid out-parameter, and getpwuid_r
+    // SAFETY: an all-zero passwd is a valid out-parameter, and the lookup
     // writes the strings it points to into `buf`, which outlives them here.
     let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut found: *mut libc::passwd = std::ptr::null_mut();
-    let status =
-        unsafe { libc::getpwuid_r(uid(), &mut entry, buf.as_mut_ptr(), buf.len(), &mut found) };
+    let mut found: Found = std::ptr::null_mut();
+    let status = get(&mut entry, buf.as_mut_ptr(), buf.len(), &mut found);
     if status != 0 || found.is_null() {
         return None;
     }
@@ -187,6 +213,8 @@ pub fn passwd() -> Option<Passwd> {
     };
     Some(Passwd {
         name: text(entry.pw_name)?,
+        uid: entry.pw_uid,
+        gid: entry.pw_gid,
         home: PathBuf::from(text(entry.pw_dir)?),
         shell: text(entry.pw_shell).unwrap_or_default(),
     })
@@ -237,5 +265,9 @@ mod tests {
         let entry = passwd().unwrap();
         assert!(!entry.name.is_empty());
         assert!(entry.home.is_absolute());
+        assert_eq!(entry.uid, uid());
+        let named = passwd_named(&entry.name).unwrap();
+        assert_eq!((named.uid, named.home), (entry.uid, entry.home));
+        assert!(passwd_named("no such user, surely").is_none());
     }
 }

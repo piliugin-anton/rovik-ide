@@ -299,3 +299,69 @@ async fn version_names_the_protocol() {
         )
     );
 }
+
+/// H07: a folder others can open stops the daemon, saying what to do.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_group_readable_folder_stops_the_daemon_with_a_message() {
+    let dir = rovik_core::testing::temp_dir();
+    let data = dir.0.join("rovik");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let out = Command::new(BINARY)
+        .arg("serve")
+        .arg("--data")
+        .arg(&data)
+        .arg("--socket")
+        .arg(dir.0.join("agentd.sock"))
+        .arg("--no-virtual-files")
+        .env("SHELL", "/bin/sh")
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("is open to other users"), "{stderr}");
+    assert!(
+        stderr.contains(&format!("chmod 700 {}", data.display())),
+        "{stderr}"
+    );
+}
+
+/// H07 (K13): the agent's commands keep their temporary files in the
+/// daemon's own folder, out of the server's shared /tmp.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_commands_temporary_files_stay_out_of_tmp() {
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = daemon.dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": "mktemp > made.txt" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut start = start_request(&url, &project, "Make a temporary file.".into());
+    if let Some(config) = start.config.as_mut() {
+        config.permissions.allow_any_command = true;
+    }
+    let mut session = daemon.session().await;
+    session.call(Request::AgentStart(start)).await.unwrap();
+    let made = project.join("made.txt");
+    let mut path = String::new();
+    for _ in 0..600 {
+        path = std::fs::read_to_string(&made).unwrap_or_default();
+        if !path.trim().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let path = std::path::PathBuf::from(path.trim());
+    assert!(
+        path.starts_with(daemon.data.join("tmp")),
+        "{path:?}\n{}",
+        daemon.output()
+    );
+}

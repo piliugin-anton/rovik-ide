@@ -21,6 +21,8 @@
 //!   work.rs     each chat's worktree (6.4)
 //!   changes.rs  a chat's changes there, for the isolation bar (6.1)
 //!   host.rs     `HostInfo`
+//!   limits.rs   /etc/rovik/agentd.toml: the administrators and the limits
+//!   installer.rs  `install`, `user` and `admin`: Rovik for everyone (5.3)
 //!   attach.rs   `attach --stdio`: a byte bridge to the socket
 //!   doctor.rs   `doctor`: what this server lacks for the daemon
 //!   logfile.rs  logs/agentd.log
@@ -46,7 +48,11 @@ mod home;
 #[cfg(unix)]
 mod host;
 #[cfg(unix)]
+mod installer;
+#[cfg(unix)]
 mod keys;
+#[cfg(unix)]
+mod limits;
 #[cfg(unix)]
 mod logfile;
 #[cfg(unix)]

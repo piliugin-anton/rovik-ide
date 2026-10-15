@@ -122,6 +122,9 @@ pub(super) struct State {
     next_seq: u64,
     focus: Option<String>,
     manual_slots: Option<usize>,
+    /// The most slots there may be, whatever the setting or the machine:
+    /// a team server's administrators' cap (the daemon sets it).
+    slot_cap: Option<usize>,
     pub(super) machine: Machine,
     /// Tests set the machine; the sampler then leaves it alone.
     pub(super) fixed_machine: bool,
@@ -143,17 +146,21 @@ pub(super) fn lock() -> MutexGuard<'static, State> {
 
 impl State {
     pub(super) fn capacity(&self) -> usize {
-        if let Some(n) = self.manual_slots {
-            return n.max(1);
-        }
-        let m = &self.machine;
-        let big = m.cores >= BIG_CORES && m.total_memory >= BIG_MEMORY;
-        let room = m.free_memory > ROOM_FREE_MEMORY && m.untracked_load < ROOM_UNTRACKED_LOAD;
-        if big && room {
-            2
-        } else {
-            1
-        }
+        let slots = match self.manual_slots {
+            Some(n) => n.max(1),
+            None => {
+                let m = &self.machine;
+                let big = m.cores >= BIG_CORES && m.total_memory >= BIG_MEMORY;
+                let room =
+                    m.free_memory > ROOM_FREE_MEMORY && m.untracked_load < ROOM_UNTRACKED_LOAD;
+                if big && room {
+                    2
+                } else {
+                    1
+                }
+            }
+        };
+        self.slot_cap.map_or(slots, |cap| slots.min(cap.max(1)))
     }
 
     /// Free slots; negative when the terminal took one that was in use.
@@ -339,6 +346,12 @@ pub fn set_manual_slots(slots: Option<usize>) {
     SHARED.changed.notify_all();
 }
 
+/// Caps the slots, whatever they're set to (`None`: no cap).
+pub fn set_slot_cap(cap: Option<usize>) {
+    lock().slot_cap = cap;
+    SHARED.changed.notify_all();
+}
+
 /// The slots now, for the settings page.
 pub struct Slots {
     /// As the user set them; None: auto.
@@ -381,9 +394,10 @@ fn slots_with(
 ) -> Slots {
     let big = cores >= BIG_CORES && total_memory >= BIG_MEMORY;
     let room = free_memory > ROOM_FREE_MEMORY && untracked_load < ROOM_UNTRACKED_LOAD;
+    let auto = if big && room { 2 } else { 1 };
     Slots {
         manual: state.manual_slots,
-        auto: if big && room { 2 } else { 1 },
+        auto: state.slot_cap.map_or(auto, |cap| auto.min(cap.max(1))),
         busy: state
             .jobs
             .values()
@@ -563,6 +577,7 @@ pub(crate) fn test_reset(cores: usize, total_memory: u64, free_memory: u64) {
     s.jobs.clear();
     s.focus = None;
     s.manual_slots = None;
+    s.slot_cap = None;
     s.machine = Machine {
         cores,
         total_memory,
@@ -576,4 +591,28 @@ pub(crate) fn test_reset(cores: usize, total_memory: u64, free_memory: u64) {
 pub(crate) mod test_support {
     /// Tests share the global queue: one at a time.
     pub static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A team server's cap wins over the setting and the machine (H07).
+    #[test]
+    fn the_cap_wins_over_the_setting_and_the_machine() {
+        let _serial = test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        test_reset(BIG_CORES, BIG_MEMORY, BIG_MEMORY);
+        assert_eq!(lock().capacity(), 2, "a big machine with room");
+        set_slot_cap(Some(1));
+        assert_eq!(lock().capacity(), 1);
+        assert_eq!(slots().auto, 1);
+        set_manual_slots(Some(4));
+        set_slot_cap(Some(2));
+        assert_eq!(lock().capacity(), 2);
+        set_slot_cap(None);
+        assert_eq!(lock().capacity(), 4);
+        test_reset(BIG_CORES, BIG_MEMORY, BIG_MEMORY);
+    }
 }

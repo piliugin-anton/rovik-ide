@@ -2362,3 +2362,46 @@ Tasks add notes here when reality differs from the plan.
     be read at the last load is kept when the frontend saves it empty,
     since empty then means unknown, not cleared. The same applies when
     the keychain refuses a read.
+- **H07, team hosts, before H05.** H05's deploy runs the installer that
+  H07 writes, so H07 came first (rule 6).
+  - `rovik-agentd install --admin USER` copies the binary (or the file
+    `--binary` names) to `/opt/rovik/bin/rovik-agentd-<version>` and
+    points `rovik-agentd` at it. It writes `/etc/rovik/agentd.toml` with
+    USER as administrator and limits sized to the machine: each user half
+    the memory and 4096 tasks, all of Rovik 80% of the memory, and CPU
+    left to equal weights. It writes the unit of 5.3, its `limits.conf`
+    drop-in and `rovik.slice`. It makes the `rovik-admin` group, puts
+    the administrators in it, installs the sudoers rule once
+    `visudo -c` accepts it, and enables USER's instance. Run again, it
+    keeps `agentd.toml` and adds the new administrator. Every file is
+    written beside its place and renamed over it.
+  - `user start|stop|restart|status` acts on the instance of the user
+    that `SUDO_UID` names, and takes no other argument. `admin` checks
+    the caller against `admins` in `agentd.toml` (sudoers already limits
+    it to `rovik-admin`). It covers `limits [name=value ...]` (with
+    `none` to remove a limit), `add`, `remove` (never the last
+    administrator), `upgrade FILE` and `uninstall`. `upgrade` takes a
+    build only where `allow_unsigned = true`, until B02 signs releases.
+    It runs the build's `version` as the administrator, not as root, and
+    restarts the daemons, which R02 replaces with a drain. `uninstall`
+    leaves users' folders.
+  - `--root DIR` puts `/` at DIR and prints each command that would
+    change the system. The tests run the real binary that way, `nobody`
+    as the administrator. Running the installer for real on this machine
+    was refused, and it has no systemd, so the live install, the memory
+    cap killing a command, and `PrivateTmp` stay manual checks on a
+    systemd host.
+  - Values from `agentd.toml` are checked before they reach a unit file
+    or the sudoers file: sizes, CPU percentages and user names.
+  - The daemon reads `agentd.toml` at start-up. The heavy-work slots are
+    the user's `max_slots` from `config.toml`, or 1 while other users'
+    daemons run (looked for each minute), else the machine's rule. The
+    administrators' `max_slots` caps all of these, through a new cap in
+    `workload::queue`. A new worktree is refused at `max_worktrees`, or
+    once Rovik's two folders reach `max_disk_gb`. The folders are
+    measured at that moment, without following links or entering other
+    file systems.
+  - `process::ordinary_oom_score` sets the agent's commands back to an
+    OOM score of 0 before `exec`, with async-signal-safe calls only.
+  - `docs/cloud-hosts.md` is the page for administrators. It says that
+    Chrome's DevTools port stays open to other users until H08.

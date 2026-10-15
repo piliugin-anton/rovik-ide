@@ -184,6 +184,15 @@ pub async fn new_worktree(
     changes: Option<Oid>,
     excludes: Vec<String>,
 ) -> Result<(PathBuf, PathBuf), Fail> {
+    let (caps, worktrees, name) = (
+        daemon.caps.clone(),
+        daemon.worktrees.clone(),
+        chat.to_string(),
+    );
+    let room = rt::spawn_blocking(move || caps.room_for_worktree(&worktrees, &name));
+    room.await
+        .map_err(joined)?
+        .map_err(|why| Fail::new(FailCode::Busy, why))?;
     let worktree = daemon.worktrees.join(chat);
     let (projects, id, name, at) = (
         daemon.projects.clone(),

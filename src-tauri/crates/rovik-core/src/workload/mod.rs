@@ -19,7 +19,7 @@ pub mod history;
 pub mod queue;
 mod tracker;
 
-pub use queue::{begin, set_focus, JobKind, Waited};
+pub use queue::{begin, set_focus, set_manual_slots, set_slot_cap, JobKind, Waited};
 
 /// Points history at the app's data folder, and applies the slots the
 /// user set (Settings → Builds & checks), if they set any.

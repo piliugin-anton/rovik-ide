@@ -20,6 +20,32 @@ pub fn no_window(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+/// Starts the command with an ordinary OOM score (0), whatever its
+/// parent's. On a team server the daemon runs at -500, so the kernel picks
+/// it last when memory runs out, and the commands it starts go back to 0,
+/// picked like anything else (5.3); raising a score needs no privilege.
+/// No-op off Linux, and where the score can't be set.
+pub fn ordinary_oom_score(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: between fork and exec it makes only async-signal-safe
+        // calls (open, write, close), on a path and bytes in static memory.
+        unsafe {
+            cmd.pre_exec(|| {
+                let path = c"/proc/self/oom_score_adj";
+                let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                if fd >= 0 {
+                    libc::write(fd, b"0".as_ptr().cast(), 1);
+                    libc::close(fd);
+                }
+                Ok(())
+            });
+        }
+    }
+    cmd
+}
+
 /// The user's login shell (`$SHELL`), if set.
 #[cfg(unix)]
 pub fn user_shell() -> Option<String> {
