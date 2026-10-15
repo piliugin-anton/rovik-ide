@@ -461,6 +461,31 @@ fn without_history_snapshots_go_on_each_other() {
 }
 
 #[test]
+fn lfs_files_that_go_up_with_their_content_are_listed() {
+    let fixture = Fixture::new();
+    let root = fixture.project();
+    // `HEAD` has the pointers; the work tree, the content git-lfs put there.
+    let pointer = "version https://git-lfs.github.com/spec/v1\n\
+                   oid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\n\
+                   size 12\n";
+    write(&root.join("assets/logo.png"), pointer);
+    write(&root.join("assets/kept.bin"), pointer);
+    write(
+        &root.join(".gitattributes"),
+        "*.png filter=lfs diff=lfs merge=lfs -text\n",
+    );
+    commit_all(&root);
+    write(&root.join("assets/logo.png"), "\u{89}PNG logo\r\n");
+
+    let shadow = fixture.shadow();
+    let snapshot = shadow.snapshot(CHAT).unwrap();
+    let guards = shadow.guards(&snapshot).unwrap();
+
+    assert_eq!(guards.lfs, [("assets/logo.png".to_string(), 12)]);
+    assert!(guards.large_files.is_empty());
+}
+
+#[test]
 fn the_guards_list_what_a_first_push_would_carry() {
     let fixture = Fixture::new();
     let root = fixture.project();

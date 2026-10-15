@@ -706,6 +706,9 @@ imported_result, imported_seq, unreported_landing)`, updated in the same
 - **Guards:**
   - Before the first push, the client lists untracked files over 50 MB
     and asks.
+  - Git LFS files go up with their content, since libgit2 runs no filter
+    drivers: the server has them as they are here. The client lists those
+    whose pointer in `HEAD` the snapshot replaces, with their sizes.
   - It also estimates the history pack. Above 1 GB it offers to send the
     project without history. That choice is kept for the project: later
     snapshots chain onto the previous snapshot instead of `HEAD`.
@@ -856,8 +859,8 @@ local ─► preflight ─► lock ─► pause ─► snapshot+upload ─► bl
    - Works out what will wait for the user, from the permissions and the
      host's approval policy (6.9).
    - Notes that CLM becomes trimming if the host has no virtual files.
-   - Lists what 6.4 lists: large files, nested repositories, and CRLF
-     scripts.
+   - Lists what 6.4 lists: large files, Git LFS files, nested
+     repositories, and CRLF scripts.
    - Notes that a parallel group's "Redo sequentially" won't be available
      after the move.
    - Checks that no conflicts are pending in the chat's overlay; they have
@@ -1586,7 +1589,8 @@ Tasks add notes here when reality differs from the plan.
   - A shadow inside the folder it snapshots (a project at the home folder,
     say) leaves itself out of its snapshots.
   - libgit2 runs no filter drivers, so a Git LFS file is snapshotted with
-    its content, not its pointer, and shows as changed from `HEAD`.
+    its content, not its pointer, and shows as changed from `HEAD`. Since
+    the second review below, the guards list those files.
   - The tests are a test binary of their own, which sets libgit2's search
     paths: the global excludes are a fixture's, and the machine's git
     settings don't count. The hashed files are `Snapshot::hashed`, and a
@@ -1924,3 +1928,8 @@ Tasks add notes here when reality differs from the plan.
     merged: `CheckMerged` grows `diffs` (additive), each file's diff from
     the landing base by `chats::short_diff`, which local merges use. The
     fix round shows them as a local chat's does.
+  - Git LFS files keep going up with their content, so the server's
+    builds and checks have them, and the guards list them
+    (`Guards::lfs`): each file whose pointer in `HEAD` the snapshot
+    replaces, with its size. The large-file guard missed them, since it
+    counts only files `HEAD` doesn't have.

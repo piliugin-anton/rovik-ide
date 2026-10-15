@@ -1,7 +1,8 @@
 //! What a project's first push would carry that the user hears about first
-//! (6.4's guards): large files the project doesn't track, the size of its
-//! history, nested repositories, and scripts with CRLF line endings. The
-//! move's preflight (M06) lists them and asks.
+//! (6.4's guards): large files the project doesn't track, Git LFS files
+//! that go up with their content, the size of its history, nested
+//! repositories, and scripts with CRLF line endings. The move's preflight
+//! (M06) lists them and asks.
 
 use super::{git, slashed, Result, Shadow, Snapshot};
 use git2::{Delta, ObjectType, TreeWalkMode, TreeWalkResult};
@@ -14,6 +15,9 @@ pub const LARGE_FILE: u64 = 50 << 20;
 pub const LARGE_HISTORY: u64 = 1 << 30;
 /// Scripts are smaller: bigger files aren't read for line endings.
 const SCRIPT_MAX: usize = 1 << 20;
+/// How a Git LFS pointer starts; pointers are smaller than a KiB.
+const LFS_POINTER: &[u8] = b"version https://git-lfs.github.com/spec/v1\n";
+const LFS_POINTER_MAX: usize = 1024;
 const SCRIPTS: [&str; 4] = ["sh", "bash", "zsh", "ksh"];
 const GITLINK: i32 = 0o160000;
 const EXECUTABLE: i32 = 0o100755;
@@ -22,6 +26,10 @@ const EXECUTABLE: i32 = 0o100755;
 pub struct Guards {
     /// Files over `LARGE_FILE` that `HEAD` doesn't have, with their sizes.
     pub large_files: Vec<(String, u64)>,
+    /// Git LFS files whose content the snapshot carries in place of
+    /// `HEAD`'s pointer, with their sizes: libgit2 runs no filter drivers,
+    /// so they go up whole, and the server has them as they are here.
+    pub lfs: Vec<(String, u64)>,
     /// The project's history, as the size of its object store: above
     /// `LARGE_HISTORY`, the user can send the project without it.
     pub history: u64,
@@ -48,11 +56,22 @@ impl Shadow {
             .repo
             .diff_tree_to_tree(head.as_ref(), Some(&tree), None)
             .map_err(git)?;
-        for delta in diff.deltas().filter(|d| d.status() == Delta::Added) {
+        for delta in diff.deltas() {
             let file = delta.new_file();
-            let bytes = size(file.id()) as u64;
-            if let (true, Some(path)) = (bytes > LARGE_FILE, file.path()) {
-                guards.large_files.push((slashed(path), bytes));
+            let (Some(path), bytes) = (file.path(), size(file.id()) as u64) else {
+                continue;
+            };
+            match delta.status() {
+                Delta::Added if bytes > LARGE_FILE => {
+                    guards.large_files.push((slashed(path), bytes));
+                }
+                Delta::Modified
+                    if self.is_lfs_pointer(delta.old_file().id())
+                        && !self.is_lfs_pointer(file.id()) =>
+                {
+                    guards.lfs.push((slashed(path), bytes));
+                }
+                _ => {}
             }
         }
         // Submodules are `HEAD`'s gitlinks: snapshots leave them out.
@@ -89,6 +108,12 @@ impl Shadow {
         self.project
             .as_ref()
             .map_or(0, |repo| size_of(&repo.commondir().join("objects")))
+    }
+
+    fn is_lfs_pointer(&self, blob: git2::Oid) -> bool {
+        self.repo.find_blob(blob).is_ok_and(|blob| {
+            blob.size() < LFS_POINTER_MAX && blob.content().starts_with(LFS_POINTER)
+        })
     }
 
     fn has_crlf(&self, blob: git2::Oid) -> bool {
