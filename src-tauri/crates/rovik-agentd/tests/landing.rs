@@ -7,7 +7,8 @@
 //! Results are numbered: an older one told again is passed over, and the
 //! same changes after another run land by that run's outcome. A result
 //! waits while its project's folder is open as another project's, until
-//! the user says which project it is.
+//! the user says which project it is. A file the chat moved lands with the
+//! user's edit to it where it was.
 
 mod common;
 
@@ -22,7 +23,7 @@ use rovik_core::overlay::{chats, import};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::work::ChatResult;
 use rovik_protocol::Request;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
 
@@ -332,4 +333,40 @@ async fn a_result_lands_once_its_folder_is_said_to_be_its_project() {
     app.remote.folder_answered(&setup.project, PROJECT);
 
     assert_eq!(landed(&setup, "src/new.rs").await, "fn new() {}\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_file_lands_with_the_users_edit_where_it_was() {
+    let mut setup = Setup::new().await;
+    write(&setup.project.join("src/old.rs"), "1\n2\n3\n4\n5\n6\n");
+    let app = App::new(&mut setup).await;
+    app.remote.set_open_project(None);
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "m1",
+            name: "bash",
+            args: json!({ "command": "mv src/old.rs src/new.rs" }),
+        },
+        writes("w2", "src/new.rs", "ONE\n2\n3\n4\n5\n6\n"),
+        Reply::Text("Moved."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    until("the result waiting for its project", || {
+        chats::pending(CHAT).filter(|p| p.reason == import::READY)
+    })
+    .await;
+    // Edited here meanwhile, where it was, on another line.
+    write(&setup.project.join("src/old.rs"), "1\n2\n3\n4\n5\nSIX\n");
+
+    let open = (PROJECT.to_string(), setup.project.clone());
+    app.remote.set_open_project(Some(open));
+
+    landed_as(&setup, "src/new.rs", "ONE\n2\n3\n4\n5\nSIX\n").await;
+    assert!(!setup.project.join("src/old.rs").exists());
 }

@@ -555,14 +555,22 @@ fn every_response_round_trips() {
                 WorkChange {
                     path: "src/new.rs".into(),
                     change: Change::Added,
+                    from: None,
                 },
                 WorkChange {
                     path: "src/main.rs".into(),
                     change: Change::Changed,
+                    from: None,
                 },
                 WorkChange {
                     path: "old.rs".into(),
                     change: Change::Deleted,
+                    from: None,
+                },
+                WorkChange {
+                    path: "src/moved.rs".into(),
+                    change: Change::Moved,
+                    from: Some("moved.rs".into()),
                 },
             ]),
             Response::WorkFile(WorkFile {

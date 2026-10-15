@@ -1698,9 +1698,10 @@ Tasks add notes here when reality differs from the plan.
     to the daemon, and the calls that give a chat its worktree.
 - **T06, results back on the desktop.**
   - `overlay::import` builds the chat's store from the result's commit and
-    its parent, the landing base, both in the shadow. Renames aren't
-    detected, so a moved file is a deletion and a new file, and a change
-    between a file and a link is a deletion and a write. Build output and
+    its parent, the landing base, both in the shadow. Renames weren't
+    detected, so a moved file was a deletion and a new file (since the
+    second review below, it's a move), and a change between a file and a
+    link is a deletion and a write. Build output and
     dependencies stay out, as `tiers.rs` keeps them out locally. Folders
     the project lacks get entries of their own, so the store replays. A
     deleted file is kept by its base content's hash, which landing checks.
@@ -1933,3 +1934,13 @@ Tasks add notes here when reality differs from the plan.
     (`Guards::lfs`): each file whose pointer in `HEAD` the snapshot
     replaces, with its size. The large-file guard missed them, since it
     counts only files `HEAD` doesn't have.
+  - A moved file comes back as a move: the import finds renames as git
+    does (`find_similar`, with git's defaults) and stores each as a local
+    overlay stores a move, written at its new place from the old one
+    (`origin`, with the old place's base copy) and deleted there. Landing
+    merges the user's edits to the old place into it. Before, the deletion
+    conflicted with those edits, and the new file came without them. A
+    move of a link, across the project's folder's edge, or out of build
+    output is still a deletion and an addition. `WorkStatus` lists a move
+    as `moved` with its `from` (additive), and its old place as deleted,
+    as a local chat's bar does.

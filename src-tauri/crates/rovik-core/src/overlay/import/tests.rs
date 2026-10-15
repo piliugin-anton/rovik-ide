@@ -122,6 +122,11 @@ fn store(dialog_id: &str) -> Vec<(String, &'static str)> {
                 } => "link",
                 OverlayChange::Write { origin: None, .. } => "added",
                 OverlayChange::Write {
+                    origin: Some(from),
+                    path,
+                    ..
+                } if from != path => "moved",
+                OverlayChange::Write {
                     perm_changed: true, ..
                 } => "changed, with its mode",
                 OverlayChange::Write { .. } => "changed",
@@ -260,6 +265,29 @@ fn a_merge_lands_by_itself_only_when_no_checks_would_run() {
     import(&f.repo, &f.project, "", &unchecked).unwrap();
     land_by_itself(CHAT).unwrap();
     assert_eq!(f.read("a.txt"), "ONE\n2\nTHREE\n");
+}
+
+#[test]
+fn a_moved_file_takes_the_projects_changes_to_its_old_place() {
+    let f = fixture(&[("old.txt", "1\n2\n3\n4\n5\n6\n")], false);
+    // The chat moved it and changed its first line; the project, its last.
+    let result = f.result(&[
+        ("old.txt", None, TEXT),
+        ("new.txt", Some("ONE\n2\n3\n4\n5\n6\n"), TEXT),
+    ]);
+    write(&f.project.join("old.txt"), "1\n2\n3\n4\n5\nSIX\n");
+
+    let imported = f.import(result).unwrap();
+
+    assert_eq!(imported.changed, ["new.txt", "old.txt"]);
+    let moved = [
+        ("old.txt".to_string(), "deleted"),
+        ("new.txt".to_string(), "moved"),
+    ];
+    assert_eq!(store(CHAT), moved);
+    chats::land_now(CHAT, false).unwrap();
+    assert_eq!(f.read("new.txt"), "ONE\n2\n3\n4\n5\nSIX\n");
+    assert!(!f.project.join("old.txt").exists());
 }
 
 #[test]

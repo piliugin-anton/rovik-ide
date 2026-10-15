@@ -97,6 +97,9 @@ pub struct ChatSync {
 pub struct WorkChange {
     pub path: String,
     pub change: Change,
+    /// Moved: from where in the project's folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +108,9 @@ pub enum Change {
     Added,
     Changed,
     Deleted,
+    /// Moved here from `from`, which is listed as deleted, as a local
+    /// chat's changes list a move.
+    Moved,
 }
 
 /// A file of a chat's worktree (6.1): as its landing base has it and as the

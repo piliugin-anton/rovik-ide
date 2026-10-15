@@ -18,7 +18,10 @@
 use crate::events::Events;
 use crate::store::{Place, Store};
 use git2::build::TreeUpdateBuilder;
-use git2::{Delta, FileMode, Index, ObjectType, Oid, Repository, ResetType, Signature};
+use git2::{
+    Delta, DiffFile, DiffFindOptions, FileMode, Index, ObjectType, Oid, Repository, ResetType,
+    Signature,
+};
 use rovik_core::agent_run::{self, pending_reason, project, AgentConfig};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
@@ -245,30 +248,45 @@ fn changes_of(
         .and_then(|base| base.tree())
         .map_err(git)?;
     let tree = repo.find_tree(tree).map_err(git)?;
-    let diff = repo
+    let mut diff = repo
         .diff_tree_to_tree(Some(&base), Some(&tree), None)
         .map_err(git)?;
+    let mut renames = DiffFindOptions::new();
+    renames.renames(true);
+    diff.find_similar(Some(&mut renames)).map_err(git)?;
     let prefix = if subpath.is_empty() {
         String::new()
     } else {
         format!("{subpath}/")
     };
+    let in_project = |file: DiffFile| {
+        let path = file.path()?.to_string_lossy().replace('\\', "/");
+        path.strip_prefix(&prefix).map(String::from)
+    };
     let mut changes: Vec<WorkChange> = Vec::new();
-    for delta in diff.deltas() {
-        let path = delta.new_file().path().or(delta.old_file().path());
-        let path = path.map(|p| p.to_string_lossy().replace('\\', "/"));
-        let Some(path) = path.and_then(|p| p.strip_prefix(&prefix).map(String::from)) else {
-            continue;
-        };
-        let change = match delta.status() {
-            Delta::Added => Change::Added,
-            Delta::Deleted => Change::Deleted,
-            _ => Change::Changed,
-        };
+    let mut add = |path: String, change, from| {
         // A change of kind comes as a deletion and an addition.
         match changes.iter_mut().find(|c| c.path == path) {
             Some(known) => known.change = Change::Changed,
-            None => changes.push(WorkChange { path, change }),
+            None => changes.push(WorkChange { path, change, from }),
+        }
+    };
+    for delta in diff.deltas() {
+        let (was, now) = (in_project(delta.old_file()), in_project(delta.new_file()));
+        match (delta.status(), was, now) {
+            (Delta::Added, _, Some(now)) => add(now, Change::Added, None),
+            (Delta::Deleted, Some(was), _) => add(was, Change::Deleted, None),
+            // A move, as a local chat lists one: from a place now deleted.
+            // One across the project's folder's edge is what's inside it.
+            (Delta::Renamed, Some(was), Some(now)) => {
+                add(was.clone(), Change::Deleted, None);
+                add(now, Change::Moved, Some(was));
+            }
+            (Delta::Renamed, Some(was), None) => add(was, Change::Deleted, None),
+            (Delta::Renamed, None, Some(now)) => add(now, Change::Added, None),
+            (Delta::Added | Delta::Deleted | Delta::Renamed, ..) => {}
+            (_, _, Some(now)) => add(now, Change::Changed, None),
+            _ => {}
         }
     }
     Ok(changes)

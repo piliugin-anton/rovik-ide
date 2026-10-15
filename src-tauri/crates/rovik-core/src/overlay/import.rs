@@ -14,6 +14,10 @@
 //!   hash, and the folders the project lacks as new folders. A file whose
 //!   kind changed (to or from a link) is deleted and written again. Build
 //!   output and dependencies stay out, as they do locally (tiers.rs).
+//! - **A moved file**, found as git finds renames (similar content), is
+//!   a local overlay's move: written at its new place from where it was,
+//!   with its base copy from there, and deleted there. Landing merges the
+//!   project's changes to the old place into it (land.rs).
 //! - **A subfolder of a repository** (K31) takes the changes under it, from
 //!   its own root. The others are listed and never land.
 //! - **An import replaces the chat's store**, unless the user is resolving
@@ -28,7 +32,7 @@ use super::land::{LandError, Landed};
 use super::tiers::Tiers;
 use crate::vfs::store::Kind;
 use git2::build::CheckoutBuilder;
-use git2::{DiffFile, FileMode, Oid, Repository, Tree};
+use git2::{DiffFile, DiffFindOptions, FileMode, Oid, Repository, Tree};
 use rovik_protocol::work::ChatResult;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -185,6 +189,9 @@ struct Entry {
     tree_path: String,
     old: Option<Side>,
     new: Option<Side>,
+    /// Moved here from this path, in the project's folder and in the trees:
+    /// `old` is the file there.
+    from: Option<(String, String)>,
 }
 
 /// Builds the store in `staging`, its files named as they will be once it
@@ -204,34 +211,56 @@ fn build(
         .parent(0)
         .map_err(|_| "the result has no landing base".to_string())?;
     let (base_tree, result_tree) = (base.tree().map_err(git)?, commit.tree().map_err(git)?);
-    // No rename detection: a moved file is deleted and written. And a
-    // change of kind comes as a deletion and an addition.
-    let diff = repo
+    // Renames found as git finds them. A change of kind comes as a
+    // deletion and an addition.
+    let mut diff = repo
         .diff_tree_to_tree(Some(&base_tree), Some(&result_tree), None)
         .map_err(git)?;
+    let mut renames = DiffFindOptions::new();
+    renames.renames(true);
+    diff.find_similar(Some(&mut renames)).map_err(git)?;
     let (prefix, tiers) = (prefix(subpath), Tiers::new(project));
     let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
     let mut outside = BTreeSet::new();
+    let in_project = |tree_path: &str| tree_path.strip_prefix(&prefix).map(String::from);
+    let landed =
+        |tree_path: &str| in_project(tree_path).filter(|rel| !tiers.is_by_product(rel, false));
     for delta in diff.deltas() {
         let (old, new) = (side(&delta.old_file()), side(&delta.new_file()));
-        let path = delta.new_file().path().or(delta.old_file().path());
-        let Some(tree_path) = path.map(|p| p.to_string_lossy().replace('\\', "/")) else {
+        let path = |file: DiffFile| file.path().map(|p| p.to_string_lossy().replace('\\', "/"));
+        let (Some(was), Some(now)) = (path(delta.old_file()), path(delta.new_file())) else {
             continue;
         };
-        let Some(rel) = tree_path.strip_prefix(&prefix).map(String::from) else {
-            outside.insert(tree_path);
-            continue;
+        // A move is its old place deleted and its new one written from it.
+        // One of a link, or across the project's folder's edge, is a
+        // deletion and an addition.
+        let files = old.zip(new).is_some_and(|(o, n)| !o.link && !n.link);
+        let from = landed(&was).filter(|_| was != now && files && landed(&now).is_some());
+        let sides = if was == now {
+            vec![(now, old, new, None)]
+        } else {
+            let moved = from.map(|from| (from, was.clone()));
+            let carried = moved.as_ref().and(old);
+            vec![(was, old, None, None), (now, carried, new, moved)]
         };
-        if (old.is_none() && new.is_none()) || tiers.is_by_product(&rel, false) {
-            continue;
+        for (tree_path, old, new, from) in sides {
+            let Some(rel) = in_project(&tree_path) else {
+                outside.insert(tree_path);
+                continue;
+            };
+            if (old.is_none() && new.is_none()) || tiers.is_by_product(&rel, false) {
+                continue;
+            }
+            let entry = entries.entry(rel).or_insert(Entry {
+                tree_path,
+                old: None,
+                new: None,
+                from: None,
+            });
+            entry.old = entry.old.or(old);
+            entry.new = entry.new.or(new);
+            entry.from = entry.from.take().or(from);
         }
-        let entry = entries.entry(rel).or_insert(Entry {
-            tree_path,
-            old: None,
-            new: None,
-        });
-        entry.old = entry.old.or(old);
-        entry.new = entry.new.or(new);
     }
 
     let out = staging.join("checkout");
@@ -243,7 +272,10 @@ fn build(
         let files = entries.filter(|e| pick(e).is_some_and(|s| !s.link));
         files.map(|e| e.tree_path.as_str()).collect()
     };
-    checkout(repo, &base_tree, &files(|e| e.old), &out.join("base"))?;
+    // A moved file's base is its old place's, which that place's deletion
+    // checks out.
+    let old = |e: &Entry| e.old.filter(|_| e.from.is_none());
+    checkout(repo, &base_tree, &files(old), &out.join("base"))?;
     checkout(repo, &result_tree, &files(|e| e.new), &out.join("result"))?;
 
     let mut deletes = Vec::new();
@@ -287,11 +319,17 @@ fn build(
             fs::rename(from, staging.join(to).join(&n)).map_err(io)
         };
         take("result", "upper")?;
-        let base_copy = if kept {
-            take("base", "base")?;
-            Some(store.join("base").join(&n))
-        } else {
-            None
+        let base_copy = match (&entry.from, kept) {
+            (Some((_, was)), _) => {
+                let base = out.join("base").join(was);
+                fs::copy(base, staging.join("base").join(&n)).map_err(io)?;
+                Some(store.join("base").join(&n))
+            }
+            (None, true) => {
+                take("base", "base")?;
+                Some(store.join("base").join(&n))
+            }
+            (None, false) => None,
         };
         let changed_mode = match entry.old.filter(|_| kept) {
             Some(old) => old.exec != new.exec,
@@ -302,7 +340,10 @@ fn build(
             OverlayChange::Write {
                 path: rel.clone(),
                 kind: Kind::File,
-                origin: kept.then(|| rel.clone()),
+                origin: match &entry.from {
+                    Some((from, _)) => Some(from.clone()),
+                    None => kept.then(|| rel.clone()),
+                },
                 upper: Some(store.join("upper").join(&n)),
                 base_copy,
                 perm: if new.exec { 0o755 } else { 0o644 },

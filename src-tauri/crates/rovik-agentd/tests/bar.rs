@@ -2,8 +2,8 @@
 //! a remote chat: what the chat changed in its worktree, until it lands; a
 //! changed file's versions; Discard; handing conflicts to the chat, whose
 //! resolution then lands; a plan read from the worktree; the buttons only
-//! a local chat has, refused; and the app told to look again when a result
-//! comes in and when it lands.
+//! a local chat has, refused; the app told to look again when a result
+//! comes in and when it lands; and a file the chat moved, listed as moved.
 
 mod common;
 
@@ -264,4 +264,40 @@ async fn the_bar_looks_again_when_a_result_comes_in_and_lands() {
     open(&setup, &app);
     landed_as(&setup, "src/new.rs", "fn new() {}\n").await;
     eventually("told once it landed", told(|(_, landed)| *landed)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bar_lists_a_moved_file_as_moved() {
+    let mut setup = Setup::new().await;
+    write(&setup.project.join("src/old.rs"), "fn old() {}\n");
+    let app = App::new(&mut setup).await;
+    app.remote.set_open_project(None);
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "m1",
+            name: "bash",
+            args: serde_json::json!({ "command": "mv src/old.rs src/new.rs" }),
+        },
+        Reply::Text("Moved."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    result_waits().await;
+
+    let status = app.remote.overlay_status(CHAT).await.unwrap();
+    let listed: Vec<(&str, &str, Option<&str>)> = status
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.change, f.from.as_deref()))
+        .collect();
+    let moved = [
+        ("src/old.rs", "deleted", None),
+        ("src/new.rs", "moved", Some("src/old.rs")),
+    ];
+    assert_eq!(listed, moved);
 }

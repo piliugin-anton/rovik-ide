@@ -183,7 +183,8 @@ fn changed_file(change: WorkChange) -> ChangedFile {
             Change::Added => "added",
             Change::Changed => "changed",
             Change::Deleted => "deleted",
+            Change::Moved => "moved",
         },
-        from: None,
+        from: change.from,
     }
 }
