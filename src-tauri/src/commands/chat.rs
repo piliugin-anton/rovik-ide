@@ -11,7 +11,7 @@ use rovik_core::chat_db::store::{
 use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
 use rovik_protocol::Request;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::ipc::InvokeBody;
 use tauri::State;
@@ -59,11 +59,14 @@ pub async fn chat_read_plan(
 #[tauri::command]
 pub async fn chat_answer_copy(
     core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     root: String,
     original_id: String,
     share: bool,
 ) -> Result<projects::ProjectInfo, String> {
-    api::chat_answer_copy(&core.db, root, original_id, share).await
+    let project = api::chat_answer_copy(&core.db, root.clone(), original_id, share).await?;
+    remote.folder_answered(Path::new(&root), &project.id);
+    Ok(project)
 }
 
 /// "Looks like a moved project": use its chats here, which merges this
@@ -77,7 +80,9 @@ pub async fn chat_answer_moved(
     target_id: String,
 ) -> Result<projects::ProjectInfo, String> {
     remote.keep_project(&current_id, "merging it").await?;
-    api::chat_answer_moved(&core.db, root, current_id, target_id).await
+    let project = api::chat_answer_moved(&core.db, root.clone(), current_id, target_id).await?;
+    remote.folder_answered(Path::new(&root), &project.id);
+    Ok(project)
 }
 
 /// "Not these": not suggested for this folder again.

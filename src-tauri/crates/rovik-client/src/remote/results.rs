@@ -21,7 +21,7 @@ use rovik_core::overlay::land::{LandError, Landed};
 use rovik_core::rt;
 use rovik_protocol::work::{ChatResult, SyncState};
 use rovik_protocol::Request;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
 
@@ -57,6 +57,16 @@ impl Remote {
     pub fn set_open_project(&self, project: Option<(String, PathBuf)>) {
         self.lock().open = project;
         let _ = self.jobs.send(Job::Opened);
+    }
+
+    /// The user said what the folder at `root` is (a copy of another
+    /// project, or one that moved), which made it `project`'s: when it's
+    /// the open folder, results land there as that project's from now on.
+    pub fn folder_answered(&self, root: &Path, project: &str) {
+        let open = self.lock().open.clone();
+        if open.is_some_and(|(id, at)| at == root && id != project) {
+            self.set_open_project(Some((project.to_string(), root.to_path_buf())));
+        }
     }
 
     /// Lands the chat's imported result as the bar's Land does

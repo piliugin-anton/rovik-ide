@@ -5,7 +5,9 @@
 //! undone, a result that ended while the app was away comes in when it
 //! connects, and text comes back with the project's own line endings.
 //! Results are numbered: an older one told again is passed over, and the
-//! same changes after another run land by that run's outcome.
+//! same changes after another run land by that run's outcome. A result
+//! waits while its project's folder is open as another project's, until
+//! the user says which project it is.
 
 mod common;
 
@@ -299,6 +301,35 @@ async fn changes_kept_by_a_stop_land_after_a_run_that_changed_nothing() {
 
     // The same changes come back from a run that ended well.
     app.remote.start(message(&setup, &url, "u2")).await.unwrap();
+
+    assert_eq!(landed(&setup, "src/new.rs").await, "fn new() {}\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_result_lands_once_its_folder_is_said_to_be_its_project() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    // The folder open as another project's, as a copy is until the user
+    // answers what it is.
+    let other = ("original".to_string(), setup.project.clone());
+    app.remote.set_open_project(Some(other));
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "src/new.rs", "fn new() {}\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    until("the result waiting for its project", || {
+        chats::pending(CHAT).filter(|p| p.reason == import::READY)
+    })
+    .await;
+
+    app.remote.folder_answered(&setup.project, PROJECT);
 
     assert_eq!(landed(&setup, "src/new.rs").await, "fn new() {}\n");
 }

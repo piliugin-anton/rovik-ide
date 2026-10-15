@@ -421,6 +421,25 @@ async fn a_project_with_a_remote_chat_isnt_merged_or_deleted() {
     assert_eq!(remote.keep_project(&all_local, "deleting it").await, Ok(()));
 }
 
+/// 6.5: results land by themselves in the open project, which the user's
+/// answer about its folder (a copy, or a project that moved) can change.
+#[tokio::test]
+async fn the_open_project_follows_what_the_user_says_its_folder_is() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let folder = app.dir.0.join("copy");
+    remote.set_open_project(Some(("original".into(), folder.clone())));
+
+    remote.folder_answered(&app.dir.0.join("elsewhere"), "separate");
+    assert_eq!(
+        remote.lock().open,
+        Some(("original".into(), folder.clone()))
+    );
+
+    remote.folder_answered(&folder, "separate");
+    assert_eq!(remote.lock().open, Some(("separate".into(), folder)));
+}
+
 /// D11, D16: a setting goes to every connected host, a configuration
 /// without its keys.
 #[tokio::test]

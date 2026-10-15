@@ -1717,8 +1717,9 @@ Tasks add notes here when reality differs from the plan.
     project changing.
   - The open project is the folder the app opened last: `chat_open_project`
     tells `Remote`. A result whose project isn't open waits as "Ready to
-    land", and lands by itself once it is. Closing the folder isn't told,
-    so for this the last project opened stays the open one.
+    land", and lands by itself once it is. The app has no way to close a
+    folder; since the review below, the open project also follows what
+    the user says the open folder is.
   - A result lands by itself under `landing.rs`'s rules but never merged:
     one that would land merged with the project's newer changes waits,
     with the reason, until T08 checks it on the server. The bar's Land
@@ -1891,3 +1892,9 @@ Tasks add notes here when reality differs from the plan.
     went back to the server for a run with nothing to check, which added a
     "no checks are set up" record to the chat when verification was on.
     `overlay::import::import` and `Shadow::import` take the `ChatResult`.
+  - The open project follows the user's answers about the open folder:
+    "Separate history" for a copy gives it a project of its own, and "Use
+    its chats" for a project that moved makes it that project's.
+    `chat_answer_copy` and `chat_answer_moved` tell `Remote`
+    (`folder_answered`), and results that waited for the new project land.
+    Before, the first project's results landed in the copy's folder.
