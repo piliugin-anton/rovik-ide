@@ -22,7 +22,7 @@ use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::ChatSync;
 use rovik_protocol::{features, Access, Event, Fail, FailCode, Request, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -93,7 +93,8 @@ pub enum CloudEvent {
 pub type CloudSink = Arc<dyn Fn(CloudEvent) + Send + Sync>;
 
 /// Who approves on a host while nobody is there (6.9).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum ApprovalPolicy {
     /// What would wait for the user goes to the AI reviewer first.
     AiReviewerThenMe,

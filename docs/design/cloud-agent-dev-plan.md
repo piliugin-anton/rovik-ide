@@ -2232,3 +2232,35 @@ Tasks add notes here when reality differs from the plan.
     the host not hear it, its cleanup takes them (R01).
   - Deleting a remote chat drops its subagents' chats from `Remote`'s map
     too, not only its own.
+- **H01, host settings and secrets.**
+  - `rovik_client::host_settings` keeps `cloud-hosts.json`, format 1:
+    this computer's id, made and saved the first time the file is read,
+    and per host its id, name, address and port, user, auth kind (`key`,
+    `agent`, `password`, `keyboard-interactive`, `system-ssh`), key path,
+    the host key pinned in OpenSSH form, approval policy and deploy state
+    (`notDeployed`, or `deployed` with its version). The file is written
+    for the user alone, and refused when a newer app wrote it. Removing a
+    host forgets its secrets.
+  - `rovik_client::secrets::SecretStore` uses the keychain through
+    `keyring` 3.6: the macOS Keychain, the Windows Credential Manager, and
+    Secret Service through libdbus on Linux. The service is `rovik-ide`,
+    the accounts `host/<id>/password`, `host/<id>/passphrase`,
+    `host/<id>/token` and `provider/<id>/api-key`. keyring 4 splits its
+    stores into crates of their own; 3.6 is the release the design names.
+  - The keychain is used when it answers a lookup, a missing entry
+    counting as an answer. Otherwise the store is the encrypted file:
+    argon2id (64 MiB, 3 passes) makes the key, and XChaCha20-Poly1305
+    seals the secrets, a JSON map, under a new nonce at each write, with
+    the salt and the settings in the clear. `unlock` takes the passphrase
+    for the session: a new file is made with it, an existing one must
+    open with it. `kind()` says which store it is and whether it's
+    unlocked, for the interface. The secrets read are wiped from memory
+    when dropped.
+  - Errors say what to do: a missing password or passphrase is asked for
+    again, a missing token needs a new deploy, a locked file its
+    passphrase.
+  - Neither is wired to the app yet: the connection (H02) and the hosts
+    page (U01) use them, and the app picks the fallback file's path in
+    its config folder.
+  - Adding `keyring` and its Linux store changed how shared dependencies
+    resolve, so every crate rebuilt once.

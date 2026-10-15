@@ -15,13 +15,18 @@
 //!                 here (6.5)
 //!   shadow.rs     each project's shadow repository and its snapshots (6.4)
 //!   packs.rs      packs between a shadow repository and a host (6.4)
+//!   host_settings.rs  the hosts this computer knows (cloud-hosts.json)
+//!   secrets.rs    passwords, passphrases, tokens and API keys, in the
+//!                 keychain or a file encrypted in its place
 
 mod client;
 mod connector;
+pub mod host_settings;
 mod hosts;
 mod http;
 mod packs;
 mod remote;
+pub mod secrets;
 pub mod shadow;
 #[cfg(test)]
 mod testing;
