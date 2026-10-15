@@ -13,15 +13,19 @@
 //!   ends the request with a `rate_limited` error saying when to try again.
 //! - Timeouts count time since the last *data* event: keep-alive comments
 //!   (": OPENROUTER PROCESSING") keep a connection open without progress.
+//! - The wait for the first data counts from when the last of the request
+//!   went out (`Upload`), so a big upload that keeps moving isn't a stall.
+//!   An attempt that got nothing back in time gives the next one twice as
+//!   long: the provider may still be working through a long prompt.
 
 use crate::agent::ChatStreamEvent;
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use futures_util::StreamExt;
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::Client;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -37,7 +41,8 @@ const DETAILS_MAX_CHARS: usize = 2_000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
-    /// Until the first data event of an attempt.
+    /// Until the first data event of an attempt, from when the last of the
+    /// request went out. Doubled after an attempt that got nothing back.
     pub first_byte: Duration,
     /// Between data events once the reply has started.
     pub idle: Duration,
@@ -878,16 +883,83 @@ pub struct RequestSpec<'a> {
 struct AttemptFailure {
     error: ChatError,
     visible: bool,
+    /// Nothing came back within the first-byte limit.
+    silent: bool,
+}
+
+/// The size of the pieces the connection is handed the request body in.
+const PIECE_BYTES: usize = 64 * 1024;
+
+/// The request body, handed to the connection a piece at a time so the
+/// attempt can tell a slow upload from a silent provider: the first-byte
+/// limit counts from when the connection last took a piece. A big request
+/// (attachments) on a slow link keeps moving; a connection that takes
+/// nothing for that long has stopped.
+struct Upload(Arc<Mutex<Sent>>);
+
+#[derive(Clone, Copy)]
+struct Sent {
+    /// When the connection last took a piece (until then, when the request
+    /// was ready to go).
+    at: Instant,
+    /// It has taken the last one.
+    all: bool,
+}
+
+impl Upload {
+    /// The body to send, and its length.
+    fn start(body: &serde_json::Value) -> (Upload, reqwest::Body, u64) {
+        let bytes = Bytes::from(body.to_string());
+        let len = bytes.len();
+        let sent = Arc::new(Mutex::new(Sent {
+            at: Instant::now(),
+            all: len == 0,
+        }));
+        let noted = sent.clone();
+        // The connection asks for the next piece once it has room for it.
+        let pieces = (0..len).step_by(PIECE_BYTES).map(move |start| {
+            let end = (start + PIECE_BYTES).min(len);
+            if let Ok(mut sent) = noted.lock() {
+                *sent = Sent {
+                    at: Instant::now(),
+                    all: end == len,
+                };
+            }
+            Ok::<_, std::io::Error>(bytes.slice(start..end))
+        });
+        let body = reqwest::Body::wrap_stream(futures_util::stream::iter(pieces));
+        (Upload(sent), body, len as u64)
+    }
+
+    fn sent(&self) -> Sent {
+        match self.0.lock() {
+            Ok(sent) => *sent,
+            Err(poisoned) => *poisoned.into_inner(),
+        }
+    }
 }
 
 async fn attempt(
     spec: &RequestSpec<'_>,
+    first_byte: Duration,
     cancel: &mut watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> Result<(), AttemptFailure> {
     let started = Instant::now();
     let deadline = started + spec.limits.overall;
-    let fail = |error: ChatError, visible: bool| AttemptFailure { error, visible };
+    let fail = |error: ChatError, visible: bool| AttemptFailure {
+        error,
+        visible,
+        silent: false,
+    };
+    let silent = || AttemptFailure {
+        error: ChatError::new(
+            ErrorKind::Stalled,
+            format!("No response within {} s.", first_byte.as_secs()),
+        ),
+        visible: false,
+        silent: true,
+    };
     // Debugging only (ROVIK_API_LOG): the request now, the reply when this
     // attempt ends, whichever way it ends.
     let mut log = crate::api_log::Exchange::start(spec.url, spec.body, spec.streaming);
@@ -901,32 +973,47 @@ async fn attempt(
         )
     };
 
-    // Waiting for response headers. Non-streaming replies only arrive when
-    // complete, so only the overall deadline applies to them.
-    let header_deadline = if spec.streaming {
-        (started + spec.limits.first_byte).min(deadline)
-    } else {
-        deadline
-    };
+    let (upload, body, length) = Upload::start(spec.body);
     let request = spec
         .client
         .post(spec.url)
         .bearer_auth(spec.api_key)
         .headers(crate::opencode::headers(spec.url, spec.chat_id))
-        .json(spec.body)
+        .header(CONTENT_TYPE, "application/json")
+        .header(CONTENT_LENGTH, length)
+        .body(body)
         .send();
-    let response = tokio::select! {
-        _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
-        r = tokio::time::timeout_at(header_deadline.into(), request) => match r {
-            Err(_) if spec.streaming && Instant::now() < deadline => {
-                return Err(fail(ChatError::new(ErrorKind::Stalled, format!(
-                    "No response within {} s.", spec.limits.first_byte.as_secs())), false));
+    let mut request = std::pin::pin!(request);
+    // Waiting for response headers. Non-streaming replies only arrive when
+    // complete, so only the overall deadline applies to them.
+    let response = loop {
+        let wait_until = if spec.streaming {
+            (upload.sent().at + first_byte).min(deadline)
+        } else {
+            deadline
+        };
+        tokio::select! {
+            _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
+            r = &mut request => match r {
+                Err(e) => return Err(fail(
+                    ChatError::new(ErrorKind::Network, "Could not reach the provider.").with_details(e.to_string()), false)),
+                Ok(r) => break r,
+            },
+            _ = tokio::time::sleep_until(wait_until.into()) => {
+                if Instant::now() >= deadline {
+                    return Err(fail(overall_error(), false));
+                }
+                let sent = upload.sent();
+                if Instant::now() < sent.at + first_byte {
+                    continue; // the connection took more of the request since
+                }
+                if !sent.all {
+                    return Err(fail(ChatError::new(ErrorKind::Network, format!(
+                        "Sending the request made no progress for {} s.", first_byte.as_secs())), false));
+                }
+                return Err(silent());
             }
-            Err(_) => return Err(fail(overall_error(), false)),
-            Ok(Err(e)) => return Err(fail(
-                ChatError::new(ErrorKind::Network, "Could not reach the provider.").with_details(e.to_string()), false)),
-            Ok(Ok(r)) => r,
-        },
+        }
     };
 
     let status = response.status();
@@ -1013,7 +1100,7 @@ async fn attempt(
 
     loop {
         let wait_until = match last_data {
-            None => started + spec.limits.first_byte,
+            None => upload.sent().at + first_byte,
             Some(t) => t + spec.limits.idle,
         }
         .min(deadline);
@@ -1033,18 +1120,12 @@ async fn attempt(
             Err(_) if Instant::now() >= deadline => {
                 return Err(fail(overall_error(), parser.visible()))
             }
+            Err(_) if last_data.is_none() => return Err(silent()),
             Err(_) => {
-                let secs = if last_data.is_none() {
-                    spec.limits.first_byte
-                } else {
-                    spec.limits.idle
-                }
-                .as_secs();
-                let message = if last_data.is_none() {
-                    format!("No response within {secs} s.")
-                } else {
-                    format!("The reply stopped arriving for {secs} s.")
-                };
+                let message = format!(
+                    "The reply stopped arriving for {} s.",
+                    spec.limits.idle.as_secs()
+                );
                 return Err(fail(
                     ChatError::new(ErrorKind::Stalled, message),
                     parser.visible(),
@@ -1147,14 +1228,21 @@ pub async fn run(
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> Result<(), ChatError> {
     let mut attempt_number = 1;
+    let mut first_byte = spec.limits.first_byte;
     loop {
-        let failure = match attempt(spec, cancel, emit).await {
+        let failure = match attempt(spec, first_byte, cancel, emit).await {
             Ok(()) => {
                 emit(ChatStreamEvent::Done);
                 return Ok(());
             }
             Err(f) => f,
         };
+        // The provider may still be working through a long prompt (a cold
+        // cache, a local server's prompt processing) and be further along
+        // when asked again: give it longer.
+        if failure.silent {
+            first_byte = first_byte.saturating_mul(2).min(spec.limits.overall);
+        }
         let mut error = failure.error;
         error.attempts = attempt_number;
 
