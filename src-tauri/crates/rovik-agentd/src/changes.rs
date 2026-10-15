@@ -67,7 +67,7 @@ pub async fn discard(daemon: &Daemon, computer: &str, chat: &str) -> Result<Resp
     });
     reset.await.map_err(joined)??;
     daemon.store.marks_left(chat, Vec::new());
-    daemon.store.forget_kept(chat, None);
+    daemon.results.forget_kept(chat, None).await;
     Ok(Response::Done)
 }
 
@@ -124,7 +124,7 @@ pub async fn to_chat(
     });
     let (files, paths, base, kept) = marked.await.map_err(joined)??;
     daemon.store.base_moved(chat, &base.to_string());
-    daemon.store.keep(chat, kept);
+    daemon.results.keep(chat, kept).await;
     // Kept from the worktree's root, as a sync's are. The message that
     // hands them over tells the chat itself.
     daemon.store.mark(chat, &paths, false);
@@ -161,9 +161,11 @@ pub async fn undo_merge(
         let kept: Vec<(String, Kept)> = kept.filter(|(path, _)| wanted(path)).collect();
         let name = chat.to_string();
         let put = rt::spawn_blocking(move || put_back(&place.worktree, &base, kept, &name));
-        let (restored, changed_since, base) = put.await.map_err(joined)??;
+        let (restored, mut changed_since, lost, base) = put.await.map_err(joined)??;
         daemon.store.base_moved(chat, &base.to_string());
-        daemon.store.forget_kept(chat, Some(&restored));
+        let forgotten = [restored.as_slice(), lost.as_slice()].concat();
+        daemon.results.forget_kept(chat, Some(&forgotten)).await;
+        changed_since.extend(lost);
         let marks = daemon.store.marked_of(chat).into_iter();
         let marks = marks.filter(|m| !restored.contains(m)).collect();
         daemon.store.marks_left(chat, marks);
@@ -182,39 +184,55 @@ pub async fn undo_merge(
 
 /// Puts what was kept back: the chat's own versions in the worktree, their
 /// old landing base in a new one. Returns the files put back, those changed
-/// since, and the new landing base.
+/// since, those whose earlier versions are gone (left as they are), and
+/// the new landing base.
 fn put_back(
     worktree: &Path,
     base: &str,
     kept: Vec<(String, Kept)>,
     chat: &str,
-) -> Result<(Vec<String>, Vec<String>, Oid), Fail> {
+) -> Result<(Vec<String>, Vec<String>, Vec<String>, Oid), Fail> {
     let repo = Repository::open(worktree).map_err(git)?;
     let base = Oid::from_str(base)
         .and_then(|base| repo.find_commit(base))
         .map_err(git)?;
-    let oid = |id: &str| Oid::from_str(id).map_err(git);
-    let (mut restored, mut changed_since, mut entries) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut restored, mut changed_since, mut lost) = (Vec::new(), Vec::new(), Vec::new());
+    let mut entries = Vec::new();
     for (path, kept) in kept {
         let now = on_disk(worktree, &path).map(|bytes| Oid::hash_object(ObjectType::Blob, &bytes));
-        if now.transpose().map_err(git)? != Some(oid(&kept.written)?) {
+        let written = Oid::from_str(&kept.written).ok();
+        if now.transpose().map_err(git)? != written {
             changed_since.push(path);
             continue;
         }
-        let chat_version = repo.find_blob(oid(&kept.chat)?).map_err(git)?;
-        fs::write(worktree.join(&path), chat_version.content())
+        let Some((chat_version, was)) = earlier(&repo, &kept) else {
+            lost.push(path);
+            continue;
+        };
+        fs::write(worktree.join(&path), chat_version)
             .map_err(|e| internal(format!("{path}: {e}")))?;
         let mode = match kept.base_exec {
             true => FileMode::BlobExecutable,
             false => FileMode::Blob,
         };
-        let was = kept.base.as_deref().map(oid).transpose()?;
         entries.push((path.clone(), was.map(|id| (id, mode))));
         restored.push(path);
     }
     let message = format!("Merge taken back in chat {chat}");
     let base = set_base(&repo, &base, &entries, &message)?;
-    Ok((restored, changed_since, base))
+    Ok((restored, changed_since, lost, base))
+}
+
+/// A kept file's earlier versions in the repository: the chat's content,
+/// and its base's blob when it had one. None when any of them is gone.
+fn earlier(repo: &Repository, kept: &Kept) -> Option<(Vec<u8>, Option<Oid>)> {
+    let blob = |id: &str| repo.find_blob(Oid::from_str(id).ok()?).ok();
+    let chat = blob(&kept.chat)?.content().to_vec();
+    let base = match &kept.base {
+        Some(id) => Some(blob(id)?.id()),
+        None => None,
+    };
+    Some((chat, base))
 }
 
 /// The chat's worktree, its landing base, and the project's folder in it.

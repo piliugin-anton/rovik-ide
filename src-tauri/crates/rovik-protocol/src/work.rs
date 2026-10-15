@@ -141,6 +141,7 @@ pub struct Handed {
 pub struct UndoneMerge {
     /// The chat's own version again.
     pub restored: Vec<String>,
-    /// Changed since the merge, by the chat: left as they are.
+    /// Left as they are: changed since the merge, by the chat, or with
+    /// their earlier versions gone.
     pub changed_since: Vec<String>,
 }

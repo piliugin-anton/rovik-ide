@@ -18,6 +18,12 @@ pub fn result_ref(chat: &str) -> String {
     format!("{PUSHED_REFS}chats/{chat}/result")
 }
 
+/// Where the daemon keeps what Undo the merge puts back in a chat's files
+/// (6.1), so that no `git gc` prunes it.
+pub fn kept_ref(chat: &str) -> String {
+    format!("{PUSHED_REFS}chats/{chat}/kept")
+}
+
 /// `GET /packs/<project>/refs`: each ref the daemon has for the project,
 /// with the commit it points at.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

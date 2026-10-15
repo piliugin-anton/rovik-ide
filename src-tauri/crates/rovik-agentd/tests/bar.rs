@@ -18,6 +18,7 @@ use rovik_core::agent_run::permissions::Permissions;
 use rovik_core::overlay::chats::{self, ChangedFile};
 use rovik_core::overlay::import;
 use rovik_core::testing::{model, Reply};
+use rovik_protocol::packs::kept_ref;
 use rovik_protocol::Request;
 use std::future::Future;
 use std::path::PathBuf;
@@ -339,14 +340,15 @@ async fn unmark_takes_markers_handed_over_back_out() {
     assert_eq!(pending.conflicts[0].path, "src/main.rs");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn undo_the_merge_puts_the_chats_own_version_back() {
-    let mut setup = Setup::new().await;
+/// A merge on the server: `a.txt` changed by the chat on one line, then
+/// here on another, which the next message's sync merges in; that run
+/// over, and its result committed. The chat's worktree's root.
+async fn merged_there(setup: &mut Setup) -> (App, PathBuf) {
     write(&setup.project.join("a.txt"), "1\n2\n3\n4\n5\n");
-    let app = App::new(&mut setup).await;
+    let app = App::new(setup).await;
     app.remote.set_open_project(None);
-    app.connect(&setup).await;
-    let root = ready_to_run(&setup).await;
+    app.connect(setup).await;
+    let root = ready_to_run(setup).await;
     let (url, _) = model(vec![
         writes("w1", "a.txt", "ONE\n2\n3\n4\n5\n"),
         Reply::Text("Done."),
@@ -354,17 +356,44 @@ async fn undo_the_merge_puts_the_chats_own_version_back() {
     ])
     .await;
     app.remote
-        .start(start(&setup, &url, unattended()))
+        .start(start(setup, &url, unattended()))
         .await
         .unwrap();
     result_waits().await;
-    // Changed here on another line: the next message's sync merges it in.
     write(&setup.project.join("a.txt"), "1\n2\n3\n4\nFIVE\n");
-    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
+    app.remote.start(message(setup, &url, "u2")).await.unwrap();
     assert_eq!(read(&root.join("a.txt")), "ONE\n2\n3\n4\nFIVE\n");
     ended(&setup.client).await;
+    until("the merged run's result", || {
+        let results = setup.daemon.state()["chats"][CHAT]["result"]["seq"].as_u64();
+        results.filter(|seq| *seq >= 2)
+    })
+    .await;
+    (app, root)
+}
+
+/// What `git gc` does to the daemon's project repository at its most
+/// thorough: objects no ref reaches are gone.
+fn gc(setup: &Setup) {
+    let repo = setup.there();
+    let done = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo.path())
+        .args(["gc", "--prune=now", "--quiet"])
+        .status()
+        .expect("git");
+    assert!(done.success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn undo_the_merge_puts_the_chats_own_version_back_after_a_gc() {
+    let mut setup = Setup::new().await;
+    let (app, root) = merged_there(&mut setup).await;
     let status = app.remote.overlay_status(CHAT).await.unwrap();
     assert_eq!(status.merged_in, ["a.txt"]);
+    let held = setup.there().find_reference(&kept_ref(CHAT)).is_ok();
+    assert!(held, "the kept versions have a ref");
+    gc(&setup);
 
     let undone = app.remote.undo_merge(CHAT, None).await.unwrap();
 
@@ -372,4 +401,27 @@ async fn undo_the_merge_puts_the_chats_own_version_back() {
     assert_eq!(read(&root.join("a.txt")), "ONE\n2\n3\n4\n5\n");
     let status = app.remote.overlay_status(CHAT).await.unwrap();
     assert!(status.merged_in.is_empty());
+    assert!(setup.there().find_reference(&kept_ref(CHAT)).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_whose_earlier_versions_are_gone_is_left_as_it_is() {
+    let mut setup = Setup::new().await;
+    let (app, root) = merged_there(&mut setup).await;
+    // Its kept versions lost, as nothing reached them before the ref did.
+    let there = setup.there();
+    there
+        .find_reference(&kept_ref(CHAT))
+        .unwrap()
+        .delete()
+        .unwrap();
+    gc(&setup);
+
+    let undone = app.remote.undo_merge(CHAT, None).await.unwrap();
+
+    assert!(undone.restored.is_empty());
+    assert_eq!(undone.changed_since, ["a.txt"]);
+    assert_eq!(read(&root.join("a.txt")), "ONE\n2\n3\n4\nFIVE\n");
+    let status = app.remote.overlay_status(CHAT).await.unwrap();
+    assert!(status.merged_in.is_empty(), "forgotten");
 }

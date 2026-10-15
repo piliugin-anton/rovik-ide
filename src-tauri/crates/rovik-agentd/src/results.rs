@@ -14,9 +14,13 @@
 //! the result's content for the paths that landed, so the next result
 //! holds only what hasn't (K34). A newer result made meanwhile, on the old
 //! base, is committed again on the new one.
+//!
+//! What a merge or markers replaced in the chat's files, which Undo the
+//! merge puts back (6.1), is kept in `state.json` and held by the chat's
+//! `kept` ref, a commit of those blobs, so that no `git gc` prunes them.
 
 use crate::events::Events;
-use crate::store::{Place, Store};
+use crate::store::{Kept, Place, Store};
 use git2::build::TreeUpdateBuilder;
 use git2::{
     Delta, DiffFile, DiffFindOptions, FileMode, Index, ObjectType, Oid, Repository, ResetType,
@@ -26,9 +30,10 @@ use rovik_core::agent_run::{self, pending_reason, project, AgentConfig};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
-use rovik_protocol::packs::result_ref;
+use rovik_protocol::packs::{kept_ref, result_ref};
 use rovik_protocol::work::{Change, ChatResult, WorkChange};
 use rovik_protocol::{Event, Fail, FailCode};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -128,7 +133,7 @@ impl Results {
             let _base = self.base.lock().await;
             let (place, base) = self.worktree(dialog_id)?;
             // What landed can't be taken back there any more.
-            self.store.forget_kept(dialog_id, Some(&paths));
+            self.forget_kept(dialog_id, Some(&paths)).await;
             let chat = dialog_id.to_string();
             let moved = rt::spawn_blocking(move || {
                 move_base(&place.worktree, &base, landed, &paths, &chat)
@@ -168,6 +173,35 @@ impl Results {
     /// The landing bases, held while one is read and moved.
     pub async fn hold_base(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.base.lock().await
+    }
+
+    /// Keeps what merges or markers replaced in the chat's files.
+    pub async fn keep(&self, dialog_id: &str, kept: Vec<(String, Kept)>) {
+        if kept.is_empty() {
+            return;
+        }
+        self.store.keep(dialog_id, kept);
+        self.hold_kept(dialog_id).await;
+    }
+
+    /// Forgets what was kept of `paths`, or of every file.
+    pub async fn forget_kept(&self, dialog_id: &str, paths: Option<&[String]>) {
+        self.store.forget_kept(dialog_id, paths);
+        self.hold_kept(dialog_id).await;
+    }
+
+    /// The chat's `kept` ref, as its kept blobs are now. Without it, they'd
+    /// still serve until a `git gc` pruned them: a failure is only told.
+    async fn hold_kept(&self, dialog_id: &str) {
+        let Some(place) = self.store.place(dialog_id) else {
+            return;
+        };
+        let (kept, chat) = (self.store.kept_of(dialog_id), dialog_id.to_string());
+        let held = rt::spawn_blocking(move || hold(&place.worktree, &chat, &kept));
+        let held = held.await.map_err(|e| e.to_string());
+        if let Err(e) = held.and_then(|held| held.map_err(|e| e.message().to_string())) {
+            log::warn!("{dialog_id}'s kept versions aren't held by a ref: {e}");
+        }
     }
 
     /// The chat's worktree and its landing base.
@@ -322,6 +356,32 @@ pub fn marked_left(store: &Store, chat: &str) -> Vec<String> {
     };
     let left = markers_left(&place.worktree, store.marked_of(chat));
     in_root(&store.subpath_of(chat), left)
+}
+
+/// Points the chat's `kept` ref at a commit of its kept blobs, each named
+/// by its id, or deletes it once nothing is kept.
+fn hold(worktree: &Path, chat: &str, kept: &BTreeMap<String, Kept>) -> Result<(), git2::Error> {
+    let repo = Repository::open(worktree)?;
+    let name = kept_ref(chat);
+    if kept.is_empty() {
+        return match repo.find_reference(&name) {
+            Ok(mut held) => held.delete(),
+            Err(_) => Ok(()),
+        };
+    }
+    let mut tree = repo.treebuilder(None)?;
+    for kept in kept.values() {
+        let blobs = [Some(&kept.chat), kept.base.as_ref(), Some(&kept.written)];
+        for id in blobs.into_iter().flatten() {
+            tree.insert(id, Oid::from_str(id)?, 0o100644)?;
+        }
+    }
+    let tree = repo.find_tree(tree.write()?)?;
+    let rovik = Signature::now("Rovik", "results@rovik.invalid")?;
+    let message = format!("What Undo the merge puts back in chat {chat}");
+    let held = repo.commit(None, &rovik, &rovik, &message, &tree, &[])?;
+    repo.reference(&name, held, true, "kept")?;
+    Ok(())
 }
 
 /// Paths from the worktree's root, from the chat's root instead: the

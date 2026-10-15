@@ -181,7 +181,7 @@ async fn merge_into(
     let merged = merged.await.map_err(joined)??;
     if merged.applied() {
         daemon.store.base_moved(chat, &snapshot.to_string());
-        daemon.store.keep(chat, merged.kept.clone());
+        daemon.results.keep(chat, merged.kept.clone()).await;
     }
     if merged.state == SyncState::Marked {
         daemon.store.mark(chat, &merged.files, true);

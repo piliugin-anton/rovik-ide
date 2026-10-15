@@ -1958,6 +1958,9 @@ Tasks add notes here when reality differs from the plan.
     committed at once, so what conflicts comes back to the bar. `files`
     limits it to those (Unmark). `WorkStatus` flags the files a merge
     replaced (`merged`, additive), which fill the bar's `mergedIn`. What
-    lands, or Discard, forgets what was kept. Kept blobs are reachable from
-    no ref, so a `git gc` that prunes old objects (R01) would lose those
-    older than its expiry, and their files would stay as they are.
+    lands, or Discard, forgets what was kept. The kept blobs are held by
+    the chat's `kept` ref (`packs::kept_ref`), a commit of them that
+    changes with them and goes with the chat's refs, so a `git gc` (R01)
+    doesn't prune them. A file whose earlier versions are gone anyway is
+    left as it is, among `changedSince`, and forgotten, rather than failing
+    the request.
