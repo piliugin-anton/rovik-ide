@@ -3,12 +3,13 @@
 //! events keep coming. And its SSH tunnel (H02, H03): each way of logging
 //! in, the host key checked before anything is sent, the WebSocket and an
 //! upload on channels of their own at once, and `attach --stdio` where the
-//! host refuses streamlocal forwarding.
+//! host refuses streamlocal forwarding. And the connection test (H04).
 
 mod common;
 
 use common::ssh::{new_key, SshServer, PASSWORD, USER};
 use common::{start_request, until, Daemon, BINARY, COMPUTER};
+use rovik_client::connection_test::{test_connection, Check, Outcome, Step, TestOptions};
 use rovik_client::ssh::{
     fingerprint, Answerer, Questions, Ssh, SshAuth, SshConnector, SshError, SshTarget,
 };
@@ -22,8 +23,9 @@ use rovik_protocol::host::HostInfo;
 use rovik_protocol::{Event, FailCode, Request, Response, Secret, MAX_FRAME, PROTOCOL};
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 /// What a client hears.
@@ -437,5 +439,135 @@ async fn a_host_refusing_streamlocal_is_reached_through_attach() {
     assert!(
         server.execs.load(ordering) >= 3,
         "the $HOME asked, the WebSocket, the upload"
+    );
+}
+
+/// A provider's API that answers every request 401, as one does without a
+/// key: its address.
+async fn api_answering_401() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buffer).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => request.extend_from_slice(&buffer[..n]),
+                    }
+                }
+                let answer = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
+                let _ = stream.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}/v1/models")
+}
+
+/// H04: the connection test, a step at a time. The first run stops at the
+/// host's key, nothing sent; once it's pinned, a wrong password stops at
+/// logging in; the right one lets the probe run on the server (this
+/// machine) in one exec, the providers' addresses tried from there, and
+/// the daemon answers through the tunnel.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() {
+    let daemon = Daemon::start(&[]).await;
+    let server = SshServer::start().await;
+    let told = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::clone(&told);
+    let report = move |step: &Step| heard.lock().unwrap().push(step.clone());
+    let outcomes = |steps: &[Step]| -> Vec<(Check, Outcome)> {
+        steps.iter().map(|s| (s.check, s.outcome)).collect()
+    };
+    let ordering = std::sync::atomic::Ordering::SeqCst;
+
+    let mut first = target(&server, password(PASSWORD));
+    first.host_key = None;
+    let options = TestOptions::default();
+    let steps = test_connection(&SshConnector::new(first), &options, &report).await;
+    assert_eq!(
+        outcomes(&steps),
+        [
+            (Check::Address, Outcome::Passed),
+            (Check::HostKey, Outcome::Confirm)
+        ]
+    );
+    assert_eq!(*told.lock().unwrap(), steps, "each step told as it ended");
+    let seen = steps[1].host_key.clone().expect("the key to confirm");
+    assert_eq!(seen.fingerprint, fingerprint(server.host_key.public_key()));
+    assert!(steps[1].message.contains(&seen.fingerprint));
+    assert_eq!(server.execs.load(ordering), 0, "nothing ran");
+
+    let mut wrong = target(&server, password("guess"));
+    wrong.host_key = Some(seen.key.clone());
+    let steps = test_connection(&SshConnector::new(wrong), &options, &report).await;
+    assert_eq!(
+        outcomes(&steps),
+        [
+            (Check::Address, Outcome::Passed),
+            (Check::HostKey, Outcome::Passed),
+            (Check::LogIn, Outcome::Failed)
+        ]
+    );
+
+    let mut pinned = target(&server, password(PASSWORD));
+    pinned.host_key = Some(seen.key);
+    let socket = daemon.socket.to_string_lossy().into_owned();
+    let connector = SshConnector::new(pinned).with_socket(socket);
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!(
+            "http://127.0.0.1:{}/",
+            listener.local_addr().unwrap().port()
+        )
+    };
+    let options = TestOptions {
+        api_urls: vec![api_answering_401().await, closed],
+        deployed: true,
+    };
+    told.lock().unwrap().clear();
+    let steps = test_connection(&connector, &options, &report).await;
+    assert_eq!(*told.lock().unwrap(), steps);
+    let checks: Vec<Check> = steps.iter().map(|s| s.check).collect();
+    let expected = [
+        "address",
+        "host-key",
+        "log-in",
+        "system",
+        "account",
+        "disk",
+        "git",
+        "chrome",
+        "isolation",
+        "service",
+        "install",
+        "api",
+        "api",
+        "daemon",
+    ];
+    assert_eq!(serde_json::to_value(&checks).unwrap(), json!(expected));
+    let outcome = |at: usize| (steps[at].outcome, steps[at].message.as_str());
+    assert_eq!(outcome(1).0, Outcome::Passed, "{}", outcome(1).1);
+    assert!(
+        outcome(2).1.contains("with your password"),
+        "{}",
+        outcome(2).1
+    );
+    assert_eq!(outcome(11).0, Outcome::Passed, "the 401: {}", outcome(11).1);
+    assert_eq!(
+        outcome(12).0,
+        Outcome::Failed,
+        "the closed port: {}",
+        outcome(12).1
+    );
+    assert_eq!(outcome(13).0, Outcome::Passed, "{}", outcome(13).1);
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(outcome(13).1.contains(version), "{}", outcome(13).1);
+    assert_eq!(server.execs.load(ordering), 1, "the probe, in one exec");
+    assert!(
+        server.most_open.load(ordering) >= 1,
+        "/health on a streamlocal channel"
     );
 }

@@ -21,8 +21,11 @@
 //!   ssh.rs        SSH to a host: a channel to its daemon for each stream,
 //!                 and the commands that set it up
 //!   system_ssh.rs the user's own ssh, forwarding a socket to the daemon
+//!   connection_test.rs  the hosts page's Test connection, a step at a time,
+//!                 and the probe that says what a server offers
 
 mod client;
+pub mod connection_test;
 mod connector;
 pub mod host_settings;
 mod hosts;

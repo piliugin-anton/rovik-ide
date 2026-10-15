@@ -2311,3 +2311,33 @@ Tasks add notes here when reality differs from the plan.
   - The test server now runs an exec channel's command with `sh -c`, its
     stdin and stdout the channel's, its output then its exit status sent
     in order; the attach test runs the real binary through it.
+- **H04, the connection test.**
+  - `connection_test::test_connection` runs the steps in order and tells
+    a callback each one as it ends: the name and a TCP connection to the
+    SSH port, the host key, logging in, the probe's findings, and the
+    daemon's `/health` through the tunnel when the host is deployed or
+    the probe finds the user's socket. A failed step that the next ones
+    need ends the test. The first connection ends at the host key with
+    the outcome `confirm`, the key and its fingerprint in the step, and
+    nothing sent. The connection stays with the connector.
+  - Errors while logging in, after the key was checked, are now
+    `SshError::Failed` rather than `Unreachable`, so the test can tell a
+    failed handshake from a login that dropped.
+  - The probe, `connection_test/probe.sh`, is POSIX sh sent on stdin to
+    `sh -s`, with the providers' addresses quoted after it, so the login
+    shell parses only that line. `Probe::parse` reads its `key=value`
+    lines and skips any it doesn't know. User namespaces are tried with
+    `unshare -Ur true`, or else read from the kernel's switches as the
+    daemon reads them. Other users' daemons are found through `/proc`,
+    as `host::other_daemons` finds them, since busybox's `ps` can't list
+    users. The administrators come from the `admins` line of
+    `agentd.toml`, which H07's installer is to write on one line.
+  - Thresholds chosen: under 1 GB free in the home folder fails and
+    under 5 GB warns. Missing git, git before 2.5, no Chrome, a Chrome
+    that doesn't start headless and missing isolation extras warn. A 403
+    from a provider warns (a region block, or a proxy), and no answer
+    fails. A root login fails the account step.
+  - `http::health` asks `/health` without a token; `doctor` (R03) isn't
+    used yet. The e2e test runs the probe on this machine through the
+    test SSH server, against a local API that answers 401 and a closed
+    port. The run against a VPS stays manual.

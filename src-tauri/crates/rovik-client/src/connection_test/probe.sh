@@ -1,0 +1,83 @@
+# What a server offers Rovik (H04): one `key=value` line each, read by
+# `rovik_client::probe`. POSIX sh, as busybox runs it too: it's sent on
+# stdin to `sh -s`, so the user's login shell never parses it. Its
+# arguments are the providers' API addresses to try from the server.
+say() { printf '%s=%s\n' "$1" "$2"; }
+say os "$(uname -s)"
+say arch "$(uname -m)"
+say uid "$(id -u)"
+say user "$(id -un)"
+say home "$HOME"
+say disk_kb "$(df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+say git "$(git --version 2>/dev/null)"
+chrome=
+for name in chromium chromium-browser google-chrome google-chrome-stable; do
+  if found=$(command -v "$name" 2>/dev/null); then chrome=$found; break; fi
+done
+say chrome "$chrome"
+if [ -n "$chrome" ]; then
+  if timeout 30 "$chrome" --headless=new --disable-gpu --no-first-run --dump-dom about:blank >/dev/null 2>&1; then
+    say chrome_headless yes
+  else
+    say chrome_headless no
+  fi
+fi
+# Trying is the surest answer; without unshare, the kernel's switches as
+# the daemon reads them.
+if command -v unshare >/dev/null 2>&1; then
+  if unshare -Ur true 2>/dev/null; then say userns yes; else say userns no; fi
+else
+  max=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)
+  clone=$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null)
+  apparmor=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)
+  if [ "${max:-0}" -gt 0 ] 2>/dev/null && [ "$clone" != 0 ] && [ "$apparmor" != 1 ]; then
+    say userns yes
+  else
+    say userns no
+  fi
+fi
+if [ -e /dev/fuse ]; then say fuse yes; else say fuse no; fi
+say fusermount "$(command -v fusermount3 2>/dev/null || command -v fusermount 2>/dev/null)"
+if [ -d /run/systemd/system ]; then say systemd yes; else say systemd no; fi
+if command -v sudo >/dev/null 2>&1; then
+  if sudo -n true 2>/dev/null; then
+    say sudo yes
+  elif sudo -n true 2>&1 | grep -qi password; then
+    say sudo password
+  else
+    say sudo no
+  fi
+else
+  say sudo none
+fi
+if [ -f /etc/rovik/agentd.toml ]; then
+  say rovik "$(/opt/rovik/bin/rovik-agentd version 2>/dev/null)"
+  say rovik_admins "$(sed -n 's/^[[:space:]]*admins[[:space:]]*=[[:space:]]*//p' /etc/rovik/agentd.toml)"
+fi
+if [ -S "$HOME/.rovik/agentd.sock" ]; then say socket yes; else say socket no; fi
+# Other users' daemons, through /proc as the daemon finds them: their
+# processes are named rovik-agentd.
+me=$(id -u)
+for status in $(grep -ls '^Name:[[:space:]]*rovik-agentd$' /proc/[0-9]*/status); do
+  uid=$(awk '/^Uid:/ { print $2 }' "$status" 2>/dev/null)
+  if [ -n "$uid" ] && [ "$uid" != "$me" ]; then
+    name=$(awk -F: -v uid="$uid" '$3 == uid { print $1; exit }' /etc/passwd)
+    say daemon "${name:-$uid}"
+  fi
+done
+for url in "$@"; do
+  if command -v curl >/dev/null 2>&1; then
+    if code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null) && [ "$code" != 000 ]; then
+      say reach "$url $code"
+    else
+      say reach "$url failed"
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    # The status from the headers: busybox's exit code can't tell a
+    # refusal from no answer.
+    code=$(wget -S --spider -T 10 "$url" 2>&1 | awk '$1 ~ /^HTTP\// { code = $2 } END { print code }')
+    say reach "$url ${code:-failed}"
+  else
+    say reach "$url untested"
+  fi
+done

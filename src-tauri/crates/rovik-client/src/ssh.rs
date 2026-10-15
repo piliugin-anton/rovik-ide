@@ -61,6 +61,22 @@ pub struct SshTarget {
     pub host_key: Option<String>,
 }
 
+impl SshTarget {
+    /// The pinned host key's fingerprint, when one is pinned.
+    pub fn pinned_fingerprint(&self) -> Result<Option<String>, SshError> {
+        Ok(self.pinned_key()?.as_ref().map(fingerprint))
+    }
+
+    fn pinned_key(&self) -> Result<Option<PublicKey>, SshError> {
+        let Some(key) = &self.host_key else {
+            return Ok(None);
+        };
+        PublicKey::from_openssh(key)
+            .map(Some)
+            .map_err(|e| SshError::Key(format!("the pinned host key can't be read: {e}")))
+    }
+}
+
 /// How to log in.
 #[derive(Clone)]
 pub enum SshAuth {
@@ -95,7 +111,7 @@ pub type Answerer = Arc<
 #[derive(Clone, Debug, PartialEq)]
 pub enum SshError {
     /// The host couldn't be reached: its name, the network, or the
-    /// handshake.
+    /// handshake, before its key was checked.
     Unreachable(String),
     /// No key is pinned for the host yet: the user is to compare this
     /// fingerprint with the host's own before the key is pinned.
@@ -107,7 +123,8 @@ pub enum SshError {
     Denied(String),
     /// The key file or the agent failed.
     Key(String),
-    /// A channel or a command failed.
+    /// The connection dropped while logging in, or a channel or a
+    /// command failed.
     Failed(String),
 }
 
@@ -183,13 +200,7 @@ pub struct Output {
 impl Ssh {
     /// Connects to the host, checks its key and logs in.
     pub async fn connect(target: &SshTarget) -> Result<Ssh, SshError> {
-        let pinned =
-            match &target.host_key {
-                Some(key) => Some(PublicKey::from_openssh(key).map_err(|e| {
-                    SshError::Key(format!("the pinned host key can't be read: {e}"))
-                })?),
-                None => None,
-            };
+        let pinned = target.pinned_key()?;
         let seen = Arc::new(Mutex::new(None));
         let checker = Checker {
             pinned: pinned.clone(),
@@ -281,9 +292,19 @@ impl Ssh {
 
     /// Runs `command` on the host and collects its output.
     pub async fn exec(&self, command: &str) -> Result<Output, SshError> {
+        self.exec_with_input(command, &[]).await
+    }
+
+    /// Runs `command` on the host with `input` on its stdin, then the end
+    /// of it, and collects its output.
+    pub async fn exec_with_input(&self, command: &str, input: &[u8]) -> Result<Output, SshError> {
         let failed = |e: russh::Error| SshError::Failed(format!("`{command}`: {e}"));
         let mut channel = self.handle.channel_open_session().await.map_err(failed)?;
         channel.exec(true, command).await.map_err(failed)?;
+        if !input.is_empty() {
+            channel.data(input).await.map_err(failed)?;
+        }
+        channel.eof().await.map_err(failed)?;
         let mut output = Output::default();
         while let Some(message) = channel.wait().await {
             match message {
@@ -320,14 +341,18 @@ fn key_refused(seen: Option<PublicKey>, pinned: Option<&PublicKey>) -> SshError 
     }
 }
 
+/// The connection dropped after the host's key was checked.
+fn dropped(e: russh::Error) -> SshError {
+    SshError::Failed(format!("The connection dropped while logging in: {e}"))
+}
+
 async fn log_in(handle: &mut Handle<Checker>, target: &SshTarget) -> Result<(), SshError> {
     let user = target.user.clone();
-    let lost = |e: russh::Error| SshError::Unreachable(e.to_string());
     let result = match &target.auth {
         SshAuth::Password(password) => handle
             .authenticate_password(user, password.0.clone())
             .await
-            .map_err(lost)?,
+            .map_err(dropped)?,
         SshAuth::Key { path, passphrase } => {
             let passphrase = passphrase.as_ref().map(|p| p.0.as_str());
             let key = russh::keys::load_secret_key(path, passphrase)
@@ -335,13 +360,13 @@ async fn log_in(handle: &mut Handle<Checker>, target: &SshTarget) -> Result<(), 
             let hash = handle
                 .best_supported_rsa_hash()
                 .await
-                .map_err(lost)?
+                .map_err(dropped)?
                 .flatten();
             let key = PrivateKeyWithHashAlg::new(Arc::new(key), hash);
             handle
                 .authenticate_publickey(user, key)
                 .await
-                .map_err(lost)?
+                .map_err(dropped)?
         }
         SshAuth::Agent { socket } => return with_agent(handle, &user, socket.as_ref()).await,
         SshAuth::KeyboardInteractive(answer) => return interactively(handle, &user, answer).await,
@@ -373,7 +398,7 @@ async fn with_agent(
     let hash = handle
         .best_supported_rsa_hash()
         .await
-        .map_err(|e| SshError::Unreachable(e.to_string()))?
+        .map_err(dropped)?
         .flatten();
     for identity in identities {
         // Certificates are the user's own ssh's (H03).
@@ -427,11 +452,10 @@ async fn interactively(
     user: &str,
     answer: &Answerer,
 ) -> Result<(), SshError> {
-    let lost = |e: russh::Error| SshError::Unreachable(e.to_string());
     let mut reply = handle
         .authenticate_keyboard_interactive_start(user, None)
         .await
-        .map_err(lost)?;
+        .map_err(dropped)?;
     loop {
         match reply {
             KeyboardInteractiveAuthResponse::Success => return Ok(()),
@@ -463,7 +487,7 @@ async fn interactively(
                 reply = handle
                     .authenticate_keyboard_interactive_respond(answers)
                     .await
-                    .map_err(lost)?;
+                    .map_err(dropped)?;
             }
         }
     }
@@ -502,6 +526,11 @@ impl SshConnector {
     pub fn with_attach(mut self, command: impl Into<String>) -> SshConnector {
         self.attach = command.into();
         self
+    }
+
+    /// Where, and as whom.
+    pub fn target(&self) -> &SshTarget {
+        &self.target
     }
 
     /// The daemon's socket there: asked for once, from `$HOME`.

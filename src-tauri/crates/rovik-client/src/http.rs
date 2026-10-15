@@ -1,7 +1,8 @@
 //! HTTP to the daemon, each request on a connection of its own (4.1, K41):
 //! `POST /call` for a call or a reply too big for a frame, the bundle that
 //! moves a chat at `/chats/import` (6.8), the attachments' files at
-//! `/blobs/<sha256>` (6.11), and the projects' packs at `/packs` (6.4).
+//! `/blobs/<sha256>` (6.11), the projects' packs at `/packs` (6.4), and
+//! `/health`, which needs no token, for the connection test (H04).
 
 use crate::client::{unreachable, Identity};
 use crate::connector::Connector;
@@ -216,6 +217,36 @@ where
         .send_request(request)
         .await
         .map_err(|_| unreachable(&identity.host))
+}
+
+/// What `/health` answers.
+#[derive(serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct Health {
+    pub ok: bool,
+    pub protocol: u32,
+    pub version: String,
+}
+
+/// The daemon's `/health`: that it answers, and its version.
+pub async fn health(connector: &dyn Connector) -> Result<Health, Fail> {
+    let lost = |why: String| Fail::new(FailCode::Unreachable, why);
+    let io = connector.connect().await.map_err(|e| lost(e.to_string()))?;
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))
+        .await
+        .map_err(|e| lost(e.to_string()))?;
+    tokio::spawn(connection);
+    let request = hyper::Request::get("/health")
+        .header(HOST, "rovik-agentd")
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|e| lost(e.to_string()))?;
+    let status = response.status();
+    let body = response.into_body().collect().await;
+    let body = body.map_err(|e| lost(e.to_string()))?.to_bytes();
+    reply(status, &body)
 }
 
 /// The JSON a request asked for, or the refusal its status says.
