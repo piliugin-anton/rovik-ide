@@ -841,7 +841,6 @@ impl<R: Runtime> Run<R> {
                 }
                 self.writes_since_verify = true;
                 self.writes_since_review = true;
-                self.map_writes_since_refresh += 1;
             }
             // The parse caches key on mtime+size: a fast same-size rewrite
             // could otherwise serve the old parse all run. Invalidate now,
@@ -853,9 +852,9 @@ impl<R: Runtime> Run<R> {
             }
         }
         // A shell command may have changed any files (git checkout, codegen,
-        // formatters): mtime/size catches it on the next collect, so only
-        // the refresh flag is needed — unlike the write tool, no same-tick
-        // cache race is possible across processes.
+        // formatters): mtime/size catches it on the map's next rebuild —
+        // unlike the write tool, no same-tick cache race is possible across
+        // processes.
         // P3.5: outside an isolated chat, what a command changed can't be
         // rolled back; the round's rollback says which ran.
         if tool_name == "bash" && auth.refusal.is_none() {
@@ -871,7 +870,6 @@ impl<R: Runtime> Run<R> {
             }
         }
         if tool_name == "bash" && !failed {
-            self.map_writes_since_refresh += 1;
             // A command on the context file's real path (sed, python3, …)
             // is a context edit for the CLM pressure (run.rs).
             if clm {

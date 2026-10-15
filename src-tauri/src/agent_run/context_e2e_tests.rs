@@ -1,10 +1,13 @@
-//! Chats of three turns against the scripted model: what every request of
+//! Chats of a few turns against the scripted model: what every request of
 //! them carries, in Trimming and in CLM mode.
 //!
-//! What the provider's prompt cache needs (prompt_cache.rs): one prefix
-//! that only grows from request to request (system prompt, tools, history,
-//! each user message as it was first sent), with what changes between steps
-//! (the repository map, notes) on the last message. What the window needs:
+//! What the model needs: the request in view, and every request ending with
+//! the step it works from (its latest result, then the IDE's short notes),
+//! not with a map of where to start. What the provider's prompt cache needs
+//! (prompt_cache.rs): one prefix that only grows from step to step (system
+//! prompt, tools, history, each user message as it was first sent, the
+//! repository map on the request it was built for), with what changes
+//! between steps (the notes) on the last message. What the window needs:
 //! every request, notes and reasoning sent back included, leaves the reply
 //! its room.
 
@@ -15,6 +18,38 @@ use crate::chat_db::history::DEFAULT_CHARS_PER_TOKEN;
 /// (`meta.sentContent`).
 const SENT: &str = "[Active editor context — file src/lib.rs (rust); cursor at line 1, col 1. \
                     Call read if you need the actual code.]\n\nWhere is alpha defined?";
+
+/// A request typed with a file open in the editor and lines referenced with
+/// "@", as the frontend sends it (ChatPanel's buildWireContent): the editor
+/// context and the references' instructions come before what was typed.
+const TYPED: &str = "parse.rs:1-3 keeps the spaces around each field; trim them.";
+const REFERENCED: &str = concat!(
+    "[Active editor context — file src/parse.rs (rust); cursor at line 2, col 5; inside parse_line(). ",
+    "Call read if you need the actual code.]\n\n",
+    "The user explicitly referenced these project files:\n",
+    "- src/parse.rs (lines 1-3, shown in the message as parse.rs:1-3)\n\n",
+    "Treat these as explicit file references from the user. Use the available file tools to inspect them when relevant.\n",
+    "A reference with lines means the user is talking about exactly those lines. ",
+    "Read them with read using that start_line and end_line.\n",
+    "To change them, use write with that same start_line and end_line, quoting the current text as old_text ",
+    "and its replacement as content: the edit then cannot change anything outside those lines. ",
+    "Do not rewrite the whole file.\n\n",
+    "parse.rs:1-3 keeps the spaces around each field; trim them."
+);
+const PARSE: &str = "pub fn parse_line(s: &str) -> Vec<String> {\n    s.split(',').map(|x| x.to_string()).collect()\n}\n";
+
+/// A message's map and the text after it, when it starts with one: the map
+/// goes on the request's message, before its text (the map itself has no
+/// blank line).
+fn map_and_text(text: &str) -> Option<(&str, &str)> {
+    text.strip_prefix("## Repository map\n")?;
+    text.split_once("\n\n")
+}
+
+/// The request's text, without the map that goes before it.
+fn without_map(text: &str) -> &str {
+    map_and_text(text).map_or(text, |(_, rest)| rest)
+}
 
 /// The text of a message: its content, or its content's text parts.
 fn text_of(message: &Value) -> String {
@@ -192,51 +227,78 @@ async fn three_turns_send_one_prefix_that_only_grows() {
     .await;
     let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 6, "two requests a turn");
+    let typed = [SENT, "Add a beta function", "Where is beta used?"];
+    // The turn's request: the latest user message.
+    let request_at = |r: &Value| {
+        messages_of(r)
+            .iter()
+            .rposition(|m| m["role"] == "user")
+            .unwrap()
+    };
+    let map_of = |r: &Value| {
+        map_and_text(&text_of(&messages_of(r)[request_at(r)]))
+            .map(|(map, _)| map.to_string())
+            .expect("a map on the request")
+    };
 
     for (i, r) in requests.iter().enumerate() {
-        // Zone 1: the system prompt and the tools never change.
+        // The system prompt and the tools never change.
         assert_eq!(system_prompt(r), system_prompt(&requests[0]), "request {i}");
         assert_eq!(r["tools"], requests[0]["tools"], "request {i}");
-        // Zone 2: the map ends the request; nothing before it carries one.
-        let (last, earlier) = messages_of(r).split_last().unwrap();
-        assert!(text_of(last).contains("## Repository map"), "request {i}");
+        // The map goes on the turn's request, before its text; no other
+        // message carries one.
+        let at = request_at(r);
+        let request = text_of(&messages_of(r)[at]);
+        assert_eq!(without_map(&request), typed[i / 2], "request {i}");
         assert!(
-            earlier
+            messages_of(r)
                 .iter()
-                .all(|m| !text_of(m).contains("## Repository map")),
-            "request {i}: a map before the last message"
+                .enumerate()
+                .all(|(j, m)| j == at || !text_of(m).contains("## Repository map")),
+            "request {i}: a map away from the request"
         );
-        // The first request goes out as it was first sent, on every turn.
+        // The first request goes out as it was first sent, on every turn
+        // (its map only in its own turn).
         let first = text_of(&messages_of(r)[1]);
-        assert!(first.starts_with(SENT), "request {i}: {first}");
+        assert_eq!(without_map(&first), SENT, "request {i}");
         if i >= 2 {
             assert_eq!(first, SENT, "request {i}");
         }
     }
-    // The map follows the project: the file written in turn 2 is in it.
-    assert!(!tail_text(&requests[2]).contains("beta_two"));
-    assert!(tail_text(&requests[3]).contains("beta_two"));
+    // A run keeps the map it started with (a rebuild waits until it's two
+    // minutes old); the next turn's map has the file written in turn 2.
+    assert!(!map_of(&requests[2]).contains("beta_two"));
+    assert_eq!(map_of(&requests[3]), map_of(&requests[2]));
+    assert!(map_of(&requests[4]).contains("beta_two"));
 
-    // Each request repeats the one before it but for its last message, the
-    // one that carried the map: within a turn and from one turn to the next.
+    // Within a turn, each request repeats the whole of the one before it:
+    // the map is in the prefix providers cache. From one turn to the next,
+    // everything before the last turn's request, whose map moved on to the
+    // new one.
+    let users = |r: &Value| {
+        messages_of(r)
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .count()
+    };
     for (i, pair) in requests.windows(2).enumerate() {
-        let n = messages_of(&pair[0]).len();
-        assert_eq!(
-            shared_messages(&pair[0], &pair[1]),
-            n - 1,
-            "requests {i}-{}",
-            i + 1
-        );
+        let shared = shared_messages(&pair[0], &pair[1]);
+        let expected = if users(&pair[0]) == users(&pair[1]) {
+            messages_of(&pair[0]).len()
+        } else {
+            request_at(&pair[0])
+        };
+        assert_eq!(shared, expected, "requests {i}-{}", i + 1);
     }
 
     // OpenRouter's breakpoint in the history lands on a message the next
-    // request sends the same way, not on the last one, which loses its map;
+    // step sends the same way, not on the last one, which can carry notes;
     // and moves forward a few blocks a step: within the provider's lookback.
     for (i, r) in requests.iter().enumerate() {
         assert_ne!(
             history_breakpoint(r),
             Some(messages_of(r).len() - 1),
-            "request {i}: a breakpoint on the message that carries the map"
+            "request {i}: a breakpoint on the last message"
         );
     }
     assert_eq!(
@@ -246,11 +308,13 @@ async fn three_turns_send_one_prefix_that_only_grows() {
     );
     for (i, pair) in requests.windows(2).enumerate().skip(1) {
         let at = history_breakpoint(&pair[0]).expect("a breakpoint");
-        assert_eq!(
-            messages_of(&pair[0])[at],
-            messages_of(&pair[1])[at],
-            "request {i}"
-        );
+        if users(&pair[0]) == users(&pair[1]) {
+            assert_eq!(
+                messages_of(&pair[0])[at],
+                messages_of(&pair[1])[at],
+                "request {i}"
+            );
+        }
         let next = history_breakpoint(&pair[1]).unwrap();
         assert!(
             next >= at && next - at <= 10,
@@ -329,13 +393,7 @@ async fn three_turns_on_a_small_window_are_trimmed_to_fit() {
     let users: Vec<String> = last
         .iter()
         .filter(|m| m["role"] == "user")
-        .map(|m| {
-            text_of(m)
-                .split("\n\n## Repository map")
-                .next()
-                .unwrap()
-                .to_string()
-        })
+        .map(|m| without_map(&text_of(m)).to_string())
         .collect();
     assert_eq!(
         users,
@@ -459,6 +517,174 @@ async fn a_long_run_over_a_long_chat_keeps_its_cut_until_the_budget() {
     }
 }
 
+/// A project to fix parse_line in, and a run of `reads` reads of its files
+/// (a step each) before the fix, the fix, a read of the result and the
+/// final reply.
+async fn parse_project(reads: usize) -> (Harness, Vec<Reply>) {
+    let h = harness(&[
+        (
+            "src/lib.rs",
+            "mod parse;\nmod report;\npub use parse::parse_line;\n",
+        ),
+        ("src/parse.rs", PARSE),
+        (
+            "src/report.rs",
+            "use crate::parse_line;\npub fn build_report(s: &str) -> usize { parse_line(s).len() }\n",
+        ),
+    ])
+    .await;
+    let files = ["src/lib.rs", "src/parse.rs", "src/report.rs"];
+    let mut replies: Vec<Reply> = (0..reads)
+        .map(|i| Reply::Call {
+            id: Box::leak(format!("r{i}").into_boxed_str()),
+            name: "read",
+            args: json!({ "path": files[i % files.len()] }),
+        })
+        .collect();
+    replies.push(Reply::Call {
+        id: "w1",
+        name: "write",
+        args: json!({ "path": "src/parse.rs", "content": PARSE.replace("x.to_string()", "x.trim().to_string()") }),
+    });
+    replies.push(Reply::Call {
+        id: "done",
+        name: "read",
+        args: json!({ "path": "src/parse.rs" }),
+    });
+    replies.push(Reply::Text("Trimmed."));
+    (h, replies)
+}
+
+/// The IDE's reminder at the end of a request, if it has one.
+fn reminder(request: &Value) -> Option<String> {
+    let tail = tail_text(request);
+    let at = tail.find("[Reminder from the IDE")?;
+    Some(tail[at..].to_string())
+}
+
+#[tokio::test]
+async fn a_long_run_ends_each_request_with_its_latest_step_and_quotes_the_request_as_typed() {
+    let (h, replies) = parse_project(7).await;
+    let (url, seen) = model(replies).await;
+    run_turns(
+        &h,
+        &url,
+        "trimming",
+        100_000,
+        "m",
+        vec![turn(TYPED, Some(REFERENCED))],
+    )
+    .await;
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(
+        requests.len(),
+        10,
+        "seven reads, the fix, a read, the reply"
+    );
+
+    for (i, r) in requests.iter().enumerate() {
+        let messages = messages_of(r);
+        // The map goes with the request it was built for, before it as the
+        // frontend sent it, on every step of the run: the same as on the
+        // first, where that message ends the request with the user's words...
+        let request = text_of(&messages[1]);
+        assert!(
+            map_and_text(&request).is_some_and(|(_, text)| text == REFERENCED),
+            "request {i}: {request}"
+        );
+        assert_eq!(
+            messages[1],
+            messages_of(&requests[0])[1],
+            "request {i}: the request is sent the same way on every step"
+        );
+        // ...and no other message carries one. Every later request ends
+        // with the step the model works from: its latest result, and the
+        // IDE's reminder once the run is long.
+        assert!(
+            messages
+                .iter()
+                .enumerate()
+                .all(|(j, m)| j == 1 || !text_of(m).contains("## Repository map")),
+            "request {i}: a map away from the request"
+        );
+        if i > 0 {
+            let last = messages.last().unwrap();
+            assert_eq!(last["role"], "tool", "request {i}");
+            match reminder(r) {
+                Some(note) => assert!(note.ends_with("[end of reminder]"), "request {i}: {note}"),
+                None => assert!(i < 6, "request {i}: no reminder after six results"),
+            }
+        }
+    }
+
+    // The reminder restates what the user asked, as they typed it: not the
+    // editor context and the references' instructions the frontend put
+    // before it, which tell the model to go and read the referenced lines.
+    let reminders: Vec<String> = requests.iter().filter_map(reminder).collect();
+    assert_eq!(reminders.len(), 4, "requests 6 to 9");
+    for note in &reminders {
+        assert!(note.contains(&format!("> {TYPED}")), "{note}");
+        assert!(
+            !note.contains("Active editor context") && !note.contains("explicitly referenced"),
+            "{note}"
+        );
+    }
+
+    // Each request repeats the one before it, all of it but the last
+    // message when that one carried the reminder: the map is in the
+    // prefix providers cache, not in what changes.
+    for (i, pair) in requests.windows(2).enumerate() {
+        let n = messages_of(&pair[0]).len();
+        let changed = usize::from(reminder(&pair[0]).is_some());
+        assert_eq!(
+            shared_messages(&pair[0], &pair[1]),
+            n - changed,
+            "requests {i}-{}",
+            i + 1
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_short_follow_up_is_reminded_of_the_request_it_continues_as_typed() {
+    let (h, mut replies) = parse_project(6).await;
+    // Turn 1 is a question answered in words; turn 2 ("Go on") the run.
+    replies.insert(0, Reply::Text("The spaces come from split(',')."));
+    let (url, seen) = model(replies).await;
+    let go_on = "[Active editor context — file src/parse.rs (rust); cursor at line 2, col 5. \
+                 Call read if you need the actual code.]\n\nGo on";
+    run_turns(
+        &h,
+        &url,
+        "trimming",
+        100_000,
+        "m",
+        vec![turn(TYPED, Some(REFERENCED)), turn("Go on", Some(go_on))],
+    )
+    .await;
+    let requests = seen.lock().unwrap().clone();
+    let note = reminder(requests.last().unwrap()).expect("a reminder");
+    assert!(note.contains("The request (quoted):\n> Go on\n"), "{note}");
+    assert!(
+        note.contains(&format!(
+            "The earlier request it continues (quoted):\n> {TYPED}\n"
+        )),
+        "{note}"
+    );
+    assert!(!note.contains("Active editor context"), "{note}");
+
+    // Turn 2's map is on turn 2's request; turn 1's goes out as it was
+    // first sent, without the map it had in turn 1.
+    let messages = messages_of(requests.last().unwrap());
+    assert_eq!(text_of(&messages[1]), REFERENCED);
+    let request = messages.iter().rposition(|m| m["role"] == "user").unwrap();
+    assert!(
+        map_and_text(&text_of(&messages[request])).is_some_and(|(_, text)| text == go_on),
+        "{:#?}",
+        messages[request]
+    );
+}
+
 /*
  * CLM
  */
@@ -516,40 +742,69 @@ async fn three_clm_turns_keep_the_context_file_and_the_prompt_in_step() {
     .await;
     let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 7, "turns of 2, 3 and 2 requests");
+    let typed = [SENT, "Add a beta function", "Tidy your context"];
+    let turn_of = [0, 0, 1, 1, 1, 2, 2];
+    // The turn's request: the latest user message that starts with it.
+    let request_at = |i: usize| {
+        messages_of(&requests[i])
+            .iter()
+            .rposition(|m| {
+                m["role"] == "user" && without_map(&text_of(m)).starts_with(typed[turn_of[i]])
+            })
+            .unwrap()
+    };
 
     for (i, r) in requests.iter().enumerate() {
         // The CLM section is in the system prompt, the same on every request.
         assert!(system_prompt(r).contains("LIVE_CONTEXT.md"), "request {i}");
         assert_eq!(system_prompt(r), system_prompt(&requests[0]), "request {i}");
         assert_eq!(r["tools"], requests[0]["tools"], "request {i}");
-        // The notes (the card, the size readout), then the map, end the
-        // request; no message before the last has them.
+        // The notes (the card, the size readout) end the request; no
+        // message before the last has them.
         let (last, earlier) = messages_of(r).split_last().unwrap();
         let tail = text_of(last);
         let readout = tail.find("[context: ~").expect("the size readout");
-        let map = tail.find("## Repository map").expect("the map");
-        assert!(readout < map, "request {i}: the notes come before the map");
         assert!(
             earlier.iter().all(|m| {
                 let t = text_of(m);
-                !t.contains("[context: ~")
-                    && !t.contains("## Repository map")
-                    && !t.contains("[your task card")
+                !t.contains("[context: ~") && !t.contains("[your task card")
             }),
-            "request {i}: notes or the map before the last message"
+            "request {i}: notes before the last message"
         );
+        // The map goes on the turn's request, before its text (and before
+        // the notes, when that message is the last); no other has one.
+        let at = request_at(i);
+        assert!(
+            map_and_text(&text_of(&messages_of(r)[at])).is_some(),
+            "request {i}"
+        );
+        assert!(
+            messages_of(r)
+                .iter()
+                .enumerate()
+                .all(|(j, m)| j == at || !text_of(m).contains("## Repository map")),
+            "request {i}: a map away from the request"
+        );
+        if let Some(map) = tail.find("## Repository map") {
+            assert!(map < readout, "request {i}: the notes come after the map");
+        }
         // The card shows once written (after the first step of turn 2).
         assert_eq!(tail.contains(card), i >= 3, "request {i}");
         assert_eq!(tail.contains("not written yet"), i < 3, "request {i}");
     }
 
-    // Until the agent edits its file, each request repeats the one before it
-    // but for its last message.
+    // Until the agent edits its file, each request repeats the one before
+    // it but for its last message, within a turn; from one turn to the
+    // next, everything before the last turn's request, whose map moved on.
     for (i, pair) in requests[..6].windows(2).enumerate() {
-        let n = messages_of(&pair[0]).len();
+        let expected = if turn_of[i] == turn_of[i + 1] {
+            messages_of(&pair[0]).len() - 1
+        } else {
+            request_at(i)
+        };
         assert_eq!(
             shared_messages(&pair[0], &pair[1]),
-            n - 1,
+            expected,
             "requests {i}-{}",
             i + 1
         );
@@ -584,10 +839,10 @@ async fn three_clm_turns_keep_the_context_file_and_the_prompt_in_step() {
     let users: Vec<String> = earlier
         .iter()
         .filter(|m| m["role"] == "user")
-        .map(text_of)
+        .map(|m| without_map(&text_of(m)).to_string())
         .filter(|t| !t.starts_with("[tool]"))
         .collect();
-    assert_eq!(users, [SENT, "Add a beta function", "Tidy your context"]);
+    assert_eq!(users, typed);
 
     // The file is the context as sent, so the agent edits what it sees: the
     // read's output is the note (only the call that replaced it quotes it).
@@ -727,15 +982,18 @@ async fn a_continued_clm_reply_has_its_notes_on_the_request_to_continue_it() {
     // model's own words, to be continued.
     assert_eq!(messages[n - 2]["role"], "assistant");
     assert_eq!(messages[n - 2]["content"], "alpha_one is");
-    // The notes, then the map, follow the request to continue it.
+    // The notes follow the request to continue it.
     let tail = text_of(&messages[n - 1]);
     assert!(
         tail.starts_with("Your previous reply was interrupted."),
         "{tail}"
     );
-    let readout = tail.find("[context: ~").expect("the notes");
+    assert!(tail.contains("[context: ~"), "{tail}");
+    // The map stays on the user's request, as on the turn's first request.
+    assert!(!tail.contains("## Repository map"), "{tail}");
+    let request = text_of(&messages[n - 3]);
     assert!(
-        readout < tail.find("## Repository map").expect("the map"),
-        "{tail}"
+        map_and_text(&request).is_some_and(|(_, text)| text == "What is alpha_one?"),
+        "{request}"
     );
 }
