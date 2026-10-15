@@ -512,6 +512,53 @@ async fn session(shared: &Shared) -> Ended {
     Ended::Lost { served: true }
 }
 
+/// Says Hello to the daemon once, and returns its Welcome (H05): that it
+/// takes this computer's token, and what it is.
+pub async fn welcome(connector: &dyn Connector, identity: &Identity) -> Result<DaemonInfo, Fail> {
+    let lost = |why: String| Fail::new(FailCode::Unreachable, why);
+    let io = connector.connect().await.map_err(|e| lost(e.to_string()))?;
+    let uri: Uri = "ws://rovik-agentd/rpc".parse().expect("a URI");
+    let request = ClientRequestBuilder::new(uri)
+        .with_header("Authorization", format!("Bearer {}", identity.token.0));
+    let mut socket = match tokio_tungstenite::client_async(request, io).await {
+        Ok((socket, _)) => socket,
+        Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                "The daemon doesn't know this computer's token.",
+            ))
+        }
+        Err(e) => return Err(lost(e.to_string())),
+    };
+    let hello = Frame::Hello {
+        protocol: PROTOCOL,
+        client: identity.client.clone(),
+        device: identity.computer.clone(),
+        token: identity.token.clone(),
+    };
+    socket
+        .send(text(&hello))
+        .await
+        .map_err(|e| lost(e.to_string()))?;
+    let welcome = tokio::time::timeout(WELCOME_WAIT, next_frame(&mut socket)).await;
+    let _ = socket.close(None).await;
+    match welcome {
+        Ok(Some(Frame::Welcome {
+            protocol,
+            min_protocol,
+            daemon,
+            features,
+            ..
+        })) => Ok(DaemonInfo {
+            protocol,
+            min_protocol,
+            daemon,
+            features,
+        }),
+        _ => Err(lost("The daemon didn't answer Hello.".into())),
+    }
+}
+
 fn text(frame: &Frame) -> Message {
     Message::Text(serde_json::to_string(frame).expect("a frame").into())
 }

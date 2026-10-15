@@ -126,6 +126,9 @@ pub enum SshError {
     /// The connection dropped while logging in, or a channel or a
     /// command failed.
     Failed(String),
+    /// Rovik on the host isn't as installed: the check each connection
+    /// makes refused it (D5, H05).
+    Install(String),
 }
 
 impl fmt::Display for SshError {
@@ -144,7 +147,7 @@ impl fmt::Display for SshError {
             ),
             SshError::Denied(why) => write!(f, "The host didn't let you in: {why}"),
             SshError::Key(why) => write!(f, "The SSH key: {why}"),
-            SshError::Failed(why) => write!(f, "{why}"),
+            SshError::Failed(why) | SshError::Install(why) => write!(f, "{why}"),
         }
     }
 }
@@ -503,6 +506,9 @@ pub struct SshConnector {
     socket: tokio::sync::Mutex<Option<String>>,
     attach: String,
     session: tokio::sync::Mutex<Option<Arc<Ssh>>>,
+    /// The builds Rovik's binary on the host may be, by their SHA-256,
+    /// checked on each new connection.
+    known: Option<Vec<String>>,
 }
 
 impl SshConnector {
@@ -513,6 +519,7 @@ impl SshConnector {
             socket: tokio::sync::Mutex::new(None),
             attach: ATTACH.into(),
             session: tokio::sync::Mutex::new(None),
+            known: None,
         }
     }
 
@@ -525,6 +532,15 @@ impl SshConnector {
     /// `command` in place of `ATTACH`, where the host refuses streamlocal.
     pub fn with_attach(mut self, command: impl Into<String>) -> SshConnector {
         self.attach = command.into();
+        self
+    }
+
+    /// Checks Rovik's install on each new connection (D5, H05): the
+    /// binary must be one of the builds `known` names by their SHA-256,
+    /// and the user's unit must run it as installed. A connection that
+    /// fails is refused, saying why, and not tried again.
+    pub fn with_install_check(mut self, known: Vec<String>) -> SshConnector {
+        self.known = Some(known);
         self
     }
 
@@ -552,6 +568,13 @@ impl SshConnector {
             return Ok(Arc::clone(ssh));
         }
         let ssh = Arc::new(Ssh::connect(&self.target).await?);
+        if let Some(known) = &self.known {
+            let layout = crate::deploy::Layout::default();
+            let checked = crate::deploy::check_install(&ssh, known, &self.target.user, &layout);
+            checked
+                .await
+                .map_err(|e| SshError::Install(e.to_string()))?;
+        }
         *session = Some(Arc::clone(&ssh));
         Ok(ssh)
     }

@@ -5,7 +5,9 @@
 //! machine, the daemon's, and the server counts how many are open at once;
 //! one started with `refusing_streamlocal` refuses them, as a server set
 //! up so does. An exec channel runs its command with `sh -c` here, its
-//! stdin and stdout the channel's.
+//! stdin and stdout the channel's; one started `as_user` runs it with that
+//! home, and as that account when the test runs as root, and refuses
+//! streamlocal, whose connections would come from the test's account.
 
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::LineEnding;
@@ -25,6 +27,14 @@ use tokio::net::{TcpListener, UnixListener};
 pub const USER: &str = "me";
 pub const PASSWORD: &str = "open sesame";
 
+/// Whom an exec channel's commands run as.
+#[derive(Clone)]
+pub struct Account {
+    pub home: PathBuf,
+    /// The uid and gid to switch to; none to stay the test's own.
+    pub ids: Option<(u32, u32)>,
+}
+
 pub struct SshServer {
     pub port: u16,
     pub host_key: PrivateKey,
@@ -38,15 +48,20 @@ pub struct SshServer {
 
 impl SshServer {
     pub async fn start() -> SshServer {
-        SshServer::serving(false).await
+        SshServer::serving(false, None).await
     }
 
     /// A server that refuses streamlocal forwarding.
     pub async fn refusing_streamlocal() -> SshServer {
-        SshServer::serving(true).await
+        SshServer::serving(true, None).await
     }
 
-    async fn serving(refuse_streamlocal: bool) -> SshServer {
+    /// A server whose commands run as `account`.
+    pub async fn as_user(account: Account) -> SshServer {
+        SshServer::serving(true, Some(account)).await
+    }
+
+    async fn serving(refuse_streamlocal: bool, account: Option<Account>) -> SshServer {
         let host_key = new_key();
         let user_key = new_key();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -71,6 +86,7 @@ impl SshServer {
                     execs: Arc::clone(&counted),
                     refuse_streamlocal,
                     sessions: HashMap::new(),
+                    account: account.clone(),
                 };
                 let config = Arc::clone(&config);
                 tokio::spawn(async move {
@@ -132,6 +148,7 @@ struct ServerSide {
     refuse_streamlocal: bool,
     /// The session channels waiting for their command.
     sessions: HashMap<ChannelId, Channel<Msg>>,
+    account: Option<Account>,
 }
 
 impl server::Handler for ServerSide {
@@ -225,7 +242,8 @@ impl server::Handler for ServerSide {
         session.channel_success(id)?;
         self.execs.fetch_add(1, Ordering::SeqCst);
         let command = String::from_utf8_lossy(data).into_owned();
-        tokio::spawn(run(command, channel, session.handle()));
+        let account = self.account.clone();
+        tokio::spawn(run(command, channel, session.handle(), account));
         Ok(())
     }
 }
@@ -233,15 +251,26 @@ impl server::Handler for ServerSide {
 /// Runs `command` for an exec channel: what the client sends goes to its
 /// stdin; its stdout, then its exit status, go back through the session's
 /// handle, in that order.
-async fn run(command: String, mut channel: Channel<Msg>, handle: server::Handle) {
+async fn run(
+    command: String,
+    mut channel: Channel<Msg>,
+    handle: server::Handle,
+    account: Option<Account>,
+) {
     let id = channel.id();
-    let spawned = tokio::process::Command::new("sh")
-        .args(["-c", &command])
+    let mut sh = tokio::process::Command::new("sh");
+    sh.args(["-c", &command])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn();
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(account) = account {
+        sh.env("HOME", &account.home).env("SHELL", "/bin/sh");
+        if let Some((uid, gid)) = account.ids {
+            sh.uid(uid).gid(gid);
+        }
+    }
+    let spawned = sh.spawn();
     let Ok(mut child) = spawned else {
         let _ = handle.exit_status_request(id, 127).await;
         let _ = handle.close(id).await;
@@ -249,6 +278,22 @@ async fn run(command: String, mut channel: Channel<Msg>, handle: server::Handle)
     };
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
+    // What it says on stderr goes back as the channel's extended data.
+    let mut stderr = child.stderr.take().unwrap();
+    let errors = handle.clone();
+    let said = tokio::spawn(async move {
+        let mut buffer = vec![0; 8 * 1024];
+        while let Ok(n) = stderr.read(&mut buffer).await {
+            if n == 0
+                || errors
+                    .extended_data(id, 1, buffer[..n].to_vec())
+                    .await
+                    .is_err()
+            {
+                break;
+            }
+        }
+    });
     tokio::spawn(async move {
         while let Some(message) = channel.wait().await {
             match message {
@@ -269,6 +314,7 @@ async fn run(command: String, mut channel: Channel<Msg>, handle: server::Handle)
             break;
         }
     }
+    let _ = said.await;
     let status = child.wait().await.ok().and_then(|s| s.code()).unwrap_or(1);
     let _ = handle.exit_status_request(id, status as u32).await;
     let _ = handle.eof(id).await;

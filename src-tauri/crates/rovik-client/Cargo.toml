@@ -32,6 +32,8 @@ zeroize = "1.9"
 base64 = "0.23.1"
 # The tunnel to a host's daemon, and the commands that set it up (H02).
 russh = "0.63.3"
+# The deployed build's hash, checked on the server (H05).
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"

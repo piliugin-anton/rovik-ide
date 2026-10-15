@@ -2405,3 +2405,49 @@ Tasks add notes here when reality differs from the plan.
     OOM score of 0 before `exec`, with async-signal-safe calls only.
   - `docs/cloud-hosts.md` is the page for administrators. It says that
     Chrome's DevTools port stays open to other users until H08.
+- **H05, deploy, upgrade and removal, after H07.**
+  - `rovik_client::deploy::deploy` probes the server and refuses a root
+    login or a system the daemon doesn't run on. It uploads the build to
+    `~/.rovik-agentd-upload` and checks its SHA-256 there. The build runs
+    the new `rovik-agentd token add COMPUTER`, which reads the token's
+    hash on stdin and writes it into `config.toml` (rewritten through the
+    toml crate, so comments in it go); the token goes back to the caller
+    for the keychain. The build is `ROVIK_AGENTD_BINARY`, B03's override:
+    without B02 there are no release downloads or signature checks yet.
+  - The probe's sudo answer picks the install: `sudo -n`, or `sudo -S`
+    with the password on stdin when sudo asks for one (`SudoPassword`
+    tells the caller to ask; the password is never kept), or
+    `NeedsRoot` with the command for someone with root, the build left in
+    place for it. On a server with Rovik the deploy runs `user start`,
+    then `user restart`, since the daemon reads tokens only at start-up.
+    Without systemd it starts the daemon with `setsid`, after stopping
+    one that runs and waiting up to 30 s for it to exit, since it holds
+    its lock. Then the daemon must answer `/health`, and `Welcome` with
+    the new token through `rovik_client::welcome`, a one-off handshake.
+  - `check_install`, and `SshConnector::with_install_check(known)` on
+    each new connection: the installed binary's SHA-256 must be among the
+    known builds, and `systemctl show -p ExecStart` must list exactly
+    `/opt/rovik/bin/rovik-agentd serve`. A failure refuses the
+    connection with the reason (`SshError::Install`, not tried again),
+    and the connection test reports it under Install.
+    `DeployState::Deployed` now keeps the build's SHA-256 for this.
+  - `upgrade` runs `admin upgrade` for an administrator, and returns
+    `AskAdmins` with their names to anyone else. `removal` lists the two
+    folders and their sizes for the confirmation. `remove` stops the
+    daemon (`user stop`, or the stop without systemd) and deletes those
+    two folders and nothing else.
+  - Not done here: the hosts page and its Tauri commands for deploy,
+    upgrade and removal (U01), so no connector is built from
+    `cloud-hosts.json` yet; offering to move chats back before a removal
+    (U01, U02); the drain before an upgrade (R02); signed releases (B02).
+  - The plan's container tests can't run here: there's no container
+    runtime and no systemd host. An e2e test runs the whole deploy
+    through the in-process SSH server instead. Its commands run as
+    `nobody` when the tests run as root. A stand-in sudo runs the
+    installer under `--root` and starts the daemon as systemd would, and
+    the real daemon then answers `Welcome` with the new token. The test
+    scans every file for the token and the sudo password, checks that the
+    install check passes and reports another build, and removes. A root
+    login is refused before anything is uploaded. A second user's
+    deploy, a deploy without sudo, and a changed binary on a real server
+    stay manual checks on a systemd host.

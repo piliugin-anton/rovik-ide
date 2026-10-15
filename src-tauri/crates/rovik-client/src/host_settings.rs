@@ -76,8 +76,13 @@ pub enum AuthKind {
 pub enum DeployState {
     #[default]
     NotDeployed,
-    /// Rovik runs there for this user, at this version.
-    Deployed { version: String },
+    /// Rovik runs there for this user, at this version; the build's
+    /// SHA-256, which the check on each connection knows (H05).
+    Deployed {
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    },
 }
 
 fn ssh_port() -> u16 {
@@ -182,6 +187,7 @@ mod tests {
             approval_policy: ApprovalPolicy::AiReviewerThenMe,
             deploy: DeployState::Deployed {
                 version: "0.1.0".into(),
+                sha256: Some("ab".repeat(32)),
             },
         }
     }

@@ -25,10 +25,12 @@
 //!   system_ssh.rs the user's own ssh, forwarding a socket to the daemon
 //!   connection_test.rs  the hosts page's Test connection, a step at a time,
 //!                 and the probe that says what a server offers
+//!   deploy.rs     the daemon put on a host, checked, upgraded and removed
 
 mod client;
 pub mod connection_test;
 mod connector;
+pub mod deploy;
 pub mod host_settings;
 mod hosts;
 mod http;
@@ -42,7 +44,7 @@ pub mod system_ssh;
 #[cfg(test)]
 mod testing;
 
-pub use client::{Client, DaemonInfo, HostState, Identity, Incoming, Sink, CALL_TIMEOUT};
+pub use client::{welcome, Client, DaemonInfo, HostState, Identity, Incoming, Sink, CALL_TIMEOUT};
 #[cfg(unix)]
 pub use connector::UnixConnector;
 pub use connector::{Connecting, Connector, Io, Stream};

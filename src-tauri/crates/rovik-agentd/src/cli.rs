@@ -2,6 +2,8 @@
 //! what it does, 1 when it couldn't (the reason goes to stderr), 2 for bad
 //! arguments.
 
+use crate::config::Config;
+use crate::home::Home;
 use crate::installer::{self, System};
 use crate::{attach, doctor, serve};
 use rovik_protocol::PROTOCOL;
@@ -24,6 +26,10 @@ usage: rovik-agentd <command>
       Check this account and server for the daemon.
   version
       Print the daemon's version and protocol.
+  token add COMPUTER [--data DIR]
+      Let COMPUTER connect: the SHA-256 of its token, in hex, comes on
+      stdin and goes in config.toml. A running daemon reads it when it
+      next starts.
 
   install --admin USER [--binary FILE] [--root DIR]
       As root: install Rovik for everyone on this server, with USER its
@@ -48,6 +54,10 @@ pub enum Command {
     Doctor(Options),
     Version,
     Help,
+    AddToken {
+        computer: String,
+        data: Option<PathBuf>,
+    },
     Install {
         admin: String,
         binary: Option<PathBuf>,
@@ -78,6 +88,9 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
     if matches!(command.as_str(), "install" | "user" | "admin") {
         return parse_system(command, rest);
     }
+    if command == "token" {
+        return parse_token(rest);
+    }
     let mut options = Options::default();
     let mut stdio = false;
     let mut it = rest.iter();
@@ -107,6 +120,33 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         "version" | "--version" => Ok(Command::Version),
         "help" | "--help" | "-h" => Ok(Command::Help),
         other => Err(format!("unknown command {other}")),
+    }
+}
+
+/// `token add COMPUTER [--data DIR]`.
+fn parse_token(rest: &[String]) -> Result<Command, String> {
+    let mut data = None;
+    let mut words = Vec::new();
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--data" => {
+                let dir = it.next().ok_or("--data needs a value")?;
+                data = Some(PathBuf::from(dir));
+            }
+            "--help" | "-h" => return Ok(Command::Help),
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown argument {flag} for token"))
+            }
+            word => words.push(word.to_string()),
+        }
+    }
+    match words.as_slice() {
+        [add, computer] if add == "add" => Ok(Command::AddToken {
+            computer: computer.clone(),
+            data,
+        }),
+        _ => Err("token takes: add COMPUTER".into()),
     }
 }
 
@@ -164,6 +204,7 @@ pub fn run(argv: &[String]) -> i32 {
             println!("{USAGE}");
             Ok(())
         }
+        Command::AddToken { computer, data } => add_token(&computer, data),
         Command::Install {
             admin,
             binary,
@@ -179,6 +220,20 @@ pub fn run(argv: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// `token add`: the hash from stdin into config.toml, the folders made
+/// as the daemon makes them.
+fn add_token(computer: &str, data: Option<PathBuf>) -> Result<(), String> {
+    let home = Home::locate(data)?;
+    home.prepare()?;
+    let mut hash = String::new();
+    std::io::stdin()
+        .read_line(&mut hash)
+        .map_err(|e| e.to_string())?;
+    Config::add_token(&home.config_file(), computer, hash.trim())?;
+    println!("{computer} can connect once the daemon next starts.");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -238,6 +293,8 @@ mod tests {
         assert!(parsed(&["install"]).unwrap_err().contains("--admin"));
         assert!(parsed(&["install", "--admin", "ann", "now"]).is_err());
         assert!(parsed(&["user", "start", "--as", "bo"]).is_err());
+        assert!(parsed(&["token", "add"]).is_err());
+        assert!(parsed(&["token", "remove", "laptop"]).is_err());
     }
 
     #[test]
@@ -248,6 +305,13 @@ mod tests {
                 admin: "ann".into(),
                 binary: None,
                 root: Some("/r".into()),
+            })
+        );
+        assert_eq!(
+            parsed(&["token", "add", "laptop", "--data", "/d"]),
+            Ok(Command::AddToken {
+                computer: "laptop".into(),
+                data: Some("/d".into()),
             })
         );
         assert_eq!(

@@ -36,6 +36,44 @@ impl Config {
         }
     }
 
+    /// Adds `computer`'s token hash to the file at `path`, or replaces the
+    /// one it had (H05). A deploy runs this with the hash on stdin, so the
+    /// token itself reaches neither the server's disk nor a command line.
+    /// The file is rewritten for its user alone, keeping its settings;
+    /// comments in it don't survive.
+    pub fn add_token(path: &Path, computer: &str, hash: &str) -> Result<(), String> {
+        let id_ok = computer.len() <= 64
+            && !computer.is_empty()
+            && computer
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !id_ok {
+            return Err(format!("{computer:?} isn't a computer's id"));
+        }
+        let hash_ok = hash.len() == 64 && hash.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+        if !hash_ok {
+            return Err("a token's hash is 64 hex digits".into());
+        }
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        let mut table: toml::Table = text
+            .parse()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let tokens = table
+            .entry("tokens")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        let Some(tokens) = tokens.as_table_mut() else {
+            return Err(format!("{}: tokens isn't a table", path.display()));
+        };
+        tokens.insert(computer.into(), toml::Value::String(hash.into()));
+        let text = toml::to_string(&table).map_err(|e| e.to_string())?;
+        rovik_core::atomic_file::write_atomic_private(path, text.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
     pub fn level(&self) -> Result<log::LevelFilter, String> {
         match self.log_level.as_deref().unwrap_or("info") {
             "error" => Ok(log::LevelFilter::Error),
@@ -61,6 +99,28 @@ mod tests {
         assert_eq!(config.level(), Ok(log::LevelFilter::Debug));
         assert_eq!(config.tokens["laptop"], "00ff");
         assert_eq!(config.tokens.len(), 2);
+    }
+
+    #[test]
+    fn a_token_is_added_keeping_the_rest() {
+        let dir = rovik_core::testing::temp_dir();
+        let path = dir.0.join("config.toml");
+        let (one, two) = ("a".repeat(64), "b".repeat(64));
+        std::fs::write(&path, "log_level = \"debug\"\nmax_slots = 2\n").unwrap();
+        Config::add_token(&path, "laptop", &one).unwrap();
+        Config::add_token(&path, "desk", &two).unwrap();
+        Config::add_token(&path, "laptop", &two).unwrap();
+        let config = Config::read(&path).unwrap();
+        assert_eq!(config.tokens["laptop"], two, "replaced");
+        assert_eq!(config.tokens["desk"], two);
+        assert_eq!(config.level(), Ok(log::LevelFilter::Debug), "kept");
+        assert_eq!(config.max_slots, Some(2));
+        assert_eq!(config.tokens.len(), 2);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(Config::add_token(&path, "a b", &one).is_err());
+        assert!(Config::add_token(&path, "laptop", "not a hash").is_err());
     }
 
     #[test]

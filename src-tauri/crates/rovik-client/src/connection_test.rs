@@ -279,6 +279,11 @@ fn refused(target: &SshTarget, e: SshError) -> Vec<Step> {
             vec![step]
         }
         e @ SshError::HostKeyChanged { .. } => vec![key(Outcome::Failed, e.to_string())],
+        SshError::Install(why) => vec![
+            key_matches(target),
+            logged_in(target),
+            Step::new(Check::Install, Outcome::Failed, why),
+        ],
         e => vec![
             key_matches(target),
             Step::new(Check::LogIn, Outcome::Failed, e.to_string()),
@@ -289,22 +294,27 @@ fn refused(target: &SshTarget, e: SshError) -> Vec<Step> {
 /// Runs the probe, and reads what it says.
 async fn run_probe(ssh: &Ssh, urls: &[String]) -> Result<Probe, Step> {
     let failed = |why: String| Step::new(Check::System, Outcome::Failed, why);
+    probe_server(ssh, urls).await.map_err(failed)
+}
+
+/// What the server offers, as the probe says (H04, and the deploy).
+pub(crate) async fn probe_server(ssh: &Ssh, urls: &[String]) -> Result<Probe, String> {
     // Chrome may take 30 s to start, and each address 10 s.
     let wait = Duration::from_secs(60 + 15 * urls.len() as u64);
     let command = probe::command(urls);
     let run = ssh.exec_with_input(&command, PROBE.as_bytes());
     let output = match tokio::time::timeout(wait, run).await {
         Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(failed(format!("The probe couldn't run on the server: {e}"))),
-        Err(_) => return Err(failed("The probe took too long on the server.".into())),
+        Ok(Err(e)) => return Err(format!("The probe couldn't run on the server: {e}")),
+        Err(_) => return Err("The probe took too long on the server.".into()),
     };
     let probe = Probe::parse(&String::from_utf8_lossy(&output.stdout));
     if probe.os.is_empty() {
         let said = String::from_utf8_lossy(&output.stderr);
-        return Err(failed(format!(
+        return Err(format!(
             "The server didn't run the probe, a POSIX shell script: {}",
             said.trim()
-        )));
+        ));
     }
     Ok(probe)
 }
