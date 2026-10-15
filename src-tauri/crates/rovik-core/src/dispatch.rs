@@ -193,6 +193,7 @@ mod tests {
             local_date: None,
             config: None,
             isolate: Some(false),
+            project_settings: None,
         }
     }
 

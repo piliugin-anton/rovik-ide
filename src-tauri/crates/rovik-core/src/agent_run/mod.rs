@@ -68,6 +68,7 @@ pub use rovik_protocol::agent::{
     AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
     RunningSubagent, StartKind, StartRequest, UserMessage,
 };
+pub use run::last_user_wire_content;
 
 /// Stop: set once, seen by the run between steps and by its current request.
 pub struct StopSignal {
@@ -587,6 +588,51 @@ pub fn agent_configure(core: &Core, config: AgentConfig) {
     core.agents.set_config(config);
 }
 
+/// A chat works in its own project only: its history, plan and changes are
+/// about that one. Its run's folder must be one of that project's.
+pub async fn check_project(
+    db: &crate::chat_db::DbState,
+    dialog_id: &str,
+    root: Option<&str>,
+) -> Result<(), String> {
+    let Some(root) = root.filter(|r| !r.trim().is_empty()).map(str::to_string) else {
+        return Ok(());
+    };
+    let id = dialog_id.to_string();
+    let ok = db
+        .read(move |c| {
+            let project = store::dialog_project(c, &id)?;
+            crate::chat_db::projects::chat_may_use(
+                c,
+                project.as_deref(),
+                std::path::Path::new(&root),
+            )
+        })
+        .await?;
+    if ok {
+        Ok(())
+    } else {
+        Err("This chat belongs to another project. Open that project to continue it.".into())
+    }
+}
+
+/// A sent message as the chat stores it.
+pub fn stored_message(message: &UserMessage) -> NewMessage {
+    NewMessage {
+        id: message.id.clone(),
+        role: "user".into(),
+        content: message.content.clone(),
+        tool_calls: None,
+        tool_call_id: None,
+        meta: message.meta.clone(),
+        error: None,
+        failed: false,
+        attachments: message.attachments.clone(),
+        created_at: store::now_ms(),
+        finalized: true,
+    }
+}
+
 /// Starts a run in the chat. Returns its id, or None when there was nothing
 /// to do (a Resume with nothing left to run).
 pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
@@ -595,26 +641,7 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         state.set_config(config);
     }
     let dialog_id = request.dialog_id.clone();
-    // A chat works in its own project only: its history, plan and changes
-    // are about that one.
-    if let Some(root) = request.root.clone().filter(|r| !r.trim().is_empty()) {
-        let id = dialog_id.clone();
-        let ok = db
-            .read(move |c| {
-                let project = store::dialog_project(c, &id)?;
-                crate::chat_db::projects::chat_may_use(
-                    c,
-                    project.as_deref(),
-                    std::path::Path::new(&root),
-                )
-            })
-            .await?;
-        if !ok {
-            return Err(
-                "This chat belongs to another project. Open that project to continue it.".into(),
-            );
-        }
-    }
+    check_project(db, &dialog_id, request.root.as_deref()).await?;
     // A message's files, once each, and only ones that are stored.
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
@@ -648,19 +675,7 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
     // A new message is stored before anything else: the run reads the
     // chat's history from the database.
     if let StartKind::Send { message } = &request.start {
-        let new = NewMessage {
-            id: message.id.clone(),
-            role: "user".into(),
-            content: message.content.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-            meta: message.meta.clone(),
-            error: None,
-            failed: false,
-            attachments: message.attachments.clone(),
-            created_at: store::now_ms(),
-            finalized: true,
-        };
+        let new = stored_message(message);
         let id = dialog_id.clone();
         let stored = vec![new.clone()];
         match db

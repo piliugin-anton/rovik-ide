@@ -1,7 +1,9 @@
 //! Chat data: chats, their messages and projects (chat_db/api.rs), and the
-//! files attached in the chat input.
+//! files attached in the chat input. A chat on a host is read from the
+//! mirror here, and written to on the host (6.1).
 
-use super::call;
+use super::{answer, call};
+use rovik_client::Remote;
 use rovik_core::chat_db::search::SearchHit;
 use rovik_core::chat_db::store::{
     ChatModel, Cursor, DialogPage, MessagePage, MessagePatch, NewDialog, NewMessage,
@@ -9,6 +11,7 @@ use rovik_core::chat_db::store::{
 use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
 use rovik_protocol::Request;
+use std::sync::Arc;
 use tauri::ipc::InvokeBody;
 use tauri::State;
 
@@ -43,14 +46,17 @@ pub async fn chat_answer_copy(
     api::chat_answer_copy(&core.db, root, original_id, share).await
 }
 
-/// "Looks like a moved project": use its chats here.
+/// "Looks like a moved project": use its chats here, which merges this
+/// folder's project into that one.
 #[tauri::command]
 pub async fn chat_answer_moved(
     core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     root: String,
     current_id: String,
     target_id: String,
 ) -> Result<projects::ProjectInfo, String> {
+    remote.keep_project(&current_id, "merging it").await?;
     api::chat_answer_moved(&core.db, root, current_id, target_id).await
 }
 
@@ -77,16 +83,25 @@ pub async fn chat_list_projects(
 #[tauri::command]
 pub async fn chat_relink_project(
     core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     project_id: String,
     root: String,
     merge: bool,
 ) -> Result<projects::Relinked, String> {
+    if merge {
+        remote.keep_project(&project_id, "merging it").await?;
+    }
     api::chat_relink_project(&core.db, project_id, root, merge).await
 }
 
 /// A project and all its chats.
 #[tauri::command]
-pub async fn chat_delete_project(core: State<'_, Core>, project_id: String) -> Result<(), String> {
+pub async fn chat_delete_project(
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    project_id: String,
+) -> Result<(), String> {
+    remote.keep_project(&project_id, "deleting it").await?;
     api::chat_delete_project(&core, project_id).await
 }
 
@@ -134,20 +149,28 @@ pub async fn chat_append_messages(
 
 #[tauri::command]
 pub async fn chat_update_message(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     message_id: String,
     patch: MessagePatch,
 ) -> Result<(), String> {
-    call(&core, Request::ChatUpdateMessage { message_id, patch }).await
+    let request = Request::ChatUpdateMessage {
+        message_id: message_id.clone(),
+        patch,
+    };
+    answer(remote.route_message(&message_id, request).await)
 }
 
 #[tauri::command]
 pub async fn chat_rename_dialog(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     dialog_id: String,
     title: String,
 ) -> Result<(), String> {
-    call(&core, Request::ChatRename { dialog_id, title }).await
+    let request = Request::ChatRename {
+        dialog_id: dialog_id.clone(),
+        title,
+    };
+    answer(remote.route(&dialog_id, request).await)
 }
 
 #[tauri::command]
@@ -223,11 +246,15 @@ pub async fn chat_get_composer_draft(
 /// Saves the model and effort a chat uses, so reopening it continues with them.
 #[tauri::command]
 pub async fn chat_set_model(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     dialog_id: String,
     model: ChatModel,
 ) -> Result<(), String> {
-    call(&core, Request::ChatSetModel { dialog_id, model }).await
+    let request = Request::ChatSetModel {
+        dialog_id: dialog_id.clone(),
+        model,
+    };
+    answer(remote.route(&dialog_id, request).await)
 }
 
 /// The chat's saved model and effort, if any.

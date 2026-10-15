@@ -4,8 +4,7 @@
 //! gets them from here. A key goes only with the base URL it came with, so
 //! a model pointed at another server never gets this one's key.
 
-use rovik_protocol::agent::{AgentConfig, ModelProfile};
-use rovik_protocol::subagents::ModelChoice;
+use rovik_protocol::agent::ModelProfile;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -76,41 +75,4 @@ impl Keys {
 /// A model's provider: the part of its id before `::`.
 fn provider(model: &ModelProfile) -> &str {
     model.id.split("::").next().unwrap_or(&model.id)
-}
-
-/// The models a configuration names: the AI reviewer and its fallbacks,
-/// and each subagent kind's.
-pub fn models(config: &AgentConfig) -> impl Iterator<Item = &ModelProfile> {
-    let kinds = config.subagents.kinds.values().flat_map(|k| &k.models);
-    config
-        .approval_profiles
-        .iter()
-        .chain(kinds.filter_map(|choice| match choice {
-            ModelChoice::Profile(model) => Some(model),
-            ModelChoice::Chat { .. } => None,
-        }))
-}
-
-pub fn models_mut(config: &mut AgentConfig) -> impl Iterator<Item = &mut ModelProfile> {
-    let kinds = config
-        .subagents
-        .kinds
-        .values_mut()
-        .flat_map(|k| &mut k.models);
-    config
-        .approval_profiles
-        .iter_mut()
-        .chain(kinds.filter_map(|choice| match choice {
-            ModelChoice::Profile(model) => Some(model),
-            ModelChoice::Chat { .. } => None,
-        }))
-}
-
-/// The configuration as state.json keeps it: no model with its key.
-pub fn without_keys(config: &AgentConfig) -> AgentConfig {
-    let mut config = config.clone();
-    for model in models_mut(&mut config) {
-        model.api_key.clear();
-    }
-    config
 }

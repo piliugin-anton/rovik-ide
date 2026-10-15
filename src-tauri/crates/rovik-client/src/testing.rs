@@ -1,8 +1,13 @@
-//! What the crate's tests share.
+//! What the crate's tests share: no daemon at all, and a daemon of the
+//! tests' own, which answers every call and keeps the requests.
 
 use crate::client::Identity;
-use crate::connector::{Connecting, Connector};
-use rovik_protocol::Secret;
+use crate::connector::{Connecting, Connector, Stream};
+use futures_util::{SinkExt, StreamExt};
+use rovik_protocol::agent::AgentStatus;
+use rovik_protocol::{Frame, Request, Response, Secret, PROTOCOL};
+use std::sync::{Arc, Mutex};
+use tokio_tungstenite::tungstenite::Message;
 
 /// No daemon there.
 pub struct Nowhere;
@@ -19,5 +24,66 @@ pub fn identity(host: &str) -> Identity {
         computer: "laptop".into(),
         token: Secret("token".into()),
         client: "rovik-client tests".into(),
+    }
+}
+
+/// A daemon on the other end of each connection: it welcomes, subscribes,
+/// and answers each call as a daemon would when all goes well, keeping
+/// the requests in order.
+#[derive(Clone, Default)]
+pub struct Fake {
+    pub requests: Arc<Mutex<Vec<Request>>>,
+}
+
+impl Connector for Fake {
+    fn connect(&self) -> Connecting<'_> {
+        let requests = self.requests.clone();
+        Box::pin(async move {
+            let (client, server) = tokio::io::duplex(1 << 16);
+            tokio::spawn(serve(server, requests));
+            Ok(Box::new(client) as Stream)
+        })
+    }
+}
+
+async fn serve(io: tokio::io::DuplexStream, requests: Arc<Mutex<Vec<Request>>>) {
+    let Ok(mut socket) = tokio_tungstenite::accept_async(io).await else {
+        return;
+    };
+    let send = |frame: &Frame| Message::Text(serde_json::to_string(frame).unwrap().into());
+    while let Some(Ok(Message::Text(text))) = socket.next().await {
+        let answer = match serde_json::from_str::<Frame>(&text) {
+            Ok(Frame::Hello { .. }) => Frame::Welcome {
+                protocol: PROTOCOL,
+                min_protocol: PROTOCOL,
+                daemon: "fake".into(),
+                boot: "boot".into(),
+                features: Vec::new(),
+            },
+            Ok(Frame::Subscribe { .. }) => Frame::Subscribed {
+                replayed: 0,
+                complete: true,
+            },
+            Ok(Frame::Call { id, req }) => {
+                let res = Ok(answer(&req));
+                requests.lock().unwrap().push(req);
+                Frame::Reply { id, res }
+            }
+            _ => continue,
+        };
+        if socket.send(send(&answer)).await.is_err() {
+            return;
+        }
+    }
+}
+
+fn answer(request: &Request) -> Response {
+    match request {
+        Request::AgentStart(_) => Response::RunId(Some("run-1".into())),
+        Request::AgentStatus => Response::AgentStatus(AgentStatus::default()),
+        Request::AgentStop { .. }
+        | Request::AgentResolveApproval { .. }
+        | Request::AgentAnswerQuestions { .. } => Response::Bool(true),
+        _ => Response::Done,
     }
 }

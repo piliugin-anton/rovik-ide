@@ -525,6 +525,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             config
         }),
         isolate: Some(false),
+        project_settings: None,
     };
     #[cfg(test)]
     {

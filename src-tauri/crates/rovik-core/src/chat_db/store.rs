@@ -264,6 +264,17 @@ pub fn dialog_project(conn: &Connection, id: &str) -> DbResult<Option<String>> {
     .map_err(err)
 }
 
+/// The chat a message is in; None for no such message.
+pub fn message_dialog(conn: &Connection, message_id: &str) -> DbResult<Option<String>> {
+    conn.query_row(
+        "SELECT dialog_id FROM messages WHERE id = ?1",
+        params![message_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(err)
+}
+
 pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
     tx.execute(
@@ -597,6 +608,43 @@ fn to_json_opt<T: Serialize>(value: &Option<T>) -> Option<String> {
 
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Appends those of the messages the chat doesn't have yet, in order: a
+/// mirror's rows, which may have come another way first (6.3). Returns
+/// each message's `seq`, whether it was appended now or before.
+pub fn append_missing(
+    conn: &mut Connection,
+    dialog_id: &str,
+    messages: &[NewMessage],
+) -> DbResult<Vec<i64>> {
+    let known = messages
+        .iter()
+        .map(|m| {
+            conn.query_row(
+                "SELECT seq FROM messages WHERE id = ?1",
+                params![m.id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+        })
+        .collect::<rusqlite::Result<Vec<Option<i64>>>>()
+        .map_err(err)?;
+    let missing: Vec<NewMessage> = messages
+        .iter()
+        .zip(&known)
+        .filter(|(_, seq)| seq.is_none())
+        .map(|(m, _)| m.clone())
+        .collect();
+    let mut appended = if missing.is_empty() {
+        Vec::new().into_iter()
+    } else {
+        append_messages(conn, dialog_id, &missing)?.into_iter()
+    };
+    Ok(known
+        .into_iter()
+        .map(|seq| seq.or_else(|| appended.next()).unwrap_or_default())
+        .collect())
 }
 
 /// Appends messages in order; returns the `seq` assigned to each.

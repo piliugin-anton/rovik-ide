@@ -2,17 +2,20 @@
 //! Tauri, so it's tested against the real daemon. A `Client` keeps one
 //! host's connection: calls and events on the WebSocket, `POST /call` for
 //! what is too big for a frame, and a new connection whenever the link
-//! drops. `Hosts` keeps each host's client.
+//! drops. `Hosts` keeps each host's client, and `Remote` the app's remote
+//! chats.
 //!
 //!   connector.rs  how a connection reaches the daemon: a stream each time
 //!   client.rs     one host's connection, its calls and its events
 //!   http.rs       `POST /call`
 //!   hosts.rs      each host's client and state
+//!   remote.rs     the app's remote chats: routing, starts and events (6.1)
 
 mod client;
 mod connector;
 mod hosts;
 mod http;
+mod remote;
 #[cfg(test)]
 mod testing;
 
@@ -21,3 +24,4 @@ pub use client::{Client, DaemonInfo, HostState, Identity, Incoming, Sink, CALL_T
 pub use connector::UnixConnector;
 pub use connector::{Connecting, Connector, Io, Stream};
 pub use hosts::Hosts;
+pub use remote::{ApprovalPolicy, Remote};

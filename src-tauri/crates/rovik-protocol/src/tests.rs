@@ -141,6 +141,7 @@ fn start() -> StartRequest {
         local_date: Some("2026-10-15".into()),
         config: Some(config()),
         isolate: Some(false),
+        project_settings: Some(json!({ "checks": [{ "kind": "test", "command": "npm test" }] })),
     }
 }
 
@@ -160,6 +161,7 @@ fn approval() -> ApprovalRequest {
         }),
         parent_dialog_id: Some("lead".into()),
         parent_call_id: Some("t1".into()),
+        remote: true,
     }
 }
 
@@ -715,4 +717,43 @@ fn an_event_names_its_chat() {
         };
         assert_eq!(event.dialog_id(), expected, "{json}");
     }
+}
+
+/// Fields added after a type first shipped are optional: a peer that
+/// doesn't send them is read as before, and they're left out when unset.
+#[test]
+fn later_fields_are_optional() {
+    let mut start = serde_json::to_value(start()).unwrap();
+    start.as_object_mut().unwrap().remove("projectSettings");
+    let start: StartRequest = serde_json::from_value(start).unwrap();
+    assert_eq!(start.project_settings, None);
+    assert!(serde_json::to_value(&start)
+        .unwrap()
+        .get("projectSettings")
+        .is_none());
+
+    let mut approval = serde_json::to_value(approval()).unwrap();
+    approval.as_object_mut().unwrap().remove("remote");
+    let approval: ApprovalRequest = serde_json::from_value(approval).unwrap();
+    assert!(!approval.remote);
+    assert!(serde_json::to_value(&approval)
+        .unwrap()
+        .get("remote")
+        .is_none());
+}
+
+/// D11: the models a configuration names, each subagent kind's included,
+/// and the same configuration without their keys.
+#[test]
+fn a_configuration_without_its_keys() {
+    let mut config = config();
+    for model in config.models_mut() {
+        model.api_key = format!("sk-{}", model.id);
+    }
+    let named: Vec<&str> = config.models().map(|m| m.id.as_str()).collect();
+    assert!(named.len() >= 2, "{named:?}");
+    let keyless = config.without_keys();
+    assert!(keyless.models().all(|m| m.api_key.is_empty()));
+    assert_eq!(keyless.models().count(), named.len());
+    assert!(config.models().all(|m| !m.api_key.is_empty()), "untouched");
 }

@@ -1,4 +1,5 @@
 use crate::{filesystem::WatcherState, terminal::TerminalState};
+use rovik_client::Remote;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
 use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
 use std::{collections::HashMap, sync::Arc, sync::Mutex};
@@ -12,6 +13,7 @@ mod git_sync;
 mod lsp;
 mod open_url;
 mod project_files;
+mod remote_chats;
 mod terminal;
 mod typings;
 
@@ -43,7 +45,15 @@ pub fn run() {
         .setup(|app| {
             let paths = Paths::new(app.path().app_data_dir()?, app.path().app_config_dir()?);
             let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
+            // Chats on hosts (6.1): their requests go to the host, and its
+            // events come back through the core's sink.
+            let remote = Remote::new(core.clone());
+            {
+                let _runtime = rt::handle().enter();
+                remote_chats::from_env(&remote);
+            }
             app.manage(core);
+            app.manage(remote);
             // The main window, as tauri.conf.json describes it (`create`
             // is off there): built here to let its page read the clipboard,
             // which a config can't. Pasting an image into the chat input

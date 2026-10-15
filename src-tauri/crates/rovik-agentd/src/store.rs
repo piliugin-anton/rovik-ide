@@ -5,7 +5,7 @@
 //! their computer, its runs their computer's configuration (D16), and an
 //! interrupted run its way back (5.4).
 
-use crate::keys::{self, Keys};
+use crate::keys::Keys;
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
 };
@@ -112,7 +112,7 @@ impl Store {
             .iter()
             .map(|(computer, config)| {
                 let mut config = config.clone();
-                keys.give(keys::models_mut(&mut config));
+                keys.give(config.models_mut());
                 (computer.clone(), config)
             })
             .collect();
@@ -154,7 +154,7 @@ impl Store {
         }
         let mut keys_changed = inner.keys.take([&start.profile]);
         if let Some(config) = &start.config {
-            keys_changed |= inner.keys.take(keys::models(config));
+            keys_changed |= inner.keys.take(config.models());
             inner.set_config(computer, config.clone());
         }
         let mut chat = earlier.unwrap_or_else(|| ChatState {
@@ -173,7 +173,7 @@ impl Store {
     /// it without keys, which come from keys.json.
     pub fn configure(&self, computer: &str, config: AgentConfig) -> Result<(), String> {
         let mut inner = self.lock();
-        if inner.keys.take(keys::models(&config)) {
+        if inner.keys.take(config.models()) {
             inner.keys.write(&self.keys_file)?;
         }
         inner.set_config(computer, config);
@@ -257,6 +257,8 @@ impl Store {
             local_date: settings.local_date,
             config: None,
             isolate: None,
+            // Kept here since the start that brought them.
+            project_settings: None,
         })
     }
 
@@ -286,10 +288,10 @@ impl Store {
 impl Inner {
     /// The computer's configuration: with keys here, without in state.json.
     fn set_config(&mut self, computer: &str, mut config: AgentConfig) {
-        self.keys.give(keys::models_mut(&mut config));
+        self.keys.give(config.models_mut());
         self.state
             .computers
-            .insert(computer.to_string(), keys::without_keys(&config));
+            .insert(computer.to_string(), config.without_keys());
         self.configs.insert(computer.to_string(), config);
     }
 }

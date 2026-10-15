@@ -5,7 +5,7 @@
 use crate::diff::Hunk;
 use crate::events::{ApprovalRequest, QuestionsRequest};
 use crate::permissions::Permissions;
-use crate::subagents::SubagentConfig;
+use crate::subagents::{ModelChoice, SubagentConfig};
 use serde::{Deserialize, Serialize};
 
 /// A model, resolved by the frontend from the providers in its settings.
@@ -81,6 +81,44 @@ pub struct AgentConfig {
     pub approval_profiles: Vec<ModelProfile>,
     /// Subagents: off unless the user turns them on.
     pub subagents: SubagentConfig,
+}
+
+impl AgentConfig {
+    /// The models it names: the AI reviewer and its fallbacks, and each
+    /// subagent kind's.
+    pub fn models(&self) -> impl Iterator<Item = &ModelProfile> {
+        let kinds = self.subagents.kinds.values().flat_map(|k| &k.models);
+        self.approval_profiles
+            .iter()
+            .chain(kinds.filter_map(|choice| match choice {
+                ModelChoice::Profile(model) => Some(model),
+                ModelChoice::Chat { .. } => None,
+            }))
+    }
+
+    pub fn models_mut(&mut self) -> impl Iterator<Item = &mut ModelProfile> {
+        let kinds = self
+            .subagents
+            .kinds
+            .values_mut()
+            .flat_map(|k| &mut k.models);
+        self.approval_profiles
+            .iter_mut()
+            .chain(kinds.filter_map(|choice| match choice {
+                ModelChoice::Profile(model) => Some(model),
+                ModelChoice::Chat { .. } => None,
+            }))
+    }
+
+    /// The configuration with no model's key: what a daemon keeps, and
+    /// what the app sends it outside a start (D11).
+    pub fn without_keys(&self) -> AgentConfig {
+        let mut config = self.clone();
+        for model in config.models_mut() {
+            model.api_key.clear();
+        }
+        config
+    }
 }
 
 /// The user's decision on a tool call waiting for approval.
@@ -160,6 +198,10 @@ pub struct StartRequest {
     /// Work in the chat's overlay (src/overlay). `None`: the app's setting.
     #[serde(default)]
     pub isolate: Option<bool>,
+    /// The project's settings as the user saved them (K03): a daemon keeps
+    /// them for the folder the run works in, as the app does for its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_settings: Option<serde_json::Value>,
 }
 
 /// A running subagent as its block shows it.

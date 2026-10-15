@@ -848,7 +848,7 @@ impl Run {
             parent_id: self.dialog_id.clone(),
             parent_call_id: call_id.to_string(),
             kind: kind.id().into(),
-            title: format!("{}: {}", kind.spec().label, store::char_prefix(goal, 80)),
+            title: kind.chat_title(goal),
             created_at: store::now_ms(),
         };
         let mut first = new_message("user", &message);

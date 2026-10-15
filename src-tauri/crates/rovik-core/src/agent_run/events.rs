@@ -36,3 +36,20 @@ pub fn out_message(dialog_id: &str, seq: i64, m: &NewMessage, pending: bool) -> 
         pending,
     }
 }
+
+/// The row `MessagesAdded` announced, as a mirror stores it (6.3).
+pub fn stored_row(m: &OutMessage) -> NewMessage {
+    NewMessage {
+        id: m.id.clone(),
+        role: m.role.clone(),
+        content: m.content.clone(),
+        tool_calls: m.tool_calls.clone(),
+        tool_call_id: m.tool_call_id.clone(),
+        meta: m.meta.clone(),
+        error: m.error.clone(),
+        failed: m.failed,
+        attachments: m.attachments.clone(),
+        created_at: m.created_at,
+        finalized: m.finalized,
+    }
+}

@@ -1500,3 +1500,28 @@ Tasks add notes here when reality differs from the plan.
     big.
   - The HTTP and WebSocket crates the client shares with the daemon, and
     `log`, are workspace dependencies now.
+- **P08, the app's remote chats.**
+  - The routing, the remote start and the event rules are in
+    `rovik-client`'s `Remote`, which takes the app's `Core` for the
+    mirror's database and the sink. They're tested without Tauri, and each
+    command is one line over it.
+  - Until M05 pulls rows, the mirror also takes each `MessagePatched`, and
+    the writes the owner sends no event for (rename, model, a message's
+    patch) once the owner has taken them. Deleting a remote chat stays
+    local until M08.
+  - A remote `Send`'s message is kept until its host announces it. When a
+    `Resync` stands in for that, the message goes into the mirror and to
+    the frontend, with what waits in the chat from the host's status. Rows
+    only the host has wait for M05. Rows passed on carry the mirror's
+    `seq`, which the frontend pages by.
+  - The approval policy "the AI reviewer, then me" sends what waits for
+    the user to the AI reviewer when there is one. Each host's is "wait
+    for me" until the hosts page sets it (U01).
+  - The developer setting also takes `ROVIK_REMOTE_TOKEN`, the token whose
+    hash the daemon's `config.toml` has, and `ROVIK_COMPUTER` (default
+    "desktop").
+  - `StartRequest.project_settings` and `ApprovalRequest.remote` are new
+    optional fields. No daemon without them has shipped, so they need no
+    feature (4.5).
+  - A run that ended while its host was away is told as `runEnded` with
+    outcome `unknown`, until results come (T05).

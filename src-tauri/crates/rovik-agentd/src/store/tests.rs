@@ -68,6 +68,7 @@ fn start(dialog: &str, key: &str, config: Option<AgentConfig>) -> StartRequest {
         local_date: None,
         config,
         isolate: None,
+        project_settings: None,
     }
 }
 

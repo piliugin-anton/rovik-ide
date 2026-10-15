@@ -1,7 +1,8 @@
 //! The agent's runs (agent_run), and the requests the frontend makes itself
-//! (agent.rs).
+//! (agent.rs). A chat on a host runs there (6.1).
 
-use super::call;
+use super::{answer, call};
+use rovik_client::Remote;
 use rovik_core::agent::{
     self, ChatParams, ChatStreamEvent, ContextEstimate, OpenAIChatOptions, ReasoningEffort,
     RemoteModel, WireChatMessage,
@@ -11,29 +12,34 @@ use rovik_core::agent_run::{AgentConfig, AgentStatus, ApprovalDecision, StartReq
 use rovik_core::chat_request::ChatRequests;
 use rovik_core::Core;
 use rovik_protocol::Request;
+use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
+/// Here and on every connected host (6.1).
 #[tauri::command]
-pub async fn agent_configure(core: State<'_, Core>, config: AgentConfig) -> Result<(), String> {
-    call(&core, Request::AgentConfigure(config)).await
+pub async fn agent_configure(
+    remote: State<'_, Arc<Remote>>,
+    config: AgentConfig,
+) -> Result<(), String> {
+    answer(remote.everywhere(Request::AgentConfigure(config)).await)
 }
 
 /// Starts a run in the chat. Returns its id, or None when there was nothing
 /// to do (a Resume with nothing left to run).
 #[tauri::command]
 pub async fn agent_start(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     request: StartRequest,
 ) -> Result<Option<String>, String> {
-    call(&core, Request::AgentStart(request)).await
+    answer(remote.start(request).await)
 }
 
 /// A reasoning effort the user picked for a model (src/lib/reasoning.ts) in
 /// a chat: runs using that model follow it. Returns how many runs it reached.
 #[tauri::command]
 pub async fn agent_set_effort(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     profile_id: String,
     options: Option<OpenAIChatOptions>,
     dialog_id: Option<String>,
@@ -43,50 +49,54 @@ pub async fn agent_set_effort(
         options,
         dialog_id,
     };
-    call(&core, request).await
+    answer(remote.everywhere(request).await)
 }
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
 /// what it waits on is answered "no").
 #[tauri::command]
-pub async fn agent_stop(core: State<'_, Core>, dialog_id: String) -> Result<bool, String> {
-    call(&core, Request::AgentStop { dialog_id }).await
+pub async fn agent_stop(remote: State<'_, Arc<Remote>>, dialog_id: String) -> Result<bool, String> {
+    let request = Request::AgentStop {
+        dialog_id: dialog_id.clone(),
+    };
+    answer(remote.route(&dialog_id, request).await)
 }
 
 #[tauri::command]
 pub async fn agent_resolve_approval(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     dialog_id: String,
     tool_call_id: String,
     decision: ApprovalDecision,
 ) -> Result<bool, String> {
     let request = Request::AgentResolveApproval {
-        dialog_id,
+        dialog_id: dialog_id.clone(),
         tool_call_id,
         decision,
     };
-    call(&core, request).await
+    answer(remote.route(&dialog_id, request).await)
 }
 
 #[tauri::command]
 pub async fn agent_answer_questions(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     dialog_id: String,
     tool_call_id: String,
     outcome: QuestionsOutcome,
 ) -> Result<bool, String> {
     let request = Request::AgentAnswerQuestions {
-        dialog_id,
+        dialog_id: dialog_id.clone(),
         tool_call_id,
         outcome,
     };
-    call(&core, request).await
+    answer(remote.route(&dialog_id, request).await)
 }
 
-/// What's going on right now, for a frontend that (re)starts mid-run.
+/// What's going on right now, here and on the connected hosts, for a
+/// frontend that (re)starts mid-run.
 #[tauri::command]
-pub async fn agent_status(core: State<'_, Core>) -> Result<AgentStatus, String> {
-    call(&core, Request::AgentStatus).await
+pub async fn agent_status(remote: State<'_, Arc<Remote>>) -> Result<AgentStatus, String> {
+    remote.status().await.map_err(|fail| fail.message)
 }
 
 /// The chat's current checklist, as the backend computes it.
@@ -101,15 +111,15 @@ pub async fn chat_checklist(
 /// The checklist panel's dismiss ✕. Returns the chat's checklist after it.
 #[tauri::command]
 pub async fn chat_dismiss_checklist(
-    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     dialog_id: String,
     message_id: String,
 ) -> Result<Option<CurrentChecklist>, String> {
     let request = Request::ChatDismissChecklist {
-        dialog_id,
+        dialog_id: dialog_id.clone(),
         message_id,
     };
-    call(&core, request).await
+    answer(remote.route(&dialog_id, request).await)
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title),

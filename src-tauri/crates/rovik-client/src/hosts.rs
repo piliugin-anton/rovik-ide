@@ -29,6 +29,16 @@ impl Hosts {
         self.lock().get(host).cloned()
     }
 
+    /// The hosts connected now, with their clients.
+    pub fn ready(&self) -> Vec<(String, Client)> {
+        let clients = self.lock();
+        clients
+            .iter()
+            .filter(|(_, client)| client.state() == HostState::Ready)
+            .map(|(host, client)| (host.clone(), client.clone()))
+            .collect()
+    }
+
     /// Each host's state, by its id.
     pub fn states(&self) -> Vec<(String, HostState)> {
         let clients = self.lock();

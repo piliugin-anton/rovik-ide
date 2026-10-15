@@ -499,5 +499,6 @@ pub fn start_request(url: &str, project: &std::path::Path, text: String) -> Star
             ..AgentConfig::default()
         }),
         isolate: None,
+        project_settings: None,
     }
 }

@@ -2938,8 +2938,9 @@ fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
 const MAX_TOUCHED_PATHS: usize = 20;
 
 /// The latest delivered user message as it was sent to the model (with its
-/// editor context and file references).
-fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
+/// editor context and file references): what a start without
+/// `current_user_content` sends.
+pub fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let m = messages
         .iter()
         .rev()

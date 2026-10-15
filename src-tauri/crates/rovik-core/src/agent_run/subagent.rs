@@ -116,6 +116,15 @@ impl Kind {
         Kind::ALL.iter().copied().find(|k| k.id() == s.trim())
     }
 
+    /// Its chat's title: "Scout: <the goal's start>".
+    pub fn chat_title(self, goal: &str) -> String {
+        format!(
+            "{}: {}",
+            self.spec().label,
+            crate::chat_db::store::char_prefix(goal, 80)
+        )
+    }
+
     pub fn spec(self) -> &'static KindSpec {
         match self {
             Kind::Scout => &SCOUT,

@@ -8,7 +8,7 @@ use crate::events::Events;
 use crate::host;
 use crate::store::Store;
 use rovik_core::chat_db::store::{self, NewDialog};
-use rovik_core::Core;
+use rovik_core::{project_profile, Core};
 use rovik_protocol::agent::StartRequest;
 use rovik_protocol::{Fail, FailCode, Request, Response};
 use std::sync::Arc;
@@ -73,8 +73,21 @@ impl Daemon {
         start.config = None;
         // The daemon works in its own copy, never in an overlay (D8).
         start.isolate = Some(false);
+        self.keep_project_settings(&mut start)?;
         self.ensure_chat(&start.dialog_id).await?;
         rovik_core::dispatch(&self.core, Request::AgentStart(start)).await
+    }
+
+    /// The project's settings the start brought, kept for the folder its
+    /// run works in (6.2), where the run reads them as the app's runs read
+    /// the app's.
+    fn keep_project_settings(&self, start: &mut StartRequest) -> Result<(), Fail> {
+        let (Some(settings), Some(root)) = (start.project_settings.take(), &start.root) else {
+            return Ok(());
+        };
+        let config_dir = &self.core.paths.config_dir;
+        project_profile::save_project_settings(config_dir, root.clone(), settings)
+            .map_err(|e| Fail::new(FailCode::Internal, e))
     }
 
     /// A chat started here before chats can move here (M04) has no row

@@ -189,6 +189,7 @@ impl Harness {
                 subagents: Default::default(),
             }),
             isolate: Some(false),
+            project_settings: None,
         }
     }
 
@@ -5096,6 +5097,7 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
         edit: None,
         parent_dialog_id: None,
         parent_call_id: None,
+        remote: false,
     };
     let wait = |dialog: &str| {
         let (state, core, request) = (state.clone(), core.clone(), request(dialog));

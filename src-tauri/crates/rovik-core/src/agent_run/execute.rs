@@ -1165,6 +1165,7 @@ impl Run {
             // A subagent's approvals show in its parent's chat (D8).
             parent_dialog_id: self.sub().map(|s| s.parent_dialog_id.clone()),
             parent_call_id: self.sub().map(|s| s.parent_call_id.clone()),
+            remote: false,
         };
         let waiting = std::time::Instant::now();
         let decision = self

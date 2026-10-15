@@ -146,6 +146,10 @@ pub struct ApprovalRequest {
     pub parent_dialog_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_call_id: Option<String>,
+    /// A remote chat's edit (K09): the file it changes is the server's, so
+    /// the editor shows the change apart, not on the local file's tab.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remote: bool,
 }
 
 /// An ask_user call waiting for the user's answers.
