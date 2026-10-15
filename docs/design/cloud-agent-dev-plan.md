@@ -2210,3 +2210,25 @@ Tasks add notes here when reality differs from the plan.
     a move just begun for one, and undo it.
   - `App::local` closes the overlays a failed test left open: they're the
     process's, by the chat's id, and pointed at that test's folders.
+- **M08, writes to and deletion of remote chats.**
+  - The writes 6.1 lists already went to the owner (P08). Since M05 the
+    mirror follows them through the pull the daemon's `ChatChanged`
+    brings; a rename, a model and a message's patch also go into the
+    mirror at once, which the pull then confirms. The test covers a
+    rename, a model and a checklist's dismissal end to end.
+  - `Remote::delete` writes the chat's tombstone first, then deletes its
+    rows here and sends `ChatDelete`, which stops the run there and
+    removes the worktree, branch, refs and `state.json` entry (T03). The
+    tombstone goes once the host has the deletion; a host away gets it on
+    its next connection.
+  - The tombstone is a move back's row in `cloud_moves` at step `deleted`,
+    so the settling of moves cut short tells it, with no table of its
+    own. It takes the place of a move back cut short. A chat its host let
+    go already is forgotten there (`ChatForget`): the daemon refuses a
+    released chat's `ChatDelete`. A `ChatDelete` refused as not this
+    computer's goes as `ChatForget` too.
+  - A move cancelled after its bundle went has the host forget the chat's
+    rows once it released them, since the chat never ran there. Should
+    the host not hear it, its cleanup takes them (R01).
+  - Deleting a remote chat drops its subagents' chats from `Remote`'s map
+    too, not only its own.

@@ -12,6 +12,9 @@
 //! before the host released the chat is dropped, the chat still there; one
 //! after is finished. Its row stays after the flip, step `forgetting`,
 //! until `ChatForget` reaches the host.
+//!
+//! A remote chat deleted here leaves a tombstone, a move back's row at
+//! step `deleted`, until its host deletes the chat too (`ChatDelete`).
 
 use super::location::{self, Location};
 use super::store::{err, now_ms, DbResult};
@@ -38,6 +41,8 @@ pub const FETCHED: &str = "fetched";
 pub const RELEASED: &str = "released";
 /// The chat is here again, and its host is yet to forget it.
 pub const FORGETTING: &str = "forgetting";
+/// The chat was deleted here, and its host is yet to delete it.
+pub const DELETED: &str = "deleted";
 
 /// A chat's move while it goes.
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +196,25 @@ pub fn flip_back(conn: &mut Connection, dialog_id: &str) -> DbResult<()> {
     tx.commit().map_err(err)
 }
 
+/// A remote chat's tombstone, written before its rows go: its host
+/// deletes the chat when it's next told, or forgets it if it let the chat
+/// go already. It takes the place of a move back cut short.
+pub fn bury(conn: &mut Connection, dialog_id: &str, host: &str, move_id: &str) -> DbResult<()> {
+    let tx = conn.transaction().map_err(err)?;
+    let step = match of_chat(&tx, dialog_id)? {
+        Some(going) if going.step == RELEASED || going.step == FORGETTING => FORGETTING,
+        _ => DELETED,
+    };
+    tx.execute(
+        "INSERT INTO cloud_moves (dialog_id, host, move_id, direction, step, started_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (dialog_id) DO UPDATE SET host = ?2, direction = ?4, step = ?5",
+        params![dialog_id, host, move_id, BACK, step, now_ms()],
+    )
+    .map_err(err)?;
+    tx.commit().map_err(err)
+}
+
 /// The move undone: the chat is here again, and its move over.
 pub fn roll_back(conn: &mut Connection, dialog_id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
@@ -325,6 +349,22 @@ mod tests {
             (row.direction.as_str(), row.move_id.as_str()),
             (THERE, "m2")
         );
+    }
+
+    #[test]
+    fn a_deleted_chats_tombstone_says_what_its_host_is_to_do() {
+        let mut conn = db();
+        bury(&mut conn, "chat", "server", "d1").unwrap();
+        let row = of_chat(&conn, "chat").unwrap().unwrap();
+        assert_eq!(
+            (row.direction.as_str(), row.step.as_str(), row.host.as_str()),
+            (BACK, DELETED, "server")
+        );
+        // A chat its host let go already is forgotten there, not deleted.
+        step(&conn, "chat", RELEASED).unwrap();
+        bury(&mut conn, "chat", "server", "d2").unwrap();
+        assert_eq!(of_chat(&conn, "chat").unwrap().unwrap().step, FORGETTING);
+        assert_eq!(with_host(&conn, "server").unwrap().len(), 1);
     }
 
     #[test]

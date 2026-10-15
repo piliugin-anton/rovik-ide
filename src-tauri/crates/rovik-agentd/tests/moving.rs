@@ -2,7 +2,9 @@
 //! pauses for the move and goes on where the chat went, nothing starts in
 //! the chat while it moves, its files go with it, its changes come back to
 //! wait here, and a move the app left unfinished is finished or undone once
-//! the host answers, or cancelled while it can't.
+//! the host answers, or cancelled while it can't. And a chat there (M08,
+//! 6.1): its writes go to the daemon, and so does its deletion, at once or
+//! when the daemon is back.
 
 mod common;
 
@@ -15,7 +17,7 @@ use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
 use rovik_core::agent_run::{ApprovalDecision, StartKind, UserMessage};
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::moves::{self, CloudMove};
-use rovik_core::chat_db::store::{self, NewMessage};
+use rovik_core::chat_db::store::{self, ChatModel, NewMessage};
 use rovik_core::chat_db::{attachments, mirror, sync};
 use rovik_core::overlay::chats;
 use rovik_core::testing::{model, Reply};
@@ -403,6 +405,7 @@ async fn cancel_move_with_the_host_away_queues_its_release() {
     let owned = owner_there(&setup).await.unwrap();
     assert_eq!(owned.move_id.as_deref(), Some("move-1"));
     assert!(owned.released);
+    assert!(setup.daemon.rows(CHAT).is_empty(), "and its rows there");
     assert_eq!(where_is(&app).await, Location::Here);
 }
 
@@ -639,4 +642,129 @@ async fn a_move_back_cut_short_before_its_release_leaves_the_chat_there() {
     assert_eq!(app.remote.host_of(CHAT).as_deref(), Some(HOST));
     let owned = owner_there(&setup).await.unwrap();
     assert!(!owned.released);
+}
+
+/// The chat's own row as a database has it: its title and model.
+fn chat_in(database: &std::path::Path) -> Option<(String, Option<String>, Option<String>)> {
+    let db = rusqlite::Connection::open(database).ok()?;
+    let row = db.query_row(
+        "SELECT title, model_provider, model_id FROM dialogs WHERE id = ?1",
+        [CHAT],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    );
+    row.ok()
+}
+
+/// 6.1: a rename, a model and a checklist's dismissal go to the daemon, and
+/// the mirror has the chat as the daemon has it after them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_chats_writes_go_to_its_host_and_its_mirror_follows() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let (url, _) = model(vec![Reply::Text("Hello.")]).await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    ended(&setup.client).await;
+    mirrored(&app, &setup).await;
+
+    let writes = [
+        Request::ChatRename {
+            dialog_id: CHAT.into(),
+            title: "Renamed".into(),
+        },
+        Request::ChatSetModel {
+            dialog_id: CHAT.into(),
+            model: ChatModel {
+                provider_id: "p".into(),
+                model_id: "m2".into(),
+                effort: None,
+            },
+        },
+        Request::ChatDismissChecklist {
+            dialog_id: CHAT.into(),
+            message_id: "u1".into(),
+        },
+    ];
+    for write in writes {
+        let shown = format!("{write:?}");
+        let answer = app.remote.route(CHAT, write).await;
+        assert!(answer.is_ok(), "{shown}: {answer:?}");
+    }
+    let there = setup.daemon.data.join("data/chats.db");
+    let theirs = chat_in(&there).unwrap();
+    assert_eq!(
+        theirs,
+        ("Renamed".into(), Some("p".into()), Some("m2".into()))
+    );
+    let rows = setup.daemon.rows(CHAT);
+    let u1 = rows.iter().find(|r| r.id == "u1").unwrap();
+    assert_eq!(u1.meta["checklistClosed"], true);
+
+    let here = app.test.core.paths.data_dir.join("chats.db");
+    until("the mirror's chat as the daemon's", || {
+        let same = chat_in(&here) == Some(theirs.clone())
+            && messages_in(&here, CHAT) == messages_in(&there, CHAT);
+        same.then_some(())
+    })
+    .await;
+}
+
+/// 6.1: a chat deleted here goes on the daemon at once: its rows, its
+/// worktree, and what the daemon kept of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_chat_deleted_here_goes_on_its_host() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let tree = setup.daemon.state()["chats"][CHAT]["worktree"]
+        .as_str()
+        .map(std::path::PathBuf::from)
+        .unwrap();
+
+    app.remote.delete(CHAT).await.unwrap();
+    let here = app.test.core.paths.data_dir.join("chats.db");
+    assert_eq!(chat_in(&here), None);
+    assert!(app.remote.host_of(CHAT).is_none());
+    assert!(its_move(&app).await.is_none(), "nothing left to tell");
+    assert_eq!(owner_there(&setup).await, None);
+    assert!(!tree.exists());
+}
+
+/// 6.1: a chat deleted while the daemon is away goes here at once, and on
+/// the daemon when it's back, from its tombstone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_deleted_while_its_host_is_away_goes_there_when_it_is_back() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let app = app.restart(&setup).await;
+
+    app.remote.delete(CHAT).await.unwrap();
+    let here = app.test.core.paths.data_dir.join("chats.db");
+    assert_eq!(chat_in(&here), None);
+    assert!(app.remote.host_of(CHAT).is_none());
+    let tombstone = its_move(&app).await.unwrap();
+    assert_eq!(tombstone.step, moves::DELETED);
+    assert!(
+        owner_there(&setup).await.is_some(),
+        "the daemon has it still"
+    );
+
+    let app = app.restart(&setup).await;
+    app.connect(&setup).await;
+    for _ in 0..400 {
+        if its_move(&app).await.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(its_move(&app).await.is_none(), "the tombstone was told");
+    assert_eq!(owner_there(&setup).await, None);
+    assert!(setup.daemon.rows(CHAT).is_empty());
 }

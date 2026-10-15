@@ -16,7 +16,7 @@ use rovik_core::agent_run::subagent::Kind;
 use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest, UserMessage};
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
-use rovik_core::chat_db::{api, attachments};
+use rovik_core::chat_db::{api, attachments, moves};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
@@ -303,9 +303,9 @@ impl Remote {
         })
     }
 
-    /// A write the owner tells no event of, into the mirror once the owner
-    /// has taken it, until M05's pulls bring them. Written here directly:
-    /// `dispatch` refuses a chat on a host.
+    /// A write the owner took, into the mirror at once: the pull its
+    /// `ChatChanged` brings then has the owner's row (6.3). Written here
+    /// directly: `dispatch` refuses a chat on a host.
     async fn mirror_write(&self, request: Request) -> Result<(), String> {
         let db = &self.core.db;
         match request {
@@ -322,24 +322,47 @@ impl Remote {
         }
     }
 
-    /// Deletes a chat. A remote chat's rows here go, and its host keeps its
-    /// own until M08 tells it. A chat moving to a host is refused, as
-    /// `dispatch` refuses it, and so is one moving back.
+    /// Deletes a chat (6.1). A remote chat's rows here go at once, and its
+    /// host deletes its own, its run stopped and its worktree gone: now, or
+    /// when it's next connected, from the tombstone written first. A chat
+    /// moving to a host is refused, as `dispatch` refuses it, and so is one
+    /// moving back.
     pub async fn delete(&self, dialog_id: &str) -> Result<(), Fail> {
-        if self.host_of(dialog_id).is_none() {
+        let Some(host) = self.host_of(dialog_id) else {
             let delete = Request::ChatDelete {
                 dialog_id: dialog_id.to_string(),
             };
             return rovik_core::dispatch(&self.core, delete).await.map(drop);
-        }
+        };
         if self.is_moving_back(dialog_id) {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
+        let (chat, on) = (dialog_id.to_string(), host.clone());
+        let id = uuid::Uuid::new_v4().to_string();
+        let buried = self.core.db.write(move |c| {
+            moves::bury(c, &chat, &on, &id)?;
+            let mut chats = store::descendants(c, &chat)?;
+            chats.push(chat);
+            Ok(chats)
+        });
+        let chats = buried.await.map_err(internal)?;
         api::chat_delete_dialog(&self.core, dialog_id.to_string())
             .await
             .map_err(internal)?;
-        let mut state = self.lock();
-        state.chats.retain(|chat, _| chat != dialog_id);
+        {
+            let mut state = self.lock();
+            for chat in &chats {
+                state.chats.remove(chat);
+                state.running.remove(chat);
+                state.pulls.remove(chat);
+                state.last_sync.remove(chat);
+                state.syncs.remove(chat);
+                state.rechecks.remove(chat);
+            }
+        }
+        if let Some(client) = self.hosts.client(&host) {
+            self.delete_there(&client, dialog_id).await;
+        }
         Ok(())
     }
 

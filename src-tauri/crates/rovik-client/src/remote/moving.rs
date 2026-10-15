@@ -296,7 +296,8 @@ impl Remote {
                 move_id: Some(going.move_id.clone()),
             };
             match client.request::<bool>(release).await {
-                Ok(_) => {}
+                Ok(true) => forget_cancelled(client, &chat).await,
+                Ok(false) => {}
                 Err(fail) if fail.code == FailCode::NotOwner => {}
                 Err(fail) => return Err(fail),
             }
@@ -465,7 +466,11 @@ impl Remote {
                 dialog_id: dialog_id.to_string(),
                 move_id: Some(move_id.to_string()),
             };
-            released = client.request::<bool>(release).await.is_ok();
+            let answer = client.request::<bool>(release).await;
+            if answer == Ok(true) {
+                forget_cancelled(client, dialog_id).await;
+            }
+            released = answer.is_ok();
         }
         let id = dialog_id.to_string();
         let undone = match released {
@@ -626,3 +631,15 @@ impl Remote {
 
 /// What a cancelled move fails with.
 pub(super) const CANCELLED: &str = "The move was cancelled.";
+
+/// The rows a move left on its host once it was cancelled there go too:
+/// this computer has the chat. Should the host not hear it, its cleanup
+/// takes them (R01).
+async fn forget_cancelled(client: &Client, dialog_id: &str) {
+    let forget = Request::ChatForget {
+        dialog_id: dialog_id.to_string(),
+    };
+    if let Err(fail) = client.request::<bool>(forget).await {
+        log::warn!("{dialog_id}'s rows stay on its host until its cleanup: {fail}");
+    }
+}

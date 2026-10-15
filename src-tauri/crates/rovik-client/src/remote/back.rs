@@ -42,6 +42,10 @@ use tokio::sync::oneshot;
 /// approval can take long, and Stop ends the wait.
 const PAUSE_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// How long a deletion waits for its host before its tombstone waits for
+/// the next connection: the host stops the chat's run first.
+const TELL_WAIT: Duration = Duration::from_secs(30);
+
 /// What a refused write to a chat moving back says.
 pub(super) const MOVING_BACK: &str = "This chat is moving back to this computer.";
 
@@ -307,7 +311,7 @@ impl Remote {
 
     /// `ChatForget`, the move back's last word: its row goes once the host
     /// heard it, and stays for the next connection if it didn't.
-    async fn forget_there(&self, client: &Client, dialog_id: &str) {
+    pub(super) async fn forget_there(&self, client: &Client, dialog_id: &str) {
         let forget = Request::ChatForget {
             dialog_id: dialog_id.to_string(),
         };
@@ -328,9 +332,45 @@ impl Remote {
         }
     }
 
+    /// A deleted chat's tombstone, told to its host (6.1): `ChatDelete`, or
+    /// `ChatForget` for a chat it let go already. Its row goes once the host
+    /// heard it, and stays for the next connection if it didn't.
+    pub(super) async fn delete_there(&self, client: &Client, dialog_id: &str) {
+        let id = dialog_id.to_string();
+        let read = self.core.db.read(move |c| moves::of_chat(c, &id)).await;
+        let step = match read {
+            Ok(Some(going)) => going.step,
+            Ok(None) => return,
+            Err(e) => return log::warn!("{dialog_id}'s tombstone: {e}"),
+        };
+        if step != moves::DELETED {
+            return self.forget_there(client, dialog_id).await;
+        }
+        let delete = Request::ChatDelete {
+            dialog_id: dialog_id.to_string(),
+        };
+        match client.call_within(delete, TELL_WAIT).await {
+            Ok(_) => {}
+            // Let go there since: forgotten instead.
+            Err(fail) if fail.code == FailCode::NotOwner => {
+                return self.forget_there(client, dialog_id).await;
+            }
+            Err(fail) if fail.code == FailCode::BadRequest => {
+                log::warn!("{dialog_id}'s host didn't delete it: {fail}");
+            }
+            Err(fail) => {
+                return log::warn!("{dialog_id}'s host deletes it later: {fail}");
+            }
+        }
+        let id = dialog_id.to_string();
+        if let Err(e) = self.core.db.write(move |c| moves::forget(c, &id)).await {
+            log::warn!("{dialog_id}'s tombstone: {e}");
+        }
+    }
+
     /// A move back the app left unfinished, once its host is connected: a
-    /// queued `ChatForget` goes; one the host released is finished; one it
-    /// didn't is dropped, the chat still there.
+    /// queued `ChatForget` or a deleted chat's tombstone goes; one the host
+    /// released is finished; one it didn't is dropped, the chat still there.
     pub(super) async fn finish_back_cut_short(
         &self,
         client: &Client,
@@ -339,6 +379,10 @@ impl Remote {
         let chat = going.dialog_id.as_str();
         if going.step == moves::FORGETTING {
             self.forget_there(client, chat).await;
+            return Ok(());
+        }
+        if going.step == moves::DELETED {
+            self.delete_there(client, chat).await;
             return Ok(());
         }
         if !self.lock().moving.insert(chat.to_string()) {
