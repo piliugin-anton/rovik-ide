@@ -2291,3 +2291,23 @@ Tasks add notes here when reality differs from the plan.
     (`tests/common/ssh.rs`): the unknown key shown first, each way in and
     a wrong one, a changed key refused, and a 2 MB upload and a call at
     once over the tunnel to the real daemon, on two channels.
+- **H03, the tunnel's fallbacks.**
+  - `SshConnector::new` asks the host for `$HOME` once, on an exec
+    channel, and reaches the daemon at `~/.rovik/agentd.sock` there;
+    `with_socket` names another path. A `direct-streamlocal` channel
+    refused as administratively prohibited marks the connection, whose
+    streams then go through `rovik-agentd attach --stdio` on exec
+    channels (`ATTACH`, the installed path; `with_attach` names another
+    command). A socket the host can't reach goes through `attach` too,
+    without marking anything: it finds the daemon where it is.
+  - `system_ssh::SystemSshConnector` runs the user's own ssh, as
+    `ssh -N -L <local>:<remote> <destination>` with
+    `ExitOnForwardFailure`, `StreamLocalBindUnlink` and keepalives, under
+    the app: started with the first stream, again once it has exited, and
+    stopped with the connector. The local end is a socket on Unix and a port of 127.0.0.1
+    elsewhere; the remote socket comes from `$HOME`, asked through the
+    same ssh. There's no `ssh` in the test environment, so its tests check
+    the command lines; the run through a jump host stays manual.
+  - The test server now runs an exec channel's command with `sh -c`, its
+    stdin and stdout the channel's, its output then its exit status sent
+    in order; the attach test runs the real binary through it.

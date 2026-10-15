@@ -1,13 +1,14 @@
 //! The app's client against the real daemon (P07): its calls and events, a
 //! daemon started again under it, and a reply too big for a frame while
-//! events keep coming. And its SSH tunnel (H02): each way of logging in,
-//! the host key checked before anything is sent, and the WebSocket and an
-//! upload on channels of their own at once.
+//! events keep coming. And its SSH tunnel (H02, H03): each way of logging
+//! in, the host key checked before anything is sent, the WebSocket and an
+//! upload on channels of their own at once, and `attach --stdio` where the
+//! host refuses streamlocal forwarding.
 
 mod common;
 
 use common::ssh::{new_key, SshServer, PASSWORD, USER};
-use common::{start_request, until, Daemon, COMPUTER};
+use common::{start_request, until, Daemon, BINARY, COMPUTER};
 use rovik_client::ssh::{
     fingerprint, Answerer, Questions, Ssh, SshAuth, SshConnector, SshError, SshTarget,
 };
@@ -318,8 +319,8 @@ async fn ssh_lets_each_way_in_once_the_host_key_is_pinned() {
     let ssh = Ssh::connect(&target(&server, password(PASSWORD)))
         .await
         .unwrap();
-    let ran = ssh.exec("echo hello").await.unwrap();
-    assert_eq!((ran.status, ran.stdout), (Some(0), b"echo hello".to_vec()));
+    let ran = ssh.exec("echo hello; exit 3").await.unwrap();
+    assert_eq!((ran.status, ran.stdout), (Some(3), b"hello\n".to_vec()));
     let file = server.key_file(&dir.0, "file pass");
     let with_key = SshAuth::Key {
         path: file.clone(),
@@ -371,7 +372,7 @@ async fn over_ssh_the_websocket_and_an_upload_go_at_once_on_channels_of_their_ow
         client: "ssh tests".into(),
     };
     let socket = daemon.socket.to_string_lossy().into_owned();
-    let connector = SshConnector::new(target(&server, password(PASSWORD)), socket);
+    let connector = SshConnector::new(target(&server, password(PASSWORD))).with_socket(socket);
     let sink = Arc::new(move |incoming| {
         let _ = tx.send(incoming);
     });
@@ -395,4 +396,46 @@ async fn over_ssh_the_websocket_and_an_upload_go_at_once_on_channels_of_their_ow
         .await
         .unwrap();
     assert!(missing.is_empty(), "the daemon has the file");
+}
+
+/// H03: a host that refuses streamlocal forwarding is reached through
+/// `rovik-agentd attach --stdio` on exec channels, a stream each, and the
+/// daemon's socket there comes from `$HOME`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_refusing_streamlocal_is_reached_through_attach() {
+    let daemon = Daemon::start(&[]).await;
+    let server = SshServer::refusing_streamlocal().await;
+    let socket = daemon.socket.to_string_lossy().into_owned();
+    let attach = format!("{BINARY} attach --stdio --socket {socket}");
+    let asked = SshConnector::new(target(&server, password(PASSWORD)));
+    let home = std::env::var("HOME").unwrap();
+    let expected = format!("{}/.rovik/agentd.sock", home.trim_end_matches('/'));
+    assert_eq!(asked.socket_path().await.unwrap(), expected, "from $HOME");
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    let identity = Identity {
+        host: "ssh-server".into(),
+        computer: COMPUTER.into(),
+        token: Secret(daemon.token.clone()),
+        client: "ssh tests".into(),
+    };
+    let connector = SshConnector::new(target(&server, password(PASSWORD)))
+        .with_socket(socket)
+        .with_attach(attach);
+    let sink = Arc::new(move |incoming| {
+        let _ = tx.send(incoming);
+    });
+    let client = Client::connect(connector, identity, sink);
+    Heard(rx).until(subscribed).await;
+    let info: HostInfo = client.request(Request::HostInfo).await.unwrap();
+    assert_eq!(info.protocol, PROTOCOL);
+    let pdf = b"%PDF-1.4\n% a file from the test\n".to_vec();
+    let id = rovik_core::chat_db::attachments::id_of(&pdf);
+    client.put_blob(&id, pdf, |_| {}).await.unwrap();
+    let ordering = std::sync::atomic::Ordering::SeqCst;
+    assert_eq!(server.most_open.load(ordering), 0, "no streamlocal channel");
+    assert!(
+        server.execs.load(ordering) >= 3,
+        "the $HOME asked, the WebSocket, the upload"
+    );
 }

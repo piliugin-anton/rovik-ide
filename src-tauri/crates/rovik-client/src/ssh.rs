@@ -4,6 +4,12 @@
 //! pack), and exec channels for setup (H04, H05). Keepalives every 15 s
 //! find a dead link; the next stream asked for connects again.
 //!
+//! The socket is `~/.rovik/agentd.sock` there, its path from `$HOME`, asked
+//! once (H03). A host that refuses streamlocal forwarding gets each stream
+//! through `rovik-agentd attach --stdio` on an exec channel instead, a byte
+//! bridge to the socket. The user's own ssh is the other way in
+//! (`system_ssh`).
+//!
 //! The host key is checked before any credential goes. The first time
 //! there's no key to check it against, and the connection fails with
 //! `UnknownHostKey`, the key and its SHA-256 fingerprint in it: the user
@@ -26,6 +32,7 @@ use std::future::Future;
 use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,6 +42,13 @@ pub const KEEPALIVE: Duration = Duration::from_secs(15);
 
 /// How long the TCP connection and the handshake may take.
 const CONNECT_WAIT: Duration = Duration::from_secs(20);
+
+/// The command whose stdin and stdout reach the daemon's socket, where the
+/// host refuses streamlocal forwarding: the installed binary (5.3).
+pub const ATTACH: &str = "/opt/rovik/bin/rovik-agentd attach --stdio";
+
+/// The daemon's socket, from the user's home folder there (D5).
+pub const SOCKET: &str = ".rovik/agentd.sock";
 
 /// Where, and as whom.
 #[derive(Clone)]
@@ -153,6 +167,9 @@ impl Handler for Checker {
 /// A connection to a host, logged in.
 pub struct Ssh {
     handle: Handle<Checker>,
+    /// The host refused a `direct-streamlocal` channel on this connection:
+    /// streams go through `attach` from then on.
+    streamlocal_refused: AtomicBool,
 }
 
 /// What a command printed, and how it ended.
@@ -203,7 +220,10 @@ impl Ssh {
             }
         };
         log_in(&mut handle, target).await?;
-        Ok(Ssh { handle })
+        Ok(Ssh {
+            handle,
+            streamlocal_refused: AtomicBool::new(false),
+        })
     }
 
     /// Whether the connection dropped.
@@ -219,6 +239,44 @@ impl Ssh {
             .await
             .map_err(|e| SshError::Failed(format!("{path} on the host: {e}")))?;
         Ok(Box::new(channel.into_stream()))
+    }
+
+    /// A stream to the daemon: a channel to its socket at `socket`, or
+    /// where the host refuses those channels, `attach`'s stdin and stdout.
+    /// A socket the host can't reach goes through `attach` too, which finds
+    /// the daemon where it is.
+    pub async fn stream_to_daemon(&self, socket: &str, attach: &str) -> Result<Stream, SshError> {
+        if !self.streamlocal_refused.load(Ordering::Relaxed) {
+            match self.handle.channel_open_direct_streamlocal(socket).await {
+                Ok(channel) => return Ok(Box::new(channel.into_stream())),
+                Err(russh::Error::ChannelOpenFailure(
+                    russh::ChannelOpenFailure::AdministrativelyProhibited,
+                )) => self.streamlocal_refused.store(true, Ordering::Relaxed),
+                Err(russh::Error::ChannelOpenFailure(_)) => {}
+                Err(e) => return Err(SshError::Failed(format!("{socket} on the host: {e}"))),
+            }
+        }
+        self.exec_stream(attach).await
+    }
+
+    /// `command` on the host, its stdin and stdout as a stream.
+    pub async fn exec_stream(&self, command: &str) -> Result<Stream, SshError> {
+        let failed = |e: russh::Error| SshError::Failed(format!("`{command}`: {e}"));
+        let channel = self.handle.channel_open_session().await.map_err(failed)?;
+        channel.exec(false, command).await.map_err(failed)?;
+        Ok(Box::new(channel.into_stream()))
+    }
+
+    /// The user's home folder on the host.
+    pub async fn home(&self) -> Result<String, SshError> {
+        let output = self.exec("printf '%s' \"$HOME\"").await?;
+        let home = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        match output.status == Some(0) && home.starts_with('/') {
+            true => Ok(home),
+            false => Err(SshError::Failed(
+                "The host didn't say where your home folder is.".into(),
+            )),
+        }
     }
 
     /// Runs `command` on the host and collects its output.
@@ -413,21 +471,49 @@ async fn interactively(
 
 /// A host's daemon through SSH (D5): one connection, made when the first
 /// stream is asked for and again once it drops, and a `direct-streamlocal`
-/// channel to the daemon's socket for each stream.
+/// channel to the daemon's socket for each stream, or `attach` where the
+/// host refuses those.
 pub struct SshConnector {
     target: SshTarget,
-    socket: String,
+    /// The daemon's socket there, asked for once.
+    socket: tokio::sync::Mutex<Option<String>>,
+    attach: String,
     session: tokio::sync::Mutex<Option<Arc<Ssh>>>,
 }
 
 impl SshConnector {
-    /// The daemon at `socket` on `target`, an absolute path there.
-    pub fn new(target: SshTarget, socket: impl Into<String>) -> SshConnector {
+    /// The daemon on `target`, at `~/.rovik/agentd.sock` there.
+    pub fn new(target: SshTarget) -> SshConnector {
         SshConnector {
             target,
-            socket: socket.into(),
+            socket: tokio::sync::Mutex::new(None),
+            attach: ATTACH.into(),
             session: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// The daemon's socket at `path` there, an absolute path.
+    pub fn with_socket(self, path: impl Into<String>) -> SshConnector {
+        *self.socket.try_lock().expect("a new connector") = Some(path.into());
+        self
+    }
+
+    /// `command` in place of `ATTACH`, where the host refuses streamlocal.
+    pub fn with_attach(mut self, command: impl Into<String>) -> SshConnector {
+        self.attach = command.into();
+        self
+    }
+
+    /// The daemon's socket there: asked for once, from `$HOME`.
+    pub async fn socket_path(&self) -> Result<String, SshError> {
+        let mut socket = self.socket.lock().await;
+        if let Some(path) = socket.as_ref() {
+            return Ok(path.clone());
+        }
+        let home = self.session().await?.home().await?;
+        let path = format!("{}/{SOCKET}", home.trim_end_matches('/'));
+        *socket = Some(path.clone());
+        Ok(path)
     }
 
     /// The connection, made again if it dropped.
@@ -445,8 +531,11 @@ impl SshConnector {
 impl Connector for SshConnector {
     fn connect(&self) -> Connecting<'_> {
         Box::pin(async move {
+            let socket = self.socket_path().await.map_err(io_error)?;
             let ssh = self.session().await.map_err(io_error)?;
-            ssh.stream_to(&self.socket).await.map_err(io_error)
+            ssh.stream_to_daemon(&socket, &self.attach)
+                .await
+                .map_err(io_error)
         })
     }
 }

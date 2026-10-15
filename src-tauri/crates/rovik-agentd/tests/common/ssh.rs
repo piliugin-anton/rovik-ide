@@ -1,20 +1,25 @@
-//! An SSH server in the test, with russh (H02). `USER` gets in with
+//! An SSH server in the test, with russh (H02, H03). `USER` gets in with
 //! `PASSWORD`, with `user_key` (from a file or an agent), or by answering
 //! its one keyboard-interactive question with `PASSWORD`. Each
 //! `direct-streamlocal` channel reaches the Unix socket it names on this
-//! machine, the daemon's, and the server counts how many are open at once.
-//! A command sent on an exec channel comes back as its output.
+//! machine, the daemon's, and the server counts how many are open at once;
+//! one started with `refusing_streamlocal` refuses them, as a server set
+//! up so does. An exec channel runs its command with `sh -c` here, its
+//! stdin and stdout the channel's.
 
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, Response, Session};
-use russh::{Channel, ChannelId};
+use russh::{Channel, ChannelId, ChannelMsg, ChannelOpenFailure};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
 
 pub const USER: &str = "me";
@@ -27,10 +32,21 @@ pub struct SshServer {
     pub user_key: PrivateKey,
     /// The most streamlocal channels that were open at once.
     pub most_open: Arc<AtomicUsize>,
+    /// The commands run so far.
+    pub execs: Arc<AtomicUsize>,
 }
 
 impl SshServer {
     pub async fn start() -> SshServer {
+        SshServer::serving(false).await
+    }
+
+    /// A server that refuses streamlocal forwarding.
+    pub async fn refusing_streamlocal() -> SshServer {
+        SshServer::serving(true).await
+    }
+
+    async fn serving(refuse_streamlocal: bool) -> SshServer {
         let host_key = new_key();
         let user_key = new_key();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -42,14 +58,19 @@ impl SshServer {
             ..Default::default()
         });
         let most_open = Arc::new(AtomicUsize::new(0));
+        let execs = Arc::new(AtomicUsize::new(0));
         let (open, most) = (Arc::new(AtomicUsize::new(0)), Arc::clone(&most_open));
         let accepted = user_key.public_key().clone();
+        let counted = Arc::clone(&execs);
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let side = ServerSide {
                     accepted: accepted.clone(),
                     open: Arc::clone(&open),
                     most: Arc::clone(&most),
+                    execs: Arc::clone(&counted),
+                    refuse_streamlocal,
+                    sessions: HashMap::new(),
                 };
                 let config = Arc::clone(&config);
                 tokio::spawn(async move {
@@ -64,6 +85,7 @@ impl SshServer {
             host_key,
             user_key,
             most_open,
+            execs,
         }
     }
 
@@ -106,6 +128,10 @@ struct ServerSide {
     accepted: PublicKey,
     open: Arc<AtomicUsize>,
     most: Arc<AtomicUsize>,
+    execs: Arc<AtomicUsize>,
+    refuse_streamlocal: bool,
+    /// The session channels waiting for their command.
+    sessions: HashMap<ChannelId, Channel<Msg>>,
 }
 
 impl server::Handler for ServerSide {
@@ -154,7 +180,14 @@ impl server::Handler for ServerSide {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.refuse_streamlocal {
+            reply
+                .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
         let Ok(mut socket) = tokio::net::UnixStream::connect(socket_path).await else {
+            reply.reject(ChannelOpenFailure::ConnectFailed).await;
             return Ok(());
         };
         reply.accept().await;
@@ -171,24 +204,73 @@ impl server::Handler for ServerSide {
 
     async fn channel_open_session(
         &mut self,
-        _channel: Channel<Msg>,
+        channel: Channel<Msg>,
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         reply.accept().await;
+        self.sessions.insert(channel.id(), channel);
         Ok(())
     }
 
     async fn exec_request(
         &mut self,
-        channel: ChannelId,
+        id: ChannelId,
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.channel_success(channel)?;
-        session.data(channel, data.to_vec())?;
-        session.exit_status_request(channel, 0)?;
-        session.eof(channel)?;
-        session.close(channel)
+        let Some(channel) = self.sessions.remove(&id) else {
+            return session.channel_failure(id);
+        };
+        session.channel_success(id)?;
+        self.execs.fetch_add(1, Ordering::SeqCst);
+        let command = String::from_utf8_lossy(data).into_owned();
+        tokio::spawn(run(command, channel, session.handle()));
+        Ok(())
     }
+}
+
+/// Runs `command` for an exec channel: what the client sends goes to its
+/// stdin; its stdout, then its exit status, go back through the session's
+/// handle, in that order.
+async fn run(command: String, mut channel: Channel<Msg>, handle: server::Handle) {
+    let id = channel.id();
+    let spawned = tokio::process::Command::new("sh")
+        .args(["-c", &command])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let Ok(mut child) = spawned else {
+        let _ = handle.exit_status_request(id, 127).await;
+        let _ = handle.close(id).await;
+        return;
+    };
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    tokio::spawn(async move {
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => {
+                    if stdin.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        let _ = stdin.shutdown().await;
+    });
+    let mut buffer = vec![0; 32 * 1024];
+    while let Ok(n) = stdout.read(&mut buffer).await {
+        if n == 0 || handle.data(id, buffer[..n].to_vec()).await.is_err() {
+            break;
+        }
+    }
+    let status = child.wait().await.ok().and_then(|s| s.code()).unwrap_or(1);
+    let _ = handle.exit_status_request(id, status as u32).await;
+    let _ = handle.eof(id).await;
+    let _ = handle.close(id).await;
 }

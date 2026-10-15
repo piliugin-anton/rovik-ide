@@ -20,6 +20,7 @@
 //!                 keychain or a file encrypted in its place
 //!   ssh.rs        SSH to a host: a channel to its daemon for each stream,
 //!                 and the commands that set it up
+//!   system_ssh.rs the user's own ssh, forwarding a socket to the daemon
 
 mod client;
 mod connector;
@@ -31,6 +32,7 @@ mod remote;
 pub mod secrets;
 pub mod shadow;
 pub mod ssh;
+pub mod system_ssh;
 #[cfg(test)]
 mod testing;
 
