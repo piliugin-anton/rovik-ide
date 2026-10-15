@@ -107,14 +107,17 @@ pub enum Request {
         excludes: Vec<String>,
     },
     /// Brings the chat's worktree to a snapshot pushed before it (6.7). A
-    /// chat without one gets it there, on its own branch (6.4).
-    /// → `Synced`.
+    /// chat without one gets it there, on its own branch (6.4), with
+    /// `changes`, a commit on the snapshot, written into it: a chat that
+    /// moved with its overlay (T09). → `Synced`.
     WorkSync {
         dialog_id: String,
         project: String,
         snapshot: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         excludes: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        changes: Option<String>,
     },
     /// Commits the chat's worktree as its result now, as a run's end does
     /// (6.5). → `ChatResult`.

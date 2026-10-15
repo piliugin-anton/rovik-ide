@@ -1,6 +1,7 @@
 //! Snapshots of fixture projects (T01, 6.4): what goes in and what stays
 //! out, modes, links and line endings, the stat cache, the parent and its
-//! fallbacks, the guards and packing, and a project left as it was.
+//! fallbacks, the guards and packing, and a project left as it was. And a
+//! chat's overlay folded into the snapshot that moves it (T09).
 //!
 //! A test binary of its own: libgit2's search paths are the process's, and
 //! these tests set them so that the user's global excludes are a fixture's
@@ -11,7 +12,10 @@ use git2::{
     TreeWalkMode, TreeWalkResult,
 };
 use rovik_client::shadow::{Shadow, Snapshot, LARGE_FILE};
+use rovik_core::overlay::fs::{OverlayChange, OverlayFs};
 use rovik_core::testing::{temp_dir, TempDir};
+use rovik_core::vfs::backend::Backend;
+use rovik_core::vfs::store::{Kind, RenameMode, SetAttr, ROOT};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -551,4 +555,146 @@ fn the_rules_only_this_computer_has_go_to_the_server() {
     let excludes = fixture.shadow().excludes();
 
     assert_eq!(excludes, ["secret.txt", "/build-local/", "*.mine"]);
+}
+
+/// What a chat's overlay of the project lists after `change`, as
+/// `overlay::chats::changes` would.
+fn overlay(project: &Path, store: &Path, change: impl FnOnce(&OverlayFs)) -> Vec<OverlayChange> {
+    let fs = OverlayFs::open(project, store, 1 << 30).unwrap();
+    change(&fs);
+    fs.flush();
+    fs.changes()
+        .into_iter()
+        .filter(|c| !c.by_product())
+        .collect()
+}
+
+/// Writes a file in the overlay: the chat's own copy of it.
+fn put(fs: &OverlayFs, path: &str, content: &str) {
+    let ino = fs.resolve(path).unwrap_or_else(|_| {
+        let (parent, name) = fs.resolve_parent(path).unwrap();
+        let made = fs.create(parent, name, Kind::File, 0o644, 0, 0, None);
+        made.unwrap().ino
+    });
+    let empty = SetAttr {
+        size: Some(0),
+        ..SetAttr::default()
+    };
+    fs.setattr(ino, &empty).unwrap();
+    fs.write(ino, 0, content.as_bytes()).unwrap();
+}
+
+/// A commit's files by path, with their contents.
+fn tree_files(repo: &Repository, commit: Oid) -> Vec<(String, String)> {
+    let tree = repo.find_commit(commit).unwrap().tree().unwrap();
+    let mut files = Vec::new();
+    tree.walk(TreeWalkMode::PreOrder, |dir, entry| {
+        if entry.kind() == Some(ObjectType::Blob) {
+            let blob = repo.find_blob(entry.id()).unwrap();
+            let path = format!("{dir}{}", entry.name().unwrap());
+            files.push((path, String::from_utf8_lossy(blob.content()).into_owned()));
+        }
+        TreeWalkResult::Ok
+    })
+    .unwrap();
+    files.sort();
+    files
+}
+
+fn pairs(files: &[(&str, &str)]) -> Vec<(String, String)> {
+    let files = files.iter();
+    files.map(|(p, c)| (p.to_string(), c.to_string())).collect()
+}
+
+#[test]
+fn an_overlay_folds_into_its_landing_base_and_its_changes() {
+    let fixture = Fixture::new();
+    let root = fixture.project();
+    write(&root.join("edited.txt"), "1\n2\n3\n");
+    write(&root.join("deleted.txt"), "gone\n");
+    write(&root.join("moved.txt"), "moving\n");
+    write(&root.join("kept.txt"), "kept\n");
+    commit_all(&root);
+    let changes = overlay(&root, &fixture.dir.0.join("store"), |fs| {
+        put(fs, "edited.txt", "ONE\n2\n3\n");
+        fs.create(ROOT, "new", Kind::Dir, 0o755, 0, 0, None)
+            .unwrap();
+        put(fs, "new/file.txt", "new\n");
+        fs.unlink(ROOT, "deleted.txt").unwrap();
+        let to = fs.create(ROOT, "to", Kind::Dir, 0o755, 0, 0, None).unwrap();
+        let moved = fs.rename(
+            ROOT,
+            "moved.txt",
+            to.ino,
+            "moved.txt",
+            RenameMode::NoReplace,
+        );
+        moved.unwrap();
+    });
+    // The user edits the file after the chat did.
+    write(&root.join("edited.txt"), "1\n2\nTHREE\n");
+
+    let folded = fixture.shadow().fold(CHAT, &changes).unwrap();
+
+    let repo = Repository::open(fixture.shadow_dir()).unwrap();
+    let base = [
+        ("deleted.txt", "gone\n"),
+        ("edited.txt", "1\n2\n3\n"),
+        ("kept.txt", "kept\n"),
+        ("moved.txt", "moving\n"),
+    ];
+    assert_eq!(tree_files(&repo, folded.base), pairs(&base));
+    let start = [
+        ("edited.txt", "ONE\n2\n3\n"),
+        ("kept.txt", "kept\n"),
+        ("new/file.txt", "new\n"),
+        ("to/moved.txt", "moving\n"),
+    ];
+    assert_eq!(tree_files(&repo, folded.start), pairs(&start));
+    let start = repo.find_commit(folded.start).unwrap();
+    assert_eq!(start.parent_id(0).unwrap(), folded.base);
+}
+
+#[test]
+fn a_folded_overlay_stores_what_git_add_would() {
+    let fixture = Fixture::new();
+    let root = fixture.project();
+    open_or_init(&root)
+        .config()
+        .unwrap()
+        .set_bool("core.autocrlf", true)
+        .unwrap();
+    write(&root.join("a.txt"), "1\r\n2\r\n");
+    commit_all(&root);
+    let changes = overlay(&root, &fixture.dir.0.join("store"), |fs| {
+        put(fs, "a.txt", "ONE\r\n2\r\n");
+    });
+
+    let folded = fixture.shadow().fold(CHAT, &changes).unwrap();
+
+    let repo = Repository::open(fixture.shadow_dir()).unwrap();
+    assert_eq!(
+        tree_files(&repo, folded.base),
+        pairs(&[("a.txt", "1\n2\n")])
+    );
+    assert_eq!(
+        tree_files(&repo, folded.start),
+        pairs(&[("a.txt", "ONE\n2\n")])
+    );
+}
+
+#[test]
+fn a_deleted_file_changed_since_is_settled_before_a_move() {
+    let fixture = Fixture::new();
+    let root = fixture.project();
+    write(&root.join("a.txt"), "a\n");
+    commit_all(&root);
+    let changes = overlay(&root, &fixture.dir.0.join("store"), |fs| {
+        fs.unlink(ROOT, "a.txt").unwrap();
+    });
+    write(&root.join("a.txt"), "changed here\n");
+
+    let refused = fixture.shadow().fold(CHAT, &changes).unwrap_err();
+
+    assert!(refused.contains("a.txt"), "{refused}");
 }

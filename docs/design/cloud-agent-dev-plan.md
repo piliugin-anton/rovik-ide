@@ -1800,3 +1800,22 @@ Tasks add notes here when reality differs from the plan.
     in, one rename after the other, then deleting the old one: before, the
     chat had no store while the old one was deleted, and a test that read
     the project in that gap saw the old file.
+- **T09, the overlay moves with the chat.**
+  - `Shadow::fold` takes a fresh snapshot and the chat's overlay changes
+    (`chats::changes`), and builds `S0'`, a commit on the snapshot, and
+    `C0`, a commit on `S0'`.
+  - A file the chat created, and a move's destination, aren't in `S0'`,
+    unless the chat replaced a project file there. A deleted file is in it
+    as the project has it now: a deletion whose file changed here since is
+    a conflict, and folding refuses it until it's settled, as 6.8's
+    preflight asks. A move without a change of content takes the project's
+    file. Folders aren't entries of their own.
+  - Base copies and upper files are stored through the shadow's filters
+    for their paths (`Repository::blob_writer` with the path as its hint),
+    so a CRLF file is stored as `git add` would store it.
+  - `WorkSync` grows `changes`: a commit on `snapshot` that a new worktree
+    checks out as changes, its index left on the snapshot, so the agent's
+    `git status` shows them as the chat's own. A chat that has a worktree
+    already ignores it. M04's import can make worktrees the same way.
+  - Moving itself (pushing `C0`, the flip, removing the local store) is
+    M06's: the test does those steps by hand.

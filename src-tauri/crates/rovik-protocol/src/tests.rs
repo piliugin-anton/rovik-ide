@@ -413,6 +413,14 @@ fn every_request_round_trips() {
                 project: "p".into(),
                 snapshot: "0123456789abcdef0123456789abcdef01234567".into(),
                 excludes: vec!["*.local".into()],
+                changes: None,
+            },
+            Request::WorkSync {
+                dialog_id: "d".into(),
+                project: "p".into(),
+                snapshot: "0123456789abcdef0123456789abcdef01234567".into(),
+                excludes: Vec::new(),
+                changes: Some("89abcdef0123456789abcdef0123456789abcdef".into()),
             },
             Request::WorkResult {
                 dialog_id: "d".into(),

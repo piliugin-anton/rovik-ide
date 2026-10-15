@@ -24,6 +24,9 @@
 //!   user has chosen to send the project without its history, it is the
 //!   chat's previous snapshot, or none.
 //!
+//! A chat that moves to a server takes its overlay with it, folded into its
+//! snapshot (`Shadow::fold`): its landing base and its changes on it.
+//!
 //! A chat's results come back the same way: fetched into the shadow, and
 //! imported from there as the chat's overlay store (`overlay::import`), so
 //! their files are checked out with the project's settings (K40). The last
@@ -32,8 +35,10 @@
 //! Each operation holds the shadow for itself: two at once would race on
 //! its index.
 
+mod fold;
 mod guards;
 
+pub use fold::Folded;
 pub use guards::{Guards, LARGE_FILE, LARGE_HISTORY};
 
 use git2::{Commit, Config, Oid, Reference, Repository, RepositoryInitOptions, Signature};

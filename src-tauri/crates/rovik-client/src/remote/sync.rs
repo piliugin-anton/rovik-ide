@@ -90,6 +90,7 @@ impl Remote {
             project: snapshot.project.clone(),
             snapshot: snapshot.commit.to_string(),
             excludes: snapshot.excludes.clone(),
+            changes: None,
         };
         let synced: Synced = client.request(sync).await.map_err(|f| f.message)?;
         self.tell_sync(dialog_id, &synced);

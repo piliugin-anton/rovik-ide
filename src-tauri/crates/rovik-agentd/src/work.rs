@@ -11,6 +11,7 @@
 use crate::daemon::Daemon;
 use crate::store::Place;
 use crate::sync::{self, Merged};
+use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, WorktreeAddOptions, WorktreePruneOptions};
 use rovik_core::chat_db::{projects, store};
 use rovik_core::{project_profile, rt};
@@ -48,15 +49,16 @@ pub async fn ensure_project(
     Ok(Response::Done)
 }
 
-/// `WorkSync`: a chat without a worktree gets one at the snapshot. A chat
-/// that has one gets the snapshot merged into it.
+/// `WorkSync` of `(chat, project)`: a chat without a worktree gets one at
+/// the snapshot, with `changes` written into it when it moved with its
+/// overlay (T09). A chat that has one gets the snapshot merged into it.
 pub async fn sync(
     daemon: &Daemon,
     computer: &str,
-    chat: &str,
-    project: &str,
+    (chat, project): (&str, &str),
     snapshot: &str,
     excludes: Vec<String>,
+    changes: Option<String>,
 ) -> Result<Response, Fail> {
     if !plain(chat) {
         return Err(bad_request(format!("{chat} isn't a chat's id.")));
@@ -81,9 +83,17 @@ pub async fn sync(
         chat.to_string(),
         worktree.clone(),
     );
+    let changes = changes
+        .map(|changes| Oid::from_str(&changes))
+        .transpose()
+        .map_err(|_| bad_request("Not a commit's id."))?;
     let made = rt::spawn_blocking(move || {
         let repo = projects.prepare(&id, &excludes)?;
-        make_worktree(&repo, &name, base, &at)
+        make_worktree(&repo, &name, base, &at)?;
+        match changes {
+            Some(changes) => write_changes(base, changes, &at),
+            None => Ok(()),
+        }
     });
     made.await.map_err(joined)??;
 
@@ -290,6 +300,26 @@ fn make_worktree(repo: &Repository, chat: &str, base: Oid, at: &Path) -> Result<
     opts.reference(Some(branch.get()));
     repo.worktree(chat, at, Some(&opts)).map_err(git)?;
     Ok(())
+}
+
+/// Writes the chat's changes, a commit on its base, into its new worktree
+/// as changes, its index left on the base: the agent's `git status` shows
+/// them as the chat's own (T09).
+fn write_changes(base: Oid, changes: Oid, at: &Path) -> Result<(), Fail> {
+    let worktree = Repository::open(at).map_err(git)?;
+    let changes = worktree
+        .find_commit(changes)
+        .map_err(|_| bad_request("The chat's changes aren't on this server: push them first."))?;
+    if changes.parent_id(0).ok() != Some(base) {
+        return Err(bad_request(
+            "The chat's changes aren't a commit on its snapshot.",
+        ));
+    }
+    let mut opts = CheckoutBuilder::new();
+    opts.force().update_index(false);
+    worktree
+        .checkout_tree(changes.as_object(), Some(&mut opts))
+        .map_err(git)
 }
 
 /// What a chat leaves in a project's repository: its worktree's record, its
