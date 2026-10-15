@@ -1,8 +1,9 @@
 //! Syncing before each message (T07, 6.7, D14): a local edit to a file the
 //! chat didn't touch is in its worktree before its next turn. With "chat
 //! resolves conflicts" on, a conflicting text edit gets the local kind of
-//! markers there, the chat is told, and its result waits until they're
-//! gone, by itself and with a manual Land. With it off the sync waits, the
+//! markers there, the chat is told, its run is reminded of them as it
+//! ends, and its result waits until they're gone, by itself and with a
+//! manual Land. With it off the sync waits, the
 //! chat goes on with its older copy, and the app says why. A binary
 //! conflict waits whatever the setting.
 
@@ -87,7 +88,10 @@ async fn a_conflict_gets_markers_and_the_result_waits_for_them() {
     let (url, asked) = model(vec![
         writes("w1", "src/main.rs", "fn main() { remote() }\n"),
         Reply::Text("Done."),
+        // Reminded of them twice as its run ends, it leaves them.
         Reply::Text("I'll look at the markers later."),
+        Reply::Text("Later."),
+        Reply::Text("Later still."),
         writes("w3", "src/main.rs", "fn main() { local(); remote() }\n"),
         Reply::Text("Settled."),
     ])
@@ -141,6 +145,55 @@ async fn a_conflict_gets_markers_and_the_result_waits_for_them() {
     // Settled by the chat, it lands.
     app.remote.start(message(&setup, &url, "u3")).await.unwrap();
 
+    let both = "fn main() { local(); remote() }\n";
+    landed_as(&setup, "src/main.rs", both).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_reminded_of_its_markers_settles_them() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.remote.set_open_project(None);
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let (url, asked) = model(vec![
+        writes("w1", "src/main.rs", "fn main() { remote() }\n"),
+        Reply::Text("Done."),
+        Reply::Text("I'll look at the markers later."),
+        writes("w3", "src/main.rs", "fn main() { local(); remote() }\n"),
+        Reply::Text("Settled."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    result_waits().await;
+    let first = import::imported(CHAT).unwrap().commit;
+    write(
+        &setup.project.join("src/main.rs"),
+        "fn main() { local() }\n",
+    );
+
+    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
+
+    // Reminded as its run ends, the chat settles them in the same run.
+    until("the chat reminded of its markers", || {
+        let reminder = "Conflict markers are still in `src/main.rs`";
+        let requests = asked.lock().unwrap();
+        requests
+            .iter()
+            .map(Value::to_string)
+            .find(|r| r.contains(reminder))
+    })
+    .await;
+    until("its settled result here", || {
+        let newer = import::imported(CHAT).filter(|i| i.commit != first);
+        newer.filter(|_| chats::markers_left(CHAT).is_empty())
+    })
+    .await;
+    let open = (PROJECT.to_string(), setup.project.clone());
+    app.remote.set_open_project(Some(open));
     let both = "fn main() { local(); remote() }\n";
     landed_as(&setup, "src/main.rs", both).await;
 }

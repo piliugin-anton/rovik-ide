@@ -10,7 +10,7 @@ use crate::home::{self, Home};
 use crate::logfile;
 use crate::packs::Projects;
 use crate::restart;
-use crate::results::Results;
+use crate::results::{self, Results};
 use crate::server::{self, OwnUser};
 use crate::store::Store;
 use crate::work;
@@ -85,6 +85,10 @@ async fn run(
     let configs = store.clone();
     core.agents
         .set_resolver(Arc::new(move |chat| configs.config_of(chat)));
+    // A run that leaves conflict markers is reminded of them (6.7).
+    let marks = store.clone();
+    core.agents
+        .set_markers_resolver(Arc::new(move |chat| results::marked_left(&marks, chat)));
     core.agents.set_on_server();
 
     // 6. The virtual files, so CLM chats can use them (K15).

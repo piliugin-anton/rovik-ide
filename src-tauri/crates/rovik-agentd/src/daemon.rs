@@ -8,7 +8,7 @@ use crate::changes;
 use crate::events::Events;
 use crate::host;
 use crate::packs::Projects;
-use crate::results::Results;
+use crate::results::{self, Results};
 use crate::store::Store;
 use crate::work;
 use rovik_core::agent_run::wire_content;
@@ -137,6 +137,11 @@ impl Daemon {
         let Some(files) = self.store.marks_to_tell(&start.dialog_id) else {
             return;
         };
+        // Named as the chat sees them, from its root.
+        let files = results::in_root(&self.store.subpath_of(&start.dialog_id), files);
+        if files.is_empty() {
+            return;
+        }
         let text = (start.current_user_content.take()).unwrap_or_else(|| wire_content(message));
         let note = chats::markers_note(&files);
         start.current_user_content = Some(format!("{text}\n\nNote: {note}"));

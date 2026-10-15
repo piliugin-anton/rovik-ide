@@ -1779,8 +1779,8 @@ Tasks add notes here when reality differs from the plan.
     result lists the marked files that still have their markers
     (`ChatResult.marked`), which the import writes to `markers.json`, so
     landing waits until they're gone.
-  - A daemon run isn't reminded of markers left when it ends
-    (`remind_of_markers`): that stays an overlay chat's.
+  - A daemon run wasn't reminded of markers left when it ended
+    (`remind_of_markers`); since the review below, it is.
   - T06's tests now go through the sync. The undo test checks that the
     next message's sync took the undo to the worktree. The conflict test's
     chat doesn't resolve conflicts, so its second message's sync waits, and
@@ -1898,3 +1898,12 @@ Tasks add notes here when reality differs from the plan.
     `chat_answer_copy` and `chat_answer_moved` tell `Remote`
     (`folder_answered`), and results that waited for the new project land.
     Before, the first project's results landed in the copy's folder.
+  - A daemon run that ends with conflict markers left is reminded of them,
+    twice at most, as an overlay chat's is: the daemon gives its core the
+    files it marked that still have them (`set_markers_resolver`), and
+    `remind_of_markers` asks it. The T07 test's chat now leaves its
+    markers after two reminders. The daemon keeps every mark from the
+    worktree's root: those handed to the chat (`WorkConflictsToChat`) were
+    kept from the project's folder, so in a project in a subfolder their
+    markers weren't found and the result didn't wait for them. The note
+    and the reminder name the files from the chat's root.

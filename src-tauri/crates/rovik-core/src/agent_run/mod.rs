@@ -145,10 +145,16 @@ type WaitKey = (String, String);
 /// configuration: a daemon keeps one for each computer (D16). None: the one.
 pub type ConfigResolver = Arc<dyn Fn(&str) -> Option<AgentConfig> + Send + Sync>;
 
+/// The files a chat was given conflict markers in that still have them,
+/// from its run's root, where it isn't an overlay that knows: a daemon
+/// knows its worktrees' (6.7).
+pub type MarkersResolver = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
+
 #[derive(Default)]
 struct Inner {
     config: AgentConfig,
     resolver: Option<ConfigResolver>,
+    markers: Option<MarkersResolver>,
     /// The runs work in a server's worktrees (D8, server.rs).
     on_server: bool,
     runs: HashMap<String, RunControl>,
@@ -208,6 +214,16 @@ impl AgentState {
     /// Runs follow the resolver's configuration from now on (a daemon's).
     pub fn set_resolver(&self, resolver: ConfigResolver) {
         self.lock().resolver = Some(resolver);
+    }
+
+    /// Where a run finds the files it still has conflict markers in, for
+    /// its reminder when it ends (6.7): a daemon's worktrees.
+    pub fn set_markers_resolver(&self, resolver: MarkersResolver) {
+        self.lock().markers = Some(resolver);
+    }
+
+    fn markers_resolver(&self) -> Option<MarkersResolver> {
+        self.lock().markers.clone()
     }
 
     /// The runs work in a server's worktrees from now on, under its rules

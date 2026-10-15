@@ -391,15 +391,22 @@ impl Run {
     }
 
     /// The model says it's done, but conflict markers handed to it are
-    /// still in its files: it's told, twice at most. True: it was told.
+    /// still in its files: it's told, twice at most. True: it was told. An
+    /// isolated chat's overlay knows its marked files; a server's daemon
+    /// knows those of its worktrees (6.7).
     pub(super) async fn remind_of_markers(&mut self) -> Result<bool, String> {
-        if self.root == self.project_root || self.plan_mode || self.marker_reminders >= 2 {
+        if self.plan_mode || self.marker_reminders >= 2 {
             return Ok(false);
         }
         let id = self.dialog_id.clone();
-        let left = crate::rt::spawn_blocking(move || chats::markers_left(&id))
-            .await
-            .unwrap_or_default();
+        let left = match self.core.agents.markers_resolver() {
+            Some(left) => crate::rt::spawn_blocking(move || left(&id)).await,
+            None if self.root != self.project_root => {
+                crate::rt::spawn_blocking(move || chats::markers_left(&id)).await
+            }
+            None => return Ok(false),
+        }
+        .unwrap_or_default();
         if left.is_empty() {
             return Ok(false);
         }

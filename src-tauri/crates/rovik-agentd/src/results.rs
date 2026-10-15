@@ -283,6 +283,29 @@ fn checks_would_run(config_dir: &Path, root: &Path, config: &AgentConfig) -> boo
     agent_run::checks_would_run(p, &checks)
 }
 
+/// Of the files the chat was given conflict markers in, those that still
+/// have them, from its root: what its run is reminded of (6.7).
+pub fn marked_left(store: &Store, chat: &str) -> Vec<String> {
+    let Some(place) = store.place(chat) else {
+        return Vec::new();
+    };
+    let left = markers_left(&place.worktree, store.marked_of(chat));
+    in_root(&store.subpath_of(chat), left)
+}
+
+/// Paths from the worktree's root, from the chat's root instead: the
+/// project's folder in it (`subpath`). Those outside it are left out.
+pub fn in_root(subpath: &str, paths: Vec<String>) -> Vec<String> {
+    if subpath.is_empty() {
+        return paths;
+    }
+    let prefix = format!("{subpath}/");
+    let paths = paths.into_iter();
+    paths
+        .filter_map(|path| path.strip_prefix(&prefix).map(String::from))
+        .collect()
+}
+
 /// Of the files a sync marked, those whose markers are still in the
 /// worktree.
 fn markers_left(worktree: &Path, marked: Vec<String>) -> Vec<String> {
@@ -351,4 +374,16 @@ fn file_mode(entry: &git2::TreeEntry) -> Option<FileMode> {
 
 fn internal(message: String) -> Fail {
     Fail::new(FailCode::Internal, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_root;
+
+    #[test]
+    fn paths_from_the_worktree_are_named_from_the_chats_root() {
+        let paths = || vec!["web/src/a.ts".to_string(), "api/main.go".to_string()];
+        assert_eq!(in_root("", paths()), paths());
+        assert_eq!(in_root("web", paths()), ["src/a.ts"], "api is outside");
+    }
 }

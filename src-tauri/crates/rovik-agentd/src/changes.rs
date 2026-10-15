@@ -111,12 +111,13 @@ pub async fn to_chat(
         let paths: Vec<String> = marked.iter().map(|(_, at)| at.clone()).collect();
         let moved = move_base(&place.worktree, &base, snapshot, &paths, &name)?;
         let files = marked.into_iter().map(|(path, _)| path).collect::<Vec<_>>();
-        Ok::<_, Fail>((files, moved))
+        Ok::<_, Fail>((files, paths, moved))
     });
-    let (files, base) = marked.await.map_err(joined)??;
+    let (files, paths, base) = marked.await.map_err(joined)??;
     daemon.store.base_moved(chat, &base.to_string());
-    // The message that hands them over tells the chat itself.
-    daemon.store.mark(chat, &files, false);
+    // Kept from the worktree's root, as a sync's are. The message that
+    // hands them over tells the chat itself.
+    daemon.store.mark(chat, &paths, false);
     Ok(Response::Handed(Handed { files }))
 }
 
