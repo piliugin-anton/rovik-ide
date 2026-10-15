@@ -1,0 +1,16 @@
+[package]
+name = "rovik-client"
+version.workspace = true
+description = "The app's half of the protocol: a connection to an agent daemon"
+edition.workspace = true
+
+[dependencies]
+rovik-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+futures-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util.workspace = true
+http-body-util.workspace = true
+tokio-tungstenite.workspace = true

@@ -1,11 +1,13 @@
 [workspace]
 # The app is the root package, so the Tauri CLI and tauri.conf.json stay
 # where they are. The agent and what it uses are in crates/rovik-core,
-# without Tauri, and what the app and the daemon send each other is in
-# crates/rovik-protocol (docs/design/cloud-agent-dev-plan.md, D1).
+# without Tauri, what the app and the daemon send each other is in
+# crates/rovik-protocol, and the app's connection to a daemon in
+# crates/rovik-client (docs/design/cloud-agent-dev-plan.md, D1).
 members = [
     "crates/rovik-protocol",
     "crates/rovik-core",
+    "crates/rovik-client",
     "crates/rovik-agentd",
     "crates/rovik-headless",
 ]
@@ -19,6 +21,7 @@ edition = "2021"
 [workspace.dependencies]
 rovik-protocol = { path = "crates/rovik-protocol" }
 rovik-core = { path = "crates/rovik-core" }
+rovik-client = { path = "crates/rovik-client" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.13", features = ["json", "rustls", "stream"] }
@@ -32,6 +35,14 @@ git2 = { version = "0.21.0", features = ["vendored-libgit2"] }
 sha2 = "0.11.0"
 regex = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+log = "0.4"
+# HTTP and the WebSocket between the app and the daemon (4.1). The
+# WebSocket is tungstenite's own, the version the core already has
+# (through eoka).
+hyper = "1.12"
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 libc = "0.2"
 windows = "0.62"
 

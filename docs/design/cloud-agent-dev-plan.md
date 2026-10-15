@@ -1478,3 +1478,25 @@ Tasks add notes here when reality differs from the plan.
     the database from a checkpoint's pause, with the kind R02 writes
     (`recovery::DRAIN`). The daemon tests read the rows a killed daemon
     left with `rusqlite`, now one of the workspace's shared dependencies.
+- **P07, the client.**
+  - Its tests against the real binary are in `rovik-agentd`
+    (`tests/client.rs`), since only a binary's own package can run it from
+    its tests. Its unit tests talk to a daemon of their own over an
+    in-memory stream, which can ask for a newer app than the real one.
+  - What a client hears goes to the sink it's given, in order: its state,
+    each `Subscribed`, the events. The core's events go to an `EventSink`
+    the same way.
+  - Back on a daemon of another boot, the client subscribes from that
+    boot's first event (P06) and says `complete: false`: its chats catch
+    up from the database, then get what the daemon did before anyone
+    connected.
+  - 6.10's other half is here too: the client connects again at once
+    when the wall clock runs 30 s ahead of the monotonic one, which stops
+    while the computer sleeps. It sends no pings: H02's keepalives find
+    a dead SSH link.
+  - A call fails as `Unreachable` while there's no link, and after 60 s
+    without a reply. A reply that came back `TooLarge` is asked again
+    through `POST /call`, whatever the call: only reads have replies that
+    big.
+  - The HTTP and WebSocket crates the client shares with the daemon, and
+    `log`, are workspace dependencies now.

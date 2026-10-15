@@ -13,14 +13,13 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"
 futures-util.workspace = true
 sha2.workspace = true
 uuid.workspace = true
-log = "0.4"
+log.workspace = true
 toml = "1.1"
-# The HTTP server on the socket, and the WebSocket at /rpc. The WebSocket
-# is tungstenite's own, the version the core already has (through eoka).
+# The HTTP server on the socket, and the WebSocket at /rpc.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
-hyper = { version = "1.12", features = ["http1", "server"] }
-hyper-util = { version = "0.1.21", features = ["tokio"] }
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util.workspace = true
+tokio-tungstenite.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -30,6 +29,8 @@ libc.workspace = true
 rovik-core = { workspace = true, features = ["testing"] }
 # The rows a killed daemon left, read from its database.
 rusqlite.workspace = true
+# The app's client, against the real daemon.
+rovik-client.workspace = true
 tokio = { workspace = true, features = ["process"] }
-hyper = { version = "1.12", features = ["client", "http1"] }
-http-body-util = "0.1.5"
+hyper = { workspace = true, features = ["client", "http1"] }
+http-body-util.workspace = true

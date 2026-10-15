@@ -3868,6 +3868,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "log",
+ "rovik-client",
  "rovik-core",
  "rovik-protocol",
  "rusqlite",
@@ -3878,6 +3879,21 @@ dependencies = [
  "tokio-tungstenite",
  "toml 1.1.8+spec-1.1.0",
  "uuid",
+]
+
+[[package]]
+name = "rovik-client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rovik-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
