@@ -1,0 +1,286 @@
+//! What the daemon tests share: the real binary started on a temporary
+//! socket and data folder, in a process of its own so its statics never
+//! meet the test's (plan section 9), and a small client for it: HTTP and
+//! the WebSocket of 4.1 over any stream.
+
+#![allow(dead_code)] // each test file uses part of it
+
+use futures_util::{SinkExt, StreamExt};
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::{Request as HttpRequest, StatusCode};
+use hyper_util::rt::TokioIo;
+use rovik_core::testing::{temp_dir, TempDir};
+use rovik_protocol::{Fail, Frame, Request, Response, Secret, PROTOCOL};
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::UnixStream;
+use tokio::process::{Child, Command};
+use tokio_tungstenite::tungstenite::http::Uri;
+use tokio_tungstenite::tungstenite::{ClientRequestBuilder, Message};
+use tokio_tungstenite::WebSocketStream;
+
+/// The computer config.toml names.
+pub const COMPUTER: &str = "laptop";
+
+pub const BINARY: &str = env!("CARGO_BIN_EXE_rovik-agentd");
+
+pub struct Daemon {
+    child: Child,
+    pub socket: PathBuf,
+    /// The daemon's folder (`--data`).
+    pub data: PathBuf,
+    /// The token of `COMPUTER`.
+    pub token: String,
+    /// Goes after the daemon.
+    pub dir: TempDir,
+}
+
+impl Daemon {
+    /// A daemon serving `COMPUTER`, with `args` after its own.
+    pub async fn start(args: &[&str]) -> Daemon {
+        let dir = temp_dir();
+        let data = dir.0.join("rovik");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let token = uuid::Uuid::new_v4().to_string();
+        std::fs::write(
+            data.join("config.toml"),
+            format!("[tokens]\n{COMPUTER} = \"{}\"\n", sha256_hex(&token)),
+        )
+        .unwrap();
+        let socket = dir.0.join("agentd.sock");
+        let stderr = std::fs::File::create(dir.0.join("stderr")).unwrap();
+        let child = Command::new(BINARY)
+            .arg("serve")
+            .arg("--data")
+            .arg(&data)
+            .arg("--socket")
+            .arg(&socket)
+            .arg("--no-virtual-files")
+            .args(args)
+            // A login shell that answers at once, and no real home.
+            .env("SHELL", "/bin/sh")
+            .env("HOME", &dir.0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut daemon = Daemon {
+            child,
+            socket,
+            data,
+            token,
+            dir,
+        };
+        daemon.wait_until_it_answers().await;
+        daemon
+    }
+
+    async fn wait_until_it_answers(&mut self) {
+        for _ in 0..300 {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                panic!("the daemon exited ({status}):\n{}", self.output());
+            }
+            if UnixStream::connect(&self.socket).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the daemon didn't answer:\n{}", self.output());
+    }
+
+    /// Its stderr and its log, for a failing test's message.
+    pub fn output(&self) -> String {
+        let read = |p: PathBuf| std::fs::read_to_string(p).unwrap_or_default();
+        format!(
+            "stderr:\n{}\nlog:\n{}",
+            read(self.dir.0.join("stderr")),
+            self.log()
+        )
+    }
+
+    pub fn log(&self) -> String {
+        std::fs::read_to_string(self.data.join("logs/agentd.log")).unwrap_or_default()
+    }
+
+    pub async fn stream(&self) -> UnixStream {
+        UnixStream::connect(&self.socket).await.unwrap()
+    }
+
+    /// An HTTP request on a connection of its own.
+    pub async fn http(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Vec<u8>,
+    ) -> (StatusCode, Bytes) {
+        http(self.stream().await, method, path, token, body).await
+    }
+
+    /// `POST /call` with `COMPUTER`'s token: the reply, as a frame.
+    pub async fn post_call(&self, id: u64, req: Request) -> Frame {
+        let body = serde_json::to_vec(&Frame::Call { id, req }).unwrap();
+        let (status, body) = self.http("POST", "/call", Some(&self.token), body).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// A WebSocket session of `COMPUTER`, past its Welcome.
+    pub async fn session(&self) -> Session<UnixStream> {
+        Session::open(self.stream().await, &self.token)
+            .await
+            .unwrap_or_else(|e| panic!("no session: {e}\n{}", self.output()))
+    }
+}
+
+pub fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+pub async fn http<S>(
+    io: S,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Vec<u8>,
+) -> (StatusCode, Bytes)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))
+        .await
+        .unwrap();
+    tokio::spawn(connection);
+    let mut request = HttpRequest::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "rovik-agentd");
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = sender
+        .send_request(request.body(Full::new(Bytes::from(body))).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    (
+        status,
+        response.into_body().collect().await.unwrap().to_bytes(),
+    )
+}
+
+/// A WebSocket upgrade at /rpc with this token.
+pub async fn websocket<S>(
+    io: S,
+    token: &str,
+) -> Result<WebSocketStream<S>, tokio_tungstenite::tungstenite::Error>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let uri: Uri = "ws://rovik-agentd/rpc".parse().unwrap();
+    let request =
+        ClientRequestBuilder::new(uri).with_header("Authorization", format!("Bearer {token}"));
+    tokio_tungstenite::client_async(request, io)
+        .await
+        .map(|(socket, _)| socket)
+}
+
+pub struct Session<S> {
+    pub socket: WebSocketStream<S>,
+    pub welcome: Frame,
+    next_id: u64,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
+    /// Hello as `COMPUTER` with `token`, and the daemon's Welcome.
+    pub async fn open(io: S, token: &str) -> Result<Session<S>, String> {
+        let mut socket = websocket(io, token).await.map_err(|e| e.to_string())?;
+        send(&mut socket, &hello(token)).await;
+        match recv(&mut socket).await {
+            Some(welcome @ Frame::Welcome { .. }) => Ok(Session {
+                socket,
+                welcome,
+                next_id: 1,
+            }),
+            other => Err(format!("no Welcome: {other:?}")),
+        }
+    }
+
+    pub async fn send(&mut self, frame: &Frame) {
+        send(&mut self.socket, frame).await
+    }
+
+    pub async fn recv(&mut self) -> Option<Frame> {
+        recv(&mut self.socket).await
+    }
+
+    /// A call, and its reply; frames that come meanwhile are dropped.
+    pub async fn call(&mut self, req: Request) -> Result<Response, Fail> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(&Frame::Call { id, req }).await;
+        loop {
+            match self.recv().await.expect("the daemon closed the session") {
+                Frame::Reply { id: got, res } if got == id => return res,
+                _ => continue,
+            }
+        }
+    }
+}
+
+pub fn hello(token: &str) -> Frame {
+    Frame::Hello {
+        protocol: PROTOCOL,
+        client: "daemon tests".into(),
+        device: COMPUTER.into(),
+        token: Secret(token.into()),
+    }
+}
+
+pub async fn send<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut WebSocketStream<S>,
+    frame: &Frame,
+) {
+    let text = serde_json::to_string(frame).unwrap();
+    socket.send(Message::Text(text.into())).await.unwrap();
+}
+
+/// The next frame, or none once the daemon has closed.
+pub async fn recv<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut WebSocketStream<S>,
+) -> Option<Frame> {
+    let wait = Duration::from_secs(30);
+    loop {
+        match tokio::time::timeout(wait, socket.next()).await.ok()?? {
+            Ok(Message::Text(text)) => return Some(serde_json::from_str(&text).unwrap()),
+            Ok(Message::Close(_)) | Err(_) => return None,
+            Ok(_) => continue,
+        }
+    }
+}
+
+/// The close frame's code and reason, once the daemon closes the session.
+pub async fn closed_with<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut WebSocketStream<S>,
+) -> Option<(u16, String)> {
+    loop {
+        match socket.next().await? {
+            Ok(Message::Close(Some(frame))) => {
+                return Some((frame.code.into(), frame.reason.to_string()))
+            }
+            Ok(Message::Close(None)) | Err(_) => return None,
+            Ok(_) => continue,
+        }
+    }
+}

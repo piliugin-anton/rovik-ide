@@ -15,6 +15,7 @@ pub mod clm;
 pub mod diff;
 pub mod events;
 mod frame;
+pub mod host;
 pub mod permissions;
 pub mod plan;
 mod request;

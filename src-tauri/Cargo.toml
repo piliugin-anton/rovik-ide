@@ -3,7 +3,12 @@
 # where they are. The agent and what it uses are in crates/rovik-core,
 # without Tauri, and what the app and the daemon send each other is in
 # crates/rovik-protocol (docs/design/cloud-agent-dev-plan.md, D1).
-members = ["crates/rovik-protocol", "crates/rovik-core", "crates/rovik-headless"]
+members = [
+    "crates/rovik-protocol",
+    "crates/rovik-core",
+    "crates/rovik-agentd",
+    "crates/rovik-headless",
+]
 resolver = "2"
 
 [workspace.package]

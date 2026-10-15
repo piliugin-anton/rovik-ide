@@ -7,6 +7,7 @@ use crate::chat::{ChatModel, MessagePatch, ToolCall};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
 use crate::events::*;
+use crate::host::{HostInfo, Install};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
@@ -367,6 +368,7 @@ fn every_request_round_trips() {
                 dialog_id: "d".into(),
                 number: 2,
             },
+            Request::HostInfo,
         ],
     );
 }
@@ -420,6 +422,23 @@ fn every_response_round_trips() {
                 tokens: 10,
             }]),
             Response::Text("revision text".into()),
+            Response::HostInfo(HostInfo {
+                version: "0.1.0".into(),
+                protocol: PROTOCOL,
+                min_protocol: 1,
+                os: "linux".into(),
+                arch: "x86_64".into(),
+                user: "me".into(),
+                virtual_files: false,
+                virtual_files_problem: Some("/dev/fuse is missing".into()),
+                chrome: Some("/usr/bin/chromium".into()),
+                user_namespaces: true,
+                install: Some(Install {
+                    admins: vec!["me".into()],
+                }),
+                other_daemons: 2,
+            }),
+            Response::HostInfo(HostInfo::default()),
         ],
     );
 }

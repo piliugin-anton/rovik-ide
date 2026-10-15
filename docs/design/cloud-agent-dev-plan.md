@@ -1410,3 +1410,26 @@ Tasks add notes here when reality differs from the plan.
   The e2e suites call `dispatch` through stand-ins with the operations'
   names in the harness, so the suites' only change is an `.await` on
   those calls.
+- **P03, the daemon's edges.**
+  - `serve --data DIR` keeps both of the daemon's folders in DIR.
+    `serve --no-virtual-files` skips the mount: the daemon tests use it, so
+    a test that kills the daemon leaves no dead mount, and an
+    administrator can turn FUSE off.
+  - Every request but `/health` carries its token (4.4), the WebSocket's
+    upgrade too, and its `Hello` must name the same computer with the same
+    token. A refused upgrade or `/call` gets a 401 with a `Fail`; a refused
+    `Hello` closes the session with code 1008.
+  - Without `--same-machine`, `AgentStart` is refused. With it, a chat
+    with no row on the daemon gets one, until M04 imports chats, and runs
+    in its start's folder without an overlay (D8).
+  - Events go nowhere until P04. The core's own messages still go to
+    stderr, which is the journal under systemd; `agentd.log` has the
+    daemon's.
+  - The test of a reply over 1 MB found two slow spots in the core. A
+    reply's stream was searched for an event's end from the start of the
+    buffer at each chunk, which is quadratic for a tool call sent as one
+    event. The diff behind an edit approval sized its search by the files
+    instead of by its 2,000-line limit, so rewriting a big file copied
+    gigabytes. Both now cost what the input does. The editor's diff
+    (lineDiff.ts), which must give the same hunks, copied the same way, and
+    applying a hunk of 200,000 lines overflowed its stack; it's fixed too.

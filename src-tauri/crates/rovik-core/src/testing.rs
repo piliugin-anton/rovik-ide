@@ -236,25 +236,32 @@ pub async fn model_routed(
 async fn read_request(socket: &mut tokio::net::TcpStream) -> Value {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 65536];
+    // Where the body starts and how long it is, once the headers are in:
+    // read once, so a request of megabytes isn't searched again per chunk.
+    let mut body: Option<(usize, usize)> = None;
     loop {
         let n = socket.read(&mut chunk).await.unwrap_or(0);
         if n == 0 {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        let text = String::from_utf8_lossy(&buf);
-        if let Some(end) = text.find("\r\n\r\n") {
-            let length = text[..end]
-                .lines()
-                .find_map(|l| {
-                    l.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(|v| v.trim().to_string())
-                })
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(0);
-            if buf.len() >= end + 4 + length {
-                return serde_json::from_slice(&buf[end + 4..end + 4 + length]).unwrap_or_default();
+        if body.is_none() {
+            body = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|end| {
+                let length = String::from_utf8_lossy(&buf[..end])
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().to_string())
+                    })
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(0);
+                (end + 4, length)
+            });
+        }
+        if let Some((start, length)) = body {
+            if buf.len() >= start + length {
+                return serde_json::from_slice(&buf[start..start + length]).unwrap_or_default();
             }
         }
     }

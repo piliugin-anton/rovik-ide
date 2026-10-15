@@ -16,14 +16,20 @@ enum Op {
 }
 
 fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Op>> {
+    // At least the difference in length apart: past the limit, no search.
+    if a.len().abs_diff(b.len()) > MAX_EDIT_DISTANCE {
+        return None;
+    }
     let n = a.len() as isize;
     let m = b.len() as isize;
-    let max = n + m;
+    // The search stops at the limit, so the diagonals it visits, and the
+    // copy of them each step keeps, are bounded by it, not by the files.
+    let max = (n + m).min(MAX_EDIT_DISTANCE as isize);
     let off = max + 1;
     let mut v = vec![0isize; (2 * max + 3) as usize];
     let mut trace: Vec<Vec<isize>> = Vec::new();
 
-    for d in 0..=max.min(MAX_EDIT_DISTANCE as isize) {
+    for d in 0..=max {
         trace.push(v.clone());
         let mut k = -d;
         while k <= d {
@@ -156,6 +162,22 @@ pub fn compact_diff(hunks: &[Hunk]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Past the limit a diff is one hunk, found without a search the size
+    /// of the files: a whole file written over, or one rewritten.
+    #[test]
+    fn a_rewrite_of_a_big_file_is_one_hunk() {
+        let big: Vec<String> = (0..200_000).map(|n| format!("line {n}")).collect();
+        let big: Vec<&str> = big.iter().map(String::as_str).collect();
+        let hunks = diff_lines(&["old"], &big);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].added.len(), 200_000);
+        let other: Vec<String> = (0..200_000).map(|n| format!("other {n}")).collect();
+        let other: Vec<&str> = other.iter().map(String::as_str).collect();
+        let hunks = diff_lines(&big, &other);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].deleted.len(), 200_000);
+    }
 
     #[test]
     fn hunks_of_a_change() {

@@ -104,6 +104,14 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
                 .await
                 .map(|_| Response::Done)
         }
+
+        // The daemon's own group: it answers these itself.
+        Request::HostInfo => {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                "Only a daemon answers HostInfo.",
+            ))
+        }
     }
     .map_err(|message| Fail::new(FailCode::Internal, message))
 }
@@ -514,6 +522,13 @@ mod tests {
         let fail = dispatch(&test.core, request).await.unwrap_err();
         assert_eq!(fail.code, FailCode::Internal);
         assert!(!fail.message.is_empty());
+    }
+
+    #[tokio::test]
+    async fn host_info_is_the_daemons_to_answer() {
+        let test = TestCore::new();
+        let fail = dispatch(&test.core, Request::HostInfo).await.unwrap_err();
+        assert_eq!(fail.code, FailCode::BadRequest);
     }
 
     #[tokio::test]

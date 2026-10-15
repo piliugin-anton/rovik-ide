@@ -833,12 +833,20 @@ impl ReplyParser {
     }
 }
 
-fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    let crlf = buffer
+/// The first blank line in `buffer`, which holds none before `from`: where
+/// it starts, and its length. The search goes back three bytes, where a
+/// blank line split between two chunks can start.
+fn find_sse_boundary(buffer: &[u8], from: usize) -> Option<(usize, usize)> {
+    let start = from.saturating_sub(3).min(buffer.len());
+    let rest = &buffer[start..];
+    let crlf = rest
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .map(|p| (p, 4));
-    let lf = buffer.windows(2).position(|w| w == b"\n\n").map(|p| (p, 2));
+        .map(|p| (start + p, 4));
+    let lf = rest
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .map(|p| (start + p, 2));
     match (crlf, lf) {
         (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
         (a, b) => a.or(b),
@@ -997,6 +1005,9 @@ async fn attempt(
 
     let mut stream = response.bytes_stream();
     let mut buffer = BytesMut::new();
+    // How much of `buffer` holds no event's end: each byte is searched once,
+    // however long an event (a provider can send a whole tool call in one).
+    let mut searched = 0;
     let mut last_data: Option<Instant> = None;
     // The server closed the connection: this pass over the buffer is the last.
     let mut closed = false;
@@ -1068,9 +1079,10 @@ async fn attempt(
             log.raw.push_str(&String::from_utf8_lossy(&chunk));
         }
 
-        while let Some((pos, sep)) = find_sse_boundary(&buffer) {
+        while let Some((pos, sep)) = find_sse_boundary(&buffer, searched) {
             let event = buffer.split_to(pos);
             buffer.advance(sep);
+            searched = 0;
             let event = String::from_utf8_lossy(&event);
             for line in event.lines() {
                 let Some(data) = line.strip_prefix("data:") else {
@@ -1112,6 +1124,7 @@ async fn attempt(
                 }
             }
         }
+        searched = buffer.len();
         if closed {
             break;
         }

@@ -5,6 +5,7 @@
 use crate::agent::{AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
+use crate::host::HostInfo;
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
@@ -84,6 +85,9 @@ pub enum Request {
         dialog_id: String,
         number: u64,
     },
+
+    // Host: the server, for the hosts page, deploy and upgrade.
+    HostInfo,
 }
 
 /// A request's reply, by what it carries. A caller takes the value its
@@ -103,6 +107,7 @@ pub enum Response {
     ClmStatus(ClmStatus),
     Revisions(Vec<RevisionRow>),
     Text(String),
+    HostInfo(HostInfo),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -145,4 +150,5 @@ replies! {
     ClmStatus => ClmStatus,
     Revisions => Vec<RevisionRow>,
     Text => String,
+    HostInfo => HostInfo,
 }

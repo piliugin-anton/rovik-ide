@@ -180,8 +180,13 @@ impl BrowserState {
     }
 }
 
+/// The Chrome or Chromium the browser tools start, if one is installed.
+pub fn chrome_path() -> Option<std::path::PathBuf> {
+    eoka::stealth::find_chrome().ok()
+}
+
 async fn launch() -> Result<Live, String> {
-    let chrome = eoka::stealth::find_chrome().map_err(|_| {
+    let chrome = chrome_path().ok_or_else(|| {
         "Chrome or Chromium was not found. Install Google Chrome or Chromium to use web tools."
             .to_string()
     })?;

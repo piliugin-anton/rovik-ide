@@ -1,0 +1,33 @@
+[package]
+name = "rovik-agentd"
+version.workspace = true
+description = "The agent on a server: a Core behind a Unix socket"
+edition.workspace = true
+
+[dependencies]
+rovik-core.workspace = true
+rovik-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "io-std", "signal", "sync", "time"] }
+futures-util.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+log = "0.4"
+toml = "1.1"
+# The HTTP server on the socket, and the WebSocket at /rpc. The WebSocket
+# is tungstenite's own, the version the core already has (through eoka).
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+hyper = { version = "1.12", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+# The scripted model and temporary folders the daemon tests use.
+rovik-core = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["process"] }
+hyper = { version = "1.12", features = ["client", "http1"] }
+http-body-util = "0.1.5"

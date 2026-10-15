@@ -1,0 +1,55 @@
+//! rovik-agentd: the agent on a server (docs/design/cloud-agent-dev-plan.md,
+//! section 5). A `Core` behind a Unix socket that only its own user can
+//! reach, serving the protocol of rovik-protocol, so the chats a computer
+//! moves here keep running while the computer sleeps.
+//!
+//!   cli.rs      the commands and their arguments
+//!   serve.rs    `serve`: start-up (5.2) and shutting down
+//!   home.rs     the daemon's folders and its lock (5.1)
+//!   config.rs   config.toml, read once at start-up
+//!   auth.rs     the computers' tokens, by their hashes (D5)
+//!   daemon.rs   what the daemon does with a request
+//!   server.rs   HTTP on the socket: /health, /rpc and /call
+//!   session.rs  one WebSocket and its frames (4.1)
+//!   host.rs     `HostInfo`
+//!   attach.rs   `attach --stdio`: a byte bridge to the socket
+//!   doctor.rs   `doctor`: what this server lacks for the daemon
+//!   logfile.rs  logs/agentd.log
+
+#[cfg(unix)]
+mod attach;
+#[cfg(unix)]
+mod auth;
+#[cfg(unix)]
+mod cli;
+#[cfg(unix)]
+mod config;
+#[cfg(unix)]
+mod daemon;
+#[cfg(unix)]
+mod doctor;
+#[cfg(unix)]
+mod home;
+#[cfg(unix)]
+mod host;
+#[cfg(unix)]
+mod logfile;
+#[cfg(unix)]
+mod serve;
+#[cfg(unix)]
+mod server;
+#[cfg(unix)]
+mod session;
+
+#[cfg(unix)]
+fn main() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    std::process::exit(cli::run(&argv));
+}
+
+/// Servers run Linux (D16); the daemon builds on macOS too, for development.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("rovik-agentd runs on Linux.");
+    std::process::exit(1);
+}

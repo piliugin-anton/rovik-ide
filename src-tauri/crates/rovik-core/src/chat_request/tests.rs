@@ -630,3 +630,16 @@ fn a_think_tag_never_closed_is_all_reasoning() {
     assert_eq!(reasoning, "still going and going</thi");
     assert!(text.is_empty());
 }
+
+/// An event's end is found where it is, also when two chunks split the
+/// blank line, and a search resumes where the last one stopped.
+#[test]
+fn an_events_end_is_found_once_however_the_chunks_split_it() {
+    assert_eq!(find_sse_boundary(b"data: a\n\ndata: b", 0), Some((7, 2)));
+    assert_eq!(find_sse_boundary(b"data: a\r\n\r\n", 0), Some((7, 4)));
+    // The blank line started in what was searched before.
+    assert_eq!(find_sse_boundary(b"data: a\r\n\r\n", 9), Some((7, 4)));
+    assert_eq!(find_sse_boundary(b"data: a\n\n", 8), Some((7, 2)));
+    assert_eq!(find_sse_boundary(b"data: abc", 9), None);
+    assert_eq!(find_sse_boundary(b"", 4), None);
+}
