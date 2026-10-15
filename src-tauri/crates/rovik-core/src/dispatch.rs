@@ -109,7 +109,11 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         }
 
         // The daemon's own groups: it answers these itself.
-        Request::ProjectEnsure { .. } | Request::WorkSync { .. } | Request::HostInfo => {
+        Request::ProjectEnsure { .. }
+        | Request::WorkSync { .. }
+        | Request::WorkResult { .. }
+        | Request::WorkResults
+        | Request::HostInfo => {
             return Err(Fail::new(
                 FailCode::BadRequest,
                 "Only a daemon answers the Work and Host requests.",

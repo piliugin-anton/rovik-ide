@@ -11,13 +11,22 @@ use crate::host::{HostInfo, Install};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
-use crate::work::{Project, Synced};
+use crate::work::{ChatResult, Project, Synced};
 use crate::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
+
+fn result(pending: Option<&str>) -> ChatResult {
+    ChatResult {
+        dialog_id: "d".into(),
+        commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        outcome: "done".into(),
+        pending: pending.map(String::from),
+    }
+}
 
 /// Through JSON and back: the same value, and the same JSON again.
 fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) -> Value {
@@ -398,6 +407,10 @@ fn every_request_round_trips() {
                 snapshot: "0123456789abcdef0123456789abcdef01234567".into(),
                 excludes: vec!["*.local".into()],
             },
+            Request::WorkResult {
+                dialog_id: "d".into(),
+            },
+            Request::WorkResults,
             Request::HostInfo,
         ],
     );
@@ -474,6 +487,9 @@ fn every_response_round_trips() {
             Response::Synced(Synced {
                 root: "/home/me/.local/share/rovik/work/d".into(),
             }),
+            Response::ChatResult(result(Some("Not landed: the run was stopped."))),
+            Response::ChatResults(vec![result(None)]),
+            Response::ChatResults(Vec::new()),
         ],
     );
 }
@@ -487,6 +503,7 @@ fn every_event_round_trips() {
                 dialog_id: "d".into(),
                 run_id: "r".into(),
             }),
+            Event::ResultReady(result(None)),
             Event::HostNotice {
                 kind: "drain".into(),
                 message: "Rovik is being upgraded.".into(),

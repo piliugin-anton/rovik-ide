@@ -10,7 +10,7 @@ use crate::keys::Keys;
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
 };
-use rovik_protocol::work::Project;
+use rovik_protocol::work::{ChatResult, Project};
 use rovik_protocol::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,6 +74,9 @@ pub struct ChatState {
     /// The commit its worktree is based on: the landing base (6.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Its newest result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ChatResult>,
 }
 
 /// Where a chat works: its project and its worktree's folder.
@@ -266,6 +269,31 @@ impl Store {
             project: chat.project.clone()?,
             worktree: chat.worktree.clone()?,
         })
+    }
+
+    /// The commit the chat's worktree is based on.
+    pub fn base_of(&self, dialog_id: &str) -> Option<String> {
+        self.lock().state.chats.get(dialog_id)?.base.clone()
+    }
+
+    /// How the chat's last run ended, when it ran here.
+    pub fn outcome_of(&self, dialog_id: &str) -> Option<String> {
+        self.lock().state.chats.get(dialog_id)?.outcome.clone()
+    }
+
+    /// The chat's newest result.
+    pub fn result_made(&self, dialog_id: &str, result: ChatResult) {
+        self.change(dialog_id, |chat| chat.result = Some(result));
+    }
+
+    /// The newest result of each of `computer`'s chats.
+    pub fn results_of(&self, computer: &str) -> Vec<ChatResult> {
+        let inner = self.lock();
+        let chats = inner.state.chats.values();
+        chats
+            .filter(|chat| chat.computer == computer)
+            .filter_map(|chat| chat.result.clone())
+            .collect()
     }
 
     /// The chats that have a worktree.

@@ -44,6 +44,11 @@ impl Home {
         self.root.join("data")
     }
 
+    /// The chats' result indexes (6.5).
+    pub fn results(&self) -> PathBuf {
+        self.root.join("results")
+    }
+
     /// The core's config folder: project-settings.json (K03).
     pub fn core_config(&self) -> PathBuf {
         self.root.join("config")

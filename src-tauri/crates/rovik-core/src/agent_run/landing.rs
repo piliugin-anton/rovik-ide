@@ -29,6 +29,29 @@ const LANDS_AFTER: &[&str] = &["done", "verified", "unverified", "verify-unverif
 /// Outcomes that land without any check having run.
 const UNCHECKED: &[&str] = &["unverified", "verify-unverified"];
 
+/// Why a run's changes don't land on their own after it ended with
+/// `outcome`: the reason the isolation bar shows, the same for a local
+/// chat and for a daemon's result (6.5). None when they may land.
+pub fn pending_reason(outcome: &str) -> Option<String> {
+    if LANDS_AFTER.contains(&outcome) {
+        return None;
+    }
+    let reason = match outcome {
+        "stopped" | "verify-stopped" => "the run was stopped",
+        "repetition" => "the model kept repeating itself",
+        "error" => "the run ended with an error",
+        "verify-gave-up" | "verify-unresolved" => "the checks still fail",
+        "verify-flagged" => "the change weakens tests or what the checks run: review it first",
+        "verify-needs-approval" => "the checks wait for your approval",
+        "verify-unchecked" => {
+            "the checks pass, but whether the change weakens tests couldn't be checked (part of the run's saved state was lost): review it first"
+        }
+        "unfinished-checklist" => "the checklist isn't finished",
+        _ => "the run didn't finish",
+    };
+    Some(format!("Not landed: {reason}."))
+}
+
 impl Run {
     pub(super) async fn land_at_end(&mut self, outcome: &str) {
         let result = self.try_land(outcome).await;
@@ -79,26 +102,11 @@ impl Run {
             return None;
         }
         let count = changes.len();
-        if !LANDS_AFTER.contains(&outcome) {
-            let reason = match outcome {
-                "stopped" | "verify-stopped" => "the run was stopped",
-                "repetition" => "the model kept repeating itself",
-                "error" => "the run ended with an error",
-                "verify-gave-up" | "verify-unresolved" => "the checks still fail",
-                "verify-flagged" => {
-                    "the change weakens tests or what the checks run: review it first"
-                }
-                "verify-needs-approval" => "the checks wait for your approval",
-                "verify-unchecked" => {
-                    "the checks pass, but whether the change weakens tests couldn't be checked (part of the run's saved state was lost): review it first"
-                }
-                "unfinished-checklist" => "the checklist isn't finished",
-                _ => "the run didn't finish",
-            };
+        if let Some(reason) = pending_reason(outcome) {
             chats::set_pending(
                 &dialog_id,
                 Some(&Pending {
-                    reason: format!("Not landed: {reason}."),
+                    reason,
                     conflicts: Vec::new(),
                 }),
             );
@@ -440,5 +448,43 @@ impl Run {
             title: title.into(),
             message: message.into(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_reason;
+
+    /// One table for both sides: a local chat's landing and a daemon's
+    /// results give each outcome the same reason (6.5).
+    #[test]
+    fn each_outcome_has_its_reason() {
+        let table = [
+            ("done", None),
+            ("verified", None),
+            ("unverified", None),
+            ("verify-unverified", None),
+            ("stopped", Some("the run was stopped")),
+            ("verify-stopped", Some("the run was stopped")),
+            ("repetition", Some("the model kept repeating itself")),
+            ("error", Some("the run ended with an error")),
+            ("verify-gave-up", Some("the checks still fail")),
+            ("verify-unresolved", Some("the checks still fail")),
+            (
+                "verify-needs-approval",
+                Some("the checks wait for your approval"),
+            ),
+            ("unfinished-checklist", Some("the checklist isn't finished")),
+            ("paused-move", Some("the run didn't finish")),
+            ("interrupted", Some("the run didn't finish")),
+        ];
+        for (outcome, reason) in table {
+            let expected = reason.map(|r| format!("Not landed: {r}."));
+            assert_eq!(pending_reason(outcome), expected, "{outcome}");
+        }
+        let flagged = pending_reason("verify-flagged").unwrap();
+        assert!(flagged.contains("weakens tests"), "{flagged}");
+        let unchecked = pending_reason("verify-unchecked").unwrap();
+        assert!(unchecked.contains("couldn't be checked"), "{unchecked}");
     }
 }

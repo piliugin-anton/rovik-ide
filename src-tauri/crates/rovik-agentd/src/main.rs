@@ -14,6 +14,7 @@
 //!   events.rs   the events: numbered, paced, kept, routed (4.3)
 //!   store.rs    state.json: each chat's computer and settings (D16)
 //!   restart.rs  the runs a crash or an upgrade cut, at start-up (5.4)
+//!   results.rs  each chat's result: its worktree committed (6.5)
 //!   keys.rs     keys.json: the providers' keys (D11)
 //!   packs.rs    each project's repository and its packs (6.4)
 //!   work.rs     each chat's worktree (6.4)
@@ -48,6 +49,8 @@ mod logfile;
 mod packs;
 #[cfg(unix)]
 mod restart;
+#[cfg(unix)]
+mod results;
 #[cfg(unix)]
 mod serve;
 #[cfg(unix)]

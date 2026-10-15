@@ -13,6 +13,11 @@ pub fn snapshot_ref(chat: &str) -> String {
     format!("{PUSHED_REFS}chats/{chat}/snapshot")
 }
 
+/// Where the daemon commits a chat's result (6.5).
+pub fn result_ref(chat: &str) -> String {
+    format!("{PUSHED_REFS}chats/{chat}/result")
+}
+
 /// `GET /packs/<project>/refs`: each ref the daemon has for the project,
 /// with the commit it points at.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]

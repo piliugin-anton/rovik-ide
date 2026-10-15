@@ -1663,3 +1663,24 @@ Tasks add notes here when reality differs from the plan.
     keys now waits for the run's end to reach `state.json` first: under
     the whole suite's load it once listed `state.json`'s temporary file
     just before the rename took it away.
+- **T05, results.**
+  - Staging a work tree into an index against a base, which T01 wrote for
+    the shadow, is `rovik_core::staging` now: the shadow stages the
+    project against its `HEAD`, the daemon a chat's worktree against its
+    landing base, through `results/<chat>.index` set on the worktree's
+    repository. The same rules hold on both sides (K30).
+  - The outcome-to-reason mapping is `agent_run::pending_reason`, which
+    `try_land` and the daemon both call; its table test is in
+    `landing.rs`.
+  - `ChatResult` (`dialogId`, `commit`, `outcome`, `pending`) is what
+    `WorkResult` answers, what `WorkResults` lists and what `ResultReady`
+    carries. `WorkResult` takes the chat's last outcome, or `unknown` for
+    a chat that never ran here, whose result waits as a run that didn't
+    finish.
+  - A result whose tree and base are the previous one's keeps its commit.
+  - Every run's end of a chat with a worktree commits its result,
+    including the end restart gives a run it won't pick up again.
+  - `ResultReady` goes to the chat's computer after the run's end. The
+    client passes it over until T06 imports results.
+  - The daemon tests share `tests/common/project.rs`: a project carried
+    to the daemon, and the calls that give a chat its worktree.

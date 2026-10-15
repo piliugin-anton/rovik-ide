@@ -6,11 +6,10 @@
 //! packs (T02) to take to a daemon.
 //!
 //! - **The index** is the shadow's own and keeps every file's stat data, so
-//!   a snapshot reads only the files that changed since the last one. Before
-//!   it reads the work tree, it takes the entries of the project's `HEAD` it
-//!   lacks, so a tracked file that matches an ignore rule stays in and keeps
-//!   its mode (K30), and it lets go of entries `HEAD` doesn't have that an
-//!   ignore rule matches now.
+//!   a snapshot reads only the files that changed since the last one. It is
+//!   staged against the project's `HEAD` (`rovik_core::staging`): a tracked
+//!   file that matches an ignore rule stays in and keeps its mode (K30), and
+//!   entries `HEAD` doesn't have that an ignore rule matches now come out.
 //! - **A git project lends its objects** through `objects/info/alternates`,
 //!   so nothing is written to its `.git`. Its `info/exclude` and
 //!   `info/attributes` are copied in, and the user's global excludes come
@@ -32,10 +31,8 @@ mod guards;
 
 pub use guards::{Guards, LARGE_FILE, LARGE_HISTORY};
 
-use git2::{
-    Commit, Config, Delta, DiffFile, DiffOptions, Index, IndexEntry, IndexTime, Oid, Reference,
-    Repository, RepositoryInitOptions, Signature, Tree,
-};
+use git2::{Commit, Config, Oid, Reference, Repository, RepositoryInitOptions, Signature};
+use rovik_core::staging::{self, Base, Staged};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,9 +65,6 @@ pub struct Shadow {
     repo: Repository,
     /// The project's repository, when it is in one.
     project: Option<Repository>,
-    /// What the snapshots are of: the project's repository folder, or the
-    /// project folder when it isn't in a repository.
-    workdir: PathBuf,
     /// Where the project sits in the snapshots' tree: "" at its root.
     subpath: String,
     busy: Arc<Mutex<()>>,
@@ -120,7 +114,6 @@ impl Shadow {
         Ok(Shadow {
             repo,
             project,
-            workdir,
             subpath,
             busy,
         })
@@ -166,11 +159,18 @@ impl Shadow {
         }
         let _held = hold(&self.busy);
         let head = self.head();
-        let mut index = self.repo.index().map_err(git)?;
-        self.align(&mut index, head.as_ref())?;
-        let (hashed, nested) = self.read_changes(&mut index)?;
-        index.write().map_err(git)?;
-        let tree = index.write_tree().map_err(git)?;
+        let head_tree = head.as_ref().and_then(|commit| commit.tree().ok());
+        let has_head = self.project.as_ref().is_some_and(|p| p.head().is_ok());
+        let base = match (&head_tree, has_head) {
+            (Some(tree), _) => Base::Tree(tree),
+            (None, true) => Base::Unknown,
+            (None, false) => Base::Nothing,
+        };
+        let Staged {
+            tree,
+            hashed,
+            nested,
+        } = staging::stage(&self.repo, base)?;
         let previous = self
             .repo
             .find_reference(&name)
@@ -261,91 +261,6 @@ impl Shadow {
         (readable && self.with_history()).then(|| head.id())
     }
 
-    /// Brings the index in line with `HEAD` before the work tree is read.
-    /// Entries `HEAD` has and the index lacks go in with their modes, for
-    /// the files that are there: an ignore rule doesn't drop a tracked file
-    /// (K30). Submodules aren't files, and stay out. Entries `HEAD` doesn't
-    /// have that an ignore rule matches now come out, as `git add -A`
-    /// wouldn't take them. When the project has a `HEAD` the shadow can't
-    /// read, nothing is known to be tracked or not, and the index stays as
-    /// it is.
-    fn align(&self, index: &mut Index, head: Option<&Commit>) -> Result<()> {
-        let tree: Option<Tree> = head.and_then(|commit| commit.tree().ok());
-        let has_head = self.project.as_ref().is_some_and(|p| p.head().is_ok());
-        if tree.is_none() && has_head {
-            return Ok(());
-        }
-        let diff = self
-            .repo
-            .diff_tree_to_index(tree.as_ref(), Some(index), None)
-            .map_err(git)?;
-        let mut missing = Vec::new();
-        let mut untracked = Vec::new();
-        for delta in diff.deltas() {
-            match delta.status() {
-                Delta::Deleted => missing.extend(unseen(&delta.old_file())),
-                Delta::Added => untracked.extend(delta.new_file().path().map(Path::to_path_buf)),
-                _ => {}
-            }
-        }
-        drop(diff);
-        for entry in missing {
-            if self.has_file(&entry.path) {
-                index.add(&entry).map_err(git)?;
-            }
-        }
-        for path in untracked {
-            if self.repo.is_path_ignored(&path).map_err(git)? {
-                index.remove_path(&path).map_err(git)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Reads the work tree into the index. Files whose stat data hasn't
-    /// changed aren't read. Those whose stat data has are hashed, and keep
-    /// their new stat data when their content is the same. Untracked files
-    /// go in unless an ignore rule matches them, and deleted ones come out.
-    /// Returns how many files were stored, and the nested repositories left
-    /// out.
-    fn read_changes(&self, index: &mut Index) -> Result<(usize, Vec<String>)> {
-        let mut opts = DiffOptions::new();
-        opts.include_untracked(true)
-            .recurse_untracked_dirs(true)
-            .include_typechange(true)
-            .ignore_submodules(true)
-            .update_index(true);
-        let diff = self
-            .repo
-            .diff_index_to_workdir(Some(index), Some(&mut opts))
-            .map_err(git)?;
-        let changes: Vec<(Delta, PathBuf)> = diff
-            .deltas()
-            .filter_map(|delta| Some((delta.status(), delta.new_file().path()?.to_path_buf())))
-            .collect();
-        drop(diff);
-        let mut hashed = 0;
-        let mut nested = Vec::new();
-        for (status, path) in changes {
-            match status {
-                Delta::Deleted => index.remove_path(&path).map_err(git)?,
-                Delta::Untracked | Delta::Modified | Delta::Typechange => {
-                    let meta = fs::symlink_metadata(self.workdir.join(&path));
-                    if meta.is_ok_and(|meta| meta.is_dir()) {
-                        nested.push(slashed(&path).trim_end_matches('/').to_string());
-                        continue;
-                    }
-                    index
-                        .add_path(&path)
-                        .map_err(|e| format!("Can't read {}: {}", path.display(), e.message()))?;
-                    hashed += 1;
-                }
-                _ => {}
-            }
-        }
-        Ok((hashed, nested))
-    }
-
     fn commit(&self, tree: Oid, parent: Option<Oid>, chat: &str) -> Result<Oid> {
         let tree = self.repo.find_tree(tree).map_err(git)?;
         let parent = parent
@@ -391,12 +306,6 @@ impl Shadow {
             let _ = fs::remove_dir(dir);
         }
         Ok(loose.len())
-    }
-
-    /// Whether the work tree has a file or a link at `path`, from its root.
-    fn has_file(&self, path: &[u8]) -> bool {
-        let path = String::from_utf8_lossy(path);
-        fs::symlink_metadata(self.workdir.join(&*path)).is_ok_and(|meta| !meta.is_dir())
     }
 }
 
@@ -491,27 +400,6 @@ fn mirror(path: &Path, content: Option<&[u8]>) -> Result<bool> {
     };
     written.map_err(|e| format!("Can't write {}: {e}", path.display()))?;
     Ok(true)
-}
-
-/// An index entry for a file `HEAD` has, with no stat data: the next read
-/// of the work tree hashes the file once, and an OS without file modes
-/// keeps `HEAD`'s.
-fn unseen(file: &DiffFile) -> Option<IndexEntry> {
-    let zero = IndexTime::new(0, 0);
-    Some(IndexEntry {
-        ctime: zero,
-        mtime: zero,
-        dev: 0,
-        ino: 0,
-        mode: u32::from(file.mode()),
-        uid: 0,
-        gid: 0,
-        file_size: 0,
-        id: file.id(),
-        flags: 0,
-        flags_extended: 0,
-        path: file.path_bytes()?.to_vec(),
-    })
 }
 
 /// The loose objects under `objects`, with their files.

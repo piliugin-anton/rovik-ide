@@ -7,7 +7,7 @@ use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::HostInfo;
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
-use crate::work::{Project, Synced};
+use crate::work::{ChatResult, Project, Synced};
 use crate::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -116,6 +116,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         excludes: Vec<String>,
     },
+    /// Commits the chat's worktree as its result now, as a run's end does
+    /// (6.5). → `ChatResult`.
+    WorkResult {
+        dialog_id: String,
+    },
+    /// The newest result of each of this computer's chats, for the ones a
+    /// client missed (K24). → `ChatResults`.
+    WorkResults,
 
     // Host: the server, for the hosts page, deploy and upgrade.
     HostInfo,
@@ -143,6 +151,10 @@ pub enum Response {
     Ids(Vec<String>),
     /// `WorkSync`.
     Synced(Synced),
+    /// `WorkResult`.
+    ChatResult(ChatResult),
+    /// `WorkResults`.
+    ChatResults(Vec<ChatResult>),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -188,4 +200,6 @@ replies! {
     HostInfo => HostInfo,
     Ids => Vec<String>,
     Synced => Synced,
+    ChatResult => ChatResult,
+    ChatResults => Vec<ChatResult>,
 }

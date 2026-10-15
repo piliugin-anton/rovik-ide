@@ -10,6 +10,7 @@ use crate::home::{self, Home};
 use crate::logfile;
 use crate::packs::Projects;
 use crate::restart;
+use crate::results::Results;
 use crate::server::{self, OwnUser};
 use crate::store::Store;
 use crate::work;
@@ -68,9 +69,11 @@ async fn run(
         Arc::new(move |chat| owners.owner(chat)),
     );
     let paths = Paths::new(home.data(), home.core_config());
+    let results = Results::new(home.results(), store.clone(), events.clone());
     let sink = Tap {
         store: store.clone(),
         events: events.clone(),
+        results: results.clone(),
     };
     let core = Core::new(paths, Arc::new(sink))?;
     // A run follows its chat's computer's configuration (D16).
@@ -93,6 +96,7 @@ async fn run(
         store,
         projects: Projects::new(home.root.join("projects")),
         worktrees: home.work(),
+        results,
         same_machine,
         virtual_files_problem,
     });
@@ -179,6 +183,7 @@ fn login_shell() {
 struct Tap {
     store: Arc<Store>,
     events: Arc<Events>,
+    results: Arc<Results>,
 }
 
 impl EventSink for Tap {
@@ -193,5 +198,12 @@ impl EventSink for Tap {
             _ => {}
         }
         self.events.agent(event);
+        // The run's end goes out first, then its result.
+        if let AgentEvent::RunEnded {
+            dialog_id, outcome, ..
+        } = event
+        {
+            self.results.after_run(dialog_id, outcome);
+        }
     }
 }

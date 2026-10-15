@@ -5,6 +5,8 @@
 
 #![allow(dead_code)] // each test file uses part of it
 
+pub mod project;
+
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -524,5 +526,20 @@ pub fn commit_all(root: &Path) -> git2::Oid {
     let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
     let parents: Vec<_> = parent.iter().collect();
     repo.commit(Some("HEAD"), &me, &me, "work", &tree, &parents)
+        .unwrap()
+}
+
+/// Commits `paths` alone, whatever the ignore rules say.
+pub fn commit_paths(root: &Path, paths: &[&str]) -> git2::Oid {
+    let repo = git2::Repository::open(root).unwrap();
+    let mut index = repo.index().unwrap();
+    for path in paths {
+        index.add_path(Path::new(path)).unwrap();
+    }
+    index.write().unwrap();
+    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let me = git2::Signature::now("Test", "test@example.com").unwrap();
+    let parent = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.commit(Some("HEAD"), &me, &me, "more", &tree, &[&parent])
         .unwrap()
 }

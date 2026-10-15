@@ -15,6 +15,21 @@ pub struct Project {
     pub subpath: String,
 }
 
+/// A chat's newest result on its daemon (6.5): its worktree committed on
+/// the landing base, after a run that ended with `outcome`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatResult {
+    pub dialog_id: String,
+    /// The result's commit, at the chat's result ref (`packs::result_ref`).
+    pub commit: String,
+    pub outcome: String,
+    /// Why it doesn't land on its own, if it doesn't: the reason a local
+    /// chat's landing would give.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
+}
+
 /// What a sync did (6.7).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]

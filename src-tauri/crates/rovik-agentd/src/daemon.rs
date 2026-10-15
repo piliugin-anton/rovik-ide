@@ -7,6 +7,7 @@ use crate::auth::Tokens;
 use crate::events::Events;
 use crate::host;
 use crate::packs::Projects;
+use crate::results::Results;
 use crate::store::Store;
 use crate::work;
 use rovik_core::chat_db::store::{self, NewDialog};
@@ -31,6 +32,8 @@ pub struct Daemon {
     pub projects: Projects,
     /// Where the chats' worktrees go (6.4).
     pub worktrees: PathBuf,
+    /// The chats' results (6.5).
+    pub results: Arc<Results>,
     /// `--same-machine`: a chat without a worktree runs in the folder its
     /// start names, for development.
     pub same_machine: bool,
@@ -61,6 +64,14 @@ impl Daemon {
                 snapshot,
                 excludes,
             } => work::sync(self, computer, &dialog_id, &project, &snapshot, excludes).await,
+            Request::WorkResult { dialog_id } => {
+                self.store.check_owner(computer, &dialog_id)?;
+                let outcome = self.store.outcome_of(&dialog_id);
+                let outcome = outcome.as_deref().unwrap_or("unknown");
+                let result = self.results.commit(&dialog_id, outcome).await?;
+                Ok(Response::ChatResult(result))
+            }
+            Request::WorkResults => Ok(Response::ChatResults(self.store.results_of(computer))),
             // The chat's worktree goes with its rows.
             Request::ChatDelete { dialog_id } => {
                 let delete = Request::ChatDelete {

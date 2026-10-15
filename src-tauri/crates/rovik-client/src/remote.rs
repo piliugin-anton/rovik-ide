@@ -483,6 +483,8 @@ impl Remote {
             Incoming::Event { event, .. } => match event {
                 Event::Agent(event) => self.agent_event(host, event).await,
                 Event::Resync { dialog_id } => self.resync(host, &dialog_id).await,
+                // Imported with T06.
+                Event::ResultReady(_) => {}
                 Event::HostNotice { kind, message } => self.core.emit(AgentEvent::Notice {
                     dialog_id: None,
                     kind,

@@ -242,6 +242,19 @@ impl Events {
         self.publish(state, Event::Agent(event), route, Some(kept));
     }
 
+    /// A chat's event that isn't a run's, such as its result (6.5): to the
+    /// chat's computer, after the run's events before it.
+    pub fn chat(&self, dialog_id: &str, ev: Event) {
+        let mut state = self.lock();
+        let Some(route) = self.route(&state, dialog_id) else {
+            return;
+        };
+        if let Some(chat) = &route.chat {
+            self.flush_chat(&mut state, chat);
+        }
+        self.publish(&mut state, ev, route, None);
+    }
+
     /// Where a chat's events go; none when no computer started it here.
     fn route(&self, state: &State, dialog_id: &str) -> Option<Route> {
         let mut chat = dialog_id;
