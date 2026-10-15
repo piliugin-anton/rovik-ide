@@ -187,6 +187,75 @@ pub enum Request {
     HostInfo,
 }
 
+/// The chat a request is about: by its id, or by one of its messages'.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target<'a> {
+    Chat(&'a str),
+    Message(&'a str),
+}
+
+/// What a request does to its chat, for the refusal of a chat owned
+/// elsewhere (4.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    /// Reads it: allowed wherever its rows are.
+    Read,
+    /// Controls the run going for it: stops it or answers what it waits
+    /// on. Allowed for a chat that is moving, whose run pauses (6.8).
+    Run,
+    /// Starts a run or changes its rows.
+    Write,
+}
+
+impl Request {
+    /// The chat the request is about, and what it does to it. None: about
+    /// no chat, or about runs in memory only (`AgentSetEffort`,
+    /// `WorkloadFocus`), which change no chat's rows.
+    pub fn target(&self) -> Option<(Target<'_>, Access)> {
+        use Access::{Read, Run, Write};
+        fn chat(id: &str, access: Access) -> Option<(Target<'_>, Access)> {
+            Some((Target::Chat(id), access))
+        }
+        match self {
+            Request::AgentStart(start) => chat(&start.dialog_id, Write),
+            Request::AgentStop { dialog_id }
+            | Request::AgentResolveApproval { dialog_id, .. }
+            | Request::AgentAnswerQuestions { dialog_id, .. } => chat(dialog_id, Run),
+            Request::ChatChecklist { dialog_id }
+            | Request::ClmStatus { dialog_id }
+            | Request::ClmListRevisions { dialog_id }
+            | Request::ClmReadRevision { dialog_id, .. }
+            | Request::WorkStatus { dialog_id }
+            | Request::WorkFile { dialog_id, .. } => chat(dialog_id, Read),
+            Request::ChatDismissChecklist { dialog_id, .. }
+            | Request::ChatRename { dialog_id, .. }
+            | Request::ChatSetModel { dialog_id, .. }
+            | Request::ChatDelete { dialog_id }
+            | Request::ClmSetMode { dialog_id, .. }
+            | Request::ClmReset { dialog_id }
+            | Request::ClmRestoreRevision { dialog_id, .. }
+            | Request::WorkSync { dialog_id, .. }
+            | Request::WorkResult { dialog_id }
+            | Request::WorkRecheck { dialog_id, .. }
+            | Request::WorkDiscard { dialog_id }
+            | Request::WorkConflictsToChat { dialog_id, .. }
+            | Request::WorkUndoMerge { dialog_id, .. }
+            | Request::WorkLanded { dialog_id, .. } => chat(dialog_id, Write),
+            Request::ChatUpdateMessage { message_id, .. } => {
+                Some((Target::Message(message_id.as_str()), Write))
+            }
+            Request::AgentStatus
+            | Request::AgentConfigure(_)
+            | Request::AgentSetEffort { .. }
+            | Request::WorkloadFocus { .. }
+            | Request::BlobsMissing { .. }
+            | Request::ProjectEnsure { .. }
+            | Request::WorkResults
+            | Request::HostInfo => None,
+        }
+    }
+}
+
 /// A request's reply, by what it carries. A caller takes the value its
 /// request answers with through `TryFrom`: `bool::try_from(response)`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -15,8 +15,9 @@ use rovik_core::agent_run::wire_content;
 use rovik_core::chat_db::store::{self, NewDialog};
 use rovik_core::overlay::chats;
 use rovik_core::{project_profile, Core};
-use rovik_protocol::agent::{StartKind, StartRequest};
-use rovik_protocol::{Fail, FailCode, Request, Response};
+use rovik_protocol::agent::{AgentStatus, StartKind, StartRequest};
+use rovik_protocol::{Fail, FailCode, Request, Response, Target};
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -45,10 +46,17 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// `computer`'s request: the computer the token named.
+    /// `computer`'s request: the computer the token named. A chat another
+    /// computer moved here is refused, its subagents' chats with it,
+    /// whatever the request (D16, 4.2).
     pub async fn answer(&self, computer: &str, request: Request) -> Result<Response, Fail> {
+        if let Some((target, _)) = request.target() {
+            let lead = self.lead_of(target).await?;
+            self.store.check_owner(computer, &lead)?;
+        }
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
+            Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
             Request::AgentStart(start) => self.start(computer, start).await,
             // Only this computer's configuration changes (D16).
             Request::AgentConfigure(config) => self
@@ -120,6 +128,67 @@ impl Daemon {
             }
             request => rovik_core::dispatch(&self.core, request).await,
         }
+    }
+
+    /// The lead's chat of the chat a request is about: its own, for a
+    /// lead's.
+    async fn lead_of(&self, target: Target<'_>) -> Result<String, Fail> {
+        let (id, message) = match target {
+            Target::Chat(id) => (id.to_string(), false),
+            Target::Message(id) => (id.to_string(), true),
+        };
+        self.core
+            .db
+            .read(move |c| {
+                let chat = match message {
+                    true => store::message_dialog(c, &id)?.unwrap_or(id),
+                    false => id,
+                };
+                store::lead_chat(c, &chat)
+            })
+            .await
+            .map_err(|e| Fail::new(FailCode::Internal, e))
+    }
+
+    /// What runs and waits here for `computer`'s chats, and never another
+    /// computer's (D16).
+    async fn status(&self, computer: &str) -> Result<AgentStatus, Fail> {
+        let reply = rovik_core::dispatch(&self.core, Request::AgentStatus).await?;
+        let mut status = AgentStatus::try_from(reply)?;
+        let named: BTreeSet<String> = (status.runs.iter().map(|r| &r.dialog_id))
+            .chain(status.subagents.iter().map(|s| &s.parent_dialog_id))
+            .chain(status.approvals.iter().map(|a| &a.dialog_id))
+            .chain(status.questions.iter().map(|q| &q.dialog_id))
+            .cloned()
+            .collect();
+        let leads = self
+            .core
+            .db
+            .read(move |c| {
+                let lead = |chat: String| Ok((store::lead_chat(c, &chat)?, chat));
+                named
+                    .into_iter()
+                    .map(lead)
+                    .collect::<Result<Vec<(String, String)>, String>>()
+            })
+            .await
+            .map_err(|e| Fail::new(FailCode::Internal, e))?;
+        let mine: HashMap<String, bool> = leads
+            .into_iter()
+            .map(|(lead, chat)| {
+                let owned = self
+                    .store
+                    .owner(&lead)
+                    .is_some_and(|owner| owner == computer);
+                (chat, owned)
+            })
+            .collect();
+        let is_mine = |chat: &String| mine.get(chat).copied().unwrap_or(false);
+        status.runs.retain(|r| is_mine(&r.dialog_id));
+        status.subagents.retain(|s| is_mine(&s.parent_dialog_id));
+        status.approvals.retain(|a| is_mine(&a.dialog_id));
+        status.questions.retain(|q| is_mine(&q.dialog_id));
+        Ok(status)
     }
 
     /// A start (6.2): the store keeps its keys apart and its settings, and

@@ -24,7 +24,7 @@ pub mod subagents;
 pub mod work;
 
 pub use frame::{Event, Fail, FailCode, Frame, Secret};
-pub use request::{Request, Response};
+pub use request::{Access, Request, Response, Target};
 
 /// The protocol's version (4.5). Additive changes keep it: new optional
 /// fields, and new requests a client finds in `Frame::Welcome`'s features.

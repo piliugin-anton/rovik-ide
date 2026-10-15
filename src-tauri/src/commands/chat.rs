@@ -2,7 +2,7 @@
 //! files attached in the chat input. A chat on a host is read from the
 //! mirror here, and written to on the host (6.1).
 
-use super::{answer, call};
+use super::answer;
 use rovik_client::Remote;
 use rovik_core::chat_db::search::SearchHit;
 use rovik_core::chat_db::store::{
@@ -199,8 +199,11 @@ pub async fn chat_rename_dialog(
 }
 
 #[tauri::command]
-pub async fn chat_delete_dialog(core: State<'_, Core>, dialog_id: String) -> Result<(), String> {
-    call(&core, Request::ChatDelete { dialog_id }).await
+pub async fn chat_delete_dialog(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+) -> Result<(), String> {
+    remote.delete(&dialog_id).await.map_err(|fail| fail.message)
 }
 
 #[tauri::command]

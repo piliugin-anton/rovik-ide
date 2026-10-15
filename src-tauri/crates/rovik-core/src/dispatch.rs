@@ -1,19 +1,29 @@
 //! What can be done to a chat, in one place (D3): the app's commands call
 //! `dispatch` for a chat on this computer, and the daemon for every call it
 //! gets, so the two serve the same operations the same way. The daemon adds
-//! the Work and Host groups of section 4.2. The refusal of a chat owned
-//! elsewhere (`NotOwner`) comes with the chats' location (M01).
+//! the Work and Host groups of section 4.2.
+//!
+//! A chat owned elsewhere (its `location`, chat_db/location.rs) is refused
+//! with `NotOwner` (4.2, K21): one on a host, whose rows here only its
+//! mirror writes; one moving there, which nothing may change until the move
+//! is over, though the run that pauses for it can still be stopped or
+//! answered; and on a daemon, one its computer took back. Their rows can
+//! still be read.
 
 use crate::agent_run;
+use crate::chat_db::location::{self, Location};
 use crate::chat_db::{api, attachments};
 use crate::clm;
 use crate::core::Core;
 use crate::workload;
-use rovik_protocol::{Fail, FailCode, Request, Response};
+use rovik_protocol::{Access, Fail, FailCode, Request, Response, Target};
 
 /// Serves a request of the Agent, Chat or CLM group. A failure carries the
 /// error text the operation gives, which is what the app's command returns.
 pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
+    if let Some((target, access)) = request.target() {
+        check_owner(core, target, access).await?;
+    }
     let (db, vfs) = (&core.db, &core.vfs);
     let done = |()| Response::Done;
     match request {
@@ -128,6 +138,42 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         }
     }
     .map_err(|message| Fail::new(FailCode::Internal, message))
+}
+
+/// Refuses what `access` would do to a chat owned elsewhere.
+async fn check_owner(core: &Core, target: Target<'_>, access: Access) -> Result<(), Fail> {
+    if access == Access::Read {
+        return Ok(());
+    }
+    let located = match target {
+        Target::Chat(id) => {
+            let id = id.to_string();
+            core.db.read(move |c| location::of_chat(c, &id)).await
+        }
+        Target::Message(id) => {
+            let id = id.to_string();
+            core.db.read(move |c| location::of_message(c, &id)).await
+        }
+    };
+    let located = located.map_err(|message| Fail::new(FailCode::Internal, message))?;
+    match refusal(&located, access) {
+        Some(why) => Err(Fail::new(FailCode::NotOwner, why)),
+        None => Ok(()),
+    }
+}
+
+/// Why `access` isn't allowed to a chat at `location`, if it isn't.
+pub fn refusal(location: &Location, access: Access) -> Option<String> {
+    match (location, access) {
+        (Location::Here, _) | (_, Access::Read) | (Location::Moving(_), Access::Run) => None,
+        (Location::Moving(host), _) => Some(format!(
+            "This chat is moving to {host}: it can't change until the move is over."
+        )),
+        (Location::Host(host), _) => Some(format!(
+            "This chat is on {host}: it changes there, and this copy follows it."
+        )),
+        (Location::Released, _) => Some("This chat went back to its computer.".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +600,154 @@ mod tests {
             number: 3,
         };
         assert!(dispatch(&test.core, request).await.is_err());
+    }
+
+    /// A chat at `location`, with a message, in a fresh core.
+    async fn located(location: Location) -> (TestCore, String) {
+        let (test, id) = chat(vec![message("u", "user", "Hi")]).await;
+        let at = id.clone();
+        test.core
+            .db
+            .write(move |c| crate::chat_db::location::set(c, &at, &location))
+            .await
+            .unwrap();
+        (test, id)
+    }
+
+    /// Each kind of request a chat can get: reads, run control, writes.
+    fn requests(id: &str) -> (Vec<Request>, Vec<Request>, Vec<Request>) {
+        let reads = vec![
+            Request::ChatChecklist {
+                dialog_id: id.into(),
+            },
+            Request::ClmStatus {
+                dialog_id: id.into(),
+            },
+            Request::ClmListRevisions {
+                dialog_id: id.into(),
+            },
+        ];
+        let runs = vec![
+            Request::AgentStop {
+                dialog_id: id.into(),
+            },
+            Request::AgentResolveApproval {
+                dialog_id: id.into(),
+                tool_call_id: "c".into(),
+                decision: ApprovalDecision::Allow,
+            },
+        ];
+        let writes = vec![
+            Request::AgentStart(start(id, "http://127.0.0.1:9", StartKind::Resume)),
+            Request::ChatRename {
+                dialog_id: id.into(),
+                title: "Renamed".into(),
+            },
+            Request::ChatUpdateMessage {
+                message_id: "u".into(),
+                patch: MessagePatch {
+                    content: Some("Changed".into()),
+                    ..Default::default()
+                },
+            },
+            Request::ChatSetModel {
+                dialog_id: id.into(),
+                model: ChatModel {
+                    provider_id: "p".into(),
+                    model_id: "m".into(),
+                    effort: None,
+                },
+            },
+            Request::ChatDismissChecklist {
+                dialog_id: id.into(),
+                message_id: "u".into(),
+            },
+            Request::ClmSetMode {
+                dialog_id: id.into(),
+                mode: "clm".into(),
+            },
+            Request::ChatDelete {
+                dialog_id: id.into(),
+            },
+        ];
+        (reads, runs, writes)
+    }
+
+    async fn refused(core: &Core, request: Request) -> String {
+        let shown = format!("{request:?}");
+        match dispatch(core, request).await {
+            Err(fail) if fail.code == FailCode::NotOwner => fail.message,
+            other => panic!("{shown} wasn't refused: {other:?}"),
+        }
+    }
+
+    async fn served(core: &Core, request: Request) {
+        let shown = format!("{request:?}");
+        if let Err(fail) = dispatch(core, request).await {
+            assert_ne!(fail.code, FailCode::NotOwner, "{shown}: {fail}");
+        }
+    }
+
+    /// K21: a chat on a host changes there; its rows here are only read.
+    #[tokio::test]
+    async fn a_chat_on_a_host_is_only_read_here() {
+        let (test, id) = located(Location::Host("server".into())).await;
+        let (reads, runs, writes) = requests(&id);
+        for request in runs.into_iter().chain(writes) {
+            let why = refused(&test.core, request).await;
+            assert!(why.contains("server"), "{why}");
+        }
+        for request in reads {
+            served(&test.core, request).await;
+        }
+        let row = row(&test.core, "u").await;
+        assert_eq!(row.content, "Hi", "nothing changed");
+        let title = test
+            .core
+            .db
+            .read(move |c| store::get_dialog(c, &id))
+            .await
+            .unwrap()
+            .map(|d| d.title);
+        assert_eq!(title.as_deref(), Some("Chat"));
+    }
+
+    /// K25: nothing changes a chat that is moving, and no run starts; the
+    /// run that pauses for the move can still be stopped or answered.
+    #[tokio::test]
+    async fn a_chat_that_is_moving_takes_no_change_but_its_run_can_be_stopped() {
+        let (test, id) = located(Location::Moving("server".into())).await;
+        let (reads, runs, writes) = requests(&id);
+        for request in writes {
+            let why = refused(&test.core, request).await;
+            assert!(why.contains("moving to server"), "{why}");
+        }
+        for request in reads.into_iter().chain(runs) {
+            served(&test.core, request).await;
+        }
+    }
+
+    /// On a daemon, a chat its computer took back is read, not changed.
+    #[tokio::test]
+    async fn a_released_chat_is_only_read() {
+        let (test, id) = located(Location::Released).await;
+        let (reads, runs, writes) = requests(&id);
+        for request in runs.into_iter().chain(writes) {
+            refused(&test.core, request).await;
+        }
+        for request in reads {
+            served(&test.core, request).await;
+        }
+    }
+
+    /// A chat owned here takes everything, as before.
+    #[tokio::test]
+    async fn a_chat_owned_here_takes_every_request() {
+        let (test, id) = located(Location::Here).await;
+        let (reads, runs, writes) = requests(&id);
+        for request in reads.into_iter().chain(runs).chain(writes) {
+            served(&test.core, request).await;
+        }
     }
 
     /// The reply serializes as the frontend reads the command's result:

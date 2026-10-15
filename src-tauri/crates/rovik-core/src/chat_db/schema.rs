@@ -208,6 +208,135 @@ ALTER TABLE dialogs ADD COLUMN model_id TEXT;
 ALTER TABLE dialogs ADD COLUMN effort TEXT;
 "#;
 
+/// Chats that move between a computer and a server (cloud-agent-dev-plan.md,
+/// 6.3 and 6.8).
+///
+/// - `dialogs.location`: who owns the chat. NULL: this database. On a
+///   computer, `moving:<host>` while it moves there and `host:<id>` once
+///   its host owns it, and its rows here are a mirror of the host's; on a
+///   daemon, `released` once its computer took it back.
+/// - `rev`: a revision from `sync_clock`, one counter per database, raised
+///   by every write to a chat's rows and kept by each row from its last
+///   change, so a mirror can ask for what changed since the revision it has.
+///   Triggers keep it, also for code that writes with plain SQL; a write to
+///   a message's body, attachments or tool-call extras raises the
+///   message's. Rows from before have revision 1, without being rewritten.
+/// - `mirror_state`: each mirrored chat's host, the owner's revision its
+///   rows are pulled up to, the result imported last with its number, and
+///   a landing its host wasn't told of yet (6.5).
+/// - `cloud_moves`: a move in progress, there or back, and the step it
+///   reached, so the next start finishes or undoes one cut short (K25, K51).
+const SCHEMA_V10: &str = r#"
+ALTER TABLE dialogs ADD COLUMN location TEXT;
+
+CREATE TABLE sync_clock (
+  id  INTEGER PRIMARY KEY CHECK (id = 1),
+  rev INTEGER NOT NULL
+) STRICT;
+INSERT INTO sync_clock (id, rev) VALUES (1, 1);
+
+ALTER TABLE dialogs ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE messages ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE clm_state ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE clm_revisions ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;
+CREATE INDEX messages_by_rev ON messages (dialog_id, rev, id);
+
+CREATE TRIGGER dialogs_rev_insert AFTER INSERT ON dialogs BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE dialogs SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.id;
+END;
+CREATE TRIGGER dialogs_rev_update AFTER UPDATE ON dialogs WHEN NEW.rev IS OLD.rev BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE dialogs SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER messages_rev_insert AFTER INSERT ON messages BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.id;
+END;
+CREATE TRIGGER messages_rev_update AFTER UPDATE ON messages WHEN NEW.rev IS OLD.rev BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER clm_state_rev_insert AFTER INSERT ON clm_state BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE clm_state SET rev = (SELECT rev FROM sync_clock) WHERE dialog_id = NEW.dialog_id;
+END;
+CREATE TRIGGER clm_state_rev_update AFTER UPDATE ON clm_state WHEN NEW.rev IS OLD.rev BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE clm_state SET rev = (SELECT rev FROM sync_clock) WHERE dialog_id = NEW.dialog_id;
+END;
+
+CREATE TRIGGER clm_revisions_rev_insert AFTER INSERT ON clm_revisions BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE clm_revisions SET rev = (SELECT rev FROM sync_clock)
+   WHERE dialog_id = NEW.dialog_id AND number = NEW.number;
+END;
+CREATE TRIGGER clm_revisions_rev_update AFTER UPDATE ON clm_revisions WHEN NEW.rev IS OLD.rev BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE clm_revisions SET rev = (SELECT rev FROM sync_clock)
+   WHERE dialog_id = NEW.dialog_id AND number = NEW.number;
+END;
+
+CREATE TRIGGER message_bodies_rev_insert AFTER INSERT ON message_bodies BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.message_id;
+END;
+CREATE TRIGGER message_bodies_rev_update AFTER UPDATE ON message_bodies BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.message_id;
+END;
+CREATE TRIGGER message_bodies_rev_delete AFTER DELETE ON message_bodies BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = OLD.message_id;
+END;
+
+CREATE TRIGGER message_attachments_rev_insert AFTER INSERT ON message_attachments BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.message_id;
+END;
+CREATE TRIGGER message_attachments_rev_update AFTER UPDATE ON message_attachments BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.message_id;
+END;
+CREATE TRIGGER message_attachments_rev_delete AFTER DELETE ON message_attachments BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = OLD.message_id;
+END;
+
+CREATE TRIGGER tool_call_extras_rev_insert AFTER INSERT ON tool_call_extras BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.message_id;
+END;
+CREATE TRIGGER tool_call_extras_rev_update AFTER UPDATE ON tool_call_extras BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = NEW.message_id;
+END;
+CREATE TRIGGER tool_call_extras_rev_delete AFTER DELETE ON tool_call_extras BEGIN
+  UPDATE sync_clock SET rev = rev + 1;
+  UPDATE messages SET rev = (SELECT rev FROM sync_clock) WHERE id = OLD.message_id;
+END;
+
+CREATE TABLE mirror_state (
+  dialog_id          TEXT PRIMARY KEY REFERENCES dialogs (id) ON DELETE CASCADE,
+  host               TEXT NOT NULL,
+  rev                INTEGER NOT NULL DEFAULT 0,
+  imported_result    TEXT,
+  imported_seq       INTEGER,
+  unreported_landing TEXT
+) STRICT;
+
+CREATE TABLE cloud_moves (
+  dialog_id  TEXT PRIMARY KEY,
+  host       TEXT NOT NULL,
+  move_id    TEXT NOT NULL,
+  direction  TEXT NOT NULL CHECK (direction IN ('there', 'back')),
+  step       TEXT NOT NULL,
+  started_at INTEGER NOT NULL
+) STRICT;
+"#;
+
 pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -277,6 +406,12 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.pragma_update(None, "user_version", 9)?;
         tx.commit()?;
     }
+    if version < 10 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(SCHEMA_V10)?;
+        tx.pragma_update(None, "user_version", 10)?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -304,7 +439,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         let project: Option<String> = conn
             .query_row("SELECT project_id FROM dialogs WHERE id = 'old'", [], |r| {
                 r.get(0)
@@ -371,4 +506,104 @@ mod tests {
             .unwrap();
         assert_eq!(listed, ["old"], "an older app's list leaves the child out");
     }
+
+    /// A version 9 database gets revisions and locations (6.3): its rows
+    /// are at revision 1 without being rewritten, each write after raises
+    /// the clock and the row takes it, its chats are owned here, and a
+    /// mirror's query for a chat's changed messages uses the new index.
+    #[test]
+    fn upgrades_a_version_9_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure(&conn, true).unwrap();
+        for step in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V9,
+        ] {
+            conn.execute_batch(step).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        conn.execute_batch(
+            "INSERT INTO dialogs (id, title, created_at, updated_at) VALUES ('old', 'Old chat', 1, 1);
+             INSERT INTO messages (id, dialog_id, seq, role, created_at, content)
+               VALUES ('m1', 'old', 1024, 'user', 1, 'Hi'), ('m2', 'old', 2048, 'tool', 1, 'preview');
+             INSERT INTO message_bodies (message_id, content) VALUES ('m2', 'the whole result');
+             INSERT INTO clm_state (dialog_id, updated_at) VALUES ('old', 1);
+             INSERT INTO clm_revisions (dialog_id, number, kind, created_at, tokens, content)
+               VALUES ('old', 1, 'context', 1, 3, '# Context');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(one("PRAGMA user_version"), 10);
+        assert_eq!(one("SELECT rev FROM sync_clock"), 1);
+        for table in ["dialogs", "messages", "clm_state", "clm_revisions"] {
+            let revs = one(&format!("SELECT COUNT(*) FROM {table} WHERE rev = 1"));
+            let rows = one(&format!("SELECT COUNT(*) FROM {table}"));
+            assert_eq!(revs, rows, "{table}");
+        }
+        let location: Option<String> = conn
+            .query_row("SELECT location FROM dialogs WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(location, None, "owned here");
+
+        // A write raises the clock, and the row it changed takes it.
+        conn.execute("UPDATE messages SET content = 'Hey' WHERE id = 'm1'", [])
+            .unwrap();
+        let rev = |conn: &Connection, id: &str| -> i64 {
+            conn.query_row("SELECT rev FROM messages WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(rev(&conn, "m1"), 2);
+        assert_eq!(rev(&conn, "m2"), 1);
+        // A body written raises its message's.
+        conn.execute(
+            "UPDATE message_bodies SET content = 'another result' WHERE message_id = 'm2'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(rev(&conn, "m2"), 3);
+
+        // The client's own tables.
+        conn.execute(
+            "INSERT INTO mirror_state (dialog_id, host) VALUES ('old', 'server')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cloud_moves (dialog_id, host, move_id, direction, step, started_at)
+             VALUES ('old', 'server', 'mv', 'there', 'locked', 1)",
+            [],
+        )
+        .unwrap();
+        let sideways = conn.execute(
+            "INSERT INTO cloud_moves (dialog_id, host, move_id, direction, step, started_at)
+             VALUES ('other', 'server', 'mv', 'sideways', 'locked', 1)",
+            [],
+        );
+        assert!(sideways.is_err(), "a move goes there or back");
+
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {CHANGED_MESSAGES}"))
+            .unwrap()
+            .query_map(rusqlite::params!["old", 1, 100], |r| r.get(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("messages_by_rev")),
+            "{plan:?}"
+        );
+        // And it runs once.
+        migrate(&mut conn).unwrap();
+    }
 }
+
+/// The query a mirror's pull makes for a chat's messages changed since a
+/// revision (6.3), oldest change first: `chat_db::sync` reads them so.
+#[cfg(test)]
+const CHANGED_MESSAGES: &str =
+    "SELECT id FROM messages WHERE dialog_id = ?1 AND rev > ?2 ORDER BY rev LIMIT ?3";

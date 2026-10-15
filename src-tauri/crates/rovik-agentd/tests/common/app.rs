@@ -54,6 +54,26 @@ impl App {
         }
     }
 
+    /// The app started again: the same data, and a new `Remote`, which
+    /// knows only what the database kept, with the project open. Not
+    /// connected yet.
+    pub async fn restart(self, setup: &Setup) -> App {
+        let App {
+            test,
+            remote,
+            _overlays,
+        } = self;
+        drop(remote);
+        let remote = Remote::new(test.core.clone());
+        remote.load().await.unwrap();
+        remote.set_open_project(Some((PROJECT.into(), setup.project.clone())));
+        App {
+            test,
+            remote,
+            _overlays,
+        }
+    }
+
     /// Connects to the daemon, once it's ready.
     pub async fn connect(&self, setup: &Setup) {
         let identity = Identity {

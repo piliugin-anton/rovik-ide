@@ -2,18 +2,21 @@
 //! project's shadow and imported as the chat's overlay store, one at a time
 //! in the order they came: from `ResultReady`, and from `WorkResults` after
 //! every connection, so a result that ended while this computer was away
-//! comes in too (K24). Results are numbered, and one older than the newest
-//! that came in, as a `ResultReady` replayed after a connection can be, is
-//! passed over. It lands by itself under landing.rs's rules while
-//! the chat's project is the open project, and waits as "Ready to land"
-//! otherwise. Each landing is reported to the host with `WorkLanded`, at
-//! once or after its next connection, so the next result doesn't bring
-//! back what the user undid (K34).
+//! comes in too (K24). Results are numbered, and one no newer than the one
+//! imported last, as a `ResultReady` replayed after a connection, or the
+//! newest result again after the app restarts, can be, is passed over: the
+//! chat's `mirror_state` keeps which it was. It lands by itself under
+//! landing.rs's rules while the chat's project is the open project, and
+//! waits as "Ready to land" otherwise. Each landing is reported to the host
+//! with `WorkLanded`, at once or after its next connection, which
+//! `mirror_state` remembers across a restart, so the next result doesn't
+//! bring back what the user undid (K34).
 
 use super::{takes_projects, Remote};
 use crate::shadow::{self, Shadow};
 use git2::Oid;
 use rovik_core::agent_run::events::AgentEvent;
+use rovik_core::chat_db::mirror::{self, MirrorState};
 use rovik_core::chat_db::{projects, store};
 use rovik_core::overlay::chats;
 use rovik_core::overlay::import::{self, ImportError, Imported};
@@ -161,7 +164,8 @@ impl Remote {
         if self.host_of(&chat).as_deref() != Some(host) {
             return Ok(());
         }
-        let seen = self.lock().results_seen.get(&chat).copied();
+        let mirrored = self.mirror_state(&chat).await?.unwrap_or_default();
+        let seen = mirrored.imported_seq;
         if passed_over(seen, result.seq) {
             return Ok(());
         }
@@ -176,17 +180,17 @@ impl Remote {
             rt::spawn_blocking(move || Shadow::open(&dir, &root))
         };
         let shadow = opened.await.map_err(|e| e.to_string())??;
-        if shadow.imported(&chat) == Some(commit) {
+        if mirrored.imported_result.as_deref() == Some(result.commit.as_str()) {
             // The same changes, after a run that changed nothing more: its
             // outcome decides again whether they land, while they wait
-            // here. Before this session knew of an older result, it can't
-            // tell, and they stay as they are.
+            // here. A chat with no number kept can't tell, and they stay as
+            // they are.
             let waits = chats::exists(&chat) && !import::resolving(&chat);
             if seen.is_some() && waits {
                 self.decide(&chat, &project, result.pending.as_deref())
                     .await;
             }
-            self.saw(&chat, result.seq);
+            self.saw(&chat, &result).await;
             return Ok(());
         }
         let client = self.client(host).map_err(|fail| fail.message)?;
@@ -211,7 +215,7 @@ impl Remote {
             }
             Err(ImportError::Failed(e)) => return Err(e),
         }
-        self.saw(&chat, result.seq);
+        self.saw(&chat, &result).await;
         Ok(())
     }
 
@@ -227,12 +231,23 @@ impl Remote {
         }
     }
 
-    /// The chat's result numbered `seq` came in: older ones are passed over
-    /// from now on.
-    fn saw(&self, dialog_id: &str, seq: u64) {
-        if seq > 0 {
-            self.lock().results_seen.insert(dialog_id.to_string(), seq);
+    /// The chat's `result` came in: it and older ones are passed over from
+    /// now on, after a restart too.
+    async fn saw(&self, dialog_id: &str, result: &ChatResult) {
+        let (id, commit, seq) = (dialog_id.to_string(), result.commit.clone(), result.seq);
+        let kept = self
+            .core
+            .db
+            .write(move |c| mirror::set_imported(c, &id, &commit, seq))
+            .await;
+        if let Err(e) = kept {
+            log::warn!("{dialog_id}'s imported result isn't kept: {e}");
         }
+    }
+
+    async fn mirror_state(&self, dialog_id: &str) -> Result<Option<MirrorState>, String> {
+        let id = dialog_id.to_string();
+        self.core.db.read(move |c| mirror::state(c, &id)).await
     }
 
     /// The results that waited for their project, once it's open.
@@ -357,7 +372,8 @@ impl Remote {
     }
 
     /// Tells the chat's host that `imported` landed, now or, when it can't
-    /// be reached, after its next connection. A newer landing's report
+    /// be reached, after its next connection, which the chat's
+    /// `mirror_state` keeps across a restart. A newer landing's report
     /// takes an older one's place: a result holds every change since the
     /// last landing it was told of.
     async fn report(&self, dialog_id: &str, imported: Imported) {
@@ -371,30 +387,38 @@ impl Remote {
             Some(client) => client.request::<()>(landed).await.map_err(|f| f.message),
             None => Err("its host isn't set up".into()),
         };
-        if let Err(e) = told {
-            log::warn!("{dialog_id}'s landing is told to its host later: {e}");
-            self.lock()
-                .unreported
-                .insert(dialog_id.to_string(), imported);
+        let kept = match &told {
+            Ok(()) => None,
+            Err(e) => {
+                log::warn!("{dialog_id}'s landing is told to its host later: {e}");
+                serde_json::to_string(&imported).ok()
+            }
+        };
+        let id = dialog_id.to_string();
+        let written = self
+            .core
+            .db
+            .write(move |c| mirror::set_unreported(c, &id, kept.as_deref()))
+            .await;
+        if let Err(e) = written {
+            log::warn!("{dialog_id}'s landing to tell: {e}");
         }
     }
 
     async fn report_landings(&self, host: &str) {
-        let unreported: Vec<(String, Imported)> = {
-            let mut state = self.lock();
-            let on_host: Vec<String> = state
-                .unreported
-                .keys()
-                .filter(|chat| state.chats.get(*chat).is_some_and(|h| h == host))
-                .cloned()
-                .collect();
-            on_host
-                .into_iter()
-                .filter_map(|chat| state.unreported.remove_entry(&chat))
-                .collect()
+        let at = host.to_string();
+        let unreported = match self.core.db.read(move |c| mirror::unreported(c, &at)).await {
+            Ok(unreported) => unreported,
+            Err(e) => {
+                log::warn!("the landings to tell {host}: {e}");
+                return;
+            }
         };
-        for (chat, imported) in unreported {
-            self.report(&chat, imported).await;
+        for (chat, landing) in unreported {
+            match serde_json::from_str::<Imported>(&landing) {
+                Ok(imported) => self.report(&chat, imported).await,
+                Err(e) => log::warn!("{chat}'s landing to tell can't be read: {e}"),
+            }
         }
     }
 

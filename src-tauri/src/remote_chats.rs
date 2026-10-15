@@ -1,8 +1,8 @@
-//! Which chats are on a host. Until chats move there (M01, M06), the
-//! developer setting `ROVIK_REMOTE_CHATS=<chat>=<socket>,…` puts chats on
-//! the daemons at those sockets: the app connects to each as
-//! `ROVIK_COMPUTER` (default "desktop"), with the token in
-//! `ROVIK_REMOTE_TOKEN` that the daemon's config.toml names it by.
+//! Which chats are on a host. Until chats move there (M06), the developer
+//! setting `ROVIK_REMOTE_CHATS=<chat>=<socket>,…` puts chats on the daemons
+//! at those sockets, as the database keeps them from then on (M01): the app
+//! connects to each as `ROVIK_COMPUTER` (default "desktop"), with the token
+//! in `ROVIK_REMOTE_TOKEN` that the daemon's config.toml names it by.
 
 use rovik_client::{Identity, Remote};
 use rovik_protocol::Secret;

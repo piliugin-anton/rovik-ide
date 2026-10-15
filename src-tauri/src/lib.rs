@@ -54,6 +54,10 @@ pub fn run() {
                     eprintln!("cloud: could not send an event: {e}");
                 }
             }));
+            // The chats the database puts on hosts go there from the start.
+            if let Err(e) = rt::block_on(remote.load()) {
+                eprintln!("cloud: the chats on hosts couldn't be read: {e}");
+            }
             {
                 let _runtime = rt::handle().enter();
                 remote_chats::from_env(&remote);

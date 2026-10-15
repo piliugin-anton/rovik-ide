@@ -30,7 +30,9 @@
 //! A chat's results come back the same way: fetched into the shadow, and
 //! imported from there as the chat's overlay store (`overlay::import`), so
 //! their files are checked out with the project's settings (K40). The last
-//! one imported is kept at `refs/rovik/imported/<chat>`.
+//! one imported is kept at `refs/rovik/imported/<chat>`, so later fetches
+//! say they have it; which one it was, with its number, is the chat's
+//! `mirror_state`'s to say.
 //!
 //! Each operation holds the shadow for itself: two at once would race on
 //! its index.
@@ -66,7 +68,7 @@ const FROM_PROJECT: [&str; 4] = [
 const INFO_FILES: [&str; 2] = ["info/exclude", "info/attributes"];
 
 const SNAPSHOTS: &str = "refs/rovik/snapshots/";
-/// Each chat's result imported last.
+/// Each chat's result imported last: what later fetches have.
 const IMPORTED: &str = "refs/rovik/imported/";
 /// False once the user has chosen to send the project without its history.
 const HISTORY: &str = "rovik.history";
@@ -269,11 +271,6 @@ impl Shadow {
             .reference(&name, commit, true, "imported")
             .map_err(|e| ImportError::Failed(git(e)))?;
         Ok(imported)
-    }
-
-    /// The chat's result imported last.
-    pub fn imported(&self, chat: &str) -> Option<Oid> {
-        self.repo.refname_to_id(&format!("{IMPORTED}{chat}")).ok()
     }
 
     /// Packs the shadow's loose objects into one pack and deletes them,

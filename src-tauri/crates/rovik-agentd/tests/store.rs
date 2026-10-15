@@ -1,15 +1,18 @@
 //! What the daemon keeps (P05), against the real binary: each computer's
-//! configuration for its own chats, and keys in keys.json alone.
+//! configuration for its own chats, which no other computer reaches or sees
+//! (M01), and keys in keys.json alone.
 
 mod common;
 
-use common::{files_under, start_request, until, Daemon, OTHER};
+use common::{files_under, start_request, until, Daemon, Session, OTHER};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
-use rovik_core::agent_run::AgentConfig;
+use rovik_core::agent_run::{AgentConfig, AgentStatus, ApprovalDecision};
+use rovik_core::chat_db::store::{ChatModel, MessagePatch};
 use rovik_core::testing::{model, Reply};
-use rovik_protocol::{Request, Response};
+use rovik_protocol::{FailCode, Request, Response};
 use serde_json::json;
 use std::time::Duration;
+use tokio::net::UnixStream;
 
 fn writes(path: &'static str) -> Vec<Reply> {
     vec![
@@ -72,38 +75,114 @@ async fn each_computers_configuration_applies_to_its_own_chats() {
     desk.call(Request::AgentStart(start)).await.unwrap();
 
     // The desk's write needs no approval: its run ends.
-    let mut status = None;
+    let mut desk_status = None;
     for _ in 0..400 {
-        if let Ok(Response::AgentStatus(s)) = desk.call(Request::AgentStatus).await {
-            let desk_runs = s.runs.iter().any(|r| r.dialog_id == "desk-chat");
-            if !desk_runs && !s.approvals.is_empty() {
-                status = Some(s);
-                break;
-            }
+        let s = status_of(&mut desk).await;
+        if s.runs.is_empty() {
+            desk_status = Some(s);
+            break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let status = status.unwrap_or_else(|| panic!("no approval waited\n{}", daemon.output()));
+    let desk_status =
+        desk_status.unwrap_or_else(|| panic!("the desk's run went on\n{}", daemon.output()));
     assert_eq!(
         std::fs::read_to_string(project.join("desk.txt"))
             .ok()
             .as_deref(),
         Some("written\n")
     );
-    // The laptop's waits for the user's approval.
-    let waiting: Vec<&str> = status
+    // The laptop's waits for the user's approval, which only the laptop
+    // sees (M01).
+    let mut laptop_status = AgentStatus::default();
+    for _ in 0..400 {
+        laptop_status = status_of(&mut laptop).await;
+        if !laptop_status.approvals.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let waiting: Vec<&str> = laptop_status
         .approvals
         .iter()
         .map(|a| a.dialog_id.as_str())
         .collect();
     assert_eq!(waiting, ["laptop-chat"]);
+    let runs: Vec<&str> = laptop_status
+        .runs
+        .iter()
+        .map(|r| r.dialog_id.as_str())
+        .collect();
+    assert_eq!(runs, ["laptop-chat"]);
+    assert!(desk_status.approvals.is_empty(), "{desk_status:?}");
+    assert!(status_of(&mut desk).await.approvals.is_empty());
     assert!(!project.join("laptop.txt").exists());
+
+    // Nor can the desk reach the laptop's chat, to change or to read it.
+    let laptop_chat = || "laptop-chat".to_string();
+    let theirs = [
+        Request::AgentStop {
+            dialog_id: laptop_chat(),
+        },
+        Request::AgentResolveApproval {
+            dialog_id: laptop_chat(),
+            tool_call_id: "w1".into(),
+            decision: ApprovalDecision::Allow,
+        },
+        Request::ChatRename {
+            dialog_id: laptop_chat(),
+            title: "Mine now".into(),
+        },
+        Request::ChatSetModel {
+            dialog_id: laptop_chat(),
+            model: ChatModel {
+                provider_id: "p".into(),
+                model_id: "m".into(),
+                effort: None,
+            },
+        },
+        Request::ChatUpdateMessage {
+            message_id: "u1".into(),
+            patch: MessagePatch {
+                content: Some("Changed".into()),
+                ..Default::default()
+            },
+        },
+        Request::ClmListRevisions {
+            dialog_id: laptop_chat(),
+        },
+        Request::ChatDelete {
+            dialog_id: laptop_chat(),
+        },
+    ];
+    for request in theirs {
+        let shown = format!("{request:?}");
+        match desk.call(request).await {
+            Err(fail) => assert_eq!(fail.code, FailCode::NotOwner, "{shown}: {fail}"),
+            Ok(reply) => panic!("{shown} wasn't refused: {reply:?}"),
+        }
+    }
+    assert!(!project.join("laptop.txt").exists(), "nothing was approved");
+    let renamed = laptop
+        .call(Request::ChatRename {
+            dialog_id: laptop_chat(),
+            title: "Still the laptop's".into(),
+        })
+        .await;
+    assert_eq!(renamed, Ok(Response::Done));
     let stopped = laptop
         .call(Request::AgentStop {
-            dialog_id: "laptop-chat".into(),
+            dialog_id: laptop_chat(),
         })
         .await;
     assert_eq!(stopped, Ok(Response::Bool(true)));
+}
+
+async fn status_of(session: &mut Session<UnixStream>) -> AgentStatus {
+    match session.call(Request::AgentStatus).await {
+        Ok(Response::AgentStatus(status)) => status,
+        other => panic!("no status: {other:?}"),
+    }
 }
 
 /// Plan rule 9: once a start has brought them, the keys are in keys.json

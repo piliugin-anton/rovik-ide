@@ -1964,3 +1964,46 @@ Tasks add notes here when reality differs from the plan.
     doesn't prune them. A file whose earlier versions are gone anyway is
     left as it is, among `changedSince`, and forgotten, rather than failing
     the request.
+- **M01, where a chat is.**
+  - `sync_clock` is a table of one row, one counter per database. The
+    `rev` of the rows already there is 1, a column default, so the upgrade
+    rewrites nothing. Triggers raise the clock on every insert and update
+    of the four tables and give the row its value; a write to
+    `message_bodies`, `message_attachments` or `tool_call_extras` raises its
+    message's. Deletions aren't revisions: M02 lists the CLM revisions that
+    remain, and M08 sends a deleted chat's tombstone.
+  - A location reads as `chat_db::location::Location`: `Here`,
+    `Moving(host)`, `Host(id)` or `Released`. A subagent's chat takes its
+    parent's when it's created, and setting a chat's location sets its
+    subagents' too. A value this app doesn't know, from a newer one, is
+    never taken as "here".
+  - `Request::target()` names the chat a request is about, by its id or one
+    of its messages', and whether it reads the chat, controls its run or
+    changes it. `dispatch` refuses a chat on a host or released anything
+    but reads, and a chat that is moving anything that changes it: the run
+    that pauses for the move can still be stopped or answered (M03).
+    `AgentSetEffort` and `WorkloadFocus` reach runs in memory alone, and
+    aren't refused.
+  - On the daemon, any request about a chat another computer moved there is
+    refused, reads included, its subagents' chats with it
+    (`store::lead_chat`): before, only starts were (P05). `AgentStatus`
+    lists the computer's own chats alone (D16): it listed every computer's.
+  - `Remote::place` writes the chat's location and `mirror_state` row,
+    queued before the writes that follow it, and `Remote::load` puts back
+    the chats the database has on hosts when the app starts. The writes the
+    mirror takes after the owner (a rename, a model, a message's patch) go
+    to the store directly, since `dispatch` refuses them now. The result
+    imported last, its number and a landing to report are `mirror_state`'s;
+    the shadow keeps `refs/rovik/imported/<chat>` as what later fetches
+    have. Deleting a remote chat removes its rows here (`Remote::delete`),
+    until M08 tells its host too; a chat that is moving isn't deleted.
+  - The developer setting `ROVIK_REMOTE_CHATS` puts its chats on their
+    daemons in the database too, so they stay there after a restart, until
+    M06 makes it unneeded.
+  - The test of the write functions covers those of the three modules that
+    change chat rows; the projects' other writes change projects alone, and
+    the input's saved draft is this computer's, with no revision. The tests
+    of a restart build a new `Remote` on the same core, as a start of the
+    app does. A result imported again after a restart changed nothing where
+    its landing stood, so that test undoes the landing first: imported
+    again, the undone change came back.

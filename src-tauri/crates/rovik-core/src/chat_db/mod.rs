@@ -12,7 +12,11 @@ pub mod api;
 pub mod attachments;
 pub mod history;
 pub mod images;
+pub mod location;
+pub mod mirror;
 pub mod projects;
+#[cfg(test)]
+mod rev_tests;
 mod schema;
 pub mod search;
 pub mod store;

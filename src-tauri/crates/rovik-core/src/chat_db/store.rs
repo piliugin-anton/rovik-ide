@@ -286,13 +286,14 @@ pub fn create_dialog(conn: &mut Connection, d: &NewDialog) -> DbResult<()> {
     tx.commit().map_err(err)
 }
 
-/// A subagent's chat: in its parent's project, stored with `archived = 2`
-/// so no chat list shows it (older app versions list `archived = 0`), and
-/// its title isn't indexed for search.
+/// A subagent's chat: in its parent's project and wherever its parent is
+/// owned (chat_db/location.rs), stored with `archived = 2` so no chat list
+/// shows it (older app versions list `archived = 0`), and its title isn't
+/// indexed for search.
 pub fn create_child_dialog(conn: &mut Connection, d: &NewChildDialog) -> DbResult<()> {
     conn.execute(
-        "INSERT INTO dialogs (id, title, created_at, updated_at, project_id, archived, parent_id, parent_call_id, kind)
-         SELECT ?1, ?2, ?3, ?3, project_id, 2, id, ?5, ?6 FROM dialogs WHERE id = ?4",
+        "INSERT INTO dialogs (id, title, created_at, updated_at, project_id, archived, parent_id, parent_call_id, kind, location)
+         SELECT ?1, ?2, ?3, ?3, project_id, 2, id, ?5, ?6, location FROM dialogs WHERE id = ?4",
         params![d.id, d.title, d.created_at, d.parent_id, d.parent_call_id, d.kind],
     )
     .map_err(err)
@@ -385,6 +386,29 @@ pub fn rename_dialog(conn: &mut Connection, id: &str, title: &str) -> DbResult<(
     .map_err(err)?;
     index_title(&tx, id, title)?;
     tx.commit().map_err(err)
+}
+
+/// The chat at the top of a subagent's chat's parents: the chat itself
+/// for a lead's, or for a chat this database doesn't have. Each parent
+/// once, even if the links loop.
+pub fn lead_chat(conn: &Connection, id: &str) -> DbResult<String> {
+    let mut chat = id.to_string();
+    let mut seen = std::collections::HashSet::from([chat.clone()]);
+    loop {
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_id FROM dialogs WHERE id = ?1",
+                params![chat],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)?
+            .flatten();
+        match parent {
+            Some(parent) if seen.insert(parent.clone()) => chat = parent,
+            _ => return Ok(chat),
+        }
+    }
 }
 
 /// P6.7: a chat's subagents' chats, theirs too, deepest first. Each once,

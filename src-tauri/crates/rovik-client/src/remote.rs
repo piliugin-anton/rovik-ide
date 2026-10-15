@@ -1,6 +1,9 @@
 //! The app's remote chats (6.1): which host each one is on, the requests
 //! that go there, and its events, passed on to the app's own sink as the
-//! frontend expects them, with the mirror written first.
+//! frontend expects them, with the mirror written first. Which host a chat
+//! is on is kept in the database (`dialogs.location`, `mirror_state`), so
+//! the next start of the app knows it (`load`); `dispatch` refuses such a
+//! chat, whose rows here only the mirror writes (K21).
 
 use crate::client::{Client, HostState, Identity, Incoming};
 use crate::connector::Connector;
@@ -10,9 +13,9 @@ use results::Job;
 use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest, OutMessage, Patch};
 use rovik_core::agent_run::subagent::Kind;
 use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest, UserMessage};
-use rovik_core::chat_db::attachments;
+use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::store::{self, MessagePatch, NewChildDialog, NewMessage};
-use rovik_core::overlay::import::Imported;
+use rovik_core::chat_db::{api, attachments, mirror};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
@@ -106,8 +109,8 @@ pub struct Remote {
 
 #[derive(Default)]
 struct State {
-    /// Each remote chat's host, and its subagents' chats' (`location`
-    /// once M01 adds it).
+    /// Each remote chat's host, and its subagents' chats': the chats the
+    /// database puts on a host (`location`).
     chats: HashMap<String, String>,
     policies: HashMap<String, ApprovalPolicy>,
     /// The remote runs the frontend was told of: a host that comes back
@@ -121,8 +124,6 @@ struct State {
     uploads: HashMap<String, oneshot::Sender<()>>,
     /// The project open in the app: its id and folder (6.5).
     open: Option<(String, PathBuf)>,
-    /// Landings their hosts weren't told of yet, by chat.
-    unreported: HashMap<String, Imported>,
     /// Each chat's snapshot as its last sync took it (6.7).
     last_sync: HashMap<String, Oid>,
     /// The projects ensured on each host this session: (host, project).
@@ -132,10 +133,6 @@ struct State {
     /// How many times each chat's result went back to be checked merged
     /// with the project's newer changes (6.6), since its last message.
     rechecks: HashMap<String, u32>,
-    /// The number of each chat's newest result handled this session (6.5):
-    /// an older one, replayed after it, is passed over. M01 keeps it in
-    /// `mirror_state`.
-    results_seen: HashMap<String, u64>,
 }
 
 impl Remote {
@@ -193,11 +190,29 @@ impl Remote {
         });
     }
 
-    /// The chat is on `host` from now on.
+    /// The chats the database puts on hosts, once the app starts: their
+    /// requests go there from now on.
+    pub async fn load(&self) -> Result<(), String> {
+        let away = self.core.db.read(location::away).await?;
+        let mut state = self.lock();
+        for (chat, location) in away {
+            if let Location::Host(host) = location {
+                state.chats.insert(chat, host);
+            }
+        }
+        Ok(())
+    }
+
+    /// The chat is on `host` from now on, with its subagents' chats: here,
+    /// and in the database, queued before any write that comes after.
     pub fn place(&self, dialog_id: &str, host: &str) {
         self.lock()
             .chats
             .insert(dialog_id.to_string(), host.to_string());
+        let (chat, host) = (dialog_id.to_string(), host.to_string());
+        self.core
+            .db
+            .write_detached(move |c| mirror::place(c, &chat, &host));
     }
 
     pub fn host_of(&self, dialog_id: &str) -> Option<String> {
@@ -241,10 +256,8 @@ impl Remote {
             }
         }
         let reply = self.client(&host)?.call(request.clone()).await?;
-        if mirror_takes(&request) {
-            if let Err(fail) = rovik_core::dispatch(&self.core, request).await {
-                log::warn!("the mirror of {dialog_id} didn't take a write: {fail}");
-            }
+        if let Err(e) = self.mirror_write(request).await {
+            log::warn!("the mirror of {dialog_id} didn't take a write: {e}");
         }
         Ok(match reply {
             // A path on the server means nothing here.
@@ -254,6 +267,43 @@ impl Remote {
             }
             reply => reply,
         })
+    }
+
+    /// A write the owner tells no event of, into the mirror once the owner
+    /// has taken it, until M05's pulls bring them. Written here directly:
+    /// `dispatch` refuses a chat on a host.
+    async fn mirror_write(&self, request: Request) -> Result<(), String> {
+        let db = &self.core.db;
+        match request {
+            Request::ChatRename { dialog_id, title } => {
+                api::chat_rename_dialog(db, dialog_id, title).await
+            }
+            Request::ChatSetModel { dialog_id, model } => {
+                api::chat_set_model(db, dialog_id, model).await
+            }
+            Request::ChatUpdateMessage { message_id, patch } => {
+                api::chat_update_message(db, message_id, patch).await
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Deletes a chat. A remote chat's rows here go, and its host keeps its
+    /// own until M08 tells it. A chat moving to a host is refused, as
+    /// `dispatch` refuses it.
+    pub async fn delete(&self, dialog_id: &str) -> Result<(), Fail> {
+        if self.host_of(dialog_id).is_none() {
+            let delete = Request::ChatDelete {
+                dialog_id: dialog_id.to_string(),
+            };
+            return rovik_core::dispatch(&self.core, delete).await.map(drop);
+        }
+        api::chat_delete_dialog(&self.core, dialog_id.to_string())
+            .await
+            .map_err(internal)?;
+        let mut state = self.lock();
+        state.chats.retain(|chat, _| chat != dialog_id);
+        Ok(())
     }
 
     /// A request about a message, answered by the owner of its chat, which
@@ -499,18 +549,17 @@ impl Remote {
         Ok(reply)
     }
 
-    /// Refused while the project has chats on a host: merging or deleting
-    /// it would rewrite or orphan them (K38). `doing` ends the sentence:
-    /// "deleting it", "merging it".
+    /// Refused while the project has chats on a host, or moving to one:
+    /// merging or deleting it would rewrite or orphan them (K38). `doing`
+    /// ends the sentence: "deleting it", "merging it".
     pub async fn keep_project(&self, project_id: &str, doing: &str) -> Result<(), String> {
         let id = project_id.to_string();
-        let chats = self
+        let away = self
             .core
             .db
-            .read(move |c| store::dialogs_in_project(c, Some(&id)))
+            .read(move |c| location::project_has_chats_away(c, &id))
             .await?;
-        let state = self.lock();
-        match chats.iter().find_map(|chat| state.chats.get(chat)) {
+        match away {
             Some(host) => Err(format!(
                 "This project has chats on {host}. Move them back to this computer before {doing}."
             )),
@@ -830,17 +879,6 @@ impl Remote {
 fn takes_projects(client: &Client) -> bool {
     let projects = |d: crate::DaemonInfo| d.features.iter().any(|f| f == features::PROJECTS);
     client.daemon().is_some_and(projects)
-}
-
-/// Writes the owner tells no event of: the mirror takes them too, once the
-/// owner has, until M05's pulls bring them.
-fn mirror_takes(request: &Request) -> bool {
-    matches!(
-        request,
-        Request::ChatRename { .. }
-            | Request::ChatSetModel { .. }
-            | Request::ChatUpdateMessage { .. }
-    )
 }
 
 /// The editor context names files from the project's root, not by a local

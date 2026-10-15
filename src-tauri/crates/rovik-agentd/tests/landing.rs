@@ -8,7 +8,8 @@
 //! same changes after another run land by that run's outcome. A result
 //! waits while its project's folder is open as another project's, until
 //! the user says which project it is. A file the chat moved lands with the
-//! user's edit to it where it was.
+//! user's edit to it where it was. Which result came in last, and a landing
+//! the daemon wasn't told of, outlive a restart of the app (M01).
 
 mod common;
 
@@ -369,4 +370,117 @@ async fn a_moved_file_lands_with_the_users_edit_where_it_was() {
 
     landed_as(&setup, "src/new.rs", "ONE\n2\n3\n4\n5\nSIX\n").await;
     assert!(!setup.project.join("src/old.rs").exists());
+}
+
+/// The notices the app gave about the chat's changes coming back or landing.
+fn landing_notices(app: &App) -> usize {
+    let titles = [
+        "Landed",
+        "This chat's changes didn't land",
+        "This chat's changes didn't come back",
+    ];
+    let events = app.test.events.lock().unwrap();
+    events
+        .iter()
+        .filter(|e| e["type"] == "notice" && titles.iter().any(|t| e["title"] == *t))
+        .count()
+}
+
+/// M01: the result imported last is kept with its number (`mirror_state`),
+/// so after a restart the app doesn't import it again, as it would told of
+/// it once more on connecting: a landing the user undid stays undone.
+#[tokio::test(flavor = "multi_thread")]
+async fn after_a_restart_the_result_imported_last_isnt_imported_again() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    let snapshot = setup.base();
+    let (url, _) = model(vec![
+        writes("w1", "src/new.rs", "fn new() {}\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    assert_eq!(landed(&setup, "src/new.rs").await, "fn new() {}\n");
+    until("the daemon told of the landing", || {
+        Some(setup.base()).filter(|b| *b != snapshot)
+    })
+    .await;
+    let undo = chats::last_landing(CHAT).unwrap();
+    let agents = &app.test.core.agents;
+    chats::overlay_undo(agents, CHAT.into(), undo.id)
+        .await
+        .unwrap();
+    assert!(!setup.project.join("src/new.rs").exists());
+    let newest = newest_result(&setup).await;
+    let told = landing_notices(&app);
+
+    let app = app.restart(&setup).await;
+    app.connect(&setup).await;
+    // Told of it again, as `WorkResults` on connecting tells it, or a
+    // `ResultReady` replayed.
+    app.remote.result_ready(HOST, newest);
+    let _ = app.remote.land(CHAT, false).await;
+
+    assert!(
+        !setup.project.join("src/new.rs").exists(),
+        "the undone landing didn't come back"
+    );
+    assert_eq!(
+        landing_notices(&app),
+        told,
+        "nothing came in or landed again"
+    );
+    assert!(!chats::exists(CHAT), "no store was made for it");
+}
+
+/// M01: a landing the daemon couldn't be told of is kept (`mirror_state`),
+/// and told after the next connection, though the app restarted meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_landing_the_daemon_wasnt_told_of_is_told_after_a_restart() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.connect(&setup).await;
+    ready_to_run(&setup).await;
+    app.remote.set_open_project(None);
+    let snapshot = setup.base();
+    let (url, _) = model(vec![
+        writes("w1", "src/new.rs", "fn new() {}\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    until("the result waiting for its project", || {
+        chats::pending(CHAT).filter(|p| p.reason == import::READY)
+    })
+    .await;
+    // The daemon goes away, and the user lands the result.
+    setup.daemon.kill().await;
+    let landing = app.remote.land(CHAT, false).await.unwrap();
+    assert!(landing.is_some());
+    assert_eq!(read(&setup.project.join("src/new.rs")), "fn new() {}\n");
+    assert_eq!(setup.base(), snapshot, "the daemon wasn't told");
+
+    let app = app.restart(&setup).await;
+    setup.daemon.restart().await;
+    app.connect(&setup).await;
+
+    let moved = until("the daemon told of the landing", || {
+        Some(setup.base()).filter(|b| *b != snapshot)
+    })
+    .await;
+    let there = setup.there();
+    let commit = there.find_commit(Oid::from_str(&moved).unwrap()).unwrap();
+    assert!(commit
+        .tree()
+        .unwrap()
+        .get_path(Path::new("src/new.rs"))
+        .is_ok());
 }
