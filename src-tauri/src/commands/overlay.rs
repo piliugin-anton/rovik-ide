@@ -87,7 +87,9 @@ pub async fn overlay_undo_merge(
     remote: State<'_, Arc<Remote>>,
     dialog_id: String,
 ) -> Result<UndoneMerge, String> {
-    remote.local_only(&dialog_id)?;
+    if remote.host_of(&dialog_id).is_some() {
+        return remote.undo_merge(&dialog_id, None).await;
+    }
     chats::overlay_undo_merge(&core.agents, dialog_id).await
 }
 
@@ -100,7 +102,9 @@ pub async fn overlay_unmark(
     dialog_id: String,
     files: Vec<String>,
 ) -> Result<UndoneMerge, String> {
-    remote.local_only(&dialog_id)?;
+    if remote.host_of(&dialog_id).is_some() {
+        return remote.undo_merge(&dialog_id, Some(files)).await;
+    }
     chats::overlay_unmark(&core.agents, dialog_id, files).await
 }
 

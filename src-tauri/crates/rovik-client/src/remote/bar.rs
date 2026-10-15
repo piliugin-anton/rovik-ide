@@ -2,14 +2,17 @@
 //! result and from the files the chat changed in its worktree so far, with
 //! its last sync; a changed file's versions; and what the bar's buttons do.
 //! Landing, Undo and the conflict resolver work on the imported result
-//! here, but "Is the run going?" is asked of the chat's host. The buttons
-//! that undo a local merge or a group's steps aren't there in v1.
+//! here, but "Is the run going?" is asked of the chat's host, and Undo the
+//! merge and Unmark take a merge or markers back out there. Redo
+//! sequentially stays a local chat's: server runs have no parallel groups.
 
 use super::Remote;
 use rovik_core::agent_run::AgentStatus;
-use rovik_core::overlay::chats::{self, ChangedFile, FileVersions, HandedOver, OverlayStatus};
+use rovik_core::overlay::chats::{
+    self, ChangedFile, FileVersions, HandedOver, OverlayStatus, UndoneMerge,
+};
 use rovik_core::rt;
-use rovik_protocol::work::{Change, Handed, WorkChange, WorkFile};
+use rovik_protocol::work::{self, Change, Handed, WorkChange, WorkFile};
 use rovik_protocol::{Fail, FailCode, Request};
 use std::path::PathBuf;
 
@@ -37,6 +40,8 @@ impl Remote {
         match self.ask::<Vec<WorkChange>>(dialog_id, ask).await {
             Ok(changes) => {
                 status.isolated = true;
+                let merged = changes.iter().filter(|c| c.merged);
+                status.merged_in = merged.map(|c| c.path.clone()).collect();
                 status.files = changes.into_iter().map(changed_file).collect();
             }
             Err(fail) => log::warn!("{dialog_id}'s changes there: {fail}"),
@@ -126,6 +131,30 @@ impl Remote {
         Ok(HandedOver {
             files: handed.files,
             request,
+        })
+    }
+
+    /// Takes the project's merged changes and conflict markers back out of
+    /// the chat's files on its host (`files`: only those, Unmark). Its next
+    /// result brings what conflicts with the project back here.
+    pub async fn undo_merge(
+        &self,
+        dialog_id: &str,
+        files: Option<Vec<String>>,
+    ) -> Result<UndoneMerge, String> {
+        let ask = Request::WorkUndoMerge {
+            dialog_id: dialog_id.to_string(),
+            files,
+        };
+        let undone: work::UndoneMerge = self.ask(dialog_id, ask).await.map_err(|f| f.message)?;
+        if !undone.restored.is_empty() {
+            // Their landing base went back there: the next message syncs
+            // again.
+            self.lock().last_sync.remove(dialog_id);
+        }
+        Ok(UndoneMerge {
+            restored: undone.restored,
+            changed_since: undone.changed_since,
         })
     }
 

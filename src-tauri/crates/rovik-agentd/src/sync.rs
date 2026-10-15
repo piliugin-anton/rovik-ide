@@ -17,6 +17,7 @@
 //!
 //! The run goes on in every case.
 
+use crate::store::Kept;
 use git2::{Oid, Repository, ResetType, Tree};
 use rovik_core::merge;
 use rovik_core::overlay::{chats, markers};
@@ -36,6 +37,8 @@ pub struct Merged {
     /// For the files of a sync that merged cleanly: what the project
     /// changed in each, its diff from the landing base (6.6).
     pub diffs: Vec<String>,
+    /// What the merge replaced in the chat's files, once applied.
+    pub kept: Vec<(String, Kept)>,
 }
 
 impl Merged {
@@ -68,6 +71,7 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
             state: SyncState::Synced,
             files: Vec::new(),
             diffs: Vec::new(),
+            kept: Vec::new(),
         });
     }
     let (old, new) = (base.tree().map_err(git)?, snapshot.tree().map_err(git)?);
@@ -82,6 +86,9 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
 
     let (mut apply, mut merged, mut marked, mut stuck) = (Vec::new(), vec![], vec![], vec![]);
     let mut diffs = Vec::new();
+    // The chat's version of each file both changed, its base, and what
+    // replaces them.
+    let mut replaced = Vec::new();
     for path in paths {
         let side = |tree: &Tree| in_tree(&repo, tree, &path).map_err(git);
         let (was, now) = (side(&old)?, side(&new)?);
@@ -112,14 +119,20 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
         } else {
             project_exec
         };
+        let base = base_bytes.zip(base_exec);
+        let kept = |written: &[u8]| Replaced::new(&path, chat, base, written);
         match merge::merge_bytes(base_bytes.unwrap_or_default(), chat, project) {
             Ok(Some(bytes)) => {
+                replaced.push(kept(&bytes));
                 apply.push((path.clone(), Some(Entry::File { bytes, exec })));
                 diffs.push(chats::short_diff(base_bytes.unwrap_or_default(), project));
                 merged.push(path);
             }
             Ok(None) => match markers::mark(base_bytes, project, chat) {
-                Some(bytes) => marked.push((path, Entry::File { bytes, exec })),
+                Some(bytes) => {
+                    replaced.push(kept(&bytes));
+                    marked.push((path, Entry::File { bytes, exec }));
+                }
                 None => stuck.push(path),
             },
             Err(_) => stuck.push(path),
@@ -139,6 +152,7 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
             state: SyncState::Unmergeable,
             files: stuck,
             diffs: Vec::new(),
+            kept: Vec::new(),
         });
     }
     if !marked.is_empty() && !resolves {
@@ -146,9 +160,12 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
             state: SyncState::Conflicts,
             files: marked_paths(),
             diffs: Vec::new(),
+            kept: Vec::new(),
         });
     }
     let files = marked_paths();
+    let kept = replaced.iter().map(|r| r.keep(&repo));
+    let kept = kept.collect::<Result<Vec<_>, _>>().map_err(git)?;
     let markers = marked.into_iter().map(|(path, entry)| (path, Some(entry)));
     for (path, entry) in apply.into_iter().chain(markers) {
         write(&worktree.join(&path), entry.as_ref())
@@ -161,14 +178,48 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
             state: SyncState::Synced,
             files: merged,
             diffs,
+            kept,
         }
     } else {
         Merged {
             state: SyncState::Marked,
             files,
             diffs: Vec::new(),
+            kept,
         }
     })
+}
+
+/// What a merge or conflict markers replace in a file: the chat's version,
+/// its base (and whether that's executable), and what's written there.
+pub struct Replaced {
+    path: String,
+    chat: Vec<u8>,
+    base: Option<(Vec<u8>, bool)>,
+    written: Vec<u8>,
+}
+
+impl Replaced {
+    pub fn new(path: &str, chat: &[u8], base: Option<(&[u8], bool)>, written: &[u8]) -> Self {
+        Replaced {
+            path: path.to_string(),
+            chat: chat.to_vec(),
+            base: base.map(|(bytes, exec)| (bytes.to_vec(), exec)),
+            written: written.to_vec(),
+        }
+    }
+
+    /// Kept as blobs in the repository, for Undo the merge (6.1).
+    pub fn keep(&self, repo: &Repository) -> Result<(String, Kept), git2::Error> {
+        let base = self.base.as_ref().map(|(bytes, _)| repo.blob(bytes));
+        let kept = Kept {
+            chat: repo.blob(&self.chat)?.to_string(),
+            base: base.transpose()?.map(|id| id.to_string()),
+            base_exec: self.base.as_ref().is_some_and(|(_, exec)| *exec),
+            written: repo.blob(&self.written)?.to_string(),
+        };
+        Ok((self.path.clone(), kept))
+    }
 }
 
 /// A file's bytes, and whether it's executable: not a link or a folder.

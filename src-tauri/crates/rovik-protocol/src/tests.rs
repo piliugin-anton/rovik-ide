@@ -12,7 +12,8 @@ use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
 use crate::work::{
-    Change, ChatResult, ChatSync, Handed, Project, SyncState, Synced, WorkChange, WorkFile,
+    Change, ChatResult, ChatSync, Handed, Project, SyncState, Synced, UndoneMerge, WorkChange,
+    WorkFile,
 };
 use crate::*;
 use serde::de::DeserializeOwned;
@@ -446,6 +447,14 @@ fn every_request_round_trips() {
                 snapshot: "0123456789abcdef0123456789abcdef01234567".into(),
                 files: vec!["src/main.rs".into()],
             },
+            Request::WorkUndoMerge {
+                dialog_id: "d".into(),
+                files: None,
+            },
+            Request::WorkUndoMerge {
+                dialog_id: "d".into(),
+                files: Some(vec!["src/main.rs".into()]),
+            },
             Request::WorkRecheck {
                 dialog_id: "d".into(),
                 project: "p".into(),
@@ -556,21 +565,25 @@ fn every_response_round_trips() {
                     path: "src/new.rs".into(),
                     change: Change::Added,
                     from: None,
+                    merged: false,
                 },
                 WorkChange {
                     path: "src/main.rs".into(),
                     change: Change::Changed,
                     from: None,
+                    merged: true,
                 },
                 WorkChange {
                     path: "old.rs".into(),
                     change: Change::Deleted,
                     from: None,
+                    merged: false,
                 },
                 WorkChange {
                     path: "src/moved.rs".into(),
                     change: Change::Moved,
                     from: Some("moved.rs".into()),
+                    merged: false,
                 },
             ]),
             Response::WorkFile(WorkFile {
@@ -579,6 +592,10 @@ fn every_response_round_trips() {
             }),
             Response::Handed(Handed {
                 files: vec!["src/main.rs".into()],
+            }),
+            Response::UndoneMerge(UndoneMerge {
+                restored: vec!["src/main.rs".into()],
+                changed_since: vec!["src/lib.rs".into()],
             }),
         ],
     );

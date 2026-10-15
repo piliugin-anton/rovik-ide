@@ -3,13 +3,14 @@
 //! changed file's versions; Discard; handing conflicts to the chat, whose
 //! resolution then lands; a plan read from the worktree; the buttons only
 //! a local chat has, refused; the app told to look again when a result
-//! comes in and when it lands; and a file the chat moved, listed as moved.
+//! comes in and when it lands; a file the chat moved, listed as moved; and
+//! a merge or markers taken back out there, with Undo the merge and Unmark.
 
 mod common;
 
 use common::app::{landed_as, App};
 use common::project::{
-    message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
+    ended, message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
 };
 use common::{until, write};
 use rovik_client::{CloudEvent, Remote};
@@ -300,4 +301,75 @@ async fn the_bar_lists_a_moved_file_as_moved() {
         ("src/new.rs", "moved", Some("src/old.rs")),
     ];
     assert_eq!(listed, moved);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unmark_takes_markers_handed_over_back_out() {
+    let (setup, app, root) = waiting().await;
+    let (url, _) = model(vec![
+        writes("w1", "src/main.rs", "fn main() { remote() }\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let handed_only = Permissions {
+        chat_resolves_conflicts: false,
+        ..unattended()
+    };
+    app.remote
+        .start(start(&setup, &url, handed_only))
+        .await
+        .unwrap();
+    result_waits().await;
+    write(
+        &setup.project.join("src/main.rs"),
+        "fn main() { local() }\n",
+    );
+    open(&setup, &app);
+    let conflicts = || chats::pending(CHAT).filter(|p| !p.conflicts.is_empty());
+    until("the conflict in the bar", conflicts).await;
+    let handed = app.remote.conflicts_to_chat(CHAT).await.unwrap();
+
+    // The chat can't take them: they come back out.
+    let undone = app.remote.undo_merge(CHAT, Some(handed.files)).await;
+
+    assert_eq!(undone.unwrap().restored, ["src/main.rs"]);
+    assert_eq!(read(&root.join("src/main.rs")), "fn main() { remote() }\n");
+    // Its next result brings the conflict back here.
+    let pending = until("the conflict back in the bar", conflicts).await;
+    assert_eq!(pending.conflicts[0].path, "src/main.rs");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn undo_the_merge_puts_the_chats_own_version_back() {
+    let mut setup = Setup::new().await;
+    write(&setup.project.join("a.txt"), "1\n2\n3\n4\n5\n");
+    let app = App::new(&mut setup).await;
+    app.remote.set_open_project(None);
+    app.connect(&setup).await;
+    let root = ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "a.txt", "ONE\n2\n3\n4\n5\n"),
+        Reply::Text("Done."),
+        Reply::Text("Seen."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    result_waits().await;
+    // Changed here on another line: the next message's sync merges it in.
+    write(&setup.project.join("a.txt"), "1\n2\n3\n4\nFIVE\n");
+    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
+    assert_eq!(read(&root.join("a.txt")), "ONE\n2\n3\n4\nFIVE\n");
+    ended(&setup.client).await;
+    let status = app.remote.overlay_status(CHAT).await.unwrap();
+    assert_eq!(status.merged_in, ["a.txt"]);
+
+    let undone = app.remote.undo_merge(CHAT, None).await.unwrap();
+
+    assert_eq!(undone.restored, ["a.txt"]);
+    assert_eq!(read(&root.join("a.txt")), "ONE\n2\n3\n4\n5\n");
+    let status = app.remote.overlay_status(CHAT).await.unwrap();
+    assert!(status.merged_in.is_empty());
 }

@@ -127,6 +127,8 @@ impl Results {
         {
             let _base = self.base.lock().await;
             let (place, base) = self.worktree(dialog_id)?;
+            // What landed can't be taken back there any more.
+            self.store.forget_kept(dialog_id, Some(&paths));
             let chat = dialog_id.to_string();
             let moved = rt::spawn_blocking(move || {
                 move_base(&place.worktree, &base, landed, &paths, &chat)
@@ -144,15 +146,20 @@ impl Results {
     }
 
     /// What the chat changed in its worktree so far, from its landing base:
-    /// what its result would change, in the project's folder (`subpath`).
+    /// what its result would change, in the project's folder (`subpath`),
+    /// with the files a merge or markers replaced.
     pub async fn changes(&self, dialog_id: &str, subpath: &str) -> Result<Vec<WorkChange>, Fail> {
         let _base = self.base.lock().await;
         let (place, base) = self.worktree(dialog_id)?;
+        let kept = self.store.kept_of(dialog_id).into_keys().collect();
         let (index, subpath) = (
             self.dir.join(format!("{dialog_id}.index")),
             subpath.to_string(),
         );
-        let read = rt::spawn_blocking(move || changes_of(&place.worktree, &index, &base, &subpath));
+        let read = rt::spawn_blocking(move || {
+            let merged = in_root(&subpath, kept);
+            changes_of(&place.worktree, &index, &base, &subpath, &merged)
+        });
         read.await
             .map_err(|e| internal(e.to_string()))?
             .map_err(internal)
@@ -240,6 +247,7 @@ fn changes_of(
     index: &Path,
     base: &str,
     subpath: &str,
+    merged: &[String],
 ) -> Result<Vec<WorkChange>, String> {
     let git = |e: git2::Error| e.message().to_string();
     let (repo, base, tree) = stage_worktree(worktree, index, base)?;
@@ -268,7 +276,12 @@ fn changes_of(
         // A change of kind comes as a deletion and an addition.
         match changes.iter_mut().find(|c| c.path == path) {
             Some(known) => known.change = Change::Changed,
-            None => changes.push(WorkChange { path, change, from }),
+            None => changes.push(WorkChange {
+                merged: merged.contains(&path),
+                path,
+                change,
+                from,
+            }),
         }
     };
     for delta in diff.deltas() {
@@ -348,13 +361,34 @@ pub fn move_base(
     let landed = repo
         .find_commit(landed)
         .map_err(|_| Fail::new(FailCode::BadRequest, "The result isn't on this server."))?;
-    let (base_tree, landed_tree) = (base.tree().map_err(git)?, landed.tree().map_err(git)?);
+    let landed_tree = landed.tree().map_err(git)?;
+    let entries: Vec<(String, Option<(Oid, FileMode)>)> = paths
+        .iter()
+        .map(|path| {
+            let entry = landed_tree.get_path(Path::new(path)).ok();
+            let entry = entry.and_then(|entry| Some((entry.id(), file_mode(&entry)?)));
+            (path.clone(), entry)
+        })
+        .collect();
+    set_base(&repo, &base, &entries, &format!("Landed from chat {chat}"))
+}
+
+/// A new landing base: `base` with `entries` (a path's blob and mode, or
+/// none: not there), as one commit on it. The chat's branch moves to it
+/// and the worktree's index follows (mixed); its files stay as they are.
+pub fn set_base(
+    repo: &Repository,
+    base: &git2::Commit,
+    entries: &[(String, Option<(Oid, FileMode)>)],
+    message: &str,
+) -> Result<Oid, Fail> {
+    let git = |e: git2::Error| internal(e.message().to_string());
+    let base_tree = base.tree().map_err(git)?;
     let mut update = TreeUpdateBuilder::new();
-    for path in paths {
-        let entry = landed_tree.get_path(Path::new(path)).ok();
-        match entry.and_then(|entry| Some((entry.id(), file_mode(&entry)?))) {
+    for (path, entry) in entries {
+        match entry {
             Some((id, mode)) => {
-                update.upsert(path.as_str(), id, mode);
+                update.upsert(path.as_str(), *id, *mode);
             }
             None if base_tree.get_path(Path::new(path)).is_ok() => {
                 update.remove(path.as_str());
@@ -362,15 +396,14 @@ pub fn move_base(
             None => {}
         }
     }
-    let tree = update.create_updated(&repo, &base_tree).map_err(git)?;
+    let tree = update.create_updated(repo, &base_tree).map_err(git)?;
     if tree == base_tree.id() {
         return Ok(base.id());
     }
     let rovik = Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
     let tree = repo.find_tree(tree).map_err(git)?;
-    let message = format!("Landed from chat {chat}");
     let commit = repo
-        .commit(None, &rovik, &rovik, &message, &tree, &[&base])
+        .commit(None, &rovik, &rovik, message, &tree, &[base])
         .map_err(git)?;
     let target = repo.find_object(commit, None).map_err(git)?;
     repo.reset(&target, ResetType::Mixed, None).map_err(git)?;

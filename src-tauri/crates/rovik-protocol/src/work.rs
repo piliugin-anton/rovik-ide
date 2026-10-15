@@ -100,6 +100,10 @@ pub struct WorkChange {
     /// Moved: from where in the project's folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// The project's newer changes, or conflict markers, were merged into
+    /// it there: Undo the merge takes them back (6.1).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merged: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,4 +133,14 @@ pub struct WorkFile {
 #[serde(rename_all = "camelCase")]
 pub struct Handed {
     pub files: Vec<String>,
+}
+
+/// What `WorkUndoMerge` did, from the project's folder.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoneMerge {
+    /// The chat's own version again.
+    pub restored: Vec<String>,
+    /// Changed since the merge, by the chat: left as they are.
+    pub changed_since: Vec<String>,
 }

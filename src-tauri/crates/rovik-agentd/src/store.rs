@@ -84,6 +84,27 @@ pub struct ChatState {
     /// Its next message's start is to tell the chat of them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tell_marked: bool,
+    /// Files a merge or conflict markers replaced, by their paths from the
+    /// worktree's root: what Undo the merge puts back (6.1).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kept: BTreeMap<String, Kept>,
+}
+
+/// What a merge or conflict markers replaced in a chat's file, as blobs in
+/// its project's repository, the way a local chat's overlay keeps them
+/// (`overlay::chats::undo_merge`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Kept {
+    /// The chat's own version.
+    pub chat: String,
+    /// Its landing base's, when it had the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub base_exec: bool,
+    /// What the last merge wrote: a file changed since stays as it is.
+    pub written: String,
 }
 
 /// Where a chat works: its project and its worktree's folder.
@@ -355,6 +376,37 @@ impl Store {
         let chat = inner.state.chats.get(dialog_id);
         let project = chat.and_then(|chat| inner.state.projects.get(chat.project.as_ref()?));
         project.map(|p| p.subpath.clone()).unwrap_or_default()
+    }
+
+    /// What merges or markers replaced in the chat's files: the earliest
+    /// version of a file stays, with what the last merge wrote.
+    pub fn keep(&self, dialog_id: &str, kept: Vec<(String, Kept)>) {
+        if kept.is_empty() {
+            return;
+        }
+        self.change(dialog_id, |chat| {
+            for (path, new) in kept {
+                let written = new.written.clone();
+                let entry = chat.kept.entry(path);
+                entry.and_modify(|k| k.written = written).or_insert(new);
+            }
+        });
+    }
+
+    /// The files merges or markers replaced, and what they had before.
+    pub fn kept_of(&self, dialog_id: &str) -> BTreeMap<String, Kept> {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id);
+        chat.map(|chat| chat.kept.clone()).unwrap_or_default()
+    }
+
+    /// Forgets what was kept of `paths`, or of every file: taken back,
+    /// landed, or thrown away.
+    pub fn forget_kept(&self, dialog_id: &str, paths: Option<&[String]>) {
+        self.change(dialog_id, |chat| match paths {
+            Some(paths) => chat.kept.retain(|path, _| !paths.contains(path)),
+            None => chat.kept.clear(),
+        });
     }
 
     /// The chat's newest result.

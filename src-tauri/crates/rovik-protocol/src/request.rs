@@ -7,7 +7,7 @@ use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::HostInfo;
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
-use crate::work::{ChatResult, Handed, Project, Synced, WorkChange, WorkFile};
+use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
 use crate::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -163,6 +163,16 @@ pub enum Request {
         snapshot: String,
         files: Vec<String>,
     },
+    /// Takes the project's merged changes and conflict markers back out of
+    /// the chat's files (6.1): each is the chat's own version again, on its
+    /// landing base from before. `files`, from the project's folder: only
+    /// those (Unmark). A file changed since stays as it is. The chat's next
+    /// result is committed at once. → `UndoneMerge`.
+    WorkUndoMerge {
+        dialog_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        files: Option<Vec<String>>,
+    },
     /// A result of the chat landed on its computer (6.5): for these paths,
     /// from the root of the project's repository, the chat's landing base
     /// takes the result's content, so the next result doesn't bring back a
@@ -208,6 +218,8 @@ pub enum Response {
     WorkFile(WorkFile),
     /// `WorkConflictsToChat`.
     Handed(Handed),
+    /// `WorkUndoMerge`.
+    UndoneMerge(UndoneMerge),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -258,4 +270,5 @@ replies! {
     Changes => Vec<WorkChange>,
     WorkFile => WorkFile,
     Handed => Handed,
+    UndoneMerge => UndoneMerge,
 }

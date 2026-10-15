@@ -1863,7 +1863,9 @@ Tasks add notes here when reality differs from the plan.
     `sync` field of `OverlayStatus`. `check_idle` asks the host whether the
     run is going, before anything changes the chat's files. `overlay_land`
     goes through `Remote::land`; Undo and the resolver stay local. Redo,
-    Undo the merge and Unmark are refused (`LOCAL_ONLY`).
+    Undo the merge and Unmark were refused (`LOCAL_ONLY`); since the second
+    review below, only Redo sequentially is, as server runs have no
+    parallel groups.
   - `chat_read_plan` reads a remote chat's plan from its worktree, by the
     part of the path from `.rovik/plans/` on, and a local chat's from the
     path. The frontend moves to it with U04.
@@ -1944,3 +1946,18 @@ Tasks add notes here when reality differs from the plan.
     output is still a deletion and an addition. `WorkStatus` lists a move
     as `moved` with its `from` (additive), and its old place as deleted,
     as a local chat's bar does.
+  - Undo the merge and Unmark work for a chat on a server. Where a sync, a
+    recheck or a hand-over (`WorkConflictsToChat`) replaces a file's
+    content with a merge or markers, the daemon keeps the chat's version,
+    its landing base's and what it wrote, as blobs in the project's
+    repository (`state.json`'s `kept`), as a local overlay keeps them. The
+    earliest version of a file stays, with what the last merge wrote.
+    `WorkUndoMerge { dialogId, files }` → `UndoneMerge` (additive) puts
+    them back: each file unchanged since is the chat's own version again,
+    its landing base takes the old content, and the chat's next result is
+    committed at once, so what conflicts comes back to the bar. `files`
+    limits it to those (Unmark). `WorkStatus` flags the files a merge
+    replaced (`merged`, additive), which fill the bar's `mergedIn`. What
+    lands, or Discard, forgets what was kept. Kept blobs are reachable from
+    no ref, so a `git gc` that prunes old objects (R01) would lose those
+    older than its expiry, and their files would stay as they are.

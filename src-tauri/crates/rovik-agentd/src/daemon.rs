@@ -91,6 +91,9 @@ impl Daemon {
                 snapshot,
                 files,
             } => changes::to_chat(self, computer, &dialog_id, &snapshot, files).await,
+            Request::WorkUndoMerge { dialog_id, files } => {
+                changes::undo_merge(self, computer, &dialog_id, files).await
+            }
             Request::WorkRecheck {
                 dialog_id,
                 project,

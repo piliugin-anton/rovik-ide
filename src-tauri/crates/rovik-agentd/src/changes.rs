@@ -1,16 +1,18 @@
 //! A chat's changes in its worktree, for the isolation bar's remote half
 //! (6.1): what the chat changed so far, a file's versions, throwing its
-//! changes away, and handing it its conflicts. Paths are from the project's
-//! folder, as a local chat's overlay has them.
+//! changes away, handing it its conflicts, and taking a merge or markers
+//! back out. Paths are from the project's folder, as a local chat's overlay
+//! has them.
 
 use crate::daemon::Daemon;
-use crate::results::move_base;
-use crate::store::Place;
+use crate::results::{self, move_base, set_base};
+use crate::store::{Kept, Place};
+use crate::sync::Replaced;
 use git2::build::CheckoutBuilder;
-use git2::{Oid, Repository, ResetType, Tree};
+use git2::{FileMode, ObjectType, Oid, Repository, ResetType, Tree};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
-use rovik_protocol::work::{Handed, WorkFile};
+use rovik_protocol::work::{Handed, UndoneMerge, WorkFile};
 use rovik_protocol::{Fail, FailCode, Response};
 use std::fs;
 use std::path::Path;
@@ -65,6 +67,7 @@ pub async fn discard(daemon: &Daemon, computer: &str, chat: &str) -> Result<Resp
     });
     reset.await.map_err(joined)??;
     daemon.store.marks_left(chat, Vec::new());
+    daemon.store.forget_kept(chat, None);
     Ok(Response::Done)
 }
 
@@ -94,7 +97,7 @@ pub async fn to_chat(
             .find_commit(snapshot)
             .and_then(|commit| commit.tree())
             .map_err(|_| bad_request("The snapshot isn't on this server: push it first."))?;
-        let mut marked = Vec::new();
+        let (mut marked, mut kept) = (Vec::new(), Vec::new());
         for path in files {
             let at = in_tree(&subpath, &path);
             let sides = (blob(&repo, &project, &at), on_disk(&place.worktree, &at));
@@ -105,20 +108,113 @@ pub async fn to_chat(
             let Some(text) = markers::mark(was.as_deref(), &theirs, &ours) else {
                 continue;
             };
+            let exec = old
+                .get_path(Path::new(&at))
+                .is_ok_and(|e| e.filemode() == 0o100755);
+            let base = was.as_deref().map(|was| (was, exec));
+            let replaced = Replaced::new(&at, &ours, base, &text);
+            kept.push(replaced.keep(&repo).map_err(git)?);
             fs::write(place.worktree.join(&at), text).map_err(|e| internal(e.to_string()))?;
             marked.push((path, at));
         }
         let paths: Vec<String> = marked.iter().map(|(_, at)| at.clone()).collect();
         let moved = move_base(&place.worktree, &base, snapshot, &paths, &name)?;
         let files = marked.into_iter().map(|(path, _)| path).collect::<Vec<_>>();
-        Ok::<_, Fail>((files, paths, moved))
+        Ok::<_, Fail>((files, paths, moved, kept))
     });
-    let (files, paths, base) = marked.await.map_err(joined)??;
+    let (files, paths, base, kept) = marked.await.map_err(joined)??;
     daemon.store.base_moved(chat, &base.to_string());
+    daemon.store.keep(chat, kept);
     // Kept from the worktree's root, as a sync's are. The message that
     // hands them over tells the chat itself.
     daemon.store.mark(chat, &paths, false);
     Ok(Response::Handed(Handed { files }))
+}
+
+/// `WorkUndoMerge`: the project's merged changes and conflict markers taken
+/// back out of the chat's files (`files`: of these, from the project's
+/// folder), as a local chat's Undo the merge and Unmark do
+/// (`overlay::chats::undo_merge`). Each is the chat's own version again, on
+/// its landing base from before; a file changed since stays as it is. The
+/// chat's next result, committed at once, brings what conflicts with the
+/// project back to its computer.
+pub async fn undo_merge(
+    daemon: &Daemon,
+    computer: &str,
+    chat: &str,
+    files: Option<Vec<String>>,
+) -> Result<Response, Fail> {
+    daemon.store.check_owner(computer, chat)?;
+    idle(daemon, chat)?;
+    for path in files.iter().flatten() {
+        check(path)?;
+    }
+    let (restored, changed_since, subpath) = {
+        let _base = daemon.results.hold_base().await;
+        let (place, base, subpath) = place(daemon, chat)?;
+        let wanted = |path: &String| {
+            files
+                .as_ref()
+                .is_none_or(|files| files.iter().any(|f| in_tree(&subpath, f) == *path))
+        };
+        let kept = daemon.store.kept_of(chat).into_iter();
+        let kept: Vec<(String, Kept)> = kept.filter(|(path, _)| wanted(path)).collect();
+        let name = chat.to_string();
+        let put = rt::spawn_blocking(move || put_back(&place.worktree, &base, kept, &name));
+        let (restored, changed_since, base) = put.await.map_err(joined)??;
+        daemon.store.base_moved(chat, &base.to_string());
+        daemon.store.forget_kept(chat, Some(&restored));
+        let marks = daemon.store.marked_of(chat).into_iter();
+        let marks = marks.filter(|m| !restored.contains(m)).collect();
+        daemon.store.marks_left(chat, marks);
+        (restored, changed_since, subpath)
+    };
+    if !restored.is_empty() {
+        let outcome = daemon.store.outcome_of(chat);
+        let outcome = outcome.as_deref().unwrap_or("unknown");
+        daemon.results.commit(chat, outcome).await?;
+    }
+    Ok(Response::UndoneMerge(UndoneMerge {
+        restored: results::in_root(&subpath, restored),
+        changed_since: results::in_root(&subpath, changed_since),
+    }))
+}
+
+/// Puts what was kept back: the chat's own versions in the worktree, their
+/// old landing base in a new one. Returns the files put back, those changed
+/// since, and the new landing base.
+fn put_back(
+    worktree: &Path,
+    base: &str,
+    kept: Vec<(String, Kept)>,
+    chat: &str,
+) -> Result<(Vec<String>, Vec<String>, Oid), Fail> {
+    let repo = Repository::open(worktree).map_err(git)?;
+    let base = Oid::from_str(base)
+        .and_then(|base| repo.find_commit(base))
+        .map_err(git)?;
+    let oid = |id: &str| Oid::from_str(id).map_err(git);
+    let (mut restored, mut changed_since, mut entries) = (Vec::new(), Vec::new(), Vec::new());
+    for (path, kept) in kept {
+        let now = on_disk(worktree, &path).map(|bytes| Oid::hash_object(ObjectType::Blob, &bytes));
+        if now.transpose().map_err(git)? != Some(oid(&kept.written)?) {
+            changed_since.push(path);
+            continue;
+        }
+        let chat_version = repo.find_blob(oid(&kept.chat)?).map_err(git)?;
+        fs::write(worktree.join(&path), chat_version.content())
+            .map_err(|e| internal(format!("{path}: {e}")))?;
+        let mode = match kept.base_exec {
+            true => FileMode::BlobExecutable,
+            false => FileMode::Blob,
+        };
+        let was = kept.base.as_deref().map(oid).transpose()?;
+        entries.push((path.clone(), was.map(|id| (id, mode))));
+        restored.push(path);
+    }
+    let message = format!("Merge taken back in chat {chat}");
+    let base = set_base(&repo, &base, &entries, &message)?;
+    Ok((restored, changed_since, base))
 }
 
 /// The chat's worktree, its landing base, and the project's folder in it.
