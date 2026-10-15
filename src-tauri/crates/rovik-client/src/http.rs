@@ -1,7 +1,7 @@
 //! HTTP to the daemon, each request on a connection of its own (4.1, K41):
-//! `POST /call` for a call or a reply too big for a frame, the
-//! attachments' files at `/blobs/<sha256>` (6.11), and the projects' packs
-//! at `/packs` (6.4).
+//! `POST /call` for a call or a reply too big for a frame, the bundle that
+//! moves a chat at `/chats/import` (6.8), the attachments' files at
+//! `/blobs/<sha256>` (6.11), and the projects' packs at `/packs` (6.4).
 
 use crate::client::{unreachable, Identity};
 use crate::connector::Connector;
@@ -11,6 +11,7 @@ use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use hyper::{Method, StatusCode};
 use hyper_util::rt::TokioIo;
 use rovik_protocol::packs::{Fetch, Pushed, Refs, Update};
+use rovik_protocol::sync::Imported;
 use rovik_protocol::{Fail, FailCode, Frame, Response};
 use serde::de::DeserializeOwned;
 use std::convert::Infallible;
@@ -42,6 +43,25 @@ pub async fn post_call(
             "The daemon's answer isn't a reply.",
         )),
     }
+}
+
+/// Sends the bundle that moves a chat, as JSON, for the move `move_id`,
+/// telling `progress` the bytes sent so far.
+pub async fn import_chat(
+    connector: &dyn Connector,
+    identity: &Identity,
+    move_id: &str,
+    bundle: Vec<u8>,
+    progress: Box<dyn Fn(u64) + Send + Sync>,
+) -> Result<Imported, Fail> {
+    let body = Upload {
+        bytes: Bytes::from(bundle),
+        sent: 0,
+        progress,
+    };
+    let path = format!("/chats/import?move_id={move_id}");
+    let (status, body) = exchange(connector, identity, Method::POST, &path, JSON, body).await?;
+    reply(status, &body)
 }
 
 /// Sends an attachment's file, telling `progress` the bytes sent so far.

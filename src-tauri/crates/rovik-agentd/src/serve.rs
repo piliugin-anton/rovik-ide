@@ -108,6 +108,7 @@ async fn run(
         results,
         same_machine,
         virtual_files_problem,
+        imports: tokio::sync::Mutex::new(()),
     });
 
     // 7. The runs the last process left going (5.4).

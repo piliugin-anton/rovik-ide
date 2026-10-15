@@ -41,4 +41,4 @@ pub mod vfs;
 pub mod workload;
 
 pub use crate::core::{Core, EventSink, Paths};
-pub use crate::dispatch::dispatch;
+pub use crate::dispatch::{dispatch, refusal};

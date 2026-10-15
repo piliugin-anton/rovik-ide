@@ -457,6 +457,17 @@ fn every_request_round_trips() {
                 rev: 41,
                 cursor: changes_page().next,
             },
+            Request::ChatOwner {
+                dialog_id: "d".into(),
+            },
+            Request::ChatRelease {
+                dialog_id: "d".into(),
+                move_id: None,
+            },
+            Request::ChatRelease {
+                dialog_id: "d".into(),
+                move_id: Some("m".into()),
+            },
             Request::BlobsMissing {
                 ids: vec!["a".repeat(64), "b".repeat(64)],
             },
@@ -684,8 +695,56 @@ fn every_response_round_trips() {
             }),
             Response::ChatChanges(changes_page()),
             Response::ChatChanges(ChangesPage::default()),
+            Response::Ownership(None),
+            Response::Ownership(Some(Ownership {
+                move_id: Some("m".into()),
+                released: true,
+                rev: 41,
+            })),
+            Response::Ownership(Some(Ownership::default())),
         ],
     );
+}
+
+/// The bundle that moves a chat, and what its import answers (6.8).
+#[test]
+fn a_chats_bundle_and_its_import_round_trip() {
+    let bundle = ChatBundle {
+        dialog_id: "d".into(),
+        rows: changes_page().changes,
+        project: Project {
+            id: "p".into(),
+            name: "app".into(),
+            subpath: "web".into(),
+        },
+        settings: Some(json!({ "checks": ["npm test"] })),
+        excludes: vec!["*.log".into()],
+        snapshot: "a".repeat(40),
+        changes: Some("b".repeat(40)),
+        pending: Some("Not landed: the run was stopped.".into()),
+    };
+    let json = round_trip(&bundle);
+    assert_eq!(json["rows"]["dialogs"][0]["id"], "d");
+    let bare = ChatBundle {
+        settings: None,
+        excludes: Vec::new(),
+        changes: None,
+        pending: None,
+        ..bundle
+    };
+    let json = round_trip(&bare);
+    for absent in ["settings", "excludes", "changes", "pending"] {
+        assert!(json.get(absent).is_none(), "{absent} in {json}");
+    }
+    let json = round_trip(&Imported {
+        rev: 7,
+        already: false,
+    });
+    assert_eq!(json, json!({ "rev": 7 }));
+    round_trip(&Imported {
+        rev: 7,
+        already: true,
+    });
 }
 
 #[test]

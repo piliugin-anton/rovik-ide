@@ -2056,3 +2056,40 @@ Tasks add notes here when reality differs from the plan.
   - `PauseInfo` has `host`, and `meta.paused` is typed `RunPause` in the
     frontend: `lib/runPause.ts` writes its line, and a kind from a newer
     app reads as a plain pause.
+- **M04, import and ownership on the daemon.**
+  - The bundle is the protocol's `ChatBundle`: the chat's rows since 0
+    (`rows`), its project with its settings and ignore rules, `snapshot`
+    and `changes` as `WorkSync` takes them (T09), and the overlay's
+    pending reason. The import answers `Imported { rev, already }`. The
+    body is parsed as it comes, at most `MAX_BUNDLE` (512 MB), and one
+    that stops coming or is bigger is refused whole.
+  - The order: the checks (the ids, `sync::check_bundle`: the rows are
+    the chat's and its subagents' alone; the chat is this computer's or
+    nobody's; no run goes in it), then the snapshot and the changes, which
+    must be in the project's repository already. Only then does what an
+    earlier stay left go (K36): its worktree, its branch and its `result`
+    and `kept` refs in every repository, but the snapshot ref the move
+    just pushed, and its CLM files. Then the worktree, as a first sync
+    makes one, and one transaction: the old rows, the project's row with
+    the repository and the worktree's root as its folders, and the rows
+    (`sync::import_in`, which refuses an id another chat has here rather
+    than take its rows over). state.json's entry is replaced last.
+  - A chat of the same computer that the daemon still has under another
+    move (one cancelled while the host was offline, whose release hasn't
+    come) is cleared and imported too. With a run going, it's refused
+    `Busy`.
+  - `ChatOwner` answers `Ownership { moveId, released, rev }`, or none
+    when the daemon doesn't know the chat. Another computer's chat is
+    refused, as every request about it is.
+  - `ChatRelease` takes an optional `moveId`, which the plan's list
+    leaves out: a release queued when a move was cancelled offline names
+    its move, and gives back nothing a later move brought. A chat released
+    already answers true, one whose run goes on `Busy`. It sets the
+    subtree's `location` to `released` and the time in state.json; the
+    daemon then refuses anything but reads of it, the Work group included,
+    which `dispatch` doesn't see. `WorkResults` leaves released chats out.
+  - The pending reason the bundle brings stays in state.json, and the
+    chat's results give it as theirs until a run ends there.
+  - `Client::import_chat` sends the bundle, behind the `mirror` feature.
+    On the desktop, `dispatch` refuses `ChatOwner` and `ChatRelease` as
+    the daemon's own.

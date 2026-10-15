@@ -8,9 +8,10 @@ use crate::{http, packs};
 use futures_util::{SinkExt, Stream, StreamExt};
 use git2::Oid;
 use rovik_protocol::packs::Pushed;
+use rovik_protocol::sync::{ChatBundle, Imported};
 use rovik_protocol::{
-    features, Event, Fail, FailCode, Frame, Request, Response, Secret, MAX_CALL, MAX_FRAME,
-    PROTOCOL,
+    features, Event, Fail, FailCode, Frame, Request, Response, Secret, MAX_BUNDLE, MAX_CALL,
+    MAX_FRAME, PROTOCOL,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -225,6 +226,33 @@ impl Client {
         http::post_call(&*self.shared.connector, &self.shared.identity, call).await
     }
 
+    /// Sends the bundle that moves a chat to the daemon (6.8). Sent again
+    /// with the same `move_id`, it's imported once. `progress` hears the
+    /// bytes sent so far.
+    pub async fn import_chat(
+        &self,
+        move_id: &str,
+        bundle: &ChatBundle,
+        progress: impl Fn(u64) + Send + Sync + 'static,
+    ) -> Result<Imported, Fail> {
+        self.takes_moves()?;
+        let bytes =
+            serde_json::to_vec(bundle).map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
+        if bytes.len() > MAX_BUNDLE {
+            return Err(Fail::new(
+                FailCode::TooLarge,
+                format!(
+                    "This chat is too big to move to {}: {} MB, {} MB at most.",
+                    self.shared.identity.host,
+                    bytes.len().div_ceil(1 << 20),
+                    MAX_BUNDLE >> 20
+                ),
+            ));
+        }
+        let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
+        http::import_chat(connector, identity, move_id, bytes, Box::new(progress)).await
+    }
+
     /// Sends an attachment's file (6.11), telling `progress` the bytes sent
     /// so far.
     pub async fn put_blob(
@@ -268,6 +296,19 @@ impl Client {
         self.takes_projects()?;
         let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
         packs::fetch(connector, identity, shadow, project, wants).await
+    }
+
+    /// A daemon from before the mirror can't take a chat (4.5).
+    fn takes_moves(&self) -> Result<(), Fail> {
+        match self.daemon() {
+            Some(daemon) if !daemon.features.iter().any(|f| f == features::MIRROR) => {
+                Err(Fail::new(
+                    FailCode::Version,
+                    "The server's daemon can't take chats yet: it needs an upgrade.",
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// A daemon from before the project transport has no `/packs` (4.5).

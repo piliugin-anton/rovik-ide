@@ -129,7 +129,9 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         }
 
         // The daemon's own groups: it answers these itself.
-        Request::ProjectEnsure { .. }
+        Request::ChatOwner { .. }
+        | Request::ChatRelease { .. }
+        | Request::ProjectEnsure { .. }
         | Request::WorkSync { .. }
         | Request::WorkResult { .. }
         | Request::WorkResults
@@ -143,7 +145,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::HostInfo => {
             return Err(Fail::new(
                 FailCode::BadRequest,
-                "Only a daemon answers the Work and Host requests.",
+                "Only a daemon answers this request.",
             ))
         }
     }

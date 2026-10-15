@@ -3,7 +3,9 @@
 //! the bundle that moves a chat (6.8). Text columns that hold JSON travel
 //! as the text they are, so the mirror stores the owner's bytes.
 
+use crate::work::Project;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// A chat's row, less what each database keeps for itself: the chat's
@@ -159,5 +161,60 @@ pub struct ChangesPage {
     pub next: Option<ChangesCursor>,
     /// The owner's revision the mirror is at once it has applied every
     /// page of the pull: the one to ask from next time.
+    pub rev: i64,
+}
+
+/// A chat as it moves to a host (6.8), the body of `POST
+/// /chats/import?move_id=…`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBundle {
+    /// The chat, which isn't a subagent's.
+    pub dialog_id: String,
+    /// Every row of it and of its subagents' chats: its changes since 0.
+    pub rows: ChangeSet,
+    /// Its project, with what `ProjectEnsure` brings for it.
+    pub project: Project,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excludes: Vec<String>,
+    /// The snapshot its worktree starts from, pushed first: its landing
+    /// base. With its overlay folded in (T09), as `WorkSync` takes it.
+    pub snapshot: String,
+    /// A commit on `snapshot` with the chat's own changes, which its new
+    /// worktree has as changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<String>,
+    /// Why its changes wait to land, as its overlay said: its results say
+    /// it until a run ends there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
+}
+
+/// What an import did.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Imported {
+    /// The daemon's revision once the chat's rows were in: where its
+    /// mirror goes on from.
+    pub rev: i64,
+    /// The move's import was done before: nothing changed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already: bool,
+}
+
+/// A chat as a daemon has it for the computer that asks (`ChatOwner`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Ownership {
+    /// The move that brought it; none for a chat started there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_id: Option<String>,
+    /// Given back to its computer (`ChatRelease`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub released: bool,
+    /// The daemon's revision once the move's rows were in (`Imported`).
+    #[serde(default)]
     pub rev: i64,
 }

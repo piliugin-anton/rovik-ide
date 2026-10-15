@@ -7,7 +7,7 @@ use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::HostInfo;
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
-use crate::sync::{ChangesCursor, ChangesPage};
+use crate::sync::{ChangesCursor, ChangesPage, Ownership};
 use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
 use crate::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,22 @@ pub enum Request {
         rev: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<ChangesCursor>,
+    },
+    /// The chat as the daemon has it for this computer, and the move that
+    /// brought it there (6.8): what a move cut short asks. → `Ownership`,
+    /// none when the daemon doesn't know the chat.
+    ChatOwner {
+        dialog_id: String,
+    },
+    /// Gives the chat back to its computer (6.8): the daemon refuses what
+    /// would change it from then on, and keeps its rows for the computer's
+    /// last pull until `ChatForget`. With `move_id`, only if that move
+    /// brought it: a release queued when a move was cancelled offline never
+    /// gives back a later move's chat. → `Bool`, whether it's released.
+    ChatRelease {
+        dialog_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        move_id: Option<String>,
     },
 
     // CLM: a chat's context file and its revisions.
@@ -245,6 +261,7 @@ impl Request {
             | Request::AgentAnswerQuestions { dialog_id, .. } => chat(dialog_id, Run),
             Request::ChatChecklist { dialog_id }
             | Request::ChatChangesSince { dialog_id, .. }
+            | Request::ChatOwner { dialog_id }
             | Request::ClmStatus { dialog_id }
             | Request::ClmListRevisions { dialog_id }
             | Request::ClmReadRevision { dialog_id, .. }
@@ -254,6 +271,7 @@ impl Request {
             | Request::ChatRename { dialog_id, .. }
             | Request::ChatSetModel { dialog_id, .. }
             | Request::ChatDelete { dialog_id }
+            | Request::ChatRelease { dialog_id, .. }
             | Request::ClmSetMode { dialog_id, .. }
             | Request::ClmReset { dialog_id }
             | Request::ClmRestoreRevision { dialog_id, .. }
@@ -314,6 +332,8 @@ pub enum Response {
     UndoneMerge(UndoneMerge),
     /// `ChatChangesSince`.
     ChatChanges(ChangesPage),
+    /// `ChatOwner`.
+    Ownership(Option<Ownership>),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -366,4 +386,5 @@ replies! {
     Handed => Handed,
     UndoneMerge => UndoneMerge,
     ChatChanges => ChangesPage,
+    Ownership => Option<Ownership>,
 }

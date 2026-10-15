@@ -21,6 +21,10 @@
 //!   still on that host, checked in the same transaction, so a late page
 //!   can't overwrite a chat that moved back. The pull's last page moves the
 //!   mirror's position (`mirror_state.rev`) in that transaction too.
+//! - **A move's import** (`import_in`, 6.8) writes a chat's changes since 0
+//!   on its host, owned there, once `check_bundle` has found them to be
+//!   that chat's and its subagents' alone, and never over another chat's
+//!   rows.
 
 use super::attachments;
 use super::location::{self, Location};
@@ -547,6 +551,94 @@ pub fn apply_pulled(
     }
     tx.commit().map_err(err)?;
     Ok(Some(applied))
+}
+
+/// Whether `rows` are the chat `lead`'s and its subagents' alone (6.8):
+/// the lead's row, which has no parent, each other chat under it, and
+/// every other row in one of those chats. An import writes nothing else.
+pub fn check_bundle(lead: &str, rows: &ChangeSet) -> Result<(), String> {
+    let parents: HashMap<&str, Option<&str>> = rows
+        .dialogs
+        .iter()
+        .map(|d| (d.id.as_str(), d.parent_id.as_deref()))
+        .collect();
+    if parents.len() != rows.dialogs.len() {
+        return Err("The chat's rows have a chat twice.".into());
+    }
+    match parents.get(lead) {
+        Some(None) => {}
+        Some(Some(_)) => return Err("A subagent's chat doesn't move on its own.".into()),
+        None => return Err("The chat's rows don't have the chat.".into()),
+    }
+    for chat in parents.keys() {
+        let (mut at, mut steps) = (*chat, 0);
+        while at != lead {
+            match parents.get(at) {
+                Some(&Some(parent)) if steps < parents.len() => at = parent,
+                _ => return Err(format!("{chat} isn't one of the chat's subagents' chats.")),
+            }
+            steps += 1;
+        }
+    }
+    let stray = (rows.clm_states.iter().map(|s| &s.dialog_id))
+        .chain(rows.clm_revisions.iter().map(|r| &r.dialog_id))
+        .chain(rows.messages.iter().map(|m| &m.dialog_id))
+        .chain(rows.clm_kept.iter().flat_map(|kept| kept.keys()))
+        .find(|chat| !parents.contains_key(chat.as_str()));
+    match stray {
+        Some(chat) => Err(format!(
+            "The chat's rows have rows of {chat}, another chat."
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Writes a chat that moved here (6.8), with its subagents' chats, in the
+/// caller's transaction: owned here, in `project_id`. Rows another chat
+/// here has under the same ids are refused, never overwritten. Returns the
+/// clock once the rows are in, where the chat's mirror goes on from.
+pub fn import_in(
+    conn: &Connection,
+    lead: &str,
+    rows: &ChangeSet,
+    project_id: &str,
+) -> DbResult<i64> {
+    check_bundle(lead, rows)?;
+    for dialog in &rows.dialogs {
+        let here = conn
+            .query_row(
+                "SELECT 1 FROM dialogs WHERE id = ?1",
+                params![dialog.id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(err)?;
+        if here.is_some() {
+            return Err(format!("This server has another chat {}.", dialog.id));
+        }
+    }
+    for message in &rows.messages {
+        let here: Option<String> = conn
+            .query_row(
+                "SELECT dialog_id FROM messages WHERE id = ?1",
+                params![message.id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)?;
+        if let Some(chat) = here {
+            return Err(format!(
+                "This server has a message {} in another chat, {chat}.",
+                message.id
+            ));
+        }
+    }
+    let new = NewChats {
+        project_id: Some(project_id.to_string()),
+        location: Location::Here,
+    };
+    apply_in(conn, rows, &new)?;
+    clock(conn)
 }
 
 /// Writes `changes` as the owner has them, in the caller's transaction.

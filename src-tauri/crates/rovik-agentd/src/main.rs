@@ -50,6 +50,8 @@ mod keys;
 #[cfg(unix)]
 mod logfile;
 #[cfg(unix)]
+mod moves;
+#[cfg(unix)]
 mod packs;
 #[cfg(unix)]
 mod restart;

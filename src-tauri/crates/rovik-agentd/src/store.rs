@@ -1,6 +1,7 @@
 //! state.json (5.1, 6.2): each chat's computer and how its run last
 //! started, whether that run is going and how the last one ended, its
-//! project and worktree (6.4), each computer's configuration and each
+//! project and worktree (6.4), the move that brought it and whether its
+//! computer took it back (6.8), each computer's configuration and each
 //! project's settings, all without keys (keys.json has them, D11) or the
 //! message's text. Read at start-up, so a chat's events still find their
 //! computer, its runs their computer's configuration (D16), and an
@@ -10,6 +11,7 @@ use crate::keys::Keys;
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
 };
+use rovik_protocol::sync::Ownership;
 use rovik_protocol::work::{ChatResult, Project};
 use rovik_protocol::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
@@ -47,7 +49,8 @@ pub struct ProjectState {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatState {
-    /// The computer that started it here: only it gets the chat's events.
+    /// The computer that started or moved it here: only it gets the chat's
+    /// events.
     pub computer: String,
     /// How its last run started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,6 +91,32 @@ pub struct ChatState {
     /// worktree's root: what Undo the merge puts back (6.1).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub kept: BTreeMap<String, Kept>,
+    /// The move that brought it here, if one did (6.8): sent again, its
+    /// import changes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_id: Option<String>,
+    /// The daemon's revision once that move's rows were in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_rev: Option<i64>,
+    /// Why its changes waited to land when it moved here, as its overlay
+    /// said: its results say it until a run ends here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
+    /// When its computer took it back (`ChatRelease`), in epoch ms: its
+    /// rows are only read from then on, for that computer's last pull,
+    /// until `ChatForget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<i64>,
+}
+
+/// A chat a computer moved here (6.8), as its import left it.
+pub struct Moved {
+    pub move_id: String,
+    pub rev: i64,
+    pub place: Place,
+    /// The snapshot its worktree started from: its landing base.
+    pub base: String,
+    pub pending: Option<String>,
 }
 
 /// What a merge or conflict markers replaced in a chat's file, as blobs in
@@ -409,17 +438,69 @@ impl Store {
         });
     }
 
+    /// `computer` moved the chat here (6.8): the import's state replaces
+    /// all an earlier stay left.
+    pub fn imported(&self, computer: &str, dialog_id: &str, moved: Moved) -> Result<(), Fail> {
+        let mut inner = self.lock();
+        inner.check_owner(computer, dialog_id)?;
+        let chat = ChatState {
+            computer: computer.to_string(),
+            project: Some(moved.place.project),
+            worktree: Some(moved.place.worktree),
+            base: Some(moved.base),
+            move_id: Some(moved.move_id),
+            imported_rev: Some(moved.rev),
+            pending: moved.pending,
+            ..ChatState::default()
+        };
+        inner.state.chats.insert(dialog_id.to_string(), chat);
+        self.save(&inner).map_err(internal)
+    }
+
+    /// The chat as this daemon has it (`ChatOwner`): none when it doesn't
+    /// know it.
+    pub fn ownership(&self, dialog_id: &str) -> Option<Ownership> {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id)?;
+        Some(Ownership {
+            move_id: chat.move_id.clone(),
+            released: chat.released.is_some(),
+            rev: chat.imported_rev.unwrap_or(0),
+        })
+    }
+
+    /// The chat's computer took it back at `now` (`ChatRelease`).
+    pub fn release(&self, dialog_id: &str, now: i64) {
+        self.change(dialog_id, |chat| {
+            chat.released.get_or_insert(now);
+        });
+    }
+
+    /// Whether the chat's computer took it back.
+    pub fn is_released(&self, dialog_id: &str) -> bool {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id);
+        chat.is_some_and(|chat| chat.released.is_some())
+    }
+
+    /// Why the chat's changes waited when it moved here, while no run has
+    /// ended here since.
+    pub fn pending_of(&self, dialog_id: &str) -> Option<String> {
+        self.lock().state.chats.get(dialog_id)?.pending.clone()
+    }
+
     /// The chat's newest result.
     pub fn result_of(&self, dialog_id: &str) -> Option<ChatResult> {
         self.lock().state.chats.get(dialog_id)?.result.clone()
     }
 
-    /// The newest result of each of `computer`'s chats.
+    /// The newest result of each of `computer`'s chats here: not of those
+    /// it took back, whose results it has.
     pub fn results_of(&self, computer: &str) -> Vec<ChatResult> {
         let inner = self.lock();
         let chats = inner.state.chats.values();
         chats
-            .filter(|chat| chat.computer == computer)
+            .filter(|chat| chat.computer == computer && chat.released.is_none())
             .filter_map(|chat| chat.result.clone())
             .collect()
     }
@@ -459,12 +540,14 @@ impl Store {
         });
     }
 
-    /// The chat's run ended, with this outcome if it's known.
+    /// The chat's run ended, with this outcome if it's known: its results
+    /// say why its changes wait from it now.
     pub fn ended(&self, dialog_id: &str, outcome: Option<&str>) {
         self.change(dialog_id, |chat| {
             chat.running = false;
             if let Some(outcome) = outcome {
                 chat.outcome = Some(outcome.to_string());
+                chat.pending = None;
             }
         });
     }

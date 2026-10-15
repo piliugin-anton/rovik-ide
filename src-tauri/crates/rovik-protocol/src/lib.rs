@@ -41,6 +41,10 @@ pub const MAX_CALL: usize = 64 << 20;
 /// The most a `PUT /blobs/<sha256>` takes: an attached PDF's 20 MB (6.11).
 pub const MAX_BLOB: usize = 20 << 20;
 
+/// The most a `POST /chats/import` takes: the rows of a chat that moves
+/// (6.8), which the daemon holds while it imports them.
+pub const MAX_BUNDLE: usize = 512 << 20;
+
 /// What a daemon serves beyond what protocol 1 began with, named in its
 /// `Welcome` (4.5). A client checks for one before it relies on it.
 pub mod features {

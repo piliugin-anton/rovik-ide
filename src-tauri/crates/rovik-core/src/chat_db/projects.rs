@@ -213,7 +213,7 @@ pub fn fingerprint(root: &Path) -> Option<Fingerprint> {
 
 /// `key`: the path for lookups (path_key); `display`: as it was opened.
 fn record_path(
-    tx: &Transaction,
+    tx: &Connection,
     id: &str,
     key: &str,
     display: &str,
@@ -235,7 +235,7 @@ fn record_path(
 }
 
 fn insert_project(
-    tx: &Transaction,
+    tx: &Connection,
     id: &str,
     name: &str,
     key: &str,
@@ -286,9 +286,16 @@ fn decide(conn: &Connection, key: &str, id: &str, decision: &str) -> DbResult<()
 /// the desktop's id, created the first time, and `path` one of its folders,
 /// where its chats may work.
 pub fn ensure(conn: &mut Connection, id: &str, name: &str, path: &Path) -> DbResult<()> {
-    let (key, display) = (path_key(path), path.to_string_lossy().into_owned());
     let tx = conn.transaction().map_err(err)?;
-    let known = tx
+    ensure_in(&tx, id, name, path)?;
+    tx.commit().map_err(err)
+}
+
+/// `ensure`, in the caller's transaction: a chat's import (6.8) adds the
+/// project with the chat's rows.
+pub fn ensure_in(conn: &Connection, id: &str, name: &str, path: &Path) -> DbResult<()> {
+    let (key, display) = (path_key(path), path.to_string_lossy().into_owned());
+    let known = conn
         .query_row("SELECT 1 FROM projects WHERE id = ?1", params![id], |_| {
             Ok(())
         })
@@ -296,11 +303,10 @@ pub fn ensure(conn: &mut Connection, id: &str, name: &str, path: &Path) -> DbRes
         .map_err(err)?
         .is_some();
     if known {
-        record_path(&tx, id, &key, &display, name, now_ms())?;
+        record_path(conn, id, &key, &display, name, now_ms())
     } else {
-        insert_project(&tx, id, name, &key, &display, now_ms())?;
+        insert_project(conn, id, name, &key, &display, now_ms())
     }
-    tx.commit().map_err(err)
 }
 
 /// `path` isn't one of the project's folders any more. Called before the

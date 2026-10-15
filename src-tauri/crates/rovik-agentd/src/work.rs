@@ -6,16 +6,17 @@
 //! it, is one of its project's folders and has the project's ID file, so a
 //! run there works as a local chat does in its project. A deleted chat
 //! takes its worktree, branch and refs with it, and start-up collects
-//! those of chats deleted while the daemon was away.
+//! those of chats deleted while the daemon was away. A chat that moves
+//! here gets its worktree the way a first sync makes one (moves.rs).
 
 use crate::daemon::Daemon;
-use crate::store::Place;
+use crate::store::{Place, ProjectState};
 use crate::sync::{self, Merged};
 use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, WorktreeAddOptions, WorktreePruneOptions};
 use rovik_core::chat_db::{projects, store};
 use rovik_core::{project_profile, rt};
-use rovik_protocol::packs::PUSHED_REFS;
+use rovik_protocol::packs::{snapshot_ref, PUSHED_REFS};
 use rovik_protocol::work::{ChatSync, Project, SyncState, Synced};
 use rovik_protocol::{Event, Fail, FailCode, Response};
 use serde_json::Value;
@@ -76,29 +77,9 @@ pub async fn sync(
             files: merged.files,
         }));
     }
-    let worktree = daemon.worktrees.join(chat);
-    let (projects, id, name, at) = (
-        daemon.projects.clone(),
-        project.to_string(),
-        chat.to_string(),
-        worktree.clone(),
-    );
-    let changes = changes
-        .map(|changes| Oid::from_str(&changes))
-        .transpose()
-        .map_err(|_| bad_request("Not a commit's id."))?;
-    let made = rt::spawn_blocking(move || {
-        let repo = projects.prepare(&id, &excludes)?;
-        make_worktree(&repo, &name, base, &at)?;
-        match changes {
-            Some(changes) => write_changes(base, changes, &at),
-            None => Ok(()),
-        }
-    });
-    made.await.map_err(joined)??;
-
-    let root = worktree.join(&state.subpath);
-    projects::write_id_file(&root, project).map_err(|e| internal(e.to_string()))?;
+    let changes = commit_of(changes)?;
+    let at = (project, &state);
+    let (worktree, root) = new_worktree(daemon, chat, at, base, changes, excludes).await?;
     let (id, name, folder) = (project.to_string(), state.name.clone(), root.clone());
     let row = daemon
         .core
@@ -106,11 +87,6 @@ pub async fn sync(
         .write(move |c| projects::ensure(c, &id, &name, &folder));
     row.await.map_err(internal)?;
     daemon.ensure_chat(chat, Some(project)).await?;
-    if let Some(settings) = state.settings {
-        let config_dir = &daemon.core.paths.config_dir;
-        let saved = project_profile::save_project_settings(config_dir, text(&root), settings);
-        saved.map_err(internal)?;
-    }
     let place = Place {
         project: project.to_string(),
         worktree,
@@ -195,6 +171,84 @@ async fn merge_into(
     Ok(merged)
 }
 
+/// A new worktree for the chat at `base`, in place of what an earlier one
+/// left, with `changes` written into it when it moved with its overlay
+/// (T09), the project's ID file at its root and the project's settings for
+/// it. Returns its folder and its root, which the caller makes one of the
+/// project's folders with the chat's row.
+pub async fn new_worktree(
+    daemon: &Daemon,
+    chat: &str,
+    (project, state): (&str, &ProjectState),
+    base: Oid,
+    changes: Option<Oid>,
+    excludes: Vec<String>,
+) -> Result<(PathBuf, PathBuf), Fail> {
+    let worktree = daemon.worktrees.join(chat);
+    let (projects, id, name, at) = (
+        daemon.projects.clone(),
+        project.to_string(),
+        chat.to_string(),
+        worktree.clone(),
+    );
+    let made = rt::spawn_blocking(move || {
+        let repo = projects.prepare(&id, &excludes)?;
+        make_worktree(&repo, &name, base, &at)?;
+        match changes {
+            Some(changes) => write_changes(base, changes, &at),
+            None => Ok(()),
+        }
+    });
+    made.await.map_err(joined)??;
+    let root = worktree.join(&state.subpath);
+    projects::write_id_file(&root, project).map_err(|e| internal(e.to_string()))?;
+    if let Some(settings) = state.settings.clone() {
+        let config_dir = &daemon.core.paths.config_dir;
+        let saved = project_profile::save_project_settings(config_dir, text(&root), settings);
+        saved.map_err(internal)?;
+    }
+    Ok((worktree, root))
+}
+
+/// The project's repository, made with the client's ignore rules as
+/// `ProjectEnsure` makes it, once it's found to have the snapshot a
+/// worktree starts from and the chat's changes on it (T09): a move pushes
+/// them before its import, which checks them before anything of the chat's
+/// earlier stay goes. Returns the repository's folder.
+pub async fn repository_with(
+    daemon: &Daemon,
+    project: &str,
+    excludes: Vec<String>,
+    base: Oid,
+    changes: Option<Oid>,
+) -> Result<PathBuf, Fail> {
+    let (projects, id) = (daemon.projects.clone(), project.to_string());
+    let checked = rt::spawn_blocking(move || {
+        let repo = projects.prepare(&id, &excludes)?;
+        repo.find_commit(base)
+            .map_err(|_| bad_request("The snapshot isn't on this server: push it first."))?;
+        if let Some(changes) = changes {
+            let changes = repo.find_commit(changes).map_err(|_| {
+                bad_request("The chat's changes aren't on this server: push them first.")
+            })?;
+            if changes.parent_id(0).ok() != Some(base) {
+                return Err(bad_request(
+                    "The chat's changes aren't a commit on its snapshot.",
+                ));
+            }
+        }
+        Ok(repo.path().to_path_buf())
+    });
+    checked.await.map_err(joined)?
+}
+
+/// A commit's id, as a request names it.
+pub fn commit_of(id: Option<String>) -> Result<Option<Oid>, Fail> {
+    id.map(|id| Oid::from_str(&id))
+        .transpose()
+        .map_err(|_| bad_request("Not a commit's id."))
+}
+
 /// The chat's root on this server, once it has a worktree: the worktree,
 /// or the project's folder in it. Its runs work there (D8).
 pub fn root(daemon: &Daemon, chat: &str) -> Option<PathBuf> {
@@ -207,9 +261,23 @@ pub fn root(daemon: &Daemon, chat: &str) -> Option<PathBuf> {
 /// every project's repository, and its root among its project's folders.
 pub async fn remove(daemon: &Daemon, chat: &str) {
     // No sync takes an id that isn't plain: nothing of it is on disk.
-    if !plain(chat) {
-        return daemon.store.forget(chat);
+    if plain(chat) {
+        clear(daemon, chat, None).await;
     }
+    daemon.store.forget(chat);
+}
+
+/// What an earlier stay of the chat left (K36), before a move brings it
+/// again: as `remove` takes, but the snapshot the move pushed to `project`.
+/// Its rows go in the import's transaction, its state with the import.
+pub async fn clear_stay(daemon: &Daemon, chat: &str, project: &str) {
+    clear(daemon, chat, Some(project)).await
+}
+
+/// The chat's worktree, its branch and its refs in every project's
+/// repository but its snapshot in `keep`'s, and its root among its
+/// project's folders.
+async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) {
     if let Some(place) = daemon.store.place(chat) {
         let subpath = daemon
             .store
@@ -226,15 +294,18 @@ pub async fn remove(daemon: &Daemon, chat: &str) {
             log::warn!("{chat}'s worktree stays among its project's folders: {e}");
         }
     }
-    let (projects, name, worktree) = (
+    let (projects, name, worktree, keep) = (
         daemon.projects.clone(),
         chat.to_string(),
         daemon.worktrees.join(chat),
+        keep.map(String::from),
     );
     let removed = rt::spawn_blocking(move || {
+        let snapshot = snapshot_ref(&name);
         for id in projects.ids() {
             if let Ok(Some(repo)) = projects.open(&id) {
-                drop_chat(&repo, &name);
+                let kept = (keep.as_deref() == Some(id.as_str())).then_some(snapshot.as_str());
+                drop_chat(&repo, &name, kept);
             }
         }
         match fs::remove_dir_all(&worktree) {
@@ -245,7 +316,6 @@ pub async fn remove(daemon: &Daemon, chat: &str) {
     if let Ok(Err(e)) = removed.await {
         log::warn!("{chat}'s worktree stays: {e}");
     }
-    daemon.store.forget(chat);
 }
 
 /// At start-up: the worktrees of chats deleted while the daemon was away,
@@ -325,8 +395,8 @@ fn write_changes(base: Oid, changes: Oid, at: &Path) -> Result<(), Fail> {
 }
 
 /// What a chat leaves in a project's repository: its worktree's record, its
-/// branch and its refs.
-fn drop_chat(repo: &Repository, chat: &str) {
+/// branch and its refs, but `keep`.
+fn drop_chat(repo: &Repository, chat: &str, keep: Option<&str>) {
     drop_chat_worktree(repo, chat);
     if let Ok(mut branch) = repo.find_branch(&branch(chat), BranchType::Local) {
         let _ = branch.delete();
@@ -336,7 +406,7 @@ fn drop_chat(repo: &Repository, chat: &str) {
         .references_glob(&glob)
         .map(|mut refs| refs.names().flatten().map(String::from).collect())
         .unwrap_or_default();
-    for name in names {
+    for name in names.into_iter().filter(|name| Some(name.as_str()) != keep) {
         if let Ok(mut reference) = repo.find_reference(&name) {
             let _ = reference.delete();
         }
@@ -357,7 +427,7 @@ fn branch(chat: &str) -> String {
 }
 
 /// Whether a chat's id can name its folder, worktree and branch as it is.
-fn plain(chat: &str) -> bool {
+pub fn plain(chat: &str) -> bool {
     let fits = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     !chat.is_empty() && chat.len() <= 64 && chat.chars().all(fits)
 }

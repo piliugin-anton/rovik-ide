@@ -186,8 +186,9 @@ pub async fn chat_delete_dialog(core: &Core, dialog_id: String) -> Result<(), St
 }
 
 /// P6.7: a chat's files and its subagents' chats' files (their copies,
-/// landing records and context), the children's first.
-async fn remove_chat_and_children_files(core: &Core, dialog_id: &str) -> Result<(), String> {
+/// landing records and context), the children's first. A daemon clears a
+/// chat's earlier stay with them when a move brings it again (6.8).
+pub async fn remove_chat_and_children_files(core: &Core, dialog_id: &str) -> Result<(), String> {
     let id = dialog_id.to_string();
     let children = core.db.read(move |c| store::descendants(c, &id)).await?;
     for child in &children {

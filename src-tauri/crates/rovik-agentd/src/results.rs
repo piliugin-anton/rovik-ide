@@ -109,7 +109,9 @@ impl Results {
             commit: commit.to_string(),
             seq: 0,
             outcome: outcome.to_string(),
-            pending: pending_reason(outcome),
+            // A chat that moved here waits as it waited there until a run
+            // ends here (6.8).
+            pending: (self.store.pending_of(dialog_id)).or_else(|| pending_reason(outcome)),
             marked,
             unchecked: !checks,
         };

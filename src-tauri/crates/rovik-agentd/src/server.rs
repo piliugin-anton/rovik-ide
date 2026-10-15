@@ -1,11 +1,13 @@
 //! HTTP on the daemon's socket (4.4): `/health`, the WebSocket at `/rpc`,
-//! `/call` for a call too big for a frame, the attachments' files at
-//! `/blobs`, and the projects' packs at `/packs`. Only the daemon's own
-//! user can connect (the socket is 0600 and each peer's uid is checked,
-//! D5), and every request but `/health` names its computer with a token.
+//! `/call` for a call too big for a frame, the bundle that moves a chat at
+//! `/chats/import`, the attachments' files at `/blobs`, and the projects'
+//! packs at `/packs`. Only the daemon's own user can connect (the socket
+//! is 0600 and each peer's uid is checked, D5), and every request but
+//! `/health` names its computer with a token.
 
 use crate::cli::VERSION;
 use crate::daemon::Daemon;
+use crate::moves;
 use crate::session;
 use axum::body::{Body, Bytes};
 use axum::extract::{FromRequestParts, Path, Request, State};
@@ -22,7 +24,8 @@ use futures_util::StreamExt;
 use rovik_core::chat_db::attachments;
 use rovik_core::rt;
 use rovik_protocol::packs::{Fetch, Pushed, Update};
-use rovik_protocol::{Fail, FailCode, Frame, MAX_BLOB, MAX_CALL, PROTOCOL};
+use rovik_protocol::sync::ChatBundle;
+use rovik_protocol::{Fail, FailCode, Frame, MAX_BLOB, MAX_BUNDLE, MAX_CALL, PROTOCOL};
 use std::convert::Infallible;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -36,6 +39,7 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
         .route("/health", get(health))
         .route("/rpc", get(rpc))
         .route("/call", post(call))
+        .route("/chats/import", post(import_chat))
         .route("/blobs/{id}", get(blob).put(put_blob))
         .route("/packs/{project}/refs", get(pack_refs))
         .route("/packs/{project}", post(push_pack))
@@ -91,6 +95,126 @@ async fn call(
     };
     let res = daemon.answer(&computer, req).await;
     json(StatusCode::OK, &Frame::Reply { id, res })
+}
+
+/// The bundle that moves a chat here (6.8), parsed as it comes: at most
+/// `MAX_BUNDLE`, and refused whole when it doesn't all come. Its rows go in
+/// in one transaction, once (moves.rs).
+async fn import_chat(
+    State(daemon): State<Arc<Daemon>>,
+    Computer(computer): Computer,
+    request: Request,
+) -> Response {
+    let move_id = request.uri().query().and_then(|query| {
+        let mut pairs = query.split('&').filter_map(|pair| pair.split_once('='));
+        pairs
+            .find(|(k, _)| *k == "move_id")
+            .map(|(_, v)| v.to_string())
+    });
+    let Some(move_id) = move_id else {
+        return failed(Fail::new(
+            FailCode::BadRequest,
+            "An import names its move: ?move_id=…",
+        ));
+    };
+    let too_large = || {
+        failed(Fail::new(
+            FailCode::TooLarge,
+            format!("A chat moves with {} MB of rows at most.", MAX_BUNDLE >> 20),
+        ))
+    };
+    let declared = request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok()?.parse::<usize>().ok());
+    if declared.is_some_and(|n| n > MAX_BUNDLE) {
+        return too_large();
+    }
+    let (pieces, taken) = mpsc::channel::<Bytes>(PIECES);
+    let parsing = rt::spawn_blocking(move || {
+        let body = std::io::BufReader::with_capacity(1 << 16, Pieces::new(taken));
+        serde_json::from_reader::<_, ChatBundle>(body)
+    });
+    let mut body = request.into_body().into_data_stream();
+    let mut size = 0;
+    let came = loop {
+        match tokio::time::timeout(IDLE, body.next()).await {
+            Ok(Some(Ok(piece))) => {
+                size += piece.len();
+                if size > MAX_BUNDLE {
+                    break Came::TooMuch;
+                }
+                // The parser stopped: what it found wrong says why.
+                if pieces.send(piece).await.is_err() {
+                    break Came::Unread;
+                }
+            }
+            Ok(None) => break Came::Whole,
+            // Quiet for too long, or broken off.
+            Ok(Some(Err(_))) | Err(_) => break Came::Cut,
+        }
+    };
+    drop(pieces);
+    let bundle = match (came, parsing.await) {
+        (Came::TooMuch, _) => return too_large(),
+        (Came::Whole, Ok(Ok(bundle))) => bundle,
+        (Came::Whole | Came::Unread, Ok(Err(e))) => {
+            return failed(Fail::new(
+                FailCode::BadRequest,
+                format!("The body isn't a chat's bundle: {e}"),
+            ))
+        }
+        (_, Err(e)) => return failed(Fail::new(FailCode::Internal, e.to_string())),
+        _ => {
+            return failed(Fail::new(
+                FailCode::BadRequest,
+                "The chat's bundle didn't all come: send it again.",
+            ))
+        }
+    };
+    match moves::import(&daemon, &computer, &move_id, bundle).await {
+        Ok(imported) => json(StatusCode::OK, &imported),
+        Err(fail) => failed(fail),
+    }
+}
+
+/// How much of an import's body came.
+enum Came {
+    Whole,
+    /// Not all: the connection went quiet or broke.
+    Cut,
+    TooMuch,
+    /// The bundle's parser stopped before the end.
+    Unread,
+}
+
+/// A body's pieces as they come, read as one stream.
+struct Pieces {
+    taken: mpsc::Receiver<Bytes>,
+    piece: Bytes,
+}
+
+impl Pieces {
+    fn new(taken: mpsc::Receiver<Bytes>) -> Pieces {
+        Pieces {
+            taken,
+            piece: Bytes::new(),
+        }
+    }
+}
+
+impl std::io::Read for Pieces {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.piece.is_empty() {
+            match self.taken.blocking_recv() {
+                Some(piece) => self.piece = piece,
+                None => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.piece.len());
+        buf[..n].copy_from_slice(&self.piece.split_to(n));
+        Ok(n)
+    }
 }
 
 /// An attachment's file (6.11), such as a screenshot a run took here, for
@@ -342,11 +466,14 @@ fn refusal(status: StatusCode, fail: Fail) -> Response {
     json(status, &fail)
 }
 
-/// A refusal with the status its code calls for: a moved ref is a conflict.
+/// A refusal with the status its code calls for: a moved ref is a conflict,
+/// another computer's chat is forbidden.
 fn failed(fail: Fail) -> Response {
     let status = match fail.code {
         FailCode::BadRequest => StatusCode::BAD_REQUEST,
         FailCode::Busy => StatusCode::CONFLICT,
+        FailCode::NotOwner => StatusCode::FORBIDDEN,
+        FailCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     refusal(status, fail)

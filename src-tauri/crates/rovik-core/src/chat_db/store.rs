@@ -457,13 +457,20 @@ pub fn set_dialog_project(conn: &Connection, id: &str, project_id: Option<&str>)
 
 pub fn delete_dialog(conn: &mut Connection, id: &str) -> DbResult<()> {
     let tx = conn.transaction().map_err(err)?;
+    delete_subtree(&tx, id)?;
+    tx.commit().map_err(err)
+}
+
+/// The chat's rows and its subagents' chats', in the caller's transaction:
+/// a daemon clears what a chat's earlier stay left in the import that
+/// brings it again (6.8).
+pub fn delete_subtree(conn: &Connection, id: &str) -> DbResult<()> {
     // Round 3: the subagents' chats first, each once, however the parent
     // links loop (the same walk `descendants` makes).
-    for child in descendants(&tx, id)? {
-        delete_dialog_in(&tx, &child)?;
+    for child in descendants(conn, id)? {
+        delete_dialog_in(conn, &child)?;
     }
-    delete_dialog_in(&tx, id)?;
-    tx.commit().map_err(err)
+    delete_dialog_in(conn, id)
 }
 
 /// One chat's rows (the foreign key would remove a subagent's rows, but

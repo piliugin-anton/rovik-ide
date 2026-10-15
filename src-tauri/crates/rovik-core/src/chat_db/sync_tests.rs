@@ -542,3 +542,148 @@ fn a_pull_reads_up_to_where_the_owner_was_when_it_began() {
         .collect();
     assert_eq!(ids, ["late"]);
 }
+
+/*
+ * A move's import (6.8)
+ */
+
+/// Every row of the owner's chat: what a move's bundle carries.
+fn everything(owner: &Connection) -> ChangeSet {
+    changes_since(owner, ROOT, 0, None, usize::MAX)
+        .unwrap()
+        .changes
+}
+
+/// A host's database, with the project a moved chat goes to.
+fn host() -> Connection {
+    let mut conn = db();
+    projects::ensure(&mut conn, "host-project", "App", std::path::Path::new("/w")).unwrap();
+    conn
+}
+
+fn project_of(conn: &Connection, chat: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT project_id FROM dialogs WHERE id = ?1",
+        [chat],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_moved_chat_is_imported_whole_and_owned_where_it_went() {
+    let mut owner = owner();
+    for n in 0..4 {
+        round(&mut owner, n);
+    }
+    let rows = everything(&owner);
+    check_bundle(ROOT, &rows).unwrap();
+
+    let mut host = host();
+    let tx = host.transaction().unwrap();
+    let rev = import_in(&tx, ROOT, &rows, "host-project").unwrap();
+    tx.commit().unwrap();
+
+    assert_eq!(dump(&host), dump(&owner));
+    assert_eq!(rev, clock(&host).unwrap());
+    for chat in [ROOT, KID] {
+        assert_eq!(location::of_chat(&host, chat).unwrap(), Location::Here);
+        assert_eq!(project_of(&host, chat).as_deref(), Some("host-project"));
+    }
+    // The rows came at revisions of the host's own, all before `rev`.
+    let newest: i64 = host
+        .query_row("SELECT MAX(rev) FROM messages", [], |r| r.get(0))
+        .unwrap();
+    assert!(newest <= rev);
+}
+
+#[test]
+fn a_bundle_that_isnt_one_chats_alone_is_refused() {
+    let mut owner = owner();
+    round(&mut owner, 0);
+    round(&mut owner, 1);
+    let rows = everything(&owner);
+    check_bundle(ROOT, &rows).unwrap();
+
+    let refused = |rows: &ChangeSet, lead: &str, why: &str| {
+        let fail = check_bundle(lead, rows).unwrap_err();
+        assert!(fail.contains(why), "{fail}");
+    };
+    refused(&rows, "elsewhere", "don't have the chat");
+    refused(&rows, KID, "subagent's chat");
+    let mut twice = rows.clone();
+    twice.dialogs.push(rows.dialogs[0].clone());
+    refused(&twice, ROOT, "twice");
+    let mut stray = rows.clone();
+    stray.dialogs.push(StoredDialog {
+        id: "stray".into(),
+        parent_id: Some("nowhere".into()),
+        ..rows.dialogs[0].clone()
+    });
+    refused(&stray, ROOT, "stray isn't one of");
+    let mut looped = rows.clone();
+    let kid = looped.dialogs.iter_mut().find(|d| d.id == KID).unwrap();
+    kid.parent_id = Some(KID.into());
+    refused(&looped, ROOT, "isn't one of");
+    let mut foreign = rows.clone();
+    foreign.messages[0].dialog_id = "elsewhere".into();
+    refused(&foreign, ROOT, "rows of elsewhere");
+    let mut kept = rows.clone();
+    kept.clm_kept = Some(BTreeMap::from([("elsewhere".to_string(), vec![1])]));
+    refused(&kept, ROOT, "rows of elsewhere");
+}
+
+/// An import never takes over another chat's rows that have the same ids.
+#[test]
+fn an_import_never_writes_over_another_chats_rows() {
+    let mut owner = owner();
+    round(&mut owner, 0);
+    let rows = everything(&owner);
+    let mut host = host();
+    let theirs = NewDialog {
+        id: "theirs".into(),
+        title: "Theirs".into(),
+        created_at: 1,
+        updated_at: 1,
+        project_id: None,
+    };
+    store::create_dialog(&mut host, &theirs).unwrap();
+    store::append_messages(&mut host, "theirs", &[message("u1", "user", "Mine")]).unwrap();
+
+    let tx = host.transaction().unwrap();
+    let fail = import_in(&tx, ROOT, &rows, "host-project").unwrap_err();
+    drop(tx);
+    assert!(fail.contains("u1") && fail.contains("theirs"), "{fail}");
+    let kept = read_message(&host, "u1").unwrap().unwrap().0;
+    assert_eq!(
+        (kept.dialog_id.as_str(), kept.content.as_str()),
+        ("theirs", "Mine")
+    );
+    assert!(!has_chat(&host, ROOT));
+
+    // A chat with the moved chat's id is refused the same way.
+    let mut host = host_with_chat(ROOT);
+    let tx = host.transaction().unwrap();
+    let fail = import_in(&tx, ROOT, &rows, "host-project").unwrap_err();
+    assert!(fail.contains("another chat"), "{fail}");
+}
+
+fn has_chat(conn: &Connection, chat: &str) -> bool {
+    conn.query_row("SELECT 1 FROM dialogs WHERE id = ?1", [chat], |_| Ok(()))
+        .optional()
+        .unwrap()
+        .is_some()
+}
+
+fn host_with_chat(id: &str) -> Connection {
+    let mut conn = host();
+    let dialog = NewDialog {
+        id: id.into(),
+        title: "Here already".into(),
+        created_at: 1,
+        updated_at: 1,
+        project_id: None,
+    };
+    store::create_dialog(&mut conn, &dialog).unwrap();
+    conn
+}

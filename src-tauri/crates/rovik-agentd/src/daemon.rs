@@ -7,16 +7,18 @@ use crate::auth::Tokens;
 use crate::changes;
 use crate::events::Events;
 use crate::host;
+use crate::moves;
 use crate::packs::Projects;
 use crate::results::{self, Results};
 use crate::store::Store;
 use crate::work;
 use rovik_core::agent_run::wire_content;
+use rovik_core::chat_db::location::Location;
 use rovik_core::chat_db::store::{self, NewDialog};
 use rovik_core::overlay::chats;
 use rovik_core::{project_profile, Core};
 use rovik_protocol::agent::{AgentStatus, StartKind, StartRequest};
-use rovik_protocol::{Fail, FailCode, Request, Response, Target};
+use rovik_protocol::{Access, Fail, FailCode, Request, Response, Target};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,16 +45,24 @@ pub struct Daemon {
     pub same_machine: bool,
     /// Why the virtual files aren't mounted, when they aren't.
     pub virtual_files_problem: Option<String>,
+    /// One chat's import or release at a time (6.8).
+    pub imports: tokio::sync::Mutex<()>,
 }
 
 impl Daemon {
     /// `computer`'s request: the computer the token named. A chat another
     /// computer moved here is refused, its subagents' chats with it,
-    /// whatever the request (D16, 4.2).
+    /// whatever the request (D16, 4.2), and so is anything but a read of a
+    /// chat the computer took back (6.8).
     pub async fn answer(&self, computer: &str, request: Request) -> Result<Response, Fail> {
-        if let Some((target, _)) = request.target() {
+        if let Some((target, access)) = request.target() {
             let lead = self.lead_of(target).await?;
             self.store.check_owner(computer, &lead)?;
+            let releasing = matches!(request, Request::ChatRelease { .. });
+            if access != Access::Read && !releasing && self.store.is_released(&lead) {
+                let why = rovik_core::refusal(&Location::Released, access);
+                return Err(Fail::new(FailCode::NotOwner, why.unwrap_or_default()));
+            }
         }
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
@@ -116,6 +126,10 @@ impl Daemon {
                 self.store.check_owner(computer, &dialog_id)?;
                 self.results.landed(&dialog_id, &commit, paths).await?;
                 Ok(Response::Done)
+            }
+            Request::ChatOwner { dialog_id } => Ok(moves::owner(self, &dialog_id)),
+            Request::ChatRelease { dialog_id, move_id } => {
+                moves::release(self, &dialog_id, move_id).await
             }
             // The chat's worktree goes with its rows.
             Request::ChatDelete { dialog_id } => {
@@ -282,9 +296,9 @@ impl Daemon {
             .map_err(|e| Fail::new(FailCode::Internal, e))
     }
 
-    /// A chat started here before chats can move here (M04) has no row
-    /// yet: it gets one, so its messages can be stored. A chat with a
-    /// worktree belongs to the worktree's project (6.4).
+    /// A chat started here without a move (6.8) has no row yet: it gets
+    /// one, so its messages can be stored. A chat with a worktree belongs
+    /// to the worktree's project (6.4).
     pub async fn ensure_chat(&self, dialog_id: &str, project: Option<&str>) -> Result<(), Fail> {
         let (id, project) = (dialog_id.to_string(), project.map(String::from));
         self.core
