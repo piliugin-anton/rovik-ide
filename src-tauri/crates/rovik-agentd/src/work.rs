@@ -17,7 +17,7 @@ use rovik_protocol::work::{Project, Synced};
 use rovik_protocol::{Fail, FailCode, Response};
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// `ProjectEnsure`: the project's repository with the client's ignore
 /// rules, its row, and its settings for its worktrees.
@@ -63,8 +63,7 @@ pub async fn sync(
     let state = daemon.store.project(project).ok_or_else(|| {
         bad_request("The project isn't on this server yet: ProjectEnsure comes first.")
     })?;
-    if let Some(place) = daemon.store.place(chat).filter(|p| p.worktree.is_dir()) {
-        let root = place.worktree.join(&state.subpath);
+    if let Some(root) = root(daemon, chat) {
         return Ok(Response::Synced(synced(&root)));
     }
     let base = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
@@ -103,6 +102,14 @@ pub async fn sync(
         .store
         .worktree_made(computer, chat, place, snapshot)?;
     Ok(Response::Synced(synced(&root)))
+}
+
+/// The chat's root on this server, once it has a worktree: the worktree,
+/// or the project's folder in it. Its runs work there (D8).
+pub fn root(daemon: &Daemon, chat: &str) -> Option<PathBuf> {
+    let place = daemon.store.place(chat).filter(|p| p.worktree.is_dir())?;
+    let subpath = daemon.store.project(&place.project)?.subpath;
+    Some(place.worktree.join(subpath))
 }
 
 /// After `ChatDelete`: the chat's worktree, its branch and its refs in
@@ -248,7 +255,8 @@ fn synced(root: &Path) -> Synced {
     Synced { root: text(root) }
 }
 
-fn text(path: &Path) -> String {
+/// The form a root takes in a start and in the project's settings.
+pub fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 

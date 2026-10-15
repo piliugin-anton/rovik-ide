@@ -817,8 +817,14 @@ async fn run(
                     }
                 }
                 // Working in the project itself: one such chat at a time
-                // runs commands that write.
+                // runs commands that write. On a server, the project is
+                // the chat's own worktree (D8).
                 None => {
+                    if core.agents.on_server() {
+                        if let Some(problem) = super::server::command_problem(command) {
+                            return Ok(ToolResult::text(problem));
+                        }
+                    }
                     if super::permissions::command_modifies_files(command) {
                         if let Err(problem) = crate::overlay::chats::claim_direct_writes(
                             std::path::Path::new(root_owned.as_str()),

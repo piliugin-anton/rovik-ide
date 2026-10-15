@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{files_under, start_request, Daemon, OTHER};
+use common::{files_under, start_request, until, Daemon, OTHER};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
 use rovik_core::agent_run::AgentConfig;
 use rovik_core::testing::{model, Reply};
@@ -130,6 +130,12 @@ async fn keys_are_kept_in_keys_json_alone() {
             _ => tokio::time::sleep(Duration::from_millis(25)).await,
         }
     }
+    // The run's end reaches state.json just after: no file is still being
+    // written while they're read.
+    until("the run's end in state.json", || {
+        (daemon.state()["chats"]["chat-1"]["running"] == false).then_some(())
+    })
+    .await;
     let keys = std::fs::read_to_string(daemon.data.join("keys.json")).unwrap();
     assert!(keys.contains(key) && keys.contains(reviewer_key), "{keys}");
     let files = files_under(&daemon.data);

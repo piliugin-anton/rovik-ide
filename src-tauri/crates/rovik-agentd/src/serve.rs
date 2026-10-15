@@ -77,6 +77,7 @@ async fn run(
     let configs = store.clone();
     core.agents
         .set_resolver(Arc::new(move |chat| configs.config_of(chat)));
+    core.agents.set_on_server();
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {

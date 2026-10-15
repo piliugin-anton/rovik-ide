@@ -1641,3 +1641,25 @@ Tasks add notes here when reality differs from the plan.
   - A chat's id names a folder, a worktree and a branch, so a sync with
     one that isn't letters, digits, `-` and `_` is refused.
   - The daemon gives a chat it makes a row for the worktree's project.
+- **T04, worktree mode.**
+  - The daemon tells its core that its runs work in a server's worktrees
+    (`AgentState::set_on_server`, at start-up): every daemon run is one
+    (D8). The rules are in `agent_run/server.rs`.
+  - The daemon runs a chat in its worktree's root, whatever folder the
+    start names. With `--same-machine`, a chat without a worktree still
+    runs in the start's folder, for development and milestone P's tests;
+    without it, such a start is refused until the project syncs.
+  - "Names `.rovik` in any spelling" is `.rovik` as a folder after a
+    slash, with quotes and backslashes taken out. The project's own
+    `.rovik/plans/…`, named from the worktree's root, doesn't match; named
+    through `$PWD` or an absolute path, it does, and asks.
+  - Such a command goes to the user with a note, the way commands the AI
+    reviewer may never approve do, and never runs alongside the reads
+    that need no approval.
+  - Parallel workers are refused by the existing rule for chats without an
+    overlay, which the test checks on the daemon.
+  - The refusal of a start without a worktree still names `--same-machine`,
+    as P03's test expects. P05's test that scans the daemon's files for
+    keys now waits for the run's end to reach `state.json` first: under
+    the whole suite's load it once listed `state.json`'s temporary file
+    just before the rename took it away.

@@ -1,17 +1,26 @@
 //! Projects and worktrees on the real daemon (T03, 6.4): a chat's worktree
 //! holds its snapshot and the project's ID file, its root is one of its
 //! project's folders, it ignores what the client ignores, and deleting the
-//! chat, or a start-up after it was deleted, takes all of it away.
+//! chat, or a start-up after it was deleted, takes all of it away. A run
+//! works in its chat's worktree under D8's rules (T04): git that changes
+//! the repository is refused, so are parallel workers, and a command that
+//! names the daemon's folder waits for the user, whatever the settings.
 
 mod common;
 
-use common::{commit_all, write, Daemon, COMPUTER, OTHER};
+use common::{commit_all, start_request, write, Daemon, COMPUTER, OTHER};
 use git2::{BranchType, Repository, StatusOptions};
 use rovik_client::shadow::Shadow;
 use rovik_client::{Client, HostState, Identity, UnixConnector};
+use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
+use rovik_core::agent_run::server::DAEMON_FOLDER_NOTE;
+use rovik_core::agent_run::{AgentConfig, ApprovalDecision, StartRequest};
 use rovik_core::chat_db::{projects, store};
 use rovik_core::project_profile;
+use rovik_core::testing::{model, Reply};
+use rovik_protocol::agent::AgentStatus;
 use rovik_protocol::packs::snapshot_ref;
+use rovik_protocol::subagents::{KindConfig, SubagentConfig};
 use rovik_protocol::work::{Project, Synced};
 use rovik_protocol::{Fail, FailCode, Request, Secret};
 use serde_json::{json, Value};
@@ -244,4 +253,207 @@ async fn a_sync_needs_its_project_its_snapshot_a_plain_id_and_its_computer() {
     let other = client_as(&setup.daemon, OTHER, &setup.daemon.other_token).await;
     let refused = sync_as(&other, CHAT, &snapshot).await.unwrap_err();
     assert_eq!(refused.code, FailCode::NotOwner);
+}
+
+/// A chat with its worktree, ready to run: its root there.
+async fn ready_to_run(setup: &Setup) -> PathBuf {
+    let snapshot = setup.pushed(CHAT).await;
+    setup.ensure().await;
+    PathBuf::from(setup.sync(CHAT, &snapshot).await.unwrap().root)
+}
+
+/// A start of `CHAT` with these settings, naming the desktop's folder: the
+/// daemon runs it in the chat's worktree.
+fn start(setup: &Setup, url: &str, permissions: Permissions) -> StartRequest {
+    let mut start = start_request(url, &setup.project, "Do it".into());
+    start.config = Some(AgentConfig {
+        permissions,
+        ..AgentConfig::default()
+    });
+    start
+}
+
+/// Any command, no approvals, no checks.
+fn unattended() -> Permissions {
+    Permissions {
+        allow_any_command: true,
+        verify_changes: false,
+        tool_call_checkpoint: None,
+        ..Permissions::default()
+    }
+}
+
+async fn status(client: &Client) -> AgentStatus {
+    client.request(Request::AgentStatus).await.unwrap()
+}
+
+/// Waits for the chat's run to end.
+async fn ended(client: &Client) {
+    for _ in 0..1200 {
+        if status(client)
+            .await
+            .runs
+            .iter()
+            .all(|r| r.dialog_id != CHAT)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the run never ended");
+}
+
+/// The tool results the chat's run stored.
+fn tool_results(setup: &Setup) -> Vec<String> {
+    let rows = setup.daemon.rows(CHAT).into_iter();
+    rows.filter(|r| r.role == "tool")
+        .map(|r| r.content)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_run_works_in_its_worktree_under_the_servers_rules() {
+    let setup = Setup::new().await;
+    let root = ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "src/new.rs", "content": "fn new() {}\n" }),
+        },
+        Reply::Call {
+            id: "g1",
+            name: "bash",
+            args: json!({ "command": "git checkout -b elsewhere" }),
+        },
+        Reply::Call {
+            id: "t1",
+            name: "task",
+            args: json!({ "kind": "workers", "group": "API" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut start = start(&setup, &url, unattended());
+    let config = start.config.as_mut().unwrap();
+    config.subagents = SubagentConfig {
+        enabled: true,
+        kinds: [(
+            "worker".to_string(),
+            KindConfig {
+                enabled: true,
+                ..KindConfig::default()
+            },
+        )]
+        .into(),
+        parallel_workers: true,
+        ..SubagentConfig::default()
+    };
+
+    setup
+        .client
+        .request::<Option<String>>(Request::AgentStart(start))
+        .await
+        .unwrap();
+    ended(&setup.client).await;
+
+    assert_eq!(read(&root.join("src/new.rs")), "fn new() {}\n");
+    assert!(
+        !setup.project.join("src/new.rs").exists(),
+        "the desktop's folder is untouched"
+    );
+    let results = tool_results(&setup);
+    let refused = |what: &str| results.iter().any(|r| r.contains(what));
+    assert!(refused("worktree of its own on the server"), "{results:?}");
+    assert!(
+        refused("parallel workers need an isolated chat"),
+        "{results:?}"
+    );
+    let worktree = Repository::open(&root).unwrap();
+    assert_eq!(
+        worktree.head().unwrap().shorthand().unwrap(),
+        "rovik/chat-1"
+    );
+}
+
+#[tokio::test]
+async fn commands_naming_the_daemons_folder_wait_for_the_user() {
+    let setup = Setup::new().await;
+    let root = ready_to_run(&setup).await;
+    // What a compiler prints: the worktree's absolute path.
+    let compiler_path = format!("cat {}/src/main.rs", root.display());
+    let named = [
+        "cat ~/.rovik/keys.json",
+        "cat $HOME/.rovik/keys.json",
+        "cat ../../../.rovik/keys.json",
+    ];
+    let call = |id: &'static str, command: &str| Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": command }),
+    };
+    let (url, _) = model(vec![
+        call("a", "cat $PWD/src/main.rs"),
+        call("b", &compiler_path),
+        call("c", named[0]),
+        call("d", named[1]),
+        call("e", named[2]),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let approve = || Reply::Text("{\"decision\": \"approve\", \"reason\": \"Reads a file.\"}");
+    let (reviewer, reviewed) = model(vec![approve(), approve()]).await;
+    let mut start = start(
+        &setup,
+        &url,
+        Permissions {
+            command_approval: ApprovalRule {
+                required: true,
+                by: Approver::Ai,
+            },
+            ..unattended()
+        },
+    );
+    let mut profile = start.profile.clone();
+    profile.base_url = reviewer;
+    profile.label = "Reviewer".into();
+    start.config.as_mut().unwrap().approval_profiles = vec![profile];
+
+    setup
+        .client
+        .request::<Option<String>>(Request::AgentStart(start))
+        .await
+        .unwrap();
+
+    for (id, command) in ["c", "d", "e"].into_iter().zip(named) {
+        let approval = loop {
+            let waiting = status(&setup.client).await.approvals;
+            if let Some(approval) = waiting.into_iter().find(|a| a.dialog_id == CHAT) {
+                break approval;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert_eq!(approval.tool_call_id, id);
+        assert_eq!(approval.command.as_deref(), Some(command));
+        assert_eq!(approval.note.as_deref(), Some(DAEMON_FOLDER_NOTE));
+        let deny = Request::AgentResolveApproval {
+            dialog_id: CHAT.into(),
+            tool_call_id: id.into(),
+            decision: ApprovalDecision::Deny,
+        };
+        assert!(setup.client.request::<bool>(deny).await.unwrap());
+    }
+    ended(&setup.client).await;
+
+    // The ordinary commands went to the reviewer and ran; the others never did.
+    assert_eq!(reviewed.lock().unwrap().len(), 2);
+    let results = tool_results(&setup);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| r.contains("fn main() {}"))
+            .count(),
+        2,
+        "{results:?}"
+    );
 }

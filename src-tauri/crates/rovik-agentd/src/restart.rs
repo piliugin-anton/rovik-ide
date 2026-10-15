@@ -29,7 +29,7 @@ async fn restart(daemon: &Daemon, dialog_id: &str) {
             return interrupted(daemon, dialog_id);
         }
     };
-    if let Err(fail) = daemon.can_run() {
+    if let Err(fail) = daemon.can_run(dialog_id) {
         log::warn!("chat {dialog_id}: not restarted: {fail}");
         return interrupted(daemon, dialog_id);
     }

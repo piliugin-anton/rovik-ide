@@ -98,7 +98,7 @@ impl ChatOverlay {
 /// (and so has no place in an isolated chat). Git's own options before the
 /// command (`-C dir`, `-c key=value`) are skipped; ones that point it at
 /// another repository are refused outright.
-fn git_changes_repo(segment: &[String]) -> Option<String> {
+pub(crate) fn git_changes_repo(segment: &[String]) -> Option<String> {
     const CHANGES_REPO: &[&str] = &[
         "checkout",
         "switch",

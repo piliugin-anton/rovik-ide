@@ -46,6 +46,7 @@ mod repair_run;
 pub mod repetition;
 pub mod review;
 mod run;
+pub mod server;
 pub mod subagent;
 mod subagent_run;
 pub mod test_writer;
@@ -147,6 +148,8 @@ pub type ConfigResolver = Arc<dyn Fn(&str) -> Option<AgentConfig> + Send + Sync>
 struct Inner {
     config: AgentConfig,
     resolver: Option<ConfigResolver>,
+    /// The runs work in a server's worktrees (D8, server.rs).
+    on_server: bool,
     runs: HashMap<String, RunControl>,
     /// Keyed by chat and tool call: providers number calls per reply
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
@@ -204,6 +207,16 @@ impl AgentState {
     /// Runs follow the resolver's configuration from now on (a daemon's).
     pub fn set_resolver(&self, resolver: ConfigResolver) {
         self.lock().resolver = Some(resolver);
+    }
+
+    /// The runs work in a server's worktrees from now on, under its rules
+    /// (D8, server.rs): a daemon's.
+    pub fn set_on_server(&self) {
+        self.lock().on_server = true;
+    }
+
+    pub fn on_server(&self) -> bool {
+        self.lock().on_server
     }
 
     /// Keeps a run's fix-round state until the user starts its checks

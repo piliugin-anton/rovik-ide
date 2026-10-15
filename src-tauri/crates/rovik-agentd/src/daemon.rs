@@ -31,8 +31,8 @@ pub struct Daemon {
     pub projects: Projects,
     /// Where the chats' worktrees go (6.4).
     pub worktrees: PathBuf,
-    /// `--same-machine`: a chat runs in the folder its start names, for
-    /// development until projects are carried to the server (T04).
+    /// `--same-machine`: a chat without a worktree runs in the folder its
+    /// start names, for development.
     pub same_machine: bool,
     /// Why the virtual files aren't mounted, when they aren't.
     pub virtual_files_problem: Option<String>,
@@ -77,20 +77,22 @@ impl Daemon {
     /// A start (6.2): the store keeps its keys apart and its settings, and
     /// the chat becomes the computer's.
     async fn start(&self, computer: &str, start: StartRequest) -> Result<Response, Fail> {
-        self.can_run()?;
+        self.can_run(&start.dialog_id)?;
         self.store.started(computer, &start)?;
         self.run(start).await
     }
 
-    /// Without `--same-machine`, no chat runs here yet.
-    pub fn can_run(&self) -> Result<(), Fail> {
-        if self.same_machine {
+    /// A chat runs in its worktree (6.4), or, with `--same-machine`, in the
+    /// folder its start names.
+    pub fn can_run(&self, dialog_id: &str) -> Result<(), Fail> {
+        if self.same_machine || work::root(self, dialog_id).is_some() {
             return Ok(());
         }
         Err(Fail::new(
             FailCode::BadRequest,
-            "This server can't run chats yet: its daemon runs them only with \
-             --same-machine, in the folder each start names.",
+            "This chat has no worktree on this server yet: its project syncs first \
+             (WorkSync). A daemon started with --same-machine runs it in the folder its \
+             start names instead.",
         ))
     }
 
@@ -98,8 +100,12 @@ impl Daemon {
     /// (`config_for`), never another's.
     pub async fn run(&self, mut start: StartRequest) -> Result<Response, Fail> {
         start.config = None;
-        // The daemon works in its own copy, never in an overlay (D8).
+        // The daemon works in its own copy, never in an overlay: the
+        // chat's worktree, whatever folder the start names (D8).
         start.isolate = Some(false);
+        if let Some(root) = work::root(self, &start.dialog_id) {
+            start.root = Some(work::text(&root));
+        }
         self.keep_project_settings(&mut start)?;
         self.ensure_chat(&start.dialog_id, None).await?;
         rovik_core::dispatch(&self.core, Request::AgentStart(start)).await

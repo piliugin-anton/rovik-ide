@@ -259,7 +259,16 @@ impl Run {
         matches!(
             permissions::check_tool_call(&tc.name, &tc.arguments, &config.permissions),
             ToolVerdict::Permitted { approval: None }
-        )
+        ) && !self.names_daemon_folder(tc)
+    }
+
+    /// A command that names a server's own folder: it waits for the user,
+    /// whatever the settings say (D8).
+    fn names_daemon_folder(&self, tc: &ToolCall) -> bool {
+        tc.name == "bash"
+            && self.core.agents.on_server()
+            && permissions::str_arg(&tc.arguments, "command")
+                .is_some_and(|command| super::server::names_daemon_folder(&command))
     }
 
     /// Calls that run together: each as a task of its own, at most
@@ -991,15 +1000,18 @@ impl Run {
     async fn authorize(&self, tc: &ToolCall, resume_note: Option<&str>) -> Authorized {
         let config = self.config();
         let p = &config.permissions;
+        let daemon_folder = self.names_daemon_folder(tc);
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
                 return rejected(format!(
                     "Error: blocked by the user's permission settings. {reason}"
                 ))
             }
-            // An interrupted call is always confirmed by the user.
+            // An interrupted call is always confirmed by the user, and so
+            // is a command that names a server's own folder.
             ToolVerdict::Permitted { approval } => match resume_note {
                 Some(_) => Approver::User,
+                None if daemon_folder => Approver::User,
                 None => match approval {
                     Some(a) => a,
                     None => return Authorized::default(),
@@ -1033,7 +1045,9 @@ impl Run {
             }
             None => (None, Vec::new()),
         };
-        let mut manual_reason: Option<String> = resume_note.map(str::to_string);
+        let mut manual_reason: Option<String> = resume_note
+            .map(str::to_string)
+            .or_else(|| daemon_folder.then(|| super::server::DAEMON_FOLDER_NOTE.to_string()));
         let reviewed = proposal.as_ref().map(|p| Reviewed {
             abs_path: p.abs_path.clone(),
             rel_path: p.rel_path.clone(),
