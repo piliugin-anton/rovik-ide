@@ -24,8 +24,17 @@ pub struct App {
 }
 
 impl App {
-    /// The app, not connected yet. The setup's snapshots go from its shadow.
+    /// The app, not connected yet, its chat on the daemon. The setup's
+    /// snapshots go from its shadow.
     pub async fn new(setup: &mut Setup) -> App {
+        let app = App::local(setup).await;
+        app.remote.place(CHAT, HOST);
+        app
+    }
+
+    /// The app, not connected yet, its chat on this computer: a chat to
+    /// move (6.8).
+    pub async fn local(setup: &mut Setup) -> App {
         let overlays = chats::TEST_DATA.clone().lock_owned().await;
         let test = TestCore::new();
         let data = test.core.paths.data_dir.clone();
@@ -45,7 +54,6 @@ impl App {
         });
         made.await.unwrap();
         let remote = Remote::new(test.core.clone());
-        remote.place(CHAT, HOST);
         remote.set_open_project(Some((PROJECT.into(), setup.project.clone())));
         App {
             test,

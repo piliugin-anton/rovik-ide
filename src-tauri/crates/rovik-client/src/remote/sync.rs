@@ -21,13 +21,13 @@ use std::path::{Path, PathBuf};
 
 /// A snapshot of a chat's project, and what goes to the host with it.
 pub(super) struct Snapshot {
-    project: String,
-    root: PathBuf,
+    pub(super) project: String,
+    pub(super) root: PathBuf,
     /// The project's shadow.
-    shadow: PathBuf,
+    pub(super) shadow: PathBuf,
     pub(super) commit: Oid,
-    excludes: Vec<String>,
-    subpath: String,
+    pub(super) excludes: Vec<String>,
+    pub(super) subpath: String,
 }
 
 impl Remote {
@@ -135,7 +135,7 @@ impl Remote {
     ) -> Result<(), String> {
         self.ensure(host, client, snapshot).await?;
         let (project, shadow) = (&snapshot.project, &snapshot.shadow);
-        let pushed = self.push_snapshot(dialog_id, project, shadow, snapshot.commit);
+        let pushed = self.push_to(host, dialog_id, project, shadow, snapshot.commit);
         pushed.await.map(drop).map_err(|fail| fail.message)
     }
 
@@ -200,7 +200,7 @@ impl Remote {
 }
 
 /// The project's settings here, when it has any.
-fn settings(config_dir: &Path, root: &Path) -> Option<serde_json::Value> {
+pub(super) fn settings(config_dir: &Path, root: &Path) -> Option<serde_json::Value> {
     let settings = project_profile::load_project_settings(config_dir, &root.to_string_lossy());
     Some(settings).filter(|s| !s.is_null())
 }

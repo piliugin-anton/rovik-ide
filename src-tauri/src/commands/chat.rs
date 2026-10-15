@@ -4,6 +4,7 @@
 
 use super::answer;
 use rovik_client::Remote;
+use rovik_core::agent_run::StartRequest;
 use rovik_core::chat_db::search::SearchHit;
 use rovik_core::chat_db::store::{
     ChatModel, Cursor, DialogPage, MessagePage, MessagePatch, NewDialog, NewMessage,
@@ -204,6 +205,47 @@ pub async fn chat_delete_dialog(
     dialog_id: String,
 ) -> Result<(), String> {
     remote.delete(&dialog_id).await.map_err(|fail| fail.message)
+}
+
+/// What moving the chat to `host` would do, and whether it can (6.8).
+#[tauri::command]
+pub async fn cloud_move_preflight(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+    host: String,
+) -> Result<rovik_client::MovePreflight, String> {
+    remote
+        .move_preflight(&dialog_id, &host)
+        .await
+        .map_err(|fail| fail.message)
+}
+
+/// Moves the chat to `host` (6.8). `start` is how the app would start it:
+/// its run picks up there with it, if it paused for the move. Progress
+/// comes on `cloud-event`.
+#[tauri::command]
+pub async fn cloud_move_chat(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+    host: String,
+    start: Option<StartRequest>,
+) -> Result<(), String> {
+    remote
+        .move_chat(&dialog_id, &host, start)
+        .await
+        .map_err(|fail| fail.message)
+}
+
+/// "Cancel move": the chat is local again (6.8).
+#[tauri::command]
+pub async fn cloud_cancel_move(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+) -> Result<(), String> {
+    remote
+        .cancel_move(&dialog_id)
+        .await
+        .map_err(|fail| fail.message)
 }
 
 /// "Re-sync this chat" (6.3): a remote chat's rows again from its host, in

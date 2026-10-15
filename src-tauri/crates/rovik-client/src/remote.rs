@@ -31,10 +31,12 @@ use tokio::sync::{mpsc, oneshot};
 
 mod bar;
 mod mirror;
+mod moving;
 mod results;
 mod sync;
 
 pub use bar::LOCAL_ONLY;
+pub use moving::MovePreflight;
 
 /// The outcome told for a run that ended while its host was away: the
 /// client can't know it until results come (T05).
@@ -66,6 +68,15 @@ pub enum CloudEvent {
     /// A remote chat's changes may look different: its result came in or
     /// landed, or its project synced. Its isolation bar looks again.
     Changed { dialog_id: String },
+    /// A chat's move to a host (6.8): the step it's at ("pausing",
+    /// "pushing", "uploading", "importing"), then "moved", "failed" with
+    /// why, or "cancelled".
+    Moving {
+        dialog_id: String,
+        step: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
 }
 
 /// Where `CloudEvent`s go.
@@ -121,6 +132,10 @@ struct State {
     running: HashMap<String, String>,
     /// Each mirrored chat's pulls (remote/mirror.rs).
     pulls: HashMap<String, mirror::Pulls>,
+    /// The chats whose move goes now, and those of them asked to cancel
+    /// (remote/moving.rs).
+    moving: HashSet<String>,
+    cancels: HashSet<String>,
     /// The sends whose files are going up, by chat: Stop cancels one.
     uploads: HashMap<String, oneshot::Sender<()>>,
     /// The project open in the app: its id and folder (6.5).
@@ -479,6 +494,19 @@ impl Remote {
         let host = self
             .host_of(dialog_id)
             .ok_or_else(|| Fail::new(FailCode::BadRequest, "The chat isn't on a host."))?;
+        self.push_to(&host, dialog_id, project, shadow, snapshot)
+            .await
+    }
+
+    /// `push_snapshot` to `host`, where the chat is or goes.
+    pub(super) async fn push_to(
+        &self,
+        host: &str,
+        dialog_id: &str,
+        project: &str,
+        shadow: &Path,
+        snapshot: Oid,
+    ) -> Result<Pushed, Fail> {
         let (cloud, chat, project_id) = (self.cloud(), dialog_id.to_string(), project.to_string());
         let progress = move |sent| {
             if let Some(cloud) = &cloud {
@@ -490,7 +518,7 @@ impl Remote {
             }
         };
         let name = packs::snapshot_ref(dialog_id);
-        let client = self.client(&host)?;
+        let client = self.client(host)?;
         client
             .push(project, shadow, &name, snapshot, progress)
             .await
@@ -565,6 +593,7 @@ impl Remote {
                 }
                 self.after_connecting(host).await;
                 self.pull_all(host).await;
+                self.finish_moves(host).await;
             }
             Incoming::Event { event, .. } => match event {
                 Event::Agent(event) => self.agent_event(host, event).await,

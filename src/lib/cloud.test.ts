@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { barChanged, type CloudEvent } from './cloud';
+import { barChanged, moveStep, type CloudEvent } from './cloud';
 
 const changed: CloudEvent = { type: 'changed', dialogId: 'chat-1' };
 
@@ -21,4 +21,12 @@ test('transfers leave the bar alone', () => {
   };
   assert.equal(barChanged(pushing, 'chat-1'), false);
   assert.equal(barChanged(uploading, 'chat-1'), false);
+});
+
+test("a move's steps are its chat's alone, and leave the bar alone", () => {
+  const moving: CloudEvent = { type: 'moving', dialogId: 'chat-1', step: 'importing' };
+  assert.equal(moveStep(moving, 'chat-1'), 'importing');
+  assert.equal(moveStep(moving, 'chat-2'), null);
+  assert.equal(moveStep(changed, 'chat-1'), null);
+  assert.equal(barChanged(moving, 'chat-1'), false);
 });

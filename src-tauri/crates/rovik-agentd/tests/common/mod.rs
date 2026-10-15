@@ -246,6 +246,34 @@ pub fn files_under(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// The chat's messages as a database has them: what a mirror copies of
+/// each, its body and its attachments, in order (6.3).
+pub fn messages_in(database: &Path, chat: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    use rusqlite::{Connection, OpenFlags};
+    let Ok(db) = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return Vec::new();
+    };
+    let read = || -> rusqlite::Result<Vec<Vec<rusqlite::types::Value>>> {
+        let mut stmt = db.prepare(
+            "SELECT m.id, m.seq, m.role, m.content, m.body_external, m.body_bytes,
+                    m.tool_calls, m.tool_call_id, m.meta, m.error, m.failed, m.finalized,
+                    m.created_at, b.content,
+                    (SELECT group_concat(attachment_id) FROM
+                       (SELECT attachment_id FROM message_attachments
+                        WHERE message_id = m.id ORDER BY position))
+             FROM messages m LEFT JOIN message_bodies b ON b.message_id = m.id
+             WHERE m.dialog_id = ?1 ORDER BY m.seq",
+        )?;
+        let rows = stmt.query_map([chat], |r| {
+            (0..15)
+                .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                .collect()
+        })?;
+        rows.collect()
+    };
+    read().unwrap_or_default()
+}
+
 /// What `check` gives once it gives something, polled for up to 30 s.
 pub async fn until<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> T {
     for _ in 0..1200 {

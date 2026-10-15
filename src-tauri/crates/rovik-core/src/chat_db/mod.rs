@@ -14,6 +14,7 @@ pub mod history;
 pub mod images;
 pub mod location;
 pub mod mirror;
+pub mod moves;
 pub mod projects;
 #[cfg(test)]
 mod rev_tests;

@@ -234,6 +234,29 @@ pub fn missing(conn: &Connection, ids: &[String]) -> DbResult<Vec<String>> {
     Ok(out)
 }
 
+/// The attachments the messages of a chat and its subagents' chats name:
+/// those that go with it when it moves (6.8, 6.11).
+pub fn of_subtree(conn: &Connection, dialog_id: &str) -> DbResult<Vec<String>> {
+    let mut chats = super::store::descendants(conn, dialog_id)?;
+    chats.push(dialog_id.to_string());
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT a.attachment_id FROM message_attachments a
+             JOIN messages m ON m.id = a.message_id WHERE m.dialog_id = ?1",
+        )
+        .map_err(err)?;
+    let mut ids = std::collections::BTreeSet::new();
+    for chat in chats {
+        let named = stmt
+            .query_map(params![chat], |r| r.get::<_, String>(0))
+            .map_err(err)?;
+        for id in named {
+            ids.insert(id.map_err(err)?);
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
 /// Of these ids, those with no file here: a row alone doesn't count, since
 /// cleanup or a hand may have removed the file (K47).
 pub fn missing_files(conn: &Connection, data_dir: &Path, ids: &[String]) -> DbResult<Vec<String>> {

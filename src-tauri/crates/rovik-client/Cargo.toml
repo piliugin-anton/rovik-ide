@@ -20,6 +20,8 @@ http-body-util.workspace = true
 tokio-tungstenite.workspace = true
 # Shadow repositories and the packs between them and a daemon (6.4).
 git2.workspace = true
+# Each move's id (6.8).
+uuid.workspace = true
 
 [dev-dependencies]
 # Cores on temporary folders, and the database read as the frontend would.

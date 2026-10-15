@@ -187,27 +187,9 @@ fn read_only(database: &Path) -> Connection {
     Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
 }
 
-/// The chat's messages as a database has them: what the mirror copies of
-/// each, its body and its attachments, in order.
+/// The chat's messages as a database has them.
 fn messages_in(database: &Path) -> Vec<Vec<Column>> {
-    let Ok(db) = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
-        return Vec::new();
-    };
-    let read = || -> rusqlite::Result<Vec<Vec<Column>>> {
-        let mut stmt = db.prepare(
-            "SELECT m.id, m.seq, m.role, m.content, m.body_external, m.body_bytes,
-                    m.tool_calls, m.tool_call_id, m.meta, m.error, m.failed, m.finalized,
-                    m.created_at, b.content,
-                    (SELECT group_concat(attachment_id) FROM
-                       (SELECT attachment_id FROM message_attachments
-                        WHERE message_id = m.id ORDER BY position))
-             FROM messages m LEFT JOIN message_bodies b ON b.message_id = m.id
-             WHERE m.dialog_id = ?1 ORDER BY m.seq",
-        )?;
-        let rows = stmt.query_map([CHAT], |r| (0..15).map(|i| r.get::<_, Column>(i)).collect())?;
-        rows.collect()
-    };
-    read().unwrap_or_default()
+    common::messages_in(database, CHAT)
 }
 
 fn project(daemon: &Daemon) -> PathBuf {

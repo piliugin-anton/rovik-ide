@@ -947,6 +947,13 @@ async fn last_paused_for(core: &Core, dialog_id: &str, kind: &str) -> Result<boo
     Ok(paused == Some(kind))
 }
 
+/// Whether the chat's last step has tool calls without results, which a
+/// `Resume` runs: a moved chat's run picks up so on its host (6.8).
+pub async fn waits_for_results(core: &Core, dialog_id: &str) -> Result<bool, String> {
+    let recent = run::recent_messages(&core.db, dialog_id).await?;
+    Ok(!run::unanswered_tool_calls(&recent).is_empty())
+}
+
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
 /// what it waits on is answered "no").
 pub fn agent_stop(core: &Core, dialog_id: String) -> bool {

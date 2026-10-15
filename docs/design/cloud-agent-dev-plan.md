@@ -2125,3 +2125,39 @@ Tasks add notes here when reality differs from the plan.
     U02's, which brings the menu.
   - The scripted model has `Reply::Trickle`, text a piece at a time, for
     a reply that streams past its checkpoints.
+- **M06, moving to a host.**
+  - `Remote::move_chat` (`remote/moving.rs`) does 6.8's steps, each kept
+    in the chat's `cloud_moves` row (`chat_db::moves`): the lock puts the
+    chat and its subagents' chats at `moving:<host>` in the transaction
+    that writes the row; the flip puts them on the host, with
+    `mirror_state` at the import's revision, and deletes the row; a
+    rollback puts them back here. A chat that isn't here, a subagent's,
+    one with no project folder here and one whose overlay has conflicts
+    don't move.
+  - The run pauses with M03's `agent_pause`. The snapshot is the overlay
+    folded in (`Shadow::fold`): `C0` is pushed to the chat's snapshot ref
+    after `ProjectEnsure`, and the bundle names `S0'` as its snapshot and
+    `C0` as its changes. The files the subtree's messages name
+    (`attachments::of_subtree`) go up when the host lacks them; one this
+    computer lost goes as a row without a file. The bundle's pending
+    reason is the overlay's.
+  - The app hands the move the start a Continue would make
+    (`cloud_move_chat`'s `start`): after the flip it's sent as
+    `ContinueRun` if the run paused for the move, as `Resume` if tool
+    calls wait for results (`agent_run::waits_for_results`), or not at
+    all. The overlay here goes at the flip.
+  - Progress is `CloudEvent::Moving { step }`: `pausing`, `pushing`,
+    `uploading`, `importing`, then `moved`, `failed` with why, or
+    `cancelled`. A failure before the import makes the chat local again
+    at once. One after the bundle went, when the host may have the chat,
+    releases it there for that move, or queues the release in the row
+    (step `cancelled`) when the host can't be reached.
+  - "Cancel move" (`cloud_cancel_move`) stops a move going at its next
+    step. A move the app left unfinished is undone at once, its release
+    queued if its bundle may have gone. On each connection, the host's
+    unfinished moves are settled: a queued release goes, and a move cut
+    short is flipped if `ChatOwner` says the host has the chat from that
+    move, and undone if not.
+  - `rovik-client` depends on `uuid` for the moves' ids. The dialog that
+    shows the preflight and the progress is U02's; `lib/cloud.ts` has
+    the commands and the event's type.
