@@ -741,12 +741,14 @@ pub struct ChatParams {
     // About the open project (stack, check commands, its agent instructions),
     // appended to the default system prompt.
     pub project_context: Option<String>,
-    // Context that changes from one step to the next (the repository map,
-    // rebuilt as files change). It goes at the very end of the request, on
-    // its last message, so everything before it (the system prompt, the
-    // tools, the history) is byte-identical to the previous step's and the
-    // provider's prompt cache serves it (prompt_cache.rs).
-    pub volatile_context: Option<String>,
+    // What the IDE made for the request a run is for (the repository map),
+    // for a stored chat (`dialog_id`). It goes on that request's message,
+    // before its text, on every step of the run
+    // (`history::add_request_context`): the request is sent the same way
+    // on every step, in the prefix providers cache (prompt_cache.rs), and
+    // every request ends with the step the model works from. Not in the
+    // system prompt: a run that rebuilds it would change the first bytes.
+    pub request_context: Option<String>,
     pub options: Option<OpenAIChatOptions>,
     // How the chat's context is managed: "trimming" (default) or "clm"
     // (Context Language Models: the agent edits its context as a file, src/clm).
@@ -826,7 +828,7 @@ pub async fn send_chat_message(
         tools,
         system_prompt,
         project_context,
-        volatile_context: None,
+        request_context: None,
         options,
         context_mode,
         carried_notes: Vec::new(),
@@ -870,7 +872,7 @@ pub async fn run_chat(
         tools,
         system_prompt,
         project_context,
-        volatile_context,
+        request_context,
         options,
         context_mode,
         carried_notes,
@@ -923,14 +925,16 @@ pub async fn run_chat(
     let tool_chars = tools.as_ref().map_or(0, |t| {
         serde_json::to_string(t).map_or(0, |j| j.chars().count())
     });
-    // The volatile tail goes with every request, so it's counted with the
-    // fixed parts, not against the history.
-    let tail = volatile_context
+    // The request's context goes with every request of the run, whatever
+    // the history keeps, so it's counted with the fixed parts.
+    let request_context = request_context
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
     let fixed_chars = system_prompt.chars().count()
         + tool_chars
-        + tail.as_ref().map_or(0, |t| t.chars().count() + 2);
+        + request_context
+            .as_ref()
+            .map_or(0, |t| t.chars().count() + 2);
     let budget = history_budget(window, fixed_chars, chars_per_token, reserve);
 
     // Context Language Models need the virtual volume (the agent's shell
@@ -1001,6 +1005,15 @@ pub async fn run_chat(
                 )
                 .await?;
                 let mut messages = prepared.messages;
+                // On the request's message, before the notes go on the last
+                // one (on a run's first step, that same message).
+                if let Some(context) = &request_context {
+                    crate::chat_db::history::add_request_context(
+                        &mut messages,
+                        prepared.request_id.as_deref(),
+                        context,
+                    );
+                }
                 let fresh = prepared.notes;
                 let notes = with_carried_notes(&carried_notes, &fresh);
                 // Notes for the model ride on the request's last message (not
@@ -1056,6 +1069,7 @@ pub async fn run_chat(
             // Cut where the chat's last request was cut, while that fits.
             let kept = crate::chat_db::history::last_cut(&dialog_id);
             let chat = dialog_id.clone();
+            let context = request_context.clone();
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
                     conn,
@@ -1065,6 +1079,7 @@ pub async fn run_chat(
                     budget,
                     accepts,
                     current_user_content.as_deref(),
+                    context.as_deref(),
                     gemini,
                     chars_per_token,
                     kept.as_ref(),
@@ -1122,12 +1137,6 @@ pub async fn run_chat(
     }
     if let (Some(notes), Some(last)) = (&later_notes, messages.last_mut()) {
         last.append_text(notes);
-    }
-
-    // Zone 2 of the request: what changes between steps rides on the last
-    // message, after the stable prefix (ChatParams::volatile_context).
-    if let (Some(tail), Some(last)) = (&tail, messages.last_mut()) {
-        last.append_text(tail);
     }
 
     messages.insert(
@@ -1883,6 +1892,7 @@ pub async fn chat_context_estimate(
                     pdf: pdf.unwrap_or(false),
                 },
                 None,
+                None,
                 gemini,
                 chars_per_token,
                 kept.as_ref(),
@@ -2071,12 +2081,12 @@ mod tests {
     }
 
     #[test]
-    fn volatile_context_is_appended_to_the_last_message() {
-        let mut text = WireChatMessage::text("tool", "wrote 3 bytes\n\n");
-        text.append_text("## Repository map\nsrc/a.rs");
+    fn notes_are_appended_to_the_last_message() {
+        let mut text = WireChatMessage::text("user", "Continue.\n\n");
+        text.append_text("[context: ~1200/9000 tokens]");
         assert_eq!(
             text.content,
-            serde_json::json!("wrote 3 bytes\n\n## Repository map\nsrc/a.rs")
+            serde_json::json!("Continue.\n\n[context: ~1200/9000 tokens]")
         );
 
         let mut empty = WireChatMessage::text("user", "");

@@ -142,19 +142,14 @@ pub struct Run<R: Runtime> {
     pub(super) checks: Vec<ProjectCheck>,
     pub(super) project_context: String,
     /// The current repository map text (the `## Repository map` section),
-    /// if any. Updated mid-run as files change; the next model turn sends
-    /// it at the end of the request (`ChatParams::volatile_context`), never
-    /// in the system prompt, so a refresh doesn't invalidate the provider's
-    /// cache of the prefix.
+    /// if any. Every model turn sends it on the request's message
+    /// (`ChatParams::request_context`), never in the system prompt or at
+    /// the end of the request. Rebuilt mid-run at most every MAP_MAX_AGE.
     pub(super) repo_map: Option<String>,
     /// Map budget in chars (about 2% of the context window), fixed at prepare.
     pub(super) repo_map_chars: usize,
-    /// Successful file writes since the map was last (re)built. Set in
-    /// record(), consumed by the mid-run refresh: same-file rewrites count,
-    /// so this is a counter, not changed_files' length.
-    pub(super) map_writes_since_refresh: u32,
-    /// When the map was last (re)built: bounds how stale external edits
-    /// (the editor, git) can get before a catch-all refresh.
+    /// When the map was last (re)built: a mid-run rebuild waits until it's
+    /// MAP_MAX_AGE old.
     pub(super) map_refreshed_at: Instant,
     /// Successful refreshes this run (for logs and tests).
     pub(super) map_refreshes: u32,
@@ -667,9 +662,9 @@ impl<R: Runtime> Run<R> {
             }
         };
         // The repository map: the declarations most relevant to the request.
-        // Built once here, then refreshed mid-run as files change
-        // (refresh_repo_map_if_needed). The next model turn sends it at the
-        // end of the request, after the history (ChatParams::volatile_context).
+        // Built here, then rebuilt mid-run at most every MAP_MAX_AGE
+        // (refresh_repo_map_if_needed). Every model turn sends it on the
+        // request's message (ChatParams::request_context).
         let repo_map_chars = repo_map_chars(request.profile.context_tokens);
         let repo_map = match &root {
             Some(r) => {
@@ -781,7 +776,6 @@ impl<R: Runtime> Run<R> {
             project_context: String::new(),
             repo_map: None,
             repo_map_chars: 0,
-            map_writes_since_refresh: 0,
             map_refreshed_at: Instant::now(),
             map_refreshes: 0,
             writes_since_verify: false,
@@ -1215,9 +1209,9 @@ impl<R: Runtime> Run<R> {
             if self.stopped() {
                 return Ok("stopped".into());
             }
-            // Files changed: the run-start map is stale. Rebuild before the
-            // next turn so it sees the new declarations; a no-op when
-            // nothing was written or the ranking didn't move.
+            // Files may have changed: once the map is old enough, rebuild it
+            // before the next turn so it shows the new declarations; a no-op
+            // when the ranking didn't move.
             self.refresh_repo_map_if_needed().await?;
 
             // Every tool call has its result, so the chat can wait here as
@@ -1447,7 +1441,7 @@ impl<R: Runtime> Run<R> {
                 tools: Some(tools.clone()),
                 system_prompt: system_prompt.clone(),
                 project_context: Some(project_context.clone()),
-                volatile_context: self.repo_map.clone(),
+                request_context: self.repo_map.clone(),
                 options: self.options.clone(),
                 context_mode: Some(self.context_mode.clone()),
                 carried_notes: carried_notes.clone(),
@@ -1992,40 +1986,38 @@ impl<R: Runtime> Run<R> {
         );
     }
 
-    /// Rebuilds the repository map mid-run, so the next model turn sees the
+    /// Rebuilds the repository map mid-run, so the next model turns see the
     /// new declarations (not the run-start snapshot).
     ///
+    /// The map goes on the request's message, in the prefix providers cache
+    /// (ChatParams::request_context): a new map changes the request from
+    /// there on, and the cache misses from there once. So a rebuild waits
+    /// until the map is MAP_MAX_AGE old, whatever changed: the run's own
+    /// writes, and what a command or someone outside the run changed (the
+    /// editor, git).
+    ///
     /// Bullet-proofing, in order of cheap to expensive:
-    /// - Skips when nothing was written since the last build, the map is
-    ///   fresh, stopped, or there is no project root: the common no-op is a
-    ///   counter check plus an Instant comparison.
+    /// - Skips while the map is fresh, once stopped, or without a project
+    ///   root: the common no-op is an Instant comparison.
     /// - Per-file caches were already invalidated in record(), so a rewrite
-    ///   with the same mtime+size can't serve a stale parse; a failed rebuild
-    ///   keeps the old map and never breaks the run.
-    /// - A successful bash marks the map dirty too (git checkout, codegen):
-    ///   mtime/size catches those on the next collect, since no same-tick
-    ///   cache race is possible across processes.
-    /// - Past MAP_MAX_AGE, rebuilds even with no writes: the catch-all for
-    ///   edits outside the run (the editor, git). Incremental (only changed
-    ///   files re-parse) and a no-op when the ranking didn't move.
+    ///   with the same mtime+size can't serve a stale parse; mtime/size
+    ///   catches what commands changed. A failed rebuild keeps the old map
+    ///   and never breaks the run.
+    /// - Incremental (only changed files re-parse) and a no-op when the
+    ///   ranking didn't move.
     /// - Focus is recomputed from the latest chat (reads + writes) plus the
     ///   original request, so new files the run touched steer the ranking.
     /// - Identical output keeps the old string (no context churn, no log spam).
+    ///
     /// Returns true when the map text changed.
     async fn refresh_repo_map_if_needed(&mut self) -> Result<bool, String> {
         let Some(root) = self.root.clone() else {
             return Ok(false);
         };
-        if self.stopped() {
+        if self.stopped() || self.map_refreshed_at.elapsed() < MAP_MAX_AGE {
             return Ok(false);
         }
-        let dirty = self.map_writes_since_refresh > 0;
-        let aged = self.map_refreshed_at.elapsed() >= MAP_MAX_AGE;
-        if !dirty && !aged {
-            return Ok(false);
-        }
-        // Consume the counter first: a failed rebuild must not retry every turn.
-        self.map_writes_since_refresh = 0;
+        // Reset first: a failed rebuild must not retry every turn.
         self.map_refreshed_at = Instant::now();
         let recent = self.recent().await?;
         let touched = touched_paths(&recent);
@@ -2882,10 +2874,11 @@ fn repo_map_chars(context_tokens: Option<usize>) -> usize {
     (window * CHARS_PER_TOKEN / 50).clamp(1_500, 6_000)
 }
 
-/// A map older than this is rebuilt on the next turn even with no writes:
-/// the catch-all for edits outside the run (the editor, git). The rebuild
-/// is incremental (only changed files re-parse) and a no-op when the
-/// ranking didn't move, so idle long runs pay one cheap walk per interval.
+/// How old the map gets before it's rebuilt mid-run, with the run's changes
+/// and those made outside it (the editor, git); not sooner: a new map
+/// costs the prompt cache the request's part (refresh_repo_map_if_needed).
+/// The rebuild is incremental (only changed files re-parse) and a no-op
+/// when the ranking didn't move, so long runs pay one cheap walk per interval.
 const MAP_MAX_AGE: Duration = Duration::from_secs(120);
 
 /// Files the chat read or changed, latest last.

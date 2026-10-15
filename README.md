@@ -385,12 +385,16 @@ prompt, the tool schemas and the history only grow from one step to the
 next: trimming replaces and drops in batches, and once over the budget it
 cuts down to 85% of it and keeps that cut while the requests fit, so the
 cut moves once in several steps; a user message is sent the same way on
-every turn. What changes between steps (the repository map,
-the focus note, context notes) rides on the last message, after everything
-cacheable. On top of that, OpenAI gets a `prompt_cache_key` per chat and
+every turn. The repository map goes on the run's request, before its text:
+it changes only when the run rebuilds it, at most every two minutes, and
+moves on to the next request with the next run. What changes between steps
+(the focus note, context notes) rides on the last message, after everything
+cacheable. Nothing long goes there: the end of the request is where the
+model looks for what to do next, and a map there read as the start of the
+task. On top of that, OpenAI gets a `prompt_cache_key` per chat and
 OpenRouter gets `cache_control` breakpoints (Anthropic models need them):
 on the system prompt and on the latest message the next step sends
-unchanged, never on the last one, whose tail the next step drops.
+unchanged, never on the last one, whose notes the next step drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
 

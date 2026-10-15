@@ -965,12 +965,16 @@ fn history_sends_a_user_message_as_it_was_first_sent() {
     );
     assert_eq!(messages[0].full_chars, messages[0].text.chars().count());
     assert!(!messages[0].needs_body);
+    // What the user typed stays at hand, for the notes that quote it.
+    let typed: Vec<Option<&str>> = messages.iter().map(|m| m.typed.as_deref()).collect();
+    assert_eq!(typed, [Some("Fix it"), None, None]);
 
     // The current request is sent as the frontend sends it now, which is
     // that same stored form on a retry.
     let mut messages = messages;
     use_sent_content(&mut messages, Some("[context]\n\nThanks"));
     assert_eq!(messages[2].text, "[context]\n\nThanks");
+    assert_eq!(messages[2].typed.as_deref(), Some("Thanks"));
     assert_eq!(
         messages[0].text,
         "[Active editor context — file a.rs]\n\nFix it"

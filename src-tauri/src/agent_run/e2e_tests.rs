@@ -5075,7 +5075,7 @@ fn shared_messages(a: &Value, b: &Value) -> usize {
 }
 
 #[tokio::test]
-async fn the_request_ends_with_a_map_centred_on_the_request() {
+async fn the_request_carries_a_map_centred_on_it() {
     let h = harness(&[
         (
             "src/billing.rs",
@@ -5098,14 +5098,15 @@ async fn the_request_ends_with_a_map_centred_on_the_request() {
     .await;
     assert_eq!(h.run_end().await, "done");
     let request = seen.lock().unwrap()[0].clone();
-    // The map changes mid-run, so it isn't in the system prompt (which
-    // providers cache): it ends the request, after the user's message.
+    // The map is rebuilt as the project changes, so it isn't in the system
+    // prompt (the start of every request, which providers cache): it goes
+    // on the user's request, before its text, which ends the request.
     assert!(!system_prompt(&request).contains("## Repository map"));
     let tail = tail_text(&request);
-    assert!(tail.starts_with("Why is src/report.rs slow?"), "{tail}");
-    let map = &tail[tail
-        .find("## Repository map")
-        .expect("a map at the end of the request")..];
+    assert!(tail.starts_with("## Repository map\n"), "{tail}");
+    let map = tail
+        .strip_suffix("\n\nWhy is src/report.rs slow?")
+        .expect("the user's words end the request");
     let report = map
         .find("src/report.rs:")
         .expect("the file the request names");
@@ -5119,7 +5120,7 @@ async fn the_request_ends_with_a_map_centred_on_the_request() {
 }
 
 #[tokio::test]
-async fn the_map_refreshes_mid_run_after_a_write_without_moving_the_prefix() {
+async fn a_run_keeps_its_map_and_the_next_one_maps_what_it_wrote() {
     let h = harness(&[("src/a.rs", "pub fn alpha_one() {}\n")]).await;
     let (url, seen) = model(vec![
         Reply::Call {
@@ -5128,36 +5129,43 @@ async fn the_map_refreshes_mid_run_after_a_write_without_moving_the_prefix() {
             args: json!({ "path": "src/b.rs", "content": "pub fn beta_two_fresh() {}\n" }),
         },
         Reply::Text("Added it."),
+        Reply::Text("In src/b.rs."),
     ])
     .await;
     h.start(h.request(&url, Harness::send("Add beta"), quiet_permissions()))
         .await;
     assert_eq!(h.run_end().await, "done");
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Where is beta?"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
     let requests = seen.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2);
-    // The first turn's map can't know the new file; the second turn's must.
+    assert_eq!(requests.len(), 3);
+    // The run sends the map it started with: rebuilt, it would change the
+    // request, which the provider's prompt cache serves, so a rebuild waits
+    // until the map is two minutes old. Each step then repeats the whole of
+    // the one before it: the system prompt, the tools, the request with its
+    // map, the steps.
     let first = tail_text(&requests[0]);
-    assert!(first.contains("## Repository map"), "{first}");
+    assert!(first.starts_with("## Repository map\n"), "{first}");
+    assert!(first.ends_with("\n\nAdd beta"), "{first}");
     assert!(!first.contains("beta_two_fresh"), "{first}");
-    let second = tail_text(&requests[1]);
-    let map = &second[second
-        .find("## Repository map")
-        .expect("a refreshed map in the second turn")..];
-    assert!(map.contains("beta_two_fresh"), "{map}");
-
-    // The two-zone shape: the refreshed map changed nothing before the
-    // last message. The system prompt, the tools and every message but the
-    // previous request's last one are byte-identical, so a provider's
-    // prompt cache serves them.
     assert_eq!(system_prompt(&requests[0]), system_prompt(&requests[1]));
     assert_eq!(requests[0]["tools"], requests[1]["tools"]);
     let n = requests[0]["messages"].as_array().unwrap().len();
-    assert_eq!(shared_messages(&requests[0], &requests[1]), n - 1);
-    // The user's request is sent the same way on every step: only the map
-    // that rode on it moved to the new last message.
-    let user = &requests[1]["messages"][n - 1];
-    assert_eq!(user["role"], "user");
-    assert_eq!(user["content"], "Add beta");
+    assert_eq!(shared_messages(&requests[0], &requests[1]), n);
+    // And the step ends with the write's result, the step it works from.
+    let step = tail_text(&requests[1]);
+    assert!(step.starts_with("wrote "), "{step}");
+    assert!(!step.contains("## Repository map"), "{step}");
+
+    // The next run's map is built when it starts: it has the new file. The
+    // last request goes out as it was sent, without its map.
+    let next = tail_text(&requests[2]);
+    assert!(next.starts_with("## Repository map\n"), "{next}");
+    assert!(next.contains("beta_two_fresh"), "{next}");
+    assert!(next.ends_with("\n\nWhere is beta?"), "{next}");
+    assert_eq!(requests[2]["messages"][1]["content"], "Add beta");
 }
 
 #[tokio::test]

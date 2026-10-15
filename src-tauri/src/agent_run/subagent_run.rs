@@ -1067,7 +1067,6 @@ impl<R: Runtime> Run<R> {
             }
             self.writes_since_verify = true;
             self.writes_since_review = true;
-            self.map_writes_since_refresh += 1;
         }
     }
 
