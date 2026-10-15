@@ -62,6 +62,13 @@ pub enum Request {
     ChatDelete {
         dialog_id: String,
     },
+    /// Of these attachments, those the daemon has no file for, a row alone
+    /// not counting (K47). The others' grace period starts again, so its
+    /// cleanup keeps them until the message that names them is stored
+    /// (6.11). → `Ids`.
+    BlobsMissing {
+        ids: Vec<String>,
+    },
 
     // CLM: a chat's context file and its revisions.
     ClmStatus {
@@ -108,6 +115,8 @@ pub enum Response {
     Revisions(Vec<RevisionRow>),
     Text(String),
     HostInfo(HostInfo),
+    /// `BlobsMissing`: the attachments it lacks.
+    Ids(Vec<String>),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -151,4 +160,5 @@ replies! {
     Revisions => Vec<RevisionRow>,
     Text => String,
     HostInfo => HostInfo,
+    Ids => Vec<String>,
 }

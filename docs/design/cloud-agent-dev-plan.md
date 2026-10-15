@@ -1525,3 +1525,21 @@ Tasks add notes here when reality differs from the plan.
     feature (4.5).
   - A run that ended while its host was away is told as `runEnded` with
     outcome `unknown`, until results come (T05).
+- **P09, a message's files.**
+  - The upload before a remote `Send` (6.11's `ensure_blobs`) is part of
+    `Remote`'s start, and its progress goes to the sink the app gives it,
+    which emits `cloud-event`.
+  - A daemon names `attachments` among its `Welcome`'s features, and the
+    client sends a message's files only to one that does (4.5, K46).
+  - `PUT /blobs` stores through `store_attached`, which prepares an image
+    again. An image the app prepared comes out byte for byte the same; one
+    that doesn't is refused. The 20 MB limit is the body read to it, as
+    `/call` reads its own, not Axum's layer.
+  - The core finds no browser in this environment, so the screenshot test
+    uses a file only the daemon has, which another app of the same
+    computer sent. Its path is a screenshot's: the files a row names come
+    before the row.
+  - After Stop during an upload, the input gets its message back the way
+    it does for any send that fails (`ChatPanel.tsx`). The test checks
+    that the send fails and that the daemon stored and started nothing.
+    Cancelling the upload when the chat moves back comes with M07.

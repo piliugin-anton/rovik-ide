@@ -7,7 +7,7 @@ use crate::cli::VERSION;
 use crate::daemon::Daemon;
 use crate::session;
 use axum::body::{Body, Bytes};
-use axum::extract::{FromRequestParts, Request, State};
+use axum::extract::{FromRequestParts, Path, Request, State};
 use axum::http::header::{
     AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, SEC_WEBSOCKET_ACCEPT,
     SEC_WEBSOCKET_KEY, UPGRADE,
@@ -17,9 +17,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use rovik_protocol::{Fail, FailCode, Frame, MAX_CALL, PROTOCOL};
+use rovik_core::chat_db::attachments;
+use rovik_core::rt;
+use rovik_protocol::{Fail, FailCode, Frame, MAX_BLOB, MAX_CALL, PROTOCOL};
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
@@ -30,6 +31,7 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
         .route("/health", get(health))
         .route("/rpc", get(rpc))
         .route("/call", post(call))
+        .route("/blobs/{id}", get(blob).put(put_blob))
         .with_state(daemon)
 }
 
@@ -75,6 +77,71 @@ async fn call(
     };
     let res = daemon.answer(&computer, req).await;
     json(StatusCode::OK, &Frame::Reply { id, res })
+}
+
+/// An attachment's file (6.11), such as a screenshot a run took here, for
+/// the app to show.
+async fn blob(State(daemon): State<Arc<Daemon>>, _: Computer, Path(id): Path<String>) -> Response {
+    let data_dir = daemon.core.db.data_dir().to_path_buf();
+    match rt::spawn_blocking(move || attachments::read(&data_dir, &id)).await {
+        Ok(Some((mime, bytes))) => {
+            (StatusCode::OK, [(CONTENT_TYPE, mime)], Bytes::from(bytes)).into_response()
+        }
+        _ => refusal(
+            StatusCode::NOT_FOUND,
+            Fail::new(FailCode::BadRequest, "The server has no such file."),
+        ),
+    }
+}
+
+/// A file of a message about to be sent (6.11): it must be what its name
+/// says, its SHA-256, and it's stored as the chat input stores one, its
+/// type read from its bytes.
+async fn put_blob(
+    State(daemon): State<Arc<Daemon>>,
+    _: Computer,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
+    let too_large = || {
+        refusal(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Fail::new(
+                FailCode::TooLarge,
+                format!("A file takes {} MB at most.", MAX_BLOB >> 20),
+            ),
+        )
+    };
+    let declared = request
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok()?.parse::<usize>().ok());
+    if declared.is_some_and(|n| n > MAX_BLOB) {
+        return too_large();
+    }
+    let Ok(body) = axum::body::to_bytes(request.into_body(), MAX_BLOB).await else {
+        return too_large();
+    };
+    if attachments::id_of(&body) != id {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            Fail::new(FailCode::BadRequest, "The file doesn't match its name."),
+        );
+    }
+    match attachments::store_attached(&daemon.core.db, body.to_vec()).await {
+        Ok(stored) if stored.id == id => json(StatusCode::OK, &stored),
+        Ok(_) => refusal(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Fail::new(
+                FailCode::BadRequest,
+                "The image isn't one the app prepared: it changed when stored.",
+            ),
+        ),
+        Err(reason) => refusal(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Fail::new(FailCode::BadRequest, reason),
+        ),
+    }
 }
 
 /// The WebSocket of 4.1. tungstenite speaks it once the upgrade is done;
@@ -180,7 +247,7 @@ fn json(status: StatusCode, body: &impl serde::Serialize) -> Response {
 /// The socket, bound with mode 0600. A socket file left from an earlier
 /// daemon goes only once connecting to it fails: one that answers is a
 /// daemon still running.
-pub fn bind(path: &Path) -> Result<UnixListener, String> {
+pub fn bind(path: &std::path::Path) -> Result<UnixListener, String> {
     if path.exists() {
         if std::os::unix::net::UnixStream::connect(path).is_ok() {
             return Err(format!("A daemon already listens at {}.", path.display()));

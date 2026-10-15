@@ -35,5 +35,17 @@ pub const MAX_FRAME: usize = 1 << 20;
 /// The most a `POST /call` takes: a call too big for a frame (4.1).
 pub const MAX_CALL: usize = 64 << 20;
 
+/// The most a `PUT /blobs/<sha256>` takes: an attached PDF's 20 MB (6.11).
+pub const MAX_BLOB: usize = 20 << 20;
+
+/// What a daemon serves beyond what protocol 1 began with, named in its
+/// `Welcome` (4.5). A client checks for one before it relies on it.
+pub mod features {
+    /// A message's images and PDFs: `BlobsMissing`, `/blobs`, and starts
+    /// whose message names attachments, which a daemon without it would
+    /// send to the model without them (K46).
+    pub const ATTACHMENTS: &str = "attachments";
+}
+
 #[cfg(test)]
 mod tests;

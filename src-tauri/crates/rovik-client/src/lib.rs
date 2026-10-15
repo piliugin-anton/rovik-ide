@@ -24,4 +24,4 @@ pub use client::{Client, DaemonInfo, HostState, Identity, Incoming, Sink, CALL_T
 pub use connector::UnixConnector;
 pub use connector::{Connecting, Connector, Io, Stream};
 pub use hosts::Hosts;
-pub use remote::{ApprovalPolicy, Remote};
+pub use remote::{ApprovalPolicy, CloudEvent, CloudSink, Remote};

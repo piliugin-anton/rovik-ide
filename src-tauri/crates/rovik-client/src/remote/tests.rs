@@ -464,3 +464,54 @@ fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
         "what needs no approval still doesn't"
     );
 }
+
+/// K46, 4.5: a daemon that doesn't name the attachments feature would send
+/// the message to the model without its files: it isn't sent at all.
+#[tokio::test]
+async fn files_arent_sent_to_a_daemon_that_doesnt_take_them() {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let stored = attachments::store_attached(&app.core.db, b"%PDF-1.4\n%%EOF".to_vec())
+        .await
+        .unwrap();
+    let (remote, fake) = connected(&app).await;
+    remote.place("chat", HOST);
+    let send = StartKind::Send {
+        message: UserMessage {
+            id: "u1".into(),
+            content: "Read it".into(),
+            meta: None,
+            attachments: vec![stored.id],
+        },
+    };
+    let refused = remote.start(start("chat", send, None)).await.unwrap_err();
+    assert_eq!(refused.code, FailCode::Version);
+    assert!(refused
+        .message
+        .starts_with("test-server runs a Rovik too old"));
+    assert!(fake.requests.lock().unwrap().is_empty(), "nothing sent");
+}
+
+/// K44: a file the host can't send doesn't hold its row back: the row goes
+/// in with a row for the file, which requests say is no longer shown.
+#[tokio::test]
+async fn a_file_the_host_cant_send_leaves_its_row_without_it() {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let (remote, _fake) = connected(&app).await;
+    remote.place("chat", HOST);
+    let lost = "f".repeat(64);
+    let mut shot = message("t1", "tool", "Screenshot");
+    shot.tool_call_id = Some("c1".into());
+    shot.attachments = vec![lost.clone()];
+    let added = AgentEvent::MessagesAdded {
+        dialog_id: "chat".into(),
+        messages: vec![events::out_message("chat", 1, &shot, false)],
+    };
+    remote.receive(HOST, event(added)).await;
+    let rows = app.rows("chat").await;
+    assert_eq!(rows[0].attachments, [lost.clone()]);
+    let data = app.core.db.data_dir().to_path_buf();
+    assert!(attachments::file_for(&data, &lost).is_none());
+    assert_eq!(*app.witnessed.lock().unwrap(), [("t1".to_string(), true)]);
+}

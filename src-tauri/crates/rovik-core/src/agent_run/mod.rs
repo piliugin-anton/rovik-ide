@@ -616,6 +616,37 @@ pub async fn check_project(
     }
 }
 
+/// A message's files, once each, and only ones that are stored.
+pub async fn check_attachments(
+    db: &crate::chat_db::DbState,
+    message: &mut UserMessage,
+) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    message.attachments.retain(|id| seen.insert(id.clone()));
+    if message.attachments.len() > MAX_MESSAGE_ATTACHMENTS {
+        return Err(format!(
+            "A message can have {MAX_MESSAGE_ATTACHMENTS} attachments at most; this one has {}.",
+            message.attachments.len()
+        ));
+    }
+    if message.attachments.is_empty() {
+        return Ok(());
+    }
+    let ids = message.attachments.clone();
+    let missing = db
+        .read(move |c| crate::chat_db::attachments::missing(c, &ids))
+        .await?;
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(ATTACHMENT_GONE.into())
+    }
+}
+
+/// What a send says of a file it can no longer find.
+pub const ATTACHMENT_GONE: &str =
+    "A file attached to the message is no longer available. Remove it and attach it again.";
+
 /// A sent message as the chat stores it.
 pub fn stored_message(message: &UserMessage) -> NewMessage {
     NewMessage {
@@ -642,29 +673,9 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
     }
     let dialog_id = request.dialog_id.clone();
     check_project(db, &dialog_id, request.root.as_deref()).await?;
-    // A message's files, once each, and only ones that are stored.
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
-        let mut seen = std::collections::HashSet::new();
-        message.attachments.retain(|id| seen.insert(id.clone()));
-        if message.attachments.len() > MAX_MESSAGE_ATTACHMENTS {
-            return Err(format!(
-                "A message can have {MAX_MESSAGE_ATTACHMENTS} attachments at most; this one has {}.",
-                message.attachments.len()
-            ));
-        }
-        if !message.attachments.is_empty() {
-            let ids = message.attachments.clone();
-            let missing = db
-                .read(move |c| crate::chat_db::attachments::missing(c, &ids))
-                .await?;
-            if !missing.is_empty() {
-                return Err(
-                    "A file attached to the message is no longer available. Remove it and attach it again."
-                        .into(),
-                );
-            }
-        }
+        check_attachments(db, message).await?;
     }
     let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone())
     else {

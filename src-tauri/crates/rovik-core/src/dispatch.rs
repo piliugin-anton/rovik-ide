@@ -5,7 +5,7 @@
 //! elsewhere (`NotOwner`) comes with the chats' location (M01).
 
 use crate::agent_run;
-use crate::chat_db::api;
+use crate::chat_db::{api, attachments};
 use crate::clm;
 use crate::core::Core;
 use crate::workload;
@@ -82,6 +82,9 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         }
         Request::ChatDelete { dialog_id } => {
             api::chat_delete_dialog(core, dialog_id).await.map(done)
+        }
+        Request::BlobsMissing { ids } => {
+            attachments::blobs_missing(db, ids).await.map(Response::Ids)
         }
 
         Request::ClmStatus { dialog_id } => clm::status(db, vfs, dialog_id)

@@ -9,7 +9,7 @@ use crate::daemon::{Daemon, MIN_PROTOCOL};
 use crate::events::Published;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use rovik_protocol::{Fail, FailCode, Frame, MAX_FRAME, PROTOCOL};
+use rovik_protocol::{features, Fail, FailCode, Frame, MAX_FRAME, PROTOCOL};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -23,6 +23,8 @@ use tokio_tungstenite::WebSocketStream;
 
 /// How long a new connection has to say `Hello`.
 const HELLO_WAIT: Duration = Duration::from_secs(10);
+/// What this daemon serves beyond protocol 1's start (4.5).
+const FEATURES: &[&str] = &[features::ATTACHMENTS];
 /// Frames waiting for the writer. A connection whose events back up past
 /// this falls behind the live ones and is dropped.
 const QUEUE: usize = 256;
@@ -82,7 +84,7 @@ where
         min_protocol: MIN_PROTOCOL,
         daemon: format!("rovik-agentd {VERSION}"),
         boot: daemon.events.boot.clone(),
-        features: Vec::new(),
+        features: FEATURES.iter().map(|f| f.to_string()).collect(),
     };
     if send(&mut sink, &Out::Frame(welcome)).await.is_err() {
         return;

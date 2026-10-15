@@ -349,6 +349,9 @@ fn every_request_round_trips() {
             Request::ChatDelete {
                 dialog_id: "d".into(),
             },
+            Request::BlobsMissing {
+                ids: vec!["a".repeat(64), "b".repeat(64)],
+            },
             Request::ClmStatus {
                 dialog_id: "d".into(),
             },
@@ -441,6 +444,8 @@ fn every_response_round_trips() {
                 other_daemons: 2,
             }),
             Response::HostInfo(HostInfo::default()),
+            Response::Ids(vec!["a".repeat(64)]),
+            Response::Ids(Vec::new()),
         ],
     );
 }
@@ -671,6 +676,10 @@ fn a_reply_reads_as_its_requests_value() {
         Ok(Some("r".into()))
     );
     assert_eq!(String::try_from(Response::Text("t".into())), Ok("t".into()));
+    assert_eq!(
+        Vec::<String>::try_from(Response::Ids(vec!["a".into()])),
+        Ok(vec!["a".into()])
+    );
     let wrong = bool::try_from(Response::Done).unwrap_err();
     assert_eq!(wrong.code, FailCode::Internal);
     assert!(<()>::try_from(Response::Bool(true)).is_err());

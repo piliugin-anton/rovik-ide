@@ -48,6 +48,12 @@ pub fn run() {
             // Chats on hosts (6.1): their requests go to the host, and its
             // events come back through the core's sink.
             let remote = Remote::new(core.clone());
+            let window = app.handle().clone();
+            remote.on_cloud(Arc::new(move |event| {
+                if let Err(e) = window.emit(CLOUD_EVENT, &event) {
+                    eprintln!("cloud: could not send an event: {e}");
+                }
+            }));
             {
                 let _runtime = rt::handle().enter();
                 remote_chats::from_env(&remote);
@@ -267,6 +273,9 @@ fn attachment_response(
         None => not_found(),
     }
 }
+
+/// The hosts' own events, apart from the chats': connections and transfers.
+const CLOUD_EVENT: &str = "cloud-event";
 
 /// The core's events, to every window (src/lib/agentRuns.ts listens).
 struct WindowEvents(tauri::AppHandle);

@@ -7,18 +7,41 @@ use crate::connector::Connector;
 use crate::hosts::Hosts;
 use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest, OutMessage, Patch};
 use rovik_core::agent_run::subagent::Kind;
-use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest};
+use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest, UserMessage};
+use rovik_core::chat_db::attachments;
 use rovik_core::chat_db::store::{self, MessagePatch, NewChildDialog, NewMessage};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::permissions::Approver;
-use rovik_protocol::{Event, Fail, FailCode, Request, Response};
-use std::collections::{HashMap, HashSet};
+use rovik_protocol::{features, Event, Fail, FailCode, Request, Response};
+use serde::Serialize;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// The outcome told for a run that ended while its host was away: the
 /// client can't know it until results come (T05).
 const ENDED_AWAY: &str = "unknown";
+
+/// What the app tells the frontend about its hosts on `cloud-event`,
+/// apart from the chats' own events.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CloudEvent {
+    /// A message's files going up to its host before it's sent (6.11).
+    Uploading {
+        dialog_id: String,
+        message_id: String,
+        sent: u64,
+        total: u64,
+    },
+}
+
+/// Where `CloudEvent`s go.
+pub type CloudSink = Arc<dyn Fn(CloudEvent) + Send + Sync>;
 
 /// Who approves on a host while nobody is there (6.9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,6 +77,7 @@ pub struct Remote {
     hosts: Hosts,
     me: Weak<Remote>,
     state: Mutex<State>,
+    cloud: Mutex<Option<CloudSink>>,
 }
 
 #[derive(Default)]
@@ -69,6 +93,8 @@ struct State {
     /// their chats: a `Resync` in place of the announcement brings them
     /// to the mirror.
     sent: HashMap<String, (String, NewMessage)>,
+    /// The sends whose files are going up, by chat: Stop cancels one.
+    uploads: HashMap<String, oneshot::Sender<()>>,
 }
 
 impl Remote {
@@ -78,7 +104,17 @@ impl Remote {
             hosts: Hosts::default(),
             me: me.clone(),
             state: Mutex::new(State::default()),
+            cloud: Mutex::new(None),
         })
+    }
+
+    /// Where uploads' progress goes from now on.
+    pub fn on_cloud(&self, sink: CloudSink) {
+        *self.cloud.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
+
+    fn cloud(&self) -> Option<CloudSink> {
+        self.cloud.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -143,6 +179,13 @@ impl Remote {
         let Some(host) = self.host_of(dialog_id) else {
             return rovik_core::dispatch(&self.core, request).await;
         };
+        // Stop during a send's upload cancels the send (6.11).
+        if matches!(request, Request::AgentStop { .. }) {
+            if let Some(cancel) = self.lock().uploads.remove(dialog_id) {
+                let _ = cancel.send(());
+                return Ok(Response::Bool(true));
+            }
+        }
         let reply = self.client(&host)?.call(request.clone()).await?;
         if mirror_takes(&request) {
             if let Err(fail) = rovik_core::dispatch(&self.core, request).await {
@@ -202,6 +245,12 @@ impl Remote {
             self.policy(&host).apply(config);
         }
         self.leave_out_known_text(&mut request).await;
+        if let StartKind::Send { message } = &mut request.start {
+            if !message.attachments.is_empty() {
+                self.send_files(&host, &client, &request.dialog_id, message)
+                    .await?;
+            }
+        }
         let sent = match &request.start {
             StartKind::Send { message } => {
                 let row = (
@@ -242,6 +291,88 @@ impl Remote {
         if matches!(stored, Ok(Some(text)) if text == current) {
             request.current_user_content = None;
         }
+    }
+
+    /// A message's files go up before it (6.11): checked here as the host
+    /// would, kept here from cleanup (sending cleared the draft that kept
+    /// them), and those the host lacks uploaded, with progress on
+    /// `cloud-event`. Stop cancels it, and the message isn't sent.
+    async fn send_files(
+        &self,
+        host: &str,
+        client: &Client,
+        dialog_id: &str,
+        message: &mut UserMessage,
+    ) -> Result<(), Fail> {
+        let serves = |d: crate::DaemonInfo| d.features.iter().any(|f| f == features::ATTACHMENTS);
+        if client.daemon().is_some_and(|d| !serves(d)) {
+            return Err(Fail::new(
+                FailCode::Version,
+                format!(
+                    "{host} runs a Rovik too old to take attached files. Upgrade it, or send \
+                     the message without them."
+                ),
+            ));
+        }
+        agent_run::check_attachments(&self.core.db, message)
+            .await
+            .map_err(internal)?;
+        let ids = message.attachments.clone();
+        let renewed = ids.clone();
+        self.core
+            .db
+            .write(move |c| attachments::renew(c, &renewed))
+            .await
+            .map_err(internal)?;
+        let (cancel, cancelled) = oneshot::channel();
+        self.lock().uploads.insert(dialog_id.to_string(), cancel);
+        let uploaded = tokio::select! {
+            uploaded = self.upload(client, dialog_id, &message.id, ids) => uploaded,
+            Ok(()) = cancelled => Err(Fail::new(
+                FailCode::Internal,
+                "Stopped before the message's files were sent.",
+            )),
+        };
+        self.lock().uploads.remove(dialog_id);
+        uploaded
+    }
+
+    async fn upload(
+        &self,
+        client: &Client,
+        dialog_id: &str,
+        message_id: &str,
+        ids: Vec<String>,
+    ) -> Result<(), Fail> {
+        let missing: Vec<String> = client.request(Request::BlobsMissing { ids }).await?;
+        let data_dir = self.core.db.data_dir().to_path_buf();
+        let mut files = Vec::with_capacity(missing.len());
+        for id in missing {
+            let bytes = attachments::file_for(&data_dir, &id)
+                .and_then(|path| std::fs::read(path).ok())
+                .ok_or_else(|| Fail::new(FailCode::BadRequest, agent_run::ATTACHMENT_GONE))?;
+            files.push((id, bytes));
+        }
+        let total: u64 = files.iter().map(|(_, bytes)| bytes.len() as u64).sum();
+        let mut done = 0;
+        for (id, bytes) in files {
+            let len = bytes.len() as u64;
+            let (cloud, chat, message) =
+                (self.cloud(), dialog_id.to_string(), message_id.to_string());
+            let progress = move |sent: u64| {
+                if let Some(cloud) = &cloud {
+                    cloud(CloudEvent::Uploading {
+                        dialog_id: chat.clone(),
+                        message_id: message.clone(),
+                        sent: done + sent,
+                        total,
+                    });
+                }
+            };
+            client.put_blob(&id, bytes, progress).await?;
+            done += len;
+        }
+        Ok(())
     }
 
     /// What runs and waits, here and on every connected host (6.1).
@@ -356,6 +487,7 @@ impl Remote {
                         state.sent.remove(&m.id);
                     }
                 }
+                self.fetch_files(host, messages).await;
                 let rows: Vec<NewMessage> = messages.iter().map(events::stored_row).collect();
                 match self.mirror(dialog_id, rows).await {
                     // The frontend pages by the mirror's numbers.
@@ -428,6 +560,57 @@ impl Remote {
             _ => {}
         }
         self.core.emit(event);
+    }
+
+    /// The files the rows name that aren't here, such as a screenshot a
+    /// run took on the host, fetched before the rows are written: a row
+    /// can't get its files later (6.1). One the host can't send gets a row
+    /// without a file, and the rows go in all the same (K44).
+    async fn fetch_files(&self, host: &str, messages: &[OutMessage]) {
+        let named: BTreeSet<String> = messages
+            .iter()
+            .flat_map(|m| m.attachments.iter().cloned())
+            .collect();
+        if named.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = named.into_iter().collect();
+        let data_dir = self.core.db.data_dir().to_path_buf();
+        let asked = ids.clone();
+        let missing = self
+            .core
+            .db
+            .read(move |c| attachments::missing_files(c, &data_dir, &asked))
+            .await
+            .unwrap_or(ids);
+        let client = self.hosts.client(host);
+        for id in missing {
+            let fetched = match &client {
+                Some(client) => client.blob(&id).await.ok().flatten(),
+                None => None,
+            };
+            let stored = match fetched {
+                Some(bytes) if attachments::id_of(&bytes) == id => {
+                    match attachments::attachment_mime(&bytes) {
+                        Some(mime) => attachments::store(&self.core.db, bytes, mime).await.is_ok(),
+                        None => false,
+                    }
+                }
+                _ => false,
+            };
+            if !stored {
+                log::warn!("{host} couldn't send the file {id}");
+                let id = id.clone();
+                let added = self
+                    .core
+                    .db
+                    .write(move |c| attachments::add_unavailable(c, &id))
+                    .await;
+                if let Err(e) = added {
+                    log::warn!("the mirror's attachments: {e}");
+                }
+            }
+        }
     }
 
     /// Rows into the mirror, those it lacks: their `seq` there.

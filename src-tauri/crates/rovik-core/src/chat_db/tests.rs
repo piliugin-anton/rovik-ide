@@ -493,6 +493,50 @@ fn missing_attachments_are_named() {
     );
 }
 
+/// K47, K43: a row whose file is gone counts as missing, and the files
+/// that are there are kept from cleanup an hour more.
+#[test]
+fn files_a_peer_asks_for_are_missing_without_their_file_and_kept_with_it() {
+    let conn = db();
+    let dir = std::env::temp_dir().join(format!("chat-db-blobs-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(super::attachments::DIR)).unwrap();
+    let (kept, rowless, fileless) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+    for id in [&kept, &fileless] {
+        conn.execute(
+            "INSERT INTO attachments (id, mime, bytes, created_at) VALUES (?1, 'image/png', 1, 0)",
+            [id],
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join(super::attachments::DIR)
+            .join(format!("{kept}.png")),
+        b"x",
+    )
+    .unwrap();
+    let ids = [kept.clone(), rowless.clone(), fileless.clone()];
+    let missing = super::attachments::missing_files(&conn, &dir, &ids).unwrap();
+    assert_eq!(missing, [rowless.clone(), fileless.clone()]);
+
+    super::attachments::renew(&conn, std::slice::from_ref(&kept)).unwrap();
+    assert_eq!(
+        super::attachments::collect_garbage(&conn, &dir).unwrap(),
+        1,
+        "the file-less row goes; the renewed one stays"
+    );
+    assert!(super::attachments::file_for(&dir, &kept).is_some());
+
+    // One the other side couldn't send: a row, for the messages naming it.
+    super::attachments::add_unavailable(&conn, &rowless).unwrap();
+    assert!(
+        super::attachments::missing(&conn, std::slice::from_ref(&rowless))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(super::attachments::file_for(&dir, &rowless).is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn attachments_are_typed_by_their_bytes() {
     use super::attachments::attachment_mime;

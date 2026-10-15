@@ -71,12 +71,17 @@ pub fn file_for(data_dir: &Path, id: &str) -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
-/// Stores bytes (deduplicated by hash) and returns the attachment id.
-pub async fn store(db: &DbState, bytes: Vec<u8>, mime: &str) -> DbResult<String> {
-    let id: String = Sha256::digest(&bytes)
+/// An attachment's id: its bytes' SHA-256, in hex.
+pub fn id_of(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect();
+        .collect()
+}
+
+/// Stores bytes (deduplicated by hash) and returns the attachment id.
+pub async fn store(db: &DbState, bytes: Vec<u8>, mime: &str) -> DbResult<String> {
+    let id = id_of(&bytes);
     let path = db
         .data_dir()
         .join(DIR)
@@ -227,6 +232,55 @@ pub fn missing(conn: &Connection, ids: &[String]) -> DbResult<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// Of these ids, those with no file here: a row alone doesn't count, since
+/// cleanup or a hand may have removed the file (K47).
+pub fn missing_files(conn: &Connection, data_dir: &Path, ids: &[String]) -> DbResult<Vec<String>> {
+    let rowless = missing(conn, ids)?;
+    Ok(ids
+        .iter()
+        .filter(|id| rowless.contains(id) || file_for(data_dir, id).is_none())
+        .cloned()
+        .collect())
+}
+
+/// The attachments' grace period starts again: cleanup keeps them an hour
+/// more, until the message that names them is stored (6.11, K43).
+pub fn renew(conn: &Connection, ids: &[String]) -> DbResult<()> {
+    let mut stmt = conn
+        .prepare("UPDATE attachments SET created_at = ?2 WHERE id = ?1")
+        .map_err(err)?;
+    let now = now_ms();
+    for id in ids {
+        stmt.execute(params![id, now]).map_err(err)?;
+    }
+    Ok(())
+}
+
+/// `BlobsMissing` (6.11): the ids this side has no file for, and the
+/// others kept from cleanup until the message that names them is stored.
+pub async fn blobs_missing(db: &DbState, ids: Vec<String>) -> DbResult<Vec<String>> {
+    let data_dir = db.data_dir().to_path_buf();
+    db.write(move |c| {
+        let missing = missing_files(c, &data_dir, &ids)?;
+        let present: Vec<String> = ids.into_iter().filter(|id| !missing.contains(id)).collect();
+        renew(c, &present)?;
+        Ok(missing)
+    })
+    .await
+}
+
+/// A row without a file, for an attachment the other side couldn't send
+/// (K44): the messages that name it are stored all the same, and requests
+/// say the file is no longer shown, as they do for one removed here.
+pub fn add_unavailable(conn: &Connection, id: &str) -> DbResult<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO attachments (id, mime, bytes, created_at) VALUES (?1, ?2, 0, ?3)",
+        params![id, "application/octet-stream", now_ms()],
+    )
+    .map_err(err)?;
+    Ok(())
 }
 
 /// Images and PDFs that unsent chat input still shows (`composer_drafts`,

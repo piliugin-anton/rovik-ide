@@ -219,6 +219,26 @@ impl Client {
     async fn post_call(&self, call: String) -> Result<Response, Fail> {
         http::post_call(&*self.shared.connector, &self.shared.identity, call).await
     }
+
+    /// Sends an attachment's file (6.11), telling `progress` the bytes sent
+    /// so far.
+    pub async fn put_blob(
+        &self,
+        id: &str,
+        bytes: Vec<u8>,
+        progress: impl Fn(u64) + Send + Sync + 'static,
+    ) -> Result<(), Fail> {
+        let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
+        http::put_blob(connector, identity, id, bytes, Box::new(progress)).await
+    }
+
+    /// An attachment's file from the daemon, such as a screenshot a run
+    /// took there; none when it has none.
+    pub async fn blob(&self, id: &str) -> Result<Option<Vec<u8>>, Fail> {
+        let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
+        let bytes = http::get_blob(connector, identity, id).await?;
+        Ok(bytes.map(|b| b.to_vec()))
+    }
 }
 
 /// What the app says of a host it can't reach (4.1).
