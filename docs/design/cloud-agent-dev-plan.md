@@ -1543,3 +1543,43 @@ Tasks add notes here when reality differs from the plan.
     it does for any send that fails (`ChatPanel.tsx`). The test checks
     that the send fails and that the daemon stored and started nothing.
     Cancelling the upload when the chat moves back comes with M07.
+- **T01, shadow repositories.**
+  - A snapshot reads the work tree with one diff from the shadow's index,
+    which also keeps the stat data of the files that didn't change, and
+    applies the diff's changes itself, deletions included. `add_all`
+    would leave the stat data of an entry seeded from `HEAD` empty, and
+    every snapshot would hash every tracked file again; `update_all` isn't
+    needed.
+  - The index is brought in line with `HEAD` before every snapshot, not
+    only when the shadow is created. `HEAD` moves: a file committed later
+    though an ignore rule matches it would have stayed out. Entries `HEAD`
+    doesn't have that an ignore rule matches now come out, as `git add -A`
+    on a fresh index wouldn't take them. While the project's `HEAD` can't
+    be read, the index stays as it is.
+  - Besides `core.autocrlf` and `info/exclude`, the shadow takes the
+    project's `core.eol`, `core.excludesFile`, `core.attributesFile` and
+    `info/attributes`, which also decide what `git add` stores or a
+    checkout writes (T06). `core.safecrlf` is off: libgit2 refuses where
+    git only warns.
+  - Nested repositories and submodules stay out of the snapshot, not even
+    as gitlinks. The guards list both: the nested repositories the
+    snapshot left out, and `HEAD`'s gitlinks.
+  - The guards are one call, `Shadow::guards`, for M06's preflight to
+    show. The history is estimated as the size of the project's object
+    store. The CRLF scripts are files with an executable mode or a shell
+    extension.
+  - Choosing to send a project without its history deletes its snapshot
+    refs, so a snapshot taken before the choice doesn't bring the history
+    in through the chain.
+  - `HEAD`'s history can be read when the repository isn't shallow and the
+    shadow reads `HEAD`'s parents. When the project's object folder
+    changes, the shadow's index is cleared, since it may name objects only
+    the old store had.
+  - A shadow inside the folder it snapshots (a project at the home folder,
+    say) leaves itself out of its snapshots.
+  - libgit2 runs no filter drivers, so a Git LFS file is snapshotted with
+    its content, not its pointer, and shows as changed from `HEAD`.
+  - The tests are a test binary of their own, which sets libgit2's search
+    paths: the global excludes are a fixture's, and the machine's git
+    settings don't count. The hashed files are `Snapshot::hashed`, and a
+    test checks that the index keeps every file's stat data.

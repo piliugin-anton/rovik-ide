@@ -3886,6 +3886,7 @@ name = "rovik-client"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "git2",
  "http-body-util",
  "hyper",
  "hyper-util",

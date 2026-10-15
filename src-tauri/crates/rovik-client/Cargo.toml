@@ -18,6 +18,8 @@ hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util.workspace = true
 http-body-util.workspace = true
 tokio-tungstenite.workspace = true
+# Shadow repositories and the packs between them and a daemon (6.4).
+git2.workspace = true
 
 [dev-dependencies]
 # Cores on temporary folders, and the database read as the frontend would.

@@ -10,12 +10,14 @@
 //!   http.rs       `POST /call`
 //!   hosts.rs      each host's client and state
 //!   remote.rs     the app's remote chats: routing, starts and events (6.1)
+//!   shadow.rs     each project's shadow repository and its snapshots (6.4)
 
 mod client;
 mod connector;
 mod hosts;
 mod http;
 mod remote;
+pub mod shadow;
 #[cfg(test)]
 mod testing;
 
