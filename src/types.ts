@@ -355,6 +355,12 @@ export interface MessageStatus {
   since?: number;
 }
 
+/** Where a chat is when it isn't simply here: on a host, or moving there or back. */
+export type ChatPlace =
+  | { kind: 'host'; host: string }
+  | { kind: 'moving'; host: string }
+  | { kind: 'movingBack'; host: string };
+
 /** A chat as listed: metadata only, no messages. */
 export interface DialogSummary {
   id: string;
@@ -363,6 +369,8 @@ export interface DialogSummary {
   updatedAt: number;
   messageCount: number;
   preview?: string | null;
+  /** Absent for a chat on this computer. */
+  place?: ChatPlace;
 }
 
 export interface DialogCursor {

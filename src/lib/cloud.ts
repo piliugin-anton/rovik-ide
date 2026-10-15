@@ -4,11 +4,18 @@
 // after its result came in or landed, or its project synced, a chat's
 // move to a host or back, and a host's connection changing. And the moves'
 // commands (6.8).
+//
+// `cloud` keeps what the chats show of it (U02): the hosts' names and
+// connections, and each chat's move as it goes. `initCloud` starts it as
+// the app starts, and keeps the chats' places with it.
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { createStore } from 'solid-js/store';
 import type { StartRequest } from './agentRuns';
-import type { HostState } from './hosts';
+import { chatStore } from './chatStore';
+import type { HostState, Tone } from './hosts';
+import type { ChatPlace } from '../types';
 
 export type CloudEvent =
   | { type: 'uploading'; dialogId: string; messageId: string; sent: number; total: number }
@@ -85,4 +92,221 @@ export function barChanged(event: CloudEvent, dialogId: string | null | undefine
 export function onCloudEvent(handler: (event: CloudEvent) => void): () => void {
   const listening = listen<CloudEvent>('cloud-event', (e) => handler(e.payload));
   return () => void listening.then((stop) => stop());
+}
+
+/** A host as the chats show it: its name, and its connection once deployed. */
+export interface HostSummary {
+  id: string;
+  name: string;
+  deployed: boolean;
+  state?: HostState;
+}
+
+export const hostSummaries = () => invoke<HostSummary[]>('hosts_summaries');
+
+/** A chat's move as it goes, from `cloud-event`. */
+export interface MoveProgress {
+  /** "there": to `host`; "back": from it. */
+  direction: 'there' | 'back';
+  /** Known when this app started the move. */
+  host?: string;
+  /** Its latest step (`CloudEvent`'s `moving` and `movingBack`), or "starting". */
+  step: string;
+  message?: string;
+  /** The project's pack: the bytes sent so far. */
+  pushed?: number;
+}
+
+/** The steps a move ends with. */
+const ENDS = new Set(['moved', 'failed', 'cancelled']);
+
+/** Whether a move is over, or none was seen. */
+export const moveEnded = (move: MoveProgress | undefined) => !move || ENDS.has(move.step);
+
+interface CloudState {
+  hosts: HostSummary[];
+  /** Each chat's latest move this session: an ended one stays until the next. */
+  moves: Record<string, MoveProgress>;
+}
+
+const [cloud, setCloud] = createStore<CloudState>({ hosts: [], moves: {} });
+
+/** The hosts the chats know of, and the chats' moves. */
+export { cloud };
+
+let started: Promise<void> | null = null;
+
+/** Keeps `cloud`, and the chats' places, from `cloud-event`: once, as the app starts. */
+export function initCloud(): Promise<void> {
+  started ??= (async () => {
+    await listen<CloudEvent>('cloud-event', (e) => track(e.payload));
+    await refreshHosts();
+  })();
+  return started;
+}
+
+/** The hosts' names and connections again, as after the hosts page changed them. */
+export async function refreshHosts(): Promise<void> {
+  try {
+    setCloud('hosts', await hostSummaries());
+  } catch (err) {
+    console.error('Hosts unavailable:', err);
+  }
+}
+
+function track(event: CloudEvent) {
+  switch (event.type) {
+    case 'host':
+      setCloud('hosts', (h) => h.id === event.host, 'state', event.state);
+      return;
+    case 'moving':
+    case 'movingBack': {
+      const direction = event.type === 'moving' ? 'there' : 'back';
+      const was = cloud.moves[event.dialogId];
+      const same = was?.direction === direction && !ENDS.has(was.step);
+      setCloud('moves', event.dialogId, {
+        direction,
+        host: same ? was.host : undefined,
+        step: event.step,
+        message: event.message,
+        pushed: same ? was.pushed : undefined,
+      });
+      // Where the move puts the chat, as it starts and once it's over.
+      if (event.step === 'pausing' || ENDS.has(event.step)) {
+        void chatStore.refreshPlace(event.dialogId);
+      }
+      return;
+    }
+    case 'pushing':
+      if (!moveEnded(cloud.moves[event.dialogId])) {
+        setCloud('moves', event.dialogId, 'pushed', event.sent);
+      }
+      return;
+  }
+}
+
+/**
+ * Moves the chat to `host`, or back from it: read-only until the move ends.
+ * Resolves once it has; a rejection's reason is the move's.
+ */
+export async function startMove(
+  dialogId: string,
+  direction: 'there' | 'back',
+  host: string,
+  start: StartRequest | null
+): Promise<void> {
+  setCloud('moves', dialogId, {
+    direction,
+    host,
+    step: 'starting',
+    message: undefined,
+    pushed: undefined,
+  });
+  chatStore.setPlace(dialogId, { kind: direction === 'there' ? 'moving' : 'movingBack', host });
+  try {
+    if (direction === 'there') await moveChat(dialogId, host, start);
+    else await moveBack(dialogId, start);
+  } catch (err) {
+    // Refused before it began: no step said so.
+    if (!ENDS.has(cloud.moves[dialogId]?.step ?? '')) {
+      setCloud('moves', dialogId, { step: 'failed', message: String(err) });
+    }
+    throw err;
+  } finally {
+    await chatStore.refreshPlace(dialogId);
+  }
+}
+
+/** A host's name, or its id when this app doesn't know it. */
+export function hostName(id: string, hosts: HostSummary[]): string {
+  return hosts.find((h) => h.id === id)?.name ?? id;
+}
+
+/** What the chat's header says of where it is. */
+export function placeLabel(
+  place: ChatPlace | undefined,
+  hosts: HostSummary[]
+): { label: string; tone: Tone; title: string } {
+  if (!place) {
+    return { label: 'This computer', tone: 'muted', title: 'This chat runs on this computer.' };
+  }
+  const name = hostName(place.host, hosts);
+  const readOnly = 'It’s read-only until the move ends.';
+  switch (place.kind) {
+    case 'moving':
+      return {
+        label: `Moving to ${name}…`,
+        tone: 'warn',
+        title: `This chat is moving to ${name}. ${readOnly}`,
+      };
+    case 'movingBack':
+      return {
+        label: `Moving back from ${name}…`,
+        tone: 'warn',
+        title: `This chat is moving back from ${name}. ${readOnly}`,
+      };
+    case 'host':
+      switch (hosts.find((h) => h.id === place.host)?.state) {
+        case 'ready':
+          return {
+            label: name,
+            tone: 'ok',
+            title: `This chat runs on ${name}, and goes on while this computer is away.`,
+          };
+        case 'offline':
+          return {
+            label: `${name} (offline)`,
+            tone: 'error',
+            title: `This chat is on ${name}, which can’t be reached now. What it does there shows when ${name} is back.`,
+          };
+        case 'version-mismatch':
+          return {
+            label: `${name} (needs a newer app)`,
+            tone: 'error',
+            title: `${name} serves only newer versions of this app: update it to reach this chat.`,
+          };
+        default:
+          return { label: name, tone: 'warn', title: `Connecting to ${name}…` };
+      }
+  }
+}
+
+/** Why the chat can't change now, if it can't: a moving chat is read-only. */
+export function readOnlyReason(place: ChatPlace | undefined, hosts: HostSummary[]): string | null {
+  if (place?.kind === 'moving') {
+    return `This chat is moving to ${hostName(place.host, hosts)}: it’s read-only until the move ends.`;
+  }
+  if (place?.kind === 'movingBack') {
+    return `This chat is moving back from ${hostName(place.host, hosts)}: it’s read-only until the move ends.`;
+  }
+  return null;
+}
+
+const THERE_STEPS: Record<string, string> = {
+  starting: 'Starting…',
+  pausing: 'Pausing its run at a safe point…',
+  pushing: 'Sending the project…',
+  uploading: 'Sending the files its messages name…',
+  importing: 'Handing the chat over…',
+  moved: 'Moved.',
+  failed: 'The move failed.',
+  cancelled: 'The move was cancelled: the chat is still on this computer.',
+};
+
+const BACK_STEPS: Record<string, string> = {
+  starting: 'Starting…',
+  pausing: 'Pausing its run at a safe point…',
+  fetching: 'Fetching its latest result…',
+  releasing: 'Asking the server to let it go…',
+  pulling: 'Bringing its messages back…',
+  landing: 'Bringing its changes back…',
+  moved: 'Back on this computer.',
+  failed: 'The move back failed.',
+  cancelled: 'The move back was cancelled: the chat is still on the server.',
+};
+
+/** A move's latest step, in words. */
+export function moveStepLabel(move: MoveProgress): string {
+  const steps = move.direction === 'there' ? THERE_STEPS : BACK_STEPS;
+  return steps[move.step] ?? move.step;
 }

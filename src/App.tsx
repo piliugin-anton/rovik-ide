@@ -90,6 +90,7 @@ import {
   clearVfsSettingsRequest,
 } from './lib/virtualFilesStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
+import { initCloud } from './lib/cloud';
 import AiSettingsModal from './components/AiSettingsModal';
 import {
   appSettingsPage,
@@ -115,6 +116,8 @@ export default function App() {
   // Agent runs live in the backend: follow them from the start, whichever
   // sidebar tab is open (approvals show in the editor too).
   onMount(() => void initAgentRuns());
+  // The cloud hosts' connections and the chats' moves, likewise.
+  onMount(() => void initCloud());
 
   // Load last opened project on startup
   onMount(async () => {

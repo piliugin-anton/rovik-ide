@@ -148,6 +148,8 @@ export const chatApi = {
    * loaded again after.
    */
   resyncDialog: (dialogId: string) => invoke<void>('chat_resync_dialog', { dialogId }),
+  /** One chat's summary as it is now: where it is after a move. */
+  getDialog: (dialogId: string) => invoke<DialogSummary | null>('chat_get_dialog', { dialogId }),
 
   /** Searches one project's chats (`projectId` null: the chats with no project). */
   search: (query: string, projectId: string | null, limit = 50) =>

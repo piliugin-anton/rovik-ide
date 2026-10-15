@@ -97,6 +97,18 @@ pub struct HostDetails {
     pub app_version: String,
 }
 
+/// A host as the chats show it: its name, and its connection once it's
+/// deployed.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostSummary {
+    pub id: String,
+    pub name: String,
+    pub deployed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<HostState>,
+}
+
 /// A deploy's, an upgrade's or a removal's failure, as the page takes it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(
@@ -300,6 +312,20 @@ impl HostsPage {
             auth,
             host_key: host.host_key.clone(),
         })
+    }
+
+    /// The hosts' names and connections, for the chats (U02, U03): no
+    /// secret is read for them.
+    pub fn summaries(&self) -> Result<Vec<HostSummary>, String> {
+        let settings = self.settings()?;
+        let states: HashMap<String, HostState> = self.remote.states().into_iter().collect();
+        let summaries = settings.hosts.into_iter().map(|host| HostSummary {
+            state: states.get(&host.id).copied(),
+            deployed: matches!(host.deploy, DeployState::Deployed { .. }),
+            id: host.id,
+            name: host.name,
+        });
+        Ok(summaries.collect())
     }
 
     /// The hosts, with their connections, their chats and which secrets

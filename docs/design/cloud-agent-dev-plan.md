@@ -2509,3 +2509,40 @@ Tasks add notes here when reality differs from the plan.
     drain before an upgrade (R02); signed releases (B02). The manual check
     against a real server (test, deploy with and without sudo, unlock,
     the administrator's view) is still to do.
+- **U02, location and moving.**
+  - `DialogSummary.place` says where a chat is when it isn't here: on a
+    host, moving there, or moving back (a move back's `cloud_moves` row
+    before `forgetting`), read in the same query as the summary.
+    `chat_get_dialog` reads one chat's summary again.
+  - `lib/cloud.ts` keeps `cloud`: the hosts' names and connections
+    (`hosts_summaries`, which reads no secret) and each chat's move as
+    `cloud-event` tells it. The app starts it, and the hosts page
+    refreshes its hosts. A move's first step and its end read the chat's
+    place again.
+  - The chat header's chip (`ChatLocation`) says "This computer", the
+    host's name, "(offline)" or "(needs a newer app)", or "Moving to …" and
+    "Moving back from …". It shows once there is a host, or while the chat
+    is on one. Pressed, it opens the chat's menu: "Move to <host>…" for
+    each deployed host (off while it isn't connected), "Set up a cloud
+    host…" when there's none, "Move back to this computer…" and "Re-sync
+    this chat" for a chat on a host, and "Cancel move" while a move goes,
+    as after a restart with its host away.
+  - The move dialog (`MoveChatDialog`) shows the preflight: what moves,
+    with the files its messages name and their size; what will wait there
+    for the user, from the permissions with the host's policy; CLM
+    becoming trimming; "Redo sequentially" lost; the project's notes; and
+    the keys notice. A chat that can't move now gets the reason instead.
+    Then come the steps, the bytes of the project's push, "Cancel move"
+    while it goes, and how it ended; closing the dialog leaves the move
+    going. A move back has no preflight: the dialog says what comes back
+    and that it can't be cancelled once the host lets the chat go.
+  - The move's start request is a Continue's, built once the chat's queued
+    writes are stored, so a run paused for the move picks up after it.
+  - A moving chat is read-only: nothing can be typed, pasted or dropped
+    into its input, Send and Attach are off, its messages offer no Retry,
+    Continue, Run checks or Implement, and no run starts in it (with a
+    notice saying why). What its run waits on can still be answered, and
+    Stop still stops it, as M06 allows.
+  - Not done here: the chat list's badges (U03), the guards on writes to
+    remote chats (U04), and the manual check of a move and a move back on
+    a real host.

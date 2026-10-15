@@ -6,7 +6,9 @@
 use rovik_client::connection_test::Step;
 use rovik_client::deploy::{Removal, SetupRun};
 use rovik_client::host_settings::Host;
-use rovik_client::hosts_page::{DeployFailure, HostDetails, HostSecrets, HostsList, HostsPage};
+use rovik_client::hosts_page::{
+    DeployFailure, HostDetails, HostSecrets, HostSummary, HostsList, HostsPage,
+};
 use rovik_client::ApprovalPolicy;
 use rovik_protocol::Secret;
 use serde::Serialize;
@@ -27,6 +29,12 @@ struct TestStep {
 #[tauri::command]
 pub async fn hosts_list(page: State<'_, Arc<HostsPage>>) -> Result<HostsList, String> {
     page.list().await
+}
+
+/// The hosts' names and connections, for the chats.
+#[tauri::command]
+pub async fn hosts_summaries(page: State<'_, Arc<HostsPage>>) -> Result<Vec<HostSummary>, String> {
+    page.summaries()
 }
 
 /// Adds or changes a host, and its secrets: none leaves one as it is, an

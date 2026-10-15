@@ -3,7 +3,9 @@
 //! main thread.
 
 use super::search::{self, SearchHit};
-use super::store::{self, Cursor, DialogPage, MessagePage, MessagePatch, NewDialog, NewMessage};
+use super::store::{
+    self, Cursor, DialogPage, DialogSummary, MessagePage, MessagePatch, NewDialog, NewMessage,
+};
 use super::{attachments, projects, DbState};
 use crate::core::Core;
 
@@ -27,6 +29,14 @@ pub async fn chat_list_dialogs(
 /// The project a folder is (chat_db/projects.rs), with a suggestion when it
 /// looks like a copy or a moved project. In two steps around the git
 /// fingerprint, which walks the history: off the database thread.
+/// One chat's summary as the list shows it, as it is now.
+pub async fn chat_get_dialog(
+    db: &DbState,
+    dialog_id: String,
+) -> Result<Option<DialogSummary>, String> {
+    db.read(move |c| store::get_dialog(c, &dialog_id)).await
+}
+
 pub async fn chat_open_project(db: &DbState, root: String) -> Result<projects::Opened, String> {
     let path = std::path::PathBuf::from(&root);
     let resolve_path = path.clone();

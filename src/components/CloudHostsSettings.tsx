@@ -25,7 +25,7 @@ import {
   Switch,
 } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
-import { onCloudEvent } from '../lib/cloud';
+import { onCloudEvent, refreshHosts } from '../lib/cloud';
 import { formatBytes, plural } from '../lib/textUtils';
 import {
   addressOf,
@@ -103,6 +103,8 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
     } catch (err) {
       setError(String(err));
     }
+    // The chats' menus offer the hosts as they are now.
+    void refreshHosts();
   }
   onMount(refresh);
   // A host's connection changing shows at once.

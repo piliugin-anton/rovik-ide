@@ -8664,3 +8664,140 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   overflow-wrap: anywhere;
   user-select: text;
 }
+
+/* Where the open chat is, and its menu (ChatLocation.tsx) */
+
+.chat-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 45%;
+  margin-left: auto;
+  padding: 2px 8px;
+  background: var(--bg-control);
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-location:hover {
+  background: var(--bg-control-hover);
+  color: var(--fg);
+}
+
+.chat-location-dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+}
+
+.chat-location.ok .chat-location-dot {
+  background: var(--success);
+}
+
+.chat-location.warn .chat-location-dot {
+  background: var(--warning);
+}
+
+.chat-location.error .chat-location-dot {
+  background: var(--error);
+}
+
+.chat-location.error {
+  color: var(--error);
+}
+
+.chat-location-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-location-caret {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.chat-location-menu .context-menu-icon {
+  display: none;
+}
+
+.chat-location-menu .context-menu-item.disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.chat-location-menu .context-menu-item.disabled:hover {
+  background: none;
+}
+
+/* Moving a chat to a host or back (MoveChatDialog.tsx) */
+
+.move-chat-dialog {
+  width: 440px;
+}
+
+.move-chat-section {
+  margin-top: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+.move-chat-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.move-chat-note,
+.move-chat-keys {
+  margin-top: 8px;
+}
+
+.move-chat-keys {
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border-radius: 4px;
+}
+
+.move-chat-progress {
+  margin-top: 8px;
+}
+
+.move-chat-step {
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.move-chat-step.done {
+  color: var(--success);
+}
+
+.move-chat-step.failed {
+  color: var(--error);
+}
+
+.move-chat-bytes {
+  color: var(--fg-dim);
+}
+
+.move-chat-reason {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}

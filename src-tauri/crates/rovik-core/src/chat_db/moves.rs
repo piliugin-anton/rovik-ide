@@ -261,7 +261,7 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<CloudMove> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat_db::store::{self, NewChildDialog, NewDialog};
+    use crate::chat_db::store::{self, NewChildDialog, NewDialog, Place};
     use crate::chat_db::{mirror, schema};
 
     fn db() -> Connection {
@@ -387,5 +387,33 @@ mod tests {
         assert!(lock(&mut conn, "chat", "server", "m3").is_err());
         forget(&conn, "chat").unwrap();
         lock(&mut conn, "chat", "server", "m3").unwrap();
+    }
+
+    #[test]
+    fn the_list_shows_where_a_chat_is_as_it_moves() {
+        let mut conn = db();
+        let place = |conn: &Connection| {
+            let one = store::get_dialog(conn, "chat").unwrap().unwrap().place;
+            let page = store::list_dialogs(conn, None, None, 10).unwrap();
+            let listed = page.items.into_iter().find(|d| d.id == "chat").unwrap();
+            assert_eq!(listed.place, one, "the list and the one chat agree");
+            one
+        };
+        let server = || "server".to_string();
+        assert_eq!(place(&conn), None);
+        lock(&mut conn, "chat", "server", "m1").unwrap();
+        assert_eq!(place(&conn), Some(Place::Moving { host: server() }));
+        flip(&mut conn, "chat", "server", 42).unwrap();
+        assert_eq!(place(&conn), Some(Place::Host { host: server() }));
+        lock_back(&mut conn, "chat", "server", "b1").unwrap();
+        assert_eq!(place(&conn), Some(Place::MovingBack { host: server() }));
+        step(&conn, "chat", RELEASED).unwrap();
+        assert_eq!(place(&conn), Some(Place::MovingBack { host: server() }));
+        flip_back(&mut conn, "chat").unwrap();
+        assert_eq!(place(&conn), None, "here, its host yet to forget it");
+        // A cancelled move whose host may have the chat leaves it here.
+        lock(&mut conn, "chat", "other", "m2").unwrap();
+        cancel(&mut conn, "chat").unwrap();
+        assert_eq!(place(&conn), None);
     }
 }

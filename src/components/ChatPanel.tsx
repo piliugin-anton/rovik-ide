@@ -65,7 +65,8 @@ import {
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import { overlayStatus } from '../lib/overlay';
-import { barChanged, onCloudEvent } from '../lib/cloud';
+import { barChanged, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
+import ChatLocation from './ChatLocation';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
   dismissChecklist,
@@ -90,6 +91,7 @@ import {
   toolNotes,
   type AgentConfig,
   type StartKind,
+  type StartRequest,
 } from '../lib/agentRuns';
 import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
 import ModelPicker from './ModelPicker';
@@ -1724,6 +1726,7 @@ export default function ChatPanel(props: ChatProps) {
    */
   function handleComposerPaste(e: ClipboardEvent) {
     e.preventDefault();
+    if (readOnly()) return;
     const data = e.clipboardData;
     const copied = pastedSegments(data);
     if (copied) {
@@ -1995,7 +1998,7 @@ export default function ChatPanel(props: ChatProps) {
    */
   async function attachFiles(files: Blob[]) {
     const container = inputTextareaRef;
-    if (!container) return;
+    if (!container || readOnly()) return;
     const unsupported: string[] = [];
     const known = files.flatMap((file) => {
       const like = { name: fileName(file), type: file.type };
@@ -2180,6 +2183,7 @@ export default function ChatPanel(props: ChatProps) {
    */
   async function pasteFromMenu() {
     closeInputMenu();
+    if (readOnly()) return;
     focusComposerAt(composerRange());
     if (document.queryCommandSupported('paste') && document.execCommand('paste')) return;
     await pasteFromClipboard();
@@ -2299,6 +2303,10 @@ export default function ChatPanel(props: ChatProps) {
 
   /** Same for drag-and-drop of selected text. */
   function handleComposerDrop(e: DragEvent) {
+    if (readOnly()) {
+      e.preventDefault();
+      return;
+    }
     const text = e.dataTransfer?.getData('text/plain');
     if (!text) return;
 
@@ -2616,6 +2624,11 @@ export default function ChatPanel(props: ChatProps) {
   ): Promise<boolean> {
     const profile = activeProfile();
     if (!profile) return false;
+    const moving = readOnlyReason(summaryOf(dialogId)?.place, cloud.hosts);
+    if (moving) {
+      notify({ title: 'This chat is moving', message: moving, timeout: 6000 });
+      return false;
+    }
     listController?.followLatest();
     try {
       await store.flush();
@@ -2643,6 +2656,37 @@ export default function ChatPanel(props: ChatProps) {
       });
       return false;
     }
+  }
+
+  /** A chat's summary: the open one's, or the list's. */
+  function summaryOf(dialogId: string) {
+    const active = store.state.active;
+    return active?.id === dialogId ? active : store.state.list.items.find((d) => d.id === dialogId);
+  }
+
+  /** Why the open chat can't change now: one that's moving is read-only (U02). */
+  const readOnly = () => readOnlyReason(activeDialog()?.place, cloud.hosts);
+
+  /**
+   * How a Continue would start `dialogId`, once what's queued for it is
+   * stored: a move's run picks up with it, on its host or back here.
+   */
+  async function moveStart(dialogId: string): Promise<StartRequest | null> {
+    await store.flush();
+    const profile = activeProfile();
+    if (!profile) return null;
+    return {
+      dialogId,
+      start: { kind: 'continueRun' },
+      profile,
+      options: reasoningOptions(profile),
+      mode: chatMode(),
+      contextMode: ensureContextMode(dialogId),
+      root: props.rootPath(),
+      currentUserContent: lastUserWireContent(dialogId),
+      localDate: localDate(),
+      config: agentConfig(),
+    };
   }
 
   /** Sends a user message (shown at once; the run stores it first thing). */
@@ -2954,6 +2998,7 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   async function handleSend() {
+    if (readOnly()) return;
     // A question is waiting: what's typed is the answer, not a new request.
     const waiting = activeDialogId() ? pendingQuestionsIn(activeDialogId()!) : undefined;
     if (waiting) {
@@ -3565,6 +3610,20 @@ export default function ChatPanel(props: ChatProps) {
           {title()}
         </span>
 
+        <Show when={activeDialog()} keyed>
+          {(dialog) => (
+            <ChatLocation
+              dialog={dialog}
+              startFor={moveStart}
+              onResynced={(id) => {
+                const open = summaryOf(id);
+                if (open && store.state.activeId === id)
+                  void store.openChat(open, { reload: true });
+              }}
+            />
+          )}
+        </Show>
+
         <div class="chat-controls">
           <button class="icon-button" onClick={() => startNewChat()} title="New chat">
             ＋
@@ -3640,6 +3699,7 @@ export default function ChatPanel(props: ChatProps) {
         onOpenProjectChecks={() => openAppSettings('project')}
         planMessageId={planMessageId()}
         onImplementPlan={implementPlan}
+        readOnly={!!readOnly()}
       />
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
@@ -3692,7 +3752,8 @@ export default function ChatPanel(props: ChatProps) {
           <div
             ref={inputTextareaRef as unknown as HTMLDivElement}
             class="chat-input-contenteditable"
-            contenteditable
+            contenteditable={readOnly() ? 'false' : 'true'}
+            aria-readonly={!!readOnly()}
             onInput={(e) =>
               handleComposerInput(
                 e.currentTarget,
@@ -3716,13 +3777,15 @@ export default function ChatPanel(props: ChatProps) {
             onKeyDown={handleKeyDown}
             onContextMenu={handleComposerContextMenu}
             data-placeholder={
-              !activeProfile()
-                ? 'Add a model in settings first'
-                : waitingQuestion()
-                  ? 'Answer the question above, or type your own answer…'
-                  : chatMode() === 'plan'
-                    ? 'Describe what to plan…'
-                    : 'Message the model...'
+              readOnly()
+                ? readOnly()!
+                : !activeProfile()
+                  ? 'Add a model in settings first'
+                  : waitingQuestion()
+                    ? 'Answer the question above, or type your own answer…'
+                    : chatMode() === 'plan'
+                      ? 'Describe what to plan…'
+                      : 'Message the model...'
             }
           />
 
@@ -3781,7 +3844,7 @@ export default function ChatPanel(props: ChatProps) {
             <button
               type="button"
               class="chat-attach-button"
-              disabled={!activeProfile() || !activeDialog()}
+              disabled={!activeProfile() || !activeDialog() || !!readOnly()}
               title="Attach images, PDFs or text files"
               aria-label="Attach files"
               // The input keeps its focus and caret: the files go there.
@@ -3818,6 +3881,7 @@ export default function ChatPanel(props: ChatProps) {
                   disabled={
                     !activeProfile() ||
                     !activeDialog() ||
+                    !!readOnly() ||
                     (!input().trim() && referencedFiles().length === 0 && attachmentCount() === 0)
                   }
                   class="chat-send-button"

@@ -98,6 +98,8 @@ export default function MessageList(props: {
   /** The finished Plan-mode reply that gets "Implement this plan". */
   planMessageId?: string | null;
   onImplementPlan?: () => void;
+  /** The chat can't change now (it's moving): no Retry, Continue or Implement. */
+  readOnly?: boolean;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let innerRef: HTMLDivElement | undefined;
@@ -124,7 +126,7 @@ export default function MessageList(props: {
    */
   const isLatest = (m: ChatMessage) => {
     const list = messages();
-    return !props.sending && list[list.length - 1]?.id === m.id;
+    return !props.sending && !props.readOnly && list[list.length - 1]?.id === m.id;
   };
   const requestUndelivered = () => {
     const list = messages();
@@ -1299,7 +1301,7 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
-                <Show when={props.planMessageId === m.id}>
+                <Show when={props.planMessageId === m.id && !props.readOnly}>
                   <div class="chat-plan-actions">
                     <button
                       type="button"

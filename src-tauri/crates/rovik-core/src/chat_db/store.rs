@@ -1,6 +1,7 @@
 //! Chat data operations. Plain functions on a `Connection`, so they can be
 //! tested directly; `commands.rs` runs them on the writer thread or a reader.
 
+use super::location::Location;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,6 +53,21 @@ pub struct DialogSummary {
     pub updated_at: i64,
     pub message_count: i64,
     pub preview: Option<String>,
+    /// Where it is, when it isn't simply here (6.3, 6.8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<Place>,
+}
+
+/// Where a listed chat is when it isn't simply here.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Place {
+    /// On this host: its rows here are a mirror of the host's.
+    Host { host: String },
+    /// Moving to this host.
+    Moving { host: String },
+    /// Moving back here from this host.
+    MovingBack { host: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -161,6 +177,7 @@ pub struct MessagePage {
  */
 
 fn dialog_from_row(r: &Row) -> rusqlite::Result<DialogSummary> {
+    let location: Option<String> = r.get(6)?;
     Ok(DialogSummary {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -168,10 +185,29 @@ fn dialog_from_row(r: &Row) -> rusqlite::Result<DialogSummary> {
         updated_at: r.get(3)?,
         message_count: r.get(4)?,
         preview: r.get(5)?,
+        place: place_of(location.as_deref(), r.get(7)?),
     })
 }
 
-const DIALOG_COLUMNS: &str = "id, title, created_at, updated_at, message_count, preview";
+/// A chat's place, from its location and the host a move back going now
+/// leaves (`moves`: until its flip, the chat is still on that host).
+fn place_of(location: Option<&str>, leaving: Option<String>) -> Option<Place> {
+    if let Some(host) = leaving {
+        return Some(Place::MovingBack { host });
+    }
+    match Location::parse(location) {
+        Location::Here | Location::Released => None,
+        Location::Moving(host) => Some(Place::Moving { host }),
+        Location::Host(host) => Some(Place::Host { host }),
+    }
+}
+
+/// The summary's columns: the chat's own, its location, and the host a
+/// move back going now leaves (`moves::BACK`, before `FORGETTING`).
+const DIALOG_COLUMNS: &str =
+    "id, title, created_at, updated_at, message_count, preview, location, \
+     (SELECT host FROM cloud_moves m WHERE m.dialog_id = dialogs.id \
+      AND m.direction = 'back' AND m.step NOT IN ('forgetting', 'deleted'))";
 
 /// A project's chats, newest first (`project` None: the chats with no
 /// project); keyset paging so deep pages cost the same as the first.

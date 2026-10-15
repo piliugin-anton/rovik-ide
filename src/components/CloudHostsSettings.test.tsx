@@ -125,7 +125,7 @@ let disposePage = () => {};
 async function hostsPage(list: HostsList, answers: typeof backend = {}): Promise<Page> {
   disposePage();
   calls = [];
-  backend = { hosts_list: () => list, ...answers };
+  backend = { hosts_list: () => list, hosts_summaries: () => [], ...answers };
   const root = container();
   let api: HostsSettingsController | undefined;
   disposePage = render(

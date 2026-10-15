@@ -7,7 +7,7 @@ use rovik_client::Remote;
 use rovik_core::agent_run::StartRequest;
 use rovik_core::chat_db::search::SearchHit;
 use rovik_core::chat_db::store::{
-    ChatModel, Cursor, DialogPage, MessagePage, MessagePatch, NewDialog, NewMessage,
+    ChatModel, Cursor, DialogPage, DialogSummary, MessagePage, MessagePatch, NewDialog, NewMessage,
 };
 use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
@@ -25,6 +25,16 @@ pub async fn chat_list_dialogs(
     limit: Option<usize>,
 ) -> Result<DialogPage, String> {
     api::chat_list_dialogs(&core.db, project_id, cursor, limit).await
+}
+
+/// One chat's summary as the list shows it, as it is now: after a move,
+/// where it went (U02).
+#[tauri::command]
+pub async fn chat_get_dialog(
+    core: State<'_, Core>,
+    dialog_id: String,
+) -> Result<Option<DialogSummary>, String> {
+    api::chat_get_dialog(&core.db, dialog_id).await
 }
 
 /// The project a folder is, with a suggestion when it looks like a copy or
