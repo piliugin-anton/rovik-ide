@@ -41,6 +41,20 @@ pub async fn chat_open_project(
     Ok(opened)
 }
 
+/// A chat's plan (`meta.planFile`): a local chat's file, or a remote one's
+/// in its worktree on its host (K09).
+#[tauri::command]
+pub async fn chat_read_plan(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+    path: String,
+) -> Result<String, String> {
+    if remote.host_of(&dialog_id).is_some() {
+        return remote.read_plan(&dialog_id, &path).await;
+    }
+    std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))
+}
+
 /// "Looks like a copy": share the chats, or a separate history.
 #[tauri::command]
 pub async fn chat_answer_copy(

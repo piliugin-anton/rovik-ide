@@ -102,6 +102,7 @@ pub fn run() {
             filesystem::save_ai_settings,
             commands::chat::chat_list_dialogs,
             commands::chat::chat_open_project,
+            commands::chat::chat_read_plan,
             commands::chat::chat_answer_copy,
             commands::chat::chat_answer_moved,
             commands::chat::chat_decline_projects,

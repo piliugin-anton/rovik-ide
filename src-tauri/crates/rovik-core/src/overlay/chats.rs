@@ -1699,6 +1699,9 @@ pub struct OverlayStatus {
     /// Parallel groups whose merge can be thrown away and redone one step
     /// at a time (R06), while the chat's changes wait to land.
     pub redo_groups: Vec<String>,
+    /// A remote chat's last sync with the project (6.7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<rovik_protocol::work::ChatSync>,
 }
 
 fn summarize(changes: &[OverlayChange]) -> Vec<ChangedFile> {
@@ -1794,6 +1797,7 @@ fn status(dialog_id: String) -> OverlayStatus {
         } else {
             Vec::new()
         },
+        sync: None,
     }
 }
 
@@ -2069,27 +2073,30 @@ pub async fn overlay_land(
 
 async fn land_command(dialog_id: String, keep_chat: bool) -> LandResult {
     let result = crate::rt::spawn_blocking(move || land_now(&dialog_id, keep_chat)).await;
-    match result {
-        Ok(Ok(landed)) => LandResult {
-            landed,
-            conflicts: Vec::new(),
-            error: None,
-        },
-        Ok(Err(super::land::LandError::Conflicts(c))) => LandResult {
-            landed: None,
-            conflicts: c,
-            error: None,
-        },
-        Ok(Err(e)) => LandResult {
-            landed: None,
-            conflicts: Vec::new(),
-            error: Some(e.to_string()),
-        },
-        Err(e) => LandResult {
-            landed: None,
-            conflicts: Vec::new(),
-            error: Some(e.to_string()),
-        },
+    let result = result.unwrap_or_else(|e| Err(super::land::LandError::Failed(e.to_string())));
+    LandResult::from(result)
+}
+
+impl From<Result<Option<super::land::Landed>, super::land::LandError>> for LandResult {
+    /// A landing as the bar shows it.
+    fn from(result: Result<Option<super::land::Landed>, super::land::LandError>) -> LandResult {
+        match result {
+            Ok(landed) => LandResult {
+                landed,
+                conflicts: Vec::new(),
+                error: None,
+            },
+            Err(super::land::LandError::Conflicts(c)) => LandResult {
+                landed: None,
+                conflicts: c,
+                error: None,
+            },
+            Err(e) => LandResult {
+                landed: None,
+                conflicts: Vec::new(),
+                error: Some(e.to_string()),
+            },
+        }
     }
 }
 

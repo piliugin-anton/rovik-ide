@@ -24,8 +24,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::{mpsc, oneshot};
 
+mod bar;
 mod results;
 mod sync;
+
+pub use bar::LOCAL_ONLY;
 
 /// The outcome told for a run that ended while its host was away: the
 /// client can't know it until results come (T05).

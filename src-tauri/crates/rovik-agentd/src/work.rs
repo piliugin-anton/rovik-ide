@@ -182,7 +182,7 @@ async fn merge_into(
         daemon.store.base_moved(chat, &snapshot.to_string());
     }
     if merged.state == SyncState::Marked {
-        daemon.store.marked_by_sync(chat, &merged.files);
+        daemon.store.mark(chat, &merged.files, true);
     }
     let told = ChatSync {
         dialog_id: chat.to_string(),

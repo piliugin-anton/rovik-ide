@@ -114,6 +114,10 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::WorkResult { .. }
         | Request::WorkResults
         | Request::WorkRecheck { .. }
+        | Request::WorkStatus { .. }
+        | Request::WorkFile { .. }
+        | Request::WorkDiscard { .. }
+        | Request::WorkConflictsToChat { .. }
         | Request::WorkLanded { .. }
         | Request::HostInfo => {
             return Err(Fail::new(

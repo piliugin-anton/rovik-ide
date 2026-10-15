@@ -7,7 +7,7 @@ use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::HostInfo;
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
-use crate::work::{ChatResult, Project, Synced};
+use crate::work::{ChatResult, Handed, Project, Synced, WorkChange, WorkFile};
 use crate::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -138,6 +138,31 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         excludes: Vec<String>,
     },
+    /// What the chat changed in its worktree so far, from its landing base
+    /// (6.1). → `Changes`.
+    WorkStatus {
+        dialog_id: String,
+    },
+    /// A file of the chat's worktree, from the project's folder: as its
+    /// landing base has it and as the chat has it now (6.1). → `WorkFile`.
+    WorkFile {
+        dialog_id: String,
+        path: String,
+    },
+    /// Throws the chat's changes away: its worktree back at its landing
+    /// base (6.1). → `Done`.
+    WorkDiscard {
+        dialog_id: String,
+    },
+    /// Hands conflicts to the chat (6.1): markers in `files`, from the
+    /// project's folder, between the chat's version and the project's in
+    /// `snapshot`, pushed before it, which those files' landing base takes.
+    /// → `Handed`.
+    WorkConflictsToChat {
+        dialog_id: String,
+        snapshot: String,
+        files: Vec<String>,
+    },
     /// A result of the chat landed on its computer (6.5): for these paths,
     /// from the root of the project's repository, the chat's landing base
     /// takes the result's content, so the next result doesn't bring back a
@@ -178,6 +203,11 @@ pub enum Response {
     ChatResult(ChatResult),
     /// `WorkResults`.
     ChatResults(Vec<ChatResult>),
+    /// `WorkStatus`.
+    Changes(Vec<WorkChange>),
+    WorkFile(WorkFile),
+    /// `WorkConflictsToChat`.
+    Handed(Handed),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -225,4 +255,7 @@ replies! {
     Synced => Synced,
     ChatResult => ChatResult,
     ChatResults => Vec<ChatResult>,
+    Changes => Vec<WorkChange>,
+    WorkFile => WorkFile,
+    Handed => Handed,
 }

@@ -10,7 +10,9 @@
 //!   http.rs       `POST /call`, `/blobs` and `/packs`
 //!   hosts.rs      each host's client and state
 //!   remote.rs     the app's remote chats: routing, starts and events (6.1),
-//!                 and their results, imported and landed here (6.5)
+//!                 their isolation bar, the project synced before each
+//!                 message (6.7), and their results, imported and landed
+//!                 here (6.5)
 //!   shadow.rs     each project's shadow repository and its snapshots (6.4)
 //!   packs.rs      packs between a shadow repository and a host (6.4)
 
@@ -29,4 +31,4 @@ pub use client::{Client, DaemonInfo, HostState, Identity, Incoming, Sink, CALL_T
 pub use connector::UnixConnector;
 pub use connector::{Connecting, Connector, Io, Stream};
 pub use hosts::Hosts;
-pub use remote::{ApprovalPolicy, CloudEvent, CloudSink, Remote};
+pub use remote::{ApprovalPolicy, CloudEvent, CloudSink, Remote, LOCAL_ONLY};

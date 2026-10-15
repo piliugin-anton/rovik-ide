@@ -4,6 +4,7 @@
 //! here, so a call gets the same reply either way (4.1).
 
 use crate::auth::Tokens;
+use crate::changes;
 use crate::events::Events;
 use crate::host;
 use crate::packs::Projects;
@@ -78,6 +79,18 @@ impl Daemon {
                 Ok(Response::ChatResult(result))
             }
             Request::WorkResults => Ok(Response::ChatResults(self.store.results_of(computer))),
+            Request::WorkStatus { dialog_id } => changes::status(self, computer, &dialog_id).await,
+            Request::WorkFile { dialog_id, path } => {
+                changes::file(self, computer, &dialog_id, &path).await
+            }
+            Request::WorkDiscard { dialog_id } => {
+                changes::discard(self, computer, &dialog_id).await
+            }
+            Request::WorkConflictsToChat {
+                dialog_id,
+                snapshot,
+                files,
+            } => changes::to_chat(self, computer, &dialog_id, &snapshot, files).await,
             Request::WorkRecheck {
                 dialog_id,
                 project,

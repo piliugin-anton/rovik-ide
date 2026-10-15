@@ -20,12 +20,12 @@ use rovik_protocol::Request;
 use std::path::{Path, PathBuf};
 
 /// A snapshot of a chat's project, and what goes to the host with it.
-struct Snapshot {
+pub(super) struct Snapshot {
     project: String,
     root: PathBuf,
     /// The project's shadow.
     shadow: PathBuf,
-    commit: Oid,
+    pub(super) commit: Oid,
     excludes: Vec<String>,
     subpath: String,
 }
@@ -100,7 +100,7 @@ impl Remote {
 
     /// The chat's project as it is now, in its shadow; none when the chat
     /// has no project here.
-    async fn snapshot(&self, dialog_id: &str) -> Result<Option<Snapshot>, String> {
+    pub(super) async fn snapshot(&self, dialog_id: &str) -> Result<Option<Snapshot>, String> {
         let Some((project, root)) = self.project_of(dialog_id).await? else {
             return Ok(None);
         };
@@ -124,7 +124,7 @@ impl Remote {
     }
 
     /// The snapshot on the host, and its project there.
-    async fn carry(
+    pub(super) async fn carry(
         &self,
         host: &str,
         client: &Client,

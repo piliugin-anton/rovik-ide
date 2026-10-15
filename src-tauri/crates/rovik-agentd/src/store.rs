@@ -77,7 +77,8 @@ pub struct ChatState {
     /// Its newest result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<ChatResult>,
-    /// Files a sync put conflict markers in, until they're gone (6.7).
+    /// Files a sync or the user put conflict markers in for the chat to
+    /// settle, until they're gone (6.7).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub marked: Vec<String>,
     /// Its next message's start is to tell the chat of them.
@@ -297,14 +298,14 @@ impl Store {
         self.change(dialog_id, |chat| chat.result = Some(result));
     }
 
-    /// A sync put conflict markers in `files`: they're kept, and the chat's
-    /// next message tells it.
-    pub fn marked_by_sync(&self, dialog_id: &str, files: &[String]) {
+    /// Conflict markers went into `files` for the chat to settle: they're
+    /// kept, and with `tell`, the chat's next message tells it (a sync's).
+    pub fn mark(&self, dialog_id: &str, files: &[String], tell: bool) {
         self.change(dialog_id, |chat| {
             chat.marked.extend(files.iter().cloned());
             chat.marked.sort();
             chat.marked.dedup();
-            chat.tell_marked = true;
+            chat.tell_marked |= tell;
         });
     }
 

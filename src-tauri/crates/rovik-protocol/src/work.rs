@@ -78,3 +78,38 @@ pub struct ChatSync {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
 }
+
+/// A file a chat changed in its worktree, from its landing base (6.1),
+/// from the project's folder.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkChange {
+    pub path: String,
+    pub change: Change,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Change {
+    Added,
+    Changed,
+    Deleted,
+}
+
+/// A file of a chat's worktree (6.1): as its landing base has it and as the
+/// chat has it now. None where it isn't there, or isn't text.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
+}
+
+/// The files handed to a chat, with conflict markers in them (6.1).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Handed {
+    pub files: Vec<String>,
+}

@@ -18,13 +18,13 @@
 use crate::events::Events;
 use crate::store::{Place, Store};
 use git2::build::TreeUpdateBuilder;
-use git2::{FileMode, Index, ObjectType, Oid, Repository, ResetType, Signature};
+use git2::{Delta, FileMode, Index, ObjectType, Oid, Repository, ResetType, Signature};
 use rovik_core::agent_run::pending_reason;
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
 use rovik_protocol::packs::result_ref;
-use rovik_protocol::work::ChatResult;
+use rovik_protocol::work::{Change, ChatResult, WorkChange};
 use rovik_protocol::{Event, Fail, FailCode};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -125,6 +125,21 @@ impl Results {
         Ok(())
     }
 
+    /// What the chat changed in its worktree so far, from its landing base:
+    /// what its result would change, in the project's folder (`subpath`).
+    pub async fn changes(&self, dialog_id: &str, subpath: &str) -> Result<Vec<WorkChange>, Fail> {
+        let _base = self.base.lock().await;
+        let (place, base) = self.worktree(dialog_id)?;
+        let (index, subpath) = (
+            self.dir.join(format!("{dialog_id}.index")),
+            subpath.to_string(),
+        );
+        let read = rt::spawn_blocking(move || changes_of(&place.worktree, &index, &base, &subpath));
+        read.await
+            .map_err(|e| internal(e.to_string()))?
+            .map_err(internal)
+    }
+
     /// The landing bases, held while one is read and moved.
     pub async fn hold_base(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.base.lock().await
@@ -153,17 +168,8 @@ impl Results {
 /// the previous result.
 fn commit_worktree(worktree: &Path, index: &Path, base: &str, chat: &str) -> Result<Oid, String> {
     let git = |e: git2::Error| e.message().to_string();
-    let repo = Repository::open(worktree).map_err(git)?;
-    if let Some(dir) = index.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let mut own = Index::open(index).map_err(git)?;
-    repo.set_index(&mut own).map_err(git)?;
-    let base = repo
-        .find_commit(Oid::from_str(base).map_err(git)?)
-        .map_err(git)?;
-    let base_tree = base.tree().map_err(git)?;
-    let tree = staging::stage(&repo, Base::Tree(&base_tree))?.tree;
+    let (repo, base, tree) = stage_worktree(worktree, index, base)?;
+    let base = repo.find_commit(base).map_err(git)?;
     let name = result_ref(chat);
     let previous = repo
         .find_reference(&name)
@@ -184,6 +190,75 @@ fn commit_worktree(worktree: &Path, index: &Path, base: &str, chat: &str) -> Res
     Ok(commit)
 }
 
+/// The worktree staged through the chat's own index against `base`: its
+/// repository, the base, and the tree a result of it has.
+fn stage_worktree(
+    worktree: &Path,
+    index: &Path,
+    base: &str,
+) -> Result<(Repository, Oid, Oid), String> {
+    let git = |e: git2::Error| e.message().to_string();
+    let repo = Repository::open(worktree).map_err(git)?;
+    if let Some(dir) = index.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut own = Index::open(index).map_err(git)?;
+    repo.set_index(&mut own).map_err(git)?;
+    let (base, tree) = {
+        let base = (Oid::from_str(base).and_then(|base| repo.find_commit(base))).map_err(git)?;
+        let base_tree = base.tree().map_err(git)?;
+        (
+            base.id(),
+            staging::stage(&repo, Base::Tree(&base_tree))?.tree,
+        )
+    };
+    Ok((repo, base, tree))
+}
+
+/// What a result of the worktree would change on its base, in the
+/// project's folder (`subpath` in the tree).
+fn changes_of(
+    worktree: &Path,
+    index: &Path,
+    base: &str,
+    subpath: &str,
+) -> Result<Vec<WorkChange>, String> {
+    let git = |e: git2::Error| e.message().to_string();
+    let (repo, base, tree) = stage_worktree(worktree, index, base)?;
+    let base = repo
+        .find_commit(base)
+        .and_then(|base| base.tree())
+        .map_err(git)?;
+    let tree = repo.find_tree(tree).map_err(git)?;
+    let diff = repo
+        .diff_tree_to_tree(Some(&base), Some(&tree), None)
+        .map_err(git)?;
+    let prefix = if subpath.is_empty() {
+        String::new()
+    } else {
+        format!("{subpath}/")
+    };
+    let mut changes: Vec<WorkChange> = Vec::new();
+    for delta in diff.deltas() {
+        let path = delta.new_file().path().or(delta.old_file().path());
+        let path = path.map(|p| p.to_string_lossy().replace('\\', "/"));
+        let Some(path) = path.and_then(|p| p.strip_prefix(&prefix).map(String::from)) else {
+            continue;
+        };
+        let change = match delta.status() {
+            Delta::Added => Change::Added,
+            Delta::Deleted => Change::Deleted,
+            _ => Change::Changed,
+        };
+        // A change of kind comes as a deletion and an addition.
+        match changes.iter_mut().find(|c| c.path == path) {
+            Some(known) => known.change = Change::Changed,
+            None => changes.push(WorkChange { path, change }),
+        }
+    }
+    Ok(changes)
+}
+
 /// Of the files a sync marked, those whose markers are still in the
 /// worktree.
 fn markers_left(worktree: &Path, marked: Vec<String>) -> Vec<String> {
@@ -195,7 +270,7 @@ fn markers_left(worktree: &Path, marked: Vec<String>) -> Vec<String> {
 /// commit on it. The chat's branch moves to it and the worktree's index
 /// follows (mixed), so the agent's `git status` shows only the changes that
 /// didn't land; its files stay as they are.
-fn move_base(
+pub fn move_base(
     worktree: &Path,
     base: &str,
     landed: Oid,

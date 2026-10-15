@@ -1819,3 +1819,38 @@ Tasks add notes here when reality differs from the plan.
     already ignores it. M04's import can make worktrees the same way.
   - Moving itself (pushing `C0`, the flip, removing the local store) is
     M06's: the test does those steps by hand.
+- **T10, the isolation bar's remote half.**
+  - The requests are `WorkStatus { dialogId }` → `Changes` (each path
+    `added`, `changed` or `deleted`), `WorkFile { dialogId, path }` →
+    `WorkFile` (`base`, `chat`), `WorkDiscard { dialogId }` → `Done`, and
+    `WorkConflictsToChat { dialogId, snapshot, files }` → `Handed`. Paths
+    are from the project's folder, as a local overlay's are, and changes
+    outside it aren't listed.
+  - `WorkStatus` is what the chat's result would change: the worktree
+    staged through the chat's results index against its landing base. It
+    follows the results' rules, and stops listing a path once `WorkLanded`
+    has moved the base.
+  - `WorkConflictsToChat` takes the project's versions from a snapshot the
+    client pushes first, so they're stored as `git add` would store them,
+    and moves those files' landing base to them. That is the remote form of
+    what `rebase_file` does locally: without it, the chat's resolution
+    would conflict again when it lands. The client drops its import, whose
+    pending conflicts would hold back the chat's next result. The request
+    it returns is the message that tells the chat, so the daemon adds no
+    note of its own.
+  - `WorkDiscard` resets the worktree hard to the landing base and removes
+    the files the chat made. libgit2's hard reset keeps untracked files, so
+    a checkout that removes them follows. Ignored files stay. `WorkDiscard`
+    and `WorkConflictsToChat` are refused while the chat's run is going.
+  - The routes are `Remote` methods (`remote/bar.rs`), which the app's
+    commands call for a remote chat. `overlay_status` is the imported
+    result's status with the worktree's files and the last sync, in a new
+    `sync` field of `OverlayStatus`. `check_idle` asks the host whether the
+    run is going, before anything changes the chat's files. `overlay_land`
+    goes through `Remote::land`; Undo and the resolver stay local. Redo,
+    Undo the merge and Unmark are refused (`LOCAL_ONLY`).
+  - `chat_read_plan` reads a remote chat's plan from its worktree, by the
+    part of the path from `.rovik/plans/` on, and a local chat's from the
+    path. The frontend moves to it with U04.
+  - The tests drive the routes through `Remote` against the real daemon.
+    The app's commands only choose between the remote and the local route.

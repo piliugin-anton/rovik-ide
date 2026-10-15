@@ -11,7 +11,9 @@ use crate::host::{HostInfo, Install};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
-use crate::work::{ChatResult, ChatSync, Project, SyncState, Synced};
+use crate::work::{
+    Change, ChatResult, ChatSync, Handed, Project, SyncState, Synced, WorkChange, WorkFile,
+};
 use crate::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -426,6 +428,21 @@ fn every_request_round_trips() {
                 dialog_id: "d".into(),
             },
             Request::WorkResults,
+            Request::WorkStatus {
+                dialog_id: "d".into(),
+            },
+            Request::WorkFile {
+                dialog_id: "d".into(),
+                path: ".rovik/plans/plan.md".into(),
+            },
+            Request::WorkDiscard {
+                dialog_id: "d".into(),
+            },
+            Request::WorkConflictsToChat {
+                dialog_id: "d".into(),
+                snapshot: "0123456789abcdef0123456789abcdef01234567".into(),
+                files: vec!["src/main.rs".into()],
+            },
             Request::WorkRecheck {
                 dialog_id: "d".into(),
                 project: "p".into(),
@@ -527,6 +544,27 @@ fn every_response_round_trips() {
             }),
             Response::ChatResults(vec![result(None)]),
             Response::ChatResults(Vec::new()),
+            Response::Changes(vec![
+                WorkChange {
+                    path: "src/new.rs".into(),
+                    change: Change::Added,
+                },
+                WorkChange {
+                    path: "src/main.rs".into(),
+                    change: Change::Changed,
+                },
+                WorkChange {
+                    path: "old.rs".into(),
+                    change: Change::Deleted,
+                },
+            ]),
+            Response::WorkFile(WorkFile {
+                base: Some("fn main() {}\n".into()),
+                chat: None,
+            }),
+            Response::Handed(Handed {
+                files: vec!["src/main.rs".into()],
+            }),
         ],
     );
 }
