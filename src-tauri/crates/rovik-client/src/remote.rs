@@ -6,20 +6,24 @@ use crate::client::{Client, HostState, Identity, Incoming};
 use crate::connector::Connector;
 use crate::hosts::Hosts;
 use git2::Oid;
+use results::Job;
 use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest, OutMessage, Patch};
 use rovik_core::agent_run::subagent::Kind;
 use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest, UserMessage};
 use rovik_core::chat_db::attachments;
 use rovik_core::chat_db::store::{self, MessagePatch, NewChildDialog, NewMessage};
+use rovik_core::overlay::import::Imported;
 use rovik_core::{project_profile, Core};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::{features, Event, Fail, FailCode, Request, Response};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::{mpsc, oneshot};
+
+mod results;
 
 /// The outcome told for a run that ended while its host was away: the
 /// client can't know it until results come (T05).
@@ -88,6 +92,8 @@ pub struct Remote {
     me: Weak<Remote>,
     state: Mutex<State>,
     cloud: Mutex<Option<CloudSink>>,
+    /// The queue of results to import and land (remote/results.rs).
+    jobs: mpsc::UnboundedSender<Job>,
 }
 
 #[derive(Default)]
@@ -105,17 +111,25 @@ struct State {
     sent: HashMap<String, (String, NewMessage)>,
     /// The sends whose files are going up, by chat: Stop cancels one.
     uploads: HashMap<String, oneshot::Sender<()>>,
+    /// The project open in the app: its id and folder (6.5).
+    open: Option<(String, PathBuf)>,
+    /// Landings their hosts weren't told of yet, by chat.
+    unreported: HashMap<String, Imported>,
 }
 
 impl Remote {
     pub fn new(core: Core) -> Arc<Remote> {
-        Arc::new_cyclic(|me| Remote {
+        let (jobs, queue) = mpsc::unbounded_channel();
+        let remote = Arc::new_cyclic(|me| Remote {
             core,
             hosts: Hosts::default(),
             me: me.clone(),
             state: Mutex::new(State::default()),
             cloud: Mutex::new(None),
-        })
+            jobs,
+        });
+        rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
+        remote
     }
 
     /// Where uploads' and pushes' progress goes from now on.
@@ -478,13 +492,16 @@ impl Remote {
     async fn receive(&self, host: &str, incoming: Incoming) {
         match incoming {
             Incoming::State(state) => log::info!("{host}: {state:?}"),
-            Incoming::Subscribed { complete: true } => {}
-            Incoming::Subscribed { complete: false } => self.catch_up(host).await,
+            Incoming::Subscribed { complete } => {
+                if !complete {
+                    self.catch_up(host).await;
+                }
+                self.after_connecting(host).await;
+            }
             Incoming::Event { event, .. } => match event {
                 Event::Agent(event) => self.agent_event(host, event).await,
                 Event::Resync { dialog_id } => self.resync(host, &dialog_id).await,
-                // Imported with T06.
-                Event::ResultReady(_) => {}
+                Event::ResultReady(result) => self.result_ready(host, result),
                 Event::HostNotice { kind, message } => self.core.emit(AgentEvent::Notice {
                     dialog_id: None,
                     kind,

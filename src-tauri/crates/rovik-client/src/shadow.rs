@@ -24,6 +24,11 @@
 //!   user has chosen to send the project without its history, it is the
 //!   chat's previous snapshot, or none.
 //!
+//! A chat's results come back the same way: fetched into the shadow, and
+//! imported from there as the chat's overlay store (`overlay::import`), so
+//! their files are checked out with the project's settings (K40). The last
+//! one imported is kept at `refs/rovik/imported/<chat>`.
+//!
 //! Each operation holds the shadow for itself: two at once would race on
 //! its index.
 
@@ -32,6 +37,7 @@ mod guards;
 pub use guards::{Guards, LARGE_FILE, LARGE_HISTORY};
 
 use git2::{Commit, Config, Oid, Reference, Repository, RepositoryInitOptions, Signature};
+use rovik_core::overlay::import::{self, ImportError, Imported};
 use rovik_core::staging::{self, Base, Staged};
 use std::collections::HashMap;
 use std::fs;
@@ -54,15 +60,24 @@ const FROM_PROJECT: [&str; 4] = [
 const INFO_FILES: [&str; 2] = ["info/exclude", "info/attributes"];
 
 const SNAPSHOTS: &str = "refs/rovik/snapshots/";
+/// Each chat's result imported last.
+const IMPORTED: &str = "refs/rovik/imported/";
 /// False once the user has chosen to send the project without its history.
 const HISTORY: &str = "rovik.history";
 /// When the loose objects were last packed, in seconds since the epoch.
 const PACKED_AT: &str = "rovik.packedat";
 const DAY: i64 = 24 * 60 * 60;
 
+/// Where a project's shadow is kept, in the app's data folder.
+pub fn dir(data_dir: &Path, project: &str) -> PathBuf {
+    data_dir.join("shadow").join(format!("{project}.git"))
+}
+
 /// A project's shadow repository.
 pub struct Shadow {
     repo: Repository,
+    /// The project's folder.
+    root: PathBuf,
     /// The project's repository, when it is in one.
     project: Option<Repository>,
     /// Where the project sits in the snapshots' tree: "" at its root.
@@ -113,6 +128,7 @@ impl Shadow {
         drop(held);
         Ok(Shadow {
             repo,
+            root,
             project,
             subpath,
             busy,
@@ -233,6 +249,30 @@ impl Shadow {
             }
         }
         Ok(())
+    }
+
+    /// Imports the chat's result, fetched into the shadow, as the chat's
+    /// overlay store for the project (6.5). `marked`: the files its host put
+    /// conflict markers in.
+    pub fn import(
+        &self,
+        chat: &str,
+        result: Oid,
+        marked: &[String],
+    ) -> std::result::Result<Imported, ImportError> {
+        let _held = hold(&self.busy);
+        let (root, subpath) = (&self.root, &self.subpath);
+        let imported = import::import(&self.repo, chat, root, subpath, result, marked)?;
+        let name = format!("{IMPORTED}{chat}");
+        self.repo
+            .reference(&name, result, true, "imported")
+            .map_err(|e| ImportError::Failed(git(e)))?;
+        Ok(imported)
+    }
+
+    /// The chat's result imported last.
+    pub fn imported(&self, chat: &str) -> Option<Oid> {
+        self.repo.refname_to_id(&format!("{IMPORTED}{chat}")).ok()
     }
 
     /// Packs the shadow's loose objects into one pack and deletes them,

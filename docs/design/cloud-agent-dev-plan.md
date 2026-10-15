@@ -1684,3 +1684,57 @@ Tasks add notes here when reality differs from the plan.
     client passes it over until T06 imports results.
   - The daemon tests share `tests/common/project.rs`: a project carried
     to the daemon, and the calls that give a chat its worktree.
+- **T06, results back on the desktop.**
+  - `overlay::import` builds the chat's store from the result's commit and
+    its parent, the landing base, both in the shadow. Renames aren't
+    detected, so a moved file is a deletion and a new file, and a change
+    between a file and a link is a deletion and a write. Build output and
+    dependencies stay out, as `tiers.rs` keeps them out locally. Folders
+    the project lacks get entries of their own, so the store replays. A
+    deleted file is kept by its base content's hash, which landing checks.
+  - The checkouts go through the shadow, whose attributes are read from the
+    project's work tree, and leave the shadow's index as it is.
+  - The store keeps what it came from in `import.json`: the result's
+    commit, the paths it brought from the tree's root, which `WorkLanded`
+    reports, and those outside the project's folder, which never land.
+  - Which result a chat imported last is kept in the shadow, at
+    `refs/rovik/imported/<chat>`, until M01 brings
+    `mirror_state.imported_result`.
+  - A new store is built in `overlays/.import-<chat>` and swapped in under
+    the chat's gate. A result that changes nothing here leaves no store.
+  - `Remote` (`remote/results.rs`) imports and lands remote chats' results
+    through one queue, one job at a time. The jobs are `ResultReady`,
+    `WorkResults` after every connection (complete or not, where 4.3 names
+    only `complete: false`), the bar's Land (`Remote::land`), and the open
+    project changing.
+  - The open project is the folder the app opened last: `chat_open_project`
+    tells `Remote`. A result whose project isn't open waits as "Ready to
+    land", and lands by itself once it is. Closing the folder isn't told,
+    so for this the last project opened stays the open one.
+  - A result lands by itself under `landing.rs`'s rules but never merged:
+    one that would land merged with the project's newer changes waits,
+    with the reason, until T08 checks it on the server. The bar's Land
+    lands it merged, as it does locally.
+  - `WorkLanded` also carries `dialogId`. The daemon commits the result's
+    entries for the paths on the landing base, moves the chat's branch to
+    that commit and resets the worktree's index (mixed). A newer result,
+    made on the old base, is committed again on the new one: otherwise it
+    would bring back what landed. The test of Resolve and Land anyway
+    covers this with a newer result that waited while the conflicts were
+    settled.
+  - When the host can't be reached, a landing is reported after its next
+    connection. The report is kept in memory: if the app restarts first,
+    the next result carries the landed paths again, which land as no-ops
+    unless the user undid that landing meanwhile.
+  - The app's `overlay_*` commands aren't routed yet (T10). For a remote
+    chat, T10's `overlay_land` calls `Remote::land`. The tests call it and
+    the resolver directly.
+  - `ChatResult` has no list of marked files yet. T07 adds the daemon's
+    marks; `overlay::import` already takes them and writes `markers.json`.
+  - The isolation bar sees an import the next time it looks (a run's start
+    or end, or the chat opened), and notices say what happened. U05 makes
+    the bar follow imports.
+  - "After the next sync" needs T07, so the test checks that the next
+    result doesn't bring the undone change back.
+  - The tests share `tests/common/app.rs`: the app's core, its `Remote` and
+    its shadow, with the overlays' data folder held for the test.

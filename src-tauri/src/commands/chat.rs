@@ -11,6 +11,7 @@ use rovik_core::chat_db::store::{
 use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
 use rovik_protocol::Request;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::ipc::InvokeBody;
 use tauri::State;
@@ -26,13 +27,18 @@ pub async fn chat_list_dialogs(
 }
 
 /// The project a folder is, with a suggestion when it looks like a copy or
-/// a moved project.
+/// a moved project. It's the open project from now on: remote chats'
+/// results land by themselves only there (6.5).
 #[tauri::command]
 pub async fn chat_open_project(
     core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
     root: String,
 ) -> Result<projects::Opened, String> {
-    api::chat_open_project(&core.db, root).await
+    let opened = api::chat_open_project(&core.db, root.clone()).await?;
+    let open = (opened.project.id.clone(), PathBuf::from(root));
+    remote.set_open_project(Some(open));
+    Ok(opened)
 }
 
 /// "Looks like a copy": share the chats, or a separate history.

@@ -72,6 +72,15 @@ impl Daemon {
                 Ok(Response::ChatResult(result))
             }
             Request::WorkResults => Ok(Response::ChatResults(self.store.results_of(computer))),
+            Request::WorkLanded {
+                dialog_id,
+                commit,
+                paths,
+            } => {
+                self.store.check_owner(computer, &dialog_id)?;
+                self.results.landed(&dialog_id, &commit, paths).await?;
+                Ok(Response::Done)
+            }
             // The chat's worktree goes with its rows.
             Request::ChatDelete { dialog_id } => {
                 let delete = Request::ChatDelete {

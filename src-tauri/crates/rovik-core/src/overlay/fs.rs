@@ -213,9 +213,14 @@ impl DeletedBase {
                 mtime: mtime_ns(&m),
             });
         }
-        Some(DeletedBase::File {
-            hash: hex(&crate::file_guard::hash(&fs::read(abs).ok()?)),
-        })
+        Some(DeletedBase::file(&fs::read(abs).ok()?))
+    }
+
+    /// A file with this content.
+    pub fn file(bytes: &[u8]) -> DeletedBase {
+        DeletedBase::File {
+            hash: hex(&crate::file_guard::hash(bytes)),
+        }
     }
 
     /// Whether the project's entry at `abs` is still what was deleted.
@@ -298,6 +303,22 @@ struct Manifest {
     version: u32,
     next_file: u64,
     changes: Vec<OverlayChange>,
+}
+
+/// Saves a store's list of changes, which [`OverlayFs::open`] replays.
+/// `next_file` names the next file of `upper/` and `base/`.
+pub(super) fn write_manifest(
+    store: &Path,
+    next_file: u64,
+    changes: Vec<OverlayChange>,
+) -> io::Result<()> {
+    let manifest = Manifest {
+        version: 1,
+        next_file,
+        changes,
+    };
+    let bytes = serde_json::to_vec(&manifest).map_err(io::Error::other)?;
+    crate::atomic_file::write_atomic(&store.join("manifest.json"), &bytes)
 }
 
 pub struct OverlayFs {
@@ -1546,15 +1567,7 @@ impl OverlayFs {
             inner.saved_at = Some(Instant::now());
             (changes, inner.next_file, std::mem::take(&mut inner.trash))
         };
-        let manifest = Manifest {
-            version: 1,
-            next_file,
-            changes,
-        };
-        let saved = serde_json::to_vec(&manifest).ok().is_some_and(|bytes| {
-            crate::atomic_file::write_atomic(&self.store.join("manifest.json"), &bytes).is_ok()
-        });
-        if saved {
+        if write_manifest(&self.store, next_file, changes).is_ok() {
             let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
             for f in trash {
                 handles.remove(&f);

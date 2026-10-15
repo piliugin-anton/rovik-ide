@@ -9,7 +9,8 @@
 //!   client.rs     one host's connection, its calls and its events
 //!   http.rs       `POST /call`, `/blobs` and `/packs`
 //!   hosts.rs      each host's client and state
-//!   remote.rs     the app's remote chats: routing, starts and events (6.1)
+//!   remote.rs     the app's remote chats: routing, starts and events (6.1),
+//!                 and their results, imported and landed here (6.5)
 //!   shadow.rs     each project's shadow repository and its snapshots (6.4)
 //!   packs.rs      packs between a shadow repository and a host (6.4)
 

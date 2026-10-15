@@ -4,6 +4,7 @@
 pub mod chats;
 pub mod confine;
 pub mod fs;
+pub mod import;
 pub mod land;
 pub mod tiers;
 

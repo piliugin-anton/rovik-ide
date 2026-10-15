@@ -276,6 +276,11 @@ impl Store {
         self.lock().state.chats.get(dialog_id)?.base.clone()
     }
 
+    /// The chat's landing base moved: a result landed on its computer.
+    pub fn base_moved(&self, dialog_id: &str, base: &str) {
+        self.change(dialog_id, |chat| chat.base = Some(base.to_string()));
+    }
+
     /// How the chat's last run ended, when it ran here.
     pub fn outcome_of(&self, dialog_id: &str) -> Option<String> {
         self.lock().state.chats.get(dialog_id)?.outcome.clone()
@@ -284,6 +289,11 @@ impl Store {
     /// The chat's newest result.
     pub fn result_made(&self, dialog_id: &str, result: ChatResult) {
         self.change(dialog_id, |chat| chat.result = Some(result));
+    }
+
+    /// The chat's newest result.
+    pub fn result_of(&self, dialog_id: &str) -> Option<ChatResult> {
+        self.lock().state.chats.get(dialog_id)?.result.clone()
     }
 
     /// The newest result of each of `computer`'s chats.

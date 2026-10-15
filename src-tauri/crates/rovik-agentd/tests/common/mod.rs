@@ -5,6 +5,7 @@
 
 #![allow(dead_code)] // each test file uses part of it
 
+pub mod app;
 pub mod project;
 
 use futures_util::{SinkExt, StreamExt};

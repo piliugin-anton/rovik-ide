@@ -8,10 +8,16 @@
 //! chat's run ends and on `WorkResult`; the newest is kept in `state.json`
 //! with its outcome and the reason a local chat's landing would give, and
 //! `ResultReady` tells the chat's computer.
+//!
+//! Once a result has landed there, `WorkLanded` moves the landing base to
+//! the result's content for the paths that landed, so the next result
+//! holds only what hasn't (K34). A newer result made meanwhile, on the old
+//! base, is committed again on the new one.
 
 use crate::events::Events;
-use crate::store::Store;
-use git2::{Index, Oid, Repository, Signature};
+use crate::store::{Place, Store};
+use git2::build::TreeUpdateBuilder;
+use git2::{FileMode, Index, ObjectType, Oid, Repository, ResetType, Signature};
 use rovik_core::agent_run::pending_reason;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
@@ -26,11 +32,19 @@ pub struct Results {
     dir: PathBuf,
     store: Arc<Store>,
     events: Arc<Events>,
+    /// One commit or move of a landing base at a time: a result is always
+    /// committed on the base as it is.
+    base: tokio::sync::Mutex<()>,
 }
 
 impl Results {
     pub fn new(dir: PathBuf, store: Arc<Store>, events: Arc<Events>) -> Arc<Results> {
-        Arc::new(Results { dir, store, events })
+        Arc::new(Results {
+            dir,
+            store,
+            events,
+            base: tokio::sync::Mutex::new(()),
+        })
     }
 
     /// After the chat's run ended with `outcome`: its result, when it has a
@@ -50,18 +64,8 @@ impl Results {
     /// Commits the chat's worktree as its result, after a run that ended
     /// with `outcome`, and tells the chat's computer.
     pub async fn commit(&self, dialog_id: &str, outcome: &str) -> Result<ChatResult, Fail> {
-        let place = self.store.place(dialog_id).ok_or_else(|| {
-            Fail::new(
-                FailCode::BadRequest,
-                "This chat has no worktree on this server.",
-            )
-        })?;
-        let base = self.store.base_of(dialog_id).ok_or_else(|| {
-            Fail::new(
-                FailCode::Internal,
-                "The chat's worktree has no base commit.",
-            )
-        })?;
+        let _base = self.base.lock().await;
+        let (place, base) = self.worktree(dialog_id)?;
         let (index, chat) = (
             self.dir.join(format!("{dialog_id}.index")),
             dialog_id.to_string(),
@@ -82,6 +86,52 @@ impl Results {
         self.events
             .chat(dialog_id, Event::ResultReady(result.clone()));
         Ok(result)
+    }
+
+    /// `WorkLanded`: the chat's result `commit` landed on its computer. For
+    /// `paths`, the landing base takes the result's content.
+    pub async fn landed(
+        &self,
+        dialog_id: &str,
+        commit: &str,
+        paths: Vec<String>,
+    ) -> Result<(), Fail> {
+        let landed = Oid::from_str(commit)
+            .map_err(|_| Fail::new(FailCode::BadRequest, "Not a commit's id."))?;
+        {
+            let _base = self.base.lock().await;
+            let (place, base) = self.worktree(dialog_id)?;
+            let chat = dialog_id.to_string();
+            let moved = rt::spawn_blocking(move || {
+                move_base(&place.worktree, &base, landed, &paths, &chat)
+            });
+            let base = moved.await.map_err(|e| internal(e.to_string()))??;
+            self.store.base_moved(dialog_id, &base.to_string());
+        }
+        // A newer result, on the old base, would bring back what landed:
+        // it's committed again, on the new one.
+        let newer = self.store.result_of(dialog_id);
+        if let Some(newer) = newer.filter(|result| result.commit != commit) {
+            self.commit(dialog_id, &newer.outcome).await?;
+        }
+        Ok(())
+    }
+
+    /// The chat's worktree and its landing base.
+    fn worktree(&self, dialog_id: &str) -> Result<(Place, String), Fail> {
+        let place = self.store.place(dialog_id).ok_or_else(|| {
+            Fail::new(
+                FailCode::BadRequest,
+                "This chat has no worktree on this server.",
+            )
+        })?;
+        let base = self.store.base_of(dialog_id).ok_or_else(|| {
+            Fail::new(
+                FailCode::Internal,
+                "The chat's worktree has no base commit.",
+            )
+        })?;
+        Ok((place, base))
     }
 }
 
@@ -119,6 +169,65 @@ fn commit_worktree(worktree: &Path, index: &Path, base: &str, chat: &str) -> Res
         .map_err(git)?;
     repo.reference(&name, commit, true, "result").map_err(git)?;
     Ok(commit)
+}
+
+/// A new landing base: `base` with `landed`'s entries for `paths`, as one
+/// commit on it. The chat's branch moves to it and the worktree's index
+/// follows (mixed), so the agent's `git status` shows only the changes that
+/// didn't land; its files stay as they are.
+fn move_base(
+    worktree: &Path,
+    base: &str,
+    landed: Oid,
+    paths: &[String],
+    chat: &str,
+) -> Result<Oid, Fail> {
+    let git = |e: git2::Error| internal(e.message().to_string());
+    let repo = Repository::open(worktree).map_err(git)?;
+    let base = (Oid::from_str(base).and_then(|base| repo.find_commit(base))).map_err(git)?;
+    let landed = repo
+        .find_commit(landed)
+        .map_err(|_| Fail::new(FailCode::BadRequest, "The result isn't on this server."))?;
+    let (base_tree, landed_tree) = (base.tree().map_err(git)?, landed.tree().map_err(git)?);
+    let mut update = TreeUpdateBuilder::new();
+    for path in paths {
+        let entry = landed_tree.get_path(Path::new(path)).ok();
+        match entry.and_then(|entry| Some((entry.id(), file_mode(&entry)?))) {
+            Some((id, mode)) => {
+                update.upsert(path.as_str(), id, mode);
+            }
+            None if base_tree.get_path(Path::new(path)).is_ok() => {
+                update.remove(path.as_str());
+            }
+            None => {}
+        }
+    }
+    let tree = update.create_updated(&repo, &base_tree).map_err(git)?;
+    if tree == base_tree.id() {
+        return Ok(base.id());
+    }
+    let rovik = Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
+    let tree = repo.find_tree(tree).map_err(git)?;
+    let message = format!("Landed from chat {chat}");
+    let commit = repo
+        .commit(None, &rovik, &rovik, &message, &tree, &[&base])
+        .map_err(git)?;
+    let target = repo.find_object(commit, None).map_err(git)?;
+    repo.reset(&target, ResetType::Mixed, None).map_err(git)?;
+    Ok(commit)
+}
+
+/// A file's mode in a tree: a blob or a link, never a folder or a
+/// submodule.
+fn file_mode(entry: &git2::TreeEntry) -> Option<FileMode> {
+    if entry.kind() != Some(ObjectType::Blob) {
+        return None;
+    }
+    Some(match entry.filemode() {
+        0o100755 => FileMode::BlobExecutable,
+        0o120000 => FileMode::Link,
+        _ => FileMode::Blob,
+    })
 }
 
 fn internal(message: String) -> Fail {

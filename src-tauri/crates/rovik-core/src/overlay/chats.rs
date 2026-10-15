@@ -319,7 +319,7 @@ pub fn valid_id(dialog_id: &str) -> bool {
         && !dialog_id.contains(['/', '\\', '\0', ':'])
 }
 
-fn store_dir(dialog_id: &str) -> Option<PathBuf> {
+pub(super) fn store_dir(dialog_id: &str) -> Option<PathBuf> {
     valid_id(dialog_id)
         .then(|| Some(data_dir()?.join("overlays").join(dialog_id)))
         .flatten()
@@ -422,7 +422,7 @@ pub fn open(
 /// files. The open overlays' lock is only held to look one up.
 static GATES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
 
-fn gate(dialog_id: &str) -> Arc<Mutex<()>> {
+pub(super) fn gate(dialog_id: &str) -> Arc<Mutex<()>> {
     GATES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -2410,7 +2410,7 @@ fn marked(dialog_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn set_marked(dialog_id: &str, mut files: Vec<String>) {
+pub(super) fn set_marked(dialog_id: &str, mut files: Vec<String>) {
     let Some(f) = markers_file(dialog_id) else {
         return;
     };

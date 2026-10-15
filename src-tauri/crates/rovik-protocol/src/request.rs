@@ -124,6 +124,15 @@ pub enum Request {
     /// The newest result of each of this computer's chats, for the ones a
     /// client missed (K24). → `ChatResults`.
     WorkResults,
+    /// A result of the chat landed on its computer (6.5): for these paths,
+    /// from the root of the project's repository, the chat's landing base
+    /// takes the result's content, so the next result doesn't bring back a
+    /// landing the user undid (K34). → `Done`.
+    WorkLanded {
+        dialog_id: String,
+        commit: String,
+        paths: Vec<String>,
+    },
 
     // Host: the server, for the hosts page, deploy and upgrade.
     HostInfo,
