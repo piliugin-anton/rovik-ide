@@ -3757,9 +3757,10 @@ impl Harness {
         request
     }
 
-    /// Waits until the call has its result, and returns it.
+    /// Waits until the call has its result, and returns it: a minute at
+    /// most, as a group's workers take long on a busy machine.
     async fn result_when_ready(&self, call: &str) -> MessageRow {
-        for _ in 0..400 {
+        for _ in 0..2400 {
             if let Some(m) = self
                 .messages()
                 .await
