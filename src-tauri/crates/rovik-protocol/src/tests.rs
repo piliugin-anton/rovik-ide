@@ -673,3 +673,46 @@ fn a_reply_reads_as_its_requests_value() {
     assert_eq!(wrong.code, FailCode::Internal);
     assert!(<()>::try_from(Response::Bool(true)).is_err());
 }
+
+#[test]
+fn a_patch_then_a_newer_one_keeps_what_the_newer_leaves_alone() {
+    let first = Patch {
+        content: Some("Hel".into()),
+        status: Some(Some(Status::text("Writing"))),
+        meta: Some(json!({ "a": 1 })),
+        ..Default::default()
+    };
+    let second = Patch {
+        content: Some("Hello".into()),
+        finalized: Some(true),
+        ..Default::default()
+    };
+    let both = first.clone().then(second);
+    assert_eq!(both.content.as_deref(), Some("Hello"));
+    assert_eq!(both.finalized, Some(true));
+    assert_eq!(both.status, Some(Some(Status::text("Writing"))));
+    assert_eq!(both.meta, Some(json!({ "a": 1 })));
+    // A cleared status clears it.
+    let cleared = first.then(Patch {
+        status: Some(None),
+        ..Default::default()
+    });
+    assert_eq!(cleared.status, Some(None));
+}
+
+/// Every event names its chat, but what applies to the settings, and a
+/// notice about no chat: those go to every computer of a daemon.
+#[test]
+fn an_event_names_its_chat() {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("../../../../test-fixtures/agent-events.json")).unwrap();
+    for json in fixtures["events"].as_array().unwrap() {
+        let event: AgentEvent = serde_json::from_value(json.clone()).unwrap();
+        let expected = match json["type"].as_str().unwrap() {
+            "reasoningLearned" | "apiRouteLearned" => None,
+            "approvalRequested" | "questionsAsked" => json["request"]["dialogId"].as_str(),
+            _ => json["dialogId"].as_str(),
+        };
+        assert_eq!(event.dialog_id(), expected, "{json}");
+    }
+}

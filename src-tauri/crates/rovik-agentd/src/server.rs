@@ -43,7 +43,11 @@ async fn health() -> Response {
 
 /// A call too big for a frame: the `Call` in, its `Reply` out. A reply is
 /// sent whole, however big: this is where a `TooLarge` one is asked again.
-async fn call(State(daemon): State<Arc<Daemon>>, _: Computer, request: Request) -> Response {
+async fn call(
+    State(daemon): State<Arc<Daemon>>,
+    Computer(computer): Computer,
+    request: Request,
+) -> Response {
     let declared = request
         .headers()
         .get(CONTENT_LENGTH)
@@ -69,7 +73,7 @@ async fn call(State(daemon): State<Arc<Daemon>>, _: Computer, request: Request) 
             Fail::new(FailCode::BadRequest, "The body isn't a call."),
         );
     };
-    let res = daemon.answer(req).await;
+    let res = daemon.answer(&computer, req).await;
     json(StatusCode::OK, &Frame::Reply { id, res })
 }
 

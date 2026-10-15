@@ -5,11 +5,11 @@ use crate::auth::Tokens;
 use crate::cli::{Options, VERSION};
 use crate::config::Config;
 use crate::daemon::Daemon;
+use crate::events::Events;
 use crate::home::{self, Home};
 use crate::logfile;
 use crate::server::{self, OwnUser};
-use rovik_core::agent_run::events::AgentEvent;
-use rovik_core::{process, rt, Core, EventSink, Paths};
+use rovik_core::{process, rt, Core, Paths};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -57,7 +57,8 @@ async fn run(
     no_virtual_files: bool,
 ) -> Result<(), String> {
     let paths = Paths::new(home.data(), home.core_config());
-    let core = Core::new(paths, Arc::new(Unsent))?;
+    let events = Events::new(uuid::Uuid::new_v4().to_string());
+    let core = Core::new(paths, events.clone())?;
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {
@@ -73,7 +74,7 @@ async fn run(
     let daemon = Arc::new(Daemon {
         core: core.clone(),
         tokens,
-        boot: uuid::Uuid::new_v4().to_string(),
+        events,
         same_machine,
         virtual_files_problem,
     });
@@ -146,11 +147,4 @@ fn login_shell() {
             std::env::set_var("SHELL", shell);
         }
     }
-}
-
-/// Events have nowhere to go until clients can subscribe (P04).
-struct Unsent;
-
-impl EventSink for Unsent {
-    fn agent(&self, _event: &AgentEvent) {}
 }

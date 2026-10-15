@@ -10,8 +10,11 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{Request as HttpRequest, StatusCode};
 use hyper_util::rt::TokioIo;
+use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
+use rovik_core::agent_run::{AgentConfig, ModelProfile, StartKind, StartRequest, UserMessage};
 use rovik_core::testing::{temp_dir, TempDir};
 use rovik_protocol::{Fail, Frame, Request, Response, Secret, PROTOCOL};
+use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -23,8 +26,9 @@ use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::{ClientRequestBuilder, Message};
 use tokio_tungstenite::WebSocketStream;
 
-/// The computer config.toml names.
+/// The computers config.toml names.
 pub const COMPUTER: &str = "laptop";
+pub const OTHER: &str = "desk";
 
 pub const BINARY: &str = env!("CARGO_BIN_EXE_rovik-agentd");
 
@@ -33,8 +37,9 @@ pub struct Daemon {
     pub socket: PathBuf,
     /// The daemon's folder (`--data`).
     pub data: PathBuf,
-    /// The token of `COMPUTER`.
+    /// The tokens of `COMPUTER` and `OTHER`.
     pub token: String,
+    pub other_token: String,
     /// Goes after the daemon.
     pub dir: TempDir,
 }
@@ -46,10 +51,17 @@ impl Daemon {
         let data = dir.0.join("rovik");
         std::fs::create_dir_all(&data).unwrap();
         std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let token = uuid::Uuid::new_v4().to_string();
+        let (token, other_token) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
         std::fs::write(
             data.join("config.toml"),
-            format!("[tokens]\n{COMPUTER} = \"{}\"\n", sha256_hex(&token)),
+            format!(
+                "[tokens]\n{COMPUTER} = \"{}\"\n{OTHER} = \"{}\"\n",
+                sha256_hex(&token),
+                sha256_hex(&other_token)
+            ),
         )
         .unwrap();
         let socket = dir.0.join("agentd.sock");
@@ -76,6 +88,7 @@ impl Daemon {
             socket,
             data,
             token,
+            other_token,
             dir,
         };
         daemon.wait_until_it_answers().await;
@@ -134,7 +147,11 @@ impl Daemon {
 
     /// A WebSocket session of `COMPUTER`, past its Welcome.
     pub async fn session(&self) -> Session<UnixStream> {
-        Session::open(self.stream().await, &self.token)
+        self.session_as(COMPUTER, &self.token).await
+    }
+
+    pub async fn session_as(&self, computer: &str, token: &str) -> Session<UnixStream> {
+        Session::open_as(self.stream().await, computer, token)
             .await
             .unwrap_or_else(|e| panic!("no session: {e}\n{}", self.output()))
     }
@@ -205,8 +222,18 @@ pub struct Session<S> {
 impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
     /// Hello as `COMPUTER` with `token`, and the daemon's Welcome.
     pub async fn open(io: S, token: &str) -> Result<Session<S>, String> {
+        Session::open_as(io, COMPUTER, token).await
+    }
+
+    pub async fn open_as(io: S, computer: &str, token: &str) -> Result<Session<S>, String> {
         let mut socket = websocket(io, token).await.map_err(|e| e.to_string())?;
-        send(&mut socket, &hello(token)).await;
+        let hello = Frame::Hello {
+            protocol: PROTOCOL,
+            client: "daemon tests".into(),
+            device: computer.into(),
+            token: Secret(token.into()),
+        };
+        send(&mut socket, &hello).await;
         match recv(&mut socket).await {
             Some(welcome @ Frame::Welcome { .. }) => Ok(Session {
                 socket,
@@ -223,6 +250,50 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Session<S> {
 
     pub async fn recv(&mut self) -> Option<Frame> {
         recv(&mut self.socket).await
+    }
+
+    /// The daemon's boot, from its Welcome.
+    pub fn boot(&self) -> String {
+        match &self.welcome {
+            Frame::Welcome { boot, .. } => boot.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Subscribes: how many events were replayed, and whether that was
+    /// everything after `since`.
+    pub async fn subscribe(&mut self, since: Option<(String, u64)>) -> (u64, bool) {
+        self.send(&Frame::Subscribe { since }).await;
+        loop {
+            match self.recv().await.expect("the daemon closed the session") {
+                Frame::Subscribed { replayed, complete } => return (replayed, complete),
+                _ => continue,
+            }
+        }
+    }
+
+    /// The events that come (each its seq and `ev` as JSON), up to the
+    /// first that `last` matches.
+    pub async fn events_until(&mut self, last: impl Fn(&Value) -> bool) -> Vec<(u64, Value)> {
+        let mut events = Vec::new();
+        loop {
+            match self.recv().await.expect("the daemon closed the session") {
+                Frame::Event { seq, ev } => {
+                    let ev = serde_json::to_value(ev).unwrap();
+                    let done = last(&ev);
+                    events.push((seq, ev));
+                    if done {
+                        return events;
+                    }
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// The next frame, if one comes within `wait`.
+    pub async fn recv_within(&mut self, wait: Duration) -> Option<Frame> {
+        tokio::time::timeout(wait, self.recv()).await.ok().flatten()
     }
 
     /// A call, and its reply; frames that come meanwhile are dropped.
@@ -282,5 +353,54 @@ pub async fn closed_with<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(Message::Close(None)) | Err(_) => return None,
             Ok(_) => continue,
         }
+    }
+}
+
+/// A start of chat-1: `text` sent to the model at `url`, working in
+/// `project`, with edits waiting for the user's approval.
+pub fn start_request(url: &str, project: &std::path::Path, text: String) -> StartRequest {
+    StartRequest {
+        dialog_id: "chat-1".into(),
+        start: StartKind::Send {
+            message: UserMessage {
+                id: "u1".into(),
+                content: text,
+                meta: None,
+                attachments: Vec::new(),
+            },
+        },
+        profile: ModelProfile {
+            id: "p::m".into(),
+            label: "Test/m".into(),
+            model: "m".into(),
+            base_url: url.into(),
+            api_key: String::new(),
+            stream: true,
+            vision: false,
+            pdf: false,
+            // Room for the 3 MB message.
+            context_tokens: Some(4_000_000),
+            no_tools: false,
+            first_byte_timeout_ms: None,
+            api_route: None,
+        },
+        options: None,
+        mode: Some("agent".into()),
+        context_mode: Some("trimming".into()),
+        root: Some(project.to_string_lossy().into_owned()),
+        current_user_content: None,
+        local_date: Some("2026-10-15".into()),
+        config: Some(AgentConfig {
+            permissions: Permissions {
+                edit_approval: ApprovalRule {
+                    required: true,
+                    by: Approver::User,
+                },
+                verify_changes: false,
+                ..Permissions::default()
+            },
+            ..AgentConfig::default()
+        }),
+        isolate: None,
     }
 }

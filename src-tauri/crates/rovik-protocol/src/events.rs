@@ -95,6 +95,22 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
+impl Patch {
+    /// This patch, then `newer`: what the two do together, as one patch.
+    pub fn then(self, newer: Patch) -> Patch {
+        Patch {
+            content: newer.content.or(self.content),
+            tool_calls: newer.tool_calls.or(self.tool_calls),
+            meta: newer.meta.or(self.meta),
+            error: newer.error.or(self.error),
+            failed: newer.failed.or(self.failed),
+            pending: newer.pending.or(self.pending),
+            finalized: newer.finalized.or(self.finalized),
+            status: newer.status.or(self.status),
+        }
+    }
+}
+
 /// A file edit for the user to review hunk by hunk in the editor.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -273,4 +289,32 @@ pub enum AgentEvent {
         child_dialog_id: String,
         status: String,
     },
+}
+
+impl AgentEvent {
+    /// The chat it's about; none for what applies to the settings (a
+    /// model's reasoning or route) and a notice about no chat.
+    pub fn dialog_id(&self) -> Option<&str> {
+        match self {
+            AgentEvent::ApprovalRequested { request } => Some(&request.dialog_id),
+            AgentEvent::QuestionsAsked { request } => Some(&request.dialog_id),
+            AgentEvent::FileWritten { dialog_id, .. } | AgentEvent::Notice { dialog_id, .. } => {
+                dialog_id.as_deref()
+            }
+            AgentEvent::ReasoningLearned { .. } | AgentEvent::ApiRouteLearned { .. } => None,
+            AgentEvent::RunStarted { dialog_id, .. }
+            | AgentEvent::RunEnded { dialog_id, .. }
+            | AgentEvent::MessagesAdded { dialog_id, .. }
+            | AgentEvent::MessagePatched { dialog_id, .. }
+            | AgentEvent::ApprovalSettled { dialog_id, .. }
+            | AgentEvent::QuestionsSettled { dialog_id, .. }
+            | AgentEvent::ToolNote { dialog_id, .. }
+            | AgentEvent::UserMessageSettled { dialog_id, .. }
+            | AgentEvent::ContextUpdated { dialog_id, .. }
+            | AgentEvent::Checklist { dialog_id, .. }
+            | AgentEvent::SubagentStarted { dialog_id, .. }
+            | AgentEvent::SubagentProgress { dialog_id, .. }
+            | AgentEvent::SubagentEnded { dialog_id, .. } => Some(dialog_id),
+        }
+    }
 }

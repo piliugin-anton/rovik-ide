@@ -1433,3 +1433,11 @@ Tasks add notes here when reality differs from the plan.
     gigabytes. Both now cost what the input does. The editor's diff
     (lineDiff.ts), which must give the same hunks, copied the same way, and
     applying a hunk of 200,000 lines overflowed its stack; it's fixed too.
+- **P04, which computer an event goes to.** A chat's computer is the one
+  that started it on the daemon, which P05 keeps in `state.json`, and a
+  subagent's chat goes with its lead's (`SubagentStarted` names both).
+  The two events about a model's settings name no chat, so they go to
+  every computer of the daemon: all of them are one person's (D16).
+  `Subscribed` comes before the events it replays. A connection that
+  falls behind is closed with code 1013, and its client subscribes again
+  from its `since`.

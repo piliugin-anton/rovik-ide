@@ -2,10 +2,10 @@
 
 mod common;
 
-use common::{closed_with, hello, send, websocket, Daemon, Session, BINARY, COMPUTER};
+use common::{
+    closed_with, hello, send, start_request, websocket, Daemon, Session, BINARY, COMPUTER,
+};
 use hyper::StatusCode;
-use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
-use rovik_core::agent_run::{AgentConfig, ModelProfile, StartKind, StartRequest, UserMessage};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::{FailCode, Frame, Request, Response, Secret, PROTOCOL};
 use serde_json::{json, Value};
@@ -298,51 +298,4 @@ async fn version_names_the_protocol() {
             env!("CARGO_PKG_VERSION")
         )
     );
-}
-
-fn start_request(url: &str, project: &std::path::Path, text: String) -> StartRequest {
-    StartRequest {
-        dialog_id: "chat-1".into(),
-        start: StartKind::Send {
-            message: UserMessage {
-                id: "u1".into(),
-                content: text,
-                meta: None,
-                attachments: Vec::new(),
-            },
-        },
-        profile: ModelProfile {
-            id: "p::m".into(),
-            label: "Test/m".into(),
-            model: "m".into(),
-            base_url: url.into(),
-            api_key: String::new(),
-            stream: true,
-            vision: false,
-            pdf: false,
-            // Room for the 3 MB message.
-            context_tokens: Some(4_000_000),
-            no_tools: false,
-            first_byte_timeout_ms: None,
-            api_route: None,
-        },
-        options: None,
-        mode: Some("agent".into()),
-        context_mode: Some("trimming".into()),
-        root: Some(project.to_string_lossy().into_owned()),
-        current_user_content: None,
-        local_date: Some("2026-10-15".into()),
-        config: Some(AgentConfig {
-            permissions: Permissions {
-                edit_approval: ApprovalRule {
-                    required: true,
-                    by: Approver::User,
-                },
-                verify_changes: false,
-                ..Permissions::default()
-            },
-            ..AgentConfig::default()
-        }),
-        isolate: None,
-    }
 }

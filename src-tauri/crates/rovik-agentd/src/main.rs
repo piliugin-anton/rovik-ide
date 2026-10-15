@@ -11,6 +11,7 @@
 //!   daemon.rs   what the daemon does with a request
 //!   server.rs   HTTP on the socket: /health, /rpc and /call
 //!   session.rs  one WebSocket and its frames (4.1)
+//!   events.rs   the events: numbered, paced, kept, routed (4.3)
 //!   host.rs     `HostInfo`
 //!   attach.rs   `attach --stdio`: a byte bridge to the socket
 //!   doctor.rs   `doctor`: what this server lacks for the daemon
@@ -28,6 +29,8 @@ mod config;
 mod daemon;
 #[cfg(unix)]
 mod doctor;
+#[cfg(unix)]
+mod events;
 #[cfg(unix)]
 mod home;
 #[cfg(unix)]

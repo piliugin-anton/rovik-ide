@@ -4,10 +4,12 @@
 //! here, so a call gets the same reply either way (4.1).
 
 use crate::auth::Tokens;
+use crate::events::Events;
 use crate::host;
 use rovik_core::chat_db::store::{self, NewDialog};
 use rovik_core::Core;
 use rovik_protocol::{Fail, FailCode, Request, Response};
+use std::sync::Arc;
 
 /// The oldest app protocol the daemon serves (4.5).
 pub const MIN_PROTOCOL: u32 = 1;
@@ -16,9 +18,8 @@ pub struct Daemon {
     pub core: Core,
     /// The computers that may connect (config.toml, read at start-up).
     pub tokens: Tokens,
-    /// New on every start, so a client knows its `since` is another
-    /// process's (4.3).
-    pub boot: String,
+    /// Where the core's events go, and where clients subscribe to them.
+    pub events: Arc<Events>,
     /// `--same-machine`: a chat runs in the folder its start names, for
     /// development until projects are carried to the server (T04).
     pub same_machine: bool,
@@ -27,7 +28,8 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub async fn answer(&self, request: Request) -> Result<Response, Fail> {
+    /// `computer`'s request: the computer the token named.
+    pub async fn answer(&self, computer: &str, request: Request) -> Result<Response, Fail> {
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
             Request::AgentStart(mut start) => {
@@ -41,6 +43,8 @@ impl Daemon {
                 // The daemon works in its own copy, never in an overlay (D8).
                 start.isolate = Some(false);
                 self.ensure_chat(&start.dialog_id).await?;
+                // The run's events go to the computer that started it.
+                self.events.own(&start.dialog_id, computer);
                 rovik_core::dispatch(&self.core, Request::AgentStart(start)).await
             }
             request => rovik_core::dispatch(&self.core, request).await,

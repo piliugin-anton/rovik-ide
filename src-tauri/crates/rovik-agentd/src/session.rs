@@ -1,17 +1,21 @@
-//! One WebSocket (4.1): the client's `Hello`, then its calls and pings,
-//! each a JSON text frame of at most `MAX_FRAME` bytes. Calls are answered
-//! side by side, so a slow one holds up neither the others nor the pings,
-//! and one writer sends every frame out.
+//! One WebSocket (4.1): the client's `Hello`, then its calls, pings and
+//! `Subscribe`, each a JSON text frame of at most `MAX_FRAME` bytes. Calls
+//! are answered side by side, so a slow one holds up neither the others
+//! nor the pings, and one writer sends every frame out: replies, and the
+//! events of this computer's chats once it subscribes (4.3).
 
 use crate::cli::VERSION;
 use crate::daemon::{Daemon, MIN_PROTOCOL};
+use crate::events::Published;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rovik_protocol::{Fail, FailCode, Frame, MAX_FRAME, PROTOCOL};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
@@ -19,11 +23,21 @@ use tokio_tungstenite::WebSocketStream;
 
 /// How long a new connection has to say `Hello`.
 const HELLO_WAIT: Duration = Duration::from_secs(10);
-/// Frames waiting for the writer.
+/// Frames waiting for the writer. A connection whose events back up past
+/// this falls behind the live ones and is dropped.
 const QUEUE: usize = 256;
 
 type Sink<S> = SplitSink<WebSocketStream<S>, Message>;
 type Stream<S> = SplitStream<WebSocketStream<S>>;
+
+/// What the writer sends.
+enum Out {
+    Frame(Frame),
+    /// An event, already a frame's text.
+    Event(Arc<Published>),
+    /// The connection fell behind: close it, so the client subscribes again.
+    Behind,
+}
 
 pub async fn run<S>(daemon: Arc<Daemon>, computer: String, io: S)
 where
@@ -67,10 +81,10 @@ where
         protocol: PROTOCOL,
         min_protocol: MIN_PROTOCOL,
         daemon: format!("rovik-agentd {VERSION}"),
-        boot: daemon.boot.clone(),
+        boot: daemon.events.boot.clone(),
         features: Vec::new(),
     };
-    if send(&mut sink, &welcome).await.is_err() {
+    if send(&mut sink, &Out::Frame(welcome)).await.is_err() {
         return;
     }
     if protocol < MIN_PROTOCOL {
@@ -84,26 +98,36 @@ where
     }
     log::info!("{computer} connected ({client}, protocol {protocol})");
 
-    let (tx, mut rx) = mpsc::channel::<Frame>(QUEUE);
+    let (tx, mut rx) = mpsc::channel::<Out>(QUEUE);
     let writer = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            if send(&mut sink, &frame).await.is_err() {
+        while let Some(out) = rx.recv().await {
+            if matches!(out, Out::Behind) {
+                return close(&mut sink, CloseCode::Again, "Fell behind: subscribe again.").await;
+            }
+            if send(&mut sink, &out).await.is_err() {
                 break;
             }
         }
         let _ = sink.close().await;
     });
+    let mut forwarder: Option<JoinHandle<()>> = None;
     while let Some(incoming) = read(&mut stream).await {
         match incoming {
             Incoming::Frame(Frame::Call { id, req }) => {
-                let (daemon, tx) = (daemon.clone(), tx.clone());
+                let (daemon, tx, computer) = (daemon.clone(), tx.clone(), computer.clone());
                 tokio::spawn(async move {
-                    let res = daemon.answer(req).await;
-                    let _ = tx.send(Frame::Reply { id, res }).await;
+                    let res = daemon.answer(&computer, req).await;
+                    let _ = tx.send(Out::Frame(Frame::Reply { id, res })).await;
                 });
             }
+            Incoming::Frame(Frame::Subscribe { since }) => {
+                if let Some(old) = forwarder.take() {
+                    old.abort();
+                }
+                forwarder = Some(subscribe(&daemon, &computer, since, tx.clone()).await);
+            }
             Incoming::Frame(Frame::Ping) => {
-                let _ = tx.send(Frame::Pong).await;
+                let _ = tx.send(Out::Frame(Frame::Pong)).await;
             }
             Incoming::Frame(Frame::Pong) => {}
             // A request this daemon doesn't know, from a newer client.
@@ -112,16 +136,58 @@ where
                     FailCode::BadRequest,
                     "This daemon doesn't know the request.",
                 );
-                let _ = tx.send(Frame::Reply { id, res: Err(fail) }).await;
+                let reply = Frame::Reply { id, res: Err(fail) };
+                let _ = tx.send(Out::Frame(reply)).await;
             }
             Incoming::Frame(_) | Incoming::Unknown { id: None } => {
                 log::debug!("{computer} sent a frame the daemon doesn't take: ignored");
             }
         }
     }
+    if let Some(forwarder) = forwarder {
+        forwarder.abort();
+    }
     drop(tx);
     let _ = writer.await;
     log::info!("{computer} disconnected");
+}
+
+/// `Subscribed`, the events the client missed, then a task that sends it
+/// its computer's events as they come.
+async fn subscribe(
+    daemon: &Daemon,
+    computer: &str,
+    since: Option<(String, u64)>,
+    tx: mpsc::Sender<Out>,
+) -> JoinHandle<()> {
+    let mut subscription = daemon.events.subscribe(computer, since);
+    let subscribed = Frame::Subscribed {
+        replayed: subscription.replay.len() as u64,
+        complete: subscription.complete,
+    };
+    let _ = tx.send(Out::Frame(subscribed)).await;
+    for published in subscription.replay.drain(..) {
+        let _ = tx.send(Out::Event(published)).await;
+    }
+    let computer = computer.to_string();
+    tokio::spawn(async move {
+        loop {
+            match subscription.live.recv().await {
+                Ok(published) if published.reaches(&computer) => {
+                    if tx.send(Out::Event(published)).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(RecvError::Lagged(missed)) => {
+                    log::info!("{computer} fell {missed} events behind: dropped");
+                    let _ = tx.send(Out::Behind).await;
+                    break;
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    })
 }
 
 enum Incoming {
@@ -161,14 +227,24 @@ fn call_id(text: &str) -> Option<u64> {
 }
 
 /// Sends a frame. A reply too big for a frame goes as `TooLarge` instead:
-/// the client asks again through `POST /call` (4.1).
-async fn send<S>(sink: &mut Sink<S>, frame: &Frame) -> Result<(), ()>
+/// the client asks again through `POST /call` (4.1). Events are sized
+/// before they get here.
+async fn send<S>(sink: &mut Sink<S>, out: &Out) -> Result<(), ()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut text = serde_json::to_string(frame).map_err(|_| ())?;
-    if text.len() > MAX_FRAME {
-        if let Frame::Reply { id, .. } = frame {
+    let text = match out {
+        Out::Event(published) => published.text.to_string(),
+        Out::Frame(frame) => frame_text(frame).ok_or(())?,
+        Out::Behind => return Ok(()),
+    };
+    sink.send(Message::Text(text.into())).await.map_err(|_| ())
+}
+
+fn frame_text(frame: &Frame) -> Option<String> {
+    let text = serde_json::to_string(frame).ok()?;
+    match frame {
+        Frame::Reply { id, .. } if text.len() > MAX_FRAME => {
             let fail = Fail::new(
                 FailCode::TooLarge,
                 format!(
@@ -177,14 +253,14 @@ where
                     MAX_FRAME >> 10
                 ),
             );
-            text = serde_json::to_string(&Frame::Reply {
+            serde_json::to_string(&Frame::Reply {
                 id: *id,
                 res: Err(fail),
             })
-            .map_err(|_| ())?;
+            .ok()
         }
+        _ => Some(text),
     }
-    sink.send(Message::Text(text.into())).await.map_err(|_| ())
 }
 
 async fn close<S>(sink: &mut Sink<S>, code: CloseCode, reason: &str)
