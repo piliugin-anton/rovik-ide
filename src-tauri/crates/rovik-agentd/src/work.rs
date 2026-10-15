@@ -144,7 +144,8 @@ pub async fn recheck(
             let outcome = outcome.as_deref().unwrap_or("unknown");
             daemon.results.commit(chat, outcome).await?;
         } else {
-            daemon.check_merged(chat, merged.files.clone()).await?;
+            let (files, diffs) = (merged.files.clone(), merged.diffs.clone());
+            daemon.check_merged(chat, files, diffs).await?;
         }
     }
     Ok(Response::Synced(Synced {

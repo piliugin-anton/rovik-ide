@@ -297,6 +297,7 @@ fn every_request_round_trips() {
             Request::AgentStart(StartRequest {
                 start: StartKind::CheckMerged {
                     files: vec!["src/main.rs".into()],
+                    diffs: vec!["@@ -1 +1 @@\n-fn main() {}\n+fn main() { run() }".into()],
                 },
                 ..start()
             }),

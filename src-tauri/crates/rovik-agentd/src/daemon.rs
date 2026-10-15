@@ -148,10 +148,15 @@ impl Daemon {
     }
 
     /// Starts the chat with the checks on `files`, which the project's
-    /// newer changes were merged into (6.6): its last start's settings, as
-    /// a restart takes them.
-    pub async fn check_merged(&self, dialog_id: &str, files: Vec<String>) -> Result<(), Fail> {
-        let start = StartKind::CheckMerged { files };
+    /// newer changes were merged into (6.6), with what it changed in each
+    /// (`diffs`): its last start's settings, as a restart takes them.
+    pub async fn check_merged(
+        &self,
+        dialog_id: &str,
+        files: Vec<String>,
+        diffs: Vec<String>,
+    ) -> Result<(), Fail> {
+        let start = StartKind::CheckMerged { files, diffs };
         let request = self
             .store
             .restart_request(dialog_id, start)

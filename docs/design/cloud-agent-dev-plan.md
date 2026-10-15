@@ -1793,9 +1793,10 @@ Tasks add notes here when reality differs from the plan.
     `CheckMerged { files }`, from its last start's settings as a restart
     does; one that merged nothing commits a result at once. A merge that
     doesn't apply starts nothing, and the result waits with the reason.
-  - `CheckMerged` sets `merged_from_project` without the diffs, which only
-    the server's merge knows, so the fix round names the merged files
-    without showing what the project changed in them.
+  - `CheckMerged` set `merged_from_project` without the diffs, which only
+    the server's merge knows, so the fix round named the merged files
+    without showing what the project changed in them. Since the second
+    review below, the merge sends them.
   - The client sent every result that would land merged back to the
     server, checks on or off: with the checks off, the server's run ended at
     once and its result landed merged. Since the review below, a result
@@ -1867,7 +1868,8 @@ Tasks add notes here when reality differs from the plan.
   milestone T left for the plan's owner were settled with them; the fixes
   are follow-ups to the tasks they change. Others the notes name (renames
   imported as a deletion and a new file, Git LFS files sent with their
-  content, the bar's buttons only a local chat has) weren't part of it.
+  content, the bar's buttons only a local chat has) were the second
+  review's, below.
   - Which result a chat imported last, and a landing its host wasn't told
     of yet, go into M01's `mirror_state` (6.3, 6.5 and M01's task say so
     now). Until M01, T06's shadow ref and in-memory list stay.
@@ -1916,3 +1918,9 @@ Tasks add notes here when reality differs from the plan.
     and once it ended, so an import or a landing after that showed the next
     time the chat was opened. Showing the sync state stays U05's, and
     reading plans with `chat_read_plan` U04's.
+- **A second review: the limits the first one left.** Settled with the
+  plan's owner the same way; each fix is a follow-up of its own.
+  - A server's merge sends what the project changed in each file it
+    merged: `CheckMerged` grows `diffs` (additive), each file's diff from
+    the landing base by `chats::short_diff`, which local merges use. The
+    fix round shows them as a local chat's does.

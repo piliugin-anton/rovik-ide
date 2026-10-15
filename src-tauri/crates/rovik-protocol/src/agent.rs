@@ -162,7 +162,13 @@ pub enum StartKind {
     /// The project's newer changes were merged into these files of the
     /// chat's worktree on its server (6.6, D13): its checks run on the
     /// result first, and a failure goes on as a fix round.
-    CheckMerged { files: Vec<String> },
+    CheckMerged {
+        files: Vec<String>,
+        /// What the project changed in each, in `files`' order: its diff
+        /// from the chat's landing base, which a fix round shows.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        diffs: Vec<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

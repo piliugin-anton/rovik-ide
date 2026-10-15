@@ -19,7 +19,7 @@
 
 use git2::{Oid, Repository, ResetType, Tree};
 use rovik_core::merge;
-use rovik_core::overlay::markers;
+use rovik_core::overlay::{chats, markers};
 use rovik_protocol::work::SyncState;
 use rovik_protocol::{Fail, FailCode};
 use std::collections::BTreeSet;
@@ -33,6 +33,9 @@ use std::path::Path;
 pub struct Merged {
     pub state: SyncState,
     pub files: Vec<String>,
+    /// For the files of a sync that merged cleanly: what the project
+    /// changed in each, its diff from the landing base (6.6).
+    pub diffs: Vec<String>,
 }
 
 impl Merged {
@@ -64,6 +67,7 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
         return Ok(Merged {
             state: SyncState::Synced,
             files: Vec::new(),
+            diffs: Vec::new(),
         });
     }
     let (old, new) = (base.tree().map_err(git)?, snapshot.tree().map_err(git)?);
@@ -77,6 +81,7 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
         .collect();
 
     let (mut apply, mut merged, mut marked, mut stuck) = (Vec::new(), vec![], vec![], vec![]);
+    let mut diffs = Vec::new();
     for path in paths {
         let side = |tree: &Tree| in_tree(&repo, tree, &path).map_err(git);
         let (was, now) = (side(&old)?, side(&new)?);
@@ -110,6 +115,7 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
         match merge::merge_bytes(base_bytes.unwrap_or_default(), chat, project) {
             Ok(Some(bytes)) => {
                 apply.push((path.clone(), Some(Entry::File { bytes, exec })));
+                diffs.push(chats::short_diff(base_bytes.unwrap_or_default(), project));
                 merged.push(path);
             }
             Ok(None) => match markers::mark(base_bytes, project, chat) {
@@ -132,12 +138,14 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
         return Ok(Merged {
             state: SyncState::Unmergeable,
             files: stuck,
+            diffs: Vec::new(),
         });
     }
     if !marked.is_empty() && !resolves {
         return Ok(Merged {
             state: SyncState::Conflicts,
             files: marked_paths(),
+            diffs: Vec::new(),
         });
     }
     let files = marked_paths();
@@ -152,11 +160,13 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
         Merged {
             state: SyncState::Synced,
             files: merged,
+            diffs,
         }
     } else {
         Merged {
             state: SyncState::Marked,
             files,
+            diffs: Vec::new(),
         }
     })
 }

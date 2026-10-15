@@ -330,8 +330,9 @@ pub(super) enum Entry {
     /// With tool calls that never ran (the app closed meanwhile).
     Resume { calls: Vec<ToolCall> },
     /// With the checks on files the project's newer changes were merged
-    /// into, on the chat's server (6.6).
-    CheckMerged { files: Vec<String> },
+    /// into, on the chat's server (6.6), with what the project changed in
+    /// each.
+    CheckMerged { files: Vec<(String, String)> },
 }
 
 /// What one model turn produced.
@@ -503,7 +504,12 @@ impl Run {
                 }
                 Entry::Resume { calls }
             }
-            StartKind::CheckMerged { files } => Entry::CheckMerged { files },
+            StartKind::CheckMerged { files, diffs } => {
+                let diffs = diffs.into_iter().chain(std::iter::repeat(String::new()));
+                Entry::CheckMerged {
+                    files: files.into_iter().zip(diffs).collect(),
+                }
+            }
         };
 
         // A new message with an unfinished checklist carried from earlier
@@ -1043,8 +1049,7 @@ impl Run {
             Entry::CheckMerged { files } => {
                 // As `take_project_changes` after a local merge: the checks
                 // run on the merged files, and a failure is a fix round.
-                self.merged_from_project =
-                    Some(files.into_iter().map(|f| (f, String::new())).collect());
+                self.merged_from_project = Some(files);
                 self.writes_since_verify = true;
                 let outcome = self.verify_at_end(false, None).await?;
                 self.merged_from_project = None;

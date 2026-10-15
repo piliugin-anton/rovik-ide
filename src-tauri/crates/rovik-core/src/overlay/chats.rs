@@ -2570,8 +2570,9 @@ fn save_pre_merge(dialog_id: &str, kept: &PreMerge) -> Result<(), String> {
 }
 
 /// What changed from `old` to `new`, as a unified diff of a few dozen lines
-/// at most, for the chat's model.
-fn short_diff(old: &[u8], new: &[u8]) -> String {
+/// at most, for the chat's model: what the project changed in a file its
+/// merge took, here or on a server (6.6).
+pub fn short_diff(old: &[u8], new: &[u8]) -> String {
     let mut opts = git2::DiffOptions::new();
     opts.context_lines(1);
     let Ok(mut patch) = git2::Patch::from_buffers(old, None, new, None, Some(&mut opts)) else {

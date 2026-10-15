@@ -106,6 +106,11 @@ async fn a_check_failing_on_the_merge_is_fixed_and_then_lands() {
         .map(Value::to_string)
         .any(|r| r.contains("The project changed meanwhile (a.txt)"));
     assert!(told, "the fix round knew of the merge");
+    let shown = requests
+        .iter()
+        .map(Value::to_string)
+        .any(|r| r.contains("What the project changed in `a.txt`") && r.contains("-5\\n+FIVE"));
+    assert!(shown, "and saw what the project changed");
 }
 
 #[tokio::test(flavor = "multi_thread")]
