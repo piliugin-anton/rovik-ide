@@ -293,6 +293,19 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     );
 }
 
+/// U01: the host's setup script runs as the user, in their home folder,
+/// and what it printed comes back in order, with how it ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_setup_script_runs_at_home_and_says_how_it_went() {
+    let host = Host::new().await;
+    let connector = host.connector();
+    let script = "echo one\necho two >&2\ntouch setup-ran\nexit 3\n";
+    let run = deploy::run_setup(&connector, script).await.unwrap();
+    assert_eq!(run.status, Some(3));
+    assert_eq!(run.output, "one\ntwo\n");
+    assert!(host.home.join("setup-ran").exists());
+}
+
 /// H05: a root login is refused, before anything is uploaded.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_root_login_is_refused() {

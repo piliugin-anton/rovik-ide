@@ -143,7 +143,10 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::WorkConflictsToChat { .. }
         | Request::WorkUndoMerge { .. }
         | Request::WorkLanded { .. }
-        | Request::HostInfo => {
+        | Request::HostInfo
+        | Request::KeysList
+        | Request::KeysRemove { .. }
+        | Request::Storage => {
             return Err(Fail::new(
                 FailCode::BadRequest,
                 "Only a daemon answers this request.",
@@ -611,8 +614,10 @@ mod tests {
     #[tokio::test]
     async fn host_info_is_the_daemons_to_answer() {
         let test = TestCore::new();
-        let fail = dispatch(&test.core, Request::HostInfo).await.unwrap_err();
-        assert_eq!(fail.code, FailCode::BadRequest);
+        for request in [Request::HostInfo, Request::KeysList, Request::Storage] {
+            let fail = dispatch(&test.core, request).await.unwrap_err();
+            assert_eq!(fail.code, FailCode::BadRequest);
+        }
     }
 
     #[tokio::test]

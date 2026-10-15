@@ -1,12 +1,14 @@
 // The hosts' own events on `cloud-event`, apart from the chats' (the app's
 // `CloudEvent`, rovik-client): a message's files going up to its host, a
 // project being pushed there, a remote chat's changes looking different
-// after its result came in or landed, or its project synced, and a chat's
-// move to a host or back. And the moves' commands (6.8).
+// after its result came in or landed, or its project synced, a chat's
+// move to a host or back, and a host's connection changing. And the moves'
+// commands (6.8).
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { StartRequest } from './agentRuns';
+import type { HostState } from './hosts';
 
 export type CloudEvent =
   | { type: 'uploading'; dialogId: string; messageId: string; sent: number; total: number }
@@ -25,7 +27,8 @@ export type CloudEvent =
       /** "pausing", "fetching", "releasing", "pulling", "landing", then "moved", "failed" or "cancelled". */
       step: string;
       message?: string;
-    };
+    }
+  | { type: 'host'; host: string; state: HostState };
 
 /** What moving a chat to a host would do, and whether it can (`MovePreflight`). */
 export interface MovePreflight {

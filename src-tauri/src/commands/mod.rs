@@ -15,6 +15,7 @@ pub mod agent;
 pub mod browser;
 pub mod chat;
 pub mod clm;
+pub mod hosts;
 pub mod overlay;
 pub mod project;
 pub mod tools;

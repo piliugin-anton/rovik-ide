@@ -59,6 +59,21 @@ impl Keys {
         changed
     }
 
+    /// The providers with a key, and the base URL each key goes with.
+    pub fn providers(&self) -> Vec<(String, String)> {
+        let keys = self.providers.iter();
+        keys.map(|(provider, key)| (provider.clone(), key.base_url.clone()))
+            .collect()
+    }
+
+    /// Forgets `provider`'s key, or every key. How many went.
+    pub fn remove(&mut self, provider: Option<&str>) -> usize {
+        match provider {
+            Some(provider) => usize::from(self.providers.remove(provider).is_some()),
+            None => std::mem::take(&mut self.providers).len(),
+        }
+    }
+
     /// Gives each model without a key its provider's, when it came with
     /// the same base URL.
     pub fn give<'a>(&self, models: impl IntoIterator<Item = &'a mut ModelProfile>) {
@@ -73,6 +88,6 @@ impl Keys {
 }
 
 /// A model's provider: the part of its id before `::`.
-fn provider(model: &ModelProfile) -> &str {
+pub fn provider(model: &ModelProfile) -> &str {
     model.id.split("::").next().unwrap_or(&model.id)
 }

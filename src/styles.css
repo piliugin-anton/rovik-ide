@@ -8452,3 +8452,215 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
   color: var(--fg-dim);
 }
+
+/* Settings → Cloud hosts (CloudHostsSettings.tsx) */
+
+.cloud-hosts-settings .setting-checkbox,
+.cloud-hosts-settings .settings-section .setting-explain {
+  margin-left: 0;
+}
+
+.cloud-hosts-settings .setting-explain.warning {
+  color: var(--error);
+}
+
+.host-status.ok {
+  color: var(--success);
+}
+
+.host-status.warn {
+  color: var(--warning);
+}
+
+.host-status.error {
+  color: var(--error);
+}
+
+.host-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.host-actions .settings-hint {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.host-form select {
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  font-size: 13px;
+}
+
+.host-steps {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.host-step {
+  display: grid;
+  grid-template-columns: 16px 96px 1fr;
+  gap: 2px 8px;
+  padding: 3px 0;
+}
+
+.host-step-mark {
+  text-align: center;
+  font-weight: 600;
+}
+
+.host-step.passed .host-step-mark {
+  color: var(--success);
+}
+
+.host-step.warning .host-step-mark,
+.host-step.confirm .host-step-mark {
+  color: var(--warning);
+}
+
+.host-step.failed .host-step-mark {
+  color: var(--error);
+}
+
+.host-step.skipped {
+  color: var(--fg-dim);
+}
+
+.host-step-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-dim);
+}
+
+.host-key-confirm {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.host-key-confirm code,
+.host-command {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+
+.host-command {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.host-sudo {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.host-sudo input,
+.host-limit input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+.host-storage-list,
+.host-keys-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.host-keys-list .settings-hint {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.host-key-provider {
+  color: var(--fg);
+}
+
+.host-limits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.host-limit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.host-limit span {
+  flex: 0 0 140px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.host-unlock {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.host-unlock input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+.host-form textarea {
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.host-setup-output {
+  margin: 8px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

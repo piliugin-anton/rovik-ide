@@ -52,6 +52,10 @@ pub struct Host {
     pub approval_policy: ApprovalPolicy,
     #[serde(default)]
     pub deploy: DeployState,
+    /// Commands run on the host after a deploy, and again on request, to
+    /// install what the projects' checks need (design §7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_script: Option<String>,
 }
 
 /// How the app logs in to a host (H02, H03).
@@ -189,6 +193,7 @@ mod tests {
                 version: "0.1.0".into(),
                 sha256: Some("ab".repeat(32)),
             },
+            setup_script: Some("rustup default stable\n".into()),
         }
     }
 

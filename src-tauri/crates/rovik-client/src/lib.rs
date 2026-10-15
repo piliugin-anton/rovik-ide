@@ -26,6 +26,7 @@
 //!   connection_test.rs  the hosts page's Test connection, a step at a time,
 //!                 and the probe that says what a server offers
 //!   deploy.rs     the daemon put on a host, checked, upgraded and removed
+//!   hosts_page.rs what Settings → Cloud hosts does with all of the above
 
 mod client;
 pub mod connection_test;
@@ -33,6 +34,7 @@ mod connector;
 pub mod deploy;
 pub mod host_settings;
 mod hosts;
+pub mod hosts_page;
 mod http;
 mod packs;
 pub mod provider_keys;

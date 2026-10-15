@@ -7,7 +7,7 @@ use crate::chat::{ChatModel, MessagePatch, ToolCall};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
 use crate::events::*;
-use crate::host::{HostInfo, Install};
+use crate::host::{HostInfo, Install, KeyInfo, Storage};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
@@ -566,6 +566,12 @@ fn every_request_round_trips() {
                 paths: vec!["src/main.rs".into()],
             },
             Request::HostInfo,
+            Request::KeysList,
+            Request::KeysRemove { provider: None },
+            Request::KeysRemove {
+                provider: Some("openai".into()),
+            },
+            Request::Storage,
         ],
     );
 }
@@ -705,7 +711,31 @@ fn every_response_round_trips() {
                 rev: 41,
             })),
             Response::Ownership(Some(Ownership::default())),
+            Response::Keys(vec![KeyInfo {
+                provider: "openai".into(),
+                base_url: "https://api.openai.com/v1".into(),
+            }]),
+            Response::Keys(Vec::new()),
+            Response::Storage(Storage {
+                projects: 1 << 30,
+                work: 2,
+                data: 3,
+                tmp: 0,
+            }),
         ],
+    );
+}
+
+/// A key's provider and base URL go to the hosts page; the key never does.
+#[test]
+fn the_key_list_carries_no_key() {
+    let json = round_trip(&Response::Keys(vec![KeyInfo {
+        provider: "openai".into(),
+        base_url: "https://api.openai.com/v1".into(),
+    }]));
+    assert_eq!(
+        json,
+        json!({ "t": "keys", "v": [{ "provider": "openai", "baseUrl": "https://api.openai.com/v1" }] })
     );
 }
 

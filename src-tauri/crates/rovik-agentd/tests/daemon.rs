@@ -365,3 +365,59 @@ async fn a_commands_temporary_files_stay_out_of_tmp() {
         daemon.output()
     );
 }
+
+/// U01: the Host group's keys and storage. A key that came with this
+/// computer's configuration is listed by provider and base URL, never
+/// itself, until it's removed; the folders' sizes come back.
+#[tokio::test(flavor = "multi_thread")]
+async fn keys_are_listed_without_themselves_then_removed() {
+    use rovik_protocol::agent::{AgentConfig, ModelProfile};
+    use rovik_protocol::host::KeyInfo;
+    let daemon = Daemon::start(&[]).await;
+    let mut session = daemon.session().await;
+    assert_eq!(
+        session.call(Request::KeysList).await,
+        Ok(Response::Keys(Vec::new()))
+    );
+    let reviewer = ModelProfile {
+        id: "openai::gpt-5".into(),
+        label: "OpenAI/gpt-5".into(),
+        model: "gpt-5".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        api_key: "sk-the-secret".into(),
+        stream: true,
+        vision: false,
+        pdf: false,
+        context_tokens: None,
+        no_tools: false,
+        first_byte_timeout_ms: None,
+        api_route: None,
+    };
+    let config = AgentConfig {
+        approval_profiles: vec![reviewer],
+        ..AgentConfig::default()
+    };
+    let configured = session.call(Request::AgentConfigure(config)).await;
+    assert_eq!(configured, Ok(Response::Done));
+    let listed = session.call(Request::KeysList).await.unwrap();
+    assert_eq!(
+        listed,
+        Response::Keys(vec![KeyInfo {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+        }])
+    );
+    assert!(!format!("{listed:?}").contains("sk-the-secret"));
+    let removed = session.call(Request::KeysRemove { provider: None }).await;
+    assert_eq!(removed, Ok(Response::Count(1)));
+    assert_eq!(
+        session.call(Request::KeysList).await,
+        Ok(Response::Keys(Vec::new()))
+    );
+    let kept = std::fs::read_to_string(daemon.data.join("keys.json")).unwrap();
+    assert!(!kept.contains("sk-the-secret"), "{kept}");
+    let Ok(Response::Storage(storage)) = session.call(Request::Storage).await else {
+        panic!("no storage\n{}", daemon.output());
+    };
+    assert!(storage.data > 0, "the chat database: {storage:?}");
+}

@@ -5,7 +5,7 @@
 use crate::agent::{AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
-use crate::host::HostInfo;
+use crate::host::{HostInfo, KeyInfo, Storage};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
 use crate::work::{ChatResult, Handed, Project, Synced, UndoneMerge, WorkChange, WorkFile};
@@ -229,6 +229,16 @@ pub enum Request {
 
     // Host: the server, for the hosts page, deploy and upgrade.
     HostInfo,
+    /// The providers whose key the host keeps, and the base URL each key
+    /// goes with: never the keys. → `Keys`.
+    KeysList,
+    /// Forgets `provider`'s key, or every key; the next start that brings
+    /// one keeps it again (D11). → `Count`, the keys forgotten.
+    KeysRemove {
+        provider: Option<String>,
+    },
+    /// What Rovik's folders take on the host. → `Storage`.
+    Storage,
 }
 
 /// The chat a request is about: by its id, or by one of its messages'.
@@ -301,7 +311,10 @@ impl Request {
             | Request::BlobsMissing { .. }
             | Request::ProjectEnsure { .. }
             | Request::WorkResults
-            | Request::HostInfo => None,
+            | Request::HostInfo
+            | Request::KeysList
+            | Request::KeysRemove { .. }
+            | Request::Storage => None,
         }
     }
 }
@@ -343,6 +356,9 @@ pub enum Response {
     ChatChanges(ChangesPage),
     /// `ChatOwner`.
     Ownership(Option<Ownership>),
+    /// `KeysList`.
+    Keys(Vec<KeyInfo>),
+    Storage(Storage),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -396,4 +412,6 @@ replies! {
     UndoneMerge => UndoneMerge,
     ChatChanges => ChangesPage,
     Ownership => Option<Ownership>,
+    Keys => Vec<KeyInfo>,
+    Storage => Storage,
 }

@@ -87,6 +87,9 @@ pub enum CloudEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+    /// A host's connection changed: the hosts page and its chats' badges
+    /// show it.
+    Host { host: String, state: HostState },
 }
 
 /// Where `CloudEvent`s go.
@@ -256,6 +259,35 @@ impl Remote {
 
     pub fn set_policy(&self, host: &str, policy: ApprovalPolicy) {
         self.lock().policies.insert(host.to_string(), policy);
+    }
+
+    /// How many of the user's chats are on `host` or moving to it.
+    pub async fn chats_on(&self, host: &str) -> Result<usize, String> {
+        let host = host.to_string();
+        self.core
+            .db
+            .read(move |c| location::chats_on(c, &host))
+            .await
+    }
+
+    /// Forgets the host (removed from the hosts page): its connection
+    /// closes once no call holds it.
+    pub fn disconnect(&self, host: &str) {
+        self.hosts.disconnect(host);
+        self.lock().policies.remove(host);
+    }
+
+    /// A call about the host itself (the Host group): `HostInfo`,
+    /// `KeysList`, `KeysRemove`, `Storage`.
+    pub async fn host_call(&self, host: &str, request: Request) -> Result<Response, Fail> {
+        self.client(host)?.call(request).await
+    }
+
+    /// Whether the host's daemon serves `feature` (4.5): false until it
+    /// has said, in its `Welcome`.
+    pub fn serves(&self, host: &str, feature: &str) -> bool {
+        let daemon = self.hosts.client(host).and_then(|c| c.daemon());
+        daemon.is_some_and(|d| d.features.iter().any(|f| f == feature))
     }
 
     fn policy(&self, host: &str) -> ApprovalPolicy {
@@ -634,7 +666,13 @@ impl Remote {
 
     async fn receive(&self, host: &str, incoming: Incoming) {
         match incoming {
-            Incoming::State(state) => log::info!("{host}: {state:?}"),
+            Incoming::State(state) => {
+                log::info!("{host}: {state:?}");
+                if let Some(cloud) = self.cloud() {
+                    let host = host.to_string();
+                    cloud(CloudEvent::Host { host, state });
+                }
+            }
             Incoming::Subscribed { complete } => {
                 if !complete {
                     self.catch_up(host).await;

@@ -1,4 +1,5 @@
 use crate::{filesystem::WatcherState, terminal::TerminalState};
+use rovik_client::hosts_page::HostsPage;
 use rovik_client::provider_keys::ProviderKeys;
 use rovik_client::secrets::SecretStore;
 use rovik_client::Remote;
@@ -46,12 +47,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = app.path().app_config_dir()?;
+            let data = app.path().app_data_dir()?;
             // The providers' API keys, in the keychain or the encrypted
             // file in its place, out of ai-settings.json (H06).
             let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
-            let keys = ProviderKeys::new(config.join("ai-settings.json"), secrets);
+            let keys = ProviderKeys::new(config.join("ai-settings.json"), secrets.clone());
             app.manage(Arc::new(keys));
-            let paths = Paths::new(app.path().app_data_dir()?, config);
+            let paths = Paths::new(data.clone(), config.clone());
             let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
             // Chats on hosts (6.1): their requests go to the host, and its
             // events come back through the core's sink.
@@ -66,10 +68,21 @@ pub fn run() {
             if let Err(e) = rt::block_on(remote.load()) {
                 eprintln!("cloud: the chats on hosts couldn't be read: {e}");
             }
+            // Settings → Cloud hosts (U01), and the hosts deployed there,
+            // connected from the start.
+            let hosts = HostsPage::new(
+                config,
+                data.join("ssh"),
+                secrets,
+                remote.clone(),
+                env!("CARGO_PKG_VERSION"),
+            );
             {
                 let _runtime = rt::handle().enter();
                 remote_chats::from_env(&remote);
+                hosts.connect_all();
             }
+            app.manage(Arc::new(hosts));
             app.manage(core);
             app.manage(remote);
             // The main window, as tauri.conf.json describes it (`create`
@@ -134,6 +147,22 @@ pub fn run() {
             commands::chat::cloud_move_chat,
             commands::chat::cloud_move_back,
             commands::chat::cloud_cancel_move,
+            commands::hosts::hosts_list,
+            commands::hosts::hosts_save,
+            commands::hosts::hosts_remove,
+            commands::hosts::hosts_test,
+            commands::hosts::hosts_trust_key,
+            commands::hosts::hosts_set_policy,
+            commands::hosts::hosts_deploy,
+            commands::hosts::hosts_upgrade,
+            commands::hosts::hosts_run_setup,
+            commands::hosts::hosts_unlock,
+            commands::hosts::hosts_removal,
+            commands::hosts::hosts_remove_rovik,
+            commands::hosts::hosts_details,
+            commands::hosts::hosts_remove_keys,
+            commands::hosts::hosts_limits,
+            commands::hosts::hosts_set_limits,
             commands::chat::chat_search,
             commands::chat::chat_messages_answered,
             commands::chat::chat_store_attachment,

@@ -39,3 +39,27 @@ pub struct Install {
     /// The accounts that can change its limits and upgrade it.
     pub admins: Vec<String>,
 }
+
+/// A provider whose key the host keeps (`KeysList`): never the key.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyInfo {
+    /// The part of a model's id before `::`.
+    pub provider: String,
+    /// The only base URL the key goes to.
+    pub base_url: String,
+}
+
+/// What Rovik's folders take on the host, in bytes (`Storage`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Storage {
+    /// The projects' bare repositories.
+    pub projects: u64,
+    /// The chats' worktrees.
+    pub work: u64,
+    /// The chat database, attachments and the agent's log.
+    pub data: u64,
+    /// The agent's temporary files.
+    pub tmp: u64,
+}

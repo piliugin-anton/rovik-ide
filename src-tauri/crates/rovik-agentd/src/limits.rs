@@ -296,7 +296,7 @@ impl Caps {
 
 /// The bytes the files under `dir` take: links not followed, and other
 /// file systems (the virtual files' mount) not entered.
-fn size_of(dir: &Path) -> u64 {
+pub fn size_of(dir: &Path) -> u64 {
     let Ok(top) = std::fs::symlink_metadata(dir) else {
         return 0;
     };

@@ -1,0 +1,320 @@
+// Settings → Cloud hosts (U01): the hosts this computer knows, each one's
+// connection test, its deploy, upgrade and removal, and what its daemon
+// says of itself, its keys and its storage. The commands are `hosts_*`
+// (src-tauri/src/commands/hosts.rs, over rovik-client's hosts_page.rs).
+// A connection test's steps come on `host-test` as each one ends.
+
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+export type AuthKind = 'key' | 'agent' | 'password' | 'keyboard-interactive' | 'system-ssh';
+
+/** Who approves on the host while nobody is there (6.9). */
+export type ApprovalPolicy = 'waitForMe' | 'aiReviewerThenMe';
+
+export type DeployState =
+  { state: 'notDeployed' } | { state: 'deployed'; version: string; sha256?: string };
+
+/** A host's connection, once deployed. */
+export type HostState = 'connecting' | 'ready' | 'offline' | 'version-mismatch';
+
+export interface Host {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  user: string;
+  auth: AuthKind;
+  keyPath?: string;
+  /** The host key pinned on first use, as OpenSSH writes it. */
+  hostKey?: string;
+  approvalPolicy: ApprovalPolicy;
+  deploy: DeployState;
+  /** Run on the host after a deploy, and when asked (design §7). */
+  setupScript?: string;
+}
+
+export interface HostRow extends Host {
+  state?: HostState;
+  /** The user's chats there, or moving there. */
+  chats: number;
+  /** Whether a password or a key passphrase is saved: never the secret. */
+  passwordSaved: boolean;
+  passphraseSaved: boolean;
+}
+
+/** Where secrets are kept (design §6). */
+export type StoreKind = { kind: 'keychain' } | { kind: 'file'; unlocked: boolean };
+
+export interface HostsList {
+  hosts: HostRow[];
+  store: StoreKind;
+  /** The build a deploy uploads (`ROVIK_AGENTD_BINARY`), if there is one. */
+  build?: string;
+}
+
+/** What a form changes of a host's secrets: absent leaves one, empty forgets it. */
+export interface HostSecrets {
+  password?: string;
+  passphrase?: string;
+}
+
+export type Check =
+  | 'address'
+  | 'host-key'
+  | 'log-in'
+  | 'system'
+  | 'account'
+  | 'disk'
+  | 'git'
+  | 'chrome'
+  | 'isolation'
+  | 'service'
+  | 'install'
+  | 'api'
+  | 'daemon';
+
+export type Outcome = 'passed' | 'warning' | 'failed' | 'confirm' | 'skipped';
+
+/** A step of the connection test (H04). */
+export interface Step {
+  check: Check;
+  outcome: Outcome;
+  message: string;
+  /** The host's key, when it's to be confirmed. */
+  hostKey?: { key: string; fingerprint: string };
+}
+
+export interface HostInfo {
+  version: string;
+  protocol: number;
+  minProtocol: number;
+  os: string;
+  arch: string;
+  /** The account the daemon runs as. */
+  user: string;
+  virtualFiles: boolean;
+  virtualFilesProblem?: string;
+  chrome?: string;
+  userNamespaces: boolean;
+  install?: { admins: string[] };
+  otherDaemons: number;
+}
+
+/** A provider whose key the host keeps: never the key. */
+export interface KeyInfo {
+  provider: string;
+  baseUrl: string;
+}
+
+/** What Rovik's folders take on the host, in bytes. */
+export interface Storage {
+  projects: number;
+  work: number;
+  data: number;
+  tmp: number;
+}
+
+export interface HostDetails {
+  info: HostInfo;
+  /** Absent from a daemon that can't say. */
+  keys?: KeyInfo[];
+  storage?: Storage;
+  /** The user is one of Rovik's administrators there. */
+  admin: boolean;
+  /** The daemon is older than this app. */
+  upgrade: boolean;
+  appVersion: string;
+}
+
+/** Why a deploy, an upgrade or a removal didn't happen. */
+export type DeployFailure =
+  | { kind: 'rootLogin'; message: string }
+  | { kind: 'unsupported'; message: string }
+  | { kind: 'sudoPassword'; message: string }
+  | { kind: 'needsRoot'; command: string; message: string }
+  | { kind: 'tampered'; message: string }
+  | { kind: 'askAdmins'; admins: string[]; message: string }
+  | { kind: 'failed'; message: string };
+
+/** What removing Rovik for this user deletes: each folder and its size. */
+export interface Removal {
+  folders: [string, number][];
+}
+
+/** What the host's setup script printed, and how it ended. */
+export interface SetupRun {
+  /** Its exit status; null if the server didn't say. */
+  status: number | null;
+  output: string;
+}
+
+export const listHosts = () => invoke<HostsList>('hosts_list');
+
+export const saveHost = (host: Host, secrets?: HostSecrets) =>
+  invoke<Host>('hosts_save', { host, secrets: secrets ?? null });
+
+export const removeHost = (id: string) => invoke<void>('hosts_remove', { id });
+
+/** Tests the host; `apiUrls` are the providers' addresses to try from it. */
+export const testHost = (id: string, apiUrls: string[]) =>
+  invoke<Step[]>('hosts_test', { id, apiUrls });
+
+export const trustKey = (id: string, key: string) => invoke<void>('hosts_trust_key', { id, key });
+
+export const setPolicy = (id: string, policy: ApprovalPolicy) =>
+  invoke<void>('hosts_set_policy', { id, policy });
+
+/** Deploys Rovik; `sudoPassword` when sudo asked for one. Resolves with its version. */
+export const deployHost = (id: string, sudoPassword?: string) =>
+  invoke<string>('hosts_deploy', { id, sudoPassword: sudoPassword ?? null });
+
+export const upgradeHost = (id: string) => invoke<void>('hosts_upgrade', { id });
+
+/** Runs the host's setup script. */
+export const runSetup = (id: string) => invoke<SetupRun>('hosts_run_setup', { id });
+
+/** Opens the file that keeps secrets where there's no keychain. */
+export const unlockSecrets = (passphrase: string) => invoke<void>('hosts_unlock', { passphrase });
+
+export const removalOf = (id: string) => invoke<Removal>('hosts_removal', { id });
+
+export const removeRovik = (id: string, removal: Removal) =>
+  invoke<void>('hosts_remove_rovik', { id, removal });
+
+export const hostDetails = (id: string) => invoke<HostDetails>('hosts_details', { id });
+
+/** "Remove keys from this server": resolves with how many went. */
+export const removeKeys = (id: string) => invoke<number>('hosts_remove_keys', { id });
+
+export const hostLimits = (id: string) => invoke<[string, string][]>('hosts_limits', { id });
+
+export const setHostLimits = (id: string, changes: [string, string][]) =>
+  invoke<void>('hosts_set_limits', { id, changes });
+
+/** Calls `handler` with each step of a connection test as it ends, until stopped. */
+export function onHostTest(handler: (hostId: string, step: Step) => void): () => void {
+  const listening = listen<{ hostId: string; step: Step }>('host-test', (e) =>
+    handler(e.payload.hostId, e.payload.step)
+  );
+  return () => void listening.then((stop) => stop());
+}
+
+/** A new host's form. */
+export function emptyHost(): Host {
+  return {
+    id: '',
+    name: '',
+    host: '',
+    port: 22,
+    user: '',
+    auth: 'key',
+    approvalPolicy: 'waitForMe',
+    deploy: { state: 'notDeployed' },
+  };
+}
+
+/** The host of a row, without what the list adds to it. */
+export function hostOf(row: HostRow): Host {
+  const { state, chats, passwordSaved, passphraseSaved, ...host } = row;
+  return host;
+}
+
+/**
+ * What a host's form saves of its secrets: what's typed in, nothing for a
+ * field left empty, and the forgetting of a saved one the way in no longer
+ * takes.
+ */
+export function secretsToSave(
+  auth: AuthKind,
+  typed: { password: string; passphrase: string },
+  saved: { passwordSaved: boolean; passphraseSaved: boolean } | undefined
+): HostSecrets {
+  const usesPassword = auth === 'password' || auth === 'keyboard-interactive';
+  const usesKey = auth === 'key';
+  const pick = (uses: boolean, value: string, kept: boolean | undefined) => {
+    if (uses) return value || undefined;
+    return kept ? '' : undefined;
+  };
+  return {
+    password: pick(usesPassword, typed.password, saved?.passwordSaved),
+    passphrase: pick(usesKey, typed.passphrase, saved?.passphraseSaved),
+  };
+}
+
+export const AUTH_LABELS: Record<AuthKind, string> = {
+  key: 'A key file',
+  agent: 'My SSH agent',
+  password: 'A password',
+  'keyboard-interactive': 'The server’s questions',
+  'system-ssh': 'My system ssh',
+};
+
+export const CHECK_LABELS: Record<Check, string> = {
+  address: 'Address',
+  'host-key': 'Host key',
+  'log-in': 'Log-in',
+  system: 'System',
+  account: 'Account',
+  disk: 'Disk',
+  git: 'git',
+  chrome: 'Chrome',
+  isolation: 'Isolation extras',
+  service: 'Service',
+  install: 'Rovik',
+  api: 'Provider',
+  daemon: 'Daemon',
+};
+
+export type Tone = 'muted' | 'ok' | 'warn' | 'error';
+
+/** What the page says of a host: deployed or not, and its connection. */
+export function hostStatus(row: Pick<HostRow, 'deploy' | 'state'>): { label: string; tone: Tone } {
+  if (row.deploy.state === 'notDeployed') return { label: 'Not deployed', tone: 'muted' };
+  switch (row.state) {
+    case 'ready':
+      return { label: 'Connected', tone: 'ok' };
+    case 'offline':
+      return { label: 'Offline', tone: 'error' };
+    case 'version-mismatch':
+      return { label: 'Needs a newer app', tone: 'error' };
+    default:
+      return { label: 'Connecting…', tone: 'warn' };
+  }
+}
+
+/** The connection test as a whole, from its steps so far. */
+export function testVerdict(steps: Step[], running: boolean): { label: string; tone: Tone } | null {
+  if (running) return { label: 'Testing…', tone: 'muted' };
+  if (steps.length === 0) return null;
+  if (steps.some((s) => s.outcome === 'confirm'))
+    return { label: 'Check the server’s key', tone: 'warn' };
+  const failed = steps.find((s) => s.outcome === 'failed');
+  if (failed) return { label: `Failed: ${CHECK_LABELS[failed.check]}`, tone: 'error' };
+  if (steps.some((s) => s.outcome === 'warning'))
+    return { label: 'Works, with warnings', tone: 'warn' };
+  return { label: 'Everything works', tone: 'ok' };
+}
+
+/** How a setup script ended, in words. */
+export function setupVerdict(run: SetupRun): { label: string; tone: Tone } {
+  if (run.status === 0) return { label: 'The setup script worked.', tone: 'ok' };
+  if (run.status === null) {
+    return { label: 'The setup script ended, but the server didn’t say how.', tone: 'warn' };
+  }
+  return { label: `The setup script failed, with exit status ${run.status}.`, tone: 'error' };
+}
+
+/** A command's rejection as a deploy failure: the object Rust sends, or text. */
+export function asDeployFailure(err: unknown): DeployFailure {
+  if (err && typeof err === 'object' && 'kind' in err && 'message' in err) {
+    return err as DeployFailure;
+  }
+  return { kind: 'failed', message: String(err) };
+}
+
+/** `user@host`, and the port when it isn't 22. */
+export function addressOf(host: Pick<Host, 'user' | 'host' | 'port'>): string {
+  const port = host.port === 22 ? '' : `:${host.port}`;
+  return `${host.user}@${host.host}${port}`;
+}

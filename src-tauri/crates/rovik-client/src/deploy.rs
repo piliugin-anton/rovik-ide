@@ -400,9 +400,51 @@ pub async fn upgrade(
     upgraded
 }
 
+/// The limits on each user's daemon, as `admin limits` shows them to an
+/// administrator: each name and its value, `none` when it isn't set.
+pub async fn limits(
+    connector: &SshConnector,
+    layout: &Layout,
+) -> Result<Vec<(String, String)>, DeployError> {
+    let ssh = session(connector).await?;
+    let command = format!(
+        "{} -n {} admin limits",
+        layout.sudo,
+        quote(&layout.installed)
+    );
+    let out = exec(&ssh, &command, b"").await?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let limits = text.lines().filter_map(|line| {
+        let (name, value) = line.split_once(" = ")?;
+        Some((name.trim().to_string(), value.trim().to_string()))
+    });
+    Ok(limits.collect())
+}
+
+/// Sets limits as an administrator (`admin limits name=value ...`), `none`
+/// taking one away. They apply to each daemon when it next starts.
+pub async fn set_limits(
+    connector: &SshConnector,
+    changes: &[(String, String)],
+    layout: &Layout,
+) -> Result<(), DeployError> {
+    let settings: Vec<String> = changes
+        .iter()
+        .map(|(name, value)| quote(&format!("{name}={value}")))
+        .collect();
+    let ssh = session(connector).await?;
+    let command = format!(
+        "{} -n {} admin limits {}",
+        layout.sudo,
+        quote(&layout.installed),
+        settings.join(" ")
+    );
+    run(&ssh, &command, b"").await
+}
+
 /// What removing Rovik for this user deletes: each folder, and its size in
 /// bytes, for the user to confirm.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct Removal {
     pub folders: Vec<(String, u64)>,
 }
@@ -463,6 +505,49 @@ pub async fn remove(
         folders.join(" ")
     );
     run(&ssh, &command, b"").await
+}
+
+/// What the host's setup script printed, and how it ended.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct SetupRun {
+    /// Its exit status: 0 when it worked, none if the host didn't say.
+    pub status: Option<u32>,
+    /// What it printed, stdout and stderr as they came: the end of it
+    /// when there's more than the page shows.
+    pub output: String,
+}
+
+/// The most of a setup script's output kept, in bytes.
+const SETUP_OUTPUT: usize = 16 * 1024;
+
+/// Runs the host's setup script (design §7) as the user, in their home
+/// folder: with bash where there is one, else sh, the script on stdin.
+pub async fn run_setup(connector: &SshConnector, script: &str) -> Result<SetupRun, DeployError> {
+    let ssh = session(connector).await?;
+    let command = "cd && if command -v bash >/dev/null 2>&1; \
+                   then exec bash -s 2>&1; else exec sh -s 2>&1; fi";
+    let out = ssh
+        .exec_with_input(command, script.as_bytes())
+        .await
+        .map_err(|e| DeployError::Failed(e.to_string()))?;
+    let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
+    output.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(SetupRun {
+        status: out.status,
+        output: tail(&output, SETUP_OUTPUT),
+    })
+}
+
+/// The last `max` bytes of `text` or so, cut where a character starts.
+fn tail(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..])
 }
 
 /// The build in the user's home on the server, its SHA-256 checked there.
@@ -543,6 +628,14 @@ fn quote(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_output_keeps_its_end_whole() {
+        assert_eq!(tail("short", 16), "short");
+        assert_eq!(tail("0123456789", 4), "…6789");
+        // Never half a character.
+        assert_eq!(tail("aé€", 4), "…€");
+    }
 
     fn probe(sudo: Sudo) -> Probe {
         Probe {

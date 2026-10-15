@@ -9,7 +9,7 @@ use rovik_core::packs;
 use rovik_protocol::packs::{Fetch, Refs, Update};
 use rovik_protocol::{Fail, FailCode};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The projects' repositories, at `projects/<project id>.git`.
 #[derive(Clone)]
@@ -20,6 +20,11 @@ pub struct Projects {
 impl Projects {
     pub fn new(dir: PathBuf) -> Projects {
         Projects { dir }
+    }
+
+    /// Where the repositories are.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// Each ref of the project, with its commit: none before its first

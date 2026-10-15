@@ -7,10 +7,11 @@
 //! computer, its runs their computer's configuration (D16), and an
 //! interrupted run its way back (5.4).
 
-use crate::keys::Keys;
+use crate::keys::{self, Keys};
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
 };
+use rovik_protocol::host::KeyInfo;
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::work::{ChatResult, Project};
 use rovik_protocol::{Fail, FailCode};
@@ -268,6 +269,34 @@ impl Store {
         }
         inner.set_config(computer, config);
         self.save(&inner)
+    }
+
+    /// The providers whose key keys.json keeps, and their base URLs: never
+    /// the keys (`KeysList`).
+    pub fn keys(&self) -> Vec<KeyInfo> {
+        let providers = self.lock().keys.providers();
+        providers
+            .into_iter()
+            .map(|(provider, base_url)| KeyInfo { provider, base_url })
+            .collect()
+    }
+
+    /// Forgets `provider`'s key, or every key (`KeysRemove`): from
+    /// keys.json, and from each computer's configuration, so the runs that
+    /// start from now on go without it until a start brings it again.
+    /// Runs going now finish with theirs. How many keys went.
+    pub fn remove_keys(&self, provider: Option<&str>) -> Result<usize, String> {
+        let mut inner = self.lock();
+        let removed = inner.keys.remove(provider);
+        for config in inner.configs.values_mut() {
+            for model in config.models_mut() {
+                if provider.is_none_or(|p| keys::provider(model) == p) {
+                    model.api_key.clear();
+                }
+            }
+        }
+        inner.keys.write(&self.keys_file)?;
+        Ok(removed)
     }
 
     /// Refuses another computer's chat.

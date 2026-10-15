@@ -335,17 +335,19 @@ async fn a_push_tells_its_progress_on_cloud_event() {
         .unwrap();
 
     let heard = heard.lock().unwrap();
+    // The host's connection is told too.
     let sent: Vec<u64> = heard
         .iter()
-        .map(|event| match event {
+        .filter_map(|event| match event {
             CloudEvent::Pushing {
                 dialog_id,
                 project,
                 sent,
             } => {
                 assert_eq!((dialog_id.as_str(), project.as_str()), (CHAT, PROJECT));
-                *sent
+                Some(*sent)
             }
+            CloudEvent::Host { .. } => None,
             other => panic!("{other:?}"),
         })
         .collect();

@@ -5,8 +5,8 @@
 use crate::cli::VERSION;
 use crate::daemon::{Daemon, MIN_PROTOCOL};
 use crate::home;
-use crate::limits::{AdminFile, ADMIN_FILE};
-use rovik_protocol::host::{HostInfo, Install};
+use crate::limits::{size_of, AdminFile, ADMIN_FILE};
+use rovik_protocol::host::{HostInfo, Install, Storage};
 use rovik_protocol::PROTOCOL;
 use std::path::Path;
 
@@ -49,6 +49,28 @@ pub fn user_namespaces(sys: &Path) -> bool {
     max.unwrap_or(0) > 0
         && read("kernel/unprivileged_userns_clone").as_deref() != Some("0")
         && read("kernel/apparmor_restrict_unprivileged_userns").as_deref() != Some("1")
+}
+
+/// What Rovik's folders take here (`Storage`), measured now: links not
+/// followed, other file systems (the virtual files' mount) not entered.
+pub async fn storage(daemon: &Daemon) -> Storage {
+    // The worktrees' folder and the temporary files' share a parent:
+    // ~/.local/share/rovik, or the folder --data names.
+    let share = daemon.worktrees.parent().map(Path::to_path_buf);
+    let folders = (
+        daemon.projects.dir().to_path_buf(),
+        daemon.worktrees.clone(),
+        daemon.core.paths.data_dir.clone(),
+        share.map(|s| s.join("tmp")),
+    );
+    rovik_core::rt::spawn_blocking(move || Storage {
+        projects: size_of(&folders.0),
+        work: size_of(&folders.1),
+        data: size_of(&folders.2),
+        tmp: folders.3.as_deref().map(size_of).unwrap_or(0),
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Rovik's install for the whole server (D17), when there is one.

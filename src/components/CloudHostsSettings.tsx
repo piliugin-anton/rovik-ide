@@ -1,0 +1,1049 @@
+// CloudHostsSettings.tsx
+//
+// Settings → Cloud hosts (U01): the servers chats can move to, reached
+// over SSH. The list; each host's form (design §7, without the agent port,
+// which a socket replaced); and a host's own page:
+// - Test connection, a step at a time, with the server's key to compare
+//   and trust the first time;
+// - Rovik deployed there, upgraded or removed;
+// - who approves while nobody is there (6.9);
+// - what Rovik's folders take on the server;
+// - the providers whose key the server keeps, never the keys, with
+//   "Remove keys from this server";
+// - Rovik on the server, its version and administrators, and for an
+//   administrator, the limits and "Upgrade for everyone".
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+  Switch,
+} from 'solid-js';
+import { confirmDialog } from './ConfirmDialog';
+import { onCloudEvent } from '../lib/cloud';
+import { formatBytes, plural } from '../lib/textUtils';
+import {
+  addressOf,
+  asDeployFailure,
+  AUTH_LABELS,
+  CHECK_LABELS,
+  deployHost,
+  emptyHost,
+  hostDetails,
+  hostLimits,
+  hostOf,
+  hostStatus,
+  listHosts,
+  onHostTest,
+  removalOf,
+  removeHost,
+  removeKeys,
+  removeRovik,
+  runSetup,
+  saveHost,
+  secretsToSave,
+  setHostLimits,
+  setPolicy,
+  setupVerdict,
+  testHost,
+  testVerdict,
+  trustKey,
+  unlockSecrets,
+  upgradeHost,
+  type ApprovalPolicy,
+  type AuthKind,
+  type DeployFailure,
+  type Host,
+  type HostDetails,
+  type HostRow,
+  type HostsList,
+  type SetupRun,
+  type Step,
+} from '../lib/hosts';
+
+/** Lets the Settings dialog title the page and step back within it. */
+export interface HostsSettingsController {
+  /** The host or form open, or null on the list. */
+  title: () => string | null;
+  /** Back from a host's form to its page, or from its page to the list. */
+  back: () => void;
+}
+
+interface CloudHostsSettingsProps {
+  /** The providers' base URLs: the test tries each from the server. */
+  apiUrls: string[];
+  controller?: (api: HostsSettingsController) => void;
+}
+
+type View =
+  { kind: 'list' } | { kind: 'form'; host: Host; isNew: boolean } | { kind: 'host'; id: string };
+
+const OUTCOME_MARK: Record<Step['outcome'], string> = {
+  passed: '✓',
+  warning: '!',
+  failed: '✗',
+  confirm: '?',
+  skipped: '–',
+};
+
+export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
+  const [list, setList] = createSignal<HostsList | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
+  const [view, setView] = createSignal<View>({ kind: 'list' });
+
+  async function refresh() {
+    try {
+      setList(await listHosts());
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+  onMount(refresh);
+  // A host's connection changing shows at once.
+  const stopEvents = onCloudEvent((event) => {
+    if (event.type !== 'host') return;
+    setList((current) =>
+      current
+        ? {
+            ...current,
+            hosts: current.hosts.map((h) =>
+              h.id === event.host ? { ...h, state: event.state } : h
+            ),
+          }
+        : current
+    );
+  });
+  onCleanup(stopEvents);
+
+  const row = (id: string) => list()?.hosts.find((h) => h.id === id);
+
+  props.controller?.({
+    title: () => {
+      const v = view();
+      if (v.kind === 'form') return v.isNew ? 'New host' : v.host.name || 'Host';
+      if (v.kind === 'host') return row(v.id)?.name ?? null;
+      return null;
+    },
+    back: () => {
+      const v = view();
+      setView(v.kind === 'form' && !v.isNew ? { kind: 'host', id: v.host.id } : { kind: 'list' });
+    },
+  });
+
+  return (
+    <div class="permissions-settings cloud-hosts-settings">
+      <Show when={error()}>
+        <p class="settings-hint setting-explain warning">{error()}</p>
+      </Show>
+      <Switch>
+        <Match when={view().kind === 'list'}>
+          <HostList
+            list={list()}
+            onOpen={(id) => setView({ kind: 'host', id })}
+            onAdd={() => setView({ kind: 'form', host: emptyHost(), isNew: true })}
+            onUnlocked={refresh}
+          />
+        </Match>
+        <Match when={view().kind === 'form' && (view() as Extract<View, { kind: 'form' }>)}>
+          {(form) => (
+            <HostForm
+              host={form().host}
+              isNew={form().isNew}
+              row={row(form().host.id)}
+              onCancel={() =>
+                setView(form().isNew ? { kind: 'list' } : { kind: 'host', id: form().host.id })
+              }
+              onSaved={async (saved) => {
+                await refresh();
+                setView({ kind: 'host', id: saved.id });
+              }}
+              onRemoved={async () => {
+                await refresh();
+                setView({ kind: 'list' });
+              }}
+            />
+          )}
+        </Match>
+        <Match when={view().kind === 'host' && row((view() as Extract<View, { kind: 'host' }>).id)}>
+          {(host) => (
+            <HostPage
+              row={host()}
+              build={list()?.build}
+              apiUrls={props.apiUrls}
+              onEdit={() => setView({ kind: 'form', host: hostOf(host()), isNew: false })}
+              onChanged={refresh}
+            />
+          )}
+        </Match>
+      </Switch>
+    </div>
+  );
+}
+
+function HostList(props: {
+  list: HostsList | null;
+  onOpen: (id: string) => void;
+  onAdd: () => void;
+  onUnlocked: () => Promise<void>;
+}) {
+  const store = () => props.list?.store;
+  const locked = () => {
+    const s = store();
+    return s?.kind === 'file' && !s.unlocked;
+  };
+  const [passphrase, setPassphrase] = createSignal('');
+  const [unlockError, setUnlockError] = createSignal<string | null>(null);
+
+  async function unlock() {
+    setUnlockError(null);
+    try {
+      await unlockSecrets(passphrase());
+      setPassphrase('');
+      await props.onUnlocked();
+    } catch (err) {
+      setUnlockError(String(err));
+    }
+  }
+
+  return (
+    <>
+      <section class="settings-section">
+        <div class="settings-section-title">Cloud hosts</div>
+        <p class="settings-hint">
+          Servers your chats can move to, reached over SSH. A chat there keeps running while this
+          computer sleeps, and comes back when you move it back.
+        </p>
+        <Show when={store()}>
+          {(s) => (
+            <p class="settings-hint">
+              {s().kind === 'keychain'
+                ? 'Passwords and key passphrases are kept in your system’s keychain.'
+                : 'This computer has no keychain, so passwords, key passphrases and API keys go in a file encrypted under a passphrase.'}
+            </p>
+          )}
+        </Show>
+        <Show when={locked()}>
+          <p class="settings-hint">
+            The file is locked: enter its passphrase to save passwords and reach your hosts. The
+            first time, the passphrase you choose here makes the file. Unlock it here again each
+            time Rovik starts.
+          </p>
+          <div class="host-unlock">
+            <input
+              type="password"
+              value={passphrase()}
+              onInput={(e) => setPassphrase(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && passphrase()) void unlock();
+              }}
+              placeholder="Passphrase"
+              aria-label="passphrase of the secrets file"
+            />
+            <button
+              class="chat-action-button primary"
+              disabled={!passphrase()}
+              onClick={() => void unlock()}
+            >
+              Unlock
+            </button>
+          </div>
+          <Show when={unlockError()}>
+            <p class="settings-hint setting-explain warning">{unlockError()}</p>
+          </Show>
+        </Show>
+      </section>
+      <Show when={props.list} fallback={<p class="settings-hint">Loading…</p>}>
+        {(list) => (
+          <>
+            <For
+              each={list().hosts}
+              fallback={
+                <div class="empty-state">No hosts yet. Add a server you reach over SSH.</div>
+              }
+            >
+              {(host) => {
+                const status = () => hostStatus(host);
+                return (
+                  <div class="profile-row host-row">
+                    <div class="profile-row-info">
+                      <span class="profile-row-label">{host.name}</span>
+                      <span class="profile-row-sub">{addressOf(host)}</span>
+                      <span class="profile-row-sub">
+                        <span class={`host-status ${status().tone}`}>{status().label}</span>
+                        {host.chats > 0 ? ` · ${plural(host.chats, 'chat')}` : ''}
+                      </span>
+                    </div>
+                    <div class="profile-row-actions">
+                      <button onClick={() => props.onOpen(host.id)}>Open</button>
+                    </div>
+                  </div>
+                );
+              }}
+            </For>
+            <button class="add-profile-button" onClick={props.onAdd}>
+              + Add host
+            </button>
+          </>
+        )}
+      </Show>
+    </>
+  );
+}
+
+function HostForm(props: {
+  host: Host;
+  isNew: boolean;
+  row?: HostRow;
+  onCancel: () => void;
+  onSaved: (host: Host) => void;
+  onRemoved: () => void;
+}) {
+  const [draft, setDraft] = createSignal<Host>({ ...props.host });
+  const [password, setPassword] = createSignal('');
+  const [passphrase, setPassphrase] = createSignal('');
+  const [error, setError] = createSignal<string | null>(null);
+  const [busy, setBusy] = createSignal(false);
+  const patch = (changes: Partial<Host>) => setDraft((d) => ({ ...d, ...changes }));
+  const auth = () => draft().auth;
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      const typed = { password: password(), passphrase: passphrase() };
+      props.onSaved(await saveHost(draft(), secretsToSave(auth(), typed, props.row)));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    const ok = await confirmDialog({
+      title: `Remove ${props.host.name}?`,
+      message:
+        'This computer forgets the host and the password, passphrase and token it kept for it. Rovik stays on the server.',
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await removeHost(props.host.id);
+      props.onRemoved();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  const savedHint = (saved: boolean | undefined) => (saved ? 'Saved: leave empty to keep it' : '');
+
+  return (
+    <div class="profile-form host-form">
+      <label>
+        Name
+        <input
+          value={draft().name}
+          onInput={(e) => patch({ name: e.currentTarget.value })}
+          placeholder="e.g. Build server"
+        />
+      </label>
+      <label>
+        Host
+        <input
+          value={draft().host}
+          onInput={(e) => patch({ host: e.currentTarget.value.trim() })}
+          placeholder="build.example.com or 203.0.113.7"
+          spellcheck={false}
+        />
+      </label>
+      <label>
+        SSH port
+        <input
+          type="number"
+          min="1"
+          max="65535"
+          value={draft().port}
+          onInput={(e) => patch({ port: Number(e.currentTarget.value) || 0 })}
+        />
+      </label>
+      <label>
+        User
+        <input
+          value={draft().user}
+          onInput={(e) => patch({ user: e.currentTarget.value.trim() })}
+          placeholder="your account on the server, not root"
+          spellcheck={false}
+        />
+      </label>
+      <label>
+        Log in with
+        <select value={auth()} onChange={(e) => patch({ auth: e.currentTarget.value as AuthKind })}>
+          <For each={Object.entries(AUTH_LABELS)}>
+            {([kind, label]) => <option value={kind}>{label}</option>}
+          </For>
+        </select>
+      </label>
+      <Show when={auth() === 'key'}>
+        <label>
+          Key file
+          <input
+            value={draft().keyPath ?? ''}
+            onInput={(e) => patch({ keyPath: e.currentTarget.value || undefined })}
+            placeholder="~/.ssh/id_ed25519"
+            spellcheck={false}
+          />
+        </label>
+        <label>
+          Key passphrase
+          <input
+            type="password"
+            value={passphrase()}
+            onInput={(e) => setPassphrase(e.currentTarget.value)}
+            placeholder={savedHint(props.row?.passphraseSaved) || 'Only if the key has one'}
+          />
+        </label>
+      </Show>
+      <Show when={auth() === 'password' || auth() === 'keyboard-interactive'}>
+        <label>
+          Password
+          <input
+            type="password"
+            value={password()}
+            onInput={(e) => setPassword(e.currentTarget.value)}
+            placeholder={savedHint(props.row?.passwordSaved)}
+          />
+        </label>
+      </Show>
+      <Show when={auth() === 'system-ssh'}>
+        <p class="settings-hint">
+          Your own ssh connects, with your configuration: jump hosts, security keys and
+          certificates. Testing and deploying need one of the other ways in, which Rovik runs its
+          setup commands through.
+        </p>
+      </Show>
+      <label>
+        Setup script
+        <textarea
+          rows="4"
+          value={draft().setupScript ?? ''}
+          onInput={(e) => patch({ setupScript: e.currentTarget.value || undefined })}
+          placeholder="e.g. curl https://sh.rustup.rs -sSf | sh -s -- -y"
+          spellcheck={false}
+        />
+      </label>
+      <p class="settings-hint">
+        Runs on the server as you, in your home folder, after Rovik is deployed and whenever you
+        ask: install what your projects’ checks need there (cargo, npm, pytest…).
+      </p>
+      <Show when={error()}>
+        <div class="provider-test-status error">{error()}</div>
+      </Show>
+      <div class="profile-form-actions">
+        <Show when={!props.isNew}>
+          <button class="danger" onClick={() => void remove()}>
+            Remove host
+          </button>
+        </Show>
+        <button onClick={props.onCancel}>Cancel</button>
+        <button class="primary" disabled={busy()} onClick={() => void save()}>
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HostPage(props: {
+  row: HostRow;
+  build?: string;
+  apiUrls: string[];
+  onEdit: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const id = props.row.id;
+  const deployed = () => props.row.deploy.state === 'deployed';
+  const status = () => hostStatus(props.row);
+
+  // The connection test.
+  const [steps, setSteps] = createSignal<Step[]>([]);
+  const [testing, setTesting] = createSignal(false);
+  const [testError, setTestError] = createSignal<string | null>(null);
+  let stopListening: (() => void) | null = null;
+  onCleanup(() => stopListening?.());
+
+  async function runTest() {
+    setSteps([]);
+    setTestError(null);
+    setTesting(true);
+    stopListening = onHostTest((hostId, step) => {
+      if (hostId === id) setSteps((s) => [...s, step]);
+    });
+    try {
+      setSteps(await testHost(id, props.apiUrls));
+    } catch (err) {
+      setTestError(String(err));
+    } finally {
+      stopListening?.();
+      stopListening = null;
+      setTesting(false);
+    }
+  }
+
+  async function trust(key: string) {
+    try {
+      await trustKey(id, key);
+      await props.onChanged();
+      await runTest();
+    } catch (err) {
+      setTestError(String(err));
+    }
+  }
+
+  // Deploy, upgrade, removal.
+  const [busy, setBusy] = createSignal<string | null>(null);
+  const [failure, setFailure] = createSignal<DeployFailure | null>(null);
+  const [sudoPassword, setSudoPassword] = createSignal('');
+
+  /** Runs `action`, then looks at the host again: whether it worked. */
+  async function act(label: string, action: () => Promise<unknown>): Promise<boolean> {
+    setBusy(label);
+    setFailure(null);
+    try {
+      await action();
+      await props.onChanged();
+      return true;
+    } catch (err) {
+      setFailure(asDeployFailure(err));
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deploy() {
+    const ok = await act('Deploying…', async () => {
+      await deployHost(id, sudoPassword() || undefined);
+      setSudoPassword('');
+    });
+    if (ok && hasSetup()) await setup();
+  }
+
+  // The setup script, after a deploy and when asked.
+  const hasSetup = () => !!props.row.setupScript?.trim();
+  const [setupRun, setSetupRun] = createSignal<SetupRun | null>(null);
+  const [settingUp, setSettingUp] = createSignal(false);
+  const [setupError, setSetupError] = createSignal<string | null>(null);
+  async function setup() {
+    setSettingUp(true);
+    setSetupRun(null);
+    setSetupError(null);
+    try {
+      setSetupRun(await runSetup(id));
+    } catch (err) {
+      setSetupError(asDeployFailure(err).message);
+    } finally {
+      setSettingUp(false);
+    }
+  }
+
+  const upgrade = () => act('Upgrading…', () => upgradeHost(id));
+
+  async function removeFromServer() {
+    const chats = props.row.chats;
+    if (chats > 0) {
+      const them = chats === 1 ? 'it' : 'them';
+      setFailure({
+        kind: 'failed',
+        message: `${plural(chats, 'chat')} ${chats === 1 ? 'is' : 'are'} on this server: move ${them} back or delete ${them} first.`,
+      });
+      return;
+    }
+    let removal;
+    try {
+      removal = await removalOf(id);
+    } catch (err) {
+      setFailure(asDeployFailure(err));
+      return;
+    }
+    const folders = removal.folders.map(([path, size]) => `${path} (${formatBytes(size)})`);
+    const ok = await confirmDialog({
+      title: `Remove Rovik from ${props.row.name}?`,
+      message: `Your daemon there stops, and this deletes:\n${folders.join('\n') || 'nothing: there are no folders of Rovik’s'}\nYour chats and projects on the server go with them. Rovik stays installed for its other users.`,
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (ok) await act('Removing…', () => removeRovik(id, removal));
+  }
+
+  // What the daemon says, once connected.
+  const [details, setDetails] = createSignal<HostDetails | null>(null);
+  const [detailsError, setDetailsError] = createSignal<string | null>(null);
+  async function loadDetails() {
+    if (!deployed() || props.row.state !== 'ready') {
+      setDetails(null);
+      return;
+    }
+    try {
+      setDetails(await hostDetails(id));
+      setDetailsError(null);
+    } catch (err) {
+      setDetailsError(String(err));
+    }
+  }
+  // Asked again whenever the connection comes up, and after a deploy, an
+  // upgrade or a removal.
+  const connection = createMemo(() => {
+    const deploy = props.row.deploy;
+    return `${deploy.state === 'deployed' ? deploy.version : 'none'} ${props.row.state ?? ''}`;
+  });
+  createEffect(on(connection, () => void loadDetails()));
+
+  async function forgetKeys() {
+    const ok = await confirmDialog({
+      title: 'Remove keys from this server?',
+      message:
+        'The server forgets every API key it keeps. Runs going now finish with theirs, and the next chat you start there brings its key again.',
+      confirmLabel: 'Remove keys',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await removeKeys(id);
+      await loadDetails();
+    } catch (err) {
+      setDetailsError(String(err));
+    }
+  }
+
+  async function choosePolicy(policy: ApprovalPolicy) {
+    try {
+      await setPolicy(id, policy);
+      await props.onChanged();
+    } catch (err) {
+      setDetailsError(String(err));
+    }
+  }
+
+  const verdict = () => testVerdict(steps(), testing());
+  const admins = () => details()?.info.install?.admins ?? [];
+
+  const deployedNote = () => {
+    const parts: string[] = [];
+    const d = details();
+    // The daemon's own version, once it answers: someone may have upgraded it.
+    const kept = props.row.deploy.state === 'deployed' ? props.row.deploy.version : null;
+    const version = d?.info.version ?? kept;
+    if (version) parts.push(`Version ${version}.`);
+    if (d && admins().length > 0) {
+      parts.push(`Its administrators: ${admins().join(', ')}.`);
+      if (d.admin) parts.push('You’re one of them.');
+    }
+    return parts.join(' ');
+  };
+
+  /** An older daemon than this app: who can upgrade it. */
+  const upgradeNote = (d: HostDetails) => {
+    const older = `Rovik ${d.info.version} here is older than this app (${d.appVersion}).`;
+    if (d.admin) return older;
+    return `${older} Ask ${admins().join(' or ') || 'the server’s administrator'} to upgrade it.`;
+  };
+
+  return (
+    <>
+      <section class="settings-section host-summary">
+        <div class="host-actions">
+          <span class="settings-hint">
+            {addressOf(props.row)} ·{' '}
+            <span class={`host-status ${status().tone}`}>{status().label}</span>
+          </span>
+          <button onClick={props.onEdit}>Edit</button>
+        </div>
+      </section>
+
+      <section class="settings-section host-test">
+        <div class="settings-section-title">Connection</div>
+        <div class="host-actions">
+          <button
+            class="chat-action-button primary"
+            disabled={testing()}
+            onClick={() => void runTest()}
+          >
+            {testing() ? 'Testing…' : 'Test connection'}
+          </button>
+          <Show when={verdict()}>
+            {(v) => <span class={`host-status ${v().tone}`}>{v().label}</span>}
+          </Show>
+        </div>
+        <Show when={testError()}>
+          <p class="settings-hint setting-explain warning">{testError()}</p>
+        </Show>
+        <Show when={steps().length > 0}>
+          <ol class="host-steps">
+            <For each={steps()}>
+              {(step) => (
+                <li class={`host-step ${step.outcome}`}>
+                  <span class="host-step-mark" aria-label={step.outcome}>
+                    {OUTCOME_MARK[step.outcome]}
+                  </span>
+                  <span class="host-step-check">{CHECK_LABELS[step.check]}</span>
+                  <span class="host-step-message">{step.message}</span>
+                  <Show when={step.hostKey}>
+                    {(key) => (
+                      <div class="host-key-confirm">
+                        <code>{key().fingerprint}</code>
+                        <button
+                          class="chat-action-button primary"
+                          onClick={() => void trust(key().key)}
+                        >
+                          Trust this key
+                        </button>
+                      </div>
+                    )}
+                  </Show>
+                </li>
+              )}
+            </For>
+          </ol>
+        </Show>
+      </section>
+
+      <section class="settings-section host-deploy">
+        <div class="settings-section-title">Rovik on this server</div>
+        <Show
+          when={deployed()}
+          fallback={
+            <>
+              <p class="settings-hint">
+                Rovik isn’t deployed for you here. Deploying installs it (with sudo, the first time
+                anyone does) and starts your daemon.
+              </p>
+              <Show
+                when={props.build}
+                fallback={
+                  <p class="settings-hint setting-explain warning">
+                    There’s no build to deploy: set ROVIK_AGENTD_BINARY to a rovik-agentd built for
+                    the server. Signed releases are to come.
+                  </p>
+                }
+              >
+                <button
+                  class="chat-action-button primary"
+                  disabled={busy() != null}
+                  onClick={() => void deploy()}
+                >
+                  {busy() ?? 'Deploy'}
+                </button>
+              </Show>
+            </>
+          }
+        >
+          <p class="settings-hint">{deployedNote()}</p>
+          <Show when={details()?.upgrade && details()}>
+            {(d) => (
+              <>
+                <p
+                  class="settings-hint host-upgrade"
+                  classList={{ 'setting-explain': !d().admin, warning: !d().admin }}
+                >
+                  {upgradeNote(d())}
+                </p>
+                <Show when={d().admin}>
+                  <button
+                    class="chat-action-button primary"
+                    disabled={busy() != null}
+                    onClick={() => void upgrade()}
+                  >
+                    {busy() ?? 'Upgrade for everyone'}
+                  </button>
+                </Show>
+              </>
+            )}
+          </Show>
+          <div class="host-actions">
+            <button
+              class="danger"
+              disabled={busy() != null}
+              onClick={() => void removeFromServer()}
+            >
+              Remove Rovik from this server…
+            </button>
+          </div>
+        </Show>
+        <Show when={failure()}>{(f) => <DeployProblem failure={f()} />}</Show>
+        <Show when={failure()?.kind === 'sudoPassword'}>
+          <div class="host-sudo">
+            <input
+              type="password"
+              value={sudoPassword()}
+              onInput={(e) => setSudoPassword(e.currentTarget.value)}
+              placeholder="Your password on the server, for sudo"
+              aria-label="sudo password"
+            />
+            <button
+              class="chat-action-button primary"
+              disabled={!sudoPassword() || busy() != null}
+              onClick={() => void deploy()}
+            >
+              Deploy
+            </button>
+          </div>
+        </Show>
+      </section>
+
+      <Show when={deployed() && hasSetup()}>
+        <section class="settings-section host-setup">
+          <div class="settings-section-title">Setup script</div>
+          <div class="host-actions">
+            <button
+              class="chat-action-button primary"
+              disabled={settingUp()}
+              onClick={() => void setup()}
+            >
+              {settingUp() ? 'Running…' : 'Run the setup script'}
+            </button>
+            <Show when={setupRun()}>
+              {(run) => (
+                <span class={`host-status ${setupVerdict(run()).tone}`}>
+                  {setupVerdict(run()).label}
+                </span>
+              )}
+            </Show>
+          </div>
+          <Show when={setupError()}>
+            <p class="settings-hint setting-explain warning">{setupError()}</p>
+          </Show>
+          <Show when={setupRun()?.output}>
+            {(output) => <pre class="host-setup-output">{output()}</pre>}
+          </Show>
+        </section>
+      </Show>
+
+      <section class="settings-section host-policy">
+        <div class="settings-section-title">While nobody is there</div>
+        <p class="settings-hint">
+          What a chat on this server does when it needs an approval and this computer is away.
+        </p>
+        <label class="setting-checkbox">
+          <input
+            type="radio"
+            name={`policy-${id}`}
+            checked={props.row.approvalPolicy === 'waitForMe'}
+            onChange={() => void choosePolicy('waitForMe')}
+          />
+          Wait for me
+        </label>
+        <label class="setting-checkbox">
+          <input
+            type="radio"
+            name={`policy-${id}`}
+            checked={props.row.approvalPolicy === 'aiReviewerThenMe'}
+            onChange={() => void choosePolicy('aiReviewerThenMe')}
+          />
+          Ask the AI reviewer first, then me
+        </label>
+      </section>
+
+      <Show when={deployed()}>
+        <Show when={detailsError()}>
+          <p class="settings-hint setting-explain warning">{detailsError()}</p>
+        </Show>
+        <Show
+          when={details()}
+          fallback={
+            <section class="settings-section">
+              <p class="settings-hint">
+                {props.row.state === 'ready'
+                  ? 'Asking the server…'
+                  : 'Connect to the server to see its storage and keys.'}
+              </p>
+            </section>
+          }
+        >
+          {(d) => (
+            <>
+              <Show when={d().storage}>
+                {(s) => (
+                  <section class="settings-section host-storage">
+                    <div class="settings-section-title">Server storage</div>
+                    <ul class="host-storage-list">
+                      <li>Projects: {formatBytes(s().projects)}</li>
+                      <li>Chats’ working copies: {formatBytes(s().work)}</li>
+                      <li>Chats and attachments: {formatBytes(s().data)}</li>
+                      <li>Temporary files: {formatBytes(s().tmp)}</li>
+                    </ul>
+                  </section>
+                )}
+              </Show>
+              <section class="settings-section host-keys">
+                <div class="settings-section-title">API keys on this server</div>
+                <p class="settings-hint">
+                  Your API keys are stored in your account on this server, so chats there run while
+                  this computer is away. The agent’s commands there and anyone with root on it can
+                  read them.
+                </p>
+                <Show
+                  when={d().keys}
+                  fallback={
+                    <p class="settings-hint">This server’s Rovik is too old to list its keys.</p>
+                  }
+                >
+                  {(keys) => (
+                    <>
+                      <ul class="host-keys-list">
+                        <For
+                          each={keys()}
+                          fallback={<li class="settings-hint">No keys are kept there.</li>}
+                        >
+                          {(key) => (
+                            <li>
+                              <span class="host-key-provider">{key.provider}</span>{' '}
+                              <span class="profile-row-sub">{key.baseUrl}</span>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                      <Show when={keys().length > 0}>
+                        <button class="danger" onClick={() => void forgetKeys()}>
+                          Remove keys from this server
+                        </button>
+                      </Show>
+                    </>
+                  )}
+                </Show>
+              </section>
+              <Show when={d().admin}>
+                <HostLimits id={id} />
+              </Show>
+            </>
+          )}
+        </Show>
+      </Show>
+    </>
+  );
+}
+
+/** Why a deploy, an upgrade or a removal didn't happen, and what to do. */
+function DeployProblem(props: { failure: DeployFailure }) {
+  return (
+    <Switch>
+      <Match when={props.failure.kind === 'needsRoot' && props.failure}>
+        {(f) => (
+          <div class="host-needs-root">
+            <p class="settings-hint setting-explain warning">
+              Installing Rovik takes root, and sudo isn’t yours on this server. Ask someone with
+              root to run this, then deploy again:
+            </p>
+            <code class="host-command">{(f() as { command: string }).command}</code>
+          </div>
+        )}
+      </Match>
+      <Match when={props.failure.kind === 'sudoPassword'}>
+        <p class="settings-hint">
+          sudo asks for your password on the server to install Rovik. It goes to that one command
+          and isn’t kept.
+        </p>
+      </Match>
+      <Match when={true}>
+        <p class="settings-hint setting-explain warning">{props.failure.message}</p>
+      </Match>
+    </Switch>
+  );
+}
+
+/** The limits on each user's daemon, for Rovik's administrators there. */
+function HostLimits(props: { id: string }) {
+  const [limits, setLimits] = createSignal<[string, string][] | null>(null);
+  const [edits, setEdits] = createSignal<Record<string, string>>({});
+  const [message, setMessage] = createSignal<string | null>(null);
+  const [busy, setBusy] = createSignal(false);
+
+  async function load() {
+    setBusy(true);
+    try {
+      setLimits(await hostLimits(props.id));
+      setEdits({});
+      setMessage(null);
+    } catch (err) {
+      setMessage(asDeployFailure(err).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save() {
+    const changes = Object.entries(edits()).map(([name, value]): [string, string] => [
+      name,
+      value.trim(),
+    ]);
+    if (changes.length === 0) return;
+    setBusy(true);
+    try {
+      await setHostLimits(props.id, changes);
+      await load();
+      setMessage('Saved. Each daemon takes the new limits when it next starts.');
+    } catch (err) {
+      setMessage(asDeployFailure(err).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section class="settings-section host-limits">
+      <div class="settings-section-title">Limits for everyone</div>
+      <p class="settings-hint">
+        You’re one of Rovik’s administrators here: these bind every user’s daemon. “none” takes a
+        limit away.
+      </p>
+      <Show
+        when={limits()}
+        fallback={
+          <button disabled={busy()} onClick={() => void load()}>
+            {busy() ? 'Asking the server…' : 'Show the limits'}
+          </button>
+        }
+      >
+        {(all) => (
+          <>
+            <div class="host-limits-list">
+              <For each={all()}>
+                {([name, value]) => (
+                  <label class="host-limit">
+                    <span>{name}</span>
+                    <input
+                      value={edits()[name] ?? value}
+                      onInput={(e) =>
+                        setEdits((current) => ({
+                          ...current,
+                          [name]: e.currentTarget.value,
+                        }))
+                      }
+                      spellcheck={false}
+                    />
+                  </label>
+                )}
+              </For>
+            </div>
+            <button
+              class="chat-action-button primary"
+              disabled={busy() || Object.keys(edits()).length === 0}
+              onClick={() => void save()}
+            >
+              Save limits
+            </button>
+          </>
+        )}
+      </Show>
+      <Show when={message()}>
+        <p class="settings-hint">{message()}</p>
+      </Show>
+    </section>
+  );
+}

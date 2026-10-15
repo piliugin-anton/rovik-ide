@@ -130,8 +130,9 @@ nothing of one user's work lands in a shared `/tmp`.
 - The agent's commands run as the user and can read whatever the user can.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
   read them, but root can. The app tells users: "Your API keys are stored in
-  your account on this server. The agent's commands there and anyone with
-  root on it can read them."
+  your account on this server, so chats there run while this computer is
+  away. The agent's commands there and anyone with root on it can read
+  them." Each user can remove them there from Settings → Cloud hosts.
 - Administrators can read the same things as before they became
   administrators, and nothing more.
 
@@ -157,5 +158,6 @@ setting `allow_unsigned = true` in `agentd.toml`.
 `admin uninstall` stops every daemon and removes everything listed above.
 Each user's `~/.rovik` and `~/.local/share/rovik` stay, because their
 chats are there. A user who no longer wants Rovik runs `user stop` and
-deletes those two folders. The app does this when the user removes the
-host, after confirming what will be deleted.
+deletes those two folders. The app does this with "Remove Rovik from this
+server" on the host's page in Settings → Cloud hosts, after confirming
+what will be deleted, once no chats of theirs are left there.

@@ -2457,3 +2457,55 @@ Tasks add notes here when reality differs from the plan.
   says so and suggests leaving the browser tools off on servers shared
   with people you don't trust. D18 and H08 stand as the plan for when the
   pipe transport is taken up again.
+- **U01, Settings → Cloud hosts.**
+  - The page is `CloudHostsSettings`, a new `AiSettingsPage`, last in the
+    menu. Unlike the other pages it saves as it goes, through `hosts_*`
+    commands (`src-tauri/src/commands/hosts.rs`, over
+    `rovik_client::hosts_page::HostsPage`), not when the dialog closes.
+    The dialog's Back steps from a host's form to its page, then to the
+    list.
+  - `HostsPage` builds each host's connector from `cloud-hosts.json` and
+    the secret store: Rovik's SSH with H05's install check, or the user's
+    own ssh for a system-ssh host, which can't be tested or deployed
+    through and the form says so. The app connects every deployed host at
+    start-up, and a host again after a save, a deploy, an upgrade or an
+    unlock. A connection's changes reach the page as `CloudEvent::Host`.
+  - A save keeps the pinned key only while the address and port stay;
+    the deploy state and the policy aren't the form's. Secrets are saved
+    before the host, so a locked store can't leave a host without the
+    password it was given. Empty forgets a secret, absent leaves it, and
+    the form forgets a saved one the chosen log-in no longer uses. A host
+    with chats on it, or moving there, isn't removed, and Rovik isn't
+    removed from it; the page says so before asking the server anything.
+  - Test connection shows each step as it ends (`host-test`), with the
+    fingerprint and "Trust this key" on first use, then tests again. The
+    providers' base URLs go to its API step. Deploy asks for the sudo
+    password when sudo wants one and shows the command for someone with
+    root when sudo isn't the user's. Without `ROVIK_AGENTD_BINARY` there
+    is nothing to deploy, and the page says so.
+  - Design §7's setup script, which H01 left out, is `Host.setup_script`.
+    It runs after a deploy and on "Run the setup script"
+    (`deploy::run_setup`: bash where there is one, else sh, in the user's
+    home), and the page shows its exit status and the last 16 KB it
+    printed.
+  - New Host requests, behind the `host` feature: `KeysList` (provider and
+    base URL, never the key), `KeysRemove` (which also clears the key in
+    each computer's `AgentConfig`) and `Storage` (the sizes of projects,
+    work, data and tmp). A daemon without the feature answers `HostInfo`
+    alone, and the page says it can't list keys. An administrator, the
+    daemon's user among `HostInfo.install.admins`, sees the limits
+    (`admin limits` over SSH) and "Upgrade for everyone" when the daemon
+    is older than the app; anyone else is told whom to ask.
+  - Where there's no keychain the page says so, and while the encrypted
+    file is locked it takes the passphrase to unlock it, or to make it
+    the first time: H01's passphrase "asked once per session". Nothing
+    asks at start-up yet, so until then hosts stay unconnected and the
+    providers' keys in the file unread. U06's reconnection notice is the
+    place to say so.
+  - The shared `formatBytes` now goes on to GB and TB. The test DOM has
+    `HTMLHeadElement`, which Solid's `Portal` needs for the confirmations.
+  - Not done here: moving a host's chats back from the page before a
+    removal (U02 brings Move back; the page says to move them first); the
+    drain before an upgrade (R02); signed releases (B02). The manual check
+    against a real server (test, deploy with and without sudo, unlock,
+    the administrator's view) is still to do.

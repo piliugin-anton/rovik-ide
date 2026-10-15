@@ -58,6 +58,9 @@ pub mod features {
     /// The mirror and the move (6.3, 6.8): `ChatChangesSince`, and the
     /// requests and the bundle that move a chat as their tasks bring them.
     pub const MIRROR: &str = "mirror";
+    /// The Host group beyond `HostInfo`, for the hosts page (U01):
+    /// `KeysList`, `KeysRemove` and `Storage`.
+    pub const HOST: &str = "host";
 }
 
 #[cfg(test)]

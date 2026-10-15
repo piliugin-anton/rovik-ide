@@ -129,6 +129,20 @@ pub fn away(conn: &Connection) -> DbResult<Vec<(String, Location)>> {
         .map_err(err)
 }
 
+/// How many of the user's chats (subagents' aside) are on `host` or moving
+/// to it: the hosts page asks about them before the host goes.
+pub fn chats_on(conn: &Connection, host: &str) -> DbResult<usize> {
+    let on = Location::Host(host.to_string()).column();
+    let moving = Location::Moving(host.to_string()).column();
+    conn.query_row(
+        "SELECT COUNT(*) FROM dialogs WHERE parent_id IS NULL AND location IN (?1, ?2, ?3)",
+        params![on, moving, host],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n as usize)
+    .map_err(err)
+}
+
 /// Whether any of the project's chats is on a host or moving to one (K38).
 pub fn project_has_chats_away(conn: &Connection, project_id: &str) -> DbResult<Option<String>> {
     conn.query_row(

@@ -83,6 +83,13 @@ impl Daemon {
     async fn serve(&self, computer: &str, request: Request) -> Result<Response, Fail> {
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
+            Request::KeysList => Ok(Response::Keys(self.store.keys())),
+            Request::KeysRemove { provider } => self
+                .store
+                .remove_keys(provider.as_deref())
+                .map(Response::Count)
+                .map_err(|e| Fail::new(FailCode::Internal, e)),
+            Request::Storage => Ok(Response::Storage(host::storage(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
             Request::AgentStart(start) => self.start(computer, start).await,
             // Only this computer's configuration changes (D16).
