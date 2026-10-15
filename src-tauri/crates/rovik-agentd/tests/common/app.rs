@@ -74,12 +74,22 @@ impl App {
     }
 }
 
-/// Waits for a file to land in the setup's project: there, and the landing
-/// over, its import gone.
+/// Waits for a new file to land in the setup's project: there, and the
+/// landing over, its import gone.
 pub async fn landed(setup: &Setup, path: &str) -> String {
     let file = setup.project.join(path);
     until(&format!("{path} landed in the project"), || {
         (file.exists() && !chats::exists(CHAT)).then(|| read(&file))
+    })
+    .await
+}
+
+/// Waits for a file of the setup's project to land as `content`.
+pub async fn landed_as(setup: &Setup, path: &str, content: &str) {
+    let file = setup.project.join(path);
+    until(&format!("{path} landed as {content:?}"), || {
+        let there = std::fs::read_to_string(&file).is_ok_and(|now| now == content);
+        (there && !chats::exists(CHAT)).then_some(())
     })
     .await
 }

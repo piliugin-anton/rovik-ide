@@ -8,7 +8,7 @@
 //! once or after its next connection, so the next result doesn't bring
 //! back what the user undid (K34).
 
-use super::Remote;
+use super::{takes_projects, Remote};
 use crate::shadow::{self, Shadow};
 use git2::Oid;
 use rovik_core::agent_run::events::AgentEvent;
@@ -17,11 +17,15 @@ use rovik_core::overlay::chats;
 use rovik_core::overlay::import::{self, ImportError, Imported};
 use rovik_core::overlay::land::{LandError, Landed};
 use rovik_core::rt;
-use rovik_protocol::work::ChatResult;
-use rovik_protocol::{features, Request};
+use rovik_protocol::work::{ChatResult, SyncState};
+use rovik_protocol::Request;
 use std::path::PathBuf;
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
+
+/// How many times a result goes back to be checked merged with the
+/// project's newer changes before it waits (6.6).
+const MAX_RECHECKS: u32 = 2;
 
 /// What the queue of results does, one job after another.
 pub(super) enum Job {
@@ -87,13 +91,9 @@ impl Remote {
     /// The newest results on `host`, of every chat or of one, into the
     /// queue, which passes over those already imported.
     async fn ask_results(&self, host: &str, chat: Option<&str>) {
-        let Some(client) = self.hosts.client(host) else {
+        let Some(client) = self.hosts.client(host).filter(takes_projects) else {
             return;
         };
-        let serves = |d: crate::DaemonInfo| d.features.iter().any(|f| f == features::PROJECTS);
-        if !client.daemon().is_some_and(serves) {
-            return;
-        }
         let results = client.request::<Vec<ChatResult>>(Request::WorkResults);
         match results.await {
             Ok(results) => {
@@ -225,13 +225,57 @@ impl Remote {
         if let (Ok(_), Some(imported)) = (&landed, imported) {
             // The landing base moves there: the next message syncs again,
             // even with the project as it was at the last sync.
-            self.lock().last_sync.remove(dialog_id);
+            {
+                let mut state = self.lock();
+                state.last_sync.remove(dialog_id);
+                state.rechecks.remove(dialog_id);
+            }
             self.report(dialog_id, imported).await;
         }
-        if keep_chat.is_none() {
-            self.tell_landing(dialog_id, &landed);
+        match (&landed, keep_chat) {
+            (Err(LandError::Unchecked(files)), None) => {
+                self.recheck_or_wait(dialog_id, files).await
+            }
+            (_, None) => self.tell_landing(dialog_id, &landed),
+            _ => {}
         }
         landed
+    }
+
+    /// A result that would land merged with the project's newer changes
+    /// goes back to its host, which merges them and runs the chat's checks
+    /// on the merge (6.6). After two rounds of the project changing the
+    /// same files again meanwhile, it waits.
+    async fn recheck_or_wait(&self, dialog_id: &str, files: &[String]) {
+        let rounds = self.lock().rechecks.get(dialog_id).copied().unwrap_or(0);
+        if rounds >= MAX_RECHECKS {
+            let again = LandError::Unchecked(files.to_vec());
+            import::wait(
+                dialog_id,
+                &format!("Not landed: {again}. Land takes it as it is."),
+            );
+            let why = "The project changed the same files again while the checks ran.";
+            self.notice(dialog_id, "warning", "This chat's changes didn't land", why);
+            return;
+        }
+        self.lock()
+            .rechecks
+            .insert(dialog_id.to_string(), rounds + 1);
+        let host = self.host_of(dialog_id).unwrap_or_default();
+        let reason = match self.recheck(&host, dialog_id).await {
+            Ok(synced) if synced.state == SyncState::Synced => format!(
+                "Checking on the server: the project changed {} too.",
+                files.join(", ")
+            ),
+            Ok(synced) => format!(
+                "Not landed: the project changed {} again, on the chat's lines.",
+                synced.files.join(", ")
+            ),
+            Err(e) => format!(
+                "Not landed: the merge with the project's newer changes couldn't be checked on the server ({e})."
+            ),
+        };
+        import::wait(dialog_id, &reason);
     }
 
     /// What a landing by itself did, as a local chat's run end says it.

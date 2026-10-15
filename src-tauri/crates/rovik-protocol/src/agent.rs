@@ -159,6 +159,10 @@ pub enum StartKind {
     RunChecks { record_id: String },
     /// A chat whose last tool calls never ran (the app closed meanwhile).
     Resume,
+    /// The project's newer changes were merged into these files of the
+    /// chat's worktree on its server (6.6, D13): its checks run on the
+    /// result first, and a failure goes on as a fix round.
+    CheckMerged { files: Vec<String> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -74,6 +74,12 @@ impl Daemon {
                 Ok(Response::ChatResult(result))
             }
             Request::WorkResults => Ok(Response::ChatResults(self.store.results_of(computer))),
+            Request::WorkRecheck {
+                dialog_id,
+                project,
+                snapshot,
+                excludes,
+            } => work::recheck(self, computer, &dialog_id, &project, &snapshot, excludes).await,
             Request::WorkLanded {
                 dialog_id,
                 commit,
@@ -117,6 +123,23 @@ impl Daemon {
         let text = (start.current_user_content.take()).unwrap_or_else(|| wire_content(message));
         let note = chats::markers_note(&files);
         start.current_user_content = Some(format!("{text}\n\nNote: {note}"));
+    }
+
+    /// Starts the chat with the checks on `files`, which the project's
+    /// newer changes were merged into (6.6): its last start's settings, as
+    /// a restart takes them.
+    pub async fn check_merged(&self, dialog_id: &str, files: Vec<String>) -> Result<(), Fail> {
+        let start = StartKind::CheckMerged { files };
+        let request = self
+            .store
+            .restart_request(dialog_id, start)
+            .ok_or_else(|| {
+                Fail::new(
+                    FailCode::BadRequest,
+                    "This chat never ran here: there's nothing to check.",
+                )
+            })?;
+        self.run(request).await.map(drop)
     }
 
     /// A chat runs in its worktree (6.4), or, with `--same-machine`, in the

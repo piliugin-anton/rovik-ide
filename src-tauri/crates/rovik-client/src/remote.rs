@@ -123,6 +123,9 @@ struct State {
     ensured: HashSet<(String, String)>,
     /// Each chat's last sync, as its host told it.
     syncs: HashMap<String, ChatSync>,
+    /// How many times each chat's result went back to be checked merged
+    /// with the project's newer changes (6.6), since its last message.
+    rechecks: HashMap<String, u32>,
 }
 
 impl Remote {
@@ -802,6 +805,12 @@ impl Remote {
             }
         }
     }
+}
+
+/// Whether the host takes projects (6.4): a daemon from before doesn't.
+fn takes_projects(client: &Client) -> bool {
+    let projects = |d: crate::DaemonInfo| d.features.iter().any(|f| f == features::PROJECTS);
+    client.daemon().is_some_and(projects)
 }
 
 /// Writes the owner tells no event of: the mirror takes them too, once the

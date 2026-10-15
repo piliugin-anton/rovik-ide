@@ -1777,3 +1777,26 @@ Tasks add notes here when reality differs from the plan.
     chat doesn't resolve conflicts, so its second message's sync waits, and
     the local edits come after its first result, which waits for the
     project to open: before, the sync would have brought them to the chat.
+- **T08, merges checked on the server.**
+  - `WorkRecheck` carries what `WorkSync` does (`dialogId`, `project`,
+    `snapshot`, `excludes`) and answers `Synced`. The daemon merges as a
+    sync does. A merge that applies with merged files starts the chat with
+    `CheckMerged { files }`, from its last start's settings as a restart
+    does; one that merged nothing commits a result at once. A merge that
+    doesn't apply starts nothing, and the result waits with the reason.
+  - `CheckMerged` sets `merged_from_project` without the diffs, which only
+    the server's merge knows, so the fix round names the merged files
+    without showing what the project changed in them.
+  - The client sends every result that would land merged back to the
+    server, checks on or off: with the checks off, the server's run ends at
+    once and its result lands merged, as a local chat's would. The client
+    doesn't need the chat's settings for this.
+  - Rounds are counted per chat, at most two; a landing or a new message
+    starts the count again. After two, the result waits with
+    `LandError::Unchecked`'s reason, "changed again".
+  - `overlay::import::land_by_itself` no longer sets a reason of its own:
+    the client decides between a recheck and waiting.
+  - An import replaces a store by moving the old one aside and the new one
+    in, one rename after the other, then deleting the old one: before, the
+    chat had no store while the old one was deleted, and a test that read
+    the project in that gap saw the old file.

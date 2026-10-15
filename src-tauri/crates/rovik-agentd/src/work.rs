@@ -111,6 +111,39 @@ pub async fn sync(
     Ok(Response::Synced(synced(&root)))
 }
 
+/// `WorkRecheck` (6.6): the snapshot merged into the chat's worktree as a
+/// sync does. What merged is checked by a run of the chat that starts with
+/// its checks, whose end brings a new result; a merge that leaves nothing
+/// to check is committed as a result at once.
+pub async fn recheck(
+    daemon: &Daemon,
+    computer: &str,
+    chat: &str,
+    project: &str,
+    snapshot: &str,
+    excludes: Vec<String>,
+) -> Result<Response, Fail> {
+    daemon.store.check_owner(computer, chat)?;
+    let root = root(daemon, chat)
+        .ok_or_else(|| bad_request("This chat has no worktree on this server."))?;
+    let snapshot = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
+    let merged = merge_into(daemon, chat, project, snapshot, excludes).await?;
+    if merged.state == SyncState::Synced {
+        if merged.files.is_empty() {
+            let outcome = daemon.store.outcome_of(chat);
+            let outcome = outcome.as_deref().unwrap_or("unknown");
+            daemon.results.commit(chat, outcome).await?;
+        } else {
+            daemon.check_merged(chat, merged.files.clone()).await?;
+        }
+    }
+    Ok(Response::Synced(Synced {
+        root: text(&root),
+        state: merged.state,
+        files: merged.files,
+    }))
+}
+
 /// Merges the snapshot into the chat's worktree, under the client's ignore
 /// rules (sync.rs), and tells the chat's computer what it did.
 async fn merge_into(

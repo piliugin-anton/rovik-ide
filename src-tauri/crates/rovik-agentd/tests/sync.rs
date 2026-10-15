@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::app::{landed, App};
+use common::app::{landed_as, App};
 use common::project::{
     message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
 };
@@ -142,7 +142,7 @@ async fn a_conflict_gets_markers_and_the_result_waits_for_them() {
     app.remote.start(message(&setup, &url, "u3")).await.unwrap();
 
     let both = "fn main() { local(); remote() }\n";
-    assert_eq!(landed(&setup, "src/main.rs").await, both);
+    landed_as(&setup, "src/main.rs", both).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

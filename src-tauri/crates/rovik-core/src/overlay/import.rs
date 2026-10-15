@@ -18,9 +18,9 @@
 //!   its own root. The others are listed and never land.
 //! - **An import replaces the chat's store**, unless the user is resolving
 //!   conflicts in it. The new store is built beside it and swapped in.
-//! - **Landing by itself** follows landing.rs's rules, but a result that
-//!   would land merged with the project's newer changes waits: its checks
-//!   run on the server (6.6).
+//! - **Landing by itself** follows landing.rs's rules, but never lands a
+//!   result merged with the project's newer changes: its checks run on the
+//!   server first (6.6).
 
 use super::chats::{self, Pending};
 use super::fs::{write_manifest, DeletedBase, OverlayChange};
@@ -135,20 +135,10 @@ pub fn wait(dialog_id: &str, reason: &str) {
     chats::set_pending(dialog_id, Some(&pending));
 }
 
-/// Lands the chat's imported result by itself. A result that would land
-/// merged with the project's newer changes waits, with its reason.
+/// Lands the chat's imported result by itself: never merged with the
+/// project's newer changes, which its server checks first (6.6).
 pub fn land_by_itself(dialog_id: &str) -> Result<Option<Landed>, LandError> {
-    let landed = chats::land_now_with(dialog_id, false, false);
-    if let Err(LandError::Unchecked(files)) = &landed {
-        wait(
-            dialog_id,
-            &format!(
-                "Not landed: the project changed {} too, and the merged result isn't checked yet. Land takes it as it is.",
-                files.join(", ")
-            ),
-        );
-    }
-    landed
+    chats::land_now_with(dialog_id, false, false)
 }
 
 /// Whether the user is resolving conflicts in the chat's store.
@@ -348,11 +338,19 @@ fn swap(
     if resolving(dialog_id) {
         return Err(ImportError::Resolving);
     }
-    chats::discard(dialog_id)?;
-    if changes.is_empty() {
-        return Ok(());
+    chats::let_go(dialog_id);
+    // The old store goes aside first: the chat is without one only between
+    // two renames, not while a large one is deleted.
+    let old = store.with_file_name(format!(".replaced-{dialog_id}"));
+    remove(&old)?;
+    match fs::rename(store, &old) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(e).into()),
+        _ => {}
     }
-    fs::rename(staging, store).map_err(|e| ImportError::Failed(io(e)))
+    if !changes.is_empty() {
+        fs::rename(staging, store).map_err(io)?;
+    }
+    Ok(remove(&old)?)
 }
 
 /// Writes `paths` of `tree` under `into`, as a checkout of the repository's

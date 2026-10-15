@@ -472,6 +472,21 @@ pub fn close(dialog_id: &str) {
 
 /// Throws the chat's changes away.
 pub fn discard(dialog_id: &str) -> Result<(), String> {
+    let_go(dialog_id);
+    match store_dir(dialog_id) {
+        // Gone already (discarded twice at once): nothing to do.
+        Some(store) => match std::fs::remove_dir_all(&store) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        },
+        None => Ok(()),
+    }
+}
+
+/// What goes with the chat's changes besides its store: its view, its
+/// checks' saved output, its children's overlays and what it was compared
+/// with.
+pub(super) fn let_go(dialog_id: &str) {
     // Its checks' saved output goes with it (landing discards too).
     crate::agent_run::check_output::clean(dialog_id);
     // And its children's overlays, which stood on its view (F02).
@@ -485,14 +500,6 @@ pub fn discard(dialog_id: &str) -> Result<(), String> {
     forget_shown(dialog_id, None);
     if let Some(project) = project {
         refresh_project_peers(&project);
-    }
-    match store_dir(dialog_id) {
-        // Gone already (discarded twice at once): nothing to do.
-        Some(store) => match std::fs::remove_dir_all(&store) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
-            _ => Ok(()),
-        },
-        None => Ok(()),
     }
 }
 

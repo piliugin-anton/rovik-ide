@@ -124,6 +124,17 @@ pub enum Request {
     /// The newest result of each of this computer's chats, for the ones a
     /// client missed (K24). → `ChatResults`.
     WorkResults,
+    /// The chat's result would land merged with the project's newer
+    /// changes (6.6, D13): `snapshot` is merged into its worktree as a sync
+    /// does, and the chat starts with the checks on what merged
+    /// (`CheckMerged`), whose end brings a new result. → `Synced`.
+    WorkRecheck {
+        dialog_id: String,
+        project: String,
+        snapshot: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        excludes: Vec<String>,
+    },
     /// A result of the chat landed on its computer (6.5): for these paths,
     /// from the root of the project's repository, the chat's landing base
     /// takes the result's content, so the next result doesn't bring back a

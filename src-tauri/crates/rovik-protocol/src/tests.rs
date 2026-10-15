@@ -290,6 +290,12 @@ fn every_request_round_trips() {
                 config: None,
                 ..start()
             }),
+            Request::AgentStart(StartRequest {
+                start: StartKind::CheckMerged {
+                    files: vec!["src/main.rs".into()],
+                },
+                ..start()
+            }),
             Request::AgentStop {
                 dialog_id: "d".into(),
             },
@@ -412,6 +418,12 @@ fn every_request_round_trips() {
                 dialog_id: "d".into(),
             },
             Request::WorkResults,
+            Request::WorkRecheck {
+                dialog_id: "d".into(),
+                project: "p".into(),
+                snapshot: "0123456789abcdef0123456789abcdef01234567".into(),
+                excludes: Vec::new(),
+            },
             Request::WorkLanded {
                 dialog_id: "d".into(),
                 commit: "0123456789abcdef0123456789abcdef01234567".into(),
