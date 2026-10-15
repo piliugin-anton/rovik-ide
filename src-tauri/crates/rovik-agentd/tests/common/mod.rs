@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod project;
+pub mod ssh;
 
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};

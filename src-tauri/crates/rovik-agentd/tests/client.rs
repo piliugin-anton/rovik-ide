@@ -1,10 +1,16 @@
 //! The app's client against the real daemon (P07): its calls and events, a
 //! daemon started again under it, and a reply too big for a frame while
-//! events keep coming.
+//! events keep coming. And its SSH tunnel (H02): each way of logging in,
+//! the host key checked before anything is sent, and the WebSocket and an
+//! upload on channels of their own at once.
 
 mod common;
 
+use common::ssh::{new_key, SshServer, PASSWORD, USER};
 use common::{start_request, until, Daemon, COMPUTER};
+use rovik_client::ssh::{
+    fingerprint, Answerer, Questions, Ssh, SshAuth, SshConnector, SshError, SshTarget,
+};
 use rovik_client::{Client, HostState, Identity, Incoming, UnixConnector};
 use rovik_core::agent_run::permissions::Permissions;
 use rovik_core::agent_run::{AgentConfig, StartKind, UserMessage};
@@ -256,4 +262,137 @@ async fn a_reply_too_big_for_a_frame_comes_through_post_call_while_events_keep_c
         })
         .await;
     assert_eq!(stopped, Ok(Response::Bool(true)));
+}
+
+/// The server in the test, as the hosts page would set it up, its key
+/// pinned.
+fn target(server: &SshServer, auth: SshAuth) -> SshTarget {
+    SshTarget {
+        host: "127.0.0.1".into(),
+        port: server.port,
+        user: USER.into(),
+        auth,
+        host_key: Some(server.host_key_line()),
+    }
+}
+
+fn password(text: &str) -> SshAuth {
+    SshAuth::Password(Secret(text.into()))
+}
+
+/// Answers each keyboard-interactive question with `answer`.
+fn answering(answer: &'static str) -> Answerer {
+    Arc::new(move |questions: Questions| {
+        Box::pin(async move {
+            let answers = questions.prompts.iter().map(|_| Secret(answer.into()));
+            Some(answers.collect())
+        })
+    })
+}
+
+/// H02: the host key is shown before anything is sent, and each way in
+/// works once it's pinned, a wrong one refused; a changed key is refused
+/// whatever the credentials.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_lets_each_way_in_once_the_host_key_is_pinned() {
+    let server = SshServer::start().await;
+    let dir = rovik_core::testing::temp_dir();
+    let mut first = target(&server, password(PASSWORD));
+    first.host_key = None;
+    let unknown = Ssh::connect(&first).await.err().unwrap();
+    let SshError::UnknownHostKey {
+        key,
+        fingerprint: shown,
+    } = unknown
+    else {
+        panic!("not asked to check the key: {unknown}");
+    };
+    let shown_key = russh::keys::PublicKey::from_openssh(&key).unwrap();
+    assert_eq!(
+        shown_key.key_data(),
+        server.host_key.public_key().key_data()
+    );
+    assert_eq!(shown, fingerprint(server.host_key.public_key()));
+    assert!(shown.starts_with("SHA256:"), "{shown}");
+
+    let ssh = Ssh::connect(&target(&server, password(PASSWORD)))
+        .await
+        .unwrap();
+    let ran = ssh.exec("echo hello").await.unwrap();
+    assert_eq!((ran.status, ran.stdout), (Some(0), b"echo hello".to_vec()));
+    let file = server.key_file(&dir.0, "file pass");
+    let with_key = SshAuth::Key {
+        path: file.clone(),
+        passphrase: Some(Secret("file pass".into())),
+    };
+    Ssh::connect(&target(&server, with_key)).await.unwrap();
+    let agent = server.agent(&dir.0).await;
+    let with_agent = SshAuth::Agent {
+        socket: Some(agent),
+    };
+    Ssh::connect(&target(&server, with_agent)).await.unwrap();
+    let asked = SshAuth::KeyboardInteractive(answering(PASSWORD));
+    Ssh::connect(&target(&server, asked)).await.unwrap();
+
+    let wrong = Ssh::connect(&target(&server, password("guess")))
+        .await
+        .err();
+    assert!(matches!(wrong, Some(SshError::Denied(_))), "{wrong:?}");
+    let locked = SshAuth::Key {
+        path: file,
+        passphrase: None,
+    };
+    let locked = Ssh::connect(&target(&server, locked)).await.err();
+    assert!(matches!(locked, Some(SshError::Key(_))), "{locked:?}");
+    let asked = SshAuth::KeyboardInteractive(answering("guess"));
+    let wrong = Ssh::connect(&target(&server, asked)).await.err();
+    assert!(matches!(wrong, Some(SshError::Denied(_))), "{wrong:?}");
+
+    let mut changed = target(&server, password(PASSWORD));
+    changed.host_key = Some(new_key().public_key().to_openssh().unwrap());
+    let refused = Ssh::connect(&changed).await.err().unwrap();
+    let SshError::HostKeyChanged { found, .. } = &refused else {
+        panic!("a changed key wasn't refused: {refused}");
+    };
+    assert_eq!(*found, fingerprint(server.host_key.public_key()));
+}
+
+/// H02: through the tunnel, the WebSocket and an upload go at once, each on
+/// a `direct-streamlocal` channel of its own to the daemon's socket.
+#[tokio::test(flavor = "multi_thread")]
+async fn over_ssh_the_websocket_and_an_upload_go_at_once_on_channels_of_their_own() {
+    let daemon = Daemon::start(&[]).await;
+    let server = SshServer::start().await;
+    let (tx, rx) = mpsc::unbounded_channel();
+    let identity = Identity {
+        host: "ssh-server".into(),
+        computer: COMPUTER.into(),
+        token: Secret(daemon.token.clone()),
+        client: "ssh tests".into(),
+    };
+    let socket = daemon.socket.to_string_lossy().into_owned();
+    let connector = SshConnector::new(target(&server, password(PASSWORD)), socket);
+    let sink = Arc::new(move |incoming| {
+        let _ = tx.send(incoming);
+    });
+    let client = Client::connect(connector, identity, sink);
+    let mut heard = Heard(rx);
+    heard.until(subscribed).await;
+
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    pdf.resize(2 << 20, b'%');
+    let id = rovik_core::chat_db::attachments::id_of(&pdf);
+    let (uploaded, info) = tokio::join!(
+        client.put_blob(&id, pdf, |_| {}),
+        client.request::<HostInfo>(Request::HostInfo)
+    );
+    uploaded.unwrap();
+    info.unwrap();
+    let most = server.most_open.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(most >= 2, "only {most} channel open at once");
+    let missing: Vec<String> = client
+        .request(Request::BlobsMissing { ids: vec![id] })
+        .await
+        .unwrap();
+    assert!(missing.is_empty(), "the daemon has the file");
 }

@@ -2264,3 +2264,30 @@ Tasks add notes here when reality differs from the plan.
     its config folder.
   - Adding `keyring` and its Linux store changed how shared dependencies
     resolve, so every crate rebuilt once.
+- **H02, SSH.**
+  - `rovik_client::ssh` uses russh 0.63 (0.64 is ten days old), with its
+    default crypto, aws-lc-rs, which the app had already.
+  - `Ssh::connect` checks the host key before any credential goes. With
+    no key pinned it fails with `UnknownHostKey`, the key in OpenSSH form
+    and its SHA-256 fingerprint: the app shows the fingerprint and pins
+    the key once the user agrees. A different key later fails with
+    `HostKeyChanged`, both fingerprints in it, and nothing overrides it.
+    Host certificates aren't pinned in v1; the user's own ssh takes them
+    (H03).
+  - Logging in takes a key file and its passphrase, the SSH agent
+    (`SSH_AUTH_SOCK`; on Windows the OpenSSH agent's pipe, then Pageant),
+    a password, or keyboard-interactive, each round of questions answered
+    by a callback the interface gives. The agent's certificates are left
+    to the user's ssh too.
+  - `SshConnector` is a `Connector`: one connection per host, made when
+    the first stream is asked for and again once it's closed, and a
+    `direct-streamlocal` channel to the daemon's socket per stream.
+    Keepalives go every 15 s, and three unanswered drop the link. Errors
+    a retry won't fix, a changed key or refused credentials, reach the
+    client as "permission denied".
+  - `Ssh::exec` runs a command on an exec channel and collects its output
+    and exit status, for H03 to H05.
+  - The tests run against a russh server in the test
+    (`tests/common/ssh.rs`): the unknown key shown first, each way in and
+    a wrong one, a changed key refused, and a 2 MB upload and a call at
+    once over the tunnel to the real daemon, on two channels.

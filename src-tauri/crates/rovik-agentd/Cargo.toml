@@ -33,6 +33,9 @@ rovik-core = { workspace = true, features = ["testing"] }
 rusqlite.workspace = true
 # The app's client, against the real daemon.
 rovik-client.workspace = true
+# An SSH server in the test for the client's tunnel (H02), with its keys.
+russh = "0.63.3"
+rand = "0.10"
 tokio = { workspace = true, features = ["process"] }
 hyper = { workspace = true, features = ["client", "http1"] }
 http-body-util.workspace = true

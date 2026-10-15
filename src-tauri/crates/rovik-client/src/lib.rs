@@ -18,6 +18,8 @@
 //!   host_settings.rs  the hosts this computer knows (cloud-hosts.json)
 //!   secrets.rs    passwords, passphrases, tokens and API keys, in the
 //!                 keychain or a file encrypted in its place
+//!   ssh.rs        SSH to a host: a channel to its daemon for each stream,
+//!                 and the commands that set it up
 
 mod client;
 mod connector;
@@ -28,6 +30,7 @@ mod packs;
 mod remote;
 pub mod secrets;
 pub mod shadow;
+pub mod ssh;
 #[cfg(test)]
 mod testing;
 

@@ -30,6 +30,8 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["
 getrandom = "0.4"
 zeroize = "1.9"
 base64 = "0.23.1"
+# The tunnel to a host's daemon, and the commands that set it up (H02).
+russh = "0.63.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"
