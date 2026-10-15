@@ -121,6 +121,7 @@ pub fn run() {
             commands::chat::chat_update_message,
             commands::chat::chat_rename_dialog,
             commands::chat::chat_delete_dialog,
+            commands::chat::chat_resync_dialog,
             commands::chat::chat_search,
             commands::chat::chat_messages_answered,
             commands::chat::chat_store_attachment,

@@ -473,6 +473,42 @@ pub fn delete_subtree(conn: &Connection, id: &str) -> DbResult<()> {
     delete_dialog_in(conn, id)
 }
 
+/// What a chat has below its own row, in the caller's transaction: its
+/// subagents' chats, its messages and its CLM rows, with their search rows.
+/// The row stays, with its title's search row and what hangs from it here
+/// (the input's draft, K45): a mirror's "Re-sync this chat" (6.3).
+pub fn delete_below(conn: &Connection, id: &str) -> DbResult<()> {
+    for child in descendants(conn, id)? {
+        delete_dialog_in(conn, &child)?;
+    }
+    let rowids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT rowid FROM search_rows WHERE dialog_id = ?1 AND message_id IS NOT NULL",
+            )
+            .map_err(err)?;
+        let ids = stmt
+            .query_map(params![id], |r| r.get(0))
+            .map_err(err)?
+            .collect::<Result<_, _>>()
+            .map_err(err)?;
+        ids
+    };
+    for rowid in rowids {
+        conn.execute("DELETE FROM search_index WHERE rowid = ?1", params![rowid])
+            .map_err(err)?;
+    }
+    for sql in [
+        "DELETE FROM search_rows WHERE dialog_id = ?1 AND message_id IS NOT NULL",
+        "DELETE FROM messages WHERE dialog_id = ?1",
+        "DELETE FROM clm_state WHERE dialog_id = ?1",
+        "DELETE FROM clm_revisions WHERE dialog_id = ?1",
+    ] {
+        conn.execute(sql, params![id]).map_err(err)?;
+    }
+    Ok(())
+}
+
 /// One chat's rows (the foreign key would remove a subagent's rows, but
 /// not its search rows, so `delete_dialog` removes those first).
 fn delete_dialog_in(tx: &Connection, id: &str) -> DbResult<()> {
@@ -619,6 +655,25 @@ fn message_from_row(r: &Row) -> rusqlite::Result<MessageRow> {
     })
 }
 
+/// The messages with these ids, in that order, those that are here.
+pub fn messages_by_id(conn: &Connection, ids: &[String]) -> DbResult<Vec<MessageRow>> {
+    let mut stmt = conn
+        .prepare_cached(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"
+        ))
+        .map_err(err)?;
+    let mut rows = Vec::with_capacity(ids.len());
+    for id in ids {
+        let row = stmt
+            .query_row(params![id], message_from_row)
+            .optional()
+            .map_err(err)?;
+        rows.extend(row);
+    }
+    attach_attachments(conn, &mut rows)?;
+    Ok(rows)
+}
+
 /// Fills `attachments` for a page of messages with one query.
 fn attach_attachments(conn: &Connection, messages: &mut [MessageRow]) -> DbResult<()> {
     if messages.is_empty() {
@@ -661,41 +716,41 @@ fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Appends those of the messages the chat doesn't have yet, in order: a
-/// mirror's rows, which may have come another way first (6.3). Returns
-/// each message's `seq`, whether it was appended now or before.
-pub fn append_missing(
+/// Appends those of a mirror's messages the chat doesn't have yet, at the
+/// numbers their owner gave them (6.1): a row of the chat's already at one
+/// of them steps aside, as a pull's does (`sync::apply_in`), until its own
+/// change brings its number.
+pub fn append_numbered(
     conn: &mut Connection,
     dialog_id: &str,
-    messages: &[NewMessage],
-) -> DbResult<Vec<i64>> {
-    let known = messages
-        .iter()
-        .map(|m| {
-            conn.query_row(
-                "SELECT seq FROM messages WHERE id = ?1",
+    messages: &[(i64, NewMessage)],
+) -> DbResult<()> {
+    let tx = conn.transaction().map_err(err)?;
+    let mut added = 0;
+    for (seq, m) in messages {
+        let here = tx
+            .query_row(
+                "SELECT 1 FROM messages WHERE id = ?1",
                 params![m.id],
-                |r| r.get::<_, i64>(0),
+                |_| Ok(()),
             )
             .optional()
-        })
-        .collect::<rusqlite::Result<Vec<Option<i64>>>>()
+            .map_err(err)?;
+        if here.is_some() {
+            continue;
+        }
+        tx.execute(
+            "UPDATE messages SET seq = -seq WHERE dialog_id = ?1 AND seq = ?2 AND seq > 0",
+            params![dialog_id, seq],
+        )
         .map_err(err)?;
-    let missing: Vec<NewMessage> = messages
-        .iter()
-        .zip(&known)
-        .filter(|(_, seq)| seq.is_none())
-        .map(|(m, _)| m.clone())
-        .collect();
-    let mut appended = if missing.is_empty() {
-        Vec::new().into_iter()
-    } else {
-        append_messages(conn, dialog_id, &missing)?.into_iter()
-    };
-    Ok(known
-        .into_iter()
-        .map(|seq| seq.or_else(|| appended.next()).unwrap_or_default())
-        .collect())
+        insert_message(&tx, dialog_id, *seq, m)?;
+        added += 1;
+    }
+    if added > 0 {
+        count_messages(&tx, dialog_id, added)?;
+    }
+    tx.commit().map_err(err)
 }
 
 /// Appends messages in order; returns the `seq` assigned to each.
@@ -716,47 +771,59 @@ pub fn append_messages(
     let mut seqs = Vec::with_capacity(messages.len());
     for m in messages {
         next += SEQ_STEP;
-        tx.execute(
-            &format!(
-                "INSERT INTO messages ({MESSAGE_COLUMNS}) VALUES
-                 (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)"
-            ),
-            params![
-                m.id,
-                dialog_id,
-                next,
-                m.role,
-                m.content.len() as i64,
-                to_json_opt(&m.tool_calls),
-                m.tool_call_id,
-                to_json_opt(&m.meta),
-                m.error,
-                m.failed as i64,
-                m.created_at,
-                m.content,
-            ],
-        )
-        .map_err(err)?;
-        for (position, attachment) in m.attachments.iter().enumerate() {
-            tx.execute(
-                "INSERT INTO message_attachments (message_id, position, attachment_id) VALUES (?1, ?2, ?3)",
-                params![m.id, position as i64, attachment],
-            )
-            .map_err(err)?;
-        }
-        if m.finalized {
-            finalize(&tx, &m.id)?;
-        }
+        insert_message(&tx, dialog_id, next, m)?;
         seqs.push(next);
     }
-
-    tx.execute(
-        "UPDATE dialogs SET message_count = message_count + ?2, updated_at = MAX(updated_at, ?3) WHERE id = ?1",
-        params![dialog_id, messages.len() as i64, now_ms()],
-    )
-    .map_err(err)?;
+    count_messages(&tx, dialog_id, messages.len())?;
     tx.commit().map_err(err)?;
     Ok(seqs)
+}
+
+/// One message, numbered `seq`, with its attachments; made final if it
+/// came final.
+fn insert_message(tx: &Connection, dialog_id: &str, seq: i64, m: &NewMessage) -> DbResult<()> {
+    tx.execute(
+        &format!(
+            "INSERT INTO messages ({MESSAGE_COLUMNS}) VALUES
+             (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12)"
+        ),
+        params![
+            m.id,
+            dialog_id,
+            seq,
+            m.role,
+            m.content.len() as i64,
+            to_json_opt(&m.tool_calls),
+            m.tool_call_id,
+            to_json_opt(&m.meta),
+            m.error,
+            m.failed as i64,
+            m.created_at,
+            m.content,
+        ],
+    )
+    .map_err(err)?;
+    for (position, attachment) in m.attachments.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO message_attachments (message_id, position, attachment_id) VALUES (?1, ?2, ?3)",
+            params![m.id, position as i64, attachment],
+        )
+        .map_err(err)?;
+    }
+    if m.finalized {
+        finalize(tx, &m.id)?;
+    }
+    Ok(())
+}
+
+/// `added` more messages in the chat.
+fn count_messages(tx: &Connection, dialog_id: &str, added: usize) -> DbResult<()> {
+    tx.execute(
+        "UPDATE dialogs SET message_count = message_count + ?2, updated_at = MAX(updated_at, ?3) WHERE id = ?1",
+        params![dialog_id, added as i64, now_ms()],
+    )
+    .map(drop)
+    .map_err(err)
 }
 
 /// Makes a message final: large tool output moves to `message_bodies`,

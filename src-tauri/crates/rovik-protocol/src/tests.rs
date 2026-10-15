@@ -771,6 +771,10 @@ fn every_event_round_trips() {
                 run_id: "r".into(),
             }),
             Event::ResultReady(result(None)),
+            Event::ChatChanged {
+                dialog_id: "d".into(),
+                rev: 41,
+            },
             Event::SyncState(ChatSync {
                 dialog_id: "d".into(),
                 state: SyncState::Conflicts,

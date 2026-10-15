@@ -206,6 +206,19 @@ pub async fn chat_delete_dialog(
     remote.delete(&dialog_id).await.map_err(|fail| fail.message)
 }
 
+/// "Re-sync this chat" (6.3): a remote chat's rows again from its host, in
+/// place of the mirror's. The chat and its input's draft stay.
+#[tauri::command]
+pub async fn chat_resync_dialog(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+) -> Result<(), String> {
+    remote
+        .resync_chat(&dialog_id)
+        .await
+        .map_err(|fail| fail.message)
+}
+
 #[tauri::command]
 pub async fn chat_search(
     core: State<'_, Core>,

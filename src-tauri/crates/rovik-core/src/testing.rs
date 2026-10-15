@@ -41,6 +41,9 @@ pub enum Reply {
     Usage(u64, u64, Box<Reply>),
     /// The reply, then this usage object, as the provider sends it.
     UsageAs(Value, Box<Reply>),
+    /// Text a piece at a time, this many milliseconds apart: a reply that
+    /// streams for a while.
+    Trickle(Vec<&'static str>, u64),
 }
 
 impl Reply {
@@ -89,6 +92,13 @@ impl Reply {
                 out + &then.sse()
             }
             Reply::Slow(_, then) => then.sse(),
+            Reply::Trickle(pieces, _) => {
+                let mut out = String::new();
+                for piece in pieces {
+                    out += &chunk(json!({ "choices": [{ "delta": { "content": piece }, "finish_reason": null }] }));
+                }
+                out + &Reply::Text("").sse()
+            }
             Reply::RateLimited(_) => String::new(),
             Reply::Usage(prompt, completion, then) => Reply::usage_sse(
                 json!({ "prompt_tokens": prompt, "completion_tokens": completion }),
@@ -140,6 +150,27 @@ impl Reply {
         }
     }
 
+    /// What the server writes, each piece after its wait: a trickle's text
+    /// a piece at a time, any other reply at once.
+    fn pieces(&self) -> Vec<(Duration, String)> {
+        let Reply::Trickle(pieces, ms) = self else {
+            return vec![(self.delay(), self.response())];
+        };
+        let chunk = |v: Value| format!("data: {v}\n\n");
+        let mut out = vec![(
+            Duration::ZERO,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        )];
+        for piece in pieces {
+            let delta =
+                json!({ "choices": [{ "delta": { "content": piece }, "finish_reason": null }] });
+            out.push((Duration::from_millis(*ms), chunk(delta)));
+        }
+        out.push((Duration::ZERO, Reply::Text("").sse()));
+        out
+    }
+
     /// The usage in a chunk of its own, as providers send it: just before
     /// [DONE]; for a reply that hangs, after what it sends.
     fn usage_sse(usage: Value, then: &Reply) -> String {
@@ -187,14 +218,11 @@ pub async fn model_routed(
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
-    let script = |replies: &[Reply]| -> Vec<(String, bool, Duration)> {
-        replies
-            .iter()
-            .map(|r| (r.response(), r.hangs(), r.delay()))
-            .collect()
+    let script = |replies: &[Reply]| -> Vec<(Vec<(Duration, String)>, bool)> {
+        replies.iter().map(|r| (r.pieces(), r.hangs())).collect()
     };
     let markers: Vec<&'static str> = routes.iter().map(|(m, _)| *m).collect();
-    let mut scripts: Vec<Vec<(String, bool, Duration)>> =
+    let mut scripts: Vec<Vec<(Vec<(Duration, String)>, bool)>> =
         routes.iter().map(|(_, r)| script(r)).collect();
     scripts.push(script(&default));
     let next = Arc::new(Mutex::new(vec![0usize; scripts.len()]));
@@ -209,17 +237,21 @@ pub async fn model_routed(
                 let body = read_request(&mut socket).await;
                 let which = route_of(&body, &markers).unwrap_or(scripts.len() - 1);
                 log.lock().unwrap().push(body);
-                let (reply, hangs, delay) = {
+                let (pieces, hangs) = {
                     let mut next = next.lock().unwrap();
                     let bodies = &scripts[which];
                     let n = next[which];
                     next[which] += 1;
                     bodies[n.min(bodies.len() - 1)].clone()
                 };
-                if !delay.is_zero() {
-                    tokio::time::sleep(delay).await;
+                for (wait, piece) in pieces {
+                    if !wait.is_zero() {
+                        tokio::time::sleep(wait).await;
+                    }
+                    if socket.write_all(piece.as_bytes()).await.is_err() {
+                        return;
+                    }
                 }
-                let _ = socket.write_all(reply.as_bytes()).await;
                 if hangs {
                     // Keeps the connection open, saying nothing more.
                     tokio::time::sleep(Duration::from_secs(120)).await;

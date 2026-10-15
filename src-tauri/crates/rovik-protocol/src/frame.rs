@@ -61,6 +61,9 @@ pub enum Frame {
 pub enum Event {
     /// A run's event, as the app emits it as `agent-event`.
     Agent(AgentEvent),
+    /// Rows of the chat or its subagents' chats changed, up to the daemon's
+    /// revision `rev`: its mirror pulls them (6.3).
+    ChatChanged { dialog_id: String, rev: i64 },
     /// A chat's result is committed (6.5).
     ResultReady(ChatResult),
     /// A sync brought the project's changes to a chat's worktree, or waits

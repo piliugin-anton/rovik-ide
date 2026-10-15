@@ -7,7 +7,7 @@
 //! The events are protocol types (rovik-protocol), since the daemon sends
 //! them to the app as they are.
 
-use crate::chat_db::store::NewMessage;
+use crate::chat_db::store::{MessageRow, NewMessage};
 
 pub use rovik_protocol::events::{
     AgentEvent, ApprovalRequest, EditProposal, OutMessage, Patch, QuestionsRequest, Status,
@@ -34,6 +34,43 @@ pub fn out_message(dialog_id: &str, seq: i64, m: &NewMessage, pending: bool) -> 
         attachments: m.attachments.clone(),
         created_at: m.created_at,
         pending,
+    }
+}
+
+/// A mirror's row as `MessagesAdded` announces it, once a pull brought it
+/// (6.3).
+pub fn out_of_row(row: &MessageRow) -> OutMessage {
+    OutMessage {
+        id: row.id.clone(),
+        dialog_id: row.dialog_id.clone(),
+        seq: row.seq,
+        role: row.role.clone(),
+        content: row.content.clone(),
+        body_external: row.body_external,
+        body_bytes: row.body_bytes,
+        tool_calls: row.tool_calls.clone(),
+        tool_call_id: row.tool_call_id.clone(),
+        meta: row.meta.clone(),
+        error: row.error.clone(),
+        failed: row.failed,
+        finalized: row.finalized,
+        attachments: row.attachments.clone(),
+        created_at: row.created_at,
+        pending: false,
+    }
+}
+
+/// A patch that gives a message all a pull brought of it (6.3).
+pub fn full_patch(row: &MessageRow) -> Patch {
+    Patch {
+        content: Some(row.content.clone()),
+        tool_calls: row.tool_calls.clone(),
+        meta: row.meta.clone(),
+        error: row.error.clone(),
+        failed: Some(row.failed),
+        pending: None,
+        finalized: Some(row.finalized),
+        status: None,
     }
 }
 

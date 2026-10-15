@@ -185,10 +185,13 @@ fn the_chat_stores_writes_raise_the_rows_revisions() {
     );
     check(
         &mut conn,
-        "append_missing",
+        "append_numbered",
         |c| {
-            let rows = [message("u1", "user", "Look"), message("t1", "tool", "x")];
-            append_missing(c, "d", &rows).unwrap();
+            let rows = [
+                (1, message("u1", "user", "Look")),
+                (5000, message("t1", "tool", "x")),
+            ];
+            append_numbered(c, "d", &rows).unwrap();
         },
         &[&|c| message_rev(c, "t1")],
         &[&other, &|c| message_rev(c, "u1")],

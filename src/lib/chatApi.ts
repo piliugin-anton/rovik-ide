@@ -142,6 +142,13 @@ export const chatApi = {
 
   deleteDialog: (dialogId: string) => invoke<void>('chat_delete_dialog', { dialogId }),
 
+  /**
+   * "Re-sync this chat": a remote chat's rows again from its host, in place of
+   * the mirror's. The chat and its input's draft stay; its messages are to be
+   * loaded again after.
+   */
+  resyncDialog: (dialogId: string) => invoke<void>('chat_resync_dialog', { dialogId }),
+
   /** Searches one project's chats (`projectId` null: the chats with no project). */
   search: (query: string, projectId: string | null, limit = 50) =>
     invoke<ChatSearchHit[]>('chat_search', { query, projectId, limit }),

@@ -2093,3 +2093,35 @@ Tasks add notes here when reality differs from the plan.
   - `Client::import_chat` sends the bundle, behind the `mirror` feature.
     On the desktop, `dispatch` refuses `ChatOwner` and `ChatRelease` as
     the daemon's own.
+- **M05, the mirror's writer.**
+  - The daemon sends `ChatChanged { dialogId, rev }` (a new `Event`) for
+    the lead's chat after each event about it and after each request that
+    changed it, at most twice a second: one is coming already, or goes
+    500 ms after the last. Its `rev` is the clock read as it goes, so
+    every change before is in it. The ring keeps one per chat.
+  - The writer is `remote/mirror.rs` in `rovik-client`, a part of
+    `Remote`. A pull goes 500 ms after a `ChatChanged` whose `rev` the
+    mirror doesn't have, and at once on each connection (every chat in
+    `mirror_state` for that host), when a run ends and on `Resync`. One
+    pull goes at a time per chat; one asked for meanwhile follows it.
+  - A page's attachment files are fetched before its rows go in; one the
+    host can't send gets a row without a file. The frontend then hears of
+    the page's new rows as `messagesAdded` and of its changed final rows
+    as a full `messagePatched`. A row still being written isn't patched
+    from its checkpoint: the run's own patches are newer.
+  - `MessagesAdded` rows still go in first (6.1), now at the owner's
+    numbers (`store::append_numbered`), so the frontend and the mirror
+    number them alike; streamed patches no longer write the mirror, which
+    the pulls bring at the 2-second checkpoints. `Resync` is a pull: the
+    messages sent from here come with it, so the client no longer keeps
+    them. A rename, a model or a message's patch still go in at once.
+  - "Re-sync this chat" (`Remote::resync_chat`, the
+    `chat_resync_dialog` command and `chatApi.resyncDialog`) reads every
+    page from 0, then replaces the mirror's rows in one transaction
+    (`sync::replace_mirror`, `store::delete_below`): the chat's row stays,
+    with its input's draft, and `mirror_state.rev` takes the owner's
+    clock even when it's lower, as after a daemon's database was
+    replaced. No pull goes meanwhile. Its place in the chat menu is
+    U02's, which brings the menu.
+  - The scripted model has `Reply::Trickle`, text a piece at a time, for
+    a reply that streams past its checkpoints.

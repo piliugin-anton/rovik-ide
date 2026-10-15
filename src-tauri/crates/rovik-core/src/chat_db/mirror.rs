@@ -80,6 +80,16 @@ pub fn set_unreported(conn: &Connection, dialog_id: &str, landing: Option<&str>)
     .map_err(err)
 }
 
+/// The chats mirrored from `host`, its subagents' chats aside: those its
+/// pulls are for.
+pub fn mirrored(conn: &Connection, host: &str) -> DbResult<Vec<String>> {
+    let mut stmt = conn
+        .prepare_cached("SELECT dialog_id FROM mirror_state WHERE host = ?1")
+        .map_err(err)?;
+    let rows = stmt.query_map(params![host], |r| r.get(0)).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
 /// The landings `host` wasn't told of, by chat.
 pub fn unreported(conn: &Connection, host: &str) -> DbResult<Vec<(String, String)>> {
     let mut stmt = conn

@@ -53,8 +53,10 @@ impl Daemon {
     /// `computer`'s request: the computer the token named. A chat another
     /// computer moved here is refused, its subagents' chats with it,
     /// whatever the request (D16, 4.2), and so is anything but a read of a
-    /// chat the computer took back (6.8).
+    /// chat the computer took back (6.8). A request that changed a chat
+    /// tells its computer (`ChatChanged`, 6.3).
     pub async fn answer(&self, computer: &str, request: Request) -> Result<Response, Fail> {
+        let mut changes = None;
         if let Some((target, access)) = request.target() {
             let lead = self.lead_of(target).await?;
             self.store.check_owner(computer, &lead)?;
@@ -63,7 +65,16 @@ impl Daemon {
                 let why = rovik_core::refusal(&Location::Released, access);
                 return Err(Fail::new(FailCode::NotOwner, why.unwrap_or_default()));
             }
+            changes = (access == Access::Write).then_some(lead);
         }
+        let reply = self.serve(computer, request).await;
+        if let (Ok(_), Some(chat)) = (&reply, changes) {
+            self.events.changed(&chat);
+        }
+        reply
+    }
+
+    async fn serve(&self, computer: &str, request: Request) -> Result<Response, Fail> {
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),

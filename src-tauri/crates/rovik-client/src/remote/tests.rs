@@ -3,9 +3,10 @@
 
 use super::*;
 use crate::testing::{identity, Fake};
+use rovik_core::agent_run::events::Patch;
 use rovik_core::agent_run::permissions::{ApprovalRule, Permissions};
 use rovik_core::agent_run::{ModelProfile, UserMessage};
-use rovik_core::chat_db::store::{MessageRow, NewDialog};
+use rovik_core::chat_db::store::{MessagePatch, MessageRow, NewDialog};
 use rovik_core::testing::{temp_dir, TempDir};
 use rovik_core::{EventSink, Paths};
 use rovik_protocol::events::EditProposal;
@@ -262,11 +263,15 @@ async fn events_reach_the_frontend_as_6_1_says() {
     };
     remote.receive(HOST, event(elsewhere)).await;
 
-    // The row was in the mirror before the frontend heard of it.
+    // The row was in the mirror before the frontend heard of it, at its
+    // owner's number. Its patches come with the next pull (6.3).
     assert_eq!(*app.witnessed.lock().unwrap(), [("a1".to_string(), true)]);
     let rows = app.rows("chat").await;
-    assert_eq!(rows[0].content, "Done.", "the mirror follows the patch");
-    assert!(rows[0].finalized);
+    assert_eq!(rows[0].seq, 7);
+    assert!(
+        !rows[0].finalized,
+        "a patch isn't written: a pull brings it"
+    );
     let sent = app.sent();
     let kinds: Vec<&str> = sent.iter().map(|e| e["type"].as_str().unwrap()).collect();
     assert_eq!(
@@ -279,10 +284,7 @@ async fn events_reach_the_frontend_as_6_1_says() {
             "approvalRequested"
         ]
     );
-    assert_eq!(
-        sent[0]["messages"][0]["seq"], rows[0].seq,
-        "the mirror's numbers"
-    );
+    assert_eq!(sent[0]["messages"][0]["seq"], 7, "the owner's numbers");
     assert_eq!(sent[2]["title"], "test-server: Stopped");
     assert_eq!(sent[3]["request"]["remote"], true, "an edit");
     assert!(sent[4]["request"].get("remote").is_none(), "a command");

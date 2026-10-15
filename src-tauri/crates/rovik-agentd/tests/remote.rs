@@ -69,6 +69,19 @@ async fn rows(app: &TestCore) -> Vec<MessageRow> {
         .messages
 }
 
+/// The chat's rows here once the mirror has `n` of them, all final: it
+/// pulls what the events didn't bring (6.3).
+async fn settled(app: &TestCore, n: usize) -> Vec<MessageRow> {
+    for _ in 0..400 {
+        let rows = rows(app).await;
+        if rows.len() >= n && rows.iter().all(|r| r.finalized) {
+            return rows;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the mirror never caught up: {:?}", rows(app).await);
+}
+
 /// The first event the app sent the frontend that `matches`, once it has.
 async fn sent(app: &TestCore, matches: impl Fn(&Value) -> bool) -> Value {
     until("an event for the frontend", || {
@@ -96,13 +109,12 @@ async fn a_remote_chat_runs_with_its_events_and_mirror_here() {
     );
     sent(&app, |e| e["type"] == "runEnded").await;
 
-    let rows = rows(&app).await;
+    let rows = settled(&app, 2).await;
     let texts: Vec<(&str, &str)> = rows
         .iter()
         .map(|r| (r.role.as_str(), r.content.as_str()))
         .collect();
     assert_eq!(texts, [("user", "Hi"), ("assistant", "Hello there.")]);
-    assert!(rows[1].finalized, "the mirror followed the reply's patches");
     let status = remote.status().await.unwrap();
     assert!(status.runs.is_empty());
 }

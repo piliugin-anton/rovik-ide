@@ -1,33 +1,36 @@
 //! The app's remote chats (6.1): which host each one is on, the requests
 //! that go there, and its events, passed on to the app's own sink as the
-//! frontend expects them, with the mirror written first. Which host a chat
-//! is on is kept in the database (`dialogs.location`, `mirror_state`), so
-//! the next start of the app knows it (`load`); `dispatch` refuses such a
-//! chat, whose rows here only the mirror writes (K21).
+//! frontend expects them, with the mirror written first. The mirror pulls
+//! the rows as their host has them (remote/mirror.rs, 6.3). Which host a
+//! chat is on is kept in the database (`dialogs.location`, `mirror_state`),
+//! so the next start of the app knows it (`load`); `dispatch` refuses such
+//! a chat, whose rows here only the mirror writes (K21).
 
 use crate::client::{Client, HostState, Identity, Incoming};
 use crate::connector::Connector;
 use crate::hosts::Hosts;
 use git2::Oid;
 use results::Job;
-use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest, OutMessage, Patch};
+use rovik_core::agent_run::events::{self, AgentEvent, ApprovalRequest};
 use rovik_core::agent_run::subagent::Kind;
 use rovik_core::agent_run::{self, AgentConfig, AgentStatus, StartKind, StartRequest, UserMessage};
 use rovik_core::chat_db::location::{self, Location};
-use rovik_core::chat_db::store::{self, MessagePatch, NewChildDialog, NewMessage};
-use rovik_core::chat_db::{api, attachments, mirror};
+use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
+use rovik_core::chat_db::{api, attachments};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::ChatSync;
 use rovik_protocol::{features, Event, Fail, FailCode, Request, Response};
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 mod bar;
+mod mirror;
 mod results;
 mod sync;
 
@@ -116,10 +119,8 @@ struct State {
     /// The remote runs the frontend was told of: a host that comes back
     /// without one ended it meanwhile.
     running: HashMap<String, String>,
-    /// Messages sent to a host and not yet announced by it, by id, with
-    /// their chats: a `Resync` in place of the announcement brings them
-    /// to the mirror.
-    sent: HashMap<String, (String, NewMessage)>,
+    /// Each mirrored chat's pulls (remote/mirror.rs).
+    pulls: HashMap<String, mirror::Pulls>,
     /// The sends whose files are going up, by chat: Stop cancels one.
     uploads: HashMap<String, oneshot::Sender<()>>,
     /// The project open in the app: its id and folder (6.5).
@@ -212,7 +213,7 @@ impl Remote {
         let (chat, host) = (dialog_id.to_string(), host.to_string());
         self.core
             .db
-            .write_detached(move |c| mirror::place(c, &chat, &host));
+            .write_detached(move |c| rovik_core::chat_db::mirror::place(c, &chat, &host));
     }
 
     pub fn host_of(&self, dialog_id: &str) -> Option<String> {
@@ -358,23 +359,7 @@ impl Remote {
                     .await?;
             }
         }
-        let sent = match &request.start {
-            StartKind::Send { message } => {
-                let row = (
-                    request.dialog_id.clone(),
-                    agent_run::stored_message(message),
-                );
-                self.lock().sent.insert(message.id.clone(), row);
-                Some(message.id.clone())
-            }
-            _ => None,
-        };
-        let reply = client.call(Request::AgentStart(request)).await;
-        if let (Err(_), Some(id)) = (&reply, sent) {
-            // Never stored there: the frontend shows it failed.
-            self.lock().sent.remove(&id);
-        }
-        reply
+        client.call(Request::AgentStart(request)).await
     }
 
     /// A start other than `Send` sends the request's text only when it
@@ -579,9 +564,13 @@ impl Remote {
                     self.catch_up(host).await;
                 }
                 self.after_connecting(host).await;
+                self.pull_all(host).await;
             }
             Incoming::Event { event, .. } => match event {
                 Event::Agent(event) => self.agent_event(host, event).await,
+                Event::ChatChanged { dialog_id, rev } => {
+                    self.chat_changed(host, &dialog_id, rev).await
+                }
                 Event::Resync { dialog_id } => self.resync(host, &dialog_id).await,
                 Event::ResultReady(result) => self.result_ready(host, result),
                 Event::SyncState(sync) => {
@@ -626,34 +615,19 @@ impl Remote {
                 dialog_id,
                 messages,
             } => {
-                {
-                    let mut state = self.lock();
-                    for m in messages.iter() {
-                        state.sent.remove(&m.id);
-                    }
-                }
-                self.fetch_files(host, messages).await;
-                let rows: Vec<NewMessage> = messages.iter().map(events::stored_row).collect();
-                match self.mirror(dialog_id, rows).await {
-                    // The frontend pages by the mirror's numbers.
-                    Ok(seqs) => messages
-                        .iter_mut()
-                        .zip(seqs)
-                        .for_each(|(m, seq)| m.seq = seq),
-                    Err(e) => log::warn!("the mirror of {dialog_id}: {e}"),
-                }
-            }
-            AgentEvent::MessagePatched {
-                dialog_id,
-                message_id,
-                patch,
-            } => {
-                // Until M05's pulls, the mirror follows the patches too.
-                let (id, patch) = (message_id.clone(), stored_patch(patch));
+                // In first, at their owner's numbers, with their files:
+                // the next pull completes them (6.1).
+                let files = messages.iter().flat_map(|m| m.attachments.iter().cloned());
+                self.fetch_files(host, files.collect()).await;
+                let rows: Vec<(i64, NewMessage)> = messages
+                    .iter()
+                    .map(|m| (m.seq, events::stored_row(m)))
+                    .collect();
+                let id = dialog_id.clone();
                 let written = self
                     .core
                     .db
-                    .write(move |c| store::update_message(c, &id, &patch))
+                    .write(move |c| store::append_numbered(c, &id, &rows))
                     .await;
                 if let Err(e) = written {
                     log::warn!("the mirror of {dialog_id}: {e}");
@@ -701,70 +675,11 @@ impl Remote {
             }
             AgentEvent::RunEnded { dialog_id, .. } => {
                 self.lock().running.remove(dialog_id);
+                self.pull_later(host, dialog_id, Duration::ZERO);
             }
             _ => {}
         }
         self.core.emit(event);
-    }
-
-    /// The files the rows name that aren't here, such as a screenshot a
-    /// run took on the host, fetched before the rows are written: a row
-    /// can't get its files later (6.1). One the host can't send gets a row
-    /// without a file, and the rows go in all the same (K44).
-    async fn fetch_files(&self, host: &str, messages: &[OutMessage]) {
-        let named: BTreeSet<String> = messages
-            .iter()
-            .flat_map(|m| m.attachments.iter().cloned())
-            .collect();
-        if named.is_empty() {
-            return;
-        }
-        let ids: Vec<String> = named.into_iter().collect();
-        let data_dir = self.core.db.data_dir().to_path_buf();
-        let asked = ids.clone();
-        let missing = self
-            .core
-            .db
-            .read(move |c| attachments::missing_files(c, &data_dir, &asked))
-            .await
-            .unwrap_or(ids);
-        let client = self.hosts.client(host);
-        for id in missing {
-            let fetched = match &client {
-                Some(client) => client.blob(&id).await.ok().flatten(),
-                None => None,
-            };
-            let stored = match fetched {
-                Some(bytes) if attachments::id_of(&bytes) == id => {
-                    match attachments::attachment_mime(&bytes) {
-                        Some(mime) => attachments::store(&self.core.db, bytes, mime).await.is_ok(),
-                        None => false,
-                    }
-                }
-                _ => false,
-            };
-            if !stored {
-                log::warn!("{host} couldn't send the file {id}");
-                let id = id.clone();
-                let added = self
-                    .core
-                    .db
-                    .write(move |c| attachments::add_unavailable(c, &id))
-                    .await;
-                if let Err(e) = added {
-                    log::warn!("the mirror's attachments: {e}");
-                }
-            }
-        }
-    }
-
-    /// Rows into the mirror, those it lacks: their `seq` there.
-    async fn mirror(&self, dialog_id: &str, rows: Vec<NewMessage>) -> Result<Vec<i64>, String> {
-        let id = dialog_id.to_string();
-        self.core
-            .db
-            .write(move |c| store::append_missing(c, &id, &rows))
-            .await
     }
 
     /// Back after missing events (4.3): the frontend is told what runs and
@@ -803,43 +718,14 @@ impl Remote {
         self.waiting(host, status, None).await;
     }
 
-    /// In place of an event too big for a frame (4.1): what waits in the
-    /// chat, from the host's status, and the messages this computer sent
-    /// it that weren't announced. Rows only the host has wait for the
-    /// mirror's pull (M05).
+    /// In place of an event too big for a frame (4.1): the chat's rows,
+    /// pulled, which the frontend then hears of, and what waits in it, from
+    /// the host's status.
     async fn resync(&self, host: &str, dialog_id: &str) {
         if self.host_of(dialog_id).as_deref() != Some(host) {
             return;
         }
-        let rows: Vec<NewMessage> = {
-            let mut state = self.lock();
-            let ids: Vec<String> = state
-                .sent
-                .iter()
-                .filter(|(_, (chat, _))| chat == dialog_id)
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.iter()
-                .filter_map(|id| state.sent.remove(id))
-                .map(|(_, row)| row)
-                .collect()
-        };
-        if !rows.is_empty() {
-            match self.mirror(dialog_id, rows.clone()).await {
-                Ok(seqs) => {
-                    let messages: Vec<OutMessage> = rows
-                        .iter()
-                        .zip(seqs)
-                        .map(|(row, seq)| events::out_message(dialog_id, seq, row, false))
-                        .collect();
-                    self.core.emit(AgentEvent::MessagesAdded {
-                        dialog_id: dialog_id.to_string(),
-                        messages,
-                    });
-                }
-                Err(e) => log::warn!("the mirror of {dialog_id}: {e}"),
-            }
-        }
+        self.pull_later(host, dialog_id, Duration::ZERO);
         if let Some(status) = self.status_of(host).await {
             self.waiting(host, status, Some(dialog_id)).await;
         }
@@ -904,18 +790,6 @@ fn relative_paths(request: &mut StartRequest, root: &str) {
 fn mark_remote(mut request: ApprovalRequest) -> ApprovalRequest {
     request.remote = request.edit.is_some();
     request
-}
-
-/// A streamed change as the mirror stores it.
-fn stored_patch(patch: &Patch) -> MessagePatch {
-    MessagePatch {
-        content: patch.content.clone(),
-        tool_calls: patch.tool_calls.clone(),
-        meta: patch.meta.clone(),
-        error: patch.error.clone(),
-        failed: patch.failed,
-        finalize: patch.finalized == Some(true),
-    }
 }
 
 fn internal(message: String) -> Fail {

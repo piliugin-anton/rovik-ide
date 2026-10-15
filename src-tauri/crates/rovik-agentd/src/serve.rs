@@ -81,6 +81,8 @@ async fn run(
         results: results.clone(),
     };
     let core = Core::new(paths, Arc::new(sink))?;
+    // `ChatChanged` names the database's clock (6.3).
+    events.set_db(core.db.clone());
     // A run follows its chat's computer's configuration (D16).
     let configs = store.clone();
     core.agents

@@ -553,6 +553,40 @@ pub fn apply_pulled(
     Ok(Some(applied))
 }
 
+/// "Re-sync this chat" (6.3): the mirror of `root`, on `host`, replaced in
+/// one transaction by every row its owner has, which a pull from 0 read up
+/// to the owner's revision `rev`. The chat's own row stays, with what hangs
+/// from it here (the input's draft and its files, K45), and takes the
+/// owner's fields. Nothing when the chat isn't on that host any more.
+pub fn replace_mirror(
+    conn: &mut Connection,
+    root: &str,
+    host: &str,
+    rows: &ChangeSet,
+    rev: i64,
+) -> DbResult<Option<Applied>> {
+    let tx = conn.transaction().map_err(err)?;
+    let on_host = Location::Host(host.to_string());
+    if location::of_chat(&tx, root)? != on_host {
+        return Ok(None);
+    }
+    store::delete_below(&tx, root)?;
+    let new = NewChats {
+        project_id: None,
+        location: on_host,
+    };
+    let applied = apply_in(&tx, rows, &new)?;
+    // From the owner's clock as it is, even one behind the mirror's: a
+    // daemon whose database was replaced.
+    tx.execute(
+        "UPDATE mirror_state SET rev = ?2 WHERE dialog_id = ?1",
+        params![root, rev],
+    )
+    .map_err(err)?;
+    tx.commit().map_err(err)?;
+    Ok(Some(applied))
+}
+
 /// Whether `rows` are the chat `lead`'s and its subagents' alone (6.8):
 /// the lead's row, which has no parent, each other chat under it, and
 /// every other row in one of those chats. An import writes nothing else.

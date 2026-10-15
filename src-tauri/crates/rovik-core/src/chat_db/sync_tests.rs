@@ -687,3 +687,74 @@ fn host_with_chat(id: &str) -> Connection {
     store::create_dialog(&mut conn, &dialog).unwrap();
     conn
 }
+
+/*
+ * The mirror's other writes (M05)
+ */
+
+/// 6.1: rows a run's events bring take their owner's numbers, and a row
+/// the mirror had at one of them steps aside.
+#[test]
+fn rows_from_events_keep_their_owners_numbers() {
+    let mut mirror = mirror();
+    store::append_messages(&mut mirror, ROOT, &[message("local", "user", "Here first")]).unwrap();
+    let rows = [
+        (1024, message("u1", "user", "The owner's first")),
+        (2048, message("a1", "assistant", "The owner's second")),
+    ];
+    store::append_numbered(&mut mirror, ROOT, &rows).unwrap();
+    store::append_numbered(&mut mirror, ROOT, &rows).unwrap();
+
+    let mut stmt = mirror
+        .prepare("SELECT id, seq FROM messages WHERE dialog_id = ?1 ORDER BY id")
+        .unwrap();
+    let seqs: Vec<(String, i64)> = stmt
+        .query_map([ROOT], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let expected = [("a1", 2048), ("local", -1024), ("u1", 1024)];
+    let expected: Vec<(String, i64)> = expected.iter().map(|(i, s)| (i.to_string(), *s)).collect();
+    assert_eq!(seqs, expected);
+    let count: i64 = mirror
+        .query_row(
+            "SELECT message_count FROM dialogs WHERE id = ?1",
+            [ROOT],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 3);
+}
+
+/// "Re-sync this chat": the mirror ends as the owner is, the rows only it
+/// had gone, and the chat's row stays with the input's draft (K45).
+#[test]
+fn a_resync_replaces_the_mirror_but_keeps_the_chat_and_its_draft() {
+    let mut owner = owner();
+    for n in 0..4 {
+        round(&mut owner, n);
+    }
+    let mut mirror = mirror();
+    store::append_messages(
+        &mut mirror,
+        ROOT,
+        &[message("stray", "user", "Never there")],
+    )
+    .unwrap();
+    let draft = r#"{"segments":[{"type":"text","text":"Half a thought"}]}"#;
+    store::save_composer_draft(&mut mirror, ROOT, draft).unwrap();
+
+    let page = changes_since(&owner, ROOT, 0, None, usize::MAX).unwrap();
+    let applied = replace_mirror(&mut mirror, ROOT, HOST, &page.changes, page.rev).unwrap();
+    assert!(applied.is_some());
+    assert_eq!(dump(&mirror), dump(&owner));
+    let kept = store::get_composer_draft(&mirror, ROOT).unwrap();
+    assert_eq!(kept.as_deref(), Some(draft));
+    assert_eq!(mirror::state(&mirror, ROOT).unwrap().unwrap().rev, page.rev);
+
+    // A chat back on this computer isn't replaced.
+    location::set(&mut mirror, ROOT, &Location::Here).unwrap();
+    let late = replace_mirror(&mut mirror, ROOT, HOST, &ChangeSet::default(), 1).unwrap();
+    assert!(late.is_none());
+    assert_eq!(dump(&mirror), dump(&owner));
+}

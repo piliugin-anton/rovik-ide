@@ -8,15 +8,20 @@
 //! - An event over a frame's 1 MB goes as `Resync` for its chat, and
 //!   `FileWritten`, which carries whole files the app would drop anyway,
 //!   doesn't go at all (4.1).
-//! - The ring keeps the last 2,000 events or 8 MB, and one patch per
-//!   message: a client back with a `since` it still covers gets what it
-//!   missed, any other catches up from the database (`complete: false`).
+//! - After a chat's events, and after a request that changed it, its
+//!   computer gets `ChatChanged` with the database's clock, at most twice a
+//!   second, and its mirror pulls the rows (6.3).
+//! - The ring keeps the last 2,000 events or 8 MB, one patch per message
+//!   and one `ChatChanged` per chat: a client back with a `since` it still
+//!   covers gets what it missed, any other catches up from the database
+//!   (`complete: false`).
 
 use rovik_core::agent_run::events::{AgentEvent, Patch};
+use rovik_core::chat_db::{sync, DbState};
 use rovik_core::EventSink;
 use rovik_protocol::{Event, Frame, MAX_FRAME};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time::Instant;
@@ -24,6 +29,9 @@ use tokio::time::Instant;
 /// How many events a connection may fall behind by before it's dropped
 /// (it subscribes again, from its `since`).
 const LIVE: usize = 1_024;
+
+/// A chat's `ChatChanged` goes at most this often (6.3).
+const CHANGED_EVERY: Duration = Duration::from_millis(500);
 
 /// The computer a chat belongs to: the one that started it here (the
 /// daemon's store keeps it).
@@ -80,6 +88,9 @@ pub struct Events {
     live: broadcast::Sender<Arc<Published>>,
     limits: Limits,
     state: Mutex<State>,
+    /// The chats' database, whose clock `ChatChanged` names: set once the
+    /// core is open.
+    db: OnceLock<DbState>,
 }
 
 #[derive(Default)]
@@ -90,6 +101,15 @@ struct State {
     leads: HashMap<String, String>,
     /// Each message being patched, by id.
     paces: HashMap<String, Pace>,
+    /// Each chat's `ChatChanged`, by its lead's id.
+    changes: HashMap<String, Changed>,
+}
+
+/// When a chat's last `ChatChanged` went, and whether one is coming.
+#[derive(Default)]
+struct Changed {
+    sent: Option<Instant>,
+    coming: bool,
 }
 
 /// Who an event goes to: the computer of the chat it's about (its lead's,
@@ -126,7 +146,68 @@ impl Events {
             live: broadcast::channel(LIVE).0,
             limits,
             state: Mutex::default(),
+            db: OnceLock::new(),
         })
+    }
+
+    /// The database whose clock `ChatChanged` names, from now on.
+    pub fn set_db(&self, db: DbState) {
+        let _ = self.db.set(db);
+    }
+
+    /// Rows of the chat may have changed: its computer hears of it (6.3).
+    pub fn changed(&self, dialog_id: &str) {
+        let mut state = self.lock();
+        if let Some(chat) = self.route(&state, dialog_id).and_then(|r| r.chat) {
+            self.change(&mut state, &chat);
+        }
+    }
+
+    /// `ChatChanged` for the lead's chat `chat`, at most twice a second:
+    /// one is coming already, or goes once the last is old enough. It names
+    /// the clock as it is when it goes, so every change before is in it.
+    fn change(&self, state: &mut State, chat: &str) {
+        if self.db.get().is_none() {
+            return;
+        }
+        let entry = state.changes.entry(chat.to_string()).or_default();
+        if entry.coming {
+            return;
+        }
+        entry.coming = true;
+        let due = entry
+            .sent
+            .map_or_else(Instant::now, |sent| sent + CHANGED_EVERY);
+        let (me, chat) = (self.me.clone(), chat.to_string());
+        rovik_core::rt::handle().spawn(async move {
+            tokio::time::sleep_until(due).await;
+            let Some(events) = me.upgrade() else { return };
+            {
+                // Done before the clock is read: a change after it is in
+                // the next one.
+                let mut state = events.lock();
+                if let Some(entry) = state.changes.get_mut(&chat) {
+                    entry.coming = false;
+                    entry.sent = Some(Instant::now());
+                }
+            }
+            let Some(db) = events.db.get().cloned() else {
+                return;
+            };
+            let rev = match db.read(sync::clock).await {
+                Ok(rev) => rev,
+                Err(e) => return log::warn!("the clock for {chat}'s changes: {e}"),
+            };
+            let mut state = events.lock();
+            if let Some(route) = events.route(&state, &chat) {
+                events.flush_chat(&mut state, &chat);
+                let ev = Event::ChatChanged {
+                    dialog_id: chat.clone(),
+                    rev,
+                };
+                events.publish(&mut state, ev, route, None);
+            }
+        });
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -271,6 +352,10 @@ impl Events {
     fn publish(&self, state: &mut State, ev: Event, route: Route, patch: Option<RingPatch>) {
         state.seq += 1;
         let seq = state.seq;
+        let changed = match &ev {
+            Event::ChatChanged { dialog_id, .. } => Some(dialog_id.clone()),
+            _ => None,
+        };
         let Some(text) = frame_text(seq, ev, route.chat.as_deref()) else {
             log::warn!("an event over 1 MB about no chat wasn't sent");
             return;
@@ -282,7 +367,7 @@ impl Events {
         });
         state
             .ring
-            .push(published.clone(), patch, &route, &self.limits);
+            .push(published.clone(), patch, changed, &route, &self.limits);
         let _ = self.live.send(published);
     }
 }
@@ -313,6 +398,7 @@ impl EventSink for Events {
                 computer: None,
             },
         };
+        let chat = route.chat.clone();
         match event {
             AgentEvent::MessagePatched {
                 dialog_id,
@@ -325,6 +411,9 @@ impl EventSink for Events {
                 }
                 self.publish(&mut state, Event::Agent(event.clone()), route, None);
             }
+        }
+        if let Some(chat) = chat {
+            self.change(&mut state, &chat);
         }
     }
 }
@@ -357,6 +446,8 @@ struct Entry {
     published: Arc<Published>,
     /// A patch, kept to merge with its message's next one.
     patch: Option<RingPatch>,
+    /// A `ChatChanged`'s chat: its next one replaces it.
+    changed: Option<String>,
 }
 
 struct RingPatch {
@@ -370,9 +461,20 @@ impl Ring {
         &mut self,
         mut published: Arc<Published>,
         mut patch: Option<RingPatch>,
+        changed: Option<String>,
         route: &Route,
         limits: &Limits,
     ) {
+        // A chat's newer `ChatChanged` says all its older one did.
+        if let Some(chat) = &changed {
+            let older = self
+                .entries
+                .iter()
+                .position(|e| e.changed.as_ref() == Some(chat));
+            if let Some(older) = older.and_then(|i| self.entries.remove(i)) {
+                self.bytes -= older.published.text.len();
+            }
+        }
         // A message's patches are one entry: the merge of them all, under
         // the newest's seq. They change fields of a row that is already
         // there, so moving them later changes nothing else.
@@ -403,7 +505,11 @@ impl Ring {
             }
         }
         self.bytes += published.text.len();
-        self.entries.push_back(Entry { published, patch });
+        self.entries.push_back(Entry {
+            published,
+            patch,
+            changed,
+        });
         while self.entries.len() > limits.events || self.bytes > limits.bytes {
             let Some(oldest) = self.entries.pop_front() else {
                 break;
