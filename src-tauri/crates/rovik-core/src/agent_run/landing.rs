@@ -155,7 +155,7 @@ impl Run {
             );
             return Some(("waits: conflicts", count));
         }
-        let p = self.core.agents.config().permissions;
+        let p = self.config().permissions;
         // Checks that would run: set up, and allowed by the command rules.
         let has_checks = p.verify_changes
             && self.checks.iter().any(|c| {
@@ -279,7 +279,7 @@ impl Run {
     /// Runs the project's checks on the merged result in the chat's view.
     /// Returns the first failing check's command.
     async fn check_merged(&self, plan: &land::Plan, view: &std::path::Path) -> Option<String> {
-        let p = self.core.agents.config().permissions;
+        let p = self.config().permissions;
         let checks: Vec<_> = self
             .checks
             .iter()

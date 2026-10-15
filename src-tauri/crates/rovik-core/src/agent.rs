@@ -1708,7 +1708,7 @@ pub async fn chat_context_estimate(
     extra_chars: Option<usize>,
 ) -> Result<ContextEstimate, String> {
     let (db, vfs) = (&core.db, &core.vfs);
-    let permissions = core.agents.config().permissions;
+    let permissions = core.agents.config_for(&dialog_id).permissions;
     let root = root.filter(|r| !r.trim().is_empty());
     let tools = crate::agent_run::tools::tools_for(
         root.is_some(),

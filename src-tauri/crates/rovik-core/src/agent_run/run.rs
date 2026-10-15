@@ -357,6 +357,12 @@ pub(super) fn reasoning_meta(reasoning: Option<Value>) -> Option<Value> {
 }
 
 impl Run {
+    /// The configuration this run follows: its chat's, which on a daemon
+    /// is its computer's (D16).
+    pub(super) fn config(&self) -> super::AgentConfig {
+        self.core.agents.config_for(&self.dialog_id)
+    }
+
     /// Everything a run needs before its first step; None when there's
     /// nothing to do.
     pub(super) async fn prepare(
@@ -366,7 +372,7 @@ impl Run {
     ) -> Result<Option<(Run, Entry)>, String> {
         let dialog_id = request.dialog_id.clone();
         let mut recent = recent_messages(&core.db, &dialog_id).await?;
-        let config = core.agents.config();
+        let config = core.agents.config_for(&dialog_id);
         let mode = run_mode_for(&recent)
             .or(request.mode.clone())
             .unwrap_or_else(|| "agent".into());
@@ -915,7 +921,7 @@ impl Run {
         if self.sub().is_some() || self.root.is_none() || self.profile.no_tools {
             return Vec::new();
         }
-        let mut kinds = self.core.agents.config().subagents.lead_kinds();
+        let mut kinds = self.config().subagents.lead_kinds();
         if self.plan_mode {
             kinds.retain(|k| !k.writes());
         }
@@ -931,7 +937,7 @@ impl Run {
     /// Parallel groups can run (F): the setting is on, step workers are
     /// on, and the chat is isolated (child overlays need its view).
     pub(super) fn parallel_on(&self) -> bool {
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         self.sub().is_none()
             && config.parallel_workers
             && config.kind(subagent::Kind::Worker).is_some()
@@ -1293,7 +1299,7 @@ impl Run {
 
         // An effort picked since the last request applies from this one.
         self.take_effort();
-        let config = self.core.agents.config();
+        let config = self.config();
         let clm = self.context_mode == crate::clm::MODE_CLM
             && crate::clm::availability(&self.core.vfs).is_ok();
         // Phase E: ignored compaction pressure restricts this turn to

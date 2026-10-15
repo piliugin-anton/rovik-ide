@@ -9,7 +9,9 @@ use crate::events::Events;
 use crate::home::{self, Home};
 use crate::logfile;
 use crate::server::{self, OwnUser};
-use rovik_core::{process, rt, Core, Paths};
+use crate::store::Store;
+use rovik_core::agent_run::events::AgentEvent;
+use rovik_core::{process, rt, Core, EventSink, Paths};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -56,9 +58,22 @@ async fn run(
     same_machine: bool,
     no_virtual_files: bool,
 ) -> Result<(), String> {
+    let store = Arc::new(Store::open(&home.root)?);
+    let owners = store.clone();
+    let events = Events::new(
+        uuid::Uuid::new_v4().to_string(),
+        Arc::new(move |chat| owners.owner(chat)),
+    );
     let paths = Paths::new(home.data(), home.core_config());
-    let events = Events::new(uuid::Uuid::new_v4().to_string());
-    let core = Core::new(paths, events.clone())?;
+    let sink = Tap {
+        store: store.clone(),
+        events: events.clone(),
+    };
+    let core = Core::new(paths, Arc::new(sink))?;
+    // A run follows its chat's computer's configuration (D16).
+    let configs = store.clone();
+    core.agents
+        .set_resolver(Arc::new(move |chat| configs.config_of(chat)));
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {
@@ -75,6 +90,7 @@ async fn run(
         core: core.clone(),
         tokens,
         events,
+        store,
         same_machine,
         virtual_files_problem,
     });
@@ -146,5 +162,20 @@ fn login_shell() {
         if let Some(shell) = home::passwd().map(|p| p.shell).filter(|s| !s.is_empty()) {
             std::env::set_var("SHELL", shell);
         }
+    }
+}
+
+/// The core's events: the store hears of runs that end, then they go out.
+struct Tap {
+    store: Arc<Store>,
+    events: Arc<Events>,
+}
+
+impl EventSink for Tap {
+    fn agent(&self, event: &AgentEvent) {
+        if let AgentEvent::RunEnded { dialog_id, .. } = event {
+            self.store.ended(dialog_id);
+        }
+        self.events.agent(event);
     }
 }

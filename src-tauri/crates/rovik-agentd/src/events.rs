@@ -25,6 +25,10 @@ use tokio::time::Instant;
 /// (it subscribes again, from its `since`).
 const LIVE: usize = 1_024;
 
+/// The computer a chat belongs to: the one that started it here (the
+/// daemon's store keeps it).
+pub type Owner = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// An event as it went out.
 pub struct Published {
     pub seq: u64,
@@ -71,6 +75,7 @@ impl Default for Limits {
 pub struct Events {
     /// New with each daemon process: a `since` from another boot is stale.
     pub boot: String,
+    owner: Owner,
     me: Weak<Events>,
     live: broadcast::Sender<Arc<Published>>,
     limits: Limits,
@@ -81,8 +86,6 @@ pub struct Events {
 struct State {
     seq: u64,
     ring: Ring,
-    /// Each chat's computer: the one that started it here.
-    owners: HashMap<String, String>,
     /// Subagents' chats, to their lead's.
     leads: HashMap<String, String>,
     /// Each message being patched, by id.
@@ -111,13 +114,14 @@ struct HeldPatch {
 }
 
 impl Events {
-    pub fn new(boot: String) -> Arc<Events> {
-        Events::with_limits(boot, Limits::default())
+    pub fn new(boot: String, owner: Owner) -> Arc<Events> {
+        Events::with_limits(boot, owner, Limits::default())
     }
 
-    pub fn with_limits(boot: String, limits: Limits) -> Arc<Events> {
+    pub fn with_limits(boot: String, owner: Owner, limits: Limits) -> Arc<Events> {
         Arc::new_cyclic(|me| Events {
             boot,
+            owner,
             me: me.clone(),
             live: broadcast::channel(LIVE).0,
             limits,
@@ -127,13 +131,6 @@ impl Events {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// The chat is `computer`'s from now on: its events go there.
-    pub fn own(&self, dialog_id: &str, computer: &str) {
-        self.lock()
-            .owners
-            .insert(dialog_id.to_string(), computer.to_string());
     }
 
     /// The events after `since` that the ring still has, and the live ones.
@@ -245,6 +242,19 @@ impl Events {
         self.publish(state, Event::Agent(event), route, Some(kept));
     }
 
+    /// Where a chat's events go; none when no computer started it here.
+    fn route(&self, state: &State, dialog_id: &str) -> Option<Route> {
+        let mut chat = dialog_id;
+        while let Some(lead) = state.leads.get(chat) {
+            chat = lead;
+        }
+        let computer = (self.owner)(chat)?;
+        Some(Route {
+            chat: Some(chat.to_string()),
+            computer: Some(computer),
+        })
+    }
+
     fn publish(&self, state: &mut State, ev: Event, route: Route, patch: Option<RingPatch>) {
         state.seq += 1;
         let seq = state.seq;
@@ -261,21 +271,6 @@ impl Events {
             .ring
             .push(published.clone(), patch, &route, &self.limits);
         let _ = self.live.send(published);
-    }
-}
-
-impl State {
-    /// Where a chat's events go; none when no computer started it here.
-    fn route(&self, dialog_id: &str) -> Option<Route> {
-        let mut chat = dialog_id;
-        while let Some(lead) = self.leads.get(chat) {
-            chat = lead;
-        }
-        let computer = self.owners.get(chat)?;
-        Some(Route {
-            chat: Some(chat.to_string()),
-            computer: Some(computer.clone()),
-        })
     }
 }
 
@@ -296,7 +291,7 @@ impl EventSink for Events {
                 .insert(child_dialog_id.clone(), dialog_id.clone());
         }
         let route = match event.dialog_id() {
-            Some(dialog_id) => match state.route(dialog_id) {
+            Some(dialog_id) => match self.route(&state, dialog_id) {
                 Some(route) => route,
                 None => return,
             },

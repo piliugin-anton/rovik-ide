@@ -12,6 +12,8 @@
 //!   server.rs   HTTP on the socket: /health, /rpc and /call
 //!   session.rs  one WebSocket and its frames (4.1)
 //!   events.rs   the events: numbered, paced, kept, routed (4.3)
+//!   store.rs    state.json: each chat's computer and settings (D16)
+//!   keys.rs     keys.json: the providers' keys (D11)
 //!   host.rs     `HostInfo`
 //!   attach.rs   `attach --stdio`: a byte bridge to the socket
 //!   doctor.rs   `doctor`: what this server lacks for the daemon
@@ -36,6 +38,8 @@ mod home;
 #[cfg(unix)]
 mod host;
 #[cfg(unix)]
+mod keys;
+#[cfg(unix)]
 mod logfile;
 #[cfg(unix)]
 mod serve;
@@ -43,6 +47,8 @@ mod serve;
 mod server;
 #[cfg(unix)]
 mod session;
+#[cfg(unix)]
+mod store;
 
 #[cfg(unix)]
 fn main() {

@@ -266,7 +266,7 @@ impl Run {
             }
             return Ok(());
         }
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         let mut jobs: Vec<Job> = Vec::with_capacity(calls.len());
         for tc in calls {
             if self.stopped() {
@@ -818,7 +818,7 @@ impl Run {
         goal: &str,
         message: String,
     ) -> Result<(String, Option<SubResult>), String> {
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         let sub = self
             .new_sub(kind, call_id, config.budget(kind), &config)
             .await?;

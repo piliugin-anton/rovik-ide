@@ -1441,3 +1441,12 @@ Tasks add notes here when reality differs from the plan.
   `Subscribed` comes before the events it replays. A connection that
   falls behind is closed with code 1013, and its client subscribes again
   from its `since`.
+- **P05, a computer's configuration.** On the daemon, `AgentConfigure` goes
+  to the store and replaces only its computer's configuration; it isn't
+  dispatched. A start's configuration becomes its computer's the same way,
+  and the start goes on without it, so the core's one configuration isn't
+  touched and every run reads its computer's through `config_for`. The
+  store is also where the events find a chat's computer. A start of
+  another computer's chat is refused with `NotOwner` already; the other
+  requests are refused with M01. `keys.json` keeps one key per provider,
+  so of two keys of one provider in a start, the later stays.

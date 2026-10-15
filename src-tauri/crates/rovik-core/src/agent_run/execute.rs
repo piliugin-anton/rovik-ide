@@ -255,7 +255,7 @@ impl Run {
         if clm && is_context_path(args.get("path").and_then(|p| p.as_str()), context_dir) {
             return false;
         }
-        let config = self.core.agents.config();
+        let config = self.config();
         matches!(
             permissions::check_tool_call(&tc.name, &tc.arguments, &config.permissions),
             ToolVerdict::Permitted { approval: None }
@@ -621,7 +621,7 @@ impl Run {
             && !self.checklist_gate_refused
             && resume_note.is_none()
             && !self.last_verify_failed
-            && self.core.agents.config().permissions.checklist != permissions::ChecklistMode::Off
+            && self.config().permissions.checklist != permissions::ChecklistMode::Off
             && !(clm && is_context_path(path_arg, context_dir))
         {
             if let Some(reason) = plan::checklist_gate_reason(
@@ -989,7 +989,7 @@ impl Run {
     /// Permission first (refused calls never reach approval), then approval
     /// when the settings require it: by the user, or by the AI reviewer.
     async fn authorize(&self, tc: &ToolCall, resume_note: Option<&str>) -> Authorized {
-        let config = self.core.agents.config();
+        let config = self.config();
         let p = &config.permissions;
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {

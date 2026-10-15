@@ -728,7 +728,7 @@ impl Run {
         if self.sub().is_some() || self.plan_mode || self.stopped() || self.profile.no_tools {
             return Ok(false);
         }
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         if config.kind(Kind::Reviewer).is_none() || self.root.is_none() {
             return Ok(false);
         }

@@ -276,7 +276,7 @@ impl Run {
         if self.sub().is_some() || self.stopped() || self.root.is_none() {
             return Ok(save(None));
         }
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         if config.kind(Kind::PlanReviewer).is_none() {
             return Ok(save(None));
         }

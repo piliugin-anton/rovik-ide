@@ -596,7 +596,7 @@ impl Run {
         if self.sub().is_some() || self.stopped() || self.profile.no_tools {
             return Ok(None);
         }
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         if config.kind(Kind::Triage).is_none() {
             return Ok(None);
         }

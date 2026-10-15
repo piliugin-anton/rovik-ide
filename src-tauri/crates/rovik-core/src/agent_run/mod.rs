@@ -137,9 +137,14 @@ struct Waiting<T, R> {
 /// (dialog id, tool call id)
 type WaitKey = (String, String);
 
+/// The configuration a chat's runs follow, where it isn't the one
+/// configuration: a daemon keeps one for each computer (D16). None: the one.
+pub type ConfigResolver = Arc<dyn Fn(&str) -> Option<AgentConfig> + Send + Sync>;
+
 #[derive(Default)]
 struct Inner {
     config: AgentConfig,
+    resolver: Option<ConfigResolver>,
     runs: HashMap<String, RunControl>,
     /// Keyed by chat and tool call: providers number calls per reply
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
@@ -174,6 +179,29 @@ impl AgentState {
 
     pub fn config(&self) -> AgentConfig {
         self.lock().config.clone()
+    }
+
+    /// The configuration the chat's runs follow: the resolver's for it,
+    /// where one is set, else the one configuration. A subagent's chat
+    /// follows its lead's.
+    pub fn config_for(&self, dialog_id: &str) -> AgentConfig {
+        let (resolver, lead) = {
+            let inner = self.lock();
+            let mut chat = dialog_id;
+            while let Some(parent) = inner.runs.get(chat).and_then(|r| r.parent.as_deref()) {
+                chat = parent;
+            }
+            (inner.resolver.clone(), chat.to_string())
+        };
+        // Asked without the lock: the resolver may take locks of its own.
+        resolver
+            .and_then(|resolve| resolve(&lead))
+            .unwrap_or_else(|| self.config())
+    }
+
+    /// Runs follow the resolver's configuration from now on (a daemon's).
+    pub fn set_resolver(&self, resolver: ConfigResolver) {
+        self.lock().resolver = Some(resolver);
     }
 
     /// Keeps a run's fix-round state until the user starts its checks
@@ -863,6 +891,28 @@ pub async fn chat_dismiss_checklist(
 #[cfg(test)]
 mod run_control_tests {
     use super::StopSignal;
+
+    /// A daemon's runs follow their computer's configuration (D16): the
+    /// resolver's for the chat, a subagent's its lead's, and the one
+    /// configuration for a chat the resolver doesn't know.
+    #[test]
+    fn a_chats_runs_follow_the_resolvers_configuration() {
+        let state = super::AgentState::default();
+        let mut desk = super::AgentConfig::default();
+        desk.permissions.allow_any_command = true;
+        assert!(!state.config_for("chat").permissions.allow_any_command);
+        let resolved = desk.clone();
+        state.set_resolver(std::sync::Arc::new(move |chat| {
+            (chat == "chat").then(|| resolved.clone())
+        }));
+        assert_eq!(state.config_for("chat"), desk);
+        state.register_in("chat", None, "m", None).unwrap();
+        state
+            .register_child("kid", "chat", "t1", "m", None)
+            .unwrap();
+        assert_eq!(state.config_for("kid"), desk, "the lead's");
+        assert_eq!(state.config_for("other"), state.config());
+    }
 
     #[test]
     fn a_stop_set_before_anyone_listens_is_seen_by_later_listeners() {

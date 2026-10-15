@@ -311,7 +311,7 @@ impl Run {
         // R06: the owners fix in the first round; then, or after a round
         // that made no progress, the lead does it all.
         let lead_only = lead_only(judgement.verdict, self.rechecks, round);
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         let parallel: Vec<usize> = if lead_only.is_none() && config.parallel_repair {
             let set = causes::parallel_set(&found);
             found
@@ -488,7 +488,7 @@ impl Run {
         if self.core.agents.is_running(&child) {
             return Err(format!("worker {label} is still working"));
         }
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         if let Some(why) = self.ledger.over_spend(config.max_run_tokens) {
             return Err(why.trim_start_matches("Error: ").to_string());
         }
@@ -784,7 +784,7 @@ impl Run {
                 }
             }
         }
-        let max = self.core.agents.config().subagents.max_at_once();
+        let max = self.config().subagents.max_at_once();
         let done: Vec<Option<SubResult>> = stream::iter(futures).buffered(max).collect().await;
         // The join, one at a time.
         let root = self.root.clone().unwrap_or_default();

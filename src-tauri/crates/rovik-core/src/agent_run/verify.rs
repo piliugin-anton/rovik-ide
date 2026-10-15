@@ -701,7 +701,7 @@ impl Run {
         approved: bool,
         record_id: Option<String>,
     ) -> Result<String, String> {
-        let p = self.core.agents.config().permissions;
+        let p = self.config().permissions;
         let Some(root) = self.root.clone() else {
             return Ok("done".into());
         };
@@ -1140,7 +1140,7 @@ impl Run {
     /// within the run's review budget. True: high findings went to the
     /// agent, and one more fix and check round is allowed.
     async fn review_after_green(&mut self, record_id: &str, meta: &Value) -> Result<bool, String> {
-        let config = self.core.agents.config().subagents;
+        let config = self.config().subagents;
         if config.kind(super::subagent::Kind::Reviewer).is_none() || self.plan_mode {
             return Ok(false);
         }
@@ -1204,7 +1204,7 @@ impl Run {
         &mut self,
         owners: &[(String, usize, super::worker::WriteScope)],
     ) -> Option<String> {
-        let p = self.core.agents.config().permissions;
+        let p = self.config().permissions;
         let root = self.root.clone()?;
         if !p.verify_changes {
             return None;

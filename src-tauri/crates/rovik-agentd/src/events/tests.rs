@@ -5,10 +5,10 @@ use rovik_core::agent_run::events::{OutMessage, Status};
 use serde_json::Value;
 use std::time::Duration;
 
+/// Events where "chat" is laptop's, and no other chat anyone's.
 fn events(limits: Limits) -> Arc<Events> {
-    let events = Events::with_limits("boot-1".into(), limits);
-    events.own("chat", "laptop");
-    events
+    let owner: Owner = Arc::new(|chat| (chat == "chat").then(|| "laptop".to_string()));
+    Events::with_limits("boot-1".into(), owner, limits)
 }
 
 /// The frames the computer's connection would send, as JSON, from what
