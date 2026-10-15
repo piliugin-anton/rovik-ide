@@ -57,6 +57,9 @@ pub enum CloudEvent {
         project: String,
         sent: u64,
     },
+    /// A remote chat's changes may look different: its result came in or
+    /// landed, or its project synced. Its isolation bar looks again.
+    Changed { dialog_id: String },
 }
 
 /// Where `CloudEvent`s go.
@@ -157,6 +160,15 @@ impl Remote {
 
     fn cloud(&self) -> Option<CloudSink> {
         self.cloud.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The chat's isolation bar is to look again.
+    fn changed(&self, dialog_id: &str) {
+        if let Some(cloud) = self.cloud() {
+            cloud(CloudEvent::Changed {
+                dialog_id: dialog_id.to_string(),
+            });
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

@@ -50,7 +50,9 @@ impl Remote {
 
     /// A sync of the chat, as its host told it.
     pub(super) fn synced(&self, sync: ChatSync) {
-        self.lock().syncs.insert(sync.dialog_id.clone(), sync);
+        let chat = sync.dialog_id.clone();
+        self.lock().syncs.insert(chat.clone(), sync);
+        self.changed(&chat);
     }
 
     /// Sends the project as it is now to the chat's host to merge into its
@@ -140,14 +142,17 @@ impl Remote {
     /// What a sync or a recheck did, kept: the snapshot it took, and its
     /// state for the bar.
     fn keep_sync(&self, dialog_id: &str, commit: Oid, synced: &Synced) {
-        let mut state = self.lock();
-        state.last_sync.insert(dialog_id.to_string(), commit);
-        let sync = ChatSync {
-            dialog_id: dialog_id.to_string(),
-            state: synced.state,
-            files: synced.files.clone(),
-        };
-        state.syncs.insert(dialog_id.to_string(), sync);
+        {
+            let mut state = self.lock();
+            state.last_sync.insert(dialog_id.to_string(), commit);
+            let sync = ChatSync {
+                dialog_id: dialog_id.to_string(),
+                state: synced.state,
+                files: synced.files.clone(),
+            };
+            state.syncs.insert(dialog_id.to_string(), sync);
+        }
+        self.changed(dialog_id);
     }
 
     /// The project on the host, with its name, its folder in its

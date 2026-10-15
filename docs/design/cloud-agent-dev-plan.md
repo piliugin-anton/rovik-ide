@@ -1740,9 +1740,9 @@ Tasks add notes here when reality differs from the plan.
     the resolver directly.
   - `ChatResult` has no list of marked files yet. T07 adds the daemon's
     marks; `overlay::import` already takes them and writes `markers.json`.
-  - The isolation bar sees an import the next time it looks (a run's start
-    or end, or the chat opened), and notices say what happened. U05 makes
-    the bar follow imports.
+  - The isolation bar saw an import the next time it looked (a run's start
+    or end, or the chat opened), and notices say what happened. Since the
+    review below, it looks again when a result comes in or lands.
   - "After the next sync" needs T07, so the test checks that the next
     result doesn't bring the undone change back.
   - The tests share `tests/common/app.rs`: the app's core, its `Remote` and
@@ -1907,3 +1907,10 @@ Tasks add notes here when reality differs from the plan.
     kept from the project's folder, so in a project in a subfolder their
     markers weren't found and the result didn't wait for them. The note
     and the reminder name the files from the chat's root.
+  - The app is told when a remote chat's changes may look different: its
+    result came in or landed, or its project synced (`CloudEvent::Changed`
+    on `cloud-event`). The chat panel listens (`lib/cloud.ts`), and its
+    isolation bar looks again. Before, the bar looked only while a run went
+    and once it ended, so an import or a landing after that showed the next
+    time the chat was opened. Showing the sync state stays U05's, and
+    reading plans with `chat_read_plan` U04's.

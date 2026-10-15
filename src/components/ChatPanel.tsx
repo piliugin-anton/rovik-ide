@@ -65,6 +65,7 @@ import {
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import { overlayStatus } from '../lib/overlay';
+import { barChanged, onCloudEvent } from '../lib/cloud';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
   dismissChecklist,
@@ -292,7 +293,8 @@ export default function ChatPanel(props: ChatProps) {
     if (id && store.state.chatVisible) store.markRead(id);
   });
   // An isolated chat's changes: looked at again while a run goes and when
-  // it ends (IsolationBar).
+  // it ends (IsolationBar), and for a remote chat, when its result came in
+  // or landed, or its project synced (lib/cloud.ts).
   const [isolationRevision, setIsolationRevision] = createSignal(0);
   createEffect(
     on(sending, (running) => {
@@ -300,6 +302,11 @@ export default function ChatPanel(props: ChatProps) {
       if (!running) return;
       const timer = setInterval(() => setIsolationRevision((n) => n + 1), 3000);
       onCleanup(() => clearInterval(timer));
+    })
+  );
+  onCleanup(
+    onCloudEvent((event) => {
+      if (barChanged(event, activeDialogId())) setIsolationRevision((n) => n + 1);
     })
   );
   // The chat on screen goes first in the queue for heavy work (builds,

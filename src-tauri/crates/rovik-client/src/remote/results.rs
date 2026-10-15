@@ -134,6 +134,7 @@ impl Remote {
                         &message,
                     );
                 }
+                self.changed(&chat);
             }
             Job::Opened => self.land_waiting().await,
             Job::Land {
@@ -286,6 +287,7 @@ impl Remote {
             (_, None) => self.tell_landing(dialog_id, &landed),
             _ => {}
         }
+        self.changed(dialog_id);
         landed
     }
 

@@ -1,8 +1,9 @@
 //! The isolation bar's remote half (T10, 6.1), through the app's routes for
 //! a remote chat: what the chat changed in its worktree, until it lands; a
 //! changed file's versions; Discard; handing conflicts to the chat, whose
-//! resolution then lands; a plan read from the worktree; and the buttons
-//! only a local chat has, refused.
+//! resolution then lands; a plan read from the worktree; the buttons only
+//! a local chat has, refused; and the app told to look again when a result
+//! comes in and when it lands.
 
 mod common;
 
@@ -11,7 +12,7 @@ use common::project::{
     message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
 };
 use common::{until, write};
-use rovik_client::Remote;
+use rovik_client::{CloudEvent, Remote};
 use rovik_core::agent_run::permissions::Permissions;
 use rovik_core::overlay::chats::{self, ChangedFile};
 use rovik_core::overlay::import;
@@ -19,6 +20,7 @@ use rovik_core::testing::{model, Reply};
 use rovik_protocol::Request;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The setup with its app connected, the project closed so results wait,
@@ -225,4 +227,41 @@ async fn what_waits_for_the_run_or_is_local_only_is_refused() {
         dialog_id: CHAT.into(),
     };
     setup.client.request::<bool>(stop).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bar_looks_again_when_a_result_comes_in_and_lands() {
+    let (setup, app, _) = waiting().await;
+    // Each time the app is told, whether the result waited, and whether it
+    // had landed.
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let (sink, file) = (heard.clone(), setup.project.join("src/new.rs"));
+    app.remote.on_cloud(Arc::new(move |event| {
+        if matches!(&event, CloudEvent::Changed { dialog_id } if dialog_id == CHAT) {
+            let waits = chats::pending(CHAT).is_some_and(|p| p.reason == import::READY);
+            sink.lock().unwrap().push((waits, file.exists()));
+        }
+    }));
+    let (url, _) = model(vec![
+        writes("w1", "src/new.rs", "fn new() {}\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    result_waits().await;
+
+    let told = |which: fn(&(bool, bool)) -> bool| {
+        let heard = heard.clone();
+        move || {
+            let told = heard.lock().unwrap().iter().any(which);
+            async move { told }
+        }
+    };
+    eventually("told once it came in", told(|(waits, _)| *waits)).await;
+    open(&setup, &app);
+    landed_as(&setup, "src/new.rs", "fn new() {}\n").await;
+    eventually("told once it landed", told(|(_, landed)| *landed)).await;
 }
