@@ -1863,9 +1863,11 @@ Tasks add notes here when reality differs from the plan.
     path. The frontend moves to it with U04.
   - The tests drive the routes through `Remote` against the real daemon.
     The app's commands only choose between the remote and the local route.
-- **After milestone T, a review of its limits.** Each limit the notes above
-  name was settled with the plan's owner; the fixes are follow-ups to the
-  tasks they change.
+- **After milestone T, a review of its limits.** The choices and limits
+  milestone T left for the plan's owner were settled with them; the fixes
+  are follow-ups to the tasks they change. Others the notes name (renames
+  imported as a deletion and a new file, Git LFS files sent with their
+  content, the bar's buttons only a local chat has) weren't part of it.
   - Which result a chat imported last, and a landing its host wasn't told
     of yet, go into M01's `mirror_state` (6.3, 6.5 and M01's task say so
     now). Until M01, T06's shadow ref and in-memory list stay.
