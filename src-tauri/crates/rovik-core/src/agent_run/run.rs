@@ -53,8 +53,8 @@ const RECENT_MESSAGES: usize = 500;
 /// previous real request's text as well.
 const SHORT_REQUEST_CHARS: usize = 80;
 
-pub(super) const RESUME_NOTE: &str =
-    "Interrupted: the app was closed before this ran. Allow it to continue the task.";
+pub(super) const RESUME_NOTE: &str = "Interrupted before this ran: the app closed or its server \
+     restarted. Allow it to continue the task.";
 
 /// Marks a chat as running for its run's length (conflicts found for it go
 /// to it), and releases that and its hold on writing commands when the run
@@ -1259,24 +1259,15 @@ impl Run {
         reasoning: Option<Value>,
         error: &ChatError,
     ) -> Result<bool, String> {
-        let stored = failure::stored(error);
-        if !text.trim().is_empty() {
-            let mut meta = reasoning_meta(reasoning).unwrap_or_else(|| json!({}));
-            meta["interrupted"] = stored;
-            self.finalize(message_id, text.to_string(), Vec::new(), Some(meta), None)
-                .await?;
-            Ok(true)
-        } else {
-            self.finalize(
-                message_id,
-                String::new(),
-                Vec::new(),
-                Some(json!({ "failure": stored })),
-                Some(failure::describe(error)),
-            )
-            .await?;
-            Ok(false)
-        }
+        settle_failed_turn(
+            &self.core,
+            &self.dialog_id,
+            message_id,
+            text,
+            reasoning,
+            error,
+        )
+        .await
     }
 
     /*
@@ -2138,32 +2129,16 @@ impl Run {
         meta: Option<Value>,
         error: Option<String>,
     ) -> Result<(), String> {
-        let id = message_id.to_string();
-        let patch = MessagePatch {
-            content: Some(content.clone()),
-            tool_calls: Some(tool_calls.clone()),
-            meta: meta.clone(),
-            error: error.clone(),
-            failed: None,
-            finalize: true,
-        };
-        self.core
-            .db
-            .write(move |c| store::update_message(c, &id, &patch))
-            .await?;
-        self.patch_ui(
+        finalize_message(
+            &self.core,
+            &self.dialog_id,
             message_id,
-            Patch {
-                content: Some(content),
-                tool_calls: Some(tool_calls),
-                meta,
-                error,
-                pending: Some(false),
-                finalized: Some(true),
-                ..Default::default()
-            },
-        );
-        Ok(())
+            content,
+            tool_calls,
+            meta,
+            error,
+        )
+        .await
     }
 
     /// Replaces a stored message's meta and shows it (records that change
@@ -2772,7 +2747,90 @@ pub(super) fn new_message(role: &str, content: &str) -> NewMessage {
     }
 }
 
-async fn recent_messages(db: &DbState, dialog_id: &str) -> Result<Vec<MessageRow>, String> {
+/// A streamed message's last form, stored and shown: it's final from now on.
+async fn finalize_message(
+    core: &Core,
+    dialog_id: &str,
+    message_id: &str,
+    content: String,
+    tool_calls: Vec<ToolCall>,
+    meta: Option<Value>,
+    error: Option<String>,
+) -> Result<(), String> {
+    let id = message_id.to_string();
+    let patch = MessagePatch {
+        content: Some(content.clone()),
+        tool_calls: Some(tool_calls.clone()),
+        meta: meta.clone(),
+        error: error.clone(),
+        failed: None,
+        finalize: true,
+    };
+    core.db
+        .write(move |c| store::update_message(c, &id, &patch))
+        .await?;
+    core.emit(AgentEvent::MessagePatched {
+        dialog_id: dialog_id.to_string(),
+        message_id: message_id.to_string(),
+        patch: Patch {
+            content: Some(content),
+            tool_calls: Some(tool_calls),
+            meta,
+            error,
+            pending: Some(false),
+            finalized: Some(true),
+            ..Default::default()
+        },
+    });
+    Ok(())
+}
+
+/// A reply that failed, or that the process ended mid-stream (5.4),
+/// settled: what arrived is kept as an interrupted reply (true), which
+/// Continue picks up; else the reply shows the error (false), and Retry
+/// takes the turn again. Its unfinished tool calls go.
+pub(super) async fn settle_failed_turn(
+    core: &Core,
+    dialog_id: &str,
+    message_id: &str,
+    text: &str,
+    reasoning: Option<Value>,
+    error: &ChatError,
+) -> Result<bool, String> {
+    let stored = failure::stored(error);
+    if !text.trim().is_empty() {
+        let mut meta = reasoning_meta(reasoning).unwrap_or_else(|| json!({}));
+        meta["interrupted"] = stored;
+        finalize_message(
+            core,
+            dialog_id,
+            message_id,
+            text.to_string(),
+            Vec::new(),
+            Some(meta),
+            None,
+        )
+        .await?;
+        Ok(true)
+    } else {
+        finalize_message(
+            core,
+            dialog_id,
+            message_id,
+            String::new(),
+            Vec::new(),
+            Some(json!({ "failure": stored })),
+            Some(failure::describe(error)),
+        )
+        .await?;
+        Ok(false)
+    }
+}
+
+pub(super) async fn recent_messages(
+    db: &DbState,
+    dialog_id: &str,
+) -> Result<Vec<MessageRow>, String> {
     let id = dialog_id.to_string();
     db.read(move |c| store::get_messages(c, &id, None, RECENT_MESSAGES))
         .await

@@ -1450,3 +1450,31 @@ Tasks add notes here when reality differs from the plan.
   another computer's chat is refused with `NotOwner` already; the other
   requests are refused with M01. `keys.json` keeps one key per provider,
   so of two keys of one provider in a start, the later stays.
+- **P06, what an interrupted run comes back as.**
+  - The core reads a chat's last rows (`agent_run::recovery::after_crash`),
+    so what a row means stays in the core. The daemon applies the limit,
+    and starts the run the way a client's start goes.
+  - A cut reply is settled by the code that stores a failed turn
+    (`settle_failed_turn`, which `store_failed_turn` now calls), with a
+    new failure kind, `restarted`, which the chat words "The server
+    restarted while the reply was being written." The approval of a
+    resumed call no longer says the app was closed.
+  - `running` goes from the run's `RunStarted` to its `RunEnded`, as the
+    daemon's sink sees them, so a start that made no run leaves nothing
+    to restart. `state.json` also keeps the last run's id and outcome; T05
+    adds the result beside them.
+  - Until T05 commits results, the `interrupted` row ends the run with a
+    `RunEnded` of outcome `interrupted`, sent through the core's sink as
+    a run's end is, so T05's commit and `ResultReady` hang off that one
+    place.
+  - Start-up's events (the restarted runs', the notice, those `RunEnded`)
+    go out before the socket is bound, so they reach a client that
+    subscribes from the start of the boot, `(boot, 0)`, after it catches
+    up from the database. P07's client subscribes that way on a new boot.
+  - Restarts follow `--same-machine` as starts do: without it, a cut run
+    ends `interrupted`. Restarts count by time alone; a start from a
+    client doesn't reset them.
+  - No run pauses for a drain before R02, so the daemon test makes one in
+    the database from a checkpoint's pause, with the kind R02 writes
+    (`recovery::DRAIN`). The daemon tests read the rows a killed daemon
+    left with `rusqlite`, now one of the workspace's shared dependencies.

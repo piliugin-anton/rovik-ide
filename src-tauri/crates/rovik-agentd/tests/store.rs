@@ -3,13 +3,12 @@
 
 mod common;
 
-use common::{start_request, Daemon, OTHER};
+use common::{files_under, start_request, Daemon, OTHER};
 use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
 use rovik_core::agent_run::AgentConfig;
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::{Request, Response};
 use serde_json::json;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn writes(path: &'static str) -> Vec<Reply> {
@@ -142,17 +141,4 @@ async fn keys_are_kept_in_keys_json_alone() {
             assert!(!text.contains(secret), "{secret} in {file:?}");
         }
     }
-}
-
-fn files_under(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir).unwrap().flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            files.extend(files_under(&path));
-        } else if path.is_file() {
-            files.push(path);
-        }
-    }
-    files
 }

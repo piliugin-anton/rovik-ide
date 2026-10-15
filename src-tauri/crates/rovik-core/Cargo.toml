@@ -23,7 +23,7 @@ eoka = "0.5.14"
 rand = "0.10"
 log = "0.4"
 base64 = "0.23.1"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite.workspace = true
 sha2.workspace = true
 grep-searcher = "0.1.17"
 grep-regex = "0.1.14"

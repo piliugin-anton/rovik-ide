@@ -13,6 +13,7 @@
 //!   session.rs  one WebSocket and its frames (4.1)
 //!   events.rs   the events: numbered, paced, kept, routed (4.3)
 //!   store.rs    state.json: each chat's computer and settings (D16)
+//!   restart.rs  the runs a crash or an upgrade cut, at start-up (5.4)
 //!   keys.rs     keys.json: the providers' keys (D11)
 //!   host.rs     `HostInfo`
 //!   attach.rs   `attach --stdio`: a byte bridge to the socket
@@ -41,6 +42,8 @@ mod host;
 mod keys;
 #[cfg(unix)]
 mod logfile;
+#[cfg(unix)]
+mod restart;
 #[cfg(unix)]
 mod serve;
 #[cfg(unix)]

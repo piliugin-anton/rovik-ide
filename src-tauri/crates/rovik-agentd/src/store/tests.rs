@@ -210,13 +210,16 @@ fn the_store_reads_back_what_it_kept() {
                 &start("chat", "sk-chat", Some(config("sk-r", ""))),
             )
             .unwrap();
-        store.ended("chat");
+        store.run_started("chat", "run-1");
+        store.ended("chat", Some("done"));
     }
     let state: State =
         serde_json::from_slice(&fs::read(dir.0.join("state.json")).unwrap()).unwrap();
     let chat = &state.chats["chat"];
     assert_eq!(chat.computer, "laptop");
     assert!(!chat.running);
+    assert_eq!(chat.run_id.as_deref(), Some("run-1"));
+    assert_eq!(chat.outcome.as_deref(), Some("done"));
     let settings = chat.start.as_ref().unwrap();
     assert_eq!(settings.profile.api_key, "", "no key in state.json");
     assert_eq!(settings.root.as_deref(), Some("/p"));
@@ -227,4 +230,66 @@ fn the_store_reads_back_what_it_kept() {
         config.approval_profiles[0].api_key, "sk-r",
         "from keys.json"
     );
+}
+
+/// 5.4: `running` goes from the run's `RunStarted` to its `RunEnded`, so a
+/// start that never made a run leaves nothing to restart.
+#[test]
+fn a_chat_runs_from_its_runs_start_to_its_end() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &start("chat", "", None)).unwrap();
+    assert!(store.running().is_empty());
+    store.run_started("chat", "run-1");
+    store.run_started("elsewhere", "run-2");
+    assert_eq!(store.running(), ["chat"]);
+    assert_eq!(store.run_id("chat").as_deref(), Some("run-1"));
+    store.ended("chat", Some("interrupted"));
+    assert!(store.running().is_empty());
+    let reopened = Store::open(&dir.0).unwrap();
+    assert!(reopened.running().is_empty());
+    let state: State =
+        serde_json::from_slice(&fs::read(dir.0.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state.chats["chat"].outcome.as_deref(), Some("interrupted"));
+}
+
+#[test]
+fn a_chat_is_restarted_at_most_twice_an_hour() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    store.started("laptop", &start("chat", "", None)).unwrap();
+    let minute = 60 * 1000;
+    assert!(store.count_restart("chat", 0));
+    assert!(store.count_restart("chat", 10 * minute));
+    assert!(!store.count_restart("chat", 20 * minute), "a third");
+    // An hour after the first, it counts no more.
+    assert!(store.count_restart("chat", 61 * minute));
+    assert!(!store.count_restart("chat", 62 * minute));
+    let reopened = Store::open(&dir.0).unwrap();
+    assert!(!reopened.count_restart("chat", 63 * minute), "kept");
+    assert!(!store.count_restart("unknown", 0));
+}
+
+/// A restart is rebuilt from the chat's settings and keys.json: nothing
+/// of the message, which the database has, and no configuration, which
+/// is its computer's.
+#[test]
+fn a_restart_is_its_last_start_again_with_its_key() {
+    let dir = temp_dir();
+    let first = start("chat", "sk-chat", Some(config("sk-r", "")));
+    Store::open(&dir.0)
+        .unwrap()
+        .started("laptop", &first)
+        .unwrap();
+    let store = Store::open(&dir.0).unwrap();
+    let restart = store
+        .restart_request("chat", StartKind::ContinueReply)
+        .unwrap();
+    assert_eq!(restart.start, StartKind::ContinueReply);
+    assert_eq!(restart.profile, first.profile, "with its key");
+    assert_eq!(restart.mode, first.mode);
+    assert_eq!(restart.root, first.root);
+    assert_eq!(restart.current_user_content, None);
+    assert_eq!(restart.config, None);
+    assert!(store.restart_request("unknown", StartKind::Retry).is_none());
 }

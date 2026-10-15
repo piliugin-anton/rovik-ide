@@ -8,6 +8,7 @@ use crate::daemon::Daemon;
 use crate::events::Events;
 use crate::home::{self, Home};
 use crate::logfile;
+use crate::restart;
 use crate::server::{self, OwnUser};
 use crate::store::Store;
 use rovik_core::agent_run::events::AgentEvent;
@@ -82,10 +83,6 @@ async fn run(
         mount_virtual_files(&core, home.share.join("vfs")).await
     };
 
-    // 7. Interrupted runs restart here (5.4, P06).
-
-    // 8. The socket, then serving.
-    let listener = server::bind(&socket)?;
     let daemon = Arc::new(Daemon {
         core: core.clone(),
         tokens,
@@ -94,6 +91,12 @@ async fn run(
         same_machine,
         virtual_files_problem,
     });
+
+    // 7. The runs the last process left going (5.4).
+    restart::restart_interrupted(&daemon).await;
+
+    // 8. The socket, then serving.
+    let listener = server::bind(&socket)?;
     log::info!(
         "rovik-agentd {VERSION} listening at {} for {} computers{}",
         socket.display(),
@@ -165,7 +168,8 @@ fn login_shell() {
     }
 }
 
-/// The core's events: the store hears of runs that end, then they go out.
+/// The core's events: the store hears of runs that start and end, then
+/// they go out.
 struct Tap {
     store: Arc<Store>,
     events: Arc<Events>,
@@ -173,8 +177,14 @@ struct Tap {
 
 impl EventSink for Tap {
     fn agent(&self, event: &AgentEvent) {
-        if let AgentEvent::RunEnded { dialog_id, .. } = event {
-            self.store.ended(dialog_id);
+        match event {
+            AgentEvent::RunStarted { dialog_id, run_id } => {
+                self.store.run_started(dialog_id, run_id)
+            }
+            AgentEvent::RunEnded {
+                dialog_id, outcome, ..
+            } => self.store.ended(dialog_id, Some(outcome)),
+            _ => {}
         }
         self.events.agent(event);
     }

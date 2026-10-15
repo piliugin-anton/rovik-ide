@@ -304,7 +304,9 @@ export type ChatErrorKind =
   | 'context_length'
   | 'length'
   | 'provider'
-  | 'cancelled';
+  | 'cancelled'
+  /** The agent's server restarted mid-reply, and settled what was stored of it. */
+  | 'restarted';
 
 /** Typed request failure from the backend (src-tauri/src/chat_request.rs). */
 export interface ChatError {

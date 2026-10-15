@@ -79,6 +79,7 @@ pub fn describe(error: &ChatError) -> String {
         ErrorKind::ContextLength => "The conversation is too long for this model. Start a new chat, or set a smaller context window for it in Model Settings.".into(),
         ErrorKind::Length => "The model reached its output limit before writing anything.".into(),
         ErrorKind::Cancelled => "Stopped.".into(),
+        ErrorKind::Restarted => restarted().message,
         ErrorKind::BadRequest => "The provider rejected the request.".into(),
         ErrorKind::Provider => format!("The provider reported an error{after}."),
     }
@@ -86,6 +87,14 @@ pub fn describe(error: &ChatError) -> String {
 
 pub fn stopped() -> ChatError {
     ChatError::new(ErrorKind::Cancelled, "Stopped.")
+}
+
+/// What cut a reply the process ended mid-stream (5.4).
+pub fn restarted() -> ChatError {
+    ChatError::new(
+        ErrorKind::Restarted,
+        "The server restarted while the reply was being written.",
+    )
 }
 
 /// A problem before the request was sent (e.g. building the history).
@@ -111,5 +120,10 @@ mod tests {
         assert_eq!(stored(&e)["kind"], "rate_limited");
         assert!(stored(&e)["resetAt"].as_i64().unwrap() > now_ms());
         assert_eq!(describe(&stopped()), "Stopped.");
+        assert_eq!(stored(&restarted())["kind"], "restarted");
+        assert_eq!(
+            describe(&restarted()),
+            "The server restarted while the reply was being written."
+        );
     }
 }

@@ -47,28 +47,34 @@ impl Daemon {
         }
     }
 
-    /// A start (6.2): the store keeps its keys apart and its settings, the
-    /// chat becomes the computer's, and the run follows the computer's
-    /// configuration (`config_for`), never another's.
-    async fn start(&self, computer: &str, mut start: StartRequest) -> Result<Response, Fail> {
-        if !self.same_machine {
-            return Err(Fail::new(
-                FailCode::BadRequest,
-                "This server can't run chats yet: its daemon runs them only with \
-                 --same-machine, in the folder each start names.",
-            ));
-        }
+    /// A start (6.2): the store keeps its keys apart and its settings, and
+    /// the chat becomes the computer's.
+    async fn start(&self, computer: &str, start: StartRequest) -> Result<Response, Fail> {
+        self.can_run()?;
         self.store.started(computer, &start)?;
+        self.run(start).await
+    }
+
+    /// Without `--same-machine`, no chat runs here yet.
+    pub fn can_run(&self) -> Result<(), Fail> {
+        if self.same_machine {
+            return Ok(());
+        }
+        Err(Fail::new(
+            FailCode::BadRequest,
+            "This server can't run chats yet: its daemon runs them only with \
+             --same-machine, in the folder each start names.",
+        ))
+    }
+
+    /// Starts the chat's run, which follows its computer's configuration
+    /// (`config_for`), never another's.
+    pub async fn run(&self, mut start: StartRequest) -> Result<Response, Fail> {
         start.config = None;
         // The daemon works in its own copy, never in an overlay (D8).
         start.isolate = Some(false);
         self.ensure_chat(&start.dialog_id).await?;
-        let dialog_id = start.dialog_id.clone();
-        let started = rovik_core::dispatch(&self.core, Request::AgentStart(start)).await;
-        if !matches!(started, Ok(Response::RunId(Some(_)))) {
-            self.store.ended(&dialog_id);
-        }
-        started
+        rovik_core::dispatch(&self.core, Request::AgentStart(start)).await
     }
 
     /// A chat started here before chats can move here (M04) has no row

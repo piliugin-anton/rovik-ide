@@ -1,12 +1,14 @@
 //! state.json (5.1, 6.2): each chat's computer and how its run last
-//! started, whether that run is going, and each computer's configuration,
-//! all without keys (keys.json has them, D11) or the message's text. Read
-//! at start-up, so a chat's events still find their computer, its runs
-//! their computer's configuration (D16), and an interrupted run its way
-//! back (5.4).
+//! started, whether that run is going and how the last one ended, and each
+//! computer's configuration, all without keys (keys.json has them, D11) or
+//! the message's text. Read at start-up, so a chat's events still find
+//! their computer, its runs their computer's configuration (D16), and an
+//! interrupted run its way back (5.4).
 
 use crate::keys::{self, Keys};
-use rovik_protocol::agent::{AgentConfig, ModelProfile, OpenAIChatOptions, StartRequest};
+use rovik_protocol::agent::{
+    AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
+};
 use rovik_protocol::{Fail, FailCode};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -23,7 +25,7 @@ pub struct State {
     pub computers: BTreeMap<String, AgentConfig>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatState {
     /// The computer that started it here: only it gets the chat's events.
@@ -31,12 +33,25 @@ pub struct ChatState {
     /// How its last run started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<StartSettings>,
+    /// From the run's `RunStarted` to its `RunEnded`.
     #[serde(default)]
     pub running: bool,
+    /// The id of its last run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// How its last run ended: its `RunEnded` outcome, or `interrupted`
+    /// when the daemon stopped where no start picks it up (5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// When the daemon restarted its run after a crash, in epoch ms (5.4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restarts: Vec<i64>,
 }
+
+/// A chat restarted this many times within `RESTART_WINDOW_MS` isn't
+/// restarted again: it waits for the user (5.4).
+const MAX_RESTARTS: usize = 2;
+const RESTART_WINDOW_MS: i64 = 60 * 60 * 1000;
 
 /// A start's settings, all a restarted run needs besides the computer's
 /// configuration and the keys.
@@ -125,9 +140,9 @@ impl Store {
             .map(|c| c.computer.clone())
     }
 
-    /// A start from `computer` (6.2): its keys go to keys.json, its
-    /// settings and configuration, without them, to state.json, and the
-    /// chat is marked running. Another computer's chat is refused.
+    /// A start from `computer` (6.2): its keys go to keys.json, and its
+    /// settings and configuration, without them, to state.json. Another
+    /// computer's chat is refused.
     pub fn started(&self, computer: &str, start: &StartRequest) -> Result<(), Fail> {
         let mut inner = self.lock();
         let earlier = inner.state.chats.get(&start.dialog_id).cloned();
@@ -142,15 +157,12 @@ impl Store {
             keys_changed |= inner.keys.take(keys::models(config));
             inner.set_config(computer, config.clone());
         }
-        inner.state.chats.insert(
-            start.dialog_id.clone(),
-            ChatState {
-                computer: computer.to_string(),
-                start: Some(StartSettings::of(start)),
-                running: true,
-                restarts: earlier.map(|c| c.restarts).unwrap_or_default(),
-            },
-        );
+        let mut chat = earlier.unwrap_or_else(|| ChatState {
+            computer: computer.to_string(),
+            ..ChatState::default()
+        });
+        chat.start = Some(StartSettings::of(start));
+        inner.state.chats.insert(start.dialog_id.clone(), chat);
         if keys_changed {
             inner.keys.write(&self.keys_file).map_err(internal)?;
         }
@@ -175,12 +187,89 @@ impl Store {
         inner.configs.get(computer).cloned()
     }
 
-    /// The chat's run ended.
-    pub fn ended(&self, dialog_id: &str) {
+    /// The chat's run started.
+    pub fn run_started(&self, dialog_id: &str, run_id: &str) {
+        self.change(dialog_id, |chat| {
+            chat.running = true;
+            chat.run_id = Some(run_id.to_string());
+        });
+    }
+
+    /// The chat's run ended, with this outcome if it's known.
+    pub fn ended(&self, dialog_id: &str, outcome: Option<&str>) {
+        self.change(dialog_id, |chat| {
+            chat.running = false;
+            if let Some(outcome) = outcome {
+                chat.outcome = Some(outcome.to_string());
+            }
+        });
+    }
+
+    /// The chats whose run was going when the daemon stopped.
+    pub fn running(&self) -> Vec<String> {
+        let inner = self.lock();
+        inner
+            .state
+            .chats
+            .iter()
+            .filter(|(_, chat)| chat.running)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// The id of the chat's last run.
+    pub fn run_id(&self, dialog_id: &str) -> Option<String> {
+        self.lock().state.chats.get(dialog_id)?.run_id.clone()
+    }
+
+    /// Counts a restart of the chat's run at `now` (5.4): false, with
+    /// nothing counted, when it was restarted twice within the hour.
+    pub fn count_restart(&self, dialog_id: &str, now: i64) -> bool {
+        let mut counted = false;
+        self.change(dialog_id, |chat| {
+            chat.restarts.retain(|at| now - at < RESTART_WINDOW_MS);
+            if chat.restarts.len() < MAX_RESTARTS {
+                chat.restarts.push(now);
+                counted = true;
+            }
+        });
+        counted
+    }
+
+    /// The start that picks up the chat's interrupted run (5.4): its last
+    /// start's settings, with its key from keys.json. The run follows its
+    /// computer's configuration, as every run here does.
+    pub fn restart_request(&self, dialog_id: &str, start: StartKind) -> Option<StartRequest> {
+        let inner = self.lock();
+        let settings = inner.state.chats.get(dialog_id)?.start.clone()?;
+        let mut profile = settings.profile;
+        inner.keys.give([&mut profile]);
+        Some(StartRequest {
+            dialog_id: dialog_id.to_string(),
+            start,
+            profile,
+            options: settings.options,
+            mode: settings.mode,
+            context_mode: settings.context_mode,
+            root: settings.root,
+            // The stored message, as it was first sent (`meta.sentContent`).
+            current_user_content: None,
+            local_date: settings.local_date,
+            config: None,
+            isolate: None,
+        })
+    }
+
+    /// Changes a chat known here, and saves what changed.
+    fn change(&self, dialog_id: &str, f: impl FnOnce(&mut ChatState)) {
         let mut inner = self.lock();
-        match inner.state.chats.get_mut(dialog_id) {
-            Some(chat) if chat.running => chat.running = false,
-            _ => return,
+        let Some(chat) = inner.state.chats.get_mut(dialog_id) else {
+            return;
+        };
+        let before = chat.clone();
+        f(chat);
+        if *chat == before {
+            return;
         }
         if let Err(e) = self.save(&inner) {
             log::error!("state.json: {e}");

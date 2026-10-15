@@ -28,6 +28,8 @@ libc.workspace = true
 [dev-dependencies]
 # The scripted model and temporary folders the daemon tests use.
 rovik-core = { workspace = true, features = ["testing"] }
+# The rows a killed daemon left, read from its database.
+rusqlite.workspace = true
 tokio = { workspace = true, features = ["process"] }
 hyper = { version = "1.12", features = ["client", "http1"] }
 http-body-util = "0.1.5"

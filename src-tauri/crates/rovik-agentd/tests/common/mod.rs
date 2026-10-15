@@ -16,7 +16,7 @@ use rovik_core::testing::{temp_dir, TempDir};
 use rovik_protocol::{Fail, Frame, Request, Response, Secret, PROTOCOL};
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -34,6 +34,8 @@ pub const BINARY: &str = env!("CARGO_BIN_EXE_rovik-agentd");
 
 pub struct Daemon {
     child: Child,
+    /// What `serve` was given after its own arguments.
+    args: Vec<String>,
     pub socket: PathBuf,
     /// The daemon's folder (`--data`).
     pub data: PathBuf,
@@ -42,6 +44,18 @@ pub struct Daemon {
     pub other_token: String,
     /// Goes after the daemon.
     pub dir: TempDir,
+}
+
+/// A stored message, as the daemon's database has it.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub finalized: bool,
+    /// Null when it has none.
+    pub meta: Value,
+    pub error: Option<String>,
 }
 
 impl Daemon {
@@ -65,26 +79,11 @@ impl Daemon {
         )
         .unwrap();
         let socket = dir.0.join("agentd.sock");
-        let stderr = std::fs::File::create(dir.0.join("stderr")).unwrap();
-        let child = Command::new(BINARY)
-            .arg("serve")
-            .arg("--data")
-            .arg(&data)
-            .arg("--socket")
-            .arg(&socket)
-            .arg("--no-virtual-files")
-            .args(args)
-            // A login shell that answers at once, and no real home.
-            .env("SHELL", "/bin/sh")
-            .env("HOME", &dir.0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(stderr)
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let child = spawn(&dir, &data, &socket, &args);
         let mut daemon = Daemon {
             child,
+            args,
             socket,
             data,
             token,
@@ -93,6 +92,18 @@ impl Daemon {
         };
         daemon.wait_until_it_answers().await;
         daemon
+    }
+
+    /// `kill -9`: the daemon gets no chance to stop its runs.
+    pub async fn kill(&mut self) {
+        self.child.start_kill().unwrap();
+        self.child.wait().await.unwrap();
+    }
+
+    /// The daemon again, on the same folder, socket and arguments.
+    pub async fn restart(&mut self) {
+        self.child = spawn(&self.dir, &self.data, &self.socket, &self.args);
+        self.wait_until_it_answers().await;
     }
 
     async fn wait_until_it_answers(&mut self) {
@@ -120,6 +131,41 @@ impl Daemon {
 
     pub fn log(&self) -> String {
         std::fs::read_to_string(self.data.join("logs/agentd.log")).unwrap_or_default()
+    }
+
+    /// The chat's stored messages, in order: none while the database is
+    /// busy, so callers poll.
+    pub fn rows(&self, dialog_id: &str) -> Vec<Row> {
+        use rusqlite::{Connection, OpenFlags};
+        let read = || -> rusqlite::Result<Vec<Row>> {
+            let path = self.data.join("data/chats.db");
+            let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let mut query = db.prepare(
+                "SELECT id, role, content, finalized, meta, error FROM messages \
+                 WHERE dialog_id = ?1 ORDER BY seq",
+            )?;
+            let rows = query.query_map([dialog_id], |r| {
+                let meta: Option<String> = r.get(4)?;
+                Ok(Row {
+                    id: r.get(0)?,
+                    role: r.get(1)?,
+                    content: r.get(2)?,
+                    finalized: r.get::<_, i64>(3)? != 0,
+                    meta: meta
+                        .and_then(|m| serde_json::from_str(&m).ok())
+                        .unwrap_or_default(),
+                    error: r.get(5)?,
+                })
+            })?;
+            rows.collect()
+        };
+        read().unwrap_or_default()
+    }
+
+    /// state.json, as the daemon last wrote it.
+    pub fn state(&self) -> Value {
+        let text = std::fs::read_to_string(self.data.join("state.json")).unwrap_or_default();
+        serde_json::from_str(&text).unwrap_or_default()
     }
 
     pub async fn stream(&self) -> UnixStream {
@@ -155,6 +201,57 @@ impl Daemon {
             .await
             .unwrap_or_else(|e| panic!("no session: {e}\n{}", self.output()))
     }
+}
+
+/// `serve` on `data` and `socket`, its stderr added to the folder's.
+fn spawn(dir: &TempDir, data: &Path, socket: &Path, args: &[String]) -> Child {
+    let stderr = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.0.join("stderr"))
+        .unwrap();
+    Command::new(BINARY)
+        .arg("serve")
+        .arg("--data")
+        .arg(data)
+        .arg("--socket")
+        .arg(socket)
+        .arg("--no-virtual-files")
+        .args(args)
+        // A login shell that answers at once, and no real home.
+        .env("SHELL", "/bin/sh")
+        .env("HOME", &dir.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap()
+}
+
+/// Every file under `dir`.
+pub fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(files_under(&path));
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// What `check` gives once it gives something, polled for up to 30 s.
+pub async fn until<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> T {
+    for _ in 0..1200 {
+        if let Some(found) = check() {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("never: {what}");
 }
 
 pub fn sha256_hex(text: &str) -> String {

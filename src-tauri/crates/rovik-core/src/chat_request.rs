@@ -76,6 +76,9 @@ pub enum ErrorKind {
     /// An error reported inside the response by the provider.
     Provider,
     Cancelled,
+    /// The process ended while the reply streamed, and the daemon, started
+    /// again, settled what was stored of it (5.4).
+    Restarted,
 }
 
 impl ErrorKind {
