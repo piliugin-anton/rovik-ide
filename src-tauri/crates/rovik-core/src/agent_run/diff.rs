@@ -3,17 +3,7 @@
 //! The same algorithm as the editor's review (src/lib/lineDiff.ts), so the
 //! AI reviewer and the user see the same changes.
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Hunk {
-    /// 1-based line in the original where the hunk starts: the first deleted
-    /// line, or for a pure insertion, the line the new lines go before.
-    pub orig_start: usize,
-    pub deleted: Vec<String>,
-    pub added: Vec<String>,
-}
+pub use rovik_protocol::diff::Hunk;
 
 /// Above this many differing lines the diff is one big hunk.
 const MAX_EDIT_DISTANCE: usize = 2_000;

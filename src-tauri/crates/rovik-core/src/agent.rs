@@ -1,7 +1,7 @@
 use crate::chat_request::{responses, Api};
 use crate::core::Core;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
@@ -163,28 +163,7 @@ impl WireChatMessage {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-pub enum ReasoningEffort {
-    None,
-    Low,
-    Medium,
-    High,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct OpenAIChatOptions {
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f32>,
-    pub top_p: Option<f32>,
-    pub stop: Option<Vec<String>>,
-    pub reasoning_effort: Option<ReasoningEffort>, // add more as needed: frequency_penalty, presence_penalty, etc.
-    /// Which forms of the effort to send (`REASONING_FIELDS`). Absent: the
-    /// older default (`reasoning_effort` plus `chat_template_kwargs`), still
-    /// used by background requests.
-    pub reasoning_formats: Option<Vec<String>>,
-}
+pub use rovik_protocol::agent::{OpenAIChatOptions, ReasoningEffort};
 
 /// The ways providers take a reasoning effort:
 /// - `reasoning_effort`: OpenAI, Gemini's OpenAI-compatible API, many gateways;
@@ -203,17 +182,6 @@ pub const REASONING_FIELDS: [&str; 4] = [
 /// GPT-5 has `minimal` but not `none`, DeepSeek `low`/`high`/`max`, Mistral
 /// `none`/`high` (see `effort_value`).
 const LEVELS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-impl ReasoningEffort {
-    pub fn level(self) -> &'static str {
-        match self {
-            ReasoningEffort::None => "none",
-            ReasoningEffort::Low => "low",
-            ReasoningEffort::Medium => "medium",
-            ReasoningEffort::High => "high",
-        }
-    }
-}
 
 /// Puts the effort into the request in each of `formats`.
 #[cfg(test)]

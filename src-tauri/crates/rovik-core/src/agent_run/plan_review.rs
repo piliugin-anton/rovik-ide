@@ -16,7 +16,7 @@ use super::change_review::{
     drop_repeats, findingless, parse_findings, reviewer_skip_reason, skipped, Finding,
 };
 use super::run::Run;
-use super::subagent::{self, Budget, Format, Kind, KindSpec};
+use super::subagent::{self, Budget, Format, Kind, KindSpec, SubagentSettings};
 use super::{diff, log};
 use crate::chat_db::store::MessageRow;
 use serde_json::{json, Value};

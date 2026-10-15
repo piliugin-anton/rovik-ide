@@ -47,7 +47,6 @@ use crate::chat_db::history::{
 use crate::chat_db::DbState;
 use crate::vfs::{Source, VfsState};
 use document::CtxMsg;
-use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -1065,29 +1064,7 @@ pub fn recall_hint(
  * ---------------------------------------------------------------------------
  */
 
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct ClmStatus {
-    /// The chat's mode; None until one is chosen for it.
-    pub mode: Option<String>,
-    /// Virtual files are mounted, so CLM mode can run.
-    pub available: bool,
-    /// Why not, for the user.
-    pub problem: Option<String>,
-    pub path: String,
-    pub real_path: Option<String>,
-    /// The file's latest revision written for a request.
-    pub revision: Option<u64>,
-    pub revisions: usize,
-    pub edits: usize,
-    /// The agent's own context is in use (it has edited it).
-    pub projected: bool,
-    pub tokens: usize,
-    pub budget: usize,
-    /// Phase E: a budget reminder the agent hasn't acted on yet, e.g. "a
-    /// compaction is due (75% reminder not acted on yet)". None otherwise.
-    pub compliance: Option<String>,
-}
+pub use rovik_protocol::clm::ClmStatus;
 
 /// The chat's CLM state as it is now (also sent by a run after each request
 /// is prepared, so the UI follows it turn by turn).

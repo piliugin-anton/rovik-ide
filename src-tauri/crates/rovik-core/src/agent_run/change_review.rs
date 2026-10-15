@@ -17,7 +17,7 @@
 
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
-use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus};
+use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
 use super::{log, plan, tools};
 use regex::Regex;
 use serde::Serialize;

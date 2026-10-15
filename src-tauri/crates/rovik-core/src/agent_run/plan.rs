@@ -12,7 +12,7 @@
 
 use crate::chat_db::store::MessageRow;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::LazyLock;
@@ -1147,55 +1147,7 @@ pub fn plan_problems_in(markdown: &str, root: Option<&Path>) -> Vec<String> {
  * ---------------------------------------------------------------------------
  */
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct QuestionOption {
-    pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub recommended: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Question {
-    pub question: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    pub options: Vec<QuestionOption>,
-    /// "Other" with the user's own words.
-    pub allow_custom: bool,
-}
-
-/// One question's answer.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum QuestionAnswer {
-    Option {
-        label: String,
-    },
-    Custom {
-        text: String,
-    },
-    /// "You decide".
-    Agent,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(untagged)]
-pub enum QuestionsOutcome {
-    Answers {
-        answers: Vec<QuestionAnswer>,
-    },
-    /// Typed in the composer instead of answering in the card.
-    Reply {
-        reply: String,
-    },
-    Stopped {
-        stopped: bool,
-    },
-}
+pub use rovik_protocol::plan::{Question, QuestionAnswer, QuestionOption, QuestionsOutcome};
 
 const MAX_QUESTIONS: usize = 3;
 const MAX_OPTIONS: usize = 6;
@@ -1322,11 +1274,7 @@ pub fn outcome_kinds(outcome: &QuestionsOutcome) -> Vec<String> {
 const TODO_STATUSES: &[&str] = &["pending", "in_progress", "done", "skipped", "changed"];
 pub const MAX_TODO_ITEMS: usize = 30;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TodoItem {
-    pub title: String,
-    pub status: String,
-}
+pub use rovik_protocol::plan::{CurrentChecklist, TodoItem};
 
 pub fn parse_todo(args: &Map<String, Value>) -> Vec<TodoItem> {
     args.get("items")
@@ -1470,13 +1418,6 @@ fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
 /// unrelated work. A newer `todo` call replaces it, and the carry note
 /// tells the model to close the old one when the new message is a different
 /// task.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct CurrentChecklist {
-    pub items: Vec<TodoItem>,
-    pub carried: bool,
-    pub from_message_id: Option<String>,
-}
-
 pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     let last_user = messages
         .iter()

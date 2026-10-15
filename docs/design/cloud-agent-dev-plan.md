@@ -1388,3 +1388,17 @@ Tasks add notes here when reality differs from the plan.
   feature lets another crate use. C06 moves the runner and those tests to
   `rovik-headless`. The workspace's shared dependencies are declared once,
   in `[workspace.dependencies]`.
+- **P01, the types that travel.** Besides `AgentEvent` and `StartRequest`,
+  what they and the requests carry moved too: the settings (`AgentConfig`,
+  `Permissions`, `SubagentConfig`), the CLM, checklist and question types,
+  `ToolCall`, `MessagePatch`, `ChatModel` and `Hunk`. The core re-exports
+  each where it was. `SubagentConfig`'s methods need the core's kinds, so
+  they are a trait there (`SubagentSettings`), and its test-only
+  `extra_tools` is behind the protocol's `testing` feature, which the
+  core's tests turn on. `Request` has today's operations of the Agent,
+  Chat and CLM groups; the requests and events of later milestones
+  (`AgentPause`, `ChatChangesSince`, `BlobsMissing`, the Work and Host
+  groups, `ChatChanged`, `ResultReady`, `SyncState`) come with their
+  tasks, as additive changes. `Response` has one variant per kind of
+  value, which a caller takes with `TryFrom` (`bool::try_from(reply)`).
+  A token travels as a `Secret`, whose `Debug` doesn't show it.

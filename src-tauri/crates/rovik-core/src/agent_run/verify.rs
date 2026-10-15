@@ -16,6 +16,7 @@ use super::permissions::{check_command, Permissions, Verdict};
 use super::project::{check_label, ordered_checks, ProjectCheck};
 use super::repair::{self, Judgement, RoundFailures, Verdict as Progress};
 use super::run::{new_message, Run};
+use super::subagent::SubagentSettings;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};

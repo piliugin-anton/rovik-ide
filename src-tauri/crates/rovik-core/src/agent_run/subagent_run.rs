@@ -28,7 +28,7 @@ use super::run::{
     new_message, reasoning_meta, text_before_cut, unanswered_tool_calls, Role, Run, IDE_NOTE,
 };
 use super::subagent::{
-    self, Brief, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig,
+    self, Brief, Budget, ChildWrite, Kind, SubResult, SubStatus, SubagentConfig, SubagentSettings,
 };
 use super::worker::{self, WriteScope};
 use super::{log, permissions, tools, ModelProfile};

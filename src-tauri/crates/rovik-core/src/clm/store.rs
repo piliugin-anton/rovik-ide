@@ -5,7 +5,6 @@
 use super::document::CtxMsg;
 use crate::chat_db::store::{err, DbResult};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
 
 /// Revisions kept per chat in the database. Revisions written before an
 /// edit (backups of what an edit removed) and edits themselves are kept
@@ -128,17 +127,7 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// A revision of a chat's context file.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct RevisionRow {
-    pub number: u64,
-    /// "context": the context as it was sent; "edit": changed by the agent
-    /// (or a program); "restore": an earlier revision brought back.
-    pub kind: String,
-    pub created_at: i64,
-    pub tokens: usize,
-}
+pub use rovik_protocol::clm::RevisionRow;
 
 pub fn revisions(conn: &Connection, dialog_id: &str) -> DbResult<Vec<RevisionRow>> {
     let mut stmt = conn

@@ -13,6 +13,9 @@
 //   - what a reply showed about the model's reasoning goes to the panel,
 //     which keeps it in the settings (queued until the panel is there);
 //   - the CLM state each request went out with goes to lib/contextMode.ts.
+//
+// The events' shapes are rovik-protocol's (src-tauri/crates/rovik-protocol):
+// test-fixtures/agent-events.json holds one of each for both sides' tests.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
@@ -110,6 +113,8 @@ type AgentEvent =
   | { type: 'checklist'; dialogId: string; items: import('./todo').TodoItem[] }
   | {
       type: 'fileWritten';
+      /** The chat whose run wrote it. */
+      dialogId?: string;
       absPath: string;
       before: string | null;
       content: string;
@@ -123,6 +128,8 @@ type AgentEvent =
   | { type: 'contextUpdated'; dialogId: string; status: ClmStatus }
   | {
       type: 'notice';
+      /** The chat it's about, if it's about one. */
+      dialogId?: string;
       kind: 'info' | 'success' | 'warning' | 'error';
       title: string;
       message: string;

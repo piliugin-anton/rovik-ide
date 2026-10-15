@@ -14,7 +14,7 @@ use super::command_output::{error_locations, focus_failures, split_by_changed};
 use super::log;
 use super::project::check_label;
 use super::run::Run;
-use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip};
+use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubagentSettings};
 use super::verify::CheckResult;
 use serde::Serialize;
 use serde_json::{json, Value};

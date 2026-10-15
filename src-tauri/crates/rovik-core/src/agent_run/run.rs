@@ -8,10 +8,11 @@
 //! written in a reply instead of submitted (Plan mode), unfinished checklist
 //! steps, and the verification gate (verify.rs).
 
-use super::events::{AgentEvent, OutMessage, Patch, Status};
+use super::events::{self, AgentEvent, Patch, Status};
 use super::guard::Guard;
 use super::permissions::ChecklistMode;
 use super::project::{self, ProjectCheck};
+use super::subagent::SubagentSettings;
 use super::subagent_run::SubCtx;
 use super::{
     failure, log, plan, repair, repetition, subagent, tools, Controls, EffortPick, ModelProfile,
@@ -381,9 +382,10 @@ impl Run {
             .unwrap_or_else(crate::overlay::chats::enabled);
         let root = match &project_root {
             Some(r) if isolate && (!plan_mode || crate::overlay::chats::exists(&dialog_id)) => {
-                let core_ = core.clone();
+                let (core_, chat) = (core.clone(), dialog_id.clone());
                 let on_warn = Box::new(move |used: u64, limit: u64| {
                     core_.emit(AgentEvent::Notice {
+                        dialog_id: Some(chat.clone()),
                         kind: "warning".into(),
                         title: "This chat's changes are near their limit".into(),
                         message: format!(
@@ -407,6 +409,7 @@ impl Run {
             isolation_problem.filter(|_| crate::overlay::chats::tell_not_isolated(&dialog_id))
         {
             core.emit(AgentEvent::Notice {
+                dialog_id: Some(dialog_id.clone()),
                 kind: "warning".into(),
                 title: "This chat isn't isolated".into(),
                 message: if problem.contains("couldn't mount") {
@@ -523,7 +526,7 @@ impl Run {
                 let seq = seqs.into_iter().next().unwrap_or(0);
                 core.emit(AgentEvent::MessagesAdded {
                     dialog_id: dialog_id.to_string(),
-                    messages: vec![OutMessage::from_new(dialog_id, seq, &m, false)],
+                    messages: vec![events::out_message(dialog_id, seq, &m, false)],
                 });
                 let seq_row = recent.last().map(|r| r.seq + 1).unwrap_or(0);
                 let meta = m.meta.clone();
@@ -953,6 +956,7 @@ impl Run {
             Err(e) => {
                 eprintln!("agent: run in {} failed: {e}", self.dialog_id);
                 self.core.emit(AgentEvent::Notice {
+                    dialog_id: Some(self.dialog_id.clone()),
                     kind: "error".into(),
                     title: "The agent stopped".into(),
                     message: format!("Something went wrong: {e}"),
@@ -1053,6 +1057,7 @@ impl Run {
                 self.settle(true).await;
                 if self.repetition_stops >= 2 || self.stopped() {
                     self.core.emit(AgentEvent::Notice {
+                        dialog_id: Some(self.dialog_id.clone()),
                         kind: "warning".into(),
                         title: "The model kept repeating itself".into(),
                         message: "Its reply was stopped twice, so the run ended. Try again, or a different model."
@@ -2072,7 +2077,7 @@ impl Run {
         let out = messages
             .iter()
             .zip(seqs)
-            .map(|(m, seq)| OutMessage::from_new(&self.dialog_id, seq, m, pending))
+            .map(|(m, seq)| events::out_message(&self.dialog_id, seq, m, pending))
             .collect();
         self.core.emit(AgentEvent::MessagesAdded {
             dialog_id: self.dialog_id.clone(),

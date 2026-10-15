@@ -2,7 +2,7 @@
 //! database, the real tools and the real request code, talking to a local
 //! server that plays the model.
 
-use super::permissions::ChecklistMode;
+use super::permissions::{ChecklistMode, Permissions};
 use super::*;
 use crate::chat_db::store::{self, MessageRow, NewDialog};
 use crate::testing::{effort, model, model_routed, route_of, Reply, TempDir, TestCore};

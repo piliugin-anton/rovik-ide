@@ -1,0 +1,656 @@
+//! Every variant of every protocol enum goes through JSON and comes back
+//! the same, as the same JSON (plan rule 7). A variant without a sample
+//! here fails `covers`, so a new request can't go untested.
+
+use crate::agent::*;
+use crate::chat::{ChatModel, MessagePatch, ToolCall};
+use crate::clm::{ClmStatus, RevisionRow};
+use crate::diff::Hunk;
+use crate::events::*;
+use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
+use crate::plan::*;
+use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
+use crate::*;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::collections::{BTreeSet, HashMap};
+use std::fmt::Debug;
+
+/// Through JSON and back: the same value, and the same JSON again.
+fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) -> Value {
+    let json = serde_json::to_value(value).unwrap();
+    let back: T = serde_json::from_value(json.clone())
+        .unwrap_or_else(|e| panic!("{json} doesn't read back: {e}"));
+    assert_eq!(&back, value, "{json}");
+    assert_eq!(serde_json::to_value(&back).unwrap(), json);
+    json
+}
+
+/// The tags serde knows for `T`, from the error it gives for one it doesn't
+/// know ("unknown variant `?`, expected one of `a`, `b`").
+fn tags<T: DeserializeOwned + Debug>(tag: &str) -> BTreeSet<String> {
+    let err = serde_json::from_value::<T>(json!({ tag: "?" }))
+        .unwrap_err()
+        .to_string();
+    let list = err
+        .split("expected one of ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no variants in: {err}"));
+    list.split(", ")
+        .map(|t| t.trim_matches(|c: char| c == '`' || !c.is_alphanumeric()))
+        .map(String::from)
+        .collect()
+}
+
+/// Every sample round-trips, and together they have every variant of `T`.
+fn covers<T: Serialize + DeserializeOwned + PartialEq + Debug>(tag: &str, samples: &[T]) {
+    let seen: BTreeSet<String> = samples
+        .iter()
+        .map(|s| round_trip(s)[tag].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(seen, tags::<T>(tag), "variants without a sample");
+}
+
+fn profile(id: &str) -> ModelProfile {
+    ModelProfile {
+        id: id.into(),
+        label: "Test/m".into(),
+        model: "m".into(),
+        base_url: "https://example.test/v1".into(),
+        api_key: "sk-test".into(),
+        stream: true,
+        vision: true,
+        pdf: false,
+        context_tokens: Some(128_000),
+        no_tools: false,
+        first_byte_timeout_ms: Some(30_000),
+        api_route: Some("responses".into()),
+    }
+}
+
+fn options() -> OpenAIChatOptions {
+    OpenAIChatOptions {
+        max_tokens: Some(4096),
+        temperature: Some(0.5),
+        top_p: None,
+        stop: Some(vec!["END".into()]),
+        reasoning_effort: Some(ReasoningEffort::High),
+        reasoning_formats: Some(vec!["reasoning_effort".into()]),
+    }
+}
+
+fn config() -> AgentConfig {
+    let mut kinds = HashMap::new();
+    kinds.insert(
+        "scout".to_string(),
+        KindConfig {
+            enabled: true,
+            models: vec![
+                ModelChoice::Profile(profile("p::scout")),
+                ModelChoice::Chat { chat: true },
+            ],
+            options: Some(options()),
+            max_tool_calls: Some(20),
+            max_minutes: Some(2.5),
+            ..Default::default()
+        },
+    );
+    AgentConfig {
+        permissions: Permissions {
+            allow_any_command: true,
+            denied_commands: vec!["git push".into()],
+            command_approval: ApprovalRule {
+                required: true,
+                by: Approver::Ai,
+            },
+            tool_call_checkpoint: None,
+            checklist: ChecklistMode::Always,
+            ..Default::default()
+        },
+        approval_profiles: vec![profile("p::reviewer")],
+        subagents: SubagentConfig {
+            enabled: true,
+            kinds,
+            max_at_once: Some(2),
+            max_run_tokens: Some(1_000_000),
+            parallel_workers: true,
+            ..Default::default()
+        },
+    }
+}
+
+fn start() -> StartRequest {
+    StartRequest {
+        dialog_id: "d".into(),
+        start: StartKind::Send {
+            message: UserMessage {
+                id: "u".into(),
+                content: "Hello".into(),
+                meta: Some(json!({ "pdfs": [{ "id": "f", "name": "a.pdf", "pages": 2 }] })),
+                attachments: vec!["f".into()],
+            },
+        },
+        profile: profile("p::m"),
+        options: Some(options()),
+        mode: Some("agent".into()),
+        context_mode: Some("clm".into()),
+        root: Some("/p".into()),
+        current_user_content: Some("Hello, with context".into()),
+        local_date: Some("2026-10-15".into()),
+        config: Some(config()),
+        isolate: Some(false),
+    }
+}
+
+fn approval() -> ApprovalRequest {
+    ApprovalRequest {
+        tool_call_id: "c".into(),
+        dialog_id: "d".into(),
+        tool_name: "edit".into(),
+        summary: "Edit a.ts".into(),
+        command: None,
+        note: Some("Asked by the reviewer".into()),
+        edit: Some(EditProposal {
+            abs_path: "/p/a.ts".into(),
+            rel_path: "a.ts".into(),
+            current: "a\n".into(),
+            proposed: "b\n".into(),
+        }),
+        parent_dialog_id: Some("lead".into()),
+        parent_call_id: Some("t1".into()),
+    }
+}
+
+fn questions() -> QuestionsRequest {
+    QuestionsRequest {
+        tool_call_id: "q".into(),
+        dialog_id: "d".into(),
+        questions: vec![Question {
+            question: "Which?".into(),
+            reason: None,
+            options: vec![QuestionOption {
+                label: "A".into(),
+                description: Some("The first".into()),
+                recommended: true,
+            }],
+            allow_custom: false,
+        }],
+    }
+}
+
+fn clm_status() -> ClmStatus {
+    ClmStatus {
+        mode: Some("clm".into()),
+        available: false,
+        problem: Some("Virtual files aren't mounted.".into()),
+        path: "context.md".into(),
+        real_path: None,
+        revision: Some(3),
+        revisions: 3,
+        edits: 1,
+        projected: false,
+        tokens: 900,
+        budget: 32_000,
+        compliance: Some("a compaction is due".into()),
+    }
+}
+
+fn checklist() -> CurrentChecklist {
+    CurrentChecklist {
+        items: vec![TodoItem {
+            title: "Step".into(),
+            status: "pending".into(),
+        }],
+        carried: true,
+        from_message_id: Some("m".into()),
+    }
+}
+
+#[test]
+fn every_frame_round_trips() {
+    covers(
+        "t",
+        &[
+            Frame::Hello {
+                protocol: PROTOCOL,
+                client: "rovik-ide 0.1.0".into(),
+                device: "laptop".into(),
+                token: Secret("tok".into()),
+            },
+            Frame::Welcome {
+                protocol: PROTOCOL,
+                min_protocol: 1,
+                daemon: "rovik-agentd 0.1.0".into(),
+                boot: "b1".into(),
+                features: vec!["blobs".into()],
+            },
+            Frame::Call {
+                id: 1,
+                req: Request::AgentStatus,
+            },
+            Frame::Reply {
+                id: 1,
+                res: Ok(Response::Bool(true)),
+            },
+            Frame::Reply {
+                id: 2,
+                res: Err(Fail::new(FailCode::TooLarge, "Over 1 MB")),
+            },
+            Frame::Event {
+                seq: 9,
+                ev: Event::Resync {
+                    dialog_id: "d".into(),
+                },
+            },
+            Frame::Subscribe { since: None },
+            Frame::Subscribe {
+                since: Some(("b1".into(), 9)),
+            },
+            Frame::Subscribed {
+                replayed: 3,
+                complete: false,
+            },
+            Frame::Ping,
+            Frame::Pong,
+        ],
+    );
+}
+
+#[test]
+fn every_request_round_trips() {
+    let hunk = Hunk {
+        orig_start: 1,
+        deleted: vec!["a".into()],
+        added: vec!["b".into()],
+    };
+    covers(
+        "t",
+        &[
+            Request::AgentStart(start()),
+            Request::AgentStart(StartRequest {
+                start: StartKind::RunChecks {
+                    record_id: "r".into(),
+                },
+                options: None,
+                config: None,
+                ..start()
+            }),
+            Request::AgentStop {
+                dialog_id: "d".into(),
+            },
+            Request::AgentResolveApproval {
+                dialog_id: "d".into(),
+                tool_call_id: "c".into(),
+                decision: ApprovalDecision::Partial {
+                    content: "b\n".into(),
+                    total: 2,
+                    rejected: vec![hunk],
+                },
+            },
+            Request::AgentAnswerQuestions {
+                dialog_id: "d".into(),
+                tool_call_id: "q".into(),
+                outcome: QuestionsOutcome::Answers {
+                    answers: vec![
+                        QuestionAnswer::Option { label: "A".into() },
+                        QuestionAnswer::Custom { text: "C".into() },
+                        QuestionAnswer::Agent,
+                    ],
+                },
+            },
+            Request::AgentStatus,
+            Request::AgentConfigure(config()),
+            Request::AgentSetEffort {
+                profile_id: "p::m".into(),
+                options: Some(options()),
+                dialog_id: None,
+            },
+            Request::ChatChecklist {
+                dialog_id: "d".into(),
+            },
+            Request::ChatDismissChecklist {
+                dialog_id: "d".into(),
+                message_id: "m".into(),
+            },
+            Request::WorkloadFocus {
+                dialog_id: Some("d".into()),
+            },
+            Request::ChatRename {
+                dialog_id: "d".into(),
+                title: "New title".into(),
+            },
+            Request::ChatUpdateMessage {
+                message_id: "m".into(),
+                patch: MessagePatch {
+                    content: Some("x".into()),
+                    tool_calls: Some(vec![ToolCall {
+                        id: "c".into(),
+                        name: "read".into(),
+                        arguments: "{}".into(),
+                        extra_content: None,
+                    }]),
+                    failed: Some(true),
+                    finalize: true,
+                    ..Default::default()
+                },
+            },
+            Request::ChatSetModel {
+                dialog_id: "d".into(),
+                model: ChatModel {
+                    provider_id: "p".into(),
+                    model_id: "m".into(),
+                    effort: Some("high".into()),
+                },
+            },
+            Request::ChatDelete {
+                dialog_id: "d".into(),
+            },
+            Request::ClmStatus {
+                dialog_id: "d".into(),
+            },
+            Request::ClmSetMode {
+                dialog_id: "d".into(),
+                mode: "clm".into(),
+            },
+            Request::ClmReset {
+                dialog_id: "d".into(),
+            },
+            Request::ClmListRevisions {
+                dialog_id: "d".into(),
+            },
+            Request::ClmReadRevision {
+                dialog_id: "d".into(),
+                number: 2,
+            },
+            Request::ClmRestoreRevision {
+                dialog_id: "d".into(),
+                number: 2,
+            },
+        ],
+    );
+}
+
+#[test]
+fn every_response_round_trips() {
+    let status = AgentStatus {
+        runs: vec![RunningRun {
+            dialog_id: "d".into(),
+            run_id: "r".into(),
+        }],
+        subagents: vec![
+            RunningSubagent {
+                dialog_id: "kid".into(),
+                parent_dialog_id: "d".into(),
+                parent_call_id: "t1".into(),
+                info: Some(ChildInfo {
+                    kind: "scout".into(),
+                    goal: "Look".into(),
+                    model: "Test/m".into(),
+                    started_at: 1,
+                    tool_calls: 2,
+                }),
+            },
+            RunningSubagent {
+                dialog_id: "kid2".into(),
+                parent_dialog_id: "d".into(),
+                parent_call_id: "t2".into(),
+                info: None,
+            },
+        ],
+        approvals: vec![approval()],
+        questions: vec![questions()],
+    };
+    covers(
+        "t",
+        &[
+            Response::Done,
+            Response::Bool(false),
+            Response::RunId(Some("r".into())),
+            Response::RunId(None),
+            Response::Count(2),
+            Response::AgentStatus(status),
+            Response::Checklist(Some(checklist())),
+            Response::Checklist(None),
+            Response::ClmStatus(clm_status()),
+            Response::Revisions(vec![RevisionRow {
+                number: 1,
+                kind: "context".into(),
+                created_at: 5,
+                tokens: 10,
+            }]),
+            Response::Text("revision text".into()),
+        ],
+    );
+}
+
+#[test]
+fn every_event_round_trips() {
+    covers(
+        "t",
+        &[
+            Event::Agent(AgentEvent::RunStarted {
+                dialog_id: "d".into(),
+                run_id: "r".into(),
+            }),
+            Event::HostNotice {
+                kind: "drain".into(),
+                message: "Rovik is being upgraded.".into(),
+            },
+            Event::Resync {
+                dialog_id: "d".into(),
+            },
+        ],
+    );
+}
+
+#[test]
+fn every_fail_code_round_trips() {
+    for code in [
+        FailCode::Unreachable,
+        FailCode::NotOwner,
+        FailCode::Busy,
+        FailCode::Version,
+        FailCode::BadRequest,
+        FailCode::TooLarge,
+        FailCode::Internal,
+    ] {
+        round_trip(&Fail::new(code, "why"));
+    }
+    assert_eq!(
+        serde_json::to_value(Fail::new(FailCode::NotOwner, "Moved")).unwrap(),
+        json!({ "code": "notOwner", "message": "Moved" })
+    );
+}
+
+/// The shapes on the wire, as section 4.1 describes them.
+#[test]
+fn frames_have_the_shapes_of_4_1() {
+    assert_eq!(
+        round_trip(&Frame::Call {
+            id: 7,
+            req: Request::AgentStop {
+                dialog_id: "d".into()
+            },
+        }),
+        json!({ "t": "call", "id": 7, "req": { "t": "agentStop", "dialogId": "d" } })
+    );
+    assert_eq!(
+        round_trip(&Frame::Reply {
+            id: 7,
+            res: Ok(Response::Bool(true)),
+        }),
+        json!({ "t": "reply", "id": 7, "res": { "Ok": { "t": "bool", "v": true } } })
+    );
+    assert_eq!(
+        round_trip(&Frame::Event {
+            seq: 3,
+            ev: Event::Agent(AgentEvent::ApprovalSettled {
+                dialog_id: "d".into(),
+                tool_call_id: "c".into(),
+            }),
+        }),
+        json!({
+            "t": "event",
+            "seq": 3,
+            "ev": { "t": "agent", "type": "approvalSettled", "dialogId": "d", "toolCallId": "c" }
+        })
+    );
+    assert_eq!(
+        round_trip(&Frame::Subscribe {
+            since: Some(("b".into(), 4))
+        }),
+        json!({ "t": "subscribe", "since": ["b", 4] })
+    );
+}
+
+/// A request's fields are its Tauri command's arguments (D3), so the app
+/// sends a remote chat's call as the frontend made it.
+#[test]
+fn a_requests_fields_are_its_commands_arguments() {
+    let mut json = round_trip(&Request::AgentResolveApproval {
+        dialog_id: "d".into(),
+        tool_call_id: "c".into(),
+        decision: ApprovalDecision::Allow,
+    });
+    json.as_object_mut().unwrap().remove("t");
+    assert_eq!(
+        json,
+        json!({ "dialogId": "d", "toolCallId": "c", "decision": { "kind": "allow" } })
+    );
+    let start: Value = serde_json::to_value(Request::AgentStart(start())).unwrap();
+    assert_eq!(start["t"], "agentStart");
+    assert_eq!(
+        start["dialogId"], "d",
+        "the start's own fields, next to the tag"
+    );
+    assert_eq!(start["start"]["kind"], "send");
+}
+
+/// `status: null` clears a message's status, so it must stay `null` after
+/// a trip through the daemon, apart from an absent status (K39).
+#[test]
+fn a_patchs_null_status_survives_a_round_trip() {
+    let read = |json: Value| serde_json::from_value::<Patch>(json).unwrap();
+    assert_eq!(read(json!({ "content": "x" })).status, None);
+    assert_eq!(read(json!({ "status": null })).status, Some(None));
+    assert_eq!(
+        read(json!({ "status": { "text": "Waiting", "since": 5 } })).status,
+        Some(Some(Status {
+            text: "Waiting".into(),
+            until: None,
+            since: Some(5),
+        }))
+    );
+    for patch in [
+        Patch::default(),
+        Patch {
+            status: Some(None),
+            ..Default::default()
+        },
+        Patch {
+            content: Some("x".into()),
+            status: Some(Some(Status::text("Waiting"))),
+            ..Default::default()
+        },
+    ] {
+        round_trip(&patch);
+    }
+    assert_eq!(
+        round_trip(&Patch {
+            status: Some(None),
+            ..Default::default()
+        }),
+        json!({ "status": null })
+    );
+    assert_eq!(round_trip(&Patch::default()), json!({}));
+    // Inside an event too, which serde reads through a buffer.
+    let event = round_trip(&AgentEvent::MessagePatched {
+        dialog_id: "d".into(),
+        message_id: "m".into(),
+        patch: Patch {
+            status: Some(None),
+            ..Default::default()
+        },
+    });
+    assert_eq!(event["patch"], json!({ "status": null }));
+}
+
+/// The events as test-fixtures/agent-events.json has them, which
+/// src/lib/agentRuns.test.ts feeds to the frontend: each one reads into
+/// `AgentEvent` and writes back the same, and there's one of each.
+#[test]
+fn the_shared_event_fixtures_round_trip_unchanged() {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("../../../../test-fixtures/agent-events.json")).unwrap();
+    let events = fixtures["events"].as_array().unwrap();
+    let mut seen = BTreeSet::new();
+    for json in events {
+        let event: AgentEvent = serde_json::from_value(json.clone())
+            .unwrap_or_else(|e| panic!("{json} doesn't read: {e}"));
+        assert_eq!(&serde_json::to_value(&event).unwrap(), json);
+        round_trip(&event);
+        seen.insert(json["type"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        seen,
+        tags::<AgentEvent>("type"),
+        "event types without a fixture"
+    );
+}
+
+/// K02: a run's file writes and notices say which chat they're from.
+#[test]
+fn file_writes_and_notices_name_their_chat() {
+    let notice = AgentEvent::Notice {
+        dialog_id: Some("d".into()),
+        kind: "info".into(),
+        title: "T".into(),
+        message: "M".into(),
+    };
+    assert_eq!(round_trip(&notice)["dialogId"], "d");
+    // None of the app's notices about no chat changes shape.
+    let general = round_trip(&AgentEvent::Notice {
+        dialog_id: None,
+        kind: "info".into(),
+        title: "T".into(),
+        message: "M".into(),
+    });
+    assert!(general.get("dialogId").is_none(), "{general}");
+    let written = round_trip(&AgentEvent::FileWritten {
+        dialog_id: Some("d".into()),
+        abs_path: "/p/a".into(),
+        before: None,
+        content: "x".into(),
+        reviewed: false,
+        deleted: true,
+    });
+    assert_eq!(written["dialogId"], "d");
+    assert_eq!(written["deleted"], true);
+}
+
+#[test]
+fn a_tokens_debug_doesnt_show_it() {
+    let hello = Frame::Hello {
+        protocol: PROTOCOL,
+        client: "c".into(),
+        device: "d".into(),
+        token: Secret("tok-123".into()),
+    };
+    assert!(!format!("{hello:?}").contains("tok-123"));
+    assert_eq!(serde_json::to_value(&hello).unwrap()["token"], "tok-123");
+}
+
+#[test]
+fn a_reply_reads_as_its_requests_value() {
+    assert_eq!(bool::try_from(Response::Bool(true)), Ok(true));
+    assert_eq!(<()>::try_from(Response::Done), Ok(()));
+    assert_eq!(
+        Option::<String>::try_from(Response::RunId(Some("r".into()))),
+        Ok(Some("r".into()))
+    );
+    assert_eq!(String::try_from(Response::Text("t".into())), Ok("t".into()));
+    let wrong = bool::try_from(Response::Done).unwrap_err();
+    assert_eq!(wrong.code, FailCode::Internal);
+    assert!(<()>::try_from(Response::Bool(true)).is_err());
+}

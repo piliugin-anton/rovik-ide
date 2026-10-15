@@ -603,11 +603,12 @@ pub fn start_file_watch(
                         events.iter().map(|p| PathBuf::from(&p.path)).collect();
                     // Isolated chats on this project: see it as it is now,
                     // and hear right away when their own change conflicts.
-                    for (_chat, path) in
+                    for (chat, path) in
                         rovik_core::overlay::chats::project_changed(&watch_root, &paths, false)
                     {
                         app_handle.state::<rovik_core::Core>().emit(
                             rovik_core::agent_run::events::AgentEvent::Notice {
+                                dialog_id: Some(chat),
                                 kind: "warning".into(),
                                 title: "A chat's change conflicts with the project".into(),
                                 message: format!(

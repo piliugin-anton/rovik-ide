@@ -1,0 +1,13 @@
+[package]
+name = "rovik-protocol"
+version.workspace = true
+description = "What the app and the agent daemon send each other: serde types only"
+edition.workspace = true
+
+[features]
+# A setting only the core's tests use (KindConfig::extra_tools).
+testing = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

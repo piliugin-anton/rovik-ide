@@ -3819,6 +3819,7 @@ dependencies = [
  "rand",
  "regex",
  "reqwest",
+ "rovik-protocol",
  "rusqlite",
  "serde",
  "serde_json",
@@ -3941,6 +3942,14 @@ dependencies = [
  "windows 0.62.2",
  "winfsp",
  "zip",
+]
+
+[[package]]
+name = "rovik-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

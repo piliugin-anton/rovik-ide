@@ -435,6 +435,7 @@ impl Run {
 
     fn notice(&self, kind: &str, title: &str, message: &str) {
         self.core.emit(AgentEvent::Notice {
+            dialog_id: Some(self.dialog_id.clone()),
             kind: kind.into(),
             title: title.into(),
             message: message.into(),

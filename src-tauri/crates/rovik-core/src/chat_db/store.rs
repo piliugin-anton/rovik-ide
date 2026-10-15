@@ -41,17 +41,7 @@ pub fn char_prefix(text: &str, max: usize) -> &str {
  * ---------------------------------------------------------------------------
  */
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
-    /// Provider data that must be sent back unchanged with this call, e.g.
-    /// Gemini 3's `{"google": {"thought_signature": "…"}}`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_content: Option<Value>,
-}
+pub use rovik_protocol::chat::{ChatModel, MessagePatch, ToolCall};
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -154,18 +144,6 @@ pub struct NewMessage {
     /// Complete when appended (user and tool messages, finished replies).
     #[serde(default)]
     pub finalized: bool,
-}
-
-#[derive(Deserialize, Debug, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct MessagePatch {
-    pub content: Option<String>,
-    pub tool_calls: Option<Vec<ToolCall>>,
-    pub meta: Option<Value>,
-    pub error: Option<String>,
-    pub failed: Option<bool>,
-    #[serde(default)]
-    pub finalize: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -1037,15 +1015,6 @@ pub fn tool_call_extras(
  * The chat's model and reasoning effort
  * ---------------------------------------------------------------------------
  */
-
-/// The model a chat last used, and its effort (lib/reasoning.ts).
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatModel {
-    pub provider_id: String,
-    pub model_id: String,
-    pub effort: Option<String>,
-}
 
 /// Saves the chat's model and effort. Missing chats are ignored.
 pub fn set_chat_model(conn: &Connection, dialog_id: &str, model: &ChatModel) -> DbResult<()> {

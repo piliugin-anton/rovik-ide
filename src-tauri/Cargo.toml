@@ -1,8 +1,9 @@
 [workspace]
 # The app is the root package, so the Tauri CLI and tauri.conf.json stay
 # where they are. The agent and what it uses are in crates/rovik-core,
-# without Tauri (docs/design/cloud-agent-dev-plan.md, D1).
-members = ["crates/rovik-core", "crates/rovik-headless"]
+# without Tauri, and what the app and the daemon send each other is in
+# crates/rovik-protocol (docs/design/cloud-agent-dev-plan.md, D1).
+members = ["crates/rovik-protocol", "crates/rovik-core", "crates/rovik-headless"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +12,7 @@ edition = "2021"
 
 # Dependencies the app and the core both use, at one version.
 [workspace.dependencies]
+rovik-protocol = { path = "crates/rovik-protocol" }
 rovik-core = { path = "crates/rovik-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

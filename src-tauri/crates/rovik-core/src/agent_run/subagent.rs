@@ -18,7 +18,6 @@
 //!     report may quote untrusted files or web pages.
 
 use super::{permissions, ModelProfile};
-use crate::agent::OpenAIChatOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -350,71 +349,39 @@ static SCOUT: KindSpec = KindSpec {
  * ---------------------------------------------------------------------------
  */
 
-/// A model in a kind's list: a resolved model, or "the chat's model".
-#[derive(Deserialize, Clone, Debug)]
-#[serde(untagged)]
-pub enum ModelChoice {
-    Profile(ModelProfile),
-    Chat {
-        #[allow(dead_code)]
-        chat: bool,
-    },
-}
+pub use rovik_protocol::subagents::{KindConfig, ModelChoice, SubagentConfig};
 
-#[derive(Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct KindConfig {
-    pub enabled: bool,
-    /// The kind's model, then its fallbacks, resolved by the frontend (its
-    /// model → the default subagent model → the chat's model).
-    pub models: Vec<ModelChoice>,
-    /// The reasoning effort for this kind's requests (K20).
-    pub options: Option<OpenAIChatOptions>,
-    pub max_tool_calls: Option<u32>,
-    pub max_minutes: Option<f64>,
-    /// Tests only: tools the kind gets beyond its own (a scout that writes
-    /// stands in for the writing kinds to come).
-    #[cfg(test)]
-    pub extra_tools: Vec<String>,
-}
-
-#[derive(Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct SubagentConfig {
-    /// The master switch (D14): off, no `task` tool and nothing else changes.
-    pub enabled: bool,
-    /// By kind id ("scout").
-    pub kinds: HashMap<String, KindConfig>,
-    pub max_at_once: Option<usize>,
-    pub max_per_run: Option<usize>,
-    /// The change reviewer runs on changes of at least this many lines.
-    pub review_min_lines: Option<usize>,
-    /// Plans with at least this many steps are carried out by step workers.
-    pub worker_min_steps: Option<usize>,
-    /// Plan groups run as parallel workers in child overlays (milestone F).
-    pub parallel_workers: bool,
-    /// The test writer's new tests also run on the code before the change;
-    /// one that passes there is flagged (E04).
-    pub red_check: bool,
-    /// The repair loop fixes causes in different workers' scopes, each
-    /// rated high by triage, at the same time in child overlays (R07).
-    pub parallel_repair: bool,
-    /// Tokens the subagents of one run may use, as their providers report
-    /// them; past it, no new subagent starts (S17). None: no limit.
-    pub max_run_tokens: Option<u64>,
-}
-
-impl SubagentConfig {
+/// The settings as runs use them: with their defaults, within their bounds,
+/// and for this crate's kinds.
+pub trait SubagentSettings {
     /// The kind's settings, when subagents and the kind are both on.
-    pub fn kind(&self, kind: Kind) -> Option<&KindConfig> {
+    fn kind(&self, kind: Kind) -> Option<&KindConfig>;
+    /// The kinds that are on, in a stable order.
+    fn enabled_kinds(&self) -> Vec<Kind>;
+    /// The kinds the lead may start with `task`.
+    fn lead_kinds(&self) -> Vec<Kind>;
+    fn review_min_lines(&self) -> usize;
+    fn worker_min_steps(&self) -> usize;
+    fn max_at_once(&self) -> usize;
+    fn max_per_run(&self) -> usize;
+    /// The kind's budget: its default, lowered or raised by the settings
+    /// within sane bounds.
+    fn budget(&self, kind: Kind) -> Budget;
+    /// The models a kind tries, in order: the chat's model where the
+    /// settings say so, each model once, none marked "no tools" (every kind
+    /// needs tools). Nothing usable left: the chat's model.
+    fn models(&self, kind: Kind, chat: &ModelProfile) -> Vec<ModelProfile>;
+}
+
+impl SubagentSettings for SubagentConfig {
+    fn kind(&self, kind: Kind) -> Option<&KindConfig> {
         if !self.enabled {
             return None;
         }
         self.kinds.get(kind.id()).filter(|k| k.enabled)
     }
 
-    /// The kinds that are on, in a stable order.
-    pub fn enabled_kinds(&self) -> Vec<Kind> {
+    fn enabled_kinds(&self) -> Vec<Kind> {
         Kind::ALL
             .iter()
             .copied()
@@ -422,33 +389,30 @@ impl SubagentConfig {
             .collect()
     }
 
-    /// The kinds the lead may start with `task`.
-    pub fn lead_kinds(&self) -> Vec<Kind> {
+    fn lead_kinds(&self) -> Vec<Kind> {
         self.enabled_kinds()
             .into_iter()
             .filter(|k| k.lead_starts())
             .collect()
     }
 
-    pub fn review_min_lines(&self) -> usize {
+    fn review_min_lines(&self) -> usize {
         self.review_min_lines.unwrap_or(10).min(10_000)
     }
 
-    pub fn worker_min_steps(&self) -> usize {
+    fn worker_min_steps(&self) -> usize {
         self.worker_min_steps.unwrap_or(6).clamp(1, 100)
     }
 
-    pub fn max_at_once(&self) -> usize {
+    fn max_at_once(&self) -> usize {
         self.max_at_once.unwrap_or(DEFAULT_MAX_AT_ONCE).clamp(1, 8)
     }
 
-    pub fn max_per_run(&self) -> usize {
+    fn max_per_run(&self) -> usize {
         self.max_per_run.unwrap_or(DEFAULT_MAX_PER_RUN).clamp(1, 50)
     }
 
-    /// The kind's budget: its default, lowered or raised by the settings
-    /// within sane bounds.
-    pub fn budget(&self, kind: Kind) -> Budget {
+    fn budget(&self, kind: Kind) -> Budget {
         let default = kind.spec().default_budget;
         let k = self.kinds.get(kind.id());
         let tool_calls = k
@@ -463,10 +427,7 @@ impl SubagentConfig {
         Budget { tool_calls, wall }
     }
 
-    /// The models a kind tries, in order: the chat's model where the
-    /// settings say so, each model once, none marked "no tools" (every kind
-    /// needs tools). Nothing usable left: the chat's model.
-    pub fn models(&self, kind: Kind, chat: &ModelProfile) -> Vec<ModelProfile> {
+    fn models(&self, kind: Kind, chat: &ModelProfile) -> Vec<ModelProfile> {
         let mut out: Vec<ModelProfile> = Vec::new();
         let choices = self.kinds.get(kind.id()).map(|k| k.models.as_slice());
         for choice in choices.unwrap_or_default() {

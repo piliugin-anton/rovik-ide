@@ -896,6 +896,7 @@ impl Run {
                     .and_then(|b| b.as_str())
                     == Some("user");
                 self.core.emit(AgentEvent::FileWritten {
+                    dialog_id: Some(self.dialog_id.clone()),
                     abs_path: abs.clone(),
                     before,
                     content: after.clone(),
@@ -1677,6 +1678,7 @@ impl Run {
                 // Open tabs of the plan show the new version.
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     self.core.emit(AgentEvent::FileWritten {
+                        dialog_id: Some(self.dialog_id.clone()),
                         abs_path: path.clone(),
                         before: None,
                         content: text,

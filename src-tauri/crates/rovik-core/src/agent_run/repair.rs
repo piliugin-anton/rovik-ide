@@ -1015,6 +1015,7 @@ impl Run {
         }
         for (abs, before, content, deleted) in written {
             self.core.emit(super::events::AgentEvent::FileWritten {
+                dialog_id: Some(self.dialog_id.clone()),
                 abs_path: abs,
                 before,
                 content,

@@ -13,7 +13,7 @@
 
 use super::plan::PlanStep;
 use super::run::Run;
-use super::subagent::{self, Kind, SubResult, SubStatus, SubagentConfig};
+use super::subagent::{self, Kind, SubResult, SubStatus, SubagentConfig, SubagentSettings};
 use super::subagent_run::{none_future, run_child, SubFuture};
 use super::worker::{self, WriteScope};
 use super::{log, permissions, tools};

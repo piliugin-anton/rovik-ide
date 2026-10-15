@@ -16,7 +16,7 @@ use super::causes::{self, Cause, Owner, Owners};
 use super::command_output::focus_failures;
 use super::repair::{self, Judgement, Verdict};
 use super::run::Run;
-use super::subagent::{self, Brief, Kind, SubResult, SubStatus};
+use super::subagent::{self, Brief, Kind, SubResult, SubStatus, SubagentSettings};
 use super::subagent_run::{none_future, run_child, SubFuture};
 use super::verify::{with, CheckResult};
 use super::worker::WriteScope;

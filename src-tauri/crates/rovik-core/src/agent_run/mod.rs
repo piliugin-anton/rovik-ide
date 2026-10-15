@@ -56,73 +56,17 @@ pub mod worker;
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, NewMessage};
 use crate::core::Core;
-use events::{AgentEvent, ApprovalRequest, OutMessage, QuestionsRequest};
-use permissions::Permissions;
+use events::{AgentEvent, ApprovalRequest, QuestionsRequest};
 use plan::QuestionsOutcome;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 
-/// A model, resolved by the frontend from the providers in its settings.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelProfile {
-    /// `${providerId}::${modelId}`.
-    pub id: String,
-    /// "Provider/developer/model", for the user.
-    pub label: String,
-    pub model: String,
-    pub base_url: String,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub stream: bool,
-    #[serde(default)]
-    pub vision: bool,
-    /// The model takes PDF files (the settings' PDF).
-    #[serde(default)]
-    pub pdf: bool,
-    pub context_tokens: Option<usize>,
-    #[serde(default)]
-    pub no_tools: bool,
-    pub first_byte_timeout_ms: Option<u64>,
-    /// The API route saved with the model ("chat_completions" or
-    /// "responses"), once found (`chat_request::responses`).
-    #[serde(default)]
-    pub api_route: Option<String>,
-}
-
-/// The settings runs follow, sent by the frontend at startup and whenever
-/// they change; a running run picks changes up at its next tool call.
-#[derive(Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct AgentConfig {
-    pub permissions: Permissions,
-    /// The AI reviewer, then its fallbacks (enabled models only).
-    pub approval_profiles: Vec<ModelProfile>,
-    /// Subagents (subagent.rs): off unless the user turns them on.
-    pub subagents: subagent::SubagentConfig,
-}
-
-/// The user's decision on a tool call waiting for approval.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum ApprovalDecision {
-    Allow,
-    Deny,
-    /// Some of an edit's changes accepted: the file with only those.
-    Partial {
-        content: String,
-        total: usize,
-        rejected: Vec<diff::Hunk>,
-    },
-}
+pub use rovik_protocol::agent::{
+    AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
+    RunningSubagent, StartKind, StartRequest, UserMessage,
+};
 
 /// Stop: set once, seen by the run between steps and by its current request.
 pub struct StopSignal {
@@ -166,18 +110,6 @@ struct RunControl {
     effort: watch::Sender<EffortPick>,
     /// A subagent's: what its block shows, for a page reloaded mid-run (P1.5).
     child: Option<ChildInfo>,
-}
-
-/// A running subagent as its block shows it.
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildInfo {
-    pub kind: String,
-    pub goal: String,
-    pub model: String,
-    /// Milliseconds since the epoch.
-    pub started_at: u64,
-    pub tool_calls: u32,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -617,69 +549,8 @@ impl AgentState {
  * ---------------------------------------------------------------------------
  */
 
-/// How a run starts.
-#[derive(Deserialize, Debug)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum StartKind {
-    /// A new message from the user (stored here, first).
-    Send { message: UserMessage },
-    /// Another try after a failed turn.
-    Retry,
-    /// Continue an interrupted reply.
-    ContinueReply,
-    /// Continue a run that paused (a checkpoint or a loop check).
-    ContinueRun,
-    /// Run the checks of a verification record that waited for approval.
-    RunChecks { record_id: String },
-    /// A chat whose last tool calls never ran (the app closed meanwhile).
-    Resume,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct UserMessage {
-    pub id: String,
-    pub content: String,
-    #[serde(default)]
-    pub meta: Option<serde_json::Value>,
-    /// Images and PDFs attached to the message (chat_store_attachment ids),
-    /// in order; its meta names the PDFs (`pdfs`).
-    #[serde(default)]
-    pub attachments: Vec<String>,
-}
-
 /// Images and PDFs one message can carry at most.
 const MAX_MESSAGE_ATTACHMENTS: usize = 20;
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct StartRequest {
-    pub dialog_id: String,
-    pub start: StartKind,
-    pub profile: ModelProfile,
-    /// The reasoning effort, in the forms the provider takes (src/lib/reasoning.ts).
-    pub options: Option<OpenAIChatOptions>,
-    /// The mode selected in the chat, for a run whose message didn't record one.
-    #[serde(default)]
-    pub mode: Option<String>,
-    /// "trimming" or "clm".
-    #[serde(default)]
-    pub context_mode: Option<String>,
-    pub root: Option<String>,
-    /// The request's user message as sent (with editor context), when it
-    /// isn't the stored one.
-    pub current_user_content: Option<String>,
-    /// Today, as the user's clock has it ("2026-10-04"), for plan file names.
-    pub local_date: Option<String>,
-    pub config: Option<AgentConfig>,
-    /// Work in the chat's overlay (src/overlay). `None`: the app's setting.
-    #[serde(default)]
-    pub isolate: Option<bool>,
-}
 
 /// The settings runs follow, as the frontend sent them.
 pub fn agent_configure(core: &Core, config: AgentConfig) {
@@ -769,7 +640,7 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         {
             Ok(seqs) => core.emit(AgentEvent::MessagesAdded {
                 dialog_id: dialog_id.clone(),
-                messages: vec![OutMessage::from_new(&dialog_id, seqs[0], &new, false)],
+                messages: vec![events::out_message(&dialog_id, seqs[0], &new, false)],
             }),
             Err(e) => {
                 state.unregister(&dialog_id, &run_id);
@@ -885,33 +756,6 @@ pub fn agent_answer_questions(
 ) -> bool {
     core.agents
         .answer_questions(core, &dialog_id, &tool_call_id, outcome)
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunningRun {
-    dialog_id: String,
-    run_id: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunningSubagent {
-    dialog_id: String,
-    parent_dialog_id: String,
-    parent_call_id: String,
-    /// Its kind, goal, model, start and tool calls (once it's launched).
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    info: Option<ChildInfo>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentStatus {
-    runs: Vec<RunningRun>,
-    subagents: Vec<RunningSubagent>,
-    approvals: Vec<ApprovalRequest>,
-    questions: Vec<QuestionsRequest>,
 }
 
 /// What's going on right now, for a frontend that (re)starts mid-run.

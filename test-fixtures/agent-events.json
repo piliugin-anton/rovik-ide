@@ -1,0 +1,188 @@
+{
+  "_comment": "Shared by src/lib/agentRuns.test.ts and src-tauri/crates/rovik-protocol/src/tests.rs: one agent-event of each type, as the backend sends it, in an order the frontend can follow. The backend reads each into AgentEvent and writes it back unchanged; the frontend's handler puts each where it belongs.",
+  "events": [
+    { "type": "runStarted", "dialogId": "fx-chat", "runId": "fx-run" },
+    {
+      "type": "messagesAdded",
+      "dialogId": "fx-chat",
+      "messages": [
+        {
+          "id": "fx-user",
+          "dialogId": "fx-chat",
+          "seq": 1024,
+          "role": "user",
+          "content": "Rename the helper.",
+          "bodyExternal": false,
+          "bodyBytes": 18,
+          "toolCalls": null,
+          "toolCallId": null,
+          "meta": { "pdfs": [{ "id": "0f1e2d", "name": "spec.pdf", "pages": 3 }] },
+          "error": null,
+          "failed": false,
+          "finalized": true,
+          "attachments": ["0f1e2d"],
+          "createdAt": 1760000000000
+        },
+        {
+          "id": "fx-reply",
+          "dialogId": "fx-chat",
+          "seq": 2048,
+          "role": "assistant",
+          "content": "",
+          "bodyExternal": false,
+          "bodyBytes": 0,
+          "toolCalls": [
+            {
+              "id": "fx-call",
+              "name": "edit",
+              "arguments": "{\"path\":\"src/a.ts\"}",
+              "extraContent": { "google": { "thought_signature": "sig" } }
+            }
+          ],
+          "toolCallId": null,
+          "meta": null,
+          "error": null,
+          "failed": false,
+          "finalized": false,
+          "attachments": [],
+          "createdAt": 1760000000500,
+          "pending": true
+        }
+      ]
+    },
+    {
+      "type": "messagePatched",
+      "dialogId": "fx-chat",
+      "messageId": "fx-reply",
+      "patch": {
+        "content": "Renaming",
+        "status": { "text": "Waiting for the model", "until": 1760000009000 }
+      }
+    },
+    {
+      "type": "messagePatched",
+      "dialogId": "fx-chat",
+      "messageId": "fx-reply",
+      "patch": { "content": "Renaming it now.", "finalized": true, "status": null }
+    },
+    {
+      "type": "toolNote",
+      "dialogId": "fx-chat",
+      "toolCallId": "fx-call",
+      "note": "Reviewing with Test/m"
+    },
+    {
+      "type": "approvalRequested",
+      "request": {
+        "toolCallId": "fx-call",
+        "dialogId": "fx-chat",
+        "toolName": "edit",
+        "summary": "Edit src/a.ts",
+        "note": "The AI reviewer couldn't decide.",
+        "edit": {
+          "absPath": "/fx/src/a.ts",
+          "relPath": "src/a.ts",
+          "current": "export const helper = 1;\n",
+          "proposed": "export const renamed = 1;\n"
+        }
+      }
+    },
+    { "type": "approvalSettled", "dialogId": "fx-chat", "toolCallId": "fx-call" },
+    { "type": "toolNote", "dialogId": "fx-chat", "toolCallId": "fx-call", "note": null },
+    {
+      "type": "fileWritten",
+      "dialogId": "fx-chat",
+      "absPath": "/fx/src/a.ts",
+      "before": "export const helper = 1;\n",
+      "content": "export const renamed = 1;\n",
+      "reviewed": true
+    },
+    {
+      "type": "questionsAsked",
+      "request": {
+        "toolCallId": "fx-ask",
+        "dialogId": "fx-chat",
+        "questions": [
+          {
+            "question": "Keep the old name as an alias?",
+            "reason": "Other packages import it.",
+            "options": [
+              { "label": "Yes", "description": "Export both names.", "recommended": true },
+              { "label": "No" }
+            ],
+            "allowCustom": true
+          }
+        ]
+      }
+    },
+    { "type": "questionsSettled", "dialogId": "fx-chat", "toolCallId": "fx-ask" },
+    {
+      "type": "checklist",
+      "dialogId": "fx-chat",
+      "items": [
+        { "title": "Rename the helper", "status": "done" },
+        { "title": "Update the callers", "status": "in_progress" }
+      ]
+    },
+    {
+      "type": "contextUpdated",
+      "dialogId": "fx-chat",
+      "status": {
+        "mode": "clm",
+        "available": true,
+        "problem": null,
+        "path": "context.md",
+        "realPath": "/fx/mount/context.md",
+        "revision": 4,
+        "revisions": 4,
+        "edits": 1,
+        "projected": true,
+        "tokens": 1200,
+        "budget": 32000,
+        "compliance": null
+      }
+    },
+    {
+      "type": "subagentStarted",
+      "dialogId": "fx-chat",
+      "toolCallId": "fx-task",
+      "childDialogId": "fx-child",
+      "kind": "scout",
+      "model": "Test/m",
+      "goal": "Find the callers."
+    },
+    {
+      "type": "subagentProgress",
+      "dialogId": "fx-chat",
+      "toolCallId": "fx-task",
+      "toolCalls": 3,
+      "currentTool": "grep",
+      "model": "Test/m"
+    },
+    {
+      "type": "subagentEnded",
+      "dialogId": "fx-chat",
+      "toolCallId": "fx-task",
+      "childDialogId": "fx-child",
+      "status": "done"
+    },
+    {
+      "type": "reasoningLearned",
+      "profileId": "fx::m",
+      "accepted": ["reasoning_effort"],
+      "rejected": ["thinking"],
+      "unresolved": [],
+      "reasons": true
+    },
+    { "type": "apiRouteLearned", "profileId": "fx::m", "route": "responses" },
+    {
+      "type": "notice",
+      "dialogId": "fx-chat",
+      "kind": "warning",
+      "title": "This chat isn't isolated",
+      "message": "It works in the project folder directly."
+    },
+    { "type": "userMessageSettled", "dialogId": "fx-chat", "messageId": "fx-user", "ok": false },
+    { "type": "runEnded", "dialogId": "fx-chat", "runId": "fx-run", "outcome": "done" }
+  ]
+}
