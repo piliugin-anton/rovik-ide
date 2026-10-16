@@ -1247,7 +1247,7 @@ impl Run {
     /// goes to and gives no reason, so no summary is asked of the model,
     /// and the chat shows where it went, not a stuck agent (K29).
     /// `ContinueRun` goes on counting from it.
-    async fn pause_for(&mut self, request: PauseRequest) -> Result<String, String> {
+    pub(super) async fn pause_for(&mut self, request: PauseRequest) -> Result<String, String> {
         let pause = super::guard::PauseInfo {
             kind: request.kind,
             tool_calls: self.guard.tool_calls,

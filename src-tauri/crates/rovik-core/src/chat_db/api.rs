@@ -3,9 +3,7 @@
 //! main thread.
 
 use super::search::{self, SearchHit};
-use super::store::{
-    self, Cursor, DialogPage, DialogSummary, MessagePage, MessagePatch, NewDialog, NewMessage,
-};
+use super::store::{self, Cursor, DialogPage, DialogSummary, MessagePage, MessagePatch, NewDialog};
 use super::{attachments, projects, DbState};
 use crate::core::Core;
 
@@ -153,15 +151,6 @@ pub async fn chat_get_message_body(db: &DbState, message_id: String) -> Result<S
 
 pub async fn chat_create_dialog(db: &DbState, dialog: NewDialog) -> Result<(), String> {
     db.write(move |c| store::create_dialog(c, &dialog)).await
-}
-
-pub async fn chat_append_messages(
-    db: &DbState,
-    dialog_id: String,
-    messages: Vec<NewMessage>,
-) -> Result<Vec<i64>, String> {
-    db.write(move |c| store::append_messages(c, &dialog_id, &messages))
-        .await
 }
 
 pub async fn chat_update_message(

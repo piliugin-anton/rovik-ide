@@ -7,7 +7,7 @@ use rovik_client::Remote;
 use rovik_core::agent_run::StartRequest;
 use rovik_core::chat_db::search::SearchHit;
 use rovik_core::chat_db::store::{
-    ChatModel, Cursor, DialogPage, DialogSummary, MessagePage, MessagePatch, NewDialog, NewMessage,
+    ChatModel, Cursor, DialogPage, DialogSummary, MessagePage, MessagePatch, NewDialog,
 };
 use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
@@ -172,15 +172,6 @@ pub async fn chat_get_message_body(
 #[tauri::command]
 pub async fn chat_create_dialog(core: State<'_, Core>, dialog: NewDialog) -> Result<(), String> {
     api::chat_create_dialog(&core.db, dialog).await
-}
-
-#[tauri::command]
-pub async fn chat_append_messages(
-    core: State<'_, Core>,
-    dialog_id: String,
-    messages: Vec<NewMessage>,
-) -> Result<Vec<i64>, String> {
-    api::chat_append_messages(&core.db, dialog_id, messages).await
 }
 
 #[tauri::command]

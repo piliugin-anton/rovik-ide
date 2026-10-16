@@ -354,6 +354,19 @@ fn child_from_row(r: &Row) -> rusqlite::Result<ChildDialog> {
 
 const CHILD_COLUMNS: &str = "id, parent_id, parent_call_id, kind, created_at";
 
+/// The chat as a subagent's, with its title, when it is one.
+pub fn child_dialog(conn: &Connection, id: &str) -> DbResult<Option<(ChildDialog, String)>> {
+    conn.query_row(
+        &format!(
+            "SELECT {CHILD_COLUMNS}, title FROM dialogs WHERE id = ?1 AND parent_id IS NOT NULL"
+        ),
+        params![id],
+        |r| Ok((child_from_row(r)?, r.get::<_, String>(5)?)),
+    )
+    .optional()
+    .map_err(err)
+}
+
 /// The subagent chat answering a parent's tool call, if there is one.
 pub fn child_for_call(
     conn: &Connection,
@@ -775,9 +788,19 @@ pub fn append_numbered(
         if here.is_some() {
             continue;
         }
+        // A local row at the owner's number steps aside, to a negative
+        // number no row has: one stepped aside earlier may sit at `-seq`
+        // already, and two there would break the chat's numbering.
+        let parked: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MIN(seq), 0) FROM messages WHERE dialog_id = ?1 AND seq < 0",
+                params![dialog_id],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
         tx.execute(
-            "UPDATE messages SET seq = -seq WHERE dialog_id = ?1 AND seq = ?2 AND seq > 0",
-            params![dialog_id, seq],
+            "UPDATE messages SET seq = ?3 WHERE dialog_id = ?1 AND seq = ?2 AND seq > 0",
+            params![dialog_id, seq, parked.min(0) - SEQ_STEP],
         )
         .map_err(err)?;
         insert_message(&tx, dialog_id, *seq, m)?;
@@ -796,9 +819,11 @@ pub fn append_messages(
     messages: &[NewMessage],
 ) -> DbResult<Vec<i64>> {
     let tx = conn.transaction().map_err(err)?;
+    // Rows that stepped aside (`append_numbered`) sit at negative numbers:
+    // the chat goes on from its last real one.
     let mut next: i64 = tx
         .query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE dialog_id = ?1",
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE dialog_id = ?1 AND seq > 0",
             params![dialog_id],
             |r| r.get(0),
         )

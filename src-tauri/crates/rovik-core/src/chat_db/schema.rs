@@ -350,8 +350,23 @@ pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The schema this build writes and reads.
+pub const VERSION: i64 = 10;
+
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    // A newer Rovik wrote this database: what it added this build doesn't
+    // know, and could write around (a chat's location, say). It stays as
+    // it is.
+    if version > VERSION {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some(format!(
+                "The chat database was written by a newer version of Rovik (schema {version}, \
+                 this one reads {VERSION}): update Rovik to open it."
+            )),
+        ));
+    }
     if version < 1 {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA_V1)?;
@@ -409,7 +424,7 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     if version < 10 {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA_V10)?;
-        tx.pragma_update(None, "user_version", 10)?;
+        tx.pragma_update(None, "user_version", VERSION)?;
         tx.commit()?;
     }
     Ok(())

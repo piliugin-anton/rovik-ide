@@ -67,7 +67,7 @@ impl ProviderKeys {
             };
             match self.store.get(&name(&id)) {
                 Ok(key) => {
-                    provider.insert("apiKey".into(), Value::String(key.0));
+                    provider.insert("apiKey".into(), Value::String(key.0.clone()));
                 }
                 Err(e) => {
                     eprintln!("ai settings: the API key of {id} couldn't be read: {e}");
@@ -301,7 +301,7 @@ mod tests {
     }
 
     fn key_of(setup: &Setup, provider: &str) -> Result<String, SecretError> {
-        setup.store.get(&name(provider)).map(|s| s.0)
+        setup.store.get(&name(provider)).map(|s| s.0.clone())
     }
 
     #[test]

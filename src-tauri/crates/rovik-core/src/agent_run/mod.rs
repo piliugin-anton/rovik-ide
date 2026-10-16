@@ -120,8 +120,15 @@ impl PauseSignal {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Asks for the pause. A move's pause stays through a drain: the run
+    /// ends at the same point either way, and the move, which waits for
+    /// a pause of its kind, goes on where the chat goes.
     fn set(&self, request: PauseRequest) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
+        let mut asked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if asked.as_ref().is_some_and(|a| a.kind == MOVE) && request.kind != MOVE {
+            return;
+        }
+        *asked = Some(request);
     }
 }
 
@@ -560,62 +567,70 @@ impl AgentState {
     }
 
     fn stop_in(&self, core: &Core, dialog_id: &str, itself: bool) -> bool {
-        let mut inner = self.lock();
-        let own = if itself {
-            inner
+        // What waits is taken under the lock, and answered and told of
+        // once it's let go: a sink that asks the state back would
+        // otherwise wait on it.
+        let (approvals, questions) = {
+            let mut inner = self.lock();
+            let own = if itself {
+                inner
+                    .runs
+                    .get(dialog_id)
+                    .map(|run| run.stop.set())
+                    .is_some()
+            } else {
+                false
+            };
+            let children: Vec<String> = inner
                 .runs
-                .get(dialog_id)
-                .map(|run| run.stop.set())
-                .is_some()
-        } else {
-            false
+                .iter()
+                .filter(|(_, r)| r.parent.as_deref() == Some(dialog_id))
+                .map(|(d, r)| {
+                    r.stop.set();
+                    d.clone()
+                })
+                .collect();
+            // A lead that isn't registered (its run ended in an error) still
+            // stops the subagents it left.
+            if !own && children.is_empty() {
+                return false;
+            }
+            let stopping = |d: &String| (itself && d == dialog_id) || children.contains(d);
+            let approvals: Vec<WaitKey> = inner
+                .approvals
+                .keys()
+                .filter(|(d, _)| stopping(d))
+                .cloned()
+                .collect();
+            let approvals: Vec<_> = approvals
+                .into_iter()
+                .filter_map(|key| inner.approvals.remove(&key).map(|w| (key, w)))
+                .collect();
+            let questions: Vec<WaitKey> = inner
+                .questions
+                .keys()
+                .filter(|(d, _)| stopping(d))
+                .cloned()
+                .collect();
+            let questions: Vec<_> = questions
+                .into_iter()
+                .filter_map(|key| inner.questions.remove(&key).map(|w| (key, w)))
+                .collect();
+            (approvals, questions)
         };
-        let children: Vec<String> = inner
-            .runs
-            .iter()
-            .filter(|(_, r)| r.parent.as_deref() == Some(dialog_id))
-            .map(|(d, r)| {
-                r.stop.set();
-                d.clone()
-            })
-            .collect();
-        // A lead that isn't registered (its run ended in an error) still
-        // stops the subagents it left.
-        if !own && children.is_empty() {
-            return false;
+        for ((dialog_id, tool_call_id), w) in approvals {
+            let _ = w.reply.send(ApprovalDecision::Deny);
+            core.emit(AgentEvent::ApprovalSettled {
+                dialog_id,
+                tool_call_id,
+            });
         }
-        let stopping = |d: &String| (itself && d == dialog_id) || children.contains(d);
-        let approvals: Vec<WaitKey> = inner
-            .approvals
-            .keys()
-            .filter(|(d, _)| stopping(d))
-            .cloned()
-            .collect();
-        for key in approvals {
-            if let Some(w) = inner.approvals.remove(&key) {
-                let _ = w.reply.send(ApprovalDecision::Deny);
-                let (dialog_id, tool_call_id) = key;
-                core.emit(AgentEvent::ApprovalSettled {
-                    dialog_id,
-                    tool_call_id,
-                });
-            }
-        }
-        let questions: Vec<WaitKey> = inner
-            .questions
-            .keys()
-            .filter(|(d, _)| stopping(d))
-            .cloned()
-            .collect();
-        for key in questions {
-            if let Some(w) = inner.questions.remove(&key) {
-                let _ = w.reply.send(QuestionsOutcome::Stopped { stopped: true });
-                let (dialog_id, tool_call_id) = key;
-                core.emit(AgentEvent::QuestionsSettled {
-                    dialog_id,
-                    tool_call_id,
-                });
-            }
+        for ((dialog_id, tool_call_id), w) in questions {
+            let _ = w.reply.send(QuestionsOutcome::Stopped { stopped: true });
+            core.emit(AgentEvent::QuestionsSettled {
+                dialog_id,
+                tool_call_id,
+            });
         }
         true
     }
@@ -949,6 +964,13 @@ pub async fn agent_pause(core: &Core, dialog_id: String, host: String) -> Result
         host: Some(host).filter(|h| !h.is_empty()),
     };
     if !core.agents.pause(&dialog_id, request) {
+        // No run of its own, but subagents a run that ended left behind may
+        // still be writing its rows: they end before the move takes them
+        // (K21), as Stop ends them.
+        if core.agents.is_running(&dialog_id) {
+            core.agents.stop_children(core, &dialog_id);
+            ended(core, &dialog_id).await;
+        }
         return Ok(false);
     }
     ended(core, &dialog_id).await;
@@ -1107,17 +1129,23 @@ pub async fn chat_dismiss_checklist(
     dialog_id: String,
     message_id: String,
 ) -> Result<Option<plan::CurrentChecklist>, String> {
-    let id = message_id.clone();
+    let (id, chat) = (message_id.clone(), dialog_id.clone());
     let meta = core
         .db
         .write(move |c| {
+            // The chat's own message: the request is allowed by the chat.
             let current: Option<String> = c
                 .query_row(
-                    "SELECT meta FROM messages WHERE id = ?1",
-                    rusqlite::params![id],
+                    "SELECT meta FROM messages WHERE id = ?1 AND dialog_id = ?2",
+                    rusqlite::params![id, chat],
                     |r| r.get(0),
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => {
+                        "The message isn't in this chat.".to_string()
+                    }
+                    e => e.to_string(),
+                })?;
             let mut meta = current
                 .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
                 .filter(|m| m.is_object())
