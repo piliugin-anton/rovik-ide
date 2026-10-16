@@ -251,7 +251,13 @@ if (!window.__e2e) {
     push('rejection', text(e.reason));
   });
   const ce = console.error.bind(console);
-  console.error = (...a) => { push('console.error', a.map(text).join(' ')); ce(...a); };
+  console.error = (...a) => {
+    // Monaco on WebKit keeps a clipboard write pending on every click and
+    // key, which synthetic input (the bridge) isn't allowed: its log of it.
+    const clipboard = a[0] === '%c  ERR' && a.some((x) => x instanceof Error && x.name === 'NotAllowedError');
+    if (!clipboard) push('console.error', a.map(text).join(' '));
+    ce(...a);
+  };
   window.alert = (m) => { window.__e2e.alerts.push(String(m)); push('alert', m); };
   const seen = new WeakSet();
   new MutationObserver(() => {
@@ -333,8 +339,9 @@ async function click(target) {
       }
       return await d.click(el);
     } catch (e) {
-      if (typeof target !== 'string' || attempt >= 3 || !/stale/i.test(String(e?.message))) throw e;
-      log(`re-rendered before the click, finding ${target} again`);
+      const again = /stale|intercepted/i.test(String(e?.message));
+      if (typeof target !== 'string' || attempt >= 3 || !again) throw e;
+      log(`${e.message.split('\n')[0]}: finding ${target} again`);
       await sleep(200);
     }
   }
@@ -513,6 +520,13 @@ async function composer(text) {
 }
 
 async function send(text) {
+  // Enter sends only once the chat's run before has ended (checks
+  // included): otherwise the text stays, and the next message joins it.
+  await waitFor(
+    async () => !(await d.exists('.chat-send-button.stop')),
+    'the run before to end',
+    60_000
+  );
   await composer(text);
   await keys(Keys.ENTER);
 }

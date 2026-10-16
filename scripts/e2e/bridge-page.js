@@ -52,18 +52,27 @@
   }
 
   /**
-   * Where to press: the middle of the element's visible part. Scrolled to
-   * only when none of it shows: Monaco's line layer is taller than the
-   * window, and scrolling it moves Monaco's DOM behind its back (the click
-   * then lands on another line, or under the sticky header).
+   * Where to press: the middle of the element's visible part, what the
+   * window and its scrolled containers show of it. Scrolled to only when
+   * none of it shows: Monaco's line layer is taller than the window, and
+   * scrolling it moves Monaco's DOM behind its back (the click then lands
+   * on another line, or under the sticky header). A settings page's last
+   * item scrolled out of the dialog's view, though inside the window, was
+   * pressed where it would have been, on whatever was there.
    */
   function center(el) {
     const visible = () => {
       const r = el.getBoundingClientRect();
-      const left = Math.max(r.left, 0);
-      const right = Math.min(r.right, innerWidth);
-      const top = Math.max(r.top, 0);
-      const bottom = Math.min(r.bottom, innerHeight);
+      let [left, top, right, bottom] = [r.left, r.top, r.right, r.bottom];
+      for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+        const style = getComputedStyle(p);
+        if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+        const c = p.getBoundingClientRect();
+        [left, top] = [Math.max(left, c.left), Math.max(top, c.top)];
+        [right, bottom] = [Math.min(right, c.right), Math.min(bottom, c.bottom)];
+      }
+      [left, top] = [Math.max(left, 0), Math.max(top, 0)];
+      [right, bottom] = [Math.min(right, innerWidth), Math.min(bottom, innerHeight)];
       return right - left >= 1 && bottom - top >= 1
         ? { x: (left + right) / 2, y: (top + bottom) / 2 }
         : null;

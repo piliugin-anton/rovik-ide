@@ -189,8 +189,22 @@ export class BridgeDriver {
     return (await this.findAll(css).catch(() => [])).length > 0;
   }
 
+  /**
+   * A click where the element is. One that landed on something else
+   * (covering it, or drawn where it was scrolled away from) is an error, as
+   * WebDriver's "element click intercepted": not a click that did nothing.
+   * Only for a click, as there: a pointer action (a right or double click, a
+   * click with a key held) goes to whatever is there, Monaco's own layers
+   * over the text included.
+   */
+  async pointAt(el, opts, { strict = false } = {}) {
+    const covered = await this.call('click', { el, opts });
+    if (covered && strict) throw new Error(`element click intercepted: it landed on ${covered}`);
+    return null;
+  }
+
   async click(el) {
-    return this.call('click', { el });
+    return this.pointAt(el, undefined, { strict: true });
   }
 
   async clickCss(css, opts) {
@@ -236,11 +250,11 @@ export class BridgeDriver {
   }
 
   async rightClick(el) {
-    return this.call('click', { el, opts: { button: 2 } });
+    return this.pointAt(el, { button: 2 });
   }
 
   async doubleClick(el) {
-    return this.call('click', { el, opts: { count: 2 } });
+    return this.pointAt(el, { count: 2 });
   }
 
   async modClick(el, mod) {
@@ -250,7 +264,7 @@ export class BridgeDriver {
         : mod === Keys.SHIFT
           ? { shiftKey: true }
           : { ctrlKey: true };
-    return this.call('click', { el, opts: { mods } });
+    return this.pointAt(el, { mods });
   }
 
   async drag(from, to) {
