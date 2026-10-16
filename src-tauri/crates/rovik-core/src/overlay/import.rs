@@ -20,6 +20,11 @@
 //!   project's changes to the old place into it (land.rs).
 //! - **A subfolder of a repository** (K31) takes the changes under it, from
 //!   its own root. The others are listed and never land.
+//! - **Names that differ only in case** are one file on a file system that
+//!   doesn't tell them apart (Windows', and macOS's unless formatted
+//!   otherwise), as they aren't on the server's. A path the result writes
+//!   that would be one file here with another stays on the server, listed
+//!   (R04). A rename of case alone lands, as its deletion goes first.
 //! - **An import replaces the chat's store**, unless the user is resolving
 //!   conflicts in it. The new store is built beside it and swapped in.
 //! - **Landing by itself** follows landing.rs's rules, but lands a result
@@ -35,7 +40,7 @@ use git2::build::CheckoutBuilder;
 use git2::{DiffFile, DiffFindOptions, FileMode, Oid, Repository, Tree};
 use rovik_protocol::work::ChatResult;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 
@@ -59,6 +64,10 @@ pub struct Imported {
     /// such a merge lands by itself (`ChatResult::unchecked`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unchecked: bool,
+    /// The paths it wrote that this computer's file system would take for
+    /// another's, differing only in case: listed, never landed (R04).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub case_clashes: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -97,6 +106,18 @@ pub fn import(
     subpath: &str,
     result: &ChatResult,
 ) -> Result<Imported, ImportError> {
+    import_as(repo, project, subpath, result, case_insensitive(project))
+}
+
+/// `import`, on a file system that tells names apart by case or doesn't
+/// (`fold`).
+fn import_as(
+    repo: &Repository,
+    project: &Path,
+    subpath: &str,
+    result: &ChatResult,
+    fold: bool,
+) -> Result<Imported, ImportError> {
     let dialog_id = result.dialog_id.as_str();
     let store = chats::store_dir(dialog_id)
         .ok_or_else(|| ImportError::Failed("the app's data folder isn't known yet".into()))?;
@@ -110,7 +131,9 @@ pub fn import(
         .unwrap_or_else(|_| project.to_path_buf());
     let staging = store.with_file_name(format!(".import-{dialog_id}"));
     remove(&staging)?;
-    let built = build(repo, &project, subpath, result, unchecked, &store, &staging);
+    let built = build(
+        repo, &project, subpath, result, unchecked, fold, &store, &staging,
+    );
     let swapped = built
         .map_err(ImportError::Failed)
         .and_then(|(changes, imported)| {
@@ -196,13 +219,16 @@ struct Entry {
 
 /// Builds the store in `staging`, its files named as they will be once it
 /// is moved to `store`: its changes, in the order to replay them, and what
-/// it was imported from.
+/// it was imported from. `fold`: the project's file system doesn't tell
+/// names apart by case.
+#[allow(clippy::too_many_arguments)]
 fn build(
     repo: &Repository,
     project: &Path,
     subpath: &str,
     result: Oid,
     unchecked: bool,
+    fold: bool,
     store: &Path,
     staging: &Path,
 ) -> Result<(Vec<OverlayChange>, Imported), String> {
@@ -262,6 +288,11 @@ fn build(
             entry.from = entry.from.take().or(from);
         }
     }
+    let case_clashes = if fold {
+        hold_back_case_clashes(project, &mut entries)
+    } else {
+        Vec::new()
+    };
 
     let out = staging.join("checkout");
     for dir in ["upper", "base", "checkout/base", "checkout/result"] {
@@ -359,6 +390,7 @@ fn build(
         changed: entries.values().map(|e| e.tree_path.clone()).collect(),
         outside: outside.into_iter().collect(),
         unchecked,
+        case_clashes,
     };
     fs::write(
         staging.join("project.txt"),
@@ -372,6 +404,110 @@ fn build(
     let changes: Vec<OverlayChange> = deletes.into_iter().chain(writes.into_values()).collect();
     write_manifest(staging, next_file, changes.clone()).map_err(io)?;
     Ok((changes, imported))
+}
+
+/// What a file system that doesn't tell names apart by case can't hold of
+/// the result: the paths it writes that would be one file here with
+/// another, taken out of `entries`, by their paths in the trees. The other
+/// is a path it writes too, or the project's file, unless the result
+/// deletes that, which frees its place. Of the paths it writes, the one
+/// spelled as the project's file stays. A moved file held back stays where
+/// it was: its deletion there is held back with it.
+fn hold_back_case_clashes(project: &Path, entries: &mut BTreeMap<String, Entry>) -> Vec<String> {
+    let mut alike: BTreeMap<String, Vec<&String>> = BTreeMap::new();
+    for rel in entries.keys() {
+        alike.entry(rel.to_lowercase()).or_default().push(rel);
+    }
+    let name = |rel: &str| rel.rsplit('/').next().unwrap_or(rel).to_string();
+    // The name of the project's entry where `rel` would be but for case,
+    // spelled as it is here: each folder listed once.
+    let mut listed: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut name_here = |rel: &str| {
+        let (folder, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+        let names = listed
+            .entry(folder.to_lowercase())
+            .or_insert_with(|| names_by_case(&project.join(folder)));
+        names.get(&name.to_lowercase()).cloned()
+    };
+    let mut held = Vec::new();
+    for rels in alike.values() {
+        let written: Vec<&String> = rels
+            .iter()
+            .copied()
+            .filter(|rel| entries[*rel].new.is_some())
+            .collect();
+        let deletes = rels.len() > written.len();
+        let here = if deletes { None } else { name_here(rels[0]) };
+        let stays = match &here {
+            Some(here) => written.iter().find(|rel| name(rel) == *here),
+            None if written.len() == 1 => written.first(),
+            None => None,
+        };
+        let clashing = written.iter().filter(|rel| Some(*rel) != stays);
+        held.extend(clashing.map(|rel| rel.to_string()));
+    }
+    let mut clashes = Vec::new();
+    for rel in held {
+        let Some(entry) = entries.remove(&rel) else {
+            continue;
+        };
+        if let Some((from, _)) = &entry.from {
+            if entries.get(from).is_some_and(|e| e.new.is_none()) {
+                entries.remove(from);
+            }
+        }
+        clashes.push(entry.tree_path);
+    }
+    clashes
+}
+
+/// The names in `folder`, each by its lowercase: none if it isn't there.
+fn names_by_case(folder: &Path) -> HashMap<String, String> {
+    let entries = fs::read_dir(folder).into_iter().flatten().flatten();
+    let names = entries.filter_map(|e| e.file_name().into_string().ok());
+    names.map(|name| (name.to_lowercase(), name)).collect()
+}
+
+/// Whether the project's file system takes names that differ only in case
+/// for one: Windows' does, and macOS's unless it was formatted otherwise.
+/// An entry's name with the case of its letters turned names the same
+/// file there, its own entries' first, as the project may be mounted.
+pub fn case_insensitive(project: &Path) -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    let entries = fs::read_dir(project).into_iter().flatten().flatten();
+    let paths = entries.map(|e| e.path()).take(64);
+    for path in paths.chain([project.to_path_buf()]) {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let turned: String = name
+            .chars()
+            .map(|c| match c.is_ascii_lowercase() {
+                true => c.to_ascii_uppercase(),
+                false => c.to_ascii_lowercase(),
+            })
+            .collect();
+        if turned != name {
+            return same_file(&path, &path.with_file_name(turned));
+        }
+    }
+    false
+}
+
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_file(_a: &Path, b: &Path) -> bool {
+    fs::symlink_metadata(b).is_ok()
 }
 
 /// Puts the built store in place of the chat's store, unless the user

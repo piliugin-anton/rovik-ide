@@ -471,6 +471,14 @@ impl Remote {
                 project_profile::load_project_settings(&self.core.paths.config_dir, &root);
             request.project_settings = Some(settings).filter(|s| !s.is_null());
         }
+        // A chat of a project runs in its worktree there, which the daemon
+        // names: no local path goes to it, a drive letter least of all (R04).
+        // A daemon without projects runs in the folder the start names.
+        let id = request.dialog_id.clone();
+        let project = self.core.db.read(move |c| store::dialog_project(c, &id));
+        if project.await.map_err(internal)?.is_some() && takes_projects(&client) {
+            request.root = None;
+        }
         if let Some(config) = &mut request.config {
             self.policy(&host).apply(config);
         }
@@ -917,13 +925,10 @@ fn takes_projects(client: &Client) -> bool {
 }
 
 /// The editor context names files from the project's root, not by a local
-/// path that means nothing on the server (K08).
+/// path that means nothing on the server (K08), and with `/` between their
+/// folders, as the server's do (R04).
 fn relative_paths(request: &mut StartRequest, root: &str) {
-    let relative = |text: &str| -> String {
-        let root = root.trim_end_matches(['/', '\\']);
-        text.replace(&format!("{root}/"), "")
-            .replace(&format!("{root}\\"), "")
-    };
+    let relative = |text: &str| relative_to(text, root);
     if let Some(text) = &mut request.current_user_content {
         *text = relative(text);
     }
@@ -933,6 +938,39 @@ fn relative_paths(request: &mut StartRequest, root: &str) {
             *text = relative(text);
         }
     }
+}
+
+/// `text` with each path under `root` written from it: `root` and the
+/// separator after it go, and the path's own separators are `/` up to the
+/// space or bracket that ends it. `/` and `\` are one in `root`, as a
+/// Windows path may have either.
+fn relative_to(text: &str, root: &str) -> String {
+    let slashed = |s: &str| s.replace('\\', "/");
+    let root = slashed(root.trim_end_matches(['/', '\\']));
+    if root.is_empty() {
+        return text.to_string();
+    }
+    // Both separators are a byte: the offsets in one are the other's.
+    let haystack = slashed(text);
+    let mut out = String::with_capacity(text.len());
+    let mut from = 0;
+    while let Some(found) = haystack[from..].find(&root) {
+        let (at, after) = (from + found, from + found + root.len());
+        if !haystack[after..].starts_with('/') {
+            out.push_str(&text[from..after]);
+            from = after;
+            continue;
+        }
+        out.push_str(&text[from..at]);
+        let path = after + 1;
+        let end = haystack[path..]
+            .find(|c: char| c.is_whitespace() || "]\"'<>()`,;".contains(c))
+            .map_or(haystack.len(), |n| path + n);
+        out.push_str(&haystack[path..end]);
+        from = end;
+    }
+    out.push_str(&text[from..]);
+    out
 }
 
 /// An edit on the server is shown apart from the local file (K09).

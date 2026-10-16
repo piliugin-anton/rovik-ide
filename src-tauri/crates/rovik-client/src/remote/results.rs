@@ -277,12 +277,15 @@ impl Remote {
         let fetched = client.fetch(&project, &dir, &[commit]).await;
         fetched.map_err(|fail| fail.message)?;
         let told = result.clone();
+        let before = case_clashes(&chat);
         let imported = rt::spawn_blocking(move || shadow.import(&told));
         match imported.await.map_err(|e| e.to_string())? {
-            Ok(imported) if imported.changed.is_empty() => {}
-            Ok(_) => {
-                self.decide(&chat, &project, result.pending.as_deref())
-                    .await
+            Ok(imported) => {
+                self.tell_case_clashes(host, &chat, &before, &imported.case_clashes);
+                if !imported.changed.is_empty() {
+                    self.decide(&chat, &project, result.pending.as_deref())
+                        .await
+                }
             }
             Err(ImportError::Resolving) => {
                 // The bar offers it in place of the conflicts.
@@ -323,11 +326,13 @@ impl Remote {
             let fetched = client.fetch(&project, &dir, &[commit]).await;
             fetched.map_err(|fail| fail.message)?;
             let told = result.clone();
+            let before = case_clashes(dialog_id);
             let imported = rt::spawn_blocking(move || shadow.import(&told));
-            imported
+            let imported = imported
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
+            self.tell_case_clashes(host, dialog_id, &before, &imported.case_clashes);
             self.saw(dialog_id, &result).await;
         }
         if chats::exists(dialog_id) && !import::resolving(dialog_id) {
@@ -574,6 +579,18 @@ impl Remote {
             .is_some_and(|(id, _)| id == project)
     }
 
+    /// Tells the user of the paths of a result that stay on its host, as
+    /// this computer takes them for others that differ only in case (R04),
+    /// unless the last result's were the same.
+    fn tell_case_clashes(&self, host: &str, dialog_id: &str, before: &[String], now: &[String]) {
+        if now.is_empty() || now == before {
+            return;
+        }
+        let message = case_clashes_notice(now, &self.host_name(host));
+        let title = "Some of this chat's changes stay on the server";
+        self.notice(dialog_id, "warning", title, &message);
+    }
+
     pub(super) fn notice(&self, dialog_id: &str, kind: &str, title: &str, message: &str) {
         self.core.emit(AgentEvent::Notice {
             dialog_id: Some(dialog_id.to_string()),
@@ -582,6 +599,28 @@ impl Remote {
             message: message.into(),
         });
     }
+}
+
+/// The paths the chat's last imported result left on its host for their
+/// case (R04).
+fn case_clashes(dialog_id: &str) -> Vec<String> {
+    import::imported(dialog_id).map_or_else(Vec::new, |i| i.case_clashes)
+}
+
+/// What the notice of paths left on `host` for their case says: the first
+/// few by name.
+fn case_clashes_notice(paths: &[String], host: &str) -> String {
+    let named: Vec<String> = paths.iter().take(3).map(|p| format!("`{p}`")).collect();
+    let list = match (named.as_slice(), paths.len()) {
+        ([one], 1) => one.clone(),
+        ([init @ .., last], n) if n == named.len() => format!("{} and {last}", init.join(", ")),
+        (_, n) => format!("{} and {} more", named.join(", "), n - named.len()),
+    };
+    let stay = if paths.len() == 1 { "stays" } else { "stay" };
+    format!(
+        "This computer can't tell apart names that differ only in case, so {list} {stay} \
+         on {host}; the chat's other changes come here."
+    )
 }
 
 /// Whether a result numbered `seq` is older than the newest one that came
@@ -593,7 +632,25 @@ fn passed_over(seen: Option<u64>, seq: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::passed_over;
+    use super::{case_clashes_notice, passed_over};
+
+    #[test]
+    fn the_paths_left_for_their_case_are_named() {
+        let paths = |n: usize| -> Vec<String> { (1..=n).map(|i| format!("{i}.md")).collect() };
+        assert_eq!(
+            case_clashes_notice(&paths(1), "build box"),
+            "This computer can't tell apart names that differ only in case, so `1.md` stays \
+             on build box; the chat's other changes come here."
+        );
+        let named = |n: usize| {
+            let notice = case_clashes_notice(&paths(n), "b");
+            let (_, list) = notice.split_once(", so ").unwrap();
+            list.split(" on b;").next().unwrap().to_string()
+        };
+        assert_eq!(named(2), "`1.md` and `2.md` stay");
+        assert_eq!(named(3), "`1.md`, `2.md` and `3.md` stay");
+        assert_eq!(named(5), "`1.md`, `2.md`, `3.md` and 2 more stay");
+    }
 
     #[test]
     fn a_result_older_than_the_newest_is_passed_over() {

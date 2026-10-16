@@ -2791,3 +2791,50 @@ Tasks add notes here when reality differs from the plan.
   - Tests: the snapshot of the fixture's report and its JSON round trip,
     sizes in words, `--json` from the real binary, the CLI's flag, and a
     unit test of the connection test's daemon step with a report.
+- **R04, Windows and macOS clients.**
+  - Local paths. A move carries the chat's rows, which name no folder, and
+    its project as id, name and subpath (M06); snapshots, results and the
+    Work group name files from the project's folder with `/` (T01, T05).
+    What was left was the start: a project chat's still named its folder
+    here, `C:\…` on Windows, which the daemon put its worktree's in place
+    of (T04). The client leaves it out now when the daemon takes projects:
+    the daemon names the folder. A daemon without them (`--same-machine`,
+    for development) still gets the folder it runs in.
+  - The editor context names its file from the project's folder (K08), but
+    under a Windows folder the rest kept its `\`. It has `/` now, up to the
+    space or bracket that ends the path, and the folder is found written
+    with either separator. The files the user refers to with "@" were
+    relative with `/` already (`toRelativePath`).
+  - ssh-agent: H02 connects to the OpenSSH agent's pipe
+    (`\\.\pipe\openssh-ssh-agent`, or `SSH_AUTH_SOCK` when it's set), then
+    to Pageant. Nothing new.
+  - Case. Where names that differ only in case are one file (Windows, and
+    macOS unless its disk was formatted otherwise), an import holds back a
+    path the result writes that would be one file with another: another
+    path it writes, or the project's file of that name but for case, unless
+    the result deletes that file. Of the paths it writes, the one spelled as
+    the project's file stays. Before, two such paths broke the import: the
+    checkout wrote both to one file, and taking the second failed. A file
+    moved to a held-back name stays where it was. What's held back stays on
+    the server, listed in the store's record (`case_clashes`), and the app
+    says so once for each new list. `import::case_insensitive` asks the
+    file system: an entry's name with its case turned names the same file.
+  - A rename of case alone lands, as its deletion goes first. Landing one
+    lost the file, though: the new name read as the old file, so the plan
+    wrote nothing there, and the old name's deletion took the file. The
+    plan writes the new name now.
+  - Names that differ only in their Unicode normalization, which macOS
+    takes for one too, aren't checked.
+  - Line endings were T01's and T06's: snapshots and the import's checkouts
+    follow the project's `core.autocrlf` and attributes (K40).
+  - Tests: client tests of a project chat's start with a Windows folder (no
+    folder sent, the context's paths relative with `/`, the folder found
+    written with `/`, a neighbouring folder left as it is) and of a daemon
+    without projects; import tests as on a file system that ignores case
+    (two names added, one beside the project's file, the project's own
+    file changed, a rename of case alone landed, a move to a held-back
+    name), of the file system's answer, and of the landing plan for a
+    rename of case alone; a unit test of the notice. No Windows or macOS
+    machine or CI was at hand: the tests there and the manual check on a
+    Windows laptop (a checkout with `autocrlf`, the agent's pipe, a project
+    on `C:\`) are still to do.

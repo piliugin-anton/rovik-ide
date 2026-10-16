@@ -70,6 +70,23 @@ impl Fixture {
         import(&self.repo, &self.project, "", &told(result, &[]))
     }
 
+    /// `import`, as on a file system that takes names that differ only in
+    /// case for one (R04).
+    fn import_folded(&self, result: Oid) -> Result<Imported, ImportError> {
+        import_as(&self.repo, &self.project, "", &told(result, &[]), true)
+    }
+
+    /// The names in the project's folder, as they are spelled there.
+    fn names(&self) -> Vec<String> {
+        let entries = fs::read_dir(&self.project).unwrap().flatten();
+        let mut names: Vec<String> = entries
+            .map(|e| e.file_name().into_string().unwrap())
+            .filter(|name| name != ".git")
+            .collect();
+        names.sort();
+        names
+    }
+
     fn read(&self, path: &str) -> String {
         fs::read_to_string(self.project.join(path)).unwrap()
     }
@@ -357,4 +374,92 @@ fn links_are_written_as_links() {
     let target = |name: &str| fs::read_link(f.project.join(name)).unwrap();
     assert_eq!(target("l"), Path::new("b.txt"));
     assert_eq!(target("m"), Path::new("a.txt"));
+}
+
+/// R04: where names that differ only in case are one file, a path the
+/// result writes that would be one file with another stays on the server,
+/// listed: two it adds, and one beside the project's file of its name but
+/// for case. The project's file takes the change made to it as it is
+/// spelled, and the rest lands.
+#[test]
+fn paths_that_differ_only_in_case_stay_on_the_server() {
+    let f = fixture(
+        &[
+            ("Notes.md", "notes\n"),
+            ("Keep.md", "keep\n"),
+            ("a.txt", "a\n"),
+        ],
+        false,
+    );
+    let result = f.result(&[
+        ("Notes.md", Some("notes, changed\n"), TEXT),
+        ("notes.md", Some("other notes\n"), TEXT),
+        ("NEW.md", Some("new\n"), TEXT),
+        ("new.md", Some("new too\n"), TEXT),
+        ("KEEP.md", Some("not this\n"), TEXT),
+        ("a.txt", Some("a, changed\n"), TEXT),
+    ]);
+
+    let imported = f.import_folded(result).unwrap();
+
+    let clashes = ["KEEP.md", "NEW.md", "new.md", "notes.md"];
+    assert_eq!(imported.case_clashes, clashes);
+    assert_eq!(imported.changed, ["Notes.md", "a.txt"]);
+    assert_eq!(super::imported(CHAT), Some(imported));
+    let changed = [
+        ("Notes.md".to_string(), "changed"),
+        ("a.txt".to_string(), "changed"),
+    ];
+    assert_eq!(store(CHAT), changed);
+    land_by_itself(CHAT).unwrap().unwrap();
+    assert_eq!(f.names(), ["Keep.md", "Notes.md", "a.txt"]);
+    assert_eq!(f.read("Notes.md"), "notes, changed\n");
+    assert_eq!(f.read("Keep.md"), "keep\n");
+    assert_eq!(f.read("a.txt"), "a, changed\n");
+}
+
+/// R04: a rename of case alone lands where case doesn't count too: the old
+/// name goes, then the new one is written.
+#[test]
+fn a_rename_of_case_alone_lands() {
+    let text = "# The project\n\nIt does things.\n";
+    let f = fixture(&[("readme.md", text)], false);
+    let result = f.result(&[("readme.md", None, TEXT), ("README.md", Some(text), TEXT)]);
+
+    let imported = f.import_folded(result).unwrap();
+
+    assert!(imported.case_clashes.is_empty(), "{imported:?}");
+    let moved = [
+        ("readme.md".to_string(), "deleted"),
+        ("README.md".to_string(), "moved"),
+    ];
+    assert_eq!(store(CHAT), moved);
+    land_by_itself(CHAT).unwrap().unwrap();
+    assert_eq!(f.names(), ["README.md"]);
+    assert_eq!(f.read("README.md"), text);
+}
+
+/// R04: a file moved to a name held back stays where it was: its old
+/// place isn't deleted here either.
+#[test]
+fn a_file_moved_to_a_name_held_back_stays_where_it_was() {
+    let text = "a long enough file\nto be found moved\n";
+    let f = fixture(&[("a.md", text), ("Notes.md", "notes\n")], false);
+    let result = f.result(&[("a.md", None, TEXT), ("notes.md", Some(text), TEXT)]);
+
+    let imported = f.import_folded(result).unwrap();
+
+    assert_eq!(imported.case_clashes, ["notes.md"]);
+    assert!(imported.changed.is_empty(), "{imported:?}");
+    assert!(store(CHAT).is_empty());
+    assert_eq!(f.names(), ["Notes.md", "a.md"]);
+}
+
+/// Whether case counts is the file system's answer, here as anywhere.
+#[test]
+fn whether_case_counts_is_the_file_systems_answer() {
+    let dir = temp_dir();
+    fs::write(dir.0.join("a.txt"), "a\n").unwrap();
+    let insensitive = dir.0.join("A.TXT").exists();
+    assert_eq!(case_insensitive(&dir.0), insensitive);
 }

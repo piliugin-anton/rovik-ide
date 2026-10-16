@@ -152,8 +152,12 @@ fn approval(dialog_id: &str, edit: bool) -> ApprovalRequest {
 /// up as a first connection does (its `AgentStatus`): the fake keeps the
 /// requests after that.
 async fn connected(app: &App) -> (Arc<Remote>, Fake) {
+    connected_to(app, Fake::default()).await
+}
+
+/// `connected`, with `fake` as `HOST`.
+async fn connected_to(app: &App, fake: Fake) -> (Arc<Remote>, Fake) {
     let remote = Remote::new(app.core.clone());
-    let fake = Fake::default();
     remote.connect(HOST, fake.clone(), identity(HOST));
     for _ in 0..400 {
         let caught_up = fake
@@ -370,6 +374,54 @@ async fn a_remote_start_is_prepared_for_its_host() {
     assert_eq!(started.project_settings, Some(settings));
     let rule = started.config.unwrap().permissions.edit_approval;
     assert_eq!(rule.by, Approver::Ai, "the AI reviewer first");
+}
+
+/// R04: a chat of a project runs in its worktree on the host, which the
+/// daemon names, so its start names no local folder, a drive letter least
+/// of all; the editor context names files from the project's root, with
+/// `/` between folders as the server's paths have. A daemon without
+/// projects still gets the folder, which it runs in (--same-machine).
+#[tokio::test]
+async fn a_project_chats_start_names_no_local_folder() {
+    let app = App::new();
+    let root = r"C:\Users\me\project";
+    app.core
+        .db
+        .write(move |c| rovik_core::chat_db::projects::ensure(c, "p1", "project", Path::new(root)))
+        .await
+        .unwrap();
+    app.chat("chat", Some("p1"), Vec::new()).await;
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::PROJECTS.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    let context = format!(
+        "[Active editor context — file {root}\\src\\ui\\x.rs (rust)]\n\
+         See `{root}\\README.md`, C:/Users/me/project/docs\\a.md and {root}s\\b.md"
+    );
+    let mut request = start("chat", StartKind::Retry, Some(&context));
+    request.root = Some(root.into());
+    remote.start(request).await.unwrap();
+
+    let started = starts(&fake).remove(0);
+    assert_eq!(started.root, None);
+    assert_eq!(
+        started.current_user_content.as_deref(),
+        Some(
+            "[Active editor context — file src/ui/x.rs (rust)]\n\
+             See `README.md`, docs/a.md and C:\\Users\\me\\projects\\b.md"
+        )
+    );
+
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let (remote, fake) = connected(&app).await;
+    remote.place("chat", HOST);
+    remote
+        .start(start("chat", StartKind::Retry, None))
+        .await
+        .unwrap();
+    assert_eq!(starts(&fake)[0].root.as_deref(), Some("/home/me/project"));
 }
 
 /// K50: a Continue doesn't send the request's text again when it's the

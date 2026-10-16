@@ -251,9 +251,15 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                         bytes
                     }
                     // The project already has it: nothing to write, unless it
-                    // moved (the project has it at the old place only).
+                    // moved (the project has it at the old place only), or
+                    // its old place is its new one but for case, which a
+                    // file system that doesn't tell them apart takes for one
+                    // file: the old place's deletion would take it (R04).
                     Resolved::Same
-                        if moved_from.is_some() && now != Snapshot::File(ours.clone()) =>
+                        if moved_from.is_some_and(|o| {
+                            now != Snapshot::File(ours.clone())
+                                || o.to_lowercase() == path.to_lowercase()
+                        }) =>
                     {
                         ours
                     }
@@ -1065,7 +1071,47 @@ pub fn undo(
 
 #[cfg(test)]
 mod tests {
-    use super::Landed;
+    use super::*;
+
+    /// R04: a rename of case alone writes the new name even when the
+    /// project's file there reads as the chat's, as it does where the file
+    /// system takes both names for one file (shown here by two files): the
+    /// old name's deletion goes first, and would take it along.
+    #[test]
+    fn a_rename_of_case_alone_writes_the_new_name() {
+        let dir = crate::testing::temp_dir();
+        let project = dir.0.join("project");
+        let text = b"# The project\n";
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("readme.md"), text).unwrap();
+        fs::write(project.join("README.md"), text).unwrap();
+        let kept = dir.0.join("kept");
+        fs::write(&kept, text).unwrap();
+        let changes = [
+            OverlayChange::Delete {
+                path: "readme.md".into(),
+                by_product: false,
+                base: Some(DeletedBase::file(text)),
+            },
+            OverlayChange::Write {
+                path: "README.md".into(),
+                kind: Kind::File,
+                origin: Some("readme.md".into()),
+                upper: Some(kept.clone()),
+                base_copy: Some(kept),
+                perm: 0o644,
+                perm_changed: false,
+                target: None,
+                by_product: false,
+            },
+        ];
+
+        let plan = plan(&project, &changes, false);
+
+        let paths: Vec<&str> = plan.actions.iter().map(|a| a.path.as_str()).collect();
+        assert_eq!(paths, ["readme.md", "README.md"]);
+        assert!(plan.conflicts.is_empty());
+    }
 
     #[test]
     fn a_landings_notice_says_how_many_changes_are_in_the_project() {

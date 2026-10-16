@@ -36,14 +36,17 @@ pub struct Fake {
     pub requests: Arc<Mutex<Vec<Request>>>,
     /// What it answers `HostInfo` with, once set.
     pub info: Arc<Mutex<Option<HostInfo>>>,
+    /// What its welcome says it does: nothing unless told.
+    pub features: Arc<Mutex<Vec<String>>>,
 }
 
 impl Connector for Fake {
     fn connect(&self) -> Connecting<'_> {
         let (requests, info) = (self.requests.clone(), self.info.clone());
+        let features = self.features.lock().unwrap().clone();
         Box::pin(async move {
             let (client, server) = tokio::io::duplex(1 << 16);
-            tokio::spawn(serve(server, requests, info));
+            tokio::spawn(serve(server, requests, info, features));
             Ok(Box::new(client) as Stream)
         })
     }
@@ -53,6 +56,7 @@ async fn serve(
     io: tokio::io::DuplexStream,
     requests: Arc<Mutex<Vec<Request>>>,
     info: Arc<Mutex<Option<HostInfo>>>,
+    features: Vec<String>,
 ) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(io).await else {
         return;
@@ -65,7 +69,7 @@ async fn serve(
                 min_protocol: PROTOCOL,
                 daemon: "fake".into(),
                 boot: "boot".into(),
-                features: Vec::new(),
+                features: features.clone(),
             },
             Ok(Frame::Subscribe { .. }) => Frame::Subscribed {
                 replayed: 0,
