@@ -80,7 +80,15 @@ export class WebDriver {
   async start(application, extra = {}) {
     const caps = {
       capabilities: {
-        alwaysMatch: { 'tauri:options': { application, ...extra }, browserName: 'wry' },
+        alwaysMatch: {
+          'tauri:options': {
+            application,
+            // Windows: msedgedriver's WebView2 options, as Microsoft documents them.
+            ...(process.platform === 'win32' ? { webviewOptions: {} } : {}),
+            ...extra,
+          },
+          browserName: 'wry',
+        },
       },
     };
     const v = await this.req('POST', '/session', caps);

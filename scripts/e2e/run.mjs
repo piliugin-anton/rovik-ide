@@ -565,7 +565,8 @@ async function run() {
       20_000
     );
   });
-  if (!d) return;
+  // Nothing else can run: one failure in the report, not thirty.
+  if (!report.steps[0]?.ok) return;
 
   await step('empty state: open and new project', async () => {
     await waitFor(() => d.exists('.files-empty-open'), 'Open project…');
@@ -1301,6 +1302,9 @@ async function main() {
   const failed = report.steps.filter((s) => !s.ok && !s.optional);
   log(`${report.steps.length - failed.length}/${report.steps.length} steps passed`);
   console.log(readFileSync(join(OUT, 'report.md'), 'utf8'));
+  // 2: the app couldn't be started at all (CI then tries the bridge).
+  const launch = report.steps[0];
+  if (launch && !launch.ok && launch.name.startsWith('launch')) process.exit(2);
   process.exit(failed.length || report.runnerError ? 1 : 0);
 }
 

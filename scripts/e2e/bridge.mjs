@@ -3,7 +3,8 @@
 // (inject-bridge.mjs), launched directly, and driven over HTTP long
 // polling. Same methods as WebDriver in webdriver.mjs, so the scenarios
 // don't care which one runs them. Screenshots come from the OS
-// (`screencapture` on macOS, `import` from ImageMagick elsewhere).
+// (`screencapture` on macOS, .NET on Windows, ImageMagick's `import`
+// elsewhere).
 import { createServer } from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, openSync } from 'node:fs';
@@ -263,6 +264,17 @@ export class BridgeDriver {
         const w = await this.call('window');
         const rect = `${w.screenX},${w.screenY},${w.outerWidth},${w.outerHeight}`;
         execFileSync('screencapture', ['-x', '-R', rect, file], { timeout: 15_000 });
+      } else if (this.platform === 'win32') {
+        // The whole primary screen, through .NET.
+        const script = [
+          'Add-Type -AssemblyName System.Windows.Forms, System.Drawing',
+          '$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
+          '$img = New-Object System.Drawing.Bitmap $b.Width, $b.Height',
+          '$g = [System.Drawing.Graphics]::FromImage($img)',
+          '$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)',
+          `$img.Save('${file.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png)`,
+        ].join('; ');
+        execFileSync('powershell', ['-NoProfile', '-Command', script], { timeout: 30_000 });
       } else {
         execFileSync('import', ['-window', 'root', file], { timeout: 15_000 });
       }

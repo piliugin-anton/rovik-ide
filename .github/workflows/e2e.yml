@@ -53,6 +53,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # Kept when the scenarios fail too, as they do while being fixed:
+          # the next run then doesn't build from nothing.
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -106,18 +109,91 @@ jobs:
           }
           & $driver --version
           "MSEDGEDRIVER=$driver" >> $env:GITHUB_ENV
-      - name: Run the scenarios
-        run: node scripts/e2e/run.mjs --app "$env:APP" --out e2e-out --native-driver "$env:MSEDGEDRIVER"
+      - name: Check the app starts and its WebView2 can be debugged
+        shell: pwsh
+        run: |
+          # What WebDriver needs: the app up, and DevTools on the port given.
+          $data = "$env:RUNNER_TEMP\wv2-probe"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
+          $env:WEBVIEW2_USER_DATA_FOLDER = $data
+          $out = "$env:RUNNER_TEMP\probe.out"
+          $err = "$env:RUNNER_TEMP\probe.err"
+          $p = Start-Process $env:APP -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          $devtools = $null
+          for ($i = 1; $i -le 30 -and -not $devtools -and -not $p.HasExited; $i++) {
+            Start-Sleep 1
+            try { $devtools = Invoke-RestMethod http://127.0.0.1:9333/json/version -TimeoutSec 2 } catch {}
+          }
+          if ($p.HasExited) { "The app exited after ${i} s, code $($p.ExitCode)" } else { "The app runs ($i s)" }
+          if ($devtools) { "DevTools: $($devtools.Browser)" } else { 'No DevTools on port 9333' }
+          Get-ChildItem $data, "$env:LOCALAPPDATA\rovik-ide" -Recurse -Filter DevToolsActivePort -ErrorAction SilentlyContinue |
+            ForEach-Object { "DevToolsActivePort: $($_.FullName)" }
+          '--- its output'
+          Get-Content $out, $err -Tail 40 -ErrorAction SilentlyContinue
+          Get-Process rovik-ide -ErrorAction SilentlyContinue | Stop-Process -Force
+      - name: Run the scenarios through WebDriver
+        id: webdriver
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node scripts/e2e/run.mjs --app "$env:APP" --out e2e-out --native-driver "$env:MSEDGEDRIVER"
+          # 2: the app couldn't be started; the bridge's turn.
+          if ($LASTEXITCODE -eq 2) { 'launch_failed=true' >> $env:GITHUB_OUTPUT }
+          exit $LASTEXITCODE
+      - name: Logs of that run
+        if: steps.webdriver.outcome == 'failure'
+        shell: bash
+        run: |
+          for f in e2e-out/run.log e2e-out/tauri-driver.log; do
+            [ -f "$f" ] && { echo "=== $f"; tail -n 60 "$f"; }
+          done
+          true
+      # WebDriver couldn't start the app: the scenarios through the in-page
+      # bridge instead, as on macOS (a build of its own).
+      - name: Build it with the end-to-end bridge
+        if: steps.webdriver.outputs.launch_failed == 'true'
+        run: npx tauri build --no-bundle --config scripts/e2e/bridge.tauri.conf.json
+      - name: Run the scenarios through the bridge
+        id: bridge
+        if: steps.webdriver.outputs.launch_failed == 'true'
+        continue-on-error: true
+        run: node scripts/e2e/run.mjs --driver bridge --app src-tauri/target/release/rovik-ide.exe --out e2e-bridge
+      - name: Logs of the bridge run
+        if: steps.bridge.outcome == 'failure'
+        shell: bash
+        run: |
+          for f in e2e-bridge/run.log e2e-bridge/app.log; do
+            [ -f "$f" ] && { echo "=== $f"; tail -n 60 "$f"; }
+          done
+          true
       - name: Report
         if: always()
         shell: bash
-        run: cat e2e-out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+        run: |
+          for r in e2e-out/report.md e2e-bridge/report.md; do
+            [ -f "$r" ] && cat "$r" >> "$GITHUB_STEP_SUMMARY"
+          done
+          true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: e2e-windows
-          path: e2e-out
+          path: |
+            e2e-out
+            e2e-bridge
           if-no-files-found: ignore
+      - name: Result
+        if: always()
+        shell: bash
+        env:
+          WEBDRIVER: ${{ steps.webdriver.outcome }}
+          BRIDGE: ${{ steps.bridge.outcome }}
+        run: |
+          echo "WebDriver: $WEBDRIVER, bridge: ${BRIDGE:-not run}"
+          # The bridge's result stands for a launch WebDriver couldn't make.
+          if [ "$BRIDGE" = success ]; then exit 0; fi
+          [ "$WEBDRIVER" = success ]
 
   macos:
     name: macOS
@@ -134,6 +210,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # Kept when the scenarios fail too, as they do while being fixed:
+          # the next run then doesn't build from nothing.
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -151,6 +230,13 @@ jobs:
           echo "APP=$app/Contents/MacOS/$exe" >> "$GITHUB_ENV"
       - name: Run the scenarios
         run: node scripts/e2e/run.mjs --app "$APP" --out e2e-out --driver bridge
+      - name: Logs of a failed run
+        if: failure()
+        run: |
+          for f in e2e-out/run.log e2e-out/app.log; do
+            [ -f "$f" ] && { echo "=== $f"; tail -n 80 "$f"; }
+          done
+          true
       - name: Report
         if: always()
         run: cat e2e-out/report.md >> "$GITHUB_STEP_SUMMARY" || true
@@ -184,6 +270,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # Kept when the scenarios fail too, as they do while being fixed:
+          # the next run then doesn't build from nothing.
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -197,6 +286,13 @@ jobs:
         run: |
           xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- \
             node scripts/e2e/run.mjs --app src-tauri/target/release/rovik-ide --out e2e-out
+      - name: Logs of a failed run
+        if: failure()
+        run: |
+          for f in e2e-out/run.log e2e-out/tauri-driver.log; do
+            [ -f "$f" ] && { echo "=== $f"; tail -n 80 "$f"; }
+          done
+          true
       - name: Report
         if: always()
         run: cat e2e-out/report.md >> "$GITHUB_STEP_SUMMARY" || true
