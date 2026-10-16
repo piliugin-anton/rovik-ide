@@ -2662,5 +2662,15 @@ Tasks add notes here when reality differs from the plan.
     list is clipped.
   - U06's start-up effect threw on a missing host list, which only the
     stand-in sent (the backend always sends one); it reads none now.
+  - The real app ran too, under Xvfb, against a daemon on a local socket
+    (`ROVIK_REMOTE_CHATS`) and a scripted model. A remote chat's change
+    conflicted with an edit here, the next message's sync waited, Hand to
+    the chat put the markers in and the chat settled them, and Take the
+    newer result landed both changes in the project. A daemon restart
+    brought one notice summing up the approval waiting there.
+  - A host from `ROVIK_REMOTE_CHATS` isn't among the hosts' summaries, so a
+    window that missed its first `CaughtUp` tells of what waits there only
+    after a reconnection. Hosts from Settings → Cloud hosts are in the
+    summaries.
   - A real connection, deploy and move still need a real server: the
     manual checks stay open.
