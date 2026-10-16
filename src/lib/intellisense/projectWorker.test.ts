@@ -299,4 +299,35 @@ describe('ProjectTypeScriptWorker', () => {
     assert.equal(program().getSourceFile(`${NM}/@scope/pkg/dist/index.d.ts`), pkg);
     assert.notEqual(program().getSourceFile(`${NM}/@types/node/index.d.ts`), node);
   });
+
+  it('a program an edit replaced is emptied; the answers follow the edits', async () => {
+    // An open tab being typed in: each edit is a new version of its model.
+    let text = 'export const n: number = 1;';
+    let version = 1;
+    const typing: MirrorModel = {
+      uri: { path: new URL(APP).pathname, toString: () => APP } as MirrorModel['uri'],
+      get version() {
+        return version;
+      },
+      getValue: () => text,
+    };
+    const w = worker([typing], { ...OPTIONS, types: [] });
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), []);
+    const first = w.getLanguageService().getProgram();
+    assert.ok(first);
+    for (let edit = 1; edit <= 4; edit++) {
+      text = edit % 2 ? 'export const n: string = 1;' : 'export const n: number = 1;';
+      version++;
+      assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), edit % 2 ? [2322] : []);
+    }
+    // Nothing of the first program is left to keep its checker alive.
+    assert.deepEqual(Object.keys(first), []);
+    const current = w.getLanguageService().getProgram();
+    assert.notEqual(current, first);
+    assert.ok(current?.getSourceFile(APP));
+    // Answers that don't change the program leave it as it is.
+    await w.getQuickInfoAtPosition(APP, 13);
+    assert.equal(w.getLanguageService().getProgram(), current);
+    assert.ok(current?.getSourceFile(APP));
+  });
 });

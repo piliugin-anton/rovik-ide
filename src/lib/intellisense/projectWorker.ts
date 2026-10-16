@@ -1,7 +1,7 @@
 // projectWorker.ts
 //
 // The TypeScript worker (Monaco's, spawned by lib/monacoSetup.ts through
-// worker.ts), with two changes.
+// worker.ts), with three changes.
 //
 // Which files make up the program. Monaco's worker lists every extra lib
 // as a root file, so each typing file under node_modules was parsed and
@@ -34,14 +34,22 @@
 // activeConfig.ts): of the sources and models, those the config takes in,
 // as tsserver's program for that file. With no config, every source. A
 // model outside the program gets empty answers, not errors.
+//
+// Old programs. Each edit builds a new program; the one it replaces is
+// emptied (replacedPrograms.ts). Under JavaScriptCore every program stayed
+// reachable from the next, with its type checker, and typing in a big
+// project grew the worker until the web view was killed.
 import {
   libFileMap,
   ts,
   TypeScriptWorker,
+  type CreateData,
   type MirrorModel,
+  type WorkerContext,
 } from 'monaco-editor/language/typescript/ts.worker.js';
 import { projectCovers, type TsProject } from '../tsconfig';
 import { isProjectSource, LINKS_LIB, PROJECT_LIB } from './paths';
+import { releasingReplacedPrograms } from './replacedPrograms';
 
 /** Links to links: pnpm's store is one hop, a linked member's own links two. */
 const MAX_LINK_HOPS = 8;
@@ -50,6 +58,12 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
   private linksCache: { version: number; links: ReadonlyMap<string, string> } | undefined;
   private projectCache:
     { version: number; project: TsProject | null; covered: Map<string, boolean> } | undefined;
+
+  constructor(ctx: WorkerContext, createData: CreateData) {
+    super(ctx, createData);
+    // Every call of Monaco's and ours goes through it.
+    this._languageService = releasingReplacedPrograms(this._languageService);
+  }
 
   override getScriptFileNames(): string[] {
     const models = this._ctx

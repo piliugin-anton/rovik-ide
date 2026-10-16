@@ -31,10 +31,19 @@ declare module 'monaco-editor/language/typescript/ts.worker.js' {
     getSourceFile(fileName: string): object | undefined;
   }
 
+  /** TypeScript's language service (the parts used here). */
+  export interface LanguageService {
+    /** The program, brought up to date with the files first. */
+    getProgram(): Program | undefined;
+    /** The program as it is. */
+    getCurrentProgram(): Program | undefined;
+  }
+
   export class TypeScriptWorker {
     constructor(ctx: WorkerContext, createData: CreateData);
-    getLanguageService(): { getProgram(): Program | undefined };
+    getLanguageService(): LanguageService;
     getCompilationSettings(): typescript.CompilerOptions;
+    protected _languageService: LanguageService;
     protected _ctx: WorkerContext;
     protected _getModel(fileName: string): MirrorModel | null;
     protected _getScriptText(fileName: string): string | undefined;
