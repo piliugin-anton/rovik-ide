@@ -212,7 +212,8 @@ jobs:
       group: e2e-macos-${{ github.ref }}
       cancel-in-progress: true
     runs-on: macos-latest
-    timeout-minutes: 90
+    # Two builds of the app from nothing the first time.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
