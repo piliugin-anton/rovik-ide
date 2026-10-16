@@ -93,7 +93,7 @@ const [state, setState] = createStore<{ pending: Record<string, PendingApproval>
 
 const keyOf = (dialogId: string, toolCallId: string) => `${dialogId}\n${toolCallId}`;
 
-const revealListeners = new Set<(absPath: string) => void>();
+const revealListeners = new Set<(absPath: string, explicit: boolean) => void>();
 const writtenListeners = new Set<(absPath: string, content: string) => void>();
 
 /*
@@ -305,13 +305,17 @@ export function decideRemaining(
  * ---------------------------------------------------------------------------
  */
 
-/** Opens the file of an edit review and scrolls to its next pending change. */
-export function revealEdit(dialogId: string, toolCallId: string) {
+/**
+ * Opens the file of an edit review and scrolls to its next pending change.
+ * `explicit`: the user asked for it ("Review in editor"), so it opens even
+ * when files don't open by themselves after agent edits.
+ */
+export function revealEdit(dialogId: string, toolCallId: string, explicit = false) {
   const key = keyOf(dialogId, toolCallId);
   const edit = state.pending[key]?.edit;
   if (!edit) return;
   setState('pending', key, 'edit', 'revealNonce', (n) => n + 1);
-  for (const listener of revealListeners) listener(edit.absPath);
+  for (const listener of revealListeners) listener(edit.absPath, explicit);
 }
 
 /** A remote chat's edit, in a read-only tab comparing the file before and after it. */
@@ -329,7 +333,7 @@ export function showRemoteEdit(dialogId: string, toolCallId: string) {
 }
 
 /** App opens the file in a tab. */
-export function onRevealEdit(listener: (absPath: string) => void): () => void {
+export function onRevealEdit(listener: (absPath: string, explicit: boolean) => void): () => void {
   revealListeners.add(listener);
   return () => revealListeners.delete(listener);
 }

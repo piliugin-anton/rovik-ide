@@ -350,7 +350,7 @@ body {
 
 .tree-root-drop {
   position: sticky;
-  top: 0;
+  bottom: 0;
   z-index: 3;
   padding: 8px;
   background: var(--bg);
@@ -3282,6 +3282,10 @@ body.tree-dragging {
 
 .review-zone {
   width: 100%;
+  /* Above Monaco's text layer: .view-lines comes after the zones and is as
+     tall as the whole content, so it took every click on a change's
+     Accept / Reject. The zones hold no text lines for it to cover. */
+  z-index: 1;
 }
 
 .review-added {

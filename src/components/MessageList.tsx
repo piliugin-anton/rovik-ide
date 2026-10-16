@@ -866,6 +866,19 @@ export default function MessageList(props: {
     onCleanup(() => observer.disconnect());
   });
 
+  // The view itself resizing: a bar opening under the list (a landing's
+  // Undo, the checklist, a question) shrinks it from below, and the newest
+  // message slid out of sight while following.
+  onMount(() => {
+    const el = scrollRef;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (!topLock && stick()) scrollToBottom();
+    });
+    observer.observe(el);
+    onCleanup(() => observer.disconnect());
+  });
+
   /*
    * Scroll anchoring, by hand. Items render lazily (content-visibility) and
    * code blocks colorize after mounting, so a message's height changes as it

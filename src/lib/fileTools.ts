@@ -29,3 +29,28 @@ export function toAbsolutePath(path: string, root: string): string {
     .replace(/[\\/]+$/, '');
   return `${root.replace(/[\\/]+$/, '')}${sep}${relative}`;
 }
+
+/**
+ * Where `path` is after files or folders moved (a rename, a cut and paste,
+ * a drag in the tree): the path itself, or one inside, follows its move.
+ * Null when no move covers it. The rest of the path takes the new path's
+ * own separator, so it matches what the tree lists there.
+ */
+export function movedPath(path: string, moves: { from: string; to: string }[]): string | null {
+  for (const { from, to } of moves) {
+    const base = from.replace(/[\\/]+$/, '');
+    if (
+      path !== from &&
+      path !== base &&
+      !path.startsWith(`${base}/`) &&
+      !path.startsWith(`${base}\\`)
+    ) {
+      continue;
+    }
+    const rest = path.slice(base.length).replace(/^[\\/]+/, '');
+    if (!rest) return to;
+    const sep = to.includes('\\') && !to.includes('/') ? '\\' : '/';
+    return `${to.replace(/[\\/]+$/, '')}${sep}${rest.replace(/[\\/]+/g, sep)}`;
+  }
+  return null;
+}

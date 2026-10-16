@@ -81,7 +81,7 @@ import {
 } from './lib/intellisense';
 import { scheduleModelPrune, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
-import { toAbsolutePath, toRelativePath } from './lib/fileTools';
+import { movedPath, toAbsolutePath, toRelativePath } from './lib/fileTools';
 import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
 import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
@@ -294,7 +294,9 @@ export default function App() {
   const activeFileContext = createMemo<ActiveFileContext | null>(() => {
     const file = activeFile();
     const info = cursorInfo();
-    if (!file || !info || info.path !== file.path) return null;
+    // A read-only tab (a commit's or a stash's version, a comparison) isn't
+    // a file: its path ("commit@…:…") is nothing the agent can read.
+    if (!file || file.readOnly || !info || info.path !== file.path) return null;
     return {
       path: file.path,
       language: file.language,
@@ -460,7 +462,7 @@ export default function App() {
       if (activate) setActivePath(row.path);
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);
-      if (activate) window.alert(String(err));
+      if (activate) window.alert(`Couldn't open ${row.name}: ${String(err)}`);
     } finally {
       opening.delete(row.path);
     }
@@ -483,8 +485,9 @@ export default function App() {
   // The agent's edits: open files to review them when the "Open files
   // after agent edits" editor setting is on, and refresh open tabs
   // after a write (an unsaved tab keeps the user's text).
-  const stopReveal = onRevealEdit((path) => {
-    if (!editorSettings().openFilesAfterAgentEdits) return;
+  // "Review in editor" (explicit) always opens it.
+  const stopReveal = onRevealEdit((path, explicit) => {
+    if (!explicit && !editorSettings().openFilesAfterAgentEdits) return;
     void openPath(path);
   });
   const stopWritten = onFileWritten((path, content) => {
@@ -1360,10 +1363,11 @@ export default function App() {
         if (entry.mode === 'copy') {
           await copyPathOnDisk(id, destDirId);
         } else {
-          const oldPath = openFiles().find((f) => f.id === id)?.path;
+          const oldPath =
+            tree.rows().find((r) => r.id === id)?.path ??
+            openFiles().find((f) => f.id === id)?.path;
           const newPath = await movePathOnDisk(id, destDirId);
-          setOpenFiles((prev) => prev.map((f) => (f.id === id ? { ...f, path: newPath } : f)));
-          if (oldPath && activePath() === oldPath) setActivePath(newPath);
+          if (oldPath) followMoves([{ from: oldPath, to: newPath }]);
         }
       }
     } catch (err) {
@@ -1426,26 +1430,7 @@ export default function App() {
     }
 
     if (moved.length > 0) {
-      // Tabs at or inside a moved path follow it to the new location.
-      setOpenFiles((prev) =>
-        prev.map((f) => {
-          const m = moved.find((m) => f.path === m.from || isAtOrUnder(f.path, m.from));
-          if (!m) return f;
-          const rest = f.path.slice(m.from.length).replace(/^[\\/]/, '');
-          const path = rest ? `${m.to}/${rest}` : m.to;
-          const name = path.split(/[\\/]/).pop() ?? f.name;
-          return { ...f, path, name, language: languageForFile(name) };
-        })
-      );
-      if (activePath()) {
-        const m = moved.find((m) => activePath() === m.from || isAtOrUnder(activePath()!, m.from));
-        if (m) {
-          const rest = activePath()!
-            .slice(m.from.length)
-            .replace(/^[\\/]/, '');
-          setActivePath(rest ? `${m.to}/${rest}` : m.to);
-        }
-      }
+      followMoves(moved);
       // Refresh both sides right away instead of waiting for the watcher.
       for (const m of moved) {
         tree.refresh(m.from);
@@ -1458,6 +1443,26 @@ export default function App() {
       }
     }
     if (failures.length > 0) window.alert(failures.join('\n'));
+  }
+
+  /**
+   * Tabs at or inside a renamed or moved file or folder follow it to its new
+   * path, by path: a tab opened by path (go to definition, a search result,
+   * a chat link, a restored session) has no tree id to match, and the files
+   * inside a folder never do.
+   */
+  function followMoves(moves: { from: string; to: string }[]) {
+    setOpenFiles((prev) =>
+      prev.map((f) => {
+        const path = movedPath(f.path, moves);
+        if (!path) return f;
+        const name = path.split(/[\\/]/).pop() ?? f.name;
+        return { ...f, path, name, language: languageForFile(name) };
+      })
+    );
+    const active = activePath();
+    const next = active ? movedPath(active, moves) : null;
+    if (next) setActivePath(next);
   }
 
   function parentPathOf(path: string): string | null {
@@ -1544,12 +1549,7 @@ export default function App() {
     if (!name || name === row.name) return;
     try {
       const newPath = await renamePathOnDisk(row.id, name);
-      setOpenFiles((prev) =>
-        prev.map((f) =>
-          f.id === row.id ? { ...f, path: newPath, name, language: languageForFile(name) } : f
-        )
-      );
-      if (activePath() === row.path) setActivePath(newPath);
+      followMoves([{ from: row.path, to: newPath }]);
     } catch (err) {
       console.error('Failed to rename:', err);
       window.alert(fsErrorMessage(err));

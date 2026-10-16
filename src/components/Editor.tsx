@@ -325,15 +325,19 @@ export default function Editor(props: EditorProps) {
     const initial = editor.getSelection();
     if (initial) reportCursor(initial);
 
-    const addToChatWidget = mountAddToChat(editor, () => ({
-      path: props.currentFilePath,
-      root: props.projectDir(),
-    }));
+    // Not on a read-only tab (a commit's or a stash's version, a
+    // comparison): its path ("commit@…:…") is nothing the agent can read.
+    const addToChatWidget = untrack(() => props.readOnly?.() ?? false)
+      ? null
+      : mountAddToChat(editor, () => ({
+          path: props.currentFilePath,
+          root: props.projectDir(),
+        }));
 
     onCleanup(() => {
       contentDisposable.dispose();
       selectionDisposable.dispose();
-      addToChatWidget.dispose();
+      addToChatWidget?.dispose();
     });
 
     // Runs for an already-open file and for one that just opened (this

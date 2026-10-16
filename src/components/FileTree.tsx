@@ -368,15 +368,6 @@ export default function FileTree(props: FileTreeProps) {
         '-webkit-user-select': 'none',
       }}
     >
-      <Show when={dragging()}>
-        <div
-          class="tree-root-drop"
-          data-root-drop={ROOT_TARGET_ID}
-          classList={{ 'drop-destination': dropTargetId() === ROOT_TARGET_ID }}
-        >
-          Drop here to move to the project root
-        </div>
-      </Show>
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -477,6 +468,17 @@ export default function FileTree(props: FileTreeProps) {
           }}
         </For>
       </div>
+      {/* After the rows, sticking to the bottom: above them, it pushed every
+          row down as the drag began, and the drop landed a row too high. */}
+      <Show when={dragging()}>
+        <div
+          class="tree-root-drop"
+          data-root-drop={ROOT_TARGET_ID}
+          classList={{ 'drop-destination': dropTargetId() === ROOT_TARGET_ID }}
+        >
+          Drop here to move to the project root
+        </div>
+      </Show>
     </div>
   );
 }

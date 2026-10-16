@@ -9,6 +9,7 @@ import {
   pendingApprovalsOfTask,
   pendingEditFor,
   registerApproval,
+  revealEdit,
   setHunkState,
   showRemoteEdit,
   type ApprovalRequest,
@@ -216,4 +217,19 @@ test('a remote edit approval doesn’t open the local file: it shows apart, allo
   allow('remote-chat', 'remote-1');
   assert.deepEqual(decision('remote-1').decision, { kind: 'allow' });
   assert.equal(pendingApproval('remote-chat', 'remote-1'), undefined);
+});
+
+test('"Review in editor" asks to open the file; the reveal as the edit arrives doesn’t insist', () => {
+  // App opens the file for an explicit reveal whatever the editor settings
+  // say; one as the approval arrives only when files open after agent edits.
+  const revealed: [string, boolean][] = [];
+  const stopReveal = onRevealEdit((path, explicit) => revealed.push([path, explicit]));
+  const id = review('one\n', 'two\n', 'reveal-chat');
+  const absPath = pendingApproval('reveal-chat', id)?.edit?.absPath;
+  assert.ok(absPath);
+  assert.deepEqual(revealed, [[absPath, false]], 'arriving: not explicit');
+  revealEdit('reveal-chat', id, true);
+  assert.deepEqual(revealed[1], [absPath, true], 'the button: explicit');
+  stopReveal();
+  clearApproval('reveal-chat', id);
 });
