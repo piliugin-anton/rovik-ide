@@ -1,0 +1,672 @@
+# Autopilot: a task done on its own, from the request to a delivered result
+
+Today a chat needs a person at the keyboard: to approve, to answer, to
+press "Implement this plan", to read the result and land it. This plan
+adds **Autopilot**, a chat mode in which one message is a whole task: the
+agent writes criteria and a plan, the plan is reviewed until it holds,
+tests are written from the plan, the plan is implemented, the change is
+reviewed, checked and judged against the criteria, and the result is
+delivered with a report. Nothing in it waits for a person. What the agent
+can't decide, it writes down.
+
+Autopilot has two efforts. **Balanced** runs each stage once, with the
+subagents that exist. **Thorough** spends tokens on independence: several
+candidates where one model's blind spot would decide the outcome, a
+second model for every judgment, an adversarial tester, and loops that
+end on "no progress" rather than on a count.
+
+On a cloud host, a third choice under "While nobody is there", **Works on
+its own**, makes Autopilot the default for that host's chats and adds what
+only a server needs: delivery to a git branch, a notice when a task ends,
+and a budget.
+
+Read [`subagents.md`](subagents.md) and
+[`subagents-plan.md`](subagents-plan.md) for the subagent kinds this plan
+builds on, and [`cloud-agent-dev-plan.md`](cloud-agent-dev-plan.md) for the
+daemon, the hosts page and the way a result comes back from a server. This
+file says what to build, in which files, in which order, and how each step
+is tested.
+
+Contents:
+
+1. [Decisions](#1-decisions)
+2. [What the code does today](#2-what-the-code-does-today)
+3. [The shape of Autopilot](#3-the-shape-of-autopilot)
+4. [Each stage](#4-each-stage)
+5. [Milestones](#5-milestones)
+6. [Implementation order for an AI agent](#6-implementation-order-for-an-ai-agent)
+7. [Testing](#7-testing)
+8. [Risks and known limits](#8-risks-and-known-limits)
+9. [Decided questions](#9-decided-questions)
+
+---
+
+## 1. Decisions
+
+| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Why                                                                                                                                                                                                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | **Autopilot is a chat mode**, the third beside Agent and Plan (`src/lib/chatMode.ts`, `StartRequest.mode`). It works on a local chat and on a remote one. A run keeps the mode of the message that started it, as today.                                                                                                                                                                                                                                                        | It can be watched and evaluated locally before it's trusted on a server, and the headless runner and the evaluation set get it for free. A host policy alone couldn't be tried without a host.                                                             |
+| D2  | **A task is a pipeline of runs in one chat**, driven by the harness (`agent_run/autopilot.rs`), not one long run. Each stage is a run (the plan, the implementation) or an IDE-started subagent (the reviews, the tests, the acceptance check), and starts in a fresh context from artifacts: the request, the criteria, the plan, the diff, the checks' output.                                                                                                                | Context rot is the main reason long unattended runs degrade. Fresh contexts also mean every stage reuses an existing code path: the Plan-mode run, the "Implement this plan" run, the verify gate, `run_ide_subagent`.                                     |
+| D3  | **Every stage leaves a record** in the chat: an empty assistant message with `meta.stage`, like the verification records (`meta.verification`), never sent to the model. The pipeline's state _is_ its records: what ran, with which outcome, what comes next.                                                                                                                                                                                                                  | Rows survive restarts, go to the mirror with the chat (dev plan 6.3), and need no new storage. A daemon that restarts, or an app that reopens, reads the records and continues.                                                                            |
+| D4  | **Effort: Balanced or Thorough**, in `AutopilotConfig.effort`. It's a setting on the Subagents page's new Autopilot section, and a host's "Works on its own" block can override it for that host's chats. No per-chat choice in v1.                                                                                                                                                                                                                                             | Two levels are explainable; a slider isn't. The host override exists because a server is where tokens matter least and time matters most.                                                                                                                  |
+| D5  | **Autopilot never asks.** `ask_user` is refused in its plan stage with the message Agent mode gives today; assumptions go under the plan's "## Decisions". The system prompt's line on clarifying questions is replaced in Autopilot by "decide, state the assumption, proceed".                                                                                                                                                                                                | A question nobody answers is a run that never ends. The plan reviewer sees the assumptions, and the report lists them first, so a wrong one is caught at the cheapest point that has a reader.                                                             |
+| D6  | **Nothing in an Autopilot run waits for a person.** The tool-call checkpoint is off, a loop pause resumes once with its reason, approvals go to the AI reviewer, and what the reviewer can't approve is _refused_, never parked. A resumed call after a crash runs again without asking. Commands naming `.rovik` stay refused (dev plan D8).                                                                                                                                   | Each "wait for the user" state is a run that looks finished and isn't. Refusing is safe: the agent is told and adapts, and the record says what was refused.                                                                                               |
+| D7  | **Nothing lands unverified.** In Autopilot the outcomes `unverified` and `verify-unverified` don't land: a project with no detected check runs the commands under the plan's "## Validation" as its checks, and a check the allowlist refuses runs anyway, because the gate's commands are the IDE's, not the model's.                                                                                                                                                          | Today `LANDS_AFTER` (`agent_run/landing.rs`) lands "unverified" with a notice for the user to read. With nobody reading, the verification floor must be in the pipeline.                                                                                   |
+| D8  | **Criteria before code.** The plan gains a required "## Criteria" section: testable statements of what done means, "Out of scope" and "Assumptions". The plan reviewer checks them, the test writer writes from them, the acceptance checker judges by them. Thorough has two independent criteria writers and a judge that merges them.                                                                                                                                        | "Done" today means the checks pass. Criteria turn "does it do what was asked" into something a test and a reviewer can check, and they pin the _original_ request, which the reviewers don't see today (`latest_user_request` returns the latest message). |
+| D9  | **Tests first.** The test writer runs after the plan review and before the implementation, from the criteria and the plan, with the red check on: a test that passes before the change is flagged. The implementation run is told which tests to make pass.                                                                                                                                                                                                                     | The test writer already never reads the new code (subagents plan K11). Running it first makes acceptance mechanical where it can be, and gives the implementer a target instead of a description.                                                          |
+| D10 | **The change review blocks.** The agent answers each finding in a structured way (`fixed`, or `not a problem` with a reason), as it answers plan findings in `submit_plan`'s `responses`. A follow-up review must find every high finding resolved before the checks count. A high finding still open at the stage's cap ends the task with `review-open`.                                                                                                                      | Today a high finding is dismissed with free text and dropped as a repeat in the next round (`drop_repeats`). That's right with a reader, wrong without one.                                                                                                |
+| D11 | **An acceptance check after green.** A read-only subagent gets the criteria, the diff, the checks' results and the test writer's report, and gives a verdict per criterion with evidence. Unsatisfied criteria go back to the implementer once (Balanced) or until no progress (Thorough). Still unsatisfied ends the task with `unmet`, delivered as partial.                                                                                                                  | Passing checks never meant the request was met. This is the one stage whose only job is that question, and it's independent of the implementer.                                                                                                            |
+| D12 | **Repair rounds are bounded by progress and budget, not by three.** In Autopilot `MAX_VERIFY_ROUNDS` doesn't apply: a round that uncovers failures the last one hid (a type check that passed shows the tests) isn't counted, and the loop ends after two rounds without progress or at the budget. An environment failure (exit 127, "command not found", "Cannot find module", "No module named") is a prepare failure, not a code failure: it reruns the prepare stage once. | Three rounds absorb cascades and setup problems before the real failure is seen (review findings 6 and 7). The no-progress rule exists (`repair::Judgement`); the budget is new (D16).                                                                     |
+| D13 | **Thorough buys independence, not repetition.** Three plan candidates and a judge; two criteria writers; two implementers in two working copies where a second copy is possible; an adversarial tester; a second model for every judging role by default. Never "ask the model if it's sure" twice.                                                                                                                                                                             | Redundant _independent_ work decorrelates errors; repeated self-assessment doesn't.                                                                                                                                                                        |
+| D14 | **Candidates are scored mechanically, the judge breaks ties.** Score: criteria tests passed, then project checks passed, then high and medium review findings (fewer is better), then diff size (smaller is better). The judge model picks only when two candidates tie.                                                                                                                                                                                                        | A judge is a model too. Tests first keeps its influence to the cases where nothing else can decide.                                                                                                                                                        |
+| D15 | **Delivery on a server is a push.** After a landable outcome the daemon pushes the result commit to a branch `rovik/<slug>` on the project's remote, with a deploy key the user put on the server, and opens a pull request when `gh` is installed and logged in there. The result ref and the `ResultReady` event stay as they are, so the laptop still gets the result.                                                                                                       | Results never leave a server today without a client (dev plan 6.5). A branch is what every forge, CI and reviewer can take. The agent's own `git push` stays refused: the daemon pushes, once, what the pipeline delivered.                                |
+| D16 | **A budget per task**: wall time and cost, from the Autopilot settings, overridden by the host's block. The pipeline checks it between stages, and the run checks it per reply from the usage providers report. Past it, the task ends with `budget`, delivered as partial with a report.                                                                                                                                                                                       | The lead has no bound today (`the_lead_has_no_wall`). Unattended, the only stop would be a provider error or the user. Thorough's "no progress" loops need a hard stop.                                                                                    |
+| D17 | **Autopilot enables the kinds it needs for its own runs**: plan reviewer, change reviewer, triage, test writer, step workers, acceptance checker; in Thorough also planner, judge and adversarial tester. The user's switches on the Subagents page still govern ordinary chats; the rows there give the models.                                                                                                                                                                | A pipeline whose stages can be switched off isn't a pipeline. Showing the rows as "Used by Autopilot" keeps the models in one place.                                                                                                                       |
+| D18 | **A notice when a task ends or is blocked**: a URL on the host's block, called by the daemon with the chat, the stage, the outcome and the report's summary. Nothing else: no email, no push service in v1.                                                                                                                                                                                                                                                                     | One HTTP call reaches everything (Slack, ntfy, a GitHub Action, a mailer). The daemon knows the moment; the laptop may be off.                                                                                                                             |
+| D19 | **Prepare before the first check**: in a working copy whose dependencies aren't installed, the pipeline runs the install the lockfile implies (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`, `cargo fetch`, `pip install -r requirements.txt`, `uv sync`, `go mod download`), as heavy work, once, and records the output.                                                                                                                            | A fresh server worktree has no `node_modules`; "vitest: not found" would otherwise eat the repair rounds, and the model can't run installs under the default allowlist.                                                                                    |
+| D20 | **Nothing changes for a chat that isn't in Autopilot** and for a host not set to "Works on its own", with three exceptions this plan marks as general improvements: a syntax check after every write (V04), a rollback that puts back only the files behind the regression (V05) and a Go test counter (V08). They go in their own tasks with their own tests.                                                                                                                  | The rules of the earlier plans: the app keeps working for everyone else, and a behaviour change for everyone is a decision made on purpose, in one task, with a test.                                                                                      |
+
+---
+
+## 2. What the code does today
+
+What this plan builds on, with where it is. Each item is a thing to keep,
+or a thing to change in a named task.
+
+- **A run ends when the model replies without tool calls**
+  (`agent_run/run.rs`, the loop in `drive`). The verify gate then runs the
+  project's checks (`agent_run/verify.rs`); with none enabled it records
+  `unverified`. `pending_reason` in `agent_run/landing.rs` maps every
+  outcome to "lands on its own" or a reason that waits for the user;
+  `LANDS_AFTER` is `done`, `verified`, `unverified`, `verify-unverified`.
+- **Human-wait states**: `wait_for_approval` (`agent_run/mod.rs`) has no
+  deadline; the tool-call checkpoint (`DEFAULT_TOOL_CALL_CHECKPOINT = 50`,
+  `rovik-protocol/src/permissions.rs`) and the loop guard end a run as
+  `paused-<kind>`; a call resumed after a crash is approved by the user
+  (`agent_run/recovery.rs`); a reviewer that is unsure falls back to the
+  user (`agent_run/execute.rs`); `verify-flagged`, `verify-needs-approval`
+  and `verify-gave-up` park the result. `ask_user` exists in Plan mode only;
+  in Agent mode a question in plain text ends the run as `done`.
+- **Plan mode** ends at `submit_plan`; the plan reviewer holds a plan for at
+  most `MAX_PLAN_REVIEW_ROUNDS = 2` (`agent_run/plan_review.rs`) and then
+  saves it with an "## Open review findings" section. Implementation
+  starts from a new user message built by `implementationRequest` in
+  `src/lib/chatMode.ts`, with `meta.implementsPlan`. Plans are parsed from
+  Markdown by `agent_run/plan.rs` (`plan_problems`, the steps' "Files:"
+  lines, the "## Decisions" section).
+- **Subagents** (`agent_run/subagent.rs`, `Kind`): scout, change reviewer,
+  triage, plan reviewer, step worker, test writer, plus the AI approver
+  (`agent_run/review.rs`). Every kind is off by default
+  (`src/lib/subagentSettings.ts`). The harness starts the reviewer, triage
+  and plan reviewer itself (`run_ide_subagent` in `subagent_run.rs`); the
+  lead starts scouts, workers and the test writer with `task`. The change
+  review is advisory: findings go to the lead as a note, and its answers
+  are free text (`change_review.rs`, `answers_since`, `drop_repeats`).
+  Parallel implementers (`agent_run/group.rs`) need an isolated chat, and
+  only they get a light check between steps (`project::light_check_for`).
+- **Hosts**: `ApprovalPolicy` has two values (`rovik-client/src/remote.rs`,
+  `apply`), shown as two radios under "While nobody is there" in
+  `src/components/CloudHostsSettings.tsx`. The host's settings
+  (`rovik-client/src/host_settings.rs`, `src/lib/hosts.ts`) also carry a
+  setup script that runs over SSH in `$HOME`. The daemon
+  (`crates/rovik-agentd`) runs chats in worktrees, never isolated, commits a
+  run's result to `refs/rovik/chats/<chat>/result` (`results.rs`,
+  `after_run`) and tells the client with `ResultReady`; it never pushes
+  anywhere, and `agent_run/server.rs` refuses the agent's own `git commit`
+  and `git push`. `restart.rs` continues interrupted runs, at most twice an
+  hour. `Config` (`config.rs`) holds the log level, the tokens and the
+  slots. The daemon's event tap is `Tap` in `serve.rs`.
+- **Headless** (`crates/rovik-headless`): starts one run on a project with a
+  `Policy` that answers approvals and questions, a timeout and a token cap,
+  and writes a report. The evaluation set (`scripts/eval`, 30 tasks with
+  hidden tests) scores by hidden tests; its baseline was never run, and no
+  workflow runs the suites.
+
+---
+
+## 3. The shape of Autopilot
+
+### 3.1 The pipeline
+
+One message in Autopilot mode starts a task. Its stages, in order; each
+leaves a stage record, and the strip above the message box shows them.
+
+| Stage             | Who does it                                                                    | Ends the task when                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Plan**          | A Plan-mode run (Balanced); three planner subagents and a judge (Thorough)     | The planner can't produce a plan that passes `plan_problems`: `plan-failed`                                                      |
+| **Plan review**   | The plan reviewer, rounds until clean                                          | A high finding is still open at the cap: `plan-blocked`                                                                          |
+| **Prepare**       | The harness: the install the lockfile implies, once                            | Never. A failed install is recorded and the checks will say what's missing                                                       |
+| **Tests**         | The test writer, from criteria and plan, red check on                          | Never. A blocked test writer is recorded; acceptance then rests on the reviewer and the acceptance checker                       |
+| **Implement**     | An "Implement this plan" run (Balanced); two, in two working copies (Thorough) | The run ends `error`, `repetition` or `budget`                                                                                   |
+| **Change review** | The change reviewer, blocking, structured answers                              | A high finding is still open at the cap: `review-open`                                                                           |
+| **Checks**        | The verify gate, rounds bounded by progress and budget                         | The checks still fail with no progress: `verify-gave-up`; a weakened test: `verify-flagged` (delivered as partial, never landed) |
+| **Break**         | Thorough only: the adversarial tester writes tests that try to break it        | Never. Its failing tests are a repair round; still failing, `verify-gave-up` as above                                            |
+| **Pick**          | Thorough only: the candidates scored, the judge on ties                        | Never                                                                                                                            |
+| **Acceptance**    | The acceptance checker, per criterion                                          | A criterion is still unsatisfied after the allowed round(s): `unmet`, delivered as partial                                       |
+| **Deliver**       | Land (local) or commit and push (server); the report; the notice               | Always: the last stage                                                                                                           |
+
+Every ending is a named outcome with a report. A person coming back sees
+one red stage in the strip and a message that says exactly what blocked
+it. There is no outcome that waits.
+
+### 3.2 Effort: Balanced and Thorough
+
+| Stage         | Balanced                                            | Thorough                                                                                                                                          |
+| ------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Criteria      | Written by the planner, in the plan's "## Criteria" | Two criteria writers in parallel, different models; a judge merges them and records where they disagreed, taking the narrower reading             |
+| Plan          | One Plan-mode run                                   | Three planner subagents in parallel; the judge picks one or merges; the result goes through `submit_plan` so `plan_problems` and the review apply |
+| Plan review   | Up to 3 rounds                                      | Until clean, or two rounds without progress                                                                                                       |
+| Tests         | The test writer, red check                          | The same                                                                                                                                          |
+| Implement     | One implementer; step workers from `workerMinSteps` | Two implementers in two working copies where possible (T05); else one, and the record says so                                                     |
+| Change review | Blocking, up to `MAX_CHANGE_REVIEWS_PER_RUN`        | Until no high finding is open, or two rounds without progress                                                                                     |
+| Checks        | Rounds until no progress twice, within the budget   | The same                                                                                                                                          |
+| Break         | —                                                   | The adversarial tester; its failures are a repair round                                                                                           |
+| Pick          | —                                                   | Mechanical score, judge on ties (D14)                                                                                                             |
+| Acceptance    | One more implement round                            | Until no progress                                                                                                                                 |
+| Report        | One, from the implementer's side                    | Two: the implementer's and the reviewer's                                                                                                         |
+| Models        | Each kind's row on the Subagents page               | Judging roles default to a different provider than the chat's model, when one is set up (a hint on the page says why)                             |
+
+### 3.3 Stage records and the strip
+
+A stage record is an empty assistant message with `meta.stage`:
+
+```json
+{
+  "stage": {
+    "task": "t_8f3a", // one id per message that started the task
+    "name": "planReview", // plan | planReview | prepare | tests | implement | review | checks | break | pick | acceptance | deliver
+    "status": "running", // running | done | failed | skipped
+    "round": 2,
+    "effort": "thorough",
+    "candidate": "b", // Thorough: which working copy, when a stage runs per candidate
+    "outcome": "plan-blocked", // when failed: the task's outcome
+    "ref": "<message id>", // the record this stage produced (a review record, a verification record, a report)
+    "summary": "3 findings, 1 high" // one line for the strip
+  }
+}
+```
+
+The strip (`AutopilotStrip.tsx`) shows the stages of the latest task in
+order, with a tick, a spinner or a cross, the round count, and the
+summary on hover; a click scrolls to the stage's record. The strip reads
+the rows; it has no state of its own, so it is right after a restart and
+in a mirrored remote chat.
+
+### 3.4 The rules of an unattended run
+
+`Permissions` as an Autopilot run gets them, whatever the user's settings
+say, applied in one place (`autopilot::permissions_for`):
+
+- `tool_call_checkpoint: None`; the loop guard's pause resumes once with
+  its reason as a harness note, then ends the run as today.
+- `allow_any_command: true` with `denied_commands` from the settings, plus
+  the fixed refusals: commands naming `.rovik` (dev plan D8), `git` writes
+  on a server (`agent_run/server.rs`), and everything the denylist names.
+- Approvals: every rule that would ask the user asks the AI reviewer; what
+  the reviewer rejects, can't decide or fails on is _refused_, with the
+  reviewer's reason as the tool result. A resumed call after a crash runs
+  again without asking. `verify_changes: true`, `checklist: Auto`.
+- `ask_user` is refused (D5), and `MAX_QUESTIONS_PER_RUN` doesn't matter.
+- The gate's detected checks run even when the allowlist wouldn't let the
+  model run them (D7).
+
+### 3.5 Settings and names
+
+**The chat.** The mode picker beside the model picker offers Agent, Plan
+and **Autopilot**. The composer's placeholder in Autopilot is "Describe the
+task…". The strip of 3.3 appears when a task starts.
+
+**Settings → Subagents** gets a section **Autopilot** above "Kinds":
+
+- **Effort**: radios **Balanced** ("each stage once, with the subagents
+  above") and **Thorough** ("several candidates, a second model for every
+  judgment, an adversarial tester; takes longer and costs more").
+- **Budget per task**: "Stop a task after [hours] or [cost]", empty for
+  none. Defaults: 2 hours and 5 in the provider's currency for Balanced;
+  none for Thorough.
+- **Prepare dependencies before the first check** (checkbox, on).
+- **Commands Autopilot may never run** (the denylist, one per line, with
+  the defaults shown).
+
+In "Kinds", the rows Autopilot uses carry a tag **Used by Autopilot**, and
+the new rows appear: **Planner**, **Judge**, **Acceptance checker**,
+**Adversarial tester**. A hint under the judging rows: "A different
+provider than the chat's model catches more: their mistakes differ."
+
+**Settings → Cloud hosts → While nobody is there** gets a third radio,
+**Works on its own**: "Chats on this server run in Autopilot: they plan,
+review, implement, check and deliver a task without asking. Nothing waits
+for you. What the agent can't decide, it writes down." When chosen, a
+block unfolds:
+
+| Option    | Control                                                                                                                                                                                                                          | Default            |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| Effort    | "As in Settings → Subagents", Balanced, Thorough                                                                                                                                                                                 | As in Settings     |
+| Approvals | Fixed text: "The AI reviewer decides. What it can't approve is refused and reported."                                                                                                                                            |                    |
+| Delivery  | Radios: "Keep the result on the server for this computer" or "Push to a branch `rovik/<task>` on the project's remote"; a "Deploy key on the server" path; a checkbox "Open a pull request (needs `gh` logged in on the server)" | Keep on the server |
+| Budget    | "Stop a task after [hours] or [cost]"                                                                                                                                                                                            | As in Settings     |
+| Notify    | "Call this URL when a task ends or is blocked"                                                                                                                                                                                   | Empty              |
+| Test      | A button "Test delivery": the daemon pushes an empty branch `rovik/test-<date>` and deletes it, and reports                                                                                                                      |                    |
+
+**Rust and protocol names.** `ChatMode = 'agent' | 'plan' | 'autopilot'`;
+`StartRequest.mode = Some("autopilot")`. `AutopilotConfig` (new,
+`rovik-protocol/src/autopilot.rs`) in `AgentConfig.autopilot`:
+
+```rust
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutopilotConfig {
+    pub effort: Effort,                 // Balanced (default) | Thorough
+    pub budget: Budget,                 // max_hours: Option<f64>, max_cost: Option<f64>
+    pub prepare: bool,                  // D19, default true
+    pub denied_commands: Vec<String>,   // the denylist, with DEFAULT_AUTOPILOT_DENYLIST
+}
+```
+
+`ApprovalPolicy` gains `Autonomous`; `HostSettings` gains
+`autonomy: AutonomySettings { effort: Option<Effort>, budget: Option<Budget>, delivery: Delivery, notify_url: Option<String> }`,
+and `Host` in `src/lib/hosts.ts` the same. `Delivery` is
+`KeepOnHost` or `PushBranch { deploy_key: PathBuf, open_pr: bool }`; the
+remote's URL comes from the project's `origin` on the client, with the
+start request (`StartRequest.deliver_to: Option<String>`), because the
+daemon's bare repository knows no remote. New daemon config keys in
+`~/.rovik/config.toml`: none; the daemon takes everything with the
+computer's `AgentConfig` and the start, as it does the policy today (dev
+plan D16). The notify URL and the delivery settings ride in a new
+per-computer `AutonomyConfig` frame beside `AgentConfig`, so a run started
+by a computer that has since gone away still knows where to deliver.
+
+### 3.6 On a server
+
+- A chat on a "Works on its own" host starts in Autopilot unless the user
+  picks another mode for that message. The client applies 3.4's rules and
+  the host's overrides in `ApprovalPolicy::apply`, which already runs on
+  every configuration the client sends a host.
+- The daemon drives the pipeline itself: `autopilot::after_run` runs in
+  the core on every `RunEnded`, so the next stage starts with no client
+  connected. On start, `restart.rs` also calls `autopilot::resume` for
+  every chat whose latest stage record is `running` or whose last stage
+  ended without a `deliver` record.
+- Delivery (D15) runs in `Results` after `commit`, before `ResultReady`.
+- The notice (D18) is sent from `Tap::agent` on a task's end and on a
+  `failed` stage record.
+- The budget (D16) is enforced in the core; the daemon adds one thing: a
+  run that ended `error` with `RateLimited` is retried by the daemon with
+  backoff up to an hour, within the task's budget, instead of waiting for
+  a human Retry.
+
+Known limits on a server stay: no sandbox beyond the Unix account (dev
+plan "Later"), API keys readable by the agent's commands, ports shared.
+Autopilot runs more commands, so the sandbox moves up the "Later" list;
+it isn't part of this plan.
+
+---
+
+## 4. Each stage
+
+### 4.1 Plan, with criteria
+
+Balanced: a Plan-mode run, as today, with `PLAN_MODE_INSTRUCTIONS`
+extended in Autopilot by a "## Criteria" section: "numbered, testable
+statements of what done means, each checkable by a test or by reading the
+result; then **Out of scope** and **Assumptions**". `plan_problems`
+requires the section in Autopilot (a plan without it goes back to the
+planner, as a plan without steps does). `ask_user` is refused (D5).
+
+Thorough: three **planner** subagents (new `Kind::Planner`, read-only
+tools, `Format::Sections` with "Plan" as the one required section) run in
+parallel with the same brief: the request, the merged criteria (4.1a), the
+repo map. Their plans go to the **judge** (new `Kind::Judge`, read-only;
+sections "Choice", "Plan", "Why"), which returns one plan, picked or
+merged. The harness submits it through the `submit_plan` path, so the
+plan's checks and review apply to it exactly as to a planner's own.
+
+4.1a, Thorough's criteria: two planner subagents with a criteria-only
+brief (sections "Criteria", "Out of scope", "Assumptions"), different
+models when the settings have two; the judge merges them and lists where
+they disagreed under "Assumptions", taking the narrower reading of the
+request.
+
+### 4.2 Plan review
+
+The plan reviewer as today (`plan_review.rs`), with the prompt extended:
+criteria that aren't testable, that miss part of the request or that go
+beyond it are findings. Autopilot's cap replaces `MAX_PLAN_REVIEW_ROUNDS`:
+3 rounds in Balanced, "two rounds without progress" in Thorough, where
+progress means the set of open high and medium findings shrank. At the
+cap with a high finding open, the plan isn't saved for implementation:
+the task ends `plan-blocked` with the findings in the report. Medium and
+low findings go to the "## Open review findings" section, as today, and
+into the report.
+
+### 4.3 Prepare
+
+The harness, before the test writer. In the working copy: for each
+lockfile found at the root or one folder down (`package-lock.json`,
+`pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, `requirements.txt`,
+`uv.lock`, `go.sum`), when its dependency folder or cache is missing, the
+install it implies runs as heavy work (`workload`), once, with the
+project's check timeout. Output goes to `@checks/prepare` like a check's.
+A failed install is a `prepare` record with `status: failed`; the pipeline
+goes on, and the checks say what's missing. The stage reruns once when a
+later check fails with an environment failure (D12).
+
+### 4.4 Tests
+
+The test writer (`test_writer.rs`) runs as an IDE-started subagent, from
+the criteria and the plan, with `red_check` forced on. Its report and the
+test files it wrote go into the stage record. The implement run's request
+names them: "Tests that must pass: `path`, `path`; they fail now on
+purpose."
+
+### 4.5 Implement
+
+The "Implement this plan" run, started by the harness with the text
+`plan::implementation_request` builds (moved from `chatMode.ts` to the
+core, so the daemon can build it; the frontend's "Implement this plan"
+button sends `meta.implementsPlan` and the plan's path, and the core
+expands the text). Step workers carry plans from `workerMinSteps` steps,
+and a light check (`project::light_check_for`) runs after each worker's
+step in `after_worker`, with its failures handed to the next step as a
+note. Thorough: two implement runs in two working copies (T05), each with
+the full stages 4.6 to 4.8, before Pick.
+
+### 4.6 Change review
+
+As today, but blocking (D10). A new tool in Autopilot's implement run,
+`answer_review`, takes `{ "responses": [ { "finding": 1, "status": "fixed" | "not-a-problem", "note": "…" } ] }`
+and is the only way to answer; free text isn't read. The follow-up review
+gets the responses, as the plan review's B13 brief does, and must mark
+each high finding resolved. The caps: `MAX_CHANGE_REVIEWS_PER_RUN` in
+Balanced; "two reviews without progress" in Thorough. A high finding open
+at the cap ends the task `review-open`.
+
+### 4.7 Checks
+
+The verify gate with the floor of D7 and the rounds of D12. Also, in
+Autopilot: a check that times out is re-run as the scoped command for the
+changed files (`project::test_command_for`) and the full suite is recorded
+as `slow`, not failed; the gate's command output is captured whole for
+failure keys (today 64 KB, which hides middle errors).
+
+### 4.8 Break (Thorough)
+
+The **adversarial tester** (new `Kind::Breaker`): the test writer's tools
+and write scope (test paths only), check-only bash as a worker's, a brief
+of the criteria, the plan and the diff, and the instruction to write
+tests that a wrong implementation would fail: edge cases, error paths,
+concurrency, the boundaries the criteria name. Tests that fail on the
+change are findings: they stay in the tree and the gate's next round is a
+repair round with them. Tests that pass stay as regression tests when
+they test a criterion, and are removed when the tester marked them
+"speculative". The gate's "fewer tests" and integrity flags apply to the
+implementer's later rounds as usual.
+
+### 4.9 Pick (Thorough)
+
+For each candidate working copy: criteria tests passed, project checks
+passed, open high and medium findings, diff lines. Ordered as D14 says;
+the judge gets the two diffs, the criteria and both review records only
+on a tie. The losing candidate's diff and records are kept in its stage
+records and a one-line note goes in the report. The winner's working copy
+becomes the chat's.
+
+### 4.10 Acceptance
+
+The **acceptance checker** (new `Kind::Acceptance`, read-only; sections
+"Verdicts", "Evidence", "Unmet"): the criteria, the diff, the checks'
+latest results, the test writer's report. "Verdicts" is one line per
+criterion, `1. satisfied — <evidence>` or `1. unsatisfied — <what's missing>`,
+parsed strictly; an unparseable reply gets the S13 repair turn and is then
+recorded `skipped`, never satisfied. Unsatisfied criteria go to one more
+implement run as its request (Balanced), or until two rounds without
+progress (Thorough), each followed by the checks and a new acceptance.
+Still unsatisfied: `unmet`.
+
+### 4.11 Deliver and report
+
+Local: the chat's changes land as today (`try_land`), with the Autopilot
+mapping of outcomes (D7). Server: `Results::commit` as today, then the
+push and the pull request (D15), then `ResultReady`. Then a words-only
+turn (`words_only_turn`) in the implementer's context writes the
+**report**, saved as the final assistant message with `meta.report`, and
+as the pull request's description: what changed and why, the assumptions
+made (first), how it was verified (checks, the tests written, the
+acceptance verdicts), what is unmet or open, cost and time. Thorough adds
+a second report from the change reviewer's context. The notice (D18) goes
+out last.
+
+---
+
+## 5. Milestones
+
+### Milestone A: the mode and the driver
+
+| ID  | Task                                                                                                                                                                                                                                                                                                                                                                                                                                                | Needs | Done when                                                                                                                                                                                               |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A01 | `ChatMode` gains `'autopilot'` (`src/lib/chatMode.ts`); the mode picker and the composer's placeholder in `ChatPanel.tsx`; `StartRequest.mode = "autopilot"`. The core reads it as `autopilot: bool` on `Run`, and treats it as Plan mode for the first run of a task (A03). `Autopilot` in the protocol: `rovik-protocol/src/autopilot.rs` with `AutopilotConfig`, `Effort`, `Budget`; `AgentConfig.autopilot` with a default                      | —     | `npm test` for the picker; protocol round-trip test; e2e: a message sent in Autopilot starts a Plan-mode run with `autopilot` set                                                                       |
+| A02 | Stage records: `agent_run/autopilot.rs` with `Stage`, `StageRecord` (3.3), `records_of(task)`, `next_stage(records, effort)`, and `add_stage`/`end_stage` writing `meta.stage` rows. The pipeline's state is read back from the rows only                                                                                                                                                                                                           | A01   | Unit tests: `next_stage` for every status of every stage in both efforts; records survive a reload (e2e reads them back)                                                                                |
+| A03 | The driver: `autopilot::after_run(core, dialog_id, outcome)` called where `RunEnded` is emitted, after landing's decision; it ends the current stage with the outcome, decides the next (A02), and starts it: a run via `agent_start` with a harness message, or an IDE-started subagent via `run_ide_subagent`. `autopilot::resume` at app start and daemon start. A stage is recorded `running` before it starts, so a crash mid-start repeats it | A02   | e2e on the scripted provider: Plan → Plan review (clean) → Implement → Checks → Deliver, each with a record; `kill` between two stages, then `resume` continues; a second `resume` starts nothing twice |
+| A04 | The plan stage: the Plan-mode run as the task's first run, `ask_user` refused in Autopilot (D5), the system prompt's clarifying-question line replaced; the implement stage: `plan::implementation_request` in the core, the frontend's button sending `meta.implementsPlan` and the path; the harness starts the implement run when the plan review is clean                                                                                       | A03   | e2e: a plan that asks gets the refusal and submits with assumptions; the implement run starts without a user message and gets the same text the button used to send (a test compares both)              |
+| A05 | `AutopilotStrip.tsx` above the composer, reading the stage records; `StageRecord.tsx` for the records in the chat (like `VerificationRecord.tsx`); the strip in a mirrored remote chat                                                                                                                                                                                                                                                              | A02   | `npm test` for the strip's states; manual check locally and on a same-machine daemon                                                                                                                    |
+| A06 | Effort setting: the Autopilot section on the Subagents page (3.5) in `SubagentSettings.tsx` and `src/lib/autopilotSettings.ts`, sent in `AgentConfig.autopilot`; `next_stage` takes the effort                                                                                                                                                                                                                                                      | A02   | `npm test` for the section; e2e: Thorough records the Thorough-only stages as `skipped` until T builds them                                                                                             |
+| A07 | D17: `autopilot::subagent_config(user's SubagentConfig, effort)` enables the kinds the pipeline needs for its runs, with the user's rows' models and the default model as fallback; the "Used by Autopilot" tag on the rows                                                                                                                                                                                                                         | A06   | Unit test: every needed kind is enabled in the config an Autopilot run gets, the user's models kept; an ordinary chat's config is untouched                                                             |
+
+### Milestone U: the rules of an unattended run
+
+| ID  | Task                                                                                                                                                                                                                                                                                                                              | Needs | Done when                                                                                                                                               |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U01 | `autopilot::permissions_for(user's Permissions, AutopilotConfig)`: 3.4's rules; `DEFAULT_AUTOPILOT_DENYLIST` in the protocol (`rm -rf /`, `git push`, `git commit --amend`, `curl … \| sh`, `sudo`, `shutdown`, `dd`); applied to every run and subagent of a task                                                                | A03   | Unit tests on the function; e2e: a run in Autopilot never ends `paused-checkpoint`; a denied command is refused with the reason                         |
+| U02 | Approvals in Autopilot: rules that would ask the user ask the AI reviewer when `approval_profiles` has one; the reviewer's reject, unsure and failure become a refusal with the reason (`execute.rs`, where it falls back to the user today); with no reviewer profile, an approval is refused at once. A resumed call runs again | U01   | e2e: a risky command with the reviewer unsure is refused, the run goes on; a crash during a tool call, then `Resume`, runs the call without an approval |
+| U03 | The loop guard's pause resumes once in Autopilot with a harness note ("You repeated …; change approach"), then ends the run as today; `wait_for_approval` gets a deadline in Autopilot (default 10 minutes, for the states U02 doesn't cover) that denies and records                                                             | U01   | e2e: a looping scripted model is resumed once and the second pause ends the run; an approval nobody answers is denied at the deadline with a record     |
+| U04 | Budget (D16): `agent_run/budget.rs` accumulating cost and wall time per task from the usage providers report (the headless runner's accounting moved into the core); checked per reply and between stages; outcome `budget`; `pending_reason` for it                                                                              | A03   | e2e: a tiny budget ends the task `budget` at the next reply, with a deliver stage and a report                                                          |
+
+### Milestone V: the verification floor
+
+| ID  | Task                                                                                                                                                                                                                                                                                                                 | Needs | Done when                                                                                                                                                                            |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| V01 | In Autopilot the gate's detected checks run regardless of the model's allowlist (`verify.rs`, where a refused check is skipped today); `verify-needs-approval` can't happen in Autopilot                                                                                                                             | U01   | e2e: a Python project with `pytest` not in the allowlist is checked; the same run outside Autopilot still skips it                                                                   |
+| V02 | D7: `unverified` and `verify-unverified` don't land in Autopilot (`landing.rs`, an Autopilot-aware `pending_reason`); with no detected check, the commands under the plan's "## Validation" are the checks, filtered by the denylist and recorded as such                                                            | A04   | e2e: a project with no checks gets the plan's validation commands as checks; a failing one gives a repair round; a plan without runnable commands ends `unverified` and doesn't land |
+| V03 | D12: environment failures (exit 127, "command not found", "Cannot find module", "No module named", "could not find `Cargo.toml`") classified in `command_output.rs`; in Autopilot they rerun Prepare once and don't count as a round; rounds in Autopilot end on two without progress or at the budget, not at three | U04   | Unit tests on the classifier; e2e: "vitest: not found" → prepare → the check runs; a round that only uncovers hidden failures doesn't count                                          |
+| V04 | **General:** after every `write`, `outline::syntax_errors` runs on the written file where the language is known, and errors are appended to the tool result                                                                                                                                                          | —     | Unit test: a write that breaks a Rust file returns the error in its result; a file in an unknown language is unaffected; the e2e suites pass unchanged                               |
+| V05 | **General:** `repair::roll_back` puts back only the files behind the keys in `judgement.broke` (via `causes.rs`), not every checkpointed file; the round still counts                                                                                                                                                | —     | e2e in `repair_e2e_tests.rs`: a round that fixes two checks and breaks one keeps the two fixes                                                                                       |
+| V06 | A check that times out in Autopilot reruns as the scoped command (`project::test_command_for`) for the changed files; the full suite is recorded `slow`, not failed                                                                                                                                                  | V03   | e2e with a short test timeout: the scoped rerun's result is the round's                                                                                                              |
+| V07 | The gate's command output is captured whole for `failure_keys` (a separate, larger limit for check jobs than `run_command`'s 64 KB); the saved `@checks/` file is unchanged                                                                                                                                          | —     | Unit test: keys from a 200 KB output include the middle errors                                                                                                                       |
+| V08 | **General:** `tests_ran` parses `go test -v` output, so the "fewer tests" flag works for Go                                                                                                                                                                                                                          | —     | Parser tests                                                                                                                                                                         |
+| V09 | `project_profile` detects a stack one folder down (a monorepo's `api/` and `web/`), and the checks run per folder; with several, the gate runs them all                                                                                                                                                              | —     | Detection tests on fixtures; e2e with two packages                                                                                                                                   |
+
+### Milestone S: the Balanced stages
+
+| ID  | Task                                                                                                                                                                                                                                                                                                                        | Needs    | Done when                                                                                                                                                                                                            |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S01 | Criteria (D8): `PLAN_MODE_INSTRUCTIONS`' Autopilot addition; `plan_problems` requires "## Criteria" in Autopilot; `plan::criteria(text)` parses the numbered statements, "Out of scope" and "Assumptions"; the plan reviewer's prompt checks them                                                                           | A04      | Parser tests; e2e: a plan without criteria goes back; the reviewer's brief has them                                                                                                                                  |
+| S02 | Plan review in Autopilot (4.2): the Balanced cap of 3; `plan-blocked` at the cap with a high finding open; the task's report carries the findings                                                                                                                                                                           | S01      | e2e: a high finding the planner never fixes ends the task `plan-blocked` after 3 rounds, with a report and no implement run                                                                                          |
+| S03 | Prepare (4.3): `agent_run/prepare.rs`, lockfile detection, the install as heavy work, the record and `@checks/prepare`; the `prepare` setting                                                                                                                                                                               | A03      | Unit tests on detection; e2e with a fixture whose `node_modules` is missing: the install runs once and the checks pass                                                                                               |
+| S04 | Tests first (4.4): the test writer as an IDE-started subagent after the plan review, `red_check` forced; its files in the stage record and in the implement run's request                                                                                                                                                   | S02      | e2e: the test writer runs before the implement run; the implement run's request names its files; a blocked test writer is recorded and the pipeline goes on                                                          |
+| S05 | Per-step light checks: `light_check_for` after each sequential worker in `after_worker`, failures to the next step as a note                                                                                                                                                                                                | A04      | e2e: a worker's step that breaks a file's syntax gets the diagnostics into the lead's next note                                                                                                                      |
+| S06 | Blocking change review (4.6): the `answer_review` tool in Autopilot's implement run; `change_review.rs` reads responses instead of free text; the follow-up review must resolve high findings; `review-open` at the cap                                                                                                     | A04      | e2e: a high finding answered `not-a-problem` without the follow-up review agreeing is still open; at the cap the task ends `review-open`; a `fixed` finding the follow-up confirms lets the checks run               |
+| S07 | Test-exists rule (no model): a round whose changed files include non-test files and no test file (`project::is_test_path`) starts the test writer again in Autopilot, once per task, before acceptance                                                                                                                      | S04      | e2e: an implementation without test changes gets a second test writer run                                                                                                                                            |
+| S08 | Acceptance (4.10): `Kind::Acceptance`, its `KindSpec`, brief and strict parser; the hook after the checks pass (beside `review_after_green`); one implement round on unsatisfied criteria; `unmet`                                                                                                                          | S01, S06 | Parser tests on good, partial and garbage verdicts (garbage → `skipped`); e2e: an unsatisfied criterion gives one more implement round and a second acceptance; still unsatisfied ends `unmet`, delivered as partial |
+| S09 | The report (4.11): `words_only_turn` with the report brief; `meta.report`; the frontend shows it as the final message with its sections; `pending_reason` and landing for every Autopilot outcome (D7): `done`/`verified` land; `unmet`, `budget`, `verify-flagged` deliver as partial without landing; the rest don't land | S08, U04 | e2e: the report names the assumptions, the tests, the verdicts and the cost; a partial result isn't landed locally but its report says why                                                                           |
+| S10 | The headless runner takes `--mode autopilot --effort balanced\|thorough` and reports the stages and the task's outcome                                                                                                                                                                                                      | S09      | Headless e2e on the scripted provider: a Balanced task end to end, stages in the report                                                                                                                              |
+
+### Milestone H: hosts that work on their own
+
+| ID  | Task                                                                                                                                                                                                                                                                                                                              | Needs    | Done when                                                                                                                                                                                                               |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H01 | `ApprovalPolicy::Autonomous`; `AutonomySettings` on `HostSettings` and `Host`; the third radio and its block in `CloudHostsSettings.tsx` (3.5), saved through `hosts_page.rs`                                                                                                                                                     | A06      | `npm test` for the block; settings round-trip test; an old settings file without the block loads                                                                                                                        |
+| H02 | `ApprovalPolicy::apply` for `Autonomous`: U01's permissions, the effort and budget overrides, the kinds of A07; a chat on such a host starts in Autopilot unless the message says otherwise; the `AutonomyConfig` frame beside `AgentConfig` (3.5), stored per computer by the daemon                                             | H01, U01 | Client test: the configuration a "Works on its own" host receives; daemon test: the frame is stored and read back after a restart                                                                                       |
+| H03 | The pipeline on the daemon: `autopilot::after_run` from the daemon's `RunEnded` path; `autopilot::resume` in `restart.rs`; `agent_start` of a stage's run on the daemon with no client connected                                                                                                                                  | A03, H02 | Daemon test: a task started by a client that disconnects runs to `deliver` and its records are there when the client returns; `kill -9` between stages, then the daemon continues                                       |
+| H04 | Delivery (D15): `results::deliver` after `commit`: push the result commit to `rovik/<slug>` on `deliver_to` with the deploy key (git2 over SSH with the key, or the system `git` when the host is set to it); `gh pr create` when `open_pr` and `gh` is logged in; the branch and the PR's URL in the report and in `ResultReady` | H03      | Daemon test against a local bare "remote" over a file URL and an SSH test server: the branch exists with the result; a push that fails is a `deliver` record with `failed` and the result ref still comes to the client |
+| H05 | "Test delivery" (3.5): a daemon request that pushes and deletes `rovik/test-<date>`                                                                                                                                                                                                                                               | H04      | Daemon test; the hosts page shows the result                                                                                                                                                                            |
+| H06 | Notify (D18): `POST notify_url` with `{ chat, task, stage, outcome, summary, branch, pr }` from `Tap::agent` on a task's end and on a failed stage; three retries with backoff; failures logged, never fatal                                                                                                                      | H03      | Daemon test with a local HTTP server: one call per end, the body as specified; an unreachable URL doesn't stop the task                                                                                                 |
+| H07 | Rate limits on the daemon: a stage's run that ended `error` with `RateLimited` is retried by the daemon with backoff up to an hour, within the task's budget                                                                                                                                                                      | U04, H03 | Daemon test with the scripted provider returning 429: the run is retried and the task completes                                                                                                                         |
+| H08 | `rovik-agentd status --json`: this user's chats from `state.json`, with the latest stage, the outcome, the running run and the task's cost from the agent log; the hosts page shows the same per chat                                                                                                                             | H03      | CLI test on a daemon data folder; `npm test` for the list                                                                                                                                                               |
+
+### Milestone T: Thorough
+
+| ID  | Task                                                                                                                                                                                                                                                                                                       | Needs              | Done when                                                                                                                                                                       |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T01 | `Kind::Planner`: read-only tools, `Format::Sections` ("Plan"), the brief of 4.1; three run in parallel through `run_ide_subagent`; the Subagents row                                                                                                                                                       | S02                | e2e: three planner results in three records                                                                                                                                     |
+| T02 | `Kind::Judge`: read-only; sections "Choice", "Plan", "Why" for plans, "Verdict", "Why" for candidates (T06); the picked or merged plan is submitted through the `submit_plan` path (`plan_problems`, then the review)                                                                                      | T01                | e2e: the judge's plan goes through the plan checks and the plan review; a judge that fails falls back to the first planner's plan with a note                                   |
+| T03 | Criteria twice (4.1a): two planner subagents with the criteria brief and different models when two are set up; the judge merges and records disagreements                                                                                                                                                  | T02                | e2e: two differing criteria sets give a merged set with the disagreement under "Assumptions"                                                                                    |
+| T04 | `Kind::Breaker` (4.8): the test writer's tools and scope, check-only bash; the stage after the checks pass; its failing tests become a repair round; speculative passing tests are removed                                                                                                                 | S08                | e2e: the breaker's failing test leads to a repair round that makes it pass; a speculative passing test is gone at delivery; a breaker that writes outside test paths is refused |
+| T05 | Two working copies: locally a child overlay through the parallel-group machinery (`group.rs`) when the driver is there; on the daemon a sibling worktree per candidate (`work.rs`, `candidate_worktree`), with its own result commit; where neither is possible, one implementer and a record that says so | A04                | Daemon test: two candidate worktrees, two implement runs, two result commits; local e2e with overlays; a host without a second copy records the fallback                        |
+| T06 | Pick (4.9, D14): the mechanical score from the candidates' records, the judge on ties, the winner's working copy becomes the chat's, the loser's records kept                                                                                                                                              | T02, T05           | Unit tests on the score's ordering; e2e: a tie goes to the judge; the loser's diff is in its record                                                                             |
+| T07 | Thorough's loops (3.2): plan review, change review, repair and acceptance end on two rounds without progress or at the budget; `progress` defined per loop (open high and medium findings; failing keys; unsatisfied criteria)                                                                             | S02, S06, S08, U04 | e2e per loop: progress continues the loop; two rounds without it end the stage; the budget ends it first when smaller                                                           |
+| T08 | The reviewer's report: a second `words_only_turn` in the change reviewer's context, appended to the report under "The reviewer's view"                                                                                                                                                                     | S09                | e2e: the report has both parts                                                                                                                                                  |
+| T09 | Judging roles default to a different provider: `autopilotSettings.ts` picks, for planner, judge, acceptance and breaker rows left on "Default", the first enabled model of a provider other than the chat model's, when there is one; the hint on the page                                                 | A06                | `npm test`: with two providers the judging rows resolve to the other one; with one, to the default                                                                              |
+
+### Milestone G: measure
+
+| ID  | Task                                                                                                                                                                                                                 | Needs | Done when                                                                                                         |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------- |
+| G01 | `.github/workflows/ci.yml` on pull requests: `cargo test --workspace`, `npm test`, `npm run typecheck`, `npm run format:check`, `node scripts/eval/eval.mjs dry-run`                                                 | —     | The workflow passes on a pull request                                                                             |
+| G02 | A `tool` line per finished tool call in the agent log (name, failed, error class such as `old_text not found`, ms); the headless report and `result.json` carry `toolErrors`, `editMisses`, `verifyRounds`, `stages` | S10   | Log tests; `summarize()` shows the new columns                                                                    |
+| G03 | Eval variants `autopilot-balanced` and `autopilot-thorough` beside the kind variants; `compare` over any two campaigns; pass@k and pass^k beside the mean                                                            | S10   | `dry-run-variants` runs them on the scripted model; a real pilot on the 30 tasks is run and its summary committed |
+
+---
+
+## 6. Implementation order for an AI agent
+
+### Rules for every task
+
+1. **One task per branch and pull request.** Don't start the next until
+   the current one is merged.
+2. **Read first:** this plan's sections 1 to 4, the task's row, and the
+   files it names; `subagents-plan.md` for a subagent task, the cloud dev
+   plan's sections 5 and 6 for an H task. Follow the surrounding code's
+   style: module doc comments that explain _why_, small functions, tests
+   next to the code.
+3. **Keep the app working.** Nothing changes for a chat that isn't in
+   Autopilot or on a "Works on its own" host, except V04, V05 and V08,
+   which say so in their pull requests. The existing suites pass
+   unchanged.
+4. **Checks before every push:**
+   - `cd src-tauri && cargo check --workspace && cargo test --workspace`
+   - `npm test`
+   - `npm run typecheck`
+   - `npx prettier --check <the files you added or changed>`
+5. **Tests in the same task.** Each row's "Done when" names them. A stage
+   gets an e2e run on the scripted provider; a parser gets good, partial
+   and garbage inputs; a daemon change gets a daemon test.
+6. **Model output is data.** Every verdict, finding and verdict list is
+   parsed strictly; what doesn't parse is `skipped`, never `clean`,
+   `satisfied` or `fixed`. Reports and briefs quote file contents as data
+   (subagents plan D16).
+7. **No new human-wait state.** A task that would add one adds an outcome
+   and a report instead, and `pending_reason` learns it.
+8. **When a task doesn't fit reality,** don't improvise a design. Add a
+   note under "Notes from implementation", take the smallest safe path,
+   and say so in the pull request.
+9. **Protocol changes are additive**, or raise `PROTOCOL` and say why.
+   Every new frame gets a round-trip test.
+10. **Secrets:** the deploy key's path is stored, never its contents; the
+    notify URL may carry a token and is never logged whole.
+
+### Order at a glance
+
+```
+A:  A01 ─► A02 ─► A03 ─► A04 ─► A05;  A06 ─► A07 after A02        the mode, the driver, the strip, the effort
+U:  U01 (after A03) ─► U02 ─► U03;  U04 after A03                   nothing waits
+V:  V01 (after U01), V02 (after A04), V03 (after U04), V06 after V03; V04, V05, V07, V08, V09 any time
+S:  S01 (after A04) ─► S02 ─► S04 ─► S06 ─► S08 ─► S09 ─► S10;  S03 after A03;  S05 after A04;  S07 after S04
+H:  H01 (after A06) ─► H02 (after U01) ─► H03 ─► H04 ─► H05;  H06, H07, H08 after H03
+T:  T01 (after S02) ─► T02 ─► T03;  T04 after S08;  T05 after A04 ─► T06 (after T02);  T07 after S08 and U04;  T08 after S09;  T09 after A06
+G:  G01 any time;  G02 and G03 after S10
+```
+
+After A, U, V and S, one message in Autopilot runs a Balanced task to a
+report on a local chat and in the headless runner. H puts the same on a
+server with nobody connected, and delivers it. T adds Thorough. G measures
+both against the baseline before either becomes a default anywhere.
+
+A03 is the riskiest single change: it threads a state machine through the
+run's end and the daemon's restart. V05 is the riskiest general change.
+T05 depends most on the environment it meets.
+
+---
+
+## 7. Testing
+
+- **Unit tests** next to the code: `next_stage`, the parsers (criteria,
+  verdicts, judge choices, responses), the score's ordering, the
+  environment-failure classifier, the lockfile detection.
+- **Core e2e** on the scripted provider (`agent_run/e2e_tests.rs`'s
+  harness): a Balanced task end to end; each stage's failure outcome; a
+  resume after a kill between any two stages; a budget stop; the blocking
+  review's three paths; acceptance's two rounds; Thorough's candidates,
+  tie and breaker.
+- **Daemon tests** (`crates/rovik-agentd/tests/`): a task that runs to
+  delivery with the client gone; `kill -9` between stages; delivery to a
+  local bare remote over a file URL and over the in-process SSH server;
+  the notice to a local HTTP server; a 429 retried.
+- **Headless**: a Balanced and a Thorough task on the scripted provider,
+  with the stages in the report.
+- **Frontend**: the picker, the strip's states, the Autopilot section, the
+  host block, the hosts page's chat list.
+- **Faults to inject:** the daemon killed during a stage's subagent; the
+  reviewer model down for a whole stage (recorded `skipped`, the task
+  goes on, the report says so); a plan with no "## Criteria"; a push
+  refused by the remote; a judge that returns nothing parseable; a
+  working copy that can't be made for the second candidate.
+- **Manual matrix:** a Node project with no tests; a Rust workspace; a
+  Python project with `pytest` only; a monorepo with two packages; a
+  project whose `origin` needs the deploy key; a "Works on its own" host
+  with the laptop closed for the whole task.
+
+---
+
+## 8. Risks and known limits
+
+- **Cost and time.** A Balanced task costs two to three plain Agent runs;
+  a Thorough one costs several times that and takes hours. The budget is
+  the bound, and G03 says whether the extra stages pay for themselves
+  before anything becomes a default.
+- **Parsing.** Every new stage adds a verdict a model writes and the
+  harness parses. Rule 6 keeps a parse failure from ever counting as a
+  pass, and `skipped` stages are visible in the strip and the report.
+- **Two working copies.** Thorough's second implementer needs a child
+  overlay or a sibling worktree; without either (a server without FUSE
+  _and_ a project the daemon can't worktree twice) Thorough runs one
+  implementer and says so.
+- **The deploy key.** It sits on the server, readable by the agent's
+  commands, as the API keys are. Use a key that may push only `rovik/*`
+  branches where the forge allows it; the sandbox stays on the "Later"
+  list.
+- **Validation commands as checks (V02).** Commands the model wrote run
+  unattended. They come from a reviewed plan and pass the denylist; a
+  project with no checks of its own is where the agent's output is least
+  trustworthy anyway, so the alternative, landing unverified, is worse.
+- **Assumptions.** No question is asked, so a wrong reading of the request
+  costs a task. Criteria written twice (Thorough) and the report's
+  "Assumptions" first keep the cost to one task.
+- **General changes (V04, V05, V08)** alter behaviour for every chat. Each
+  has its own task and tests, and each is small.
+- **Known limits of v1:** no per-chat effort; no smoke test of the running
+  product (a design note under "Later" when T is done: long-lived
+  processes, port discovery, then the browser tools); no email or push
+  notices; no CLI to start a task without the app; no sandbox.
+
+---
+
+## 9. Decided questions
+
+| Question                                      | Decision                                                                                                                        | Where    |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| A mode, a host policy, or both?               | **Both**: the mode does the work and runs anywhere; the host policy chooses it by default and adds delivery, notice and budget. | D1, H02  |
+| One long run or a pipeline of runs?           | **A pipeline**: fresh contexts and existing code paths per stage.                                                               | D2       |
+| Where does the pipeline's state live?         | **In stage records**, rows in the chat.                                                                                         | D3       |
+| Criteria by a separate writer or in the plan? | **In the plan** for Balanced; **two writers and a judge** for Thorough.                                                         | D8, T03  |
+| Tests before or after the implementation?     | **Before**, from the criteria, red check on.                                                                                    | D9       |
+| Is the change review blocking?                | **Yes**, with structured answers and a follow-up review.                                                                        | D10      |
+| How are candidates judged?                    | **Mechanically**, the judge on ties.                                                                                            | D14      |
+| Does Autopilot ever ask the user?             | **Never.**                                                                                                                      | D5       |
+| What bounds a loop?                           | **Progress and the budget**; a count only in Balanced where one exists today.                                                   | D12, T07 |
+| Where is the effort set?                      | **Settings → Subagents → Autopilot**, overridden per host.                                                                      | D4       |
+| What leaves a server?                         | **A branch, and a pull request when `gh` is there**; the result ref stays for the laptop.                                       | D15      |
+| Changes for everyone?                         | **Three**, named, each its own task.                                                                                            | D20      |
+
+## Notes from implementation
+
+(Added as tasks land.)
