@@ -54,6 +54,7 @@ import {
   setupVerdict,
   testHost,
   testVerdict,
+  trustBuild,
   trustKey,
   unlockSecrets,
   upgradeHost,
@@ -78,8 +79,6 @@ export interface HostsSettingsController {
 }
 
 interface CloudHostsSettingsProps {
-  /** The providers' base URLs: the test tries each from the server. */
-  apiUrls: string[];
   controller?: (api: HostsSettingsController) => void;
 }
 
@@ -180,7 +179,6 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
             <HostPage
               row={host()}
               build={list()?.build}
-              apiUrls={props.apiUrls}
               onEdit={() => setView({ kind: 'form', host: hostOf(host()), isNew: false })}
               onChanged={refresh}
             />
@@ -468,7 +466,6 @@ function HostForm(props: {
 function HostPage(props: {
   row: HostRow;
   build?: string;
-  apiUrls: string[];
   onEdit: () => void;
   onChanged: () => Promise<void>;
 }) {
@@ -491,7 +488,7 @@ function HostPage(props: {
       if (hostId === id) setSteps((s) => [...s, step]);
     });
     try {
-      setSteps(await testHost(id, props.apiUrls));
+      setSteps(await testHost(id));
     } catch (err) {
       setTestError(String(err));
     } finally {
@@ -501,9 +498,10 @@ function HostPage(props: {
     }
   }
 
-  async function trust(key: string) {
+  /** Trusts what the test showed (`confirm`), then tests again. */
+  async function trust(confirm: () => Promise<void>) {
     try {
-      await trustKey(id, key);
+      await confirm();
       await props.onChanged();
       await runTest();
     } catch (err) {
@@ -690,6 +688,11 @@ function HostPage(props: {
           </span>
           <button onClick={props.onEdit}>Edit</button>
         </div>
+        <Show when={deployed() && props.row.state === 'offline'}>
+          <p class="settings-hint">
+            The app can’t reach Rovik there right now. Test the connection to see why.
+          </p>
+        </Show>
       </section>
 
       <section class="settings-section host-test">
@@ -725,9 +728,22 @@ function HostPage(props: {
                         <code>{key().fingerprint}</code>
                         <button
                           class="chat-action-button primary"
-                          onClick={() => void trust(key().key)}
+                          onClick={() => void trust(() => trustKey(id, key().key))}
                         >
                           Trust this key
+                        </button>
+                      </div>
+                    )}
+                  </Show>
+                  <Show when={step.build}>
+                    {(build) => (
+                      <div class="host-key-confirm host-build-confirm">
+                        <code>{build().sha256}</code>
+                        <button
+                          class="chat-action-button primary"
+                          onClick={() => void trust(() => trustBuild(id, build().sha256))}
+                        >
+                          Trust this build
                         </button>
                       </div>
                     )}
@@ -753,8 +769,9 @@ function HostPage(props: {
                 when={props.build}
                 fallback={
                   <p class="settings-hint setting-explain warning">
-                    There’s no build to deploy: set ROVIK_AGENTD_BINARY to a rovik-agentd built for
-                    the server. Signed releases are to come.
+                    There’s no build to deploy: this build of Rovik has no release key to check a
+                    downloaded daemon with. Set ROVIK_AGENTD_BINARY to a rovik-agentd built for the
+                    server (scripts/build-agentd.sh makes one).
                   </p>
                 }
               >

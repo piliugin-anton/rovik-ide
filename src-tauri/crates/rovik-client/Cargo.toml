@@ -34,9 +34,15 @@ base64 = "0.23.1"
 russh = "0.63.3"
 # The deployed build's hash, checked on the server (H05).
 sha2.workspace = true
+# This app's release of the daemon, downloaded for a deploy (B02), and
+# builds gzipped on their way to a server.
+reqwest.workspace = true
+flate2 = "1.1.10"
 
 [dev-dependencies]
 tempfile = "3.27.0"
 # Cores on temporary folders, and the database read as the frontend would.
 rovik-core = { workspace = true, features = ["testing"] }
 rusqlite.workspace = true
+# A release key and files it signed (release::fixture).
+rovik-protocol = { workspace = true, features = ["testing"] }

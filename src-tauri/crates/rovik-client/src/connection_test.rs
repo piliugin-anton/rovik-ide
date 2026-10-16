@@ -2,19 +2,22 @@
 //! result, so the hosts page shows how far it got and what's wrong. The
 //! name and TCP; the handshake and the host's key; logging in; the probe,
 //! a script that says in one exec what the server offers (`probe`); and,
-//! once the daemon is deployed, its health and version through the
-//! tunnel, with what `rovik-agentd doctor` says of it (R03): what stops it
-//! from starting, its heavy-work slots and what Rovik's folders take. A
+//! once the daemon is deployed, Rovik's binary there against the build
+//! this computer trusts (D5), then the daemon's health and version through
+//! the tunnel, with what `rovik-agentd doctor` says of it (R03): what stops
+//! it from starting, its heavy-work slots and what Rovik's folders take. A
 //! failed step that the next ones need ends the test.
 //!
 //! The first connection stops at the host's key, before any credential
 //! goes: the step carries the key and its fingerprint, for the user to
-//! compare and confirm, and the test runs again with the key pinned.
+//! compare and confirm, and the test runs again with the key pinned. A
+//! build that changed since it was trusted stops the test the same way.
 
 pub mod probe;
 
-use crate::deploy::Layout;
+use crate::deploy::{self, DeployError, InstalledBuild, Layout};
 use crate::http;
+use crate::release::Releases;
 use crate::ssh::{Ssh, SshAuth, SshConnector, SshError, SshTarget};
 use probe::{Probe, PROBE};
 use rovik_protocol::host::{Doctor, Level};
@@ -36,7 +39,7 @@ pub enum Check {
     /// The handshake, and the host's key against the one pinned.
     HostKey,
     LogIn,
-    /// The probe's findings, from here to `Api`.
+    /// The probe's findings, from here to `Install`.
     System,
     Account,
     Disk,
@@ -49,8 +52,8 @@ pub enum Check {
     /// Rovik on the server: its version and administrators, or how a
     /// deploy would install it.
     Install,
-    /// A provider's API, from the server: one step an address.
-    Api,
+    /// Rovik's binary there against the build this computer trusts.
+    Build,
     /// The user's daemon, through the tunnel.
     Daemon,
 }
@@ -62,8 +65,8 @@ pub enum Outcome {
     /// It works, with something missing or worth knowing.
     Warning,
     Failed,
-    /// The host's key isn't pinned yet: the user is to compare and confirm
-    /// it.
+    /// The host's key isn't pinned yet, or Rovik's build there isn't the
+    /// one trusted: the user is to compare and confirm it.
     Confirm,
     /// Not tested, and why.
     Skipped,
@@ -80,6 +83,9 @@ pub struct Step {
     /// The host's key, when it's to be confirmed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_key: Option<SeenKey>,
+    /// Rovik's build there, when it's to be trusted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<InstalledBuild>,
 }
 
 /// A host key as the host showed it.
@@ -99,6 +105,7 @@ impl Step {
             outcome,
             message,
             host_key: None,
+            build: None,
         }
     }
 
@@ -111,10 +118,15 @@ impl Step {
 /// What's tested besides the connection.
 #[derive(Clone, Debug, Default)]
 pub struct TestOptions {
-    /// The providers' API addresses, tried from the server.
-    pub api_urls: Vec<String>,
     /// The daemon is deployed: its health is asked for.
     pub deployed: bool,
+    /// The builds this computer trusts there, by their SHA-256: Rovik's
+    /// binary is checked against them once it's deployed. None, it isn't.
+    pub known: Vec<String>,
+    /// Where Rovik is installed there.
+    pub layout: Layout,
+    /// The releases whose builds are Rovik's own besides `known`.
+    pub releases: Option<Releases>,
 }
 
 /// The steps so far, each told to `report` as it ends.
@@ -169,7 +181,7 @@ pub async fn test_connection(
             return steps.done;
         }
     };
-    let probe = match run_probe(&ssh, &options.api_urls).await {
+    let probe = match run_probe(&ssh).await {
         Ok(probe) => probe,
         Err(step) => {
             steps.push(step);
@@ -178,6 +190,12 @@ pub async fn test_connection(
     };
     for step in probe.findings() {
         steps.push(step);
+    }
+    if options.deployed && !options.known.is_empty() {
+        let step = build(&ssh, options, &target.user).await;
+        if !steps.push(step) {
+            return steps.done;
+        }
     }
     if options.deployed || probe.socket {
         let mut step = daemon(connector).await;
@@ -195,6 +213,27 @@ pub async fn test_connection(
         ));
     }
     steps.done
+}
+
+/// Rovik's binary there, as each connection checks it (D5): a build that
+/// changed since it was trusted is for the user to compare and trust.
+async fn build(ssh: &Ssh, options: &TestOptions, user: &str) -> Step {
+    let step = |outcome, message: String| Step::new(Check::Build, outcome, message);
+    let releases = options.releases.as_ref();
+    match deploy::check_install(ssh, &options.known, releases, user, &options.layout).await {
+        Ok(build) => step(
+            Outcome::Passed,
+            match &build.version {
+                Some(version) => format!("Rovik {version} there is the build you trusted."),
+                None => "Rovik there is the build you trusted.".into(),
+            },
+        ),
+        Err(DeployError::Changed(build)) => Step {
+            build: Some(build.clone()),
+            ..step(Outcome::Confirm, DeployError::Changed(build).to_string())
+        },
+        Err(e) => step(Outcome::Failed, e.to_string()),
+    }
 }
 
 /// The name, then a TCP connection to the SSH port at one of its
@@ -302,17 +341,16 @@ fn refused(target: &SshTarget, e: SshError) -> Vec<Step> {
 }
 
 /// Runs the probe, and reads what it says.
-async fn run_probe(ssh: &Ssh, urls: &[String]) -> Result<Probe, Step> {
+async fn run_probe(ssh: &Ssh) -> Result<Probe, Step> {
     let failed = |why: String| Step::new(Check::System, Outcome::Failed, why);
-    probe_server(ssh, urls).await.map_err(failed)
+    probe_server(ssh).await.map_err(failed)
 }
 
 /// What the server offers, as the probe says (H04, and the deploy).
-pub(crate) async fn probe_server(ssh: &Ssh, urls: &[String]) -> Result<Probe, String> {
-    // Chrome may take 30 s to start, and each address 10 s.
-    let wait = Duration::from_secs(60 + 15 * urls.len() as u64);
-    let command = probe::command(urls);
-    let run = ssh.exec_with_input(&command, PROBE.as_bytes());
+pub(crate) async fn probe_server(ssh: &Ssh) -> Result<Probe, String> {
+    // Chrome may take 30 s to start.
+    let wait = Duration::from_secs(60);
+    let run = ssh.exec_with_input(probe::COMMAND, PROBE.as_bytes());
     let output = match tokio::time::timeout(wait, run).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => return Err(format!("The probe couldn't run on the server: {e}")),

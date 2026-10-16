@@ -12,8 +12,9 @@
 
 use crate::client::{HostState, Identity};
 use crate::connection_test::{test_connection, Step, TestOptions};
-use crate::deploy::{self, Binary, DeployError, Layout, Removal, SetupRun};
+use crate::deploy::{self, Builds, DeployError, Layout, Removal, SetupRun};
 use crate::host_settings::{AuthKind, DeployState, Host, HostSettings};
+use crate::release::Releases;
 use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
@@ -49,7 +50,8 @@ pub struct HostsList {
     pub hosts: Vec<HostRow>,
     /// Where secrets are kept, for the page to say (design §6).
     pub store: StoreKind,
-    /// The build a deploy uploads (`ROVIK_AGENTD_BINARY`), if there is one.
+    /// What a deploy uploads: the build `ROVIK_AGENTD_BINARY` names, or
+    /// this app's release when there's a key to check it with.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
 }
@@ -158,7 +160,9 @@ impl From<DeployError> for DeployFailure {
             DeployError::Unsupported(_) => DeployFailure::Unsupported { message },
             DeployError::SudoPassword => DeployFailure::SudoPassword { message },
             DeployError::NeedsRoot { command } => DeployFailure::NeedsRoot { command, message },
-            DeployError::Tampered(_) => DeployFailure::Tampered { message },
+            DeployError::Tampered(_) | DeployError::Changed(_) => {
+                DeployFailure::Tampered { message }
+            }
             DeployError::AskAdmins(admins) => DeployFailure::AskAdmins { admins, message },
             DeployError::Failed(_) => DeployFailure::Failed { message },
         }
@@ -265,7 +269,7 @@ impl HostsPage {
         }
         let mut connector = SshConnector::new(self.target(host)?);
         if let Some(sha256) = sha256 {
-            connector = connector.with_install_check(vec![sha256.clone()]);
+            connector = connector.with_install_check(vec![sha256.clone()], Some(self.releases()));
         }
         self.remote.connect(&host.id, connector, identity);
         Ok(())
@@ -376,11 +380,19 @@ impl HostsPage {
                 host,
             });
         }
-        let build = std::env::var_os("ROVIK_AGENTD_BINARY");
+        // What a deploy takes, without reading it: a build of one's own,
+        // or this app's release, when there's a key to check it with.
+        let build = match std::env::var_os("ROVIK_AGENTD_BINARY") {
+            Some(path) => Some(path.to_string_lossy().into_owned()),
+            None => self
+                .releases()
+                .has_key()
+                .then(|| format!("Rovik {}'s release", self.version)),
+        };
         Ok(HostsList {
             hosts,
             store: self.secrets.kind(),
-            build: build.map(|b| b.to_string_lossy().into_owned()),
+            build,
         })
     }
 
@@ -448,14 +460,22 @@ impl HostsPage {
     pub async fn test(
         &self,
         id: &str,
-        api_urls: &[String],
         report: &(dyn Fn(&Step) + Send + Sync),
     ) -> Result<Vec<Step>, String> {
         let host = self.host(id)?;
         let connector = SshConnector::new(self.target(&host)?);
+        let known = match &host.deploy {
+            DeployState::Deployed {
+                sha256: Some(sha256),
+                ..
+            } => vec![sha256.clone()],
+            _ => Vec::new(),
+        };
         let options = TestOptions {
-            api_urls: api_urls.to_vec(),
             deployed: matches!(host.deploy, DeployState::Deployed { .. }),
+            known,
+            layout: Layout::default(),
+            releases: Some(self.releases()),
         };
         Ok(test_connection(&connector, &options, report).await)
     }
@@ -474,6 +494,31 @@ impl HostsPage {
         Ok(())
     }
 
+    /// This app's releases, kept in its data folder.
+    fn releases(&self) -> Releases {
+        Releases::new(self.remote.data_dir())
+    }
+
+    /// Trusts the build of Rovik the host runs now, once the user compared
+    /// it with what the connection test showed: an administrator's
+    /// upgrade, say. The host connects again, checked against it (D5).
+    pub fn trust_build(&self, id: &str, sha256: &str) -> Result<(), String> {
+        let hex = sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit());
+        if !hex {
+            return Err(format!("{sha256} isn't a SHA-256."));
+        }
+        let host = self.host(id)?;
+        if !matches!(host.deploy, DeployState::Deployed { .. }) {
+            return Err("Rovik isn't deployed for you on this host.".into());
+        }
+        let host = self.change_host(id, |host| {
+            if let DeployState::Deployed { sha256: kept, .. } = &mut host.deploy {
+                *kept = Some(sha256.to_ascii_lowercase());
+            }
+        })?;
+        self.connect(&self.settings()?.computer, &host)
+    }
+
     /// Who approves on the host while nobody is there (6.9).
     pub fn set_policy(&self, id: &str, policy: ApprovalPolicy) -> Result<(), String> {
         self.change_host(id, |host| host.approval_policy = policy)?;
@@ -490,12 +535,12 @@ impl HostsPage {
     ) -> Result<String, DeployFailure> {
         let host = self.host(id)?;
         let connector = SshConnector::new(self.target(&host)?);
-        let binary = Binary::from_env()?;
+        let builds = Builds::new(self.remote.data_dir(), &self.version)?;
         let computer = self.settings()?.computer;
         let layout = Layout::default();
         let deployed = deploy::deploy(
             &connector,
-            &binary,
+            &builds,
             &computer,
             sudo_password.as_ref(),
             &layout,
@@ -524,11 +569,11 @@ impl HostsPage {
     pub async fn upgrade(&self, id: &str) -> Result<(), DeployFailure> {
         let host = self.host(id)?;
         let connector = SshConnector::new(self.target(&host)?);
-        let binary = Binary::from_env()?;
-        deploy::upgrade(&connector, &binary, &Layout::default()).await?;
+        let builds = Builds::new(self.remote.data_dir(), &self.version)?;
+        let installed = deploy::upgrade(&connector, &builds, &Layout::default()).await?;
         let host = self.change_host(id, |host| {
             if let DeployState::Deployed { sha256, .. } = &mut host.deploy {
-                *sha256 = Some(binary.sha256.clone());
+                *sha256 = Some(installed);
             }
         })?;
         self.connect(&self.settings()?.computer, &host)?;
@@ -953,6 +998,41 @@ mod tests {
         host.host = "build.example.com".into();
         host.port = 0;
         assert!(check(&host).is_err());
+    }
+
+    /// D5: a build the user compared is the one each connection checks
+    /// from then on, on a deployed host alone.
+    #[tokio::test]
+    async fn a_build_the_user_trusts_is_kept_for_the_host() {
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("pw")).unwrap();
+        let sha256 = "AB".repeat(32);
+        let undeployed = setup.page.trust_build(&saved.id, &sha256);
+        assert!(undeployed.unwrap_err().contains("isn't deployed"));
+        setup
+            .page
+            .change_host(&saved.id, |host| {
+                host.deploy = DeployState::Deployed {
+                    version: "0.1.0".into(),
+                    sha256: Some("00".repeat(32)),
+                }
+            })
+            .unwrap();
+        let token = SecretName::Token {
+            host: saved.id.clone(),
+        };
+        setup
+            .page
+            .secrets
+            .set(&token, &Secret("token".into()))
+            .unwrap();
+        assert!(setup.page.trust_build(&saved.id, "abc").is_err());
+        setup.page.trust_build(&saved.id, &sha256).unwrap();
+        let host = setup.page.host(&saved.id).unwrap();
+        let DeployState::Deployed { sha256: kept, .. } = host.deploy else {
+            panic!("{:?}", host.deploy);
+        };
+        assert_eq!(kept, Some("ab".repeat(32)));
     }
 
     #[test]

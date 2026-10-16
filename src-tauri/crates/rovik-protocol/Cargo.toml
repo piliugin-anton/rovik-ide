@@ -1,7 +1,7 @@
 [package]
 name = "rovik-protocol"
 version.workspace = true
-description = "What the app and the agent daemon send each other: serde types only"
+description = "What the app and the agent daemon send each other, and how Rovik's releases are signed"
 edition.workspace = true
 
 [features]
@@ -11,3 +11,6 @@ testing = []
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# Releases' signatures (B02): minisign, as `tauri signer` makes them.
+minisign-verify = "0.3.0"
+base64 = "0.23.1"

@@ -1,0 +1,209 @@
+# A release, started by hand from the Actions tab with its version
+# (Run workflow, on the branch to release from). It sets that version in
+# the sources and commits and tags it, then builds the app for each
+# platform and the daemon for each CPU, signs them with the release key
+# and publishes them on the tag's GitHub release:
+#
+# - the app's bundles (tauri-action), with the updater's latest.json once
+#   tauri.conf.json makes updater artifacts (bundle.createUpdaterArtifacts);
+# - rovik-agentd-<version>-<cpu> for x86_64 and aarch64, static builds
+#   for any Linux (scripts/build-agentd.sh), gzipped (.gz, a tenth of
+#   their size), each with the build's .sig, and their SHA256SUMS with its
+#   .sig: what the app downloads for a deploy and its install check reads
+#   (B02).
+#
+# It needs, in the repository's secrets, the key `npx tauri signer
+# generate` made: TAURI_SIGNING_PRIVATE_KEY, and its password in
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD. The public half goes in
+# src-tauri/release-key.pub (and the updater's pubkey). If the branch is
+# protected, RELEASE_TOKEN, a token that may push to it, pushes the
+# version's commit and tag. The release stays a draft until every file is
+# on it; a version such as 1.2.3-4 is published as a pre-release, which
+# GitHub's latest release, and an updater that reads it, skips.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, as 1.2.3 (a Windows installer takes only numbers: 1.2.3-4 for a pre-release)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Scripts take the version from here, as the text it is: never from an
+  # expression written into them.
+  VERSION: ${{ inputs.version }}
+  TAG: v${{ inputs.version }}
+
+jobs:
+  version:
+    name: Set the version, commit and tag
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.draft.outputs.id }}
+    steps:
+      - name: Check where it runs
+        run: |
+          if [ "$GITHUB_REF_TYPE" != branch ]; then
+            echo "Run the workflow on a branch, not on $GITHUB_REF_TYPE $GITHUB_REF_NAME." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Set the version
+        run: scripts/set-version.sh "$VERSION"
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Nothing to commit when the sources have that version already.
+          git diff --quiet || git commit -am "Release $VERSION"
+          git tag "$TAG"
+          # Both or neither: a tag that's taken leaves the branch as it was.
+          git push --atomic origin "HEAD:$GITHUB_REF_NAME" "$TAG"
+      - name: Draft the release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=false
+          case "$VERSION" in *-*) prerelease=true ;; esac
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="$TAG" -f name="Rovik $VERSION" \
+            -F draft=true -F prerelease=$prerelease -F generate_release_notes=true \
+            --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  daemon:
+    name: Daemon (${{ matrix.cpu }})
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cpu: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cpu }}-unknown-linux-musl
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install zig and cargo-zigbuild
+        run: pip install cargo-zigbuild
+      - name: Build
+        run: scripts/build-agentd.sh ${{ matrix.cpu }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daemon-${{ matrix.cpu }}
+          path: src-tauri/target/agentd/rovik-agentd-*
+          if-no-files-found: error
+
+  app:
+    name: App (${{ matrix.name }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-22.04
+            args: ""
+          - name: macOS, Apple silicon
+            runner: macos-latest
+            args: --target aarch64-apple-darwin
+          - name: macOS, Intel
+            runner: macos-latest
+            args: --target x86_64-apple-darwin
+          - name: Windows
+            runner: windows-latest
+            args: ""
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Install the system's packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
+            librsvg2-dev libayatana-appindicator3-dev libssl-dev \
+            libsoup-3.0-dev libxdo-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # The draft the version job made, so that the platforms don't each
+          # make one; the tag names the updater's download links.
+          releaseId: ${{ needs.version.outputs.release }}
+          tagName: ${{ env.TAG }}
+          args: ${{ matrix.args }}
+
+  publish:
+    name: Sign the daemon, and publish
+    needs: [daemon, app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: daemon-*
+          path: agentd
+          merge-multiple: true
+      - name: Sign the builds and their SHA256SUMS, and gzip the builds
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "TAURI_SIGNING_PRIVATE_KEY isn't set"; exit 1; }
+          cd agentd
+          chmod 755 rovik-agentd-*
+          sha256sum rovik-agentd-* > SHA256SUMS
+          # Each signature is the build's own, as the server checks the
+          # build it installs; the app checks it once it has unpacked.
+          for file in rovik-agentd-* SHA256SUMS; do
+            npx tauri signer sign "$file"
+          done
+          for build in $(ls rovik-agentd-* | grep -v '\.sig$'); do
+            gzip -9 "$build"
+          done
+          ls -l
+      - name: Attach them, and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" agentd/*.gz agentd/*.sig agentd/SHA256SUMS --clobber
+          gh release edit "$TAG" --draft=false

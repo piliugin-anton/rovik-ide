@@ -43,6 +43,8 @@ test('the test’s verdict: running, nothing yet, a key to check, the first fail
   assert.equal(testVerdict([], false), null);
   const key = [step('address', 'passed'), step('host-key', 'confirm'), step('log-in', 'skipped')];
   assert.equal(testVerdict(key, false)?.label, 'Check the server’s key');
+  const build = [step('install', 'passed'), step('build', 'confirm')];
+  assert.equal(testVerdict(build, false)?.label, 'Check Rovik’s build there');
   const failed = [step('address', 'passed'), step('log-in', 'failed'), step('disk', 'failed')];
   assert.deepEqual(testVerdict(failed, false), { label: 'Failed: Log-in', tone: 'error' });
   const warned = [step('address', 'passed'), step('chrome', 'warning')];

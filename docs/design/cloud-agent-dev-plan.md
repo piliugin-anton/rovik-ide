@@ -2341,6 +2341,10 @@ Tasks add notes here when reality differs from the plan.
     used yet. The e2e test runs the probe on this machine through the
     test SSH server, against a local API that answers 401 and a closed
     port. The run against a VPS stays manual.
+  - Later, at the user's request, the providers went from the test: Test
+    connection asks no provider anything, from the server or from here,
+    and shows no Provider step. The probe takes no arguments (`sh -s`),
+    and the e2e test has no local API.
 - **H06, the desktop's API keys.**
   - `rovik_client::provider_keys::ProviderKeys` stands between the two
     settings commands and `ai-settings.json`. The file is now version 3:
@@ -2451,6 +2455,19 @@ Tasks add notes here when reality differs from the plan.
     login is refused before anything is uploaded. A second user's
     deploy, a deploy without sudo, and a changed binary on a real server
     stay manual checks on a systemd host.
+  - Later, an interim fix for D5 on servers others install or upgrade.
+    Every user but the one who installed Rovik was refused once deployed:
+    a deploy kept the hash of the build it uploaded, but on a server with
+    Rovik it only starts the build installed there. Everyone was refused
+    after an administrator's upgrade from another computer too. Neither
+    showed: the connection test didn't run the check, so the host only
+    read as offline. Now a deploy trusts the build the server runs once
+    it's done. A build that isn't the one trusted is `Changed`, with its
+    SHA-256 and the version its name says (`rovik-agentd-<version>`): the
+    connection test shows it under Build with "Trust this build"
+    (`hosts_trust_build`), as it shows a new host key, and stops there.
+    The page says to test the connection when a deployed host is
+    offline. Signed releases (B02) let the check take any release build.
 - **H08 is skipped for now, as asked.** The agent's Chrome stays on eoka
   0.5.14's DevTools port on `127.0.0.1`, so on a shared server other users
   can reach the browser that runs as you (K52). `docs/cloud-hosts.md`
@@ -2478,8 +2495,8 @@ Tasks add notes here when reality differs from the plan.
     with chats on it, or moving there, isn't removed, and Rovik isn't
     removed from it; the page says so before asking the server anything.
   - Test connection shows each step as it ends (`host-test`), with the
-    fingerprint and "Trust this key" on first use, then tests again. The
-    providers' base URLs go to its API step. Deploy asks for the sudo
+    fingerprint and "Trust this key" on first use, then tests again. It
+    asks no provider anything (H04's notes). Deploy asks for the sudo
     password when sudo wants one and shows the command for someone with
     root when sudo isn't the user's. Without `ROVIK_AGENTD_BINARY` there
     is nothing to deploy, and the page says so.
@@ -2838,3 +2855,87 @@ Tasks add notes here when reality differs from the plan.
     machine or CI was at hand: the tests there and the manual check on a
     Windows laptop (a checkout with `autocrlf`, the agent's pipe, a project
     on `C:\`) are still to do.
+- **B01, static builds.**
+  - `scripts/build-agentd.sh` makes them with cargo-zigbuild, which
+    `pip install cargo-zigbuild` installs with zig, for
+    `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, with
+    `--profile release-daemon --locked`, and copies each to
+    `src-tauri/target/agentd/rovik-agentd-<version>-<cpu>`, a release's
+    name for it.
+  - Every C library built with zig as it is: aws-lc-sys, so K20's
+    fallback to `ring` wasn't needed, libgit2, SQLite, zlib and the
+    tree-sitter grammars.
+  - Each build took 8 minutes here. Both are statically linked and about
+    165 MB stripped, mostly the grammars' tables: gzipped, 19 MB (xz:
+    12 MB). The x86_64 one runs `version` and `doctor` on this machine;
+    the aarch64 one was checked with `file` alone, as nothing here runs
+    it. Starting them on Alpine and Ubuntu, as the plan's test says, is
+    still to do.
+- **B02 and B03, signed releases and builds of one's own.**
+  - The key is the one the app's updates are signed with: a minisign key,
+    as `tauri signer generate` makes it, and `tauri signer sign` signs
+    each file (base64 of minisign's text). `rovik_protocol::release`
+    checks with `minisign-verify`, which has no dependencies of its own,
+    against the key compiled in from `src-tauri/release-key.pub`. That
+    file has no key until one is made; a debug build takes
+    `ROVIK_RELEASE_KEY` instead, for the tests. The tests' fixture was
+    signed by the real `tauri signer`, with a key thrown away since.
+  - A release has `rovik-agentd-<version>-<cpu>.gz`, the build gzipped
+    (19 MB of 165), `rovik-agentd-<version>-<cpu>.sig`, the build's own
+    signature, and `SHA256SUMS` with its `.sig`.
+  - The app (`rovik_client::release::Releases`) downloads the build for
+    the server's CPU from its own version's release, unpacks it (1 GiB at
+    most), checks it, and keeps it under `releases/<version>/` in its
+    data folder, the current version's build alone. It's checked again
+    each time it's read. `ROVIK_AGENTD_BINARY` still names a build of
+    one's own, and `ROVIK_RELEASES_URL` another place to download from.
+    The page offers Deploy when there's either.
+  - A deploy or an upgrade uploads the build gzipped where the server has
+    gzip, unpacked there and checked by its SHA-256 as before, with its
+    signature beside it (`.rovik-agentd-upload.sig`); a build of one's own
+    removes an older one there.
+  - `admin upgrade FILE` takes a build whose `FILE.sig` the installed
+    binary's key checks, so a new build can't vouch for itself. A
+    signature that doesn't match is refused, and a build without one goes
+    in only where `allow_unsigned = true`, as before.
+  - The install check takes, besides the builds this computer trusts, any
+    build its version's release lists in `SHA256SUMS`, which is signed,
+    kept, and fetched with a short timeout while connecting. The version
+    is the installed build's name, `rovik-agentd-<version>`. An
+    administrator's upgrade to a release no longer asks to be trusted.
+  - Tests: the fixture through `verify`, and the list's parsing; a release
+    server in the client's tests, whose build is downloaded once and kept,
+    a changed copy downloaded again, older versions' builds removed, and
+    an unsigned or missing build refused; `admin upgrade` taking a signed
+    build where unsigned ones aren't allowed, and refusing the same
+    signature on another build.
+- **Versions, and the release workflow.**
+  - The version is written once, under `[workspace.package]` in
+    `src-tauri/Cargo.toml`: every crate takes it, and `tauri.conf.json`
+    names none now, so the app's bundles take the app crate's. It's in
+    `package.json` too. `scripts/set-version.sh 1.2.3` writes both, and
+    their lock files (`cargo update --workspace`, `npm version`), and
+    refuses a version a Windows installer wouldn't take: numbers only,
+    `1.2.3`, or `1.2.3-4` for a pre-release.
+  - B02's workflow is `.github/workflows/release.yml`, not `agentd.yml` on
+    `v*` tags: it's started by hand with the version (Actions, Release,
+    Run workflow), sets it, commits it and tags it `v<version>` itself, so
+    a tag can't name another version than its sources. Then it drafts the
+    release, builds the app on each platform into that draft with
+    `tauri-action`, and the daemon for both CPUs with
+    `scripts/build-agentd.sh`, signs each build and `SHA256SUMS` with
+    `tauri signer sign` (`.sig`, not `.minisig`, as the key is tauri's),
+    gzips the builds, attaches them and publishes the release, a
+    pre-release for `1.2.3-4`.
+  - The key is the developer's to make, once (README, Releases). The
+    updater's own files, `latest.json` and the bundles' signatures, come
+    once `bundle.createUpdaterArtifacts` is on, with the updater plugin.
+  - Checked here: `set-version.sh` in a clone (both manifests and lock
+    files changed, a version with letters refused), after which `tauri
+bundle` named a `.deb` with that version, `Cargo.toml`'s and not
+    `package.json`'s, and `scripts/build-agentd.sh` read it; and the
+    publish step's commands with a throwaway key: each build, unpacked, has the
+    hash the signed `SHA256SUMS` lists, and each signature checks, as
+    minisign's format has it. actionlint and GitHub's schema take the
+    workflow, but it hasn't run: the first release is its test, the
+    Windows and macOS builds included.

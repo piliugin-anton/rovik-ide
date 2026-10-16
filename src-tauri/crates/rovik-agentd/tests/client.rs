@@ -25,7 +25,6 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 /// What a client hears.
@@ -442,35 +441,11 @@ async fn a_host_refusing_streamlocal_is_reached_through_attach() {
     );
 }
 
-/// A provider's API that answers every request 401, as one does without a
-/// key: its address.
-async fn api_answering_401() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let mut buffer = [0; 1024];
-                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-                    match stream.read(&mut buffer).await {
-                        Ok(0) | Err(_) => return,
-                        Ok(n) => request.extend_from_slice(&buffer[..n]),
-                    }
-                }
-                let answer = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
-                let _ = stream.write_all(answer.as_bytes()).await;
-            });
-        }
-    });
-    format!("http://127.0.0.1:{port}/v1/models")
-}
-
 /// H04: the connection test, a step at a time. The first run stops at the
 /// host's key, nothing sent; once it's pinned, a wrong password stops at
 /// logging in; the right one lets the probe run on the server (this
-/// machine) in one exec, the providers' addresses tried from there, and
-/// the daemon answers through the tunnel.
+/// machine) in one exec, which tries no provider from there, and the
+/// daemon answers through the tunnel.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() {
     let daemon = Daemon::start(&[]).await;
@@ -516,16 +491,9 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
     pinned.host_key = Some(seen.key);
     let socket = daemon.socket.to_string_lossy().into_owned();
     let connector = SshConnector::new(pinned).with_socket(socket);
-    let closed = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        format!(
-            "http://127.0.0.1:{}/",
-            listener.local_addr().unwrap().port()
-        )
-    };
     let options = TestOptions {
-        api_urls: vec![api_answering_401().await, closed],
         deployed: true,
+        ..Default::default()
     };
     told.lock().unwrap().clear();
     let steps = test_connection(&connector, &options, &report).await;
@@ -543,8 +511,6 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
         "isolation",
         "service",
         "install",
-        "api",
-        "api",
         "daemon",
     ];
     assert_eq!(serde_json::to_value(&checks).unwrap(), json!(expected));
@@ -555,16 +521,9 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
         "{}",
         outcome(2).1
     );
-    assert_eq!(outcome(11).0, Outcome::Passed, "the 401: {}", outcome(11).1);
-    assert_eq!(
-        outcome(12).0,
-        Outcome::Failed,
-        "the closed port: {}",
-        outcome(12).1
-    );
-    assert_eq!(outcome(13).0, Outcome::Passed, "{}", outcome(13).1);
+    assert_eq!(outcome(11).0, Outcome::Passed, "{}", outcome(11).1);
     let version = env!("CARGO_PKG_VERSION");
-    assert!(outcome(13).1.contains(version), "{}", outcome(13).1);
+    assert!(outcome(11).1.contains(version), "{}", outcome(11).1);
     // The probe, in one exec, and doctor once deployed (R03): not installed
     // under /opt/rovik here, so the daemon's step stays as its health says.
     assert_eq!(server.execs.load(ordering), 2, "the probe and doctor");

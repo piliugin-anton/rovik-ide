@@ -49,7 +49,10 @@ export type StoreKind = { kind: 'keychain' } | { kind: 'file'; unlocked: boolean
 export interface HostsList {
   hosts: HostRow[];
   store: StoreKind;
-  /** The build a deploy uploads (`ROVIK_AGENTD_BINARY`), if there is one. */
+  /**
+   * What a deploy uploads: the build `ROVIK_AGENTD_BINARY` names, or this
+   * app's release; absent when there's neither.
+   */
   build?: string;
 }
 
@@ -71,7 +74,7 @@ export type Check =
   | 'isolation'
   | 'service'
   | 'install'
-  | 'api'
+  | 'build'
   | 'daemon';
 
 export type Outcome = 'passed' | 'warning' | 'failed' | 'confirm' | 'skipped';
@@ -83,6 +86,8 @@ export interface Step {
   message: string;
   /** The host's key, when it's to be confirmed. */
   hostKey?: { key: string; fingerprint: string };
+  /** Rovik's build on the server, when it isn't the one trusted. */
+  build?: { sha256: string; version?: string };
 }
 
 export interface HostInfo {
@@ -158,11 +163,14 @@ export const saveHost = (host: Host, secrets?: HostSecrets) =>
 
 export const removeHost = (id: string) => invoke<void>('hosts_remove', { id });
 
-/** Tests the host; `apiUrls` are the providers' addresses to try from it. */
-export const testHost = (id: string, apiUrls: string[]) =>
-  invoke<Step[]>('hosts_test', { id, apiUrls });
+/** Tests the host's connection; each step comes on `host-test` as it ends. */
+export const testHost = (id: string) => invoke<Step[]>('hosts_test', { id });
 
 export const trustKey = (id: string, key: string) => invoke<void>('hosts_trust_key', { id, key });
+
+/** Trusts the build of Rovik the server runs now, once the user compared it. */
+export const trustBuild = (id: string, sha256: string) =>
+  invoke<void>('hosts_trust_build', { id, sha256 });
 
 export const setPolicy = (id: string, policy: ApprovalPolicy) =>
   invoke<void>('hosts_set_policy', { id, policy });
@@ -280,7 +288,7 @@ export const CHECK_LABELS: Record<Check, string> = {
   isolation: 'Isolation extras',
   service: 'Service',
   install: 'Rovik',
-  api: 'Provider',
+  build: 'Build',
   daemon: 'Daemon',
 };
 
@@ -305,8 +313,11 @@ export function hostStatus(row: Pick<HostRow, 'deploy' | 'state'>): { label: str
 export function testVerdict(steps: Step[], running: boolean): { label: string; tone: Tone } | null {
   if (running) return { label: 'Testing…', tone: 'muted' };
   if (steps.length === 0) return null;
-  if (steps.some((s) => s.outcome === 'confirm'))
-    return { label: 'Check the server’s key', tone: 'warn' };
+  const confirm = steps.find((s) => s.outcome === 'confirm');
+  if (confirm) {
+    const what = confirm.check === 'build' ? 'Rovik’s build there' : 'the server’s key';
+    return { label: `Check ${what}`, tone: 'warn' };
+  }
   const failed = steps.find((s) => s.outcome === 'failed');
   if (failed) return { label: `Failed: ${CHECK_LABELS[failed.check]}`, tone: 'error' };
   if (steps.some((s) => s.outcome === 'warning'))

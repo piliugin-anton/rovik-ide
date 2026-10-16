@@ -14,13 +14,19 @@
 //! without systemd the app starts it in a session of its own. Then the
 //! daemon must answer `/health`, and `Welcome` with the new token.
 //!
-//! The build is `ROVIK_AGENTD_BINARY` (B03). Release builds, downloaded
-//! for this app's version with their signatures checked, come with B02.
+//! The build is this app's release for the server's CPU, downloaded with
+//! its signature, which is checked first (`release`, B02), and uploaded
+//! beside it for `admin upgrade` to check again; or a build of one's own
+//! that `ROVIK_AGENTD_BINARY` names (B03), with no signature.
 //!
 //! `check_install` runs on each connection (D5): the installed binary
-//! must be a build this app knows, and the user's unit must run it as the
-//! installer wrote it. An upgrade is for an administrator (`admin
-//! upgrade`); anyone else is told whom to ask. Removing stops the user's
+//! must be a build this computer trusts, and the user's unit must run it as
+//! the installer wrote it. A deploy trusts the build the server runs once
+//! it's done, which on a server another user installed is theirs; a build
+//! that changed since (an administrator's upgrade, or someone else's
+//! change) is the user's to compare and trust, as a host's key is. An
+//! upgrade is for an administrator (`admin upgrade`); anyone else is told
+//! whom to ask. Removing stops the user's
 //! daemon and deletes `~/.rovik` and `~/.local/share/rovik`, as `removal`
 //! listed them for the user to confirm.
 
@@ -28,8 +34,10 @@ use crate::client::{welcome, DaemonInfo, Identity};
 use crate::connection_test::probe::{Probe, Sudo};
 use crate::connection_test::probe_server;
 use crate::http;
+use crate::release::Releases;
 use crate::ssh::{Output, Ssh, SshConnector};
 use rovik_protocol::Secret;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::PathBuf;
@@ -38,6 +46,8 @@ use zeroize::Zeroizing;
 
 /// Where the build waits in the user's home before it's installed.
 const UPLOAD: &str = ".rovik-agentd-upload";
+/// Says `yes` where the server has gzip.
+const HAS_GZIP: &str = "command -v gzip >/dev/null 2>&1 && echo yes; true";
 /// How long a daemon that's starting may take to answer.
 const START_WAIT: Duration = Duration::from_secs(30);
 
@@ -46,27 +56,72 @@ const START_WAIT: Duration = Duration::from_secs(30);
 pub struct Binary {
     pub path: PathBuf,
     pub sha256: String,
+    /// A release's signature for it, as its `.sig` file has it; none for a
+    /// build of one's own.
+    pub signature: Option<String>,
 }
 
 impl Binary {
-    /// The build `ROVIK_AGENTD_BINARY` names (B03).
-    pub fn from_env() -> Result<Binary, DeployError> {
-        let path = std::env::var_os("ROVIK_AGENTD_BINARY").ok_or_else(|| {
-            DeployError::Failed(
-                "There's no build to deploy: set ROVIK_AGENTD_BINARY to a rovik-agentd built \
-                 for the server."
-                    .into(),
-            )
-        })?;
-        Binary::at(PathBuf::from(path))
-    }
-
+    /// A build of one's own, at `path`.
     pub fn at(path: PathBuf) -> Result<Binary, DeployError> {
         let bytes = std::fs::read(&path)
             .map_err(|e| DeployError::Failed(format!("{}: {e}", path.display())))?;
         Ok(Binary {
             sha256: hex(&Sha256::digest(&bytes)),
             path,
+            signature: None,
+        })
+    }
+}
+
+/// Where a deploy's or an upgrade's build comes from.
+#[derive(Clone, Debug)]
+pub enum Builds {
+    /// A build of one's own (B03).
+    Own(Binary),
+    /// `version`'s release, for the server's CPU (B02).
+    Release { releases: Releases, version: String },
+}
+
+impl Builds {
+    /// The build `ROVIK_AGENTD_BINARY` names, else `version`'s release,
+    /// kept under `data_dir`.
+    pub fn new(data_dir: &std::path::Path, version: &str) -> Result<Builds, DeployError> {
+        match std::env::var_os("ROVIK_AGENTD_BINARY") {
+            Some(path) => Binary::at(PathBuf::from(path)).map(Builds::Own),
+            None => Ok(Builds::Release {
+                releases: Releases::new(data_dir),
+                version: version.to_string(),
+            }),
+        }
+    }
+
+    /// The build for a server whose `uname -m` is `machine`.
+    pub async fn for_machine(&self, machine: &str) -> Result<Binary, DeployError> {
+        let (releases, version) = match self {
+            Builds::Own(binary) => return Ok(binary.clone()),
+            Builds::Release { releases, version } => (releases, version),
+        };
+        let cpu = rovik_protocol::release::cpu(machine).ok_or_else(|| {
+            DeployError::Unsupported(format!("the daemon isn't built for {machine}."))
+        })?;
+        let file = releases.build(version, cpu).await;
+        let file = file.map_err(|why| {
+            let instead = match why == crate::release::NO_KEY {
+                true => "",
+                false => {
+                    " A build of your own can go instead: set ROVIK_AGENTD_BINARY to it \
+                     (scripts/build-agentd.sh makes one)."
+                }
+            };
+            DeployError::Failed(format!(
+                "Rovik {version}'s daemon for {cpu}: {why}{instead}"
+            ))
+        })?;
+        Ok(Binary {
+            sha256: hex(&Sha256::digest(&file.bytes)),
+            path: file.path,
+            signature: Some(file.signature),
         })
     }
 }
@@ -103,6 +158,10 @@ pub enum DeployError {
     },
     /// Rovik's binary or unit on the server isn't what the app installed.
     Tampered(String),
+    /// Rovik's binary on the server isn't the build this computer trusts:
+    /// an administrator's upgrade, or a change behind the app's back. The
+    /// user is to compare and trust it (`HostsPage::trust_build`).
+    Changed(InstalledBuild),
     /// Only these administrators upgrade Rovik here.
     AskAdmins(Vec<String>),
     Failed(String),
@@ -125,6 +184,17 @@ impl fmt::Display for DeployError {
                  root to run this, then deploy again: {command}"
             ),
             DeployError::Tampered(why) => f.write_str(why),
+            DeployError::Changed(build) => write!(
+                f,
+                "Rovik on this server isn't the build you trusted: it's {} now, with the \
+                 SHA-256 {}. An administrator's upgrade does this. If nobody upgraded it, ask \
+                 the server's administrators before you trust it.",
+                build
+                    .version
+                    .as_deref()
+                    .map_or("another build".to_string(), |v| format!("version {v}")),
+                build.sha256
+            ),
             DeployError::AskAdmins(admins) => write!(
                 f,
                 "Only Rovik's administrators on this server upgrade it: ask {}.",
@@ -147,22 +217,36 @@ pub struct Deployed {
     pub token: Secret,
     /// What answered `Welcome`.
     pub daemon: DaemonInfo,
-    /// The build's hash, which `check_install` knows from then on.
+    /// The hash of the build the server runs, which `check_install` knows
+    /// from then on: the one uploaded, or on a server another user
+    /// installed, theirs.
     pub sha256: String,
+}
+
+/// Rovik's binary as the server has it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledBuild {
+    pub sha256: String,
+    /// The version its name says: the installer names each build
+    /// `rovik-agentd-<version>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// Deploys `binary` for this user on `connector`'s host, as `computer`.
 pub async fn deploy(
     connector: &SshConnector,
-    binary: &Binary,
+    builds: &Builds,
     computer: &str,
     sudo_password: Option<&Secret>,
     layout: &Layout,
 ) -> Result<Deployed, DeployError> {
     let ssh = session(connector).await?;
-    let probe = probe_server(&ssh, &[]).await.map_err(DeployError::Failed)?;
+    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     supported(&probe)?;
-    let upload = upload(&ssh, binary).await?;
+    let binary = builds.for_machine(&probe.arch).await?;
+    let upload = upload(&ssh, &binary).await?;
     let token = new_token();
     let done = install_and_start(
         &ssh,
@@ -176,7 +260,7 @@ pub async fn deploy(
     let done = done.await;
     // The build stays only for someone with root to run.
     if !matches!(done, Err(DeployError::NeedsRoot { .. })) {
-        let _ = ssh.exec(&format!("rm -f {}", quote(&upload))).await;
+        forget_upload(&ssh, &upload).await;
     }
     done?;
     let identity = Identity {
@@ -186,10 +270,19 @@ pub async fn deploy(
         client: format!("rovik-client {}", env!("CARGO_PKG_VERSION")),
     };
     let daemon = confirm(connector, &identity).await?;
+    // The build the server runs is trusted from now on, as the user chose
+    // to deploy there: theirs, or the one already installed.
+    let (installed, _) = installed(&ssh, &probe.user, layout).await?;
+    let installed = installed.ok_or_else(|| {
+        DeployError::Failed(format!(
+            "Rovik's binary isn't on the server at {}.",
+            layout.installed
+        ))
+    })?;
     Ok(Deployed {
         token,
         daemon,
-        sha256: binary.sha256.clone(),
+        sha256: installed.sha256,
     })
 }
 
@@ -314,17 +407,59 @@ pub async fn confirm(
         .map_err(|e| DeployError::Failed(e.message))
 }
 
-/// On each connection (D5): the installed binary is a build this app knows
-/// (`known`, their SHA-256), and the user's unit runs it as the installer
-/// wrote it. Without systemd, only the binary is checked.
+/// On each connection (D5): the user's unit runs the installed binary as
+/// the installer wrote it, and that binary is a build this computer trusts
+/// (`known`, their SHA-256) or one of its version's release, as the
+/// release's signed `SHA256SUMS` lists them. Without systemd, only the
+/// binary is checked.
 pub async fn check_install(
     ssh: &Ssh,
     known: &[String],
+    releases: Option<&Releases>,
     user: &str,
     layout: &Layout,
-) -> Result<(), DeployError> {
+) -> Result<InstalledBuild, DeployError> {
+    let (build, shown) = installed(ssh, user, layout).await?;
+    let Some(build) = build else {
+        return Err(DeployError::Tampered(format!(
+            "Rovik's binary isn't on the server at {}.",
+            layout.installed
+        )));
+    };
+    let expected = format!("{} serve", layout.installed);
+    match exec_starts(&shown).as_slice() {
+        [] => {}
+        [only] if *only == expected => {}
+        found => {
+            return Err(DeployError::Tampered(format!(
+                "Your daemon's unit doesn't run Rovik as installed: it runs {}. Someone may \
+                 have changed it: ask the server's administrators before you go on.",
+                found.join(", then ")
+            )))
+        }
+    }
+    if known.contains(&build.sha256) {
+        return Ok(build);
+    }
+    if let (Some(releases), Some(version)) = (releases, &build.version) {
+        let listed = releases.sums(version).await;
+        if listed.is_ok_and(|sums| sums.contains(&build.sha256)) {
+            return Ok(build);
+        }
+    }
+    Err(DeployError::Changed(build))
+}
+
+/// The build the installed link points to, if there's one, and what
+/// systemd says the user's unit runs (nothing without systemd).
+async fn installed(
+    ssh: &Ssh,
+    user: &str,
+    layout: &Layout,
+) -> Result<(Option<InstalledBuild>, String), DeployError> {
     let command = format!(
-        "f=$(readlink -f {installed}) && sha256sum \"$f\" | cut -d' ' -f1; \
+        "f=$(readlink -f {installed}) && [ -f \"$f\" ] && \
+         printf 'path=%s\\nsha256=%s\\n' \"$f\" \"$(sha256sum \"$f\" | cut -d' ' -f1)\"; \
          systemctl show -p ExecStart --value {unit} 2>/dev/null; true",
         installed = quote(&layout.installed),
         unit = quote(&format!("rovik-agentd@{user}.service")),
@@ -333,32 +468,35 @@ pub async fn check_install(
         .exec(&command)
         .await
         .map_err(|e| DeployError::Failed(e.to_string()))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (hash, shown) = text.split_once('\n').unwrap_or((&text, ""));
-    let hash = hash.trim();
-    if hash.is_empty() {
-        return Err(DeployError::Tampered(format!(
-            "Rovik's binary isn't on the server at {}.",
-            layout.installed
-        )));
+    Ok(read_installed(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// What `installed`'s command printed: its `path=` and `sha256=` lines,
+/// then systemd's.
+fn read_installed(text: &str) -> (Option<InstalledBuild>, String) {
+    let (mut path, mut sha256, mut shown) = (None, None, String::new());
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("path=") {
+            path = Some(value.trim());
+        } else if let Some(value) = line.strip_prefix("sha256=") {
+            sha256 = Some(value.trim()).filter(|v| !v.is_empty());
+        } else {
+            shown.push_str(line);
+            shown.push('\n');
+        }
     }
-    if !known.iter().any(|k| k == hash) {
-        return Err(DeployError::Tampered(format!(
-            "Rovik's binary on the server isn't a build this app knows (its SHA-256 is \
-             {hash}). Someone may have changed it: ask the server's administrators before \
-             you go on."
-        )));
-    }
-    let expected = format!("{} serve", layout.installed);
-    match exec_starts(shown).as_slice() {
-        [] => Ok(()),
-        [only] if *only == expected => Ok(()),
-        found => Err(DeployError::Tampered(format!(
-            "Your daemon's unit doesn't run Rovik as installed: it runs {}. Someone may \
-             have changed it: ask the server's administrators before you go on.",
-            found.join(", then ")
-        ))),
-    }
+    let build = sha256.map(|sha256| InstalledBuild {
+        sha256: sha256.to_string(),
+        version: path.and_then(version_of),
+    });
+    (build, shown)
+}
+
+/// `/opt/rovik/bin/rovik-agentd-0.2.0`: `0.2.0`.
+fn version_of(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next()?;
+    let version = name.strip_prefix("rovik-agentd-")?;
+    Some(version.to_string()).filter(|v| !v.is_empty())
 }
 
 /// The command lines in what `systemctl show -p ExecStart --value` prints:
@@ -372,17 +510,18 @@ fn exec_starts(shown: &str) -> Vec<String> {
         .collect()
 }
 
-/// An upgrade for everyone, by an administrator (`admin upgrade`); anyone
+/// An upgrade for everyone, by an administrator (`admin upgrade`), which
+/// returns the build's SHA-256: what the server runs from then on. Anyone
 /// else is told whom to ask. The daemons that ran pause their runs and
 /// start again on it (R02). Without systemd only the administrator's own
 /// daemon is started again here; the others' take it at their next start.
 pub async fn upgrade(
     connector: &SshConnector,
-    binary: &Binary,
+    builds: &Builds,
     layout: &Layout,
-) -> Result<(), DeployError> {
+) -> Result<String, DeployError> {
     let ssh = session(connector).await?;
-    let probe = probe_server(&ssh, &[]).await.map_err(DeployError::Failed)?;
+    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     let Some(install) = &probe.install else {
         return Err(DeployError::Failed(
             "Rovik isn't installed on this server: deploy it first.".into(),
@@ -391,7 +530,8 @@ pub async fn upgrade(
     if !install.admins.contains(&probe.user) {
         return Err(DeployError::AskAdmins(install.admins.clone()));
     }
-    let upload = upload(&ssh, binary).await?;
+    let binary = builds.for_machine(&probe.arch).await?;
+    let upload = upload(&ssh, &binary).await?;
     let command = format!(
         "{} -n {} admin upgrade {}",
         layout.sudo,
@@ -399,12 +539,12 @@ pub async fn upgrade(
         quote(&upload)
     );
     let upgraded = run(&ssh, &command, b"").await;
-    let _ = ssh.exec(&format!("rm -f {}", quote(&upload))).await;
+    forget_upload(&ssh, &upload).await;
     upgraded?;
     if !probe.systemd {
         start(&ssh, &probe, layout).await?;
     }
-    Ok(())
+    Ok(binary.sha256)
 }
 
 /// The limits on each user's daemon, as `admin limits` shows them to an
@@ -497,7 +637,7 @@ pub async fn remove(
         }
     }
     let ssh = session(connector).await?;
-    let probe = probe_server(&ssh, &[]).await.map_err(DeployError::Failed)?;
+    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     let stop = match (probe.systemd, &probe.install) {
         (true, Some(_)) => format!("{} -n {} user stop", layout.sudo, quote(&layout.installed)),
         _ => format!("{}; true", stop_unmanaged(layout)),
@@ -559,14 +699,37 @@ fn tail(text: &str, max: usize) -> String {
 
 /// The build in the user's home on the server, its SHA-256 checked there.
 /// Returns its path there.
+/// Uploads `binary` to the user's home, and its signature beside it
+/// (`<upload>.sig`) when it has one, for `admin upgrade` to check: a build
+/// of one's own leaves no signature there, not even an older one.
 async fn upload(ssh: &Ssh, binary: &Binary) -> Result<String, DeployError> {
+    let signed = match &binary.signature {
+        Some(_) => format!(
+            "umask 077 && cat > \"$HOME/{UPLOAD}{}\"",
+            rovik_protocol::release::SIGNATURE
+        ),
+        None => format!(
+            "rm -f \"$HOME/{UPLOAD}{}\"",
+            rovik_protocol::release::SIGNATURE
+        ),
+    };
+    let signature = binary.signature.as_deref().unwrap_or_default();
+    run(ssh, &signed, signature.as_bytes()).await?;
     let bytes = std::fs::read(&binary.path)
         .map_err(|e| DeployError::Failed(format!("{}: {e}", binary.path.display())))?;
+    // A build is mostly tables: gzipped, a tenth of it goes, where the
+    // server has gzip to unpack it.
+    let gzip = exec(ssh, HAS_GZIP, b"").await;
+    let gzip = gzip.is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "yes");
+    let (write, sent) = match gzip {
+        true => ("gzip -dc", gzipped(&bytes)?),
+        false => ("cat", bytes),
+    };
     let command = format!(
-        "umask 077 && f=\"$HOME/{UPLOAD}\" && cat > \"$f.part\" && chmod 700 \"$f.part\" && \
+        "umask 077 && f=\"$HOME/{UPLOAD}\" && {write} > \"$f.part\" && chmod 700 \"$f.part\" && \
          mv -f \"$f.part\" \"$f\" && printf '%s\\n' \"$f\" && sha256sum \"$f\" | cut -d' ' -f1"
     );
-    let out = exec(ssh, &command, &bytes).await?;
+    let out = exec(ssh, &command, &sent).await?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut lines = text.lines();
     let (path, hash) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
@@ -576,6 +739,21 @@ async fn upload(ssh: &Ssh, binary: &Binary) -> Result<String, DeployError> {
         ));
     }
     Ok(path.to_string())
+}
+
+fn gzipped(bytes: &[u8]) -> Result<Vec<u8>, DeployError> {
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(bytes)
+        .and_then(|()| gz.finish())
+        .map_err(|e| DeployError::Failed(e.to_string()))
+}
+
+/// The upload and its signature, once they've done their work.
+async fn forget_upload(ssh: &Ssh, upload: &str) {
+    let signature = format!("{upload}{}", rovik_protocol::release::SIGNATURE);
+    let command = format!("rm -f {} {}", quote(upload), quote(&signature));
+    let _ = ssh.exec(&command).await;
 }
 
 async fn session(connector: &SshConnector) -> Result<std::sync::Arc<Ssh>, DeployError> {
@@ -709,6 +887,41 @@ mod tests {
         let two = format!("{shown}{{ path=/tmp/x ; argv[]=/tmp/x --evil ; ignore_errors=no }}");
         assert_eq!(exec_starts(&two).len(), 2);
         assert!(exec_starts("").is_empty(), "no systemd");
+    }
+
+    #[test]
+    fn the_installed_build_is_read_with_its_version() {
+        let hash = "ab".repeat(32);
+        let shown = "{ path=/opt/rovik/bin/rovik-agentd ; argv[]=/opt/rovik/bin/rovik-agentd \
+                     serve ; ignore_errors=no }";
+        let text = format!("path=/opt/rovik/bin/rovik-agentd-0.2.0\nsha256={hash}\n{shown}\n");
+        let (build, unit) = read_installed(&text);
+        let build = build.unwrap();
+        assert_eq!(build.sha256, hash);
+        assert_eq!(build.version.as_deref(), Some("0.2.0"));
+        assert_eq!(exec_starts(&unit), ["/opt/rovik/bin/rovik-agentd serve"]);
+        // A build of one's own keeps its name: no version to tell.
+        let own = read_installed(&format!("path=/srv/rovik-agentd\nsha256={hash}\n")).0;
+        assert_eq!(own.unwrap().version, None);
+        // No binary there: nothing but what systemd said.
+        assert_eq!(read_installed(shown).0, None);
+        assert_eq!(read_installed("path=/x\nsha256=\n").0, None);
+    }
+
+    #[test]
+    fn a_changed_build_says_what_it_is_now() {
+        let changed = DeployError::Changed(InstalledBuild {
+            sha256: "cd".repeat(32),
+            version: Some("0.2.0".into()),
+        });
+        let said = changed.to_string();
+        assert!(said.contains("version 0.2.0"), "{said}");
+        assert!(said.contains(&"cd".repeat(32)), "{said}");
+        let own = DeployError::Changed(InstalledBuild {
+            sha256: "cd".repeat(32),
+            version: None,
+        });
+        assert!(own.to_string().contains("it's another build now"), "{own}");
     }
 
     #[test]

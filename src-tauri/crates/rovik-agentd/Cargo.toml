@@ -27,6 +27,8 @@ git2.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+# A release key and files it signed (release::fixture).
+rovik-protocol = { workspace = true, features = ["testing"] }
 # The scripted model and temporary folders the daemon tests use.
 rovik-core = { workspace = true, features = ["testing"] }
 # The rows a killed daemon left, read from its database.
