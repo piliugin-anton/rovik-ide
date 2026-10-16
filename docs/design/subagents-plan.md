@@ -2283,3 +2283,29 @@ step with the same title, and an inserted step renumbers the rest.
       gives it;
     - the budget's note and a format repair keeping the verdicts.
   - Component: the follow-up's card.
+
+### B08 follow-up: findings located in the reviewer's own words
+
+A finding had to be located at `Step N`, at `Plan` or in one word. For a
+finding about the plan as a whole, reviewers often named the part they
+meant instead: "Validation section", "Missing step", "Plan as a whole".
+Such a report couldn't be read. The repair turn said its findings "don't
+start with a numbered finding", the reviewer wrote the same line again,
+and the plan was saved unreviewed ("Review skipped: its report didn't
+follow the format").
+
+- A numbered line with a `[severity]` is a finding's header, whatever
+  follows. When the location isn't one of the format's, it's the words
+  before the first dash or colon outside code and brackets. With no dash
+  or colon, the line is the title and there's no location: the plan (or
+  the change) as a whole.
+- A location of several words is never a path. One that starts with
+  `Step N` still names its steps.
+- Two findings with no path and no step are the same only with the same
+  title. Before, any two at `Plan` were one, so a follow-up's new finding
+  about the whole plan was dropped as a repeat of an earlier one.
+- A finding without a location shows as its title alone: in the hold, the
+  follow-up's brief, the saved open findings and the review card.
+- Tests: the header shapes (unit); a finding at "Validation section"
+  holds the plan, with no repair turn (e2e); the card of a finding without
+  a location (component).

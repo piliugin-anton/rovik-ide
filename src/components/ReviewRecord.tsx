@@ -29,7 +29,15 @@ function FindingItem(props: { finding: ReviewFinding; dropped?: boolean }) {
     <li class={`review-finding ${f().severity}`} classList={{ dropped: !!props.dropped }}>
       <div class="review-finding-head">
         <span class={`review-severity ${f().severity}`}>{f().severity}</span>
-        <Show when={f().path} fallback={<span class="review-location">{f().location}</span>}>
+        {/* No location: the finding is about the change, or the plan, as a whole. */}
+        <Show
+          when={f().path}
+          fallback={
+            <Show when={f().location}>
+              <span class="review-location">{f().location}</span>
+            </Show>
+          }
+        >
           <button type="button" class="link-button review-location" onClick={open}>
             {f().location}
           </button>
@@ -65,7 +73,8 @@ function EarlierItem(props: { check: EarlierCheck }) {
     >
       <span class="review-earlier-verdict">{verdict()}</span>
       <span class="review-location">
-        Earlier {c().finding} · {c().location}
+        Earlier {c().finding}
+        {c().location ? ` · ${c().location}` : ''}
       </span>
       <span class="review-title">{c().title}</span>
       <Show when={c().response}>

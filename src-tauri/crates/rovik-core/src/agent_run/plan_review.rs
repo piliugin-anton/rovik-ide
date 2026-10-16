@@ -246,14 +246,9 @@ pub fn with_open_findings(plan: &str, open: &[Finding]) -> String {
         .iter()
         .map(|f| {
             format!(
-                "- **[{}] {}{}**: {} Suggested fix: {}",
+                "- **[{}] {}**: {} Suggested fix: {}",
                 f.severity,
-                f.location,
-                if f.title.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {}", f.title)
-                },
+                f.headline(),
                 f.scenario.replace('\n', " "),
                 f.fix.replace('\n', " ")
             )
@@ -1914,6 +1909,10 @@ mod tests {
         assert_eq!(steps("Steps 2-4"), [2, 3, 4]);
         assert!(steps("Plan").is_empty());
         assert!(steps("src/a.rs").is_empty());
+        // In the reviewer's own words; none is the plan as a whole.
+        assert_eq!(steps("Step 2, Step 5"), [2, 5]);
+        assert!(steps("Validation section").is_empty());
+        assert!(steps("").is_empty());
     }
 
     #[test]
@@ -1925,6 +1924,10 @@ mod tests {
             "{saved}"
         );
         assert!(saved.contains("- **[high] Step 2 — `list_users` is called from `src/cli.rs` too**: the CLI still calls"));
+        // A finding the reviewer gave no location: its title alone.
+        let unplaced = finding("high", "", "No step updates the CLI");
+        assert!(with_open_findings("# P", &[unplaced])
+            .ends_with("- **[high] No step updates the CLI**: s. Suggested fix: f."));
         assert_eq!(with_open_findings("# P", &[]), "# P");
         let plan = (1..=20)
             .map(|i| format!("line {i}"))
