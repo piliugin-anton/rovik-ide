@@ -2668,9 +2668,12 @@ Tasks add notes here when reality differs from the plan.
     the chat put the markers in and the chat settled them, and Take the
     newer result landed both changes in the project. A daemon restart
     brought one notice summing up the approval waiting there.
-  - A host from `ROVIK_REMOTE_CHATS` isn't among the hosts' summaries, so a
-    window that missed its first `CaughtUp` tells of what waits there only
-    after a reconnection. Hosts from Settings → Cloud hosts are in the
-    summaries.
+  - A host from `ROVIK_REMOTE_CHATS` wasn't among the hosts' summaries, so
+    a window that missed its first `CaughtUp` told of what waits there only
+    after a reconnection. The summaries now list such a host too, after
+    those of the settings, by its socket's file name: its chats show its
+    connection, U06's notices work from the start, and the location menu
+    offers moving chats there, which goes over the socket as the e2e
+    tests' moves do.
   - A real connection, deploy and move still need a real server: the
     manual checks stay open.

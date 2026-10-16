@@ -319,18 +319,39 @@ impl HostsPage {
     }
 
     /// The hosts' names and connections, for the chats (U02, U03): no
-    /// secret is read for them.
+    /// secret is read for them. After those of the settings come those the
+    /// app connects to without settings, the daemons whose sockets the
+    /// developer setting `ROVIK_REMOTE_CHATS` names, by the socket's file
+    /// name: their chats show their connection, and can move there.
     pub fn summaries(&self) -> Result<Vec<HostSummary>, String> {
         let settings = self.settings()?;
-        let states: HashMap<String, HostState> = self.remote.states().into_iter().collect();
-        let summaries = settings.hosts.into_iter().map(|host| HostSummary {
-            state: states.get(&host.id).copied(),
-            deployed: matches!(host.deploy, DeployState::Deployed { .. }),
-            caught_up: self.remote.caught_up(&host.id),
-            id: host.id,
-            name: host.name,
-        });
-        Ok(summaries.collect())
+        let states = self.remote.states();
+        let state_of = |id: &str| states.iter().find(|(host, _)| host == id).map(|(_, s)| *s);
+        let mut summaries: Vec<HostSummary> = settings
+            .hosts
+            .into_iter()
+            .map(|host| HostSummary {
+                state: state_of(&host.id),
+                deployed: matches!(host.deploy, DeployState::Deployed { .. }),
+                caught_up: self.remote.caught_up(&host.id),
+                id: host.id,
+                name: host.name,
+            })
+            .collect();
+        for (id, state) in &states {
+            if summaries.iter().any(|known| &known.id == id) {
+                continue;
+            }
+            let file = std::path::Path::new(id).file_name();
+            summaries.push(HostSummary {
+                name: file.map_or_else(|| id.clone(), |f| f.to_string_lossy().into_owned()),
+                deployed: true,
+                state: Some(*state),
+                caught_up: self.remote.caught_up(id),
+                id: id.clone(),
+            });
+        }
+        Ok(summaries)
     }
 
     /// The hosts, with their connections, their chats and which secrets
@@ -746,6 +767,37 @@ mod tests {
             password: Some(Secret(text.into())),
             passphrase: None,
         }
+    }
+
+    #[tokio::test]
+    async fn a_daemon_connected_without_settings_is_summed_up_by_its_socket() {
+        use crate::testing::{identity, Fake};
+        let setup = setup();
+        setup.page.save(new_host(), password("hunter2")).unwrap();
+        let socket = "/run/user/1000/rovik/agentd.sock";
+        setup
+            .remote
+            .connect(socket, Fake::default(), identity(socket));
+        let mut summaries = Vec::new();
+        for _ in 0..400 {
+            summaries = setup.page.summaries().unwrap();
+            if summaries.get(1).is_some_and(|s| s.caught_up) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let shown: Vec<_> = summaries
+            .iter()
+            .map(|s| (s.name.as_str(), s.deployed, s.state, s.caught_up))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Build box", false, None, false),
+                ("agentd.sock", true, Some(HostState::Ready), true),
+            ]
+        );
+        assert_eq!(summaries[1].id, socket);
     }
 
     #[tokio::test]
