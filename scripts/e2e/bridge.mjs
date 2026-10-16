@@ -261,9 +261,9 @@ export class BridgeDriver {
     const file = join(this.shots, `${String(++this.shotN).padStart(3, '0')}-${name}.png`);
     try {
       if (this.platform === 'darwin') {
-        const w = await this.call('window');
-        const rect = `${w.screenX},${w.screenY},${w.outerWidth},${w.outerHeight}`;
-        execFileSync('screencapture', ['-x', '-R', rect, file], { timeout: 15_000 });
+        // The whole screen: WKWebView gives the page no window frame (its
+        // outerWidth and outerHeight are 0), so there's no rectangle to cut.
+        execFileSync('screencapture', ['-x', file], { timeout: 15_000 });
       } else if (this.platform === 'win32') {
         // The whole primary screen, through .NET.
         const script = [

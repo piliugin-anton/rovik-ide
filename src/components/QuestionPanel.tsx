@@ -184,6 +184,8 @@ export default function QuestionPanel(props: { pending: PendingQuestions }) {
                   >
                     <input
                       type="text"
+                      // As in the chat's input: macOS would curl its quotes.
+                      spellcheck={false}
                       placeholder="Other… (Enter to continue)"
                       value={
                         custom()[i] ??

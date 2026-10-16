@@ -66,3 +66,14 @@ test('answers so far come back when the panel does, and go once sent', async () 
   assert.equal(pendingQuestions('chat-q', 'ask-1'), undefined, 'no longer waiting');
   assert.equal(questionsDraft('chat-q', 'ask-1'), undefined, 'the draft went with them');
 });
+
+test('a typed answer is sent as typed: no text checking (macOS would curl its quotes)', () => {
+  const typed: PendingQuestions = { ...pending, toolCallId: 'ask-typed' };
+  registerQuestions(typed);
+  const root = container();
+  const dispose = render(() => <QuestionPanel pending={typed} />, root);
+  const other = root.querySelector<HTMLInputElement>('.question-custom input');
+  assert.ok(other, 'the input for an answer of your own');
+  assert.equal(other.getAttribute('spellcheck'), 'false');
+  dispose();
+});

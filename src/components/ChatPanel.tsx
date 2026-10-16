@@ -3814,6 +3814,11 @@ export default function ChatPanel(props: ChatProps) {
             ref={inputTextareaRef as unknown as HTMLDivElement}
             class="chat-input-contenteditable"
             contenteditable={readOnly() ? 'false' : 'true'}
+            // No text checking: on macOS it also turns " into “ ” and -- into
+            // —, which broke the code, commands and JSON typed here for the
+            // agent. (The menu here is our own: its spelling fixes weren't
+            // offered anyway.)
+            spellcheck={false}
             aria-readonly={!!readOnly()}
             onInput={(e) =>
               handleComposerInput(
