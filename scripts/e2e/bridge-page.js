@@ -346,7 +346,11 @@
         const value = await handle(op, args || {});
         reply = { id, value: value === undefined ? null : value };
       } catch (e) {
-        reply = { id, error: String((e && e.stack) || e) };
+        // The message first: WebKit's stack is only the frames, and the
+        // runner tells a stale element from the message.
+        const message = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+        const stack = e instanceof Error && e.stack ? `\n${e.stack}` : '';
+        reply = { id, error: stack.includes(message) ? stack.trim() : message + stack };
       }
       try {
         // text/plain: a simple request, no CORS preflight.
