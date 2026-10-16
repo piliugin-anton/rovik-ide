@@ -6013,6 +6013,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 }
 
 .git-file-row:hover .git-revert-button,
+.git-dir-row:hover .git-revert-button,
 .git-revert-button:focus-visible {
   visibility: visible;
 }
