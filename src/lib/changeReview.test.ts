@@ -25,7 +25,10 @@ test('the review record’s headline', () => {
     'The reviewer found nothing to fix.'
   );
   assert.equal(
-    reviewHeadline({ ...base, status: 'clean', reason: 'its reply had no Findings section' }, false),
+    reviewHeadline(
+      { ...base, status: 'clean', reason: 'its reply had no Findings section' },
+      false
+    ),
     'The reviewer reported nothing to fix: its reply had no Findings section.'
   );
   assert.equal(

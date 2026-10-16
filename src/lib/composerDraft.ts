@@ -33,9 +33,7 @@ function clearTimer(dialogId: string) {
 
 /** True when there is nothing worth storing (no chips, text blank). */
 export function isEmptySegments(segments: DraftSegment[]): boolean {
-  return !segments.some((s) =>
-    s.type === 'text' ? s.text.trim().length > 0 : true,
-  );
+  return !segments.some((s) => (s.type === 'text' ? s.text.trim().length > 0 : true));
 }
 
 function encode(segments: DraftSegment[]): string {
