@@ -7,9 +7,10 @@
 //
 // `cloud` keeps what the chats show of it: the hosts' names and
 // connections, and each chat's move as it goes (U02); which hosts have
-// caught up since they connected, and each chat's upload (U04).
-// `initCloud` starts it as the app starts, and keeps the chats' places
-// with it.
+// caught up since they connected, and each chat's upload (U04). A host
+// that caught up before the window listened says so in its summary, and
+// `onCaughtUp` tells of each host as it catches up (U06). `initCloud`
+// starts it as the app starts, and keeps the chats' places with it.
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -104,6 +105,11 @@ export interface HostSummary {
   name: string;
   deployed: boolean;
   state?: HostState;
+  /**
+   * Its mirrored chats pulled since it connected: for a window that missed
+   * `caughtUp`, as the hosts connect while the app starts.
+   */
+  caughtUp?: boolean;
 }
 
 export const hostSummaries = () => invoke<HostSummary[]>('hosts_summaries');
@@ -171,10 +177,30 @@ export function initCloud(): Promise<void> {
 /** The hosts' names and connections again, as after the hosts page changed them. */
 export async function refreshHosts(): Promise<void> {
   try {
-    setCloud('hosts', await hostSummaries());
+    const hosts = await hostSummaries();
+    setCloud('hosts', hosts);
+    // One that caught up before this window listened.
+    for (const host of hosts) {
+      if (host.caughtUp && host.state === 'ready') markCaughtUp(host.id);
+    }
   } catch (err) {
     console.error('Hosts unavailable:', err);
   }
+}
+
+const caughtUpListeners = new Set<(host: string) => void>();
+
+/** Calls `listener` with each host as it catches up, until the function it returns is called. */
+export function onCaughtUp(listener: (host: string) => void): () => void {
+  caughtUpListeners.add(listener);
+  return () => void caughtUpListeners.delete(listener);
+}
+
+/** The host caught up, as its event or its summary says: once until it goes away. */
+function markCaughtUp(host: string) {
+  if (cloud.caughtUp[host]) return;
+  setCloud('caughtUp', host, true);
+  for (const listener of [...caughtUpListeners]) listener(host);
 }
 
 function track(event: CloudEvent) {
@@ -192,7 +218,7 @@ function track(event: CloudEvent) {
       }
       return;
     case 'caughtUp':
-      setCloud('caughtUp', event.host, true);
+      markCaughtUp(event.host);
       return;
     case 'uploading':
       if (event.sent >= event.total) clearUpload(event.dialogId);

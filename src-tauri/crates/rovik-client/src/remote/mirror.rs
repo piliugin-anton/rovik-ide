@@ -105,8 +105,11 @@ impl Remote {
                 if !busy {
                     let client = remote.client(&host);
                     let ready = client.is_ok_and(|c| c.state() == HostState::Ready);
-                    if let (true, false, Some(cloud)) = (ready, failed, remote.cloud()) {
-                        cloud(CloudEvent::CaughtUp { host });
+                    if ready && !failed {
+                        remote.lock().caught_up.insert(host.clone());
+                        if let Some(cloud) = remote.cloud() {
+                            cloud(CloudEvent::CaughtUp { host });
+                        }
                     }
                     return;
                 }

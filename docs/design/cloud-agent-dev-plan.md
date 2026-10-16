@@ -2623,3 +2623,30 @@ Tasks add notes here when reality differs from the plan.
     to the chat and Take the newer result (`tests/sync.rs`,
     `tests/landing.rs`), and the bar's states in `isolationBar.test.tsx`.
   - Not done here: the manual check on a real host.
+- **U06, notices.**
+  - `lib/remoteNotices.ts` tells of what a chat waits on the user for, in
+    the corner. A question notifies as before, and a local chat's approval
+    stays in the chat. A remote chat's approval notifies too ("The agent
+    needs your approval", with its host's name), once: one told again
+    isn't told twice. Show opens the chat (a subagent's lead's), for a
+    local question too; before, it only brought up the chat panel.
+  - While a host connects (the app starting, or its link back), what its
+    chats wait on is told again at once. Those don't notify one by one:
+    once the host has caught up, one notice sums up what waits there
+    ("Waiting for you on Build": "1 approval and 2 questions, in 2
+    chats."), and those told one by one before it went away fold into it.
+    Its Show opens the chat, or the chat list for several. Settling counts
+    it again, and it goes once none of it waits. What waited as the app
+    started (`agent_status`) is counted the same way.
+  - A host that connected but doesn't catch up (a pull that failed) gets
+    its notice 30 seconds after it connected, and what comes after is told
+    on its own: notices don't wait for the mirror's health, which U04's
+    drafts still do.
+  - The hosts connect as the app starts, before its window listens, so the
+    window could miss `CaughtUp`. `Remote::caught_up` keeps it, cleared
+    when the host goes away, and the host summaries carry it (`caughtUp`),
+    which `refreshHosts` applies. U04's draft recovery gains from it too.
+  - Tests: `remoteNotices.test.ts` follows scripted events through the
+    app's start, a caught-up host, a reconnection, a window that missed
+    `caughtUp`, and a host that never catches up; a client unit test and
+    the mirror e2e test check `caught_up`.

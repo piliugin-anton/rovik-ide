@@ -544,3 +544,20 @@ async fn a_file_the_host_cant_send_leaves_its_row_without_it() {
     assert!(attachments::file_for(&data, &lost).is_none());
     assert_eq!(*app.witnessed.lock().unwrap(), [("t1".to_string(), true)]);
 }
+
+#[tokio::test]
+async fn a_host_that_goes_away_has_to_catch_up_again() {
+    let app = App::new();
+    let (remote, _fake) = connected(&app).await;
+    for _ in 0..400 {
+        if remote.caught_up(HOST) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(remote.caught_up(HOST), "its chats pulled: it has none");
+    remote
+        .receive(HOST, Incoming::State(HostState::Offline))
+        .await;
+    assert!(!remote.caught_up(HOST), "away, it has to catch up again");
+}

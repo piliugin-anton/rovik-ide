@@ -299,6 +299,7 @@ async fn caught_up_comes_once_the_mirror_has_what_was_stored_meanwhile() {
         heard.iter().any(caught_up).then_some(())
     })
     .await;
+    assert!(app.remote().caught_up(HOST), "a window that missed it asks");
     let expected = [
         ("user".to_string(), "Do it".to_string()),
         ("assistant".into(), "Done while you were away.".into()),

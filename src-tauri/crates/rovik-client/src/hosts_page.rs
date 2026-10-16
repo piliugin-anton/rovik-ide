@@ -107,6 +107,10 @@ pub struct HostSummary {
     pub deployed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<HostState>,
+    /// Its mirrored chats pulled since it connected (K23): for a window
+    /// that missed `CaughtUp`, as the hosts connect while the app starts.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub caught_up: bool,
 }
 
 /// A deploy's, an upgrade's or a removal's failure, as the page takes it.
@@ -322,6 +326,7 @@ impl HostsPage {
         let summaries = settings.hosts.into_iter().map(|host| HostSummary {
             state: states.get(&host.id).copied(),
             deployed: matches!(host.deploy, DeployState::Deployed { .. }),
+            caught_up: self.remote.caught_up(&host.id),
             id: host.id,
             name: host.name,
         });

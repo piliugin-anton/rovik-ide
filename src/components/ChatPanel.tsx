@@ -100,6 +100,7 @@ import {
   type StartKind,
   type StartRequest,
 } from '../lib/agentRuns';
+import type { ShowTarget } from '../lib/remoteNotices';
 import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
@@ -2629,8 +2630,21 @@ export default function ChatPanel(props: ChatProps) {
   // What replies show about the model's reasoning is kept with it.
   onCleanup(onReasoningLearned((learned) => learnReasoning(learned.profileId, learned)));
   onCleanup(onApiRouteLearned(learnApiRoute));
-  // A question's notification: "Show".
-  onCleanup(onShowChat(() => listController?.followLatest()));
+  // "Show" on a notification of what a chat waits for: that chat, opened
+  // if it isn't on screen, or the chat list when several wait.
+  onCleanup(onShowChat((target) => void showFromNotice(target)));
+  async function showFromNotice(target?: ShowTarget) {
+    if (target && 'list' in target) {
+      setHistoryOpen(true);
+      return;
+    }
+    const id = target?.dialogId;
+    if (id && id !== activeDialogId()) {
+      const dialog = store.summaryOf(id) ?? (await chatApi.getDialog(id).catch(() => null));
+      if (dialog) await selectRow({ dialog, title: { text: dialog.title, ranges: [] } });
+    }
+    listController?.followLatest();
+  }
 
   /**
    * Starts a run in a chat. The backend reads the chat from the database,

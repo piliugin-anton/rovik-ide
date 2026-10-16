@@ -173,6 +173,9 @@ struct State {
     /// Each chat's newer result held back while its conflicts are resolved
     /// (6.5), with its host: the bar offers it in their place.
     held: HashMap<String, (String, ChatResult)>,
+    /// The hosts whose mirrored chats pulled since they connected (K23):
+    /// a window that missed `CaughtUp` asks.
+    caught_up: HashSet<String>,
     /// How many times each chat's result went back to be checked merged
     /// with the project's newer changes (6.6), since its last message.
     rechecks: HashMap<String, u32>,
@@ -265,6 +268,12 @@ impl Remote {
     /// Each host's connection, by its id.
     pub fn states(&self) -> Vec<(String, HostState)> {
         self.hosts.states()
+    }
+
+    /// Whether the chats mirrored from `host` pulled since it connected, as
+    /// `CaughtUp` told (K23).
+    pub fn caught_up(&self, host: &str) -> bool {
+        self.lock().caught_up.contains(host)
     }
 
     pub fn set_policy(&self, host: &str, policy: ApprovalPolicy) {
@@ -678,6 +687,10 @@ impl Remote {
         match incoming {
             Incoming::State(state) => {
                 log::info!("{host}: {state:?}");
+                // Away, it has to catch up again once it's back.
+                if state != HostState::Ready {
+                    self.lock().caught_up.remove(host);
+                }
                 if let Some(cloud) = self.cloud() {
                     let host = host.to_string();
                     cloud(CloudEvent::Host { host, state });

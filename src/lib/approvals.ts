@@ -170,6 +170,11 @@ export function chatsWaitingOnApprovals(): Record<string, true> {
   return chats;
 }
 
+/** Every approval waiting now, in any chat. */
+export function approvalsWaiting(): PendingApproval[] {
+  return Object.values(state.pending);
+}
+
 /** Every approval a chat waits on (a subagent's, shown on its block). */
 export function pendingApprovalsOf(dialogId: string): PendingApproval[] {
   return Object.values(state.pending).filter((p) => p.dialogId === dialogId);

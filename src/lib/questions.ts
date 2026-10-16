@@ -85,6 +85,11 @@ export function chatsWaitingOnQuestions(): Record<string, true> {
   return chats;
 }
 
+/** Every question call waiting now, in any chat. */
+export function questionsWaiting(): PendingQuestions[] {
+  return Object.values(state.pending);
+}
+
 /** The questions waiting in a chat, if any (the composer answers them). */
 export function pendingQuestionsIn(dialogId: string): PendingQuestions | undefined {
   return Object.values(state.pending).find((p) => p.dialogId === dialogId);
