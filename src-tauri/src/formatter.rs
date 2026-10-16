@@ -677,9 +677,9 @@ fn run(
     ok_codes: &[i32],
     timeout: Duration,
 ) -> Result<String, String> {
-    use crate::command_tool::{kill_tree, shell_exited};
+    use rovik_core::command_tool::{kill_tree, shell_exited};
 
-    crate::process::no_window(&mut cmd);
+    rovik_core::process::no_window(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

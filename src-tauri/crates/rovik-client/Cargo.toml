@@ -1,0 +1,42 @@
+[package]
+name = "rovik-client"
+version.workspace = true
+description = "The app's half of the protocol: a connection to an agent daemon"
+edition.workspace = true
+
+[dependencies]
+rovik-protocol.workspace = true
+# The app's Core: the mirror is written into its database, and remote
+# events go out through its sink (6.1).
+rovik-core.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "sync", "time"] }
+futures-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util.workspace = true
+http-body-util.workspace = true
+tokio-tungstenite.workspace = true
+# Shadow repositories and the packs between them and a daemon (6.4).
+git2.workspace = true
+# Each move's id (6.8).
+uuid.workspace = true
+# Secrets in the OS keychain, or in a file encrypted under a passphrase
+# where no keychain answers (H01).
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+getrandom = "0.4"
+zeroize = "1.9"
+base64 = "0.23.1"
+# The tunnel to a host's daemon, and the commands that set it up (H02).
+russh = "0.63.3"
+# The deployed build's hash, checked on the server (H05).
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+# Cores on temporary folders, and the database read as the frontend would.
+rovik-core = { workspace = true, features = ["testing"] }
+rusqlite.workspace = true

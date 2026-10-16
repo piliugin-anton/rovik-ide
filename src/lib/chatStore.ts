@@ -12,7 +12,7 @@
 // order they were made, even though Tauri may run concurrent commands in
 // parallel. What a run stores is already in the database when it arrives.
 import { createStore, produce } from 'solid-js/store';
-import type { ChatMessage, DialogCursor, DialogSummary, MessageStatus } from '../types';
+import type { ChatMessage, ChatPlace, DialogCursor, DialogSummary, MessageStatus } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 
 export type { MessageRow };
@@ -154,6 +154,29 @@ export function createChatStore() {
         if (s.active?.id === dialogId) fn(s.active);
       })
     );
+  }
+
+  /** A chat's summary: the open one's, or the list's. */
+  function summaryOf(dialogId: string): DialogSummary | undefined {
+    if (state.active?.id === dialogId) return state.active;
+    return state.list.items.find((d) => d.id === dialogId);
+  }
+
+  /** Where a chat is: on a host, moving, or here (absent). */
+  function setPlace(dialogId: string, place: ChatPlace | undefined) {
+    updateSummary(dialogId, (d) => {
+      d.place = place;
+    });
+  }
+
+  /** Where a chat is, read again: after a step of its move there or back. */
+  async function refreshPlace(dialogId: string) {
+    try {
+      const fresh = await chatApi.getDialog(dialogId);
+      if (fresh) setPlace(dialogId, fresh.place);
+    } catch (err) {
+      console.error('Chat summary unavailable:', err);
+    }
   }
 
   /** A chat with new messages moves to the top of the list. */
@@ -578,6 +601,9 @@ export function createChatStore() {
     createDialog,
     renameDialog,
     deleteDialog,
+    summaryOf,
+    setPlace,
+    refreshPlace,
     addLocal,
     receiveMessages,
     applyPatch,

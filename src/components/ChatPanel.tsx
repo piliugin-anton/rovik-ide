@@ -15,7 +15,6 @@ import {
 import type {
   ApiRoute,
   ChatMessage,
-  ChatToolCall,
   DialogSummary,
   FileSuggestion,
   ModelProfile,
@@ -65,6 +64,11 @@ import {
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import { overlayStatus } from '../lib/overlay';
+import { barChanged, clearUpload, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
+import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
+import ChatLocation from './ChatLocation';
+import UploadProgress from './UploadProgress';
+import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
   dismissChecklist,
@@ -72,7 +76,12 @@ import {
   refreshChecklist,
   settledChecklist,
 } from '../lib/checklist';
-import { onImplementPlanRequest, relativePlanPath, takeImplementPlanRequest } from '../lib/plans';
+import {
+  onImplementPlanRequest,
+  readPlan,
+  relativePlanPath,
+  takeImplementPlanRequest,
+} from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
 import {
   configureAgent,
@@ -89,7 +98,9 @@ import {
   toolNotes,
   type AgentConfig,
   type StartKind,
+  type StartRequest,
 } from '../lib/agentRuns';
+import type { ShowTarget } from '../lib/remoteNotices';
 import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
@@ -117,7 +128,6 @@ import {
   resolveSubagentConfig,
   type SubagentSettings,
 } from '../lib/subagentSettings';
-import { readFileContent } from '../lib/commands';
 import { parseComposerImage, type ComposerImage } from '../lib/composerImages';
 import {
   ATTACH_ACCEPT,
@@ -292,7 +302,8 @@ export default function ChatPanel(props: ChatProps) {
     if (id && store.state.chatVisible) store.markRead(id);
   });
   // An isolated chat's changes: looked at again while a run goes and when
-  // it ends (IsolationBar).
+  // it ends (IsolationBar), and for a remote chat, when its result came in
+  // or landed, or its project synced (lib/cloud.ts).
   const [isolationRevision, setIsolationRevision] = createSignal(0);
   createEffect(
     on(sending, (running) => {
@@ -300,6 +311,11 @@ export default function ChatPanel(props: ChatProps) {
       if (!running) return;
       const timer = setInterval(() => setIsolationRevision((n) => n + 1), 3000);
       onCleanup(() => clearInterval(timer));
+    })
+  );
+  onCleanup(
+    onCloudEvent((event) => {
+      if (barChanged(event, activeDialogId())) setIsolationRevision((n) => n + 1);
     })
   );
   // The chat on screen goes first in the queue for heavy work (builds,
@@ -785,6 +801,7 @@ export default function ChatPanel(props: ChatProps) {
       // Runs going on are known before drafts are judged unanswered.
       await initAgentRuns();
       await recoverDraftsAfterRestart();
+      setDraftsJudged(true);
       const active = activeDialogId();
       if (active) await restoreComposerDraft(active);
     } finally {
@@ -1717,6 +1734,7 @@ export default function ChatPanel(props: ChatProps) {
    */
   function handleComposerPaste(e: ClipboardEvent) {
     e.preventDefault();
+    if (readOnly()) return;
     const data = e.clipboardData;
     const copied = pastedSegments(data);
     if (copied) {
@@ -1988,7 +2006,7 @@ export default function ChatPanel(props: ChatProps) {
    */
   async function attachFiles(files: Blob[]) {
     const container = inputTextareaRef;
-    if (!container) return;
+    if (!container || readOnly()) return;
     const unsupported: string[] = [];
     const known = files.flatMap((file) => {
       const like = { name: fileName(file), type: file.type };
@@ -2173,6 +2191,7 @@ export default function ChatPanel(props: ChatProps) {
    */
   async function pasteFromMenu() {
     closeInputMenu();
+    if (readOnly()) return;
     focusComposerAt(composerRange());
     if (document.queryCommandSupported('paste') && document.execCommand('paste')) return;
     await pasteFromClipboard();
@@ -2292,6 +2311,10 @@ export default function ChatPanel(props: ChatProps) {
 
   /** Same for drag-and-drop of selected text. */
   function handleComposerDrop(e: DragEvent) {
+    if (readOnly()) {
+      e.preventDefault();
+      return;
+    }
     const text = e.dataTransfer?.getData('text/plain');
     if (!text) return;
 
@@ -2339,8 +2362,10 @@ export default function ChatPanel(props: ChatProps) {
 
   function restoreDraftForDialog(dialogId: string) {
     const stored = listPendingDrafts().find((d) => d.dialogId === dialogId);
-    // A run is going on: its message may still be answered.
+    // A run is going on: its message may still be answered. A remote chat's
+    // is judged once its host has caught up (K23).
     if (!stored || store.isRunning(dialogId)) return;
+    if (draftWaits(store.summaryOf(dialogId)?.place, cloud.caughtUp)) return;
 
     const draft = takePendingDraft(dialogId);
     if (draft) queueMicrotask(() => restoreDraftToComposer(draft));
@@ -2412,29 +2437,40 @@ export default function ChatPanel(props: ChatProps) {
   async function recoverDraftsAfterRestart() {
     const drafts = listPendingDrafts();
     if (drafts.length === 0) return;
-
-    let answered = new Set<string>();
     try {
-      answered = new Set(await chatApi.messagesAnswered(drafts.map((d) => d.messageId)));
+      // A running chat's and a remote chat's wait (lib/remoteGuards.ts).
+      await recoverDrafts(drafts, {
+        isRunning: (id) => store.isRunning(id),
+        placeOf: async (id) => {
+          const known = store.summaryOf(id);
+          return known ? known.place : (await chatApi.getDialog(id).catch(() => null))?.place;
+        },
+        caughtUp: cloud.caughtUp,
+        answered: (ids) => chatApi.messagesAnswered(ids),
+        clear: clearPendingDraft,
+        markFailed: markMessageFailed,
+      });
     } catch (err) {
       console.error('Draft recovery check failed:', err);
       return;
     }
 
-    for (const draft of drafts) {
-      // Its run is still going (the page was reloaded): it may yet be answered.
-      if (store.isRunning(draft.dialogId)) continue;
-      if (answered.has(draft.messageId)) {
-        // The answer made it into the database before the draft was cleared.
-        clearPendingDraft(draft.dialogId, draft.messageId);
-      } else {
-        markMessageFailed(draft.dialogId, draft.messageId);
-      }
-    }
-
     const active = activeDialogId();
     if (active) restoreDraftForDialog(active);
   }
+
+  // Drafts are first judged once runs going on are known (onMount); a
+  // remote chat's again when its host has caught up (K23).
+  const [draftsJudged, setDraftsJudged] = createSignal(false);
+  createEffect(
+    on(
+      [draftsJudged, () => Object.keys(cloud.caughtUp).join(' ')],
+      ([judged, hosts]) => {
+        if (judged && hosts) void recoverDraftsAfterRestart();
+      },
+      { defer: true }
+    )
+  );
 
   function getTextOffset(root: Node, node: Node, nodeOffset: number): number {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -2594,8 +2630,21 @@ export default function ChatPanel(props: ChatProps) {
   // What replies show about the model's reasoning is kept with it.
   onCleanup(onReasoningLearned((learned) => learnReasoning(learned.profileId, learned)));
   onCleanup(onApiRouteLearned(learnApiRoute));
-  // A question's notification: "Show".
-  onCleanup(onShowChat(() => listController?.followLatest()));
+  // "Show" on a notification of what a chat waits for: that chat, opened
+  // if it isn't on screen, or the chat list when several wait.
+  onCleanup(onShowChat((target) => void showFromNotice(target)));
+  async function showFromNotice(target?: ShowTarget) {
+    if (target && 'list' in target) {
+      setHistoryOpen(true);
+      return;
+    }
+    const id = target?.dialogId;
+    if (id && id !== activeDialogId()) {
+      const dialog = store.summaryOf(id) ?? (await chatApi.getDialog(id).catch(() => null));
+      if (dialog) await selectRow({ dialog, title: { text: dialog.title, ranges: [] } });
+    }
+    listController?.followLatest();
+  }
 
   /**
    * Starts a run in a chat. The backend reads the chat from the database,
@@ -2609,6 +2658,11 @@ export default function ChatPanel(props: ChatProps) {
   ): Promise<boolean> {
     const profile = activeProfile();
     if (!profile) return false;
+    const readOnly = readOnlyReason(store.summaryOf(dialogId)?.place, cloud.hosts);
+    if (readOnly) {
+      notify({ title: 'This chat can’t change now', message: readOnly, timeout: 6000 });
+      return false;
+    }
     listController?.followLatest();
     try {
       await store.flush();
@@ -2636,6 +2690,35 @@ export default function ChatPanel(props: ChatProps) {
       });
       return false;
     }
+  }
+
+  /** The chats an approval or a question waits in, for the list's badges (U03). */
+  const waitingIds = createMemo(waitingChats);
+
+  /** Why the open chat can't change now: one that's moving is read-only (U02). */
+  const readOnly = () => readOnlyReason(activeDialog()?.place, cloud.hosts);
+
+  /**
+   * How a Continue would start `dialogId`, once what's queued for it is
+   * stored: a move's run picks up with it, on its host or back here.
+   */
+  async function moveStart(dialogId: string): Promise<StartRequest | null> {
+    resumed.add(dialogId);
+    await store.flush();
+    const profile = activeProfile();
+    if (!profile) return null;
+    return {
+      dialogId,
+      start: { kind: 'continueRun' },
+      profile,
+      options: reasoningOptions(profile),
+      mode: chatMode(),
+      contextMode: ensureContextMode(dialogId),
+      root: props.rootPath(),
+      currentUserContent: lastUserWireContent(dialogId),
+      localDate: localDate(),
+      config: agentConfig(),
+    };
   }
 
   /** Sends a user message (shown at once; the run stores it first thing). */
@@ -2671,7 +2754,8 @@ export default function ChatPanel(props: ChatProps) {
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
     if (!last) return;
     const file = last.meta?.planFile;
-    const text = file ? await readFileContent(file).catch(() => null) : null;
+    // From its host, for a remote chat (K09).
+    const text = file ? await readPlan(dialogId, file).catch(() => null) : null;
     startImplementation(dialogId, text ?? last.content, text !== null ? file : undefined);
   }
 
@@ -2831,32 +2915,14 @@ export default function ChatPanel(props: ChatProps) {
    * allowed, and the agent continues.
    */
 
-  /** Tool calls of the chat's last agent step that have no result yet. */
-  function unansweredToolCalls(list: ChatMessage[]): ChatToolCall[] {
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (m.role === 'tool') continue;
-      if (m.role !== 'assistant' || !m.finalized || m.pending || m.error || !m.toolCalls?.length) {
-        return [];
-      }
-      const answered = new Set(
-        list
-          .slice(i + 1)
-          .filter((x) => x.role === 'tool')
-          .map((x) => x.tool_call_id)
-      );
-      return m.toolCalls.filter((tc) => !answered.has(tc.id));
-    }
-    return [];
-  }
-
   createEffect(() => {
     const dialogId = activeDialogId();
     const chat = activeChat();
     // Wait until the newest messages are loaded and nothing is running.
     if (!dialogId || !chat || chat.hasNewer || sending() || !activeProfile()) return;
     if (resumed.has(dialogId)) return;
-    if (unansweredToolCalls(chat.messages).length === 0) return;
+    // A remote chat's daemon picks its run up itself (K07).
+    if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place)) return;
     resumed.add(dialogId);
     untrack(() => void beginRun(dialogId, { kind: 'resume' }, lastUserWireContent(dialogId)));
   });
@@ -2947,6 +3013,7 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   async function handleSend() {
+    if (readOnly()) return;
     // A question is waiting: what's typed is the answer, not a new request.
     const waiting = activeDialogId() ? pendingQuestionsIn(activeDialogId()!) : undefined;
     if (waiting) {
@@ -3040,32 +3107,49 @@ export default function ChatPanel(props: ChatProps) {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
 
-    /*
-     * Save the composer before anything else: from here until the model
-     * answers, this is the only copy of what the user typed. The run clears
-     * it once the message is answered (lib/agentRuns.ts), or it comes back.
-     */
-    savePendingDraft({
-      dialogId: dialog.id,
-      messageId: message.id,
-      segments,
-      createdAt: new Date().toISOString(),
-    });
-
     // Sending always brings the conversation back into view.
     setFocusMessageId(null);
 
-    // Clear right away; the draft brings it back if the request fails.
+    // Clear right away; the input comes back if the request fails.
     clearChatInput();
-    clearComposerDraft(dialog.id);
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
     setSelectedSuggestionIndex(0);
 
-    if (!(await sendMessage(dialog.id, message, wireContent))) {
-      if (activeDialogId() === dialog.id) restoreDraftForDialog(dialog.id);
-      else clearPendingDraft(dialog.id, message.id);
+    /*
+     * From here until the model answers, the input is kept: in localStorage,
+     * which the run clears once the message is answered (lib/agentRuns.ts),
+     * and for a remote chat in `composer_drafts` too, until its start
+     * succeeded, as its text files can be too big for localStorage (K49).
+     */
+    const back = await sendKeepingInput(
+      { dialogId: dialog.id, messageId: message.id, segments, remote: !!dialog.place },
+      () => sendMessage(dialog.id, message, wireContent),
+      {
+        savePending: savePendingDraft,
+        clearPending: clearPendingDraft,
+        saveDraft: async (id, saved) => {
+          scheduleComposerDraft(id, saved);
+          await flushComposerDraft(id);
+        },
+        clearDraft: clearComposerDraft,
+        started: (id) => {
+          // What was typed since stays; the sent input goes now.
+          if (activeDialogId() !== id) return clearComposerDraft(id);
+          scheduleComposerDraftSave();
+          void flushComposerDraft(id).catch(() => undefined);
+        },
+      }
+    );
+    clearUpload(dialog.id);
+    if (back && activeDialogId() === dialog.id) {
+      restoreDraftToComposer({
+        dialogId: dialog.id,
+        messageId: message.id,
+        segments: back,
+        createdAt: new Date().toISOString(),
+      });
     }
   }
 
@@ -3558,6 +3642,20 @@ export default function ChatPanel(props: ChatProps) {
           {title()}
         </span>
 
+        <Show when={activeDialog()} keyed>
+          {(dialog) => (
+            <ChatLocation
+              dialog={dialog}
+              startFor={moveStart}
+              onResynced={(id) => {
+                const open = store.summaryOf(id);
+                if (open && store.state.activeId === id)
+                  void store.openChat(open, { reload: true });
+              }}
+            />
+          )}
+        </Show>
+
         <div class="chat-controls">
           <button class="icon-button" onClick={() => startNewChat()} title="New chat">
             ＋
@@ -3583,6 +3681,8 @@ export default function ChatPanel(props: ChatProps) {
             loading={loadingHistory() || (store.state.list.loading && !store.state.list.loaded)}
             unreadIds={store.state.unread}
             runningIds={runningListIds()}
+            waitingIds={waitingIds()}
+            hosts={cloud.hosts}
             onSelect={(row) => void selectRow(row)}
             onDelete={(dialog) => void confirmAndDeleteDialog(dialog)}
             onNearEnd={() => {
@@ -3633,10 +3733,11 @@ export default function ChatPanel(props: ChatProps) {
         onOpenProjectChecks={() => openAppSettings('project')}
         planMessageId={planMessageId()}
         onImplementPlan={implementPlan}
+        readOnly={!!readOnly()}
       />
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
-        {(items) => <TodoPanel items={items()} plan={runPlanFile()} />}
+        {(items) => <TodoPanel items={items()} plan={runPlanFile()} dialogId={activeDialogId()} />}
       </Show>
       {/* Open checklist while nothing runs: interrupted, with Continue + dismiss. */}
       <Show when={!sending() && !waitingQuestion() && idleChecklist()}>
@@ -3644,6 +3745,7 @@ export default function ChatPanel(props: ChatProps) {
           <TodoPanel
             items={items()}
             plan={runPlanFile()}
+            dialogId={activeDialogId()}
             interrupted
             onContinue={continueRun}
             onDismiss={dismissIdleChecklist}
@@ -3661,6 +3763,8 @@ export default function ChatPanel(props: ChatProps) {
             canAskChat={!!activeProfile() && !isRunning(id)}
             onAskChat={askToResolve}
             chatTitle={(other) => store.state.list.items.find((d) => d.id === other)?.title}
+            remote={store.summaryOf(id)?.place?.kind === 'host'}
+            readOnly={readOnly()}
           />
         )}
       </Show>
@@ -3680,12 +3784,15 @@ export default function ChatPanel(props: ChatProps) {
       <Show when={contextModeFor(activeDialogId()) !== 'clm' && contextUsage()}>
         {(usage) => <ContextMeter usage={usage()} />}
       </Show>
+      {/* A remote send's files going up before its message (6.11). */}
+      <UploadProgress dialogId={activeDialogId()} />
       <div class="chat-input-row">
         <div class="chat-input-container">
           <div
             ref={inputTextareaRef as unknown as HTMLDivElement}
             class="chat-input-contenteditable"
-            contenteditable
+            contenteditable={readOnly() ? 'false' : 'true'}
+            aria-readonly={!!readOnly()}
             onInput={(e) =>
               handleComposerInput(
                 e.currentTarget,
@@ -3709,13 +3816,15 @@ export default function ChatPanel(props: ChatProps) {
             onKeyDown={handleKeyDown}
             onContextMenu={handleComposerContextMenu}
             data-placeholder={
-              !activeProfile()
-                ? 'Add a model in settings first'
-                : waitingQuestion()
-                  ? 'Answer the question above, or type your own answer…'
-                  : chatMode() === 'plan'
-                    ? 'Describe what to plan…'
-                    : 'Message the model...'
+              readOnly()
+                ? readOnly()!
+                : !activeProfile()
+                  ? 'Add a model in settings first'
+                  : waitingQuestion()
+                    ? 'Answer the question above, or type your own answer…'
+                    : chatMode() === 'plan'
+                      ? 'Describe what to plan…'
+                      : 'Message the model...'
             }
           />
 
@@ -3774,7 +3883,7 @@ export default function ChatPanel(props: ChatProps) {
             <button
               type="button"
               class="chat-attach-button"
-              disabled={!activeProfile() || !activeDialog()}
+              disabled={!activeProfile() || !activeDialog() || !!readOnly()}
               title="Attach images, PDFs or text files"
               aria-label="Attach files"
               // The input keeps its focus and caret: the files go there.
@@ -3811,6 +3920,7 @@ export default function ChatPanel(props: ChatProps) {
                   disabled={
                     !activeProfile() ||
                     !activeDialog() ||
+                    !!readOnly() ||
                     (!input().trim() && referencedFiles().length === 0 && attachmentCount() === 0)
                   }
                   class="chat-send-button"

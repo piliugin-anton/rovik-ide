@@ -1,0 +1,815 @@
+//! Parser and classification unit tests, plus end-to-end runs against a
+//! local mock server that replays failure scenarios.
+
+use super::*;
+use reqwest::header::{HeaderValue, RETRY_AFTER};
+use serde_json::json;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+
+fn collect() -> (Vec<ChatStreamEvent>, impl FnMut(ChatStreamEvent)) {
+    (Vec::new(), |_e: ChatStreamEvent| {})
+}
+
+fn names(events: &[ChatStreamEvent]) -> Vec<String> {
+    events
+        .iter()
+        // Diagnostics only; the tests check what the user sees.
+        .filter(|e| !matches!(e, ChatStreamEvent::Finished { .. }))
+        .map(|e| match e {
+            ChatStreamEvent::Delta { content } => format!("delta:{content}"),
+            ChatStreamEvent::Reasoning { content } => format!("reasoning:{content}"),
+            ChatStreamEvent::ReasoningInline { tag } => format!("reasoning_inline:{tag}"),
+            ChatStreamEvent::ReasoningSupport { .. } => "reasoning_support".into(),
+            ChatStreamEvent::ApiRoute { route } => format!("api_route:{route}"),
+            ChatStreamEvent::Done => "done".into(),
+            ChatStreamEvent::Finished { .. } => "finished".into(),
+            ChatStreamEvent::Error { .. } => "error".into(),
+            ChatStreamEvent::Retrying { attempt, .. } => format!("retrying:{attempt}"),
+            ChatStreamEvent::FocusNote => "focus_note".into(),
+            ChatStreamEvent::ReasoningDetails { details } => {
+                format!("reasoning_details:{}", details.len())
+            }
+            ChatStreamEvent::ContextNotes { .. } => "context_notes".into(),
+            ChatStreamEvent::ContextUpdated { .. } => "context_updated".into(),
+            ChatStreamEvent::ToolCallStart { name, .. } => format!("tool_start:{name}"),
+            ChatStreamEvent::ToolCallArgumentsDelta { .. } => "tool_args".into(),
+            ChatStreamEvent::ToolCallComplete {
+                name, arguments, ..
+            } => format!("tool_done:{name}:{arguments}"),
+        })
+        .collect()
+}
+
+/*
+ * Parsing and classification
+ */
+
+#[test]
+fn tool_call_arguments_are_assembled_by_index() {
+    let mut parser = ReplyParser::default();
+    let mut events = Vec::new();
+    let mut emit = |e| events.push(e);
+    // The id appears only in the first chunk, as in the OpenAI format.
+    for chunk in [
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":""}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"a.ts\"}"}}]}}]}),
+        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+    ] {
+        parser.feed(&chunk, &mut emit).unwrap();
+    }
+    parser.finish(&mut emit).unwrap();
+    let last = names(&events).pop().unwrap();
+    assert_eq!(last, r#"tool_done:read:{"path":"a.ts"}"#);
+}
+
+#[test]
+fn usage_in_a_final_chunk_without_choices_is_kept() {
+    // With stream_options.include_usage, OpenAI ends with `choices: []`.
+    let mut parser = ReplyParser::default();
+    let mut events = Vec::new();
+    let mut emit = |e| events.push(e);
+    for chunk in [
+        json!({"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":null}),
+        json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}),
+    ] {
+        parser.feed(&chunk, &mut emit).unwrap();
+    }
+    parser.finish(&mut emit).unwrap();
+    let usage = events.iter().find_map(|e| match e {
+        ChatStreamEvent::Finished { usage, .. } => usage.clone(),
+        _ => None,
+    });
+    assert_eq!(usage.unwrap()["completion_tokens"], 2);
+}
+
+#[test]
+fn missing_tool_call_ids_get_generated() {
+    let mut parser = ReplyParser::default();
+    let mut events = Vec::new();
+    let mut emit = |e| events.push(e);
+    parser
+        .feed(&json!({"choices":[{"delta":{"tool_calls":[{"function":{"name":"list_dir","arguments":"{}"}}]}}]}), &mut emit)
+        .unwrap();
+    parser.finish(&mut emit).unwrap();
+    // The last event is Finished (diagnostics); the call completes before it.
+    let completed = events
+        .iter()
+        .rev()
+        .find(|e| !matches!(e, ChatStreamEvent::Finished { .. }))
+        .unwrap();
+    match completed {
+        ChatStreamEvent::ToolCallComplete { id, arguments, .. } => {
+            assert!(id.starts_with("call_0_"));
+            assert_eq!(arguments, "{}");
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn errors_inside_a_200_stream_are_classified() {
+    let mut parser = ReplyParser::default();
+    let (_, mut emit) = collect();
+    let err = parser
+        .feed(
+            &json!({"error":{"code":429,"message":"Rate limit exceeded: free-models-per-min"}}),
+            &mut emit,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::RateLimited);
+    assert!(err.retryable);
+
+    let err = ReplyParser::default()
+        .feed(
+            &json!({"error":{"message":"Upstream model crashed"}}),
+            &mut emit,
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Provider);
+}
+
+#[test]
+fn empty_and_length_finishes() {
+    let (_, mut emit) = collect();
+    let mut p = ReplyParser::default();
+    p.feed(
+        &json!({"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}),
+        &mut emit,
+    )
+    .unwrap();
+    assert_eq!(
+        p.finish(&mut emit).unwrap_err().kind,
+        ErrorKind::EmptyResponse
+    );
+
+    let mut p = ReplyParser::default();
+    p.feed(
+        &json!({"choices":[{"delta":{},"finish_reason":"length"}]}),
+        &mut emit,
+    )
+    .unwrap();
+    assert_eq!(p.finish(&mut emit).unwrap_err().kind, ErrorKind::Length);
+}
+
+#[test]
+fn status_classification_and_waits() {
+    let mut h = HeaderMap::new();
+    h.insert(RETRY_AFTER, HeaderValue::from_static("7"));
+    let e = classify_status(429, &h, r#"{"error":{"message":"slow down"}}"#);
+    assert_eq!(
+        (e.kind, e.retry_after_ms, e.retryable),
+        (ErrorKind::RateLimited, Some(7000), true)
+    );
+
+    let e = classify_status(
+        400,
+        &HeaderMap::new(),
+        "This model's maximum context length is 8192 tokens",
+    );
+    assert_eq!((e.kind, e.retryable), (ErrorKind::ContextLength, false));
+    assert_eq!(
+        classify_status(401, &HeaderMap::new(), "").kind,
+        ErrorKind::Auth
+    );
+    assert!(classify_status(503, &HeaderMap::new(), "").retryable);
+
+    // OpenRouter: the reset time (epoch ms) is inside the error body.
+    let reset = (now_epoch() + Duration::from_secs(90)).as_millis();
+    let body = json!({"error":{"code":429,"message":"limit","metadata":{"headers":{"X-RateLimit-Reset": reset.to_string()}}}});
+    let e = classify_status(429, &HeaderMap::new(), &body.to_string());
+    let ms = e.retry_after_ms.unwrap();
+    assert!((88_000..=90_000).contains(&ms), "{ms}");
+
+    assert_eq!(
+        parse_duration_text("2m59.5s"),
+        Some(Duration::from_secs_f64(179.5))
+    );
+    assert_eq!(
+        parse_duration_text("750ms"),
+        Some(Duration::from_millis(750))
+    );
+    assert_eq!(parse_duration_text("1h2m"), Some(Duration::from_secs(3720)));
+    assert_eq!(
+        human_duration(Duration::from_secs(4 * 3600 + 12 * 60)),
+        "4 h 12 min"
+    );
+}
+
+/*
+ * End to end against a mock server
+ */
+
+enum Reply {
+    /// Full HTTP response, sent at once, then close.
+    Raw(String),
+    /// SSE headers, then events with a delay before each, then close or hang.
+    Sse {
+        events: Vec<(u64, String)>,
+        hang: bool,
+    },
+}
+
+fn sse(events: &[&str]) -> Reply {
+    Reply::Sse {
+        events: events.iter().map(|e| (0, e.to_string())).collect(),
+        hang: false,
+    }
+}
+
+const TEXT: &str = r#"data: {"choices":[{"delta":{"content":"Hello"}}]}"#;
+const DONE: &str = "data: [DONE]";
+const EMPTY: &str = r#"data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}"#;
+
+/// Serves the replies in order, one per connection; returns the base URL.
+async fn mock(replies: Vec<Reply>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = served.clone();
+    tokio::spawn(async move {
+        for reply in replies {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = vec![0u8; 65536];
+            let _ = socket.read(&mut buf).await;
+            tokio::spawn(async move {
+                match reply {
+                    Reply::Raw(text) => {
+                        let _ = socket.write_all(text.as_bytes()).await;
+                    }
+                    Reply::Sse { events, hang } => {
+                        let _ = socket
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+                            .await;
+                        for (delay, event) in events {
+                            tokio::time::sleep(Duration::from_millis(delay)).await;
+                            let _ = socket.write_all(format!("{event}\n\n").as_bytes()).await;
+                        }
+                        if hang {
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                        }
+                    }
+                }
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (url, served)
+}
+
+fn fast_limits() -> Limits {
+    Limits {
+        first_byte: Duration::from_millis(300),
+        idle: Duration::from_millis(300),
+        overall: Duration::from_secs(5),
+    }
+}
+
+async fn run_against(
+    url: &str,
+    limits: Limits,
+    cancel_after: Option<u64>,
+) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
+    run_body_against(
+        url,
+        &json!({"model":"m","messages":[]}),
+        limits,
+        cancel_after,
+    )
+    .await
+}
+
+async fn run_body_against(
+    url: &str,
+    body: &serde_json::Value,
+    limits: Limits,
+    cancel_after: Option<u64>,
+) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
+    let client = Client::new();
+    let spec = RequestSpec {
+        client: &client,
+        url,
+        api_key: "k",
+        body,
+        streaming: true,
+        limits,
+        api: Api::ChatCompletions,
+        chat_id: None,
+    };
+    let (tx, mut rx) = watch::channel(false);
+    if let Some(ms) = cancel_after {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            let _ = tx.send(true);
+        });
+    } else {
+        std::mem::forget(tx); // keep the channel open for the whole run
+    }
+    let mut events = Vec::new();
+    let result = run(&spec, &mut rx, &mut |e| events.push(e)).await;
+    (result, events)
+}
+
+#[tokio::test]
+async fn empty_responses_are_retried_until_one_succeeds() {
+    let (url, served) = mock(vec![sse(&[EMPTY, DONE]), sse(&[DONE]), sse(&[TEXT, DONE])]).await;
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    assert!(result.is_ok());
+    assert_eq!(
+        names(&events),
+        ["retrying:2", "retrying:3", "delta:Hello", "done"]
+    );
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+/// Some servers close the connection right after the last chunk, with no
+/// blank line after it and no [DONE]: that chunk is still part of the reply.
+#[tokio::test]
+async fn a_final_event_without_a_blank_line_is_read_when_the_connection_closes() {
+    let body = format!(
+        "{}\n{}\n",
+        r#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#,
+        r#"data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}"#
+    );
+    let raw = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{body}"
+    );
+    let (url, _) = mock(vec![Reply::Raw(raw)]).await;
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(names(&events), ["delta:Hel", "delta:lo", "done"]);
+    let usage = events.iter().find_map(|e| match e {
+        ChatStreamEvent::Finished { usage, .. } => usage.clone(),
+        _ => None,
+    });
+    assert_eq!(usage.and_then(|u| u["prompt_tokens"].as_u64()), Some(3));
+}
+
+#[tokio::test]
+async fn gives_up_after_max_attempts_with_typed_error() {
+    let (url, _) = mock((0..MAX_ATTEMPTS).map(|_| sse(&[EMPTY, DONE])).collect()).await;
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    let error = result.unwrap_err();
+    assert_eq!(
+        (error.kind, error.attempts, error.partial),
+        (ErrorKind::EmptyResponse, MAX_ATTEMPTS, false)
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, ChatStreamEvent::Retrying { .. }))
+            .count(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn long_rate_limit_waits_are_reported_not_retried() {
+    let raw = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":{\"message\":\"daily limit\"}}";
+    let (url, served) = mock(vec![Reply::Raw(raw.into())]).await;
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::RateLimited);
+    assert_eq!(error.retry_after_ms, Some(3_600_000));
+    assert!(
+        error.message.ends_with("Try again in 1 h."),
+        "{}",
+        error.message
+    );
+    assert!(events.is_empty());
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn short_rate_limit_waits_are_honoured() {
+    let raw = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nConnection: close\r\n\r\n";
+    let (url, _) = mock(vec![Reply::Raw(raw.into()), sse(&[TEXT, DONE])]).await;
+    let started = Instant::now();
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    assert!(result.is_ok());
+    match &events[0] {
+        ChatStreamEvent::Retrying {
+            delay_ms, reason, ..
+        } => {
+            assert!(*delay_ms >= 1000, "waits at least Retry-After");
+            assert_eq!(reason.kind, ErrorKind::RateLimited);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(started.elapsed() >= Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn keepalive_comments_do_not_count_as_progress() {
+    // Only ": PROCESSING" comments, then silence: a stall, then success.
+    let stalled = Reply::Sse {
+        events: vec![
+            (0, ": OPENROUTER PROCESSING".into()),
+            (150, ": OPENROUTER PROCESSING".into()),
+        ],
+        hang: true,
+    };
+    let (url, _) = mock(vec![stalled, sse(&[TEXT, DONE])]).await;
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    assert!(result.is_ok());
+    match &events[0] {
+        ChatStreamEvent::Retrying { reason, .. } => assert_eq!(reason.kind, ErrorKind::Stalled),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn partial_reply_then_stall_stops_without_retrying() {
+    let partial = Reply::Sse {
+        events: vec![(0, TEXT.into())],
+        hang: true,
+    };
+    let (url, served) = mock(vec![partial, sse(&[TEXT, DONE])]).await;
+    let (result, events) = run_against(&url, fast_limits(), None).await;
+    let error = result.unwrap_err();
+    assert_eq!(
+        (error.kind, error.partial, error.retryable),
+        (ErrorKind::Stalled, true, false)
+    );
+    assert_eq!(names(&events), ["delta:Hello"]);
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// A reply that starts after 600 ms.
+fn late() -> Reply {
+    Reply::Sse {
+        events: vec![(600, TEXT.into()), (0, DONE.into())],
+        hang: false,
+    }
+}
+
+fn limits_of(ms: u64) -> Limits {
+    Limits {
+        first_byte: Duration::from_millis(ms),
+        idle: Duration::from_millis(ms),
+        overall: Duration::from_secs(5),
+    }
+}
+
+/// A provider slower to start than the limit (a long prompt, a cold cache)
+/// gets there on a later attempt: an attempt that got nothing back gives
+/// the next one twice as long.
+#[tokio::test]
+async fn an_attempt_after_a_silent_one_waits_twice_as_long() {
+    let (url, served) = mock(vec![late(), late()]).await;
+    let (result, events) = run_against(&url, limits_of(400), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(names(&events), ["retrying:2", "delta:Hello", "done"]);
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// Only silence lengthens the wait: a reply that started and then stopped
+/// had its first data in time.
+#[tokio::test]
+async fn a_reply_that_stops_does_not_lengthen_the_wait() {
+    let stopped = Reply::Sse {
+        events: vec![(0, r#"data: {"choices":[{"delta":{}}]}"#.into())],
+        hang: true,
+    };
+    let (url, served) = mock(vec![stopped, late(), late()]).await;
+    let (result, events) = run_against(&url, limits_of(400), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    // The second attempt still waits 400 ms; the third, 800.
+    assert_eq!(
+        names(&events),
+        ["retrying:2", "retrying:3", "delta:Hello", "done"]
+    );
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+const MB: usize = 1024 * 1024;
+
+/// A request with `size` bytes of text in it.
+fn big_body(size: usize) -> serde_json::Value {
+    json!({"model":"m","messages":[{"role":"user","content":"x".repeat(size)}]})
+}
+
+/// A server that reads the first `slow` bytes of each request body at
+/// `per_sec` bytes a second (0: not at all) and the rest at full speed,
+/// then replies "Hello". Returns the URL and the connections it took.
+async fn slow_reader(slow: usize, per_sec: usize) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    // A small receive window: what isn't read yet waits on the client's side.
+    socket.set_recv_buffer_size(32 * 1024).unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = socket.listen(16).unwrap();
+    let url = format!("http://{}/chat/completions", listener.local_addr().unwrap());
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = served.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                let mut head = Vec::new();
+                let (length, mut got) = loop {
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    head.extend_from_slice(&buf[..n]);
+                    if let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let text = String::from_utf8_lossy(&head[..end]).to_ascii_lowercase();
+                        let length = text
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        break (length, head.len() - end - 4);
+                    }
+                };
+                let started = Instant::now();
+                while got < length {
+                    if got < slow {
+                        if per_sec == 0 {
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                            return;
+                        }
+                        let due = started + Duration::from_secs_f64(got as f64 / per_sec as f64);
+                        tokio::time::sleep_until(due.into()).await;
+                    }
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    got += n;
+                }
+                let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{TEXT}\n\n{DONE}\n\n");
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (url, served)
+}
+
+/// A big request on a slow link (attachments) isn't a provider that
+/// stopped responding: the first-byte limit counts from when the last of
+/// the request went out, not from when it started going.
+#[tokio::test]
+async fn a_slow_upload_that_keeps_moving_is_not_a_stall() {
+    // Half of it at 8 MB/s: 1.5 s, twice the limit. The rest at full
+    // speed, so what the client still holds when it hands over the last
+    // piece arrives at once.
+    let (url, served) = slow_reader(12 * MB, 8 * MB).await;
+    let (result, events) = run_body_against(&url, &big_body(24 * MB), limits_of(700), None).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        names(&events),
+        ["delta:Hello", "done"],
+        "on the first attempt"
+    );
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// A connection that stops taking the request is a connection problem, and
+/// found as soon as it has taken nothing for the first-byte limit.
+#[tokio::test]
+async fn an_upload_that_stops_is_a_connection_problem() {
+    let (url, served) = slow_reader(usize::MAX, 0).await;
+    let limits = Limits {
+        overall: Duration::from_secs(30),
+        ..limits_of(300)
+    };
+    let started = Instant::now();
+    let (result, _) = run_body_against(&url, &big_body(16 * MB), limits, None).await;
+    let error = result.unwrap_err();
+    assert_eq!(
+        (error.kind, error.attempts),
+        (ErrorKind::Network, MAX_ATTEMPTS)
+    );
+    // Not the 30 s each attempt may take in all.
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::SeqCst),
+        MAX_ATTEMPTS as usize
+    );
+}
+
+#[tokio::test]
+async fn cancel_stops_a_hanging_request_and_a_retry_wait() {
+    let hanging = Reply::Sse {
+        events: vec![],
+        hang: true,
+    };
+    let (url, _) = mock(vec![hanging]).await;
+    let limits = Limits {
+        first_byte: Duration::from_secs(10),
+        ..fast_limits()
+    };
+    let started = Instant::now();
+    let (result, _) = run_against(&url, limits, Some(150)).await;
+    assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    // During the backoff wait after a 503.
+    let raw = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nConnection: close\r\n\r\n";
+    let (url, _) = mock(vec![Reply::Raw(raw.into())]).await;
+    let started = Instant::now();
+    let (result, events) = run_against(&url, fast_limits(), Some(200)).await;
+    assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    assert_eq!(names(&events), ["retrying:2"]);
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn auth_errors_are_not_retried() {
+    let raw = "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n{\"error\":{\"message\":\"bad key\"}}";
+    let (url, served) = mock(vec![Reply::Raw(raw.into()), sse(&[TEXT, DONE])]).await;
+    let (result, _) = run_against(&url, fast_limits(), None).await;
+    let error = result.unwrap_err();
+    assert_eq!((error.kind, error.attempts), (ErrorKind::Auth, 1));
+    assert!(error.details.as_deref().unwrap().contains("bad key"));
+    assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancel_through_the_registry_stops_a_waiting_request() {
+    let hanging = Reply::Sse {
+        events: vec![(0, ": OPENROUTER PROCESSING".into())],
+        hang: true,
+    };
+    let (url, _) = mock(vec![hanging]).await;
+    let requests = Arc::new(ChatRequests::default());
+
+    let r2 = requests.clone();
+    let url2 = url.clone();
+    let task = tokio::spawn(async move {
+        let client = Client::new();
+        let body = json!({"model":"m","messages":[]});
+        let limits = Limits {
+            first_byte: Duration::from_secs(20),
+            ..fast_limits()
+        };
+        let spec = RequestSpec {
+            client: &client,
+            url: &url2,
+            api_key: "k",
+            body: &body,
+            streaming: true,
+            limits,
+            api: Api::ChatCompletions,
+            chat_id: None,
+        };
+        let mut registration = r2.register(Some("req-1".into()));
+        let mut events = Vec::new();
+        run(&spec, &mut registration.cancel, &mut |e| events.push(e)).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let started = Instant::now();
+    assert!(
+        requests.cancel("req-1"),
+        "the running request is registered"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .expect("cancel must end the request")
+        .unwrap();
+    assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    // Finished requests are unregistered; a late cancel is just remembered.
+    assert!(requests.cancel("req-1"));
+}
+
+#[test]
+fn a_cancel_before_registration_is_not_lost() {
+    let requests = ChatRequests::default();
+    assert!(
+        requests.cancel("early"),
+        "accepted even before the request exists"
+    );
+    let registration = requests.register(Some("early".into()));
+    assert!(*registration.cancel.borrow(), "starts out cancelled");
+    let other = requests.register(Some("other".into()));
+    assert!(!*other.cancel.borrow());
+}
+
+#[test]
+fn gemini_signatures_survive_and_unindexed_parallel_calls_stay_separate() {
+    let mut parser = ReplyParser::default();
+    let mut events = Vec::new();
+    let mut emit = |e| events.push(e);
+    // Gemini: no `index`, each call complete in its own chunk, signature on the first.
+    for chunk in [
+        json!({"choices":[{"delta":{"role":"assistant","tool_calls":[{"extra_content":{"google":{"thought_signature":"SIG-A"}},"id":"function-call-1","type":"function","function":{"name":"list_dir","arguments":"{}"}}]}}]}),
+        json!({"choices":[{"delta":{"tool_calls":[{"id":"function-call-2","type":"function","function":{"name":"read","arguments":"{\"path\":\"a\"}"}}]}}]}),
+        json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+    ] {
+        parser.feed(&chunk, &mut emit).unwrap();
+    }
+    parser.finish(&mut emit).unwrap();
+    let done: Vec<(String, Option<serde_json::Value>)> = events
+        .iter()
+        .filter_map(|e| match e {
+            ChatStreamEvent::ToolCallComplete {
+                id, extra_content, ..
+            } => Some((id.clone(), extra_content.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done.len(), 2, "two separate calls");
+    assert_eq!(done[0].0, "function-call-1");
+    assert_eq!(
+        done[0].1,
+        Some(json!({"google":{"thought_signature":"SIG-A"}}))
+    );
+    assert_eq!(done[1], ("function-call-2".to_string(), None));
+}
+
+/// The text the user sees and the reasoning, joined, for content streamed in `pieces`.
+fn split_think(pieces: &[&str]) -> (String, String, Vec<String>) {
+    let mut parser = ReplyParser::default();
+    let mut events = Vec::new();
+    let mut emit = |e| events.push(e);
+    for piece in pieces {
+        parser
+            .feed(
+                &json!({"choices":[{"delta":{"content": piece}}]}),
+                &mut emit,
+            )
+            .unwrap();
+    }
+    parser
+        .feed(
+            &json!({"choices":[{"delta":{},"finish_reason":"stop"}]}),
+            &mut emit,
+        )
+        .unwrap();
+    let _ = parser.finish(&mut emit);
+    let (mut text, mut reasoning, mut tags) = (String::new(), String::new(), Vec::new());
+    for e in &events {
+        match e {
+            ChatStreamEvent::Delta { content } => text.push_str(content),
+            ChatStreamEvent::Reasoning { content } => reasoning.push_str(content),
+            ChatStreamEvent::ReasoningInline { tag } => tags.push(tag.clone()),
+            _ => {}
+        }
+    }
+    (text, reasoning, tags)
+}
+
+#[test]
+fn reasoning_written_in_think_tags_is_shown_as_reasoning() {
+    let (text, reasoning, tags) = split_think(&["<think>Plan: add.</think>\n\nThe answer is 4."]);
+    assert_eq!(reasoning, "Plan: add.");
+    assert_eq!(text, "\n\nThe answer is 4.");
+    assert_eq!(tags, ["think"]);
+
+    // Tags split anywhere across chunks, multi-byte text included.
+    let whole = "  <thinking>Überlegung: ok</thinking>Done ✓";
+    for size in 1..whole.len() {
+        let bytes: Vec<char> = whole.chars().collect();
+        let pieces: Vec<String> = bytes.chunks(size).map(|c| c.iter().collect()).collect();
+        let refs: Vec<&str> = pieces.iter().map(|s| s.as_str()).collect();
+        let (text, reasoning, tags) = split_think(&refs);
+        assert_eq!(reasoning, "Überlegung: ok", "chunks of {size}");
+        assert_eq!(text, "Done ✓", "chunks of {size}");
+        assert_eq!(tags, ["thinking"]);
+    }
+}
+
+#[test]
+fn only_a_leading_think_tag_counts() {
+    // Mentioned in the answer: it's the answer.
+    let (text, reasoning, tags) = split_think(&["Use ", "<think> tags like <think>x</think>."]);
+    assert_eq!(text, "Use <think> tags like <think>x</think>.");
+    assert!(reasoning.is_empty() && tags.is_empty());
+    // Something that only starts like a tag.
+    let (text, reasoning, _) = split_think(&["<thi", "s is html>"]);
+    assert_eq!(text, "<this is html>");
+    assert!(reasoning.is_empty());
+    // A reply that is just a "<": held back, then shown.
+    let (text, _, _) = split_think(&["<"]);
+    assert_eq!(text, "<");
+}
+
+#[test]
+fn a_think_tag_never_closed_is_all_reasoning() {
+    let (text, reasoning, _) = split_think(&["<think>still going", " and going</thi"]);
+    assert_eq!(reasoning, "still going and going</thi");
+    assert!(text.is_empty());
+}
+
+/// An event's end is found where it is, also when two chunks split the
+/// blank line, and a search resumes where the last one stopped.
+#[test]
+fn an_events_end_is_found_once_however_the_chunks_split_it() {
+    assert_eq!(find_sse_boundary(b"data: a\n\ndata: b", 0), Some((7, 2)));
+    assert_eq!(find_sse_boundary(b"data: a\r\n\r\n", 0), Some((7, 4)));
+    // The blank line started in what was searched before.
+    assert_eq!(find_sse_boundary(b"data: a\r\n\r\n", 9), Some((7, 4)));
+    assert_eq!(find_sse_boundary(b"data: a\n\n", 8), Some((7, 2)));
+    assert_eq!(find_sse_boundary(b"data: abc", 9), None);
+    assert_eq!(find_sse_boundary(b"", 4), None);
+}

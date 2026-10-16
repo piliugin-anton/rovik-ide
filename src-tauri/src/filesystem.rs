@@ -1,5 +1,6 @@
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{self, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+use rovik_client::provider_keys::ProviderKeys;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -546,7 +547,7 @@ pub fn start_file_watch(
                                         .file_name()
                                         .is_some_and(|n| n == "HEAD" || n == "ORIG_HEAD")
                                 {
-                                    crate::overlay::chats::project_busy(&watch_root);
+                                    rovik_core::overlay::chats::project_busy(&watch_root);
                                 }
                                 continue;
                             }
@@ -588,7 +589,7 @@ pub fn start_file_watch(
                 WatchFlush::Nothing => {}
                 WatchFlush::Everything => {
                     // Isolated chats on this project read it afresh.
-                    crate::overlay::chats::project_changed(&watch_root, &[], true);
+                    rovik_core::overlay::chats::project_changed(&watch_root, &[], true);
                     let _ = app_handle.emit(
                         "fs-changes",
                         FileWatchPayload {
@@ -603,12 +604,12 @@ pub fn start_file_watch(
                         events.iter().map(|p| PathBuf::from(&p.path)).collect();
                     // Isolated chats on this project: see it as it is now,
                     // and hear right away when their own change conflicts.
-                    for (_chat, path) in
-                        crate::overlay::chats::project_changed(&watch_root, &paths, false)
+                    for (chat, path) in
+                        rovik_core::overlay::chats::project_changed(&watch_root, &paths, false)
                     {
-                        crate::agent_run::events::emit(
-                            &app_handle,
-                            crate::agent_run::events::AgentEvent::Notice {
+                        app_handle.state::<rovik_core::Core>().emit(
+                            rovik_core::agent_run::events::AgentEvent::Notice {
+                                dialog_id: Some(chat),
                                 kind: "warning".into(),
                                 title: "A chat's change conflicts with the project".into(),
                                 message: format!(
@@ -806,30 +807,19 @@ pub fn write_file_content(
     expected: Option<String>,
 ) -> Result<(), String> {
     let p = Path::new(&path);
-    let expected = expected.map(|e| crate::file_guard::hash(e.as_bytes()));
-    match crate::file_guard::write_for_editor(p, content.as_bytes(), expected) {
+    let expected = expected.map(|e| rovik_core::file_guard::hash(e.as_bytes()));
+    match rovik_core::file_guard::write_for_editor(p, content.as_bytes(), expected) {
         Ok(()) => Ok(()),
-        Err(crate::file_guard::WriteError::Changed(changed)) => Err(format!(
+        Err(rovik_core::file_guard::WriteError::Changed(changed)) => Err(format!(
             "{CHANGED_ON_DISK}{}",
             match changed.by {
-                Some(crate::file_guard::Writer::Chat(_)) => "by an agent chat",
-                Some(crate::file_guard::Writer::Editor) => "by another save in the editor",
+                Some(rovik_core::file_guard::Writer::Chat(_)) => "by an agent chat",
+                Some(rovik_core::file_guard::Writer::Editor) => "by another save in the editor",
                 None => "outside the editor: by a command or another program",
             }
         )),
-        Err(crate::file_guard::WriteError::Io(e)) => Err(format!("{path}: {e}")),
+        Err(rovik_core::file_guard::WriteError::Io(e)) => Err(format!("{path}: {e}")),
     }
-}
-
-/// A file the app writes itself (a saved plan): created with its folders,
-/// in place, under the file's lock, but not as the user's save.
-pub fn write_app_file(path: &str, content: &str) -> Result<(), String> {
-    let p = Path::new(path);
-    let _lock = crate::file_guard::lock(p);
-    if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    fs::write(p, content).map_err(|e| format!("{path}: {e}"))
 }
 
 /// How many entries a folder has directly in it (hidden ones and `.git`
@@ -1549,24 +1539,25 @@ pub fn copy_path(
 
 // --- AI chat: settings persistence + the actual API call ------------------
 
-fn ai_settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    Ok(dir.join("ai-settings.json"))
+// `ai-settings.json`, its API keys in the keychain (H06): off the main
+// thread, as the keychain may take a moment, or ask the user.
+#[tauri::command]
+pub async fn load_ai_settings(keys: State<'_, Arc<ProviderKeys>>) -> Result<String, String> {
+    let keys = Arc::clone(&keys);
+    rovik_core::rt::spawn_blocking(move || keys.load())
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn load_ai_settings(app: AppHandle) -> Result<String, String> {
-    let path = ai_settings_path(&app)?;
-    if !path.exists() {
-        return Ok(r#"{"profiles":[],"activeProfileId":null}"#.to_string());
-    }
-    fs::read_to_string(&path).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn save_ai_settings(app: AppHandle, json: String) -> Result<(), String> {
-    let path = ai_settings_path(&app)?;
-    crate::atomic_file::write_atomic_private(&path, json.as_bytes()).map_err(|e| e.to_string())
+pub async fn save_ai_settings(
+    keys: State<'_, Arc<ProviderKeys>>,
+    json: String,
+) -> Result<(), String> {
+    let keys = Arc::clone(&keys);
+    rovik_core::rt::spawn_blocking(move || keys.save(&json))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1629,7 +1620,7 @@ pub fn save_last_project(
     };
     let json = serde_json::to_string(&data)
         .map_err(|e| format!("Failed to serialize last project: {e}"))?;
-    crate::atomic_file::write_atomic(&project_path, json.as_bytes())
+    rovik_core::atomic_file::write_atomic(&project_path, json.as_bytes())
         .map_err(|e| format!("Failed to save last project: {e}"))
 }
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::merge::MARKER;
+use rovik_core::merge::MARKER;
 use std::fs;
 use std::path::PathBuf;
 

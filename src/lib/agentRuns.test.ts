@@ -3,9 +3,23 @@
 // hands over the event handler, and `agent_status` says what's running.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initAgentRuns, isRunning } from './agentRuns';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  initAgentRuns,
+  isRunning,
+  onApiRouteLearned,
+  onMessageUnanswered,
+  onReasoningLearned,
+  toolNotes,
+} from './agentRuns';
 import { agentChangesFor, recordAgentEdit } from './agentChanges';
-import { onFileDeleted, onFileWritten } from './approvals';
+import { onFileDeleted, onFileWritten, pendingApproval } from './approvals';
+import { chatStore } from './chatStore';
+import { liveChecklist } from './checklist';
+import { liveClmStatus } from './contextMode';
+import { notifications } from './notifications';
+import { pendingQuestions } from './questions';
 import { childOf, isSubagentChat, liveSubagent, seedRunningSubagent } from './subagents';
 
 const callbacks = new Map<number, (event: unknown) => void>();
@@ -38,9 +52,20 @@ const status = {
         return 1;
       }
       if (cmd === 'agent_status') return status;
+      if (cmd === 'chat_get_messages') return { messages: [], hasOlder: false, hasNewer: false };
       return null;
     },
   },
+  // Notifications' timers, which never need to fire here.
+  setTimeout: () => 0,
+  clearTimeout: () => undefined,
+};
+// Where the chat store keeps unread chats.
+const stored = new Map<string, string>();
+(globalThis as any).localStorage = {
+  getItem: (key: string) => stored.get(key) ?? null,
+  setItem: (key: string, value: string) => void stored.set(key, value),
+  removeItem: (key: string) => void stored.delete(key),
 };
 
 /** The backend sends an `agent-event`. */
@@ -127,5 +152,91 @@ test('frontend_closes_a_deleted_tab: a rolled-back new file goes from the editor
   } finally {
     stopDeleted();
     stopWritten();
+  }
+});
+
+/**
+ * test-fixtures/agent-events.json: one event of each type, as the backend
+ * sends it. The backend's tests read each into its `AgentEvent` and write it
+ * back unchanged (rovik-protocol), so the two sides agree on every shape.
+ */
+type FixtureEvent = { type: string } & Record<string, any>;
+const fixtures = JSON.parse(
+  readFileSync(join(process.cwd(), 'test-fixtures/agent-events.json'), 'utf8')
+) as { events: FixtureEvent[] };
+
+test("the backend's events, as the shared fixtures have them, reach their stores", async () => {
+  await initAgentRuns();
+  await chatStore.openChat({
+    id: 'fx-chat',
+    title: 'Fixtures',
+    createdAt: 1,
+    updatedAt: 1,
+    messageCount: 0,
+  });
+  const written: [string, string][] = [];
+  const learned: string[] = [];
+  const routes: [string, string][] = [];
+  const unanswered: [string, string][] = [];
+  const stops = [
+    onFileWritten((path, content) => written.push([path, content])),
+    onReasoningLearned((l) => learned.push(l.profileId)),
+    onApiRouteLearned((profileId, route) => routes.push([profileId, route])),
+    onMessageUnanswered((dialogId, messageId) => unanswered.push([dialogId, messageId])),
+  ];
+  const message = (id: string) => chatStore.messagesOf('fx-chat').find((m) => m.id === id);
+  const last = <T>(list: T[]): T | undefined => list[list.length - 1];
+  // What each type of event changes, checked right after it.
+  const effects: Record<string, (e: FixtureEvent) => void> = {
+    runStarted: (e) => assert.ok(isRunning(e.dialogId)),
+    runEnded: (e) => assert.ok(!isRunning(e.dialogId)),
+    messagesAdded: (e) => {
+      for (const m of e.messages) assert.equal(message(m.id)?.content, m.content, m.id);
+    },
+    messagePatched: (e) => {
+      assert.equal(message(e.messageId)?.content, e.patch.content);
+      assert.deepEqual(message(e.messageId)?.status, e.patch.status ?? undefined);
+    },
+    toolNote: (e) => assert.equal(toolNotes(e.dialogId)?.[e.toolCallId], e.note ?? undefined),
+    approvalRequested: (e) =>
+      assert.equal(
+        pendingApproval(e.request.dialogId, e.request.toolCallId)?.edit?.absPath,
+        e.request.edit.absPath
+      ),
+    approvalSettled: (e) => assert.equal(pendingApproval(e.dialogId, e.toolCallId), undefined),
+    fileWritten: (e) => assert.deepEqual(last(written), [e.absPath, e.content]),
+    questionsAsked: (e) =>
+      assert.deepEqual(
+        pendingQuestions(e.request.dialogId, e.request.toolCallId)?.questions,
+        e.request.questions
+      ),
+    questionsSettled: (e) => assert.equal(pendingQuestions(e.dialogId, e.toolCallId), undefined),
+    checklist: (e) => assert.deepEqual(liveChecklist(e.dialogId), e.items),
+    contextUpdated: (e) => assert.deepEqual(liveClmStatus(e.dialogId), e.status),
+    subagentStarted: (e) =>
+      assert.equal(liveSubagent(e.dialogId, e.toolCallId)?.childDialogId, e.childDialogId),
+    subagentProgress: (e) =>
+      assert.equal(liveSubagent(e.dialogId, e.toolCallId)?.toolCalls, e.toolCalls),
+    subagentEnded: (e) => assert.equal(liveSubagent(e.dialogId, e.toolCallId)?.status, e.status),
+    reasoningLearned: (e) => assert.equal(last(learned), e.profileId),
+    apiRouteLearned: (e) => assert.deepEqual(last(routes), [e.profileId, e.route]),
+    notice: (e) =>
+      assert.ok(notifications().some((n) => n.title === e.title && n.message === e.message)),
+    userMessageSettled: (e) => assert.deepEqual(last(unanswered), [e.dialogId, e.messageId]),
+  };
+  try {
+    for (const event of fixtures.events) {
+      const effect = effects[event.type];
+      assert.ok(effect, `nothing checks a ${event.type} event`);
+      emit(event);
+      effect(event);
+    }
+    assert.deepEqual(
+      new Set(fixtures.events.map((e) => e.type)),
+      new Set(Object.keys(effects)),
+      'every check has its event'
+    );
+  } finally {
+    for (const stop of stops) stop();
   }
 });

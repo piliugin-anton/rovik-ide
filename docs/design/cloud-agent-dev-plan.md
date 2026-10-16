@@ -647,7 +647,9 @@ away.
   between an event and its rows still ends up with what the database has
   (K22). The chat store already treats these as idempotent.
 - **Where the position is kept:** `mirror_state(dialog_id, host, rev,
-imported_result)`, updated in the same transaction as the rows.
+imported_result, imported_seq, unreported_landing)`, updated in the same
+  transaction as the rows. The last three are 6.5's: the result imported
+  last and its number, and a landing its host wasn't told of yet.
 - **Attachments** with no file here are fetched from `/blobs/<sha256>` and
   stored, with their `attachments` rows, before the `message_attachments`
   rows that reference them are applied. A file the owner can't serve gets
@@ -704,6 +706,9 @@ imported_result)`, updated in the same transaction as the rows.
 - **Guards:**
   - Before the first push, the client lists untracked files over 50 MB
     and asks.
+  - Git LFS files go up with their content, since libgit2 runs no filter
+    drivers: the server has them as they are here. The client lists those
+    whose pointer in `HEAD` the snapshot replaces, with their sizes.
   - It also estimates the history pack. Above 1 GB it offers to send the
     project without history. That choice is kept for the project: later
     snapshots chain onto the previous snapshot instead of `HEAD`.
@@ -765,9 +770,10 @@ imported_result)`, updated in the same transaction as the rows.
 **On the client, while connected.**
 
 - **Finding results:** `ResultReady` while connected, and `WorkResults` on
-  every connection. Any result newer than `mirror_state.imported_result`
-  is imported, so a result that ended while the laptop slept isn't lost
-  (K24).
+  every connection. Each chat's results are numbered (`seq`), and any
+  result newer than the one `mirror_state` records is imported, so a
+  result that ended while the laptop slept isn't lost (K24). An older
+  `ResultReady` replayed after a newer result is passed over.
 - **Importing:**
   - The client fetches the result into the shadow repository.
   - `overlay::import` builds the chat's local overlay store from the
@@ -787,8 +793,13 @@ imported_result)`, updated in the same transaction as the rows.
     `LANDS_AFTER`, no conflict markers, no conflicts, and the plan not
     `merged`, and only while the chat's project is the open project.
   - Conflicts go to the isolation bar, as they do now.
-  - A `merged` plan with checks on goes to 6.6.
-  - After a landing, the client sends `WorkLanded`.
+  - A `merged` plan goes to 6.6 when the chat's checks would run, which
+    the result says (`unchecked` when they wouldn't). Without checks, it
+    lands merged, as a local chat's does.
+  - After a landing, the client sends `WorkLanded`. A landing its host
+    can't be told of yet waits in `mirror_state.unreported_landing` and is
+    sent after the next connection, so an app restarted meanwhile still
+    tells it (K34).
 - A result that waits shows in the bar as "Ready to land" until the
   project is opened or the user lands it.
 
@@ -848,8 +859,8 @@ local ─► preflight ─► lock ─► pause ─► snapshot+upload ─► bl
    - Works out what will wait for the user, from the permissions and the
      host's approval policy (6.9).
    - Notes that CLM becomes trimming if the host has no virtual files.
-   - Lists what 6.4 lists: large files, nested repositories, and CRLF
-     scripts.
+   - Lists what 6.4 lists: large files, Git LFS files, nested
+     repositories, and CRLF scripts.
    - Notes that a parallel group's "Redo sequentially" won't be available
      after the move.
    - Checks that no conflicts are pending in the chat's overlay; they have
@@ -1059,7 +1070,7 @@ project, and packs through the tunnel (D6) can be tested without SSH.
 
 | ID  | Task                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Needs                        | Done when                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M01 | `SCHEMA_V10` (6.3): `dialogs.location` (NULL means here; `moving:<host>`, `host:<id>`, and `released` on the daemon), `sync_clock`, `rev` columns and their triggers, an index on `(dialog_id, rev)`, and the local tables `cloud_moves` and `mirror_state`. Also the ownership refusal in `dispatch` (4.2).                                                                                                                                                                                                                                                                                     | P02                          | A migration test from version 9. A test runs every write function of `chat_db/store.rs`, `clm/store.rs` and `chat_db/projects.rs` and checks that `rev` rose on the rows each touched. `EXPLAIN QUERY PLAN` shows the changes query using the index. `dispatch` refuses a chat in `moving:` or `host:`.                                                                                                                                                                                                                                                                                      |
+| M01 | `SCHEMA_V10` (6.3): `dialogs.location` (NULL means here; `moving:<host>`, `host:<id>`, and `released` on the daemon), `sync_clock`, `rev` columns and their triggers, an index on `(dialog_id, rev)`, and the local tables `cloud_moves` and `mirror_state`. The client keeps in `mirror_state` the result each chat imported last, with its `seq`, and a landing its host wasn't told of yet (6.5), in place of T06's shadow ref and in-memory list. Also the ownership refusal in `dispatch` (4.2).                                                                                            | P02                          | A migration test from version 9. A test runs every write function of `chat_db/store.rs`, `clm/store.rs` and `chat_db/projects.rs` and checks that `rev` rose on the rows each touched. `EXPLAIN QUERY PLAN` shows the changes query using the index. `dispatch` refuses a chat in `moving:` or `host:`. After a restart of the app, an imported result isn't imported again, and a landing not yet reported is reported after the next connection.                                                                                                                                           |
 | M02 | `chat_db::sync`: `ChangeSet`, `changes_since` in pages, and `apply` (6.3), with the CLM revision deletions, the local `project_id` and `location` kept, and the location check in the same transaction.                                                                                                                                                                                                                                                                                                                                                                                          | M01                          | Tests: applying the changes in any batches and pages gives the same database as one full export; applying twice changes nothing; a finalized body stored in `message_bodies` arrives whole; a child chat arrives with its parent's location; a CLM revision the owner deleted is deleted; a chat that moved back isn't written to.                                                                                                                                                                                                                                                           |
 | M03 | The safe point. `AgentPause` in the core: a flag on `RunControl`, handed to the run with its `Controls` and checked where a checkpoint pause happens in `run.rs` and between verification rounds. The run pauses with `PauseInfo { kind: "move", host }`, a new field, and no `reason`, so there is no summary request (K29). `Drain` uses the same flag with kind `drain`. Running `task` children finish first, and the call returns when the run has ended. `MessageList.tsx` shows a `move` pause as "Moved to <host>" and a `drain` pause as "Paused for an upgrade", not as a stuck agent. | P02                          | e2e: a pause during a tool call stores the call's result and makes no further request, with outcome `paused-move`; `ContinueRun` then continues the count; a pause during a scout lets the scout finish first; Stop still stops at once. `npm test`: both pause kinds render with their own text.                                                                                                                                                                                                                                                                                            |
 | M04 | Import and ownership on the daemon: `POST /chats/import` (one transaction, idempotent per `move_id`, the chat's computer recorded, the worktree created before the commit, a released chat cleared first, a row without a file for an attachment the daemon doesn't have), `ChatOwner` and `ChatRelease`.                                                                                                                                                                                                                                                                                        | M02, T03, T09                | Daemon tests: two imports with one `move_id` make one chat; another computer's import of a chat it doesn't own is refused; after a release, writes are refused and reading changes still works; a chat released earlier can be imported again; a bundle that references a file the client couldn't upload imports, and requests say the file is no longer shown; a bundle of 50 MB imports.                                                                                                                                                                                                  |
@@ -1355,4 +1366,1475 @@ points here from each one.
 
 ## Notes from implementation
 
-None yet. Tasks add notes here when reality differs from the plan.
+Tasks add notes here when reality differs from the plan.
+
+- **C02, the runtime without a host's.** `rt` doesn't fall back to
+  `Handle::current()`: it makes a multi-thread runtime on first use, as
+  `tauri::async_runtime` did. On a `#[tokio::test]`'s single thread a run
+  moves only while the test waits, and an isolated chat's e2e test
+  (`a_running_chat_resolves_its_own_conflict`) failed two runs in three
+  that way. The app takes that runtime from `rt::handle()`, after
+  `adopt_login_shell_path`, and hands it to Tauri, so there is one runtime
+  and no `rt::init`.
+- **C03, two ways to build a `Core`.** `Core::new` sets up what the
+  process keeps once for its data folder (`workload::init`,
+  `overlay::chats::init`), so a process builds one. `Core::open` opens the
+  database and builds the parts without them: the e2e harness and the
+  headless runner build cores with it, since one test process holds many
+  (K18). The agent log's folder is a third path, `Paths::log_dir`: the data
+  folder, except for the headless runner, which keeps the log with its
+  report.
+- **C04, two tests besides the harness.** The test that stored an
+  attachment through the mock app's IPC is two tests now: the app's
+  `chat_store_attachment` reads the bytes from either body (a pure
+  function), and the core stores them (`attachments::store_attached`).
+  The headless test that checked the agent log's process-wide folder was
+  reset keeps its other checks: with the folder in each `Core`, there is
+  no such folder left. The core functions behind the commands take the
+  part of the `Core` they need (`&DbState`, `&AgentState`), or the `Core`
+  when they need more or send events.
+- **C05, the runner's code waits a task.** `rovik-headless` takes the
+  runner's binary, but headless.rs stays in `rovik-core` until C06: its
+  e2e tests need the scripted model server, which only the `testing`
+  feature lets another crate use. C06 moves the runner and those tests to
+  `rovik-headless`. The workspace's shared dependencies are declared once,
+  in `[workspace.dependencies]`.
+- **P01, the types that travel.** Besides `AgentEvent` and `StartRequest`,
+  what they and the requests carry moved too: the settings (`AgentConfig`,
+  `Permissions`, `SubagentConfig`), the CLM, checklist and question types,
+  `ToolCall`, `MessagePatch`, `ChatModel` and `Hunk`. The core re-exports
+  each where it was. `SubagentConfig`'s methods need the core's kinds, so
+  they are a trait there (`SubagentSettings`), and its test-only
+  `extra_tools` is behind the protocol's `testing` feature, which the
+  core's tests turn on. `Request` has today's operations of the Agent,
+  Chat and CLM groups; the requests and events of later milestones
+  (`AgentPause`, `ChatChangesSince`, `BlobsMissing`, the Work and Host
+  groups, `ChatChanged`, `ResultReady`, `SyncState`) come with their
+  tasks, as additive changes. `Response` has one variant per kind of
+  value, which a caller takes with `TryFrom` (`bool::try_from(reply)`).
+  A token travels as a `Secret`, whose `Debug` doesn't show it.
+- **P02, async commands.** The commands that now go through `dispatch`
+  are async, and return a `Result` as Tauri requires of async commands
+  that take the app's state: `agent_stop`, `agent_status` and the others
+  that were synchronous answer the frontend the same values. An
+  operation's own error travels as `FailCode::Internal` with its text.
+  The e2e suites call `dispatch` through stand-ins with the operations'
+  names in the harness, so the suites' only change is an `.await` on
+  those calls.
+- **P03, the daemon's edges.**
+  - `serve --data DIR` keeps both of the daemon's folders in DIR.
+    `serve --no-virtual-files` skips the mount: the daemon tests use it, so
+    a test that kills the daemon leaves no dead mount, and an
+    administrator can turn FUSE off.
+  - Every request but `/health` carries its token (4.4), the WebSocket's
+    upgrade too, and its `Hello` must name the same computer with the same
+    token. A refused upgrade or `/call` gets a 401 with a `Fail`; a refused
+    `Hello` closes the session with code 1008.
+  - Without `--same-machine`, `AgentStart` is refused. With it, a chat
+    with no row on the daemon gets one, until M04 imports chats, and runs
+    in its start's folder without an overlay (D8).
+  - Events go nowhere until P04. The core's own messages still go to
+    stderr, which is the journal under systemd; `agentd.log` has the
+    daemon's.
+  - The test of a reply over 1 MB found two slow spots in the core. A
+    reply's stream was searched for an event's end from the start of the
+    buffer at each chunk, which is quadratic for a tool call sent as one
+    event. The diff behind an edit approval sized its search by the files
+    instead of by its 2,000-line limit, so rewriting a big file copied
+    gigabytes. Both now cost what the input does. The editor's diff
+    (lineDiff.ts), which must give the same hunks, copied the same way, and
+    applying a hunk of 200,000 lines overflowed its stack; it's fixed too.
+- **P04, which computer an event goes to.** A chat's computer is the one
+  that started it on the daemon, which P05 keeps in `state.json`, and a
+  subagent's chat goes with its lead's (`SubagentStarted` names both).
+  The two events about a model's settings name no chat, so they go to
+  every computer of the daemon: all of them are one person's (D16).
+  `Subscribed` comes before the events it replays. A connection that
+  falls behind is closed with code 1013, and its client subscribes again
+  from its `since`.
+- **P05, a computer's configuration.** On the daemon, `AgentConfigure` goes
+  to the store and replaces only its computer's configuration; it isn't
+  dispatched. A start's configuration becomes its computer's the same way,
+  and the start goes on without it, so the core's one configuration isn't
+  touched and every run reads its computer's through `config_for`. The
+  store is also where the events find a chat's computer. A start of
+  another computer's chat is refused with `NotOwner` already; the other
+  requests are refused with M01. `keys.json` keeps one key per provider,
+  so of two keys of one provider in a start, the later stays.
+- **P06, what an interrupted run comes back as.**
+  - The core reads a chat's last rows (`agent_run::recovery::after_crash`),
+    so what a row means stays in the core. The daemon applies the limit,
+    and starts the run the way a client's start goes.
+  - A cut reply is settled by the code that stores a failed turn
+    (`settle_failed_turn`, which `store_failed_turn` now calls), with a
+    new failure kind, `restarted`, which the chat words "The server
+    restarted while the reply was being written." The approval of a
+    resumed call no longer says the app was closed.
+  - `running` goes from the run's `RunStarted` to its `RunEnded`, as the
+    daemon's sink sees them, so a start that made no run leaves nothing
+    to restart. `state.json` also keeps the last run's id and outcome; T05
+    adds the result beside them.
+  - Until T05 commits results, the `interrupted` row ends the run with a
+    `RunEnded` of outcome `interrupted`, sent through the core's sink as
+    a run's end is, so T05's commit and `ResultReady` hang off that one
+    place.
+  - Start-up's events (the restarted runs', the notice, those `RunEnded`)
+    go out before the socket is bound, so they reach a client that
+    subscribes from the start of the boot, `(boot, 0)`, after it catches
+    up from the database. P07's client subscribes that way on a new boot.
+  - Restarts follow `--same-machine` as starts do: without it, a cut run
+    ends `interrupted`. Restarts count by time alone; a start from a
+    client doesn't reset them.
+  - No run pauses for a drain before R02, so the daemon test makes one in
+    the database from a checkpoint's pause, with the kind R02 writes
+    (`recovery::DRAIN`). The daemon tests read the rows a killed daemon
+    left with `rusqlite`, now one of the workspace's shared dependencies.
+- **P07, the client.**
+  - Its tests against the real binary are in `rovik-agentd`
+    (`tests/client.rs`), since only a binary's own package can run it from
+    its tests. Its unit tests talk to a daemon of their own over an
+    in-memory stream, which can ask for a newer app than the real one.
+  - What a client hears goes to the sink it's given, in order: its state,
+    each `Subscribed`, the events. The core's events go to an `EventSink`
+    the same way.
+  - Back on a daemon of another boot, the client subscribes from that
+    boot's first event (P06) and says `complete: false`: its chats catch
+    up from the database, then get what the daemon did before anyone
+    connected.
+  - 6.10's other half is here too: the client connects again at once
+    when the wall clock runs 30 s ahead of the monotonic one, which stops
+    while the computer sleeps. It sends no pings: H02's keepalives find
+    a dead SSH link.
+  - A call fails as `Unreachable` while there's no link, and after 60 s
+    without a reply. A reply that came back `TooLarge` is asked again
+    through `POST /call`, whatever the call: only reads have replies that
+    big.
+  - The HTTP and WebSocket crates the client shares with the daemon, and
+    `log`, are workspace dependencies now.
+- **P08, the app's remote chats.**
+  - The routing, the remote start and the event rules are in
+    `rovik-client`'s `Remote`, which takes the app's `Core` for the
+    mirror's database and the sink. They're tested without Tauri, and each
+    command is one line over it.
+  - Until M05 pulls rows, the mirror also takes each `MessagePatched`, and
+    the writes the owner sends no event for (rename, model, a message's
+    patch) once the owner has taken them. Deleting a remote chat stays
+    local until M08.
+  - A remote `Send`'s message is kept until its host announces it. When a
+    `Resync` stands in for that, the message goes into the mirror and to
+    the frontend, with what waits in the chat from the host's status. Rows
+    only the host has wait for M05. Rows passed on carry the mirror's
+    `seq`, which the frontend pages by.
+  - The approval policy "the AI reviewer, then me" sends what waits for
+    the user to the AI reviewer when there is one. Each host's is "wait
+    for me" until the hosts page sets it (U01).
+  - The developer setting also takes `ROVIK_REMOTE_TOKEN`, the token whose
+    hash the daemon's `config.toml` has, and `ROVIK_COMPUTER` (default
+    "desktop").
+  - `StartRequest.project_settings` and `ApprovalRequest.remote` are new
+    optional fields. No daemon without them has shipped, so they need no
+    feature (4.5).
+  - A run that ended while its host was away is told as `runEnded` with
+    outcome `unknown`, until results come (T05).
+- **P09, a message's files.**
+  - The upload before a remote `Send` (6.11's `ensure_blobs`) is part of
+    `Remote`'s start, and its progress goes to the sink the app gives it,
+    which emits `cloud-event`.
+  - A daemon names `attachments` among its `Welcome`'s features, and the
+    client sends a message's files only to one that does (4.5, K46).
+  - `PUT /blobs` stores through `store_attached`, which prepares an image
+    again. An image the app prepared comes out byte for byte the same; one
+    that doesn't is refused. The 20 MB limit is the body read to it, as
+    `/call` reads its own, not Axum's layer.
+  - The core finds no browser in this environment, so the screenshot test
+    uses a file only the daemon has, which another app of the same
+    computer sent. Its path is a screenshot's: the files a row names come
+    before the row.
+  - After Stop during an upload, the input gets its message back the way
+    it does for any send that fails (`ChatPanel.tsx`). The test checks
+    that the send fails and that the daemon stored and started nothing.
+    Cancelling the upload when the chat moves back comes with M07.
+- **T01, shadow repositories.**
+  - A snapshot reads the work tree with one diff from the shadow's index,
+    which also keeps the stat data of the files that didn't change, and
+    applies the diff's changes itself, deletions included. `add_all`
+    would leave the stat data of an entry seeded from `HEAD` empty, and
+    every snapshot would hash every tracked file again; `update_all` isn't
+    needed.
+  - The index is brought in line with `HEAD` before every snapshot, not
+    only when the shadow is created. `HEAD` moves: a file committed later
+    though an ignore rule matches it would have stayed out. Entries `HEAD`
+    doesn't have that an ignore rule matches now come out, as `git add -A`
+    on a fresh index wouldn't take them. While the project's `HEAD` can't
+    be read, the index stays as it is.
+  - Besides `core.autocrlf` and `info/exclude`, the shadow takes the
+    project's `core.eol`, `core.excludesFile`, `core.attributesFile` and
+    `info/attributes`, which also decide what `git add` stores or a
+    checkout writes (T06). `core.safecrlf` is off: libgit2 refuses where
+    git only warns.
+  - Nested repositories and submodules stay out of the snapshot, not even
+    as gitlinks. The guards list both: the nested repositories the
+    snapshot left out, and `HEAD`'s gitlinks.
+  - The guards are one call, `Shadow::guards`, for M06's preflight to
+    show. The history is estimated as the size of the project's object
+    store. The CRLF scripts are files with an executable mode or a shell
+    extension.
+  - Choosing to send a project without its history deletes its snapshot
+    refs, so a snapshot taken before the choice doesn't bring the history
+    in through the chain.
+  - `HEAD`'s history can be read when the repository isn't shallow and the
+    shadow reads `HEAD`'s parents. When the project's object folder
+    changes, the shadow's index is cleared, since it may name objects only
+    the old store had.
+  - A shadow inside the folder it snapshots (a project at the home folder,
+    say) leaves itself out of its snapshots.
+  - libgit2 runs no filter drivers, so a Git LFS file is snapshotted with
+    its content, not its pointer, and shows as changed from `HEAD`. Since
+    the second review below, the guards list those files.
+  - The tests are a test binary of their own, which sets libgit2's search
+    paths: the global excludes are a fixture's, and the machine's git
+    settings don't count. The hashed files are `Snapshot::hashed`, and a
+    test checks that the index keeps every file's stat data.
+- **T02, packs.**
+  - Building a pack, taking one in and checking that a commit is complete
+    are `rovik_core::packs`, which the client and the daemon share. A
+    complete commit is one whose whole tree and parents are there; the
+    history behind the parents isn't walked again.
+  - The daemon creates `projects/<id>.git` on a project's first push.
+    T03's `ProjectEnsure` adds the project's row and its exclude patterns.
+  - A client may push only refs under `refs/rovik/`, written in letters,
+    digits, `-`, `_`, `.` and `/`, so the push's query string needs no
+    escaping and no new dependency. A chat's snapshot goes to
+    `refs/rovik/chats/<chat>/snapshot` (`packs::snapshot_ref`).
+  - A fetch may want only the commits of the project's refs.
+  - A push against a ref that moved is refused with `409` and `Busy`. The
+    client reads the refs before each push, so pushing again gets there.
+  - The daemon reads a pushed pack with a 60-second idle timeout. The
+    client has none of its own yet: H02's keepalives find a dead link.
+  - The daemon names `projects` among its `Welcome`'s features (4.5), and
+    the client checks for it before a push or a fetch.
+  - A push's progress is `CloudEvent::Pushing`, from
+    `Remote::push_snapshot`, in bytes sent: a pack's size isn't known
+    while it's built. A fetch tells none yet; T06 brings the imports that
+    would show it.
+  - The client's HTTP requests no longer declare a length of 0 for a body
+    whose length isn't known: such a body goes chunked.
+  - P09's attachments test now picks the `Uploading` events out of what
+    the app was told: `CloudEvent` has a second variant, which its
+    patterns didn't allow for.
+- **T03, projects and worktrees.**
+  - The plan names no request that makes a chat's worktree before M04's
+    import, so the first `WorkSync` of a chat makes it, at the snapshot.
+    A later `WorkSync` changes nothing until T07 brings the merge.
+    `WorkSync` also carries `dialogId` and `project`, which section 4.2
+    leaves out, and answers `Synced { root }`, which T07 can grow.
+  - `ProjectEnsure` creates the bare repository and the project's row,
+    whose folder is the repository, and keeps the project's name, folder
+    in its repository and settings in `state.json`. A worktree made later
+    gets the settings under its root.
+  - The worktree's ID file is written alone (`projects::write_id_file`),
+    and the repository's `info/exclude` names `**/.rovik/project.json`
+    after the client's patterns: the ID file stays out of results even
+    when the snapshot has no `.rovik/.gitignore`. The repository's own
+    config has `core.autocrlf=false`, whatever the account's says.
+  - The client's patterns are `Shadow::excludes()`: the lines of the
+    project's `info/exclude` and of the global excludes file
+    (`core.excludesFile`, or git's XDG default), without comments and
+    blank lines.
+  - The test checks that the worktree's git ignores a file only the
+    client's global excludes name. Results, which take the same rules,
+    are T05's.
+  - Deleting a chat removes its worktree, its branch `rovik/<chat>` and
+    its refs under `refs/rovik/chats/<chat>/` in every project's
+    repository, its root's `project_paths` row and its `state.json`
+    entry. Garbage is collected at start-up: the worktrees of chats whose
+    rows are gone, and folders in `work/` no chat has. R01's `Gc` can
+    call the same.
+  - A chat's id names a folder, a worktree and a branch, so a sync with
+    one that isn't letters, digits, `-` and `_` is refused.
+  - The daemon gives a chat it makes a row for the worktree's project.
+- **T04, worktree mode.**
+  - The daemon tells its core that its runs work in a server's worktrees
+    (`AgentState::set_on_server`, at start-up): every daemon run is one
+    (D8). The rules are in `agent_run/server.rs`.
+  - The daemon runs a chat in its worktree's root, whatever folder the
+    start names. With `--same-machine`, a chat without a worktree still
+    runs in the start's folder, for development and milestone P's tests;
+    without it, such a start is refused until the project syncs.
+  - "Names `.rovik` in any spelling" is `.rovik` as a folder after a
+    slash, with quotes and backslashes taken out. The project's own
+    `.rovik/plans/…`, named from the worktree's root, doesn't match; named
+    through `$PWD` or an absolute path, it does, and asks.
+  - Such a command goes to the user with a note, the way commands the AI
+    reviewer may never approve do, and never runs alongside the reads
+    that need no approval.
+  - Parallel workers are refused by the existing rule for chats without an
+    overlay, which the test checks on the daemon.
+  - The refusal of a start without a worktree still names `--same-machine`,
+    as P03's test expects. P05's test that scans the daemon's files for
+    keys now waits for the run's end to reach `state.json` first: under
+    the whole suite's load it once listed `state.json`'s temporary file
+    just before the rename took it away.
+- **T05, results.**
+  - Staging a work tree into an index against a base, which T01 wrote for
+    the shadow, is `rovik_core::staging` now: the shadow stages the
+    project against its `HEAD`, the daemon a chat's worktree against its
+    landing base, through `results/<chat>.index` set on the worktree's
+    repository. The same rules hold on both sides (K30).
+  - The outcome-to-reason mapping is `agent_run::pending_reason`, which
+    `try_land` and the daemon both call; its table test is in
+    `landing.rs`.
+  - `ChatResult` (`dialogId`, `commit`, `outcome`, `pending`) is what
+    `WorkResult` answers, what `WorkResults` lists and what `ResultReady`
+    carries. `WorkResult` takes the chat's last outcome, or `unknown` for
+    a chat that never ran here, whose result waits as a run that didn't
+    finish.
+  - A result whose tree and base are the previous one's keeps its commit.
+  - Every run's end of a chat with a worktree commits its result,
+    including the end restart gives a run it won't pick up again.
+  - `ResultReady` goes to the chat's computer after the run's end. The
+    client passes it over until T06 imports results.
+  - The daemon tests share `tests/common/project.rs`: a project carried
+    to the daemon, and the calls that give a chat its worktree.
+- **T06, results back on the desktop.**
+  - `overlay::import` builds the chat's store from the result's commit and
+    its parent, the landing base, both in the shadow. Renames weren't
+    detected, so a moved file was a deletion and a new file (since the
+    second review below, it's a move), and a change between a file and a
+    link is a deletion and a write. Build output and
+    dependencies stay out, as `tiers.rs` keeps them out locally. Folders
+    the project lacks get entries of their own, so the store replays. A
+    deleted file is kept by its base content's hash, which landing checks.
+  - The checkouts go through the shadow, whose attributes are read from the
+    project's work tree, and leave the shadow's index as it is.
+  - The store keeps what it came from in `import.json`: the result's
+    commit, the paths it brought from the tree's root, which `WorkLanded`
+    reports, and those outside the project's folder, which never land.
+  - Which result a chat imported last is kept in the shadow, at
+    `refs/rovik/imported/<chat>`, until M01 brings
+    `mirror_state.imported_result`.
+  - A new store is built in `overlays/.import-<chat>` and swapped in under
+    the chat's gate. A result that changes nothing here leaves no store.
+  - `Remote` (`remote/results.rs`) imports and lands remote chats' results
+    through one queue, one job at a time. The jobs are `ResultReady`,
+    `WorkResults` after every connection (complete or not, where 4.3 names
+    only `complete: false`), the bar's Land (`Remote::land`), and the open
+    project changing.
+  - The open project is the folder the app opened last: `chat_open_project`
+    tells `Remote`. A result whose project isn't open waits as "Ready to
+    land", and lands by itself once it is. The app has no way to close a
+    folder; since the review below, the open project also follows what
+    the user says the open folder is.
+  - A result lands by itself under `landing.rs`'s rules but never merged:
+    one that would land merged with the project's newer changes waits,
+    with the reason, until T08 checks it on the server. The bar's Land
+    lands it merged, as it does locally.
+  - `WorkLanded` also carries `dialogId`. The daemon commits the result's
+    entries for the paths on the landing base, moves the chat's branch to
+    that commit and resets the worktree's index (mixed). A newer result,
+    made on the old base, is committed again on the new one: otherwise it
+    would bring back what landed. The test of Resolve and Land anyway
+    covers this with a newer result that waited while the conflicts were
+    settled.
+  - When the host can't be reached, a landing is reported after its next
+    connection. The report is kept in memory: if the app restarts first,
+    the next result carries the landed paths again, which land as no-ops
+    unless the user undid that landing meanwhile.
+  - The app's `overlay_*` commands aren't routed yet (T10). For a remote
+    chat, T10's `overlay_land` calls `Remote::land`. The tests call it and
+    the resolver directly.
+  - `ChatResult` has no list of marked files yet. T07 adds the daemon's
+    marks; `overlay::import` already takes them and writes `markers.json`.
+  - The isolation bar saw an import the next time it looked (a run's start
+    or end, or the chat opened), and notices say what happened. Since the
+    review below, it looks again when a result comes in or lands.
+  - "After the next sync" needs T07, so the test checks that the next
+    result doesn't bring the undone change back.
+  - The tests share `tests/common/app.rs`: the app's core, its `Remote` and
+    its shadow, with the overlays' data folder held for the test.
+- **T07, syncing before each message.**
+  - `Remote::start` syncs a remote chat before each `Send`
+    (`remote/sync.rs`): a snapshot, `ProjectEnsure` once a session per host
+    and project, the push, and `WorkSync`. A snapshot the chat's last sync
+    took isn't synced again, but a landing makes the next message sync,
+    since it moved the landing base. A chat without a project, or on a
+    daemon without `projects`, isn't synced. A sync that fails says so in a
+    notice, and the message goes to the chat as it was.
+  - The daemon merges in `sync.rs`, under the same lock as results and
+    landings. It takes "chat resolves conflicts" from the chat's computer's
+    configuration, which each start brings. A sync that applies moves the
+    chat's branch to the snapshot and resets the worktree's index (mixed).
+  - A link or a folder on either side is unmergeable, like a binary file. A
+    file both sides added is merged against nothing, so different text
+    conflicts.
+  - `Synced` grows `state` and `files`, and `Event::SyncState` carries the
+    same, as `ChatSync` with the chat's id. `SyncState` has four states:
+    `synced` (applied; the files merged with the chat's own), `marked`,
+    `conflicts` (waits; the chat could take them) and `unmergeable` (waits;
+    binary, or deleted on one side and changed on the other).
+  - The client keeps each chat's last sync (`Remote::sync_state`) for T10's
+    `overlay_status` and U05's bar. Until U05, a sync that waits says why
+    in a notice.
+  - The marker text builder is `overlay::markers` now. `mark_one`,
+    `markers_left` and the daemon's sync use it, with the same labels.
+  - The daemon keeps the marked files in `state.json`. The next message's
+    start tells the model of them once, with the note a local chat gets
+    (`chats::markers_note`), added to the text the model gets for the
+    message (`current_user_content`, else `agent_run::wire_content`). Each
+    result lists the marked files that still have their markers
+    (`ChatResult.marked`), which the import writes to `markers.json`, so
+    landing waits until they're gone.
+  - A daemon run wasn't reminded of markers left when it ended
+    (`remind_of_markers`); since the review below, it is.
+  - T06's tests now go through the sync. The undo test checks that the
+    next message's sync took the undo to the worktree. The conflict test's
+    chat doesn't resolve conflicts, so its second message's sync waits, and
+    the local edits come after its first result, which waits for the
+    project to open: before, the sync would have brought them to the chat.
+- **T08, merges checked on the server.**
+  - `WorkRecheck` carries what `WorkSync` does (`dialogId`, `project`,
+    `snapshot`, `excludes`) and answers `Synced`. The daemon merges as a
+    sync does. A merge that applies with merged files starts the chat with
+    `CheckMerged { files }`, from its last start's settings as a restart
+    does; one that merged nothing commits a result at once. A merge that
+    doesn't apply starts nothing, and the result waits with the reason.
+  - `CheckMerged` set `merged_from_project` without the diffs, which only
+    the server's merge knows, so the fix round named the merged files
+    without showing what the project changed in them. Since the second
+    review below, the merge sends them.
+  - The client sent every result that would land merged back to the
+    server, checks on or off: with the checks off, the server's run ended at
+    once and its result landed merged. Since the review below, a result
+    without checks to run lands merged here.
+  - Rounds are counted per chat, at most two; a landing or a new message
+    starts the count again. After two, the result waits with
+    `LandError::Unchecked`'s reason, "changed again".
+  - `overlay::import::land_by_itself` no longer sets a reason of its own:
+    the client decides between a recheck and waiting.
+  - An import replaces a store by moving the old one aside and the new one
+    in, one rename after the other, then deleting the old one: before, the
+    chat had no store while the old one was deleted, and a test that read
+    the project in that gap saw the old file.
+- **T09, the overlay moves with the chat.**
+  - `Shadow::fold` takes a fresh snapshot and the chat's overlay changes
+    (`chats::changes`), and builds `S0'`, a commit on the snapshot, and
+    `C0`, a commit on `S0'`.
+  - A file the chat created, and a move's destination, aren't in `S0'`,
+    unless the chat replaced a project file there. A deleted file is in it
+    as the project has it now: a deletion whose file changed here since is
+    a conflict, and folding refuses it until it's settled, as 6.8's
+    preflight asks. A move without a change of content takes the project's
+    file. Folders aren't entries of their own.
+  - Base copies and upper files are stored through the shadow's filters
+    for their paths (`Repository::blob_writer` with the path as its hint),
+    so a CRLF file is stored as `git add` would store it.
+  - `WorkSync` grows `changes`: a commit on `snapshot` that a new worktree
+    checks out as changes, its index left on the snapshot, so the agent's
+    `git status` shows them as the chat's own. A chat that has a worktree
+    already ignores it. M04's import can make worktrees the same way.
+  - Moving itself (pushing `C0`, the flip, removing the local store) is
+    M06's: the test does those steps by hand.
+- **T10, the isolation bar's remote half.**
+  - The requests are `WorkStatus { dialogId }` → `Changes` (each path
+    `added`, `changed` or `deleted`), `WorkFile { dialogId, path }` →
+    `WorkFile` (`base`, `chat`), `WorkDiscard { dialogId }` → `Done`, and
+    `WorkConflictsToChat { dialogId, snapshot, files }` → `Handed`. Paths
+    are from the project's folder, as a local overlay's are, and changes
+    outside it aren't listed.
+  - `WorkStatus` is what the chat's result would change: the worktree
+    staged through the chat's results index against its landing base. It
+    follows the results' rules, and stops listing a path once `WorkLanded`
+    has moved the base.
+  - `WorkConflictsToChat` takes the project's versions from a snapshot the
+    client pushes first, so they're stored as `git add` would store them,
+    and moves those files' landing base to them. That is the remote form of
+    what `rebase_file` does locally: without it, the chat's resolution
+    would conflict again when it lands. The client drops its import, whose
+    pending conflicts would hold back the chat's next result. The request
+    it returns is the message that tells the chat, so the daemon adds no
+    note of its own.
+  - `WorkDiscard` resets the worktree hard to the landing base and removes
+    the files the chat made. libgit2's hard reset keeps untracked files, so
+    a checkout that removes them follows. Ignored files stay. `WorkDiscard`
+    and `WorkConflictsToChat` are refused while the chat's run is going.
+  - The routes are `Remote` methods (`remote/bar.rs`), which the app's
+    commands call for a remote chat. `overlay_status` is the imported
+    result's status with the worktree's files and the last sync, in a new
+    `sync` field of `OverlayStatus`. `check_idle` asks the host whether the
+    run is going, before anything changes the chat's files. `overlay_land`
+    goes through `Remote::land`; Undo and the resolver stay local. Redo,
+    Undo the merge and Unmark were refused (`LOCAL_ONLY`); since the second
+    review below, only Redo sequentially is, as server runs have no
+    parallel groups.
+  - `chat_read_plan` reads a remote chat's plan from its worktree, by the
+    part of the path from `.rovik/plans/` on, and a local chat's from the
+    path. The frontend moves to it with U04.
+  - The tests drive the routes through `Remote` against the real daemon.
+    The app's commands only choose between the remote and the local route.
+- **After milestone T, a review of its limits.** The choices and limits
+  milestone T left for the plan's owner were settled with them; the fixes
+  are follow-ups to the tasks they change. Others the notes name (renames
+  imported as a deletion and a new file, Git LFS files sent with their
+  content, the bar's buttons only a local chat has) were the second
+  review's, below.
+  - Which result a chat imported last, and a landing its host wasn't told
+    of yet, go into M01's `mirror_state` (6.3, 6.5 and M01's task say so
+    now). Until M01, T06's shadow ref and in-memory list stay.
+  - Results are numbered (`ChatResult.seq`, additive): the daemon counts
+    each chat's results in `state.json`, and the same result again keeps
+    its number. The client passes over a result older than the newest one
+    that came in this session, or that one again. A `ResultReady` replayed
+    after a connection comes behind the result `WorkResults` brought: when
+    it was older, its commit was at no ref any more, so its fetch failed
+    and the chat said its changes didn't come back.
+  - A result with the imported one's commit, from a run that changed
+    nothing more, now decides again whether the changes land while they
+    wait here: a run stopped and then finished without changes left them
+    waiting with the stop's reason. After the app starts, the client
+    doesn't know which number it imported, so such a result changes
+    nothing until M01 keeps the number. `Remote::result_ready` is public
+    for the test that replays an older result.
+  - A result says whether checks would run on it merged with the project's
+    newer changes (`ChatResult.unchecked`, additive). The daemon works it
+    out as it commits the result, from the checks of the chat's root and its
+    computer's permissions, with `agent_run::checks_would_run`, which local
+    landing now calls too. The import keeps it in `import.json`, and
+    `land_by_itself` lands such a merge as a local chat does. Before, it
+    went back to the server for a run with nothing to check, which added a
+    "no checks are set up" record to the chat when verification was on.
+    `overlay::import::import` and `Shadow::import` take the `ChatResult`.
+  - The open project follows the user's answers about the open folder:
+    "Separate history" for a copy gives it a project of its own, and "Use
+    its chats" for a project that moved makes it that project's.
+    `chat_answer_copy` and `chat_answer_moved` tell `Remote`
+    (`folder_answered`), and results that waited for the new project land.
+    Before, the first project's results landed in the copy's folder.
+  - A daemon run that ends with conflict markers left is reminded of them,
+    twice at most, as an overlay chat's is: the daemon gives its core the
+    files it marked that still have them (`set_markers_resolver`), and
+    `remind_of_markers` asks it. The T07 test's chat now leaves its
+    markers after two reminders. The daemon keeps every mark from the
+    worktree's root: those handed to the chat (`WorkConflictsToChat`) were
+    kept from the project's folder, so in a project in a subfolder their
+    markers weren't found and the result didn't wait for them. The note
+    and the reminder name the files from the chat's root.
+  - The app is told when a remote chat's changes may look different: its
+    result came in or landed, or its project synced (`CloudEvent::Changed`
+    on `cloud-event`). The chat panel listens (`lib/cloud.ts`), and its
+    isolation bar looks again. Before, the bar looked only while a run went
+    and once it ended, so an import or a landing after that showed the next
+    time the chat was opened. Showing the sync state stays U05's, and
+    reading plans with `chat_read_plan` U04's.
+- **A second review: the limits the first one left.** Settled with the
+  plan's owner the same way; each fix is a follow-up of its own.
+  - A server's merge sends what the project changed in each file it
+    merged: `CheckMerged` grows `diffs` (additive), each file's diff from
+    the landing base by `chats::short_diff`, which local merges use. The
+    fix round shows them as a local chat's does.
+  - Git LFS files keep going up with their content, so the server's
+    builds and checks have them, and the guards list them
+    (`Guards::lfs`): each file whose pointer in `HEAD` the snapshot
+    replaces, with its size. The large-file guard missed them, since it
+    counts only files `HEAD` doesn't have.
+  - A moved file comes back as a move: the import finds renames as git
+    does (`find_similar`, with git's defaults) and stores each as a local
+    overlay stores a move, written at its new place from the old one
+    (`origin`, with the old place's base copy) and deleted there. Landing
+    merges the user's edits to the old place into it. Before, the deletion
+    conflicted with those edits, and the new file came without them. A
+    move of a link, across the project's folder's edge, or out of build
+    output is still a deletion and an addition. `WorkStatus` lists a move
+    as `moved` with its `from` (additive), and its old place as deleted,
+    as a local chat's bar does.
+  - Undo the merge and Unmark work for a chat on a server. Where a sync, a
+    recheck or a hand-over (`WorkConflictsToChat`) replaces a file's
+    content with a merge or markers, the daemon keeps the chat's version,
+    its landing base's and what it wrote, as blobs in the project's
+    repository (`state.json`'s `kept`), as a local overlay keeps them. The
+    earliest version of a file stays, with what the last merge wrote.
+    `WorkUndoMerge { dialogId, files }` → `UndoneMerge` (additive) puts
+    them back: each file unchanged since is the chat's own version again,
+    its landing base takes the old content, and the chat's next result is
+    committed at once, so what conflicts comes back to the bar. `files`
+    limits it to those (Unmark). `WorkStatus` flags the files a merge
+    replaced (`merged`, additive), which fill the bar's `mergedIn`. What
+    lands, or Discard, forgets what was kept. The kept blobs are held by
+    the chat's `kept` ref (`packs::kept_ref`), a commit of them that
+    changes with them and goes with the chat's refs, so a `git gc` (R01)
+    doesn't prune them. A file whose earlier versions are gone anyway is
+    left as it is, among `changedSince`, and forgotten, rather than failing
+    the request.
+- **M01, where a chat is.**
+  - `sync_clock` is a table of one row, one counter per database. The
+    `rev` of the rows already there is 1, a column default, so the upgrade
+    rewrites nothing. Triggers raise the clock on every insert and update
+    of the four tables and give the row its value; a write to
+    `message_bodies`, `message_attachments` or `tool_call_extras` raises its
+    message's. Deletions aren't revisions: M02 lists the CLM revisions that
+    remain, and M08 sends a deleted chat's tombstone.
+  - A location reads as `chat_db::location::Location`: `Here`,
+    `Moving(host)`, `Host(id)` or `Released`. A subagent's chat takes its
+    parent's when it's created, and setting a chat's location sets its
+    subagents' too. A value this app doesn't know, from a newer one, is
+    never taken as "here".
+  - `Request::target()` names the chat a request is about, by its id or one
+    of its messages', and whether it reads the chat, controls its run or
+    changes it. `dispatch` refuses a chat on a host or released anything
+    but reads, and a chat that is moving anything that changes it: the run
+    that pauses for the move can still be stopped or answered (M03).
+    `AgentSetEffort` and `WorkloadFocus` reach runs in memory alone, and
+    aren't refused.
+  - On the daemon, any request about a chat another computer moved there is
+    refused, reads included, its subagents' chats with it
+    (`store::lead_chat`): before, only starts were (P05). `AgentStatus`
+    lists the computer's own chats alone (D16): it listed every computer's.
+  - `Remote::place` writes the chat's location and `mirror_state` row,
+    queued before the writes that follow it, and `Remote::load` puts back
+    the chats the database has on hosts when the app starts. The writes the
+    mirror takes after the owner (a rename, a model, a message's patch) go
+    to the store directly, since `dispatch` refuses them now. The result
+    imported last, its number and a landing to report are `mirror_state`'s;
+    the shadow keeps `refs/rovik/imported/<chat>` as what later fetches
+    have. Deleting a remote chat removes its rows here (`Remote::delete`),
+    until M08 tells its host too; a chat that is moving isn't deleted.
+  - The developer setting `ROVIK_REMOTE_CHATS` puts its chats on their
+    daemons in the database too, so they stay there after a restart, until
+    M06 makes it unneeded.
+  - The test of the write functions covers those of the three modules that
+    change chat rows; the projects' other writes change projects alone, and
+    the input's saved draft is this computer's, with no revision. The tests
+    of a restart build a new `Remote` on the same core, as a start of the
+    app does. A result imported again after a restart changed nothing where
+    its landing stood, so that test undoes the landing first: imported
+    again, the undone change came back.
+- **M02, the mirror's changes.**
+  - `ChatChangesSince { dialogId, rev, cursor }` answers `ChatChanges`, a
+    `ChangesPage` of the protocol's `sync` module: the rows as stored
+    (`StoredDialog`, `StoredMessage`, …), with the columns that hold JSON
+    as the text they are. A daemon names `mirror` among its features. It
+    reads, so a released chat still answers it, and another computer's
+    chat doesn't.
+  - A pull reads up to the owner's clock when it began
+    (`ChangesCursor::upto`): its pages don't chase the writes made while
+    they come, which come with the next pull, from that clock. Each page is
+    one read transaction. The chat rows all come on the first page,
+    parents first, whatever their size: they're small, and a new
+    subagent's chat needs its parent's row first. Then each chat's CLM
+    state, CLM revisions and messages, by revision; the index is on
+    (dialog_id, rev, id), so a page reads on from where the last stopped.
+  - `apply_in` writes a row only where it differs, so a second application
+    writes nothing and raises no revision. A message a run's event brought
+    first, numbered here (P08), takes the owner's number, and a row that
+    had that number here steps aside (negative) until its own change
+    brings its number. An attachment no file came for gets a row without
+    a file (K44); M05 fetches the files first.
+  - `apply_pulled` is the mirror's: it checks that the chat is still on that
+    host in its transaction, and moves `mirror_state.rev` on the last page.
+    M04's import uses `apply_in`, with where a new chat goes.
+  - The test of pages builds an owner's chat in four rounds and pulls it a
+    row a page after each round, in pages of 2 KB after two of them, and
+    in one page at the end: the three mirrors end as the owner is, search
+    rows included. A change made between two pages comes with the next
+    pull.
+- **M03, the safe point.**
+  - `AgentPause { dialogId, host }` answers `Bool` once the run has ended:
+    whether it paused for the move. It controls the run, so a chat that is
+    moving takes it, as Stop. The core's `agent_pause` waits for the run
+    and its subagents to end, then reads the chat's last row.
+  - The pause is checked at the top of the run's loop: after each round of
+    tool calls, where a checkpoint pause happens, and after a round of
+    checks that goes back to the model. A checkpoint or a loop pause due
+    on the same round comes first, since it's the user's. An interrupted
+    reply that a start picks up is finished first, which `ContinueRun`
+    wouldn't do.
+  - Only a lead's run has the pause: its subagents' runs get their own,
+    never set, so a `task` call ends as it would have, and the lead pauses
+    after it. Stop still ends the run at once, and the pause answers false.
+  - `agent_run::drain` pauses every lead's run the same way with kind
+    `drain` and returns how many paused. No request carries it yet: who
+    may drain a daemon is R02's, with the upgrade.
+  - `PauseInfo` has `host`, and `meta.paused` is typed `RunPause` in the
+    frontend: `lib/runPause.ts` writes its line, and a kind from a newer
+    app reads as a plain pause.
+- **M04, import and ownership on the daemon.**
+  - The bundle is the protocol's `ChatBundle`: the chat's rows since 0
+    (`rows`), its project with its settings and ignore rules, `snapshot`
+    and `changes` as `WorkSync` takes them (T09), and the overlay's
+    pending reason. The import answers `Imported { rev, already }`. The
+    body is parsed as it comes, at most `MAX_BUNDLE` (512 MB), and one
+    that stops coming or is bigger is refused whole.
+  - The order: the checks (the ids, `sync::check_bundle`: the rows are
+    the chat's and its subagents' alone; the chat is this computer's or
+    nobody's; no run goes in it), then the snapshot and the changes, which
+    must be in the project's repository already. Only then does what an
+    earlier stay left go (K36): its worktree, its branch and its `result`
+    and `kept` refs in every repository, but the snapshot ref the move
+    just pushed, and its CLM files. Then the worktree, as a first sync
+    makes one, and one transaction: the old rows, the project's row with
+    the repository and the worktree's root as its folders, and the rows
+    (`sync::import_in`, which refuses an id another chat has here rather
+    than take its rows over). state.json's entry is replaced last.
+  - A chat of the same computer that the daemon still has under another
+    move (one cancelled while the host was offline, whose release hasn't
+    come) is cleared and imported too. With a run going, it's refused
+    `Busy`.
+  - `ChatOwner` answers `Ownership { moveId, released, rev }`, or none
+    when the daemon doesn't know the chat. Another computer's chat is
+    refused, as every request about it is.
+  - `ChatRelease` takes an optional `moveId`, which the plan's list
+    leaves out: a release queued when a move was cancelled offline names
+    its move, and gives back nothing a later move brought. A chat released
+    already answers true, one whose run goes on `Busy`. It sets the
+    subtree's `location` to `released` and the time in state.json; the
+    daemon then refuses anything but reads of it, the Work group included,
+    which `dispatch` doesn't see. `WorkResults` leaves released chats out.
+  - The pending reason the bundle brings stays in state.json, and the
+    chat's results give it as theirs until a run ends there.
+  - `Client::import_chat` sends the bundle, behind the `mirror` feature.
+    On the desktop, `dispatch` refuses `ChatOwner` and `ChatRelease` as
+    the daemon's own.
+- **M05, the mirror's writer.**
+  - The daemon sends `ChatChanged { dialogId, rev }` (a new `Event`) for
+    the lead's chat after each event about it and after each request that
+    changed it, at most twice a second: one is coming already, or goes
+    500 ms after the last. Its `rev` is the clock read as it goes, so
+    every change before is in it. The ring keeps one per chat.
+  - The writer is `remote/mirror.rs` in `rovik-client`, a part of
+    `Remote`. A pull goes 500 ms after a `ChatChanged` whose `rev` the
+    mirror doesn't have, and at once on each connection (every chat in
+    `mirror_state` for that host), when a run ends and on `Resync`. One
+    pull goes at a time per chat; one asked for meanwhile follows it.
+  - A page's attachment files are fetched before its rows go in; one the
+    host can't send gets a row without a file. The frontend then hears of
+    the page's new rows as `messagesAdded` and of its changed final rows
+    as a full `messagePatched`. A row still being written isn't patched
+    from its checkpoint: the run's own patches are newer.
+  - `MessagesAdded` rows still go in first (6.1), now at the owner's
+    numbers (`store::append_numbered`), so the frontend and the mirror
+    number them alike; streamed patches no longer write the mirror, which
+    the pulls bring at the 2-second checkpoints. `Resync` is a pull: the
+    messages sent from here come with it, so the client no longer keeps
+    them. A rename, a model or a message's patch still go in at once.
+  - "Re-sync this chat" (`Remote::resync_chat`, the
+    `chat_resync_dialog` command and `chatApi.resyncDialog`) reads every
+    page from 0, then replaces the mirror's rows in one transaction
+    (`sync::replace_mirror`, `store::delete_below`): the chat's row stays,
+    with its input's draft, and `mirror_state.rev` takes the owner's
+    clock even when it's lower, as after a daemon's database was
+    replaced. No pull goes meanwhile. Its place in the chat menu is
+    U02's, which brings the menu.
+  - The scripted model has `Reply::Trickle`, text a piece at a time, for
+    a reply that streams past its checkpoints.
+- **M06, moving to a host.**
+  - `Remote::move_chat` (`remote/moving.rs`) does 6.8's steps, each kept
+    in the chat's `cloud_moves` row (`chat_db::moves`): the lock puts the
+    chat and its subagents' chats at `moving:<host>` in the transaction
+    that writes the row; the flip puts them on the host, with
+    `mirror_state` at the import's revision, and deletes the row; a
+    rollback puts them back here. A chat that isn't here, a subagent's,
+    one with no project folder here and one whose overlay has conflicts
+    don't move.
+  - The run pauses with M03's `agent_pause`. The snapshot is the overlay
+    folded in (`Shadow::fold`): `C0` is pushed to the chat's snapshot ref
+    after `ProjectEnsure`, and the bundle names `S0'` as its snapshot and
+    `C0` as its changes. The files the subtree's messages name
+    (`attachments::of_subtree`) go up when the host lacks them; one this
+    computer lost goes as a row without a file. The bundle's pending
+    reason is the overlay's.
+  - The app hands the move the start a Continue would make
+    (`cloud_move_chat`'s `start`): after the flip it's sent as
+    `ContinueRun` if the run paused for the move, as `Resume` if tool
+    calls wait for results (`agent_run::waits_for_results`), or not at
+    all. The overlay here goes at the flip.
+  - Progress is `CloudEvent::Moving { step }`: `pausing`, `pushing`,
+    `uploading`, `importing`, then `moved`, `failed` with why, or
+    `cancelled`. A failure before the import makes the chat local again
+    at once. One after the bundle went, when the host may have the chat,
+    releases it there for that move, or queues the release in the row
+    (step `cancelled`) when the host can't be reached.
+  - "Cancel move" (`cloud_cancel_move`) stops a move going at its next
+    step. A move the app left unfinished is undone at once, its release
+    queued if its bundle may have gone. On each connection, the host's
+    unfinished moves are settled: a queued release goes, and a move cut
+    short is flipped if `ChatOwner` says the host has the chat from that
+    move, and undone if not.
+  - `rovik-client` depends on `uuid` for the moves' ids. The dialog that
+    shows the preflight and the progress is U02's; `lib/cloud.ts` has
+    the commands and the event's type.
+- **M07, moving back.**
+  - `Remote::move_back` (`remote/back.rs`) keeps the move in the chat's
+    `cloud_moves` row too, direction `back`: `locked`, `paused`,
+    `fetched`, `released`, then `forgetting` after the flip, until
+    `ChatForget` reaches the host. The lock leaves the chat on its host:
+    `Remote` refuses its writes there (and its subagents' chats'), while
+    approvals, answers and Stop still go through.
+  - The result comes before the release, not after it as 6.8 orders it:
+    `WorkResult`, the fetch and the import as the chat's store, through
+    the results' queue (`Job::Back`). A failure up to the release leaves
+    the chat on its host as it was, and a crash after it needs no result.
+    The queue passes over the chat's other results while it moves and
+    refuses its Land, so nothing lands by itself or is reported to a host
+    about to let the chat go. Its changes wait with the result's reason
+    ("Not landed: the run didn't finish." after a pause), or "Ready to
+    land: this chat moved back from <host>."
+  - `AgentPause` with an empty host pauses for a move back: the pause
+    names no host, and the transcript says "Moved back to this computer."
+    The run goes on here with `ContinueRun` when the chat's last row is a
+    move's pause (`agent_run::paused_for_move`), whatever `AgentPause`
+    answered, or with `Resume` for tool calls without results.
+  - After the flip the chat's changes wait where its runs here can see
+    them: isolation on (the start's `isolate`, else the app's setting)
+    and its view mounts, which opening and closing it tries. Otherwise
+    they land first (`chats::land_now`); if they don't, they wait with
+    their conflicts, and the run doesn't go on by itself.
+  - `ChatForget` deletes a released chat's rows and its files, and answers
+    whether the daemon knew the chat. A chat not released is refused. The
+    worktree and `state.json`'s entry stay for R01's cleanup; a later
+    import from that computer clears them (K36).
+  - A move back cut short is settled on the next connection: `forgetting`
+    sends `ChatForget`; otherwise `ChatOwner` decides. Released, or
+    unknown to the host, it's finished from the last pull; not released,
+    it's dropped and the chat stays there. A move back asked for again
+    takes up its row and asks `ChatOwner` first, so a release whose answer
+    was lost is finished too.
+  - "Cancel move" stops a move back at its next step until the release,
+    and is refused after it. It drops a `forgetting` row; a move there
+    replaces one, since its import clears the old stay, and another host
+    keeps the released rows until its cleanup.
+  - Progress is `CloudEvent::MovingBack`: `pausing`, `fetching`,
+    `releasing`, `pulling`, `landing`, then `moved`, `failed` or
+    `cancelled`. `cloud_move_back` and `lib/cloud.ts`'s `moveBack` start
+    it; `moveStep` reports both directions.
+  - Both moves now take `Remote`'s lock on the chat before they write its
+    row: a connection's settling of moves cut short could otherwise take
+    a move just begun for one, and undo it.
+  - `App::local` closes the overlays a failed test left open: they're the
+    process's, by the chat's id, and pointed at that test's folders.
+- **M08, writes to and deletion of remote chats.**
+  - The writes 6.1 lists already went to the owner (P08). Since M05 the
+    mirror follows them through the pull the daemon's `ChatChanged`
+    brings; a rename, a model and a message's patch also go into the
+    mirror at once, which the pull then confirms. The test covers a
+    rename, a model and a checklist's dismissal end to end.
+  - `Remote::delete` writes the chat's tombstone first, then deletes its
+    rows here and sends `ChatDelete`, which stops the run there and
+    removes the worktree, branch, refs and `state.json` entry (T03). The
+    tombstone goes once the host has the deletion; a host away gets it on
+    its next connection.
+  - The tombstone is a move back's row in `cloud_moves` at step `deleted`,
+    so the settling of moves cut short tells it, with no table of its
+    own. It takes the place of a move back cut short. A chat its host let
+    go already is forgotten there (`ChatForget`): the daemon refuses a
+    released chat's `ChatDelete`. A `ChatDelete` refused as not this
+    computer's goes as `ChatForget` too.
+  - A move cancelled after its bundle went has the host forget the chat's
+    rows once it released them, since the chat never ran there. Should
+    the host not hear it, its cleanup takes them (R01).
+  - Deleting a remote chat drops its subagents' chats from `Remote`'s map
+    too, not only its own.
+- **H01, host settings and secrets.**
+  - `rovik_client::host_settings` keeps `cloud-hosts.json`, format 1:
+    this computer's id, made and saved the first time the file is read,
+    and per host its id, name, address and port, user, auth kind (`key`,
+    `agent`, `password`, `keyboard-interactive`, `system-ssh`), key path,
+    the host key pinned in OpenSSH form, approval policy and deploy state
+    (`notDeployed`, or `deployed` with its version). The file is written
+    for the user alone, and refused when a newer app wrote it. Removing a
+    host forgets its secrets.
+  - `rovik_client::secrets::SecretStore` uses the keychain through
+    `keyring` 3.6: the macOS Keychain, the Windows Credential Manager, and
+    Secret Service through libdbus on Linux. The service is `rovik-ide`,
+    the accounts `host/<id>/password`, `host/<id>/passphrase`,
+    `host/<id>/token` and `provider/<id>/api-key`. keyring 4 splits its
+    stores into crates of their own; 3.6 is the release the design names.
+  - The keychain is used when it answers a lookup, a missing entry
+    counting as an answer. Otherwise the store is the encrypted file:
+    argon2id (64 MiB, 3 passes) makes the key, and XChaCha20-Poly1305
+    seals the secrets, a JSON map, under a new nonce at each write, with
+    the salt and the settings in the clear. `unlock` takes the passphrase
+    for the session: a new file is made with it, an existing one must
+    open with it. `kind()` says which store it is and whether it's
+    unlocked, for the interface. The secrets read are wiped from memory
+    when dropped.
+  - Errors say what to do: a missing password or passphrase is asked for
+    again, a missing token needs a new deploy, a locked file its
+    passphrase.
+  - Neither is wired to the app yet: the connection (H02) and the hosts
+    page (U01) use them, and the app picks the fallback file's path in
+    its config folder.
+  - Adding `keyring` and its Linux store changed how shared dependencies
+    resolve, so every crate rebuilt once.
+- **H02, SSH.**
+  - `rovik_client::ssh` uses russh 0.63 (0.64 is ten days old), with its
+    default crypto, aws-lc-rs, which the app had already.
+  - `Ssh::connect` checks the host key before any credential goes. With
+    no key pinned it fails with `UnknownHostKey`, the key in OpenSSH form
+    and its SHA-256 fingerprint: the app shows the fingerprint and pins
+    the key once the user agrees. A different key later fails with
+    `HostKeyChanged`, both fingerprints in it, and nothing overrides it.
+    Host certificates aren't pinned in v1; the user's own ssh takes them
+    (H03).
+  - Logging in takes a key file and its passphrase, the SSH agent
+    (`SSH_AUTH_SOCK`; on Windows the OpenSSH agent's pipe, then Pageant),
+    a password, or keyboard-interactive, each round of questions answered
+    by a callback the interface gives. The agent's certificates are left
+    to the user's ssh too.
+  - `SshConnector` is a `Connector`: one connection per host, made when
+    the first stream is asked for and again once it's closed, and a
+    `direct-streamlocal` channel to the daemon's socket per stream.
+    Keepalives go every 15 s, and three unanswered drop the link. Errors
+    a retry won't fix, a changed key or refused credentials, reach the
+    client as "permission denied".
+  - `Ssh::exec` runs a command on an exec channel and collects its output
+    and exit status, for H03 to H05.
+  - The tests run against a russh server in the test
+    (`tests/common/ssh.rs`): the unknown key shown first, each way in and
+    a wrong one, a changed key refused, and a 2 MB upload and a call at
+    once over the tunnel to the real daemon, on two channels.
+- **H03, the tunnel's fallbacks.**
+  - `SshConnector::new` asks the host for `$HOME` once, on an exec
+    channel, and reaches the daemon at `~/.rovik/agentd.sock` there;
+    `with_socket` names another path. A `direct-streamlocal` channel
+    refused as administratively prohibited marks the connection, whose
+    streams then go through `rovik-agentd attach --stdio` on exec
+    channels (`ATTACH`, the installed path; `with_attach` names another
+    command). A socket the host can't reach goes through `attach` too,
+    without marking anything: it finds the daemon where it is.
+  - `system_ssh::SystemSshConnector` runs the user's own ssh, as
+    `ssh -N -L <local>:<remote> <destination>` with
+    `ExitOnForwardFailure`, `StreamLocalBindUnlink` and keepalives, under
+    the app: started with the first stream, again once it has exited, and
+    stopped with the connector. The local end is a socket on Unix and a port of 127.0.0.1
+    elsewhere; the remote socket comes from `$HOME`, asked through the
+    same ssh. There's no `ssh` in the test environment, so its tests check
+    the command lines; the run through a jump host stays manual.
+  - The test server now runs an exec channel's command with `sh -c`, its
+    stdin and stdout the channel's, its output then its exit status sent
+    in order; the attach test runs the real binary through it.
+- **H04, the connection test.**
+  - `connection_test::test_connection` runs the steps in order and tells
+    a callback each one as it ends: the name and a TCP connection to the
+    SSH port, the host key, logging in, the probe's findings, and the
+    daemon's `/health` through the tunnel when the host is deployed or
+    the probe finds the user's socket. A failed step that the next ones
+    need ends the test. The first connection ends at the host key with
+    the outcome `confirm`, the key and its fingerprint in the step, and
+    nothing sent. The connection stays with the connector.
+  - Errors while logging in, after the key was checked, are now
+    `SshError::Failed` rather than `Unreachable`, so the test can tell a
+    failed handshake from a login that dropped.
+  - The probe, `connection_test/probe.sh`, is POSIX sh sent on stdin to
+    `sh -s`, with the providers' addresses quoted after it, so the login
+    shell parses only that line. `Probe::parse` reads its `key=value`
+    lines and skips any it doesn't know. User namespaces are tried with
+    `unshare -Ur true`, or else read from the kernel's switches as the
+    daemon reads them. Other users' daemons are found through `/proc`,
+    as `host::other_daemons` finds them, since busybox's `ps` can't list
+    users. The administrators come from the `admins` line of
+    `agentd.toml`, which H07's installer is to write on one line.
+  - Thresholds chosen: under 1 GB free in the home folder fails and
+    under 5 GB warns. Missing git, git before 2.5, no Chrome, a Chrome
+    that doesn't start headless and missing isolation extras warn. A 403
+    from a provider warns (a region block, or a proxy), and no answer
+    fails. A root login fails the account step.
+  - `http::health` asks `/health` without a token; `doctor` (R03) isn't
+    used yet. The e2e test runs the probe on this machine through the
+    test SSH server, against a local API that answers 401 and a closed
+    port. The run against a VPS stays manual.
+- **H06, the desktop's API keys.**
+  - `rovik_client::provider_keys::ProviderKeys` stands between the two
+    settings commands and `ai-settings.json`. The file is now version 3:
+    each provider whose key is saved has an empty `apiKey` and says where
+    the key is in `apiKeyIn` (`keychain`, or `secrets-file` for the
+    encrypted file). The key's account is `provider/<id>/api-key`. A
+    version 2 file's keys move over at the first load. The frontend gets
+    the keys filled in and saves them as before, so it didn't change.
+    Older app versions still read the file, with empty keys.
+  - A save puts each key in the store, and forgets the key of a provider
+    that's gone or whose key was cleared. Load and save share a lock, so
+    a load that moves keys can't write over a save. Both run off the
+    main thread, as the keychain may take a moment or ask the user.
+  - The app opens one `SecretStore` at start-up, with `secrets.json` in
+    its config folder as the fallback. While that file is locked (no
+    passphrase is asked yet; U01 adds that), keys can't be read or saved
+    there. Keys already in the settings file stay in it, as before H06,
+    until a load with the store unlocked moves them. A key that couldn't
+    be read at the last load is kept when the frontend saves it empty,
+    since empty then means unknown, not cleared. The same applies when
+    the keychain refuses a read.
+- **H07, team hosts, before H05.** H05's deploy runs the installer that
+  H07 writes, so H07 came first (rule 6).
+  - `rovik-agentd install --admin USER` copies the binary (or the file
+    `--binary` names) to `/opt/rovik/bin/rovik-agentd-<version>` and
+    points `rovik-agentd` at it. It writes `/etc/rovik/agentd.toml` with
+    USER as administrator and limits sized to the machine: each user half
+    the memory and 4096 tasks, all of Rovik 80% of the memory, and CPU
+    left to equal weights. It writes the unit of 5.3, its `limits.conf`
+    drop-in and `rovik.slice`. It makes the `rovik-admin` group, puts
+    the administrators in it, installs the sudoers rule once
+    `visudo -c` accepts it, and enables USER's instance. Run again, it
+    keeps `agentd.toml` and adds the new administrator. Every file is
+    written beside its place and renamed over it.
+  - `user start|stop|restart|status` acts on the instance of the user
+    that `SUDO_UID` names, and takes no other argument. `admin` checks
+    the caller against `admins` in `agentd.toml` (sudoers already limits
+    it to `rovik-admin`). It covers `limits [name=value ...]` (with
+    `none` to remove a limit), `add`, `remove` (never the last
+    administrator), `upgrade FILE` and `uninstall`. `upgrade` takes a
+    build only where `allow_unsigned = true`, until B02 signs releases.
+    It runs the build's `version` as the administrator, not as root, and
+    restarts the daemons, which R02 replaces with a drain. `uninstall`
+    leaves users' folders.
+  - `--root DIR` puts `/` at DIR and prints each command that would
+    change the system. The tests run the real binary that way, `nobody`
+    as the administrator. Running the installer for real on this machine
+    was refused, and it has no systemd, so the live install, the memory
+    cap killing a command, and `PrivateTmp` stay manual checks on a
+    systemd host.
+  - Values from `agentd.toml` are checked before they reach a unit file
+    or the sudoers file: sizes, CPU percentages and user names.
+  - The daemon reads `agentd.toml` at start-up. The heavy-work slots are
+    the user's `max_slots` from `config.toml`, or 1 while other users'
+    daemons run (looked for each minute), else the machine's rule. The
+    administrators' `max_slots` caps all of these, through a new cap in
+    `workload::queue`. A new worktree is refused at `max_worktrees`, or
+    once Rovik's two folders reach `max_disk_gb`. The folders are
+    measured at that moment, without following links or entering other
+    file systems.
+  - `process::ordinary_oom_score` sets the agent's commands back to an
+    OOM score of 0 before `exec`, with async-signal-safe calls only.
+  - `docs/cloud-hosts.md` is the page for administrators. It says that
+    Chrome's DevTools port stays open to other users until H08.
+- **H05, deploy, upgrade and removal, after H07.**
+  - `rovik_client::deploy::deploy` probes the server and refuses a root
+    login or a system the daemon doesn't run on. It uploads the build to
+    `~/.rovik-agentd-upload` and checks its SHA-256 there. The build runs
+    the new `rovik-agentd token add COMPUTER`, which reads the token's
+    hash on stdin and writes it into `config.toml` (rewritten through the
+    toml crate, so comments in it go); the token goes back to the caller
+    for the keychain. The build is `ROVIK_AGENTD_BINARY`, B03's override:
+    without B02 there are no release downloads or signature checks yet.
+  - The probe's sudo answer picks the install: `sudo -n`, or `sudo -S`
+    with the password on stdin when sudo asks for one (`SudoPassword`
+    tells the caller to ask; the password is never kept), or
+    `NeedsRoot` with the command for someone with root, the build left in
+    place for it. On a server with Rovik the deploy runs `user start`,
+    then `user restart`, since the daemon reads tokens only at start-up.
+    Without systemd it starts the daemon with `setsid`, after stopping
+    one that runs and waiting up to 30 s for it to exit, since it holds
+    its lock. Then the daemon must answer `/health`, and `Welcome` with
+    the new token through `rovik_client::welcome`, a one-off handshake.
+  - `check_install`, and `SshConnector::with_install_check(known)` on
+    each new connection: the installed binary's SHA-256 must be among the
+    known builds, and `systemctl show -p ExecStart` must list exactly
+    `/opt/rovik/bin/rovik-agentd serve`. A failure refuses the
+    connection with the reason (`SshError::Install`, not tried again),
+    and the connection test reports it under Install.
+    `DeployState::Deployed` now keeps the build's SHA-256 for this.
+  - `upgrade` runs `admin upgrade` for an administrator, and returns
+    `AskAdmins` with their names to anyone else. `removal` lists the two
+    folders and their sizes for the confirmation. `remove` stops the
+    daemon (`user stop`, or the stop without systemd) and deletes those
+    two folders and nothing else.
+  - Not done here: the hosts page and its Tauri commands for deploy,
+    upgrade and removal (U01), so no connector is built from
+    `cloud-hosts.json` yet; offering to move chats back before a removal
+    (U01, U02); the drain before an upgrade (R02); signed releases (B02).
+  - The plan's container tests can't run here: there's no container
+    runtime and no systemd host. An e2e test runs the whole deploy
+    through the in-process SSH server instead. Its commands run as
+    `nobody` when the tests run as root. A stand-in sudo runs the
+    installer under `--root` and starts the daemon as systemd would, and
+    the real daemon then answers `Welcome` with the new token. The test
+    scans every file for the token and the sudo password, checks that the
+    install check passes and reports another build, and removes. A root
+    login is refused before anything is uploaded. A second user's
+    deploy, a deploy without sudo, and a changed binary on a real server
+    stay manual checks on a systemd host.
+- **H08 is skipped for now, as asked.** The agent's Chrome stays on eoka
+  0.5.14's DevTools port on `127.0.0.1`, so on a shared server other users
+  can reach the browser that runs as you (K52). `docs/cloud-hosts.md`
+  says so and suggests leaving the browser tools off on servers shared
+  with people you don't trust. D18 and H08 stand as the plan for when the
+  pipe transport is taken up again.
+- **U01, Settings → Cloud hosts.**
+  - The page is `CloudHostsSettings`, a new `AiSettingsPage`, last in the
+    menu. Unlike the other pages it saves as it goes, through `hosts_*`
+    commands (`src-tauri/src/commands/hosts.rs`, over
+    `rovik_client::hosts_page::HostsPage`), not when the dialog closes.
+    The dialog's Back steps from a host's form to its page, then to the
+    list.
+  - `HostsPage` builds each host's connector from `cloud-hosts.json` and
+    the secret store: Rovik's SSH with H05's install check, or the user's
+    own ssh for a system-ssh host, which can't be tested or deployed
+    through and the form says so. The app connects every deployed host at
+    start-up, and a host again after a save, a deploy, an upgrade or an
+    unlock. A connection's changes reach the page as `CloudEvent::Host`.
+  - A save keeps the pinned key only while the address and port stay;
+    the deploy state and the policy aren't the form's. Secrets are saved
+    before the host, so a locked store can't leave a host without the
+    password it was given. Empty forgets a secret, absent leaves it, and
+    the form forgets a saved one the chosen log-in no longer uses. A host
+    with chats on it, or moving there, isn't removed, and Rovik isn't
+    removed from it; the page says so before asking the server anything.
+  - Test connection shows each step as it ends (`host-test`), with the
+    fingerprint and "Trust this key" on first use, then tests again. The
+    providers' base URLs go to its API step. Deploy asks for the sudo
+    password when sudo wants one and shows the command for someone with
+    root when sudo isn't the user's. Without `ROVIK_AGENTD_BINARY` there
+    is nothing to deploy, and the page says so.
+  - Design §7's setup script, which H01 left out, is `Host.setup_script`.
+    It runs after a deploy and on "Run the setup script"
+    (`deploy::run_setup`: bash where there is one, else sh, in the user's
+    home), and the page shows its exit status and the last 16 KB it
+    printed.
+  - New Host requests, behind the `host` feature: `KeysList` (provider and
+    base URL, never the key), `KeysRemove` (which also clears the key in
+    each computer's `AgentConfig`) and `Storage` (the sizes of projects,
+    work, data and tmp). A daemon without the feature answers `HostInfo`
+    alone, and the page says it can't list keys. An administrator, the
+    daemon's user among `HostInfo.install.admins`, sees the limits
+    (`admin limits` over SSH) and "Upgrade for everyone" when the daemon
+    is older than the app; anyone else is told whom to ask.
+  - Where there's no keychain the page says so, and while the encrypted
+    file is locked it takes the passphrase to unlock it, or to make it
+    the first time: H01's passphrase "asked once per session". Nothing
+    asks at start-up yet, so until then hosts stay unconnected and the
+    providers' keys in the file unread. U06's reconnection notice is the
+    place to say so.
+  - The shared `formatBytes` now goes on to GB and TB. The test DOM has
+    `HTMLHeadElement`, which Solid's `Portal` needs for the confirmations.
+  - Not done here: moving a host's chats back from the page before a
+    removal (U02 brings Move back; the page says to move them first); the
+    drain before an upgrade (R02); signed releases (B02). The manual check
+    against a real server (test, deploy with and without sudo, unlock,
+    the administrator's view) is still to do.
+- **U02, location and moving.**
+  - `DialogSummary.place` says where a chat is when it isn't here: on a
+    host, moving there, or moving back (a move back's `cloud_moves` row
+    before `forgetting`), read in the same query as the summary.
+    `chat_get_dialog` reads one chat's summary again.
+  - `lib/cloud.ts` keeps `cloud`: the hosts' names and connections
+    (`hosts_summaries`, which reads no secret) and each chat's move as
+    `cloud-event` tells it. The app starts it, and the hosts page
+    refreshes its hosts. A move's first step and its end read the chat's
+    place again.
+  - The chat header's chip (`ChatLocation`) says "This computer", the
+    host's name, "(offline)" or "(needs a newer app)", or "Moving to …" and
+    "Moving back from …". It shows once there is a host, or while the chat
+    is on one. Pressed, it opens the chat's menu: "Move to <host>…" for
+    each deployed host (off while it isn't connected), "Set up a cloud
+    host…" when there's none, "Move back to this computer…" and "Re-sync
+    this chat" for a chat on a host, and "Cancel move" while a move goes,
+    as after a restart with its host away.
+  - The move dialog (`MoveChatDialog`) shows the preflight: what moves,
+    with the files its messages name and their size; what will wait there
+    for the user, from the permissions with the host's policy; CLM
+    becoming trimming; "Redo sequentially" lost; the project's notes; and
+    the keys notice. A chat that can't move now gets the reason instead.
+    Then come the steps, the bytes of the project's push, "Cancel move"
+    while it goes, and how it ended; closing the dialog leaves the move
+    going. A move back has no preflight: the dialog says what comes back
+    and that it can't be cancelled once the host lets the chat go.
+  - The move's start request is a Continue's, built once the chat's queued
+    writes are stored, so a run paused for the move picks up after it.
+  - A moving chat is read-only: nothing can be typed, pasted or dropped
+    into its input, Send and Attach are off, its messages offer no Retry,
+    Continue, Run checks or Implement, and no run starts in it (with a
+    notice saying why). What its run waits on can still be answered, and
+    Stop still stops it, as M06 allows.
+  - Not done here: the chat list's badges (U03), the guards on writes to
+    remote chats (U04), and the manual check of a move and a move back on
+    a real host.
+- **U03, the chat list's badges.**
+  - `lib/chatBadges.ts` gives each row its badges: "Waiting for you" while
+    an approval or a question waits in the chat, or an approval in one of
+    its subagents (counted for its lead), local or remote alike, as the
+    approval and question events and `agent_status` fill those stores;
+    the host's name on a chat there, "· offline" or "· needs a newer app"
+    when the host can't be reached; and "Moving…" during a move.
+  - They sit on the row's date line, so the rows keep their fixed heights.
+    The hosts and their connections come from U02's `cloud` store.
+- **U04, the frontend's guards for remote chats.**
+  - Opening a chat picks up its unanswered tool calls only when it's this
+    computer's (`remoteGuards.resumesHere`): a remote chat's daemon resumes
+    it (K07). A move's start does it after the move, so the panel doesn't.
+  - `CloudEvent::CaughtUp { host }` comes once the chats mirrored from a
+    host have pulled after it connected, unless a pull failed or the host
+    went away meanwhile. The `cloud` store keeps the hosts that caught up,
+    and forgets one when it goes. Draft recovery (`recoverDrafts`) judges a
+    remote chat's draft only then, and again each time a host catches up;
+    until then it neither clears it, nor marks the message failed, nor puts
+    it back in the input (K23). An e2e test checks that the mirror has what
+    the daemon stored while the app was away by the time `CaughtUp` comes.
+  - A remote edit approval (`ApprovalRequest.remote`) keeps the file's text
+    before and after the edit and opens a read-only compare tab of it; it
+    never reviews hunks on the local file's tab. The approval bar offers
+    "Show the change", Allow and Deny (K09).
+  - Plans are read with `chat_read_plan` (`plans.readPlan`), for
+    "Implement this plan" too. A remote chat's plan opens read-only from its
+    host; a local chat's opens in the editor as before.
+  - A remote chat's context file (`@context/LIVE_CONTEXT.md`) has no
+    `realPath`, so it opens read-only from its latest revision
+    (`clm_read_revision`).
+  - The `cloud` store keeps each chat's upload, and `UploadProgress` shows
+    it above the input while a remote send's files go up (6.11).
+  - `sendKeepingInput`: the input is cleared at once and kept in
+    localStorage until the message is answered, as before; a remote chat's
+    is also saved in `composer_drafts` until its start succeeded, as
+    localStorage can't hold megabytes of text files and its error is
+    swallowed. A send that fails puts the input back from memory, so it no
+    longer depends on the localStorage copy either (K49).
+  - A chat on an offline host, or one that needs a newer app, is
+    read-only, and its input says why (6.10).
+- **U05, the isolation bar for remote chats.**
+  - The bar lists what a remote chat changed in its worktree (`WorkStatus`),
+    looked at every few seconds while a run goes as a local chat's is,
+    with the pending reason and conflicts of the result imported here. Its
+    buttons are off while the run goes, and while the chat can't change
+    (its host offline, or the chat moving), with the reason as their
+    tooltip.
+  - Sync now (`overlay_sync_now`) takes a snapshot and syncs as before a
+    message, and says when the chat had the project already: its last sync
+    took the same snapshot and applied. It's refused while the chat's run
+    goes on its host, as merging under a running agent could undo what it
+    writes.
+  - A sync that waits shows in the bar with why and its files, in place of
+    T07's notice. Keep the older copy (`overlay_keep_older`) hides it until
+    the next sync; the landing base stays, so the conflicts come up when
+    the result lands. Hand to the chat (`overlay_sync_to_chat`) syncs the
+    project as it is now with `WorkSync { mark: true }` (additive, under
+    `projects`): the daemon marks text conflicts whatever "chat resolves
+    conflicts" says and keeps the marked files without telling the next
+    start, and the bar asks the chat with `resolve_request` as Ask the chat
+    does. A chat that can't take it now isn't handed anything, and markers
+    whose message didn't start come back out (Unmark). Files that can't
+    take markers can only wait.
+  - The bar doesn't show a `marked` sync: the chat may settle the markers
+    before its next sync, and its next result's `marked` list makes landing
+    wait with its own reason.
+  - A result that comes while the user resolves the chat's conflicts is
+    held back (`Remote.held`), and the bar says a newer result is ready
+    (`OverlayStatus.newer_result`), in place of the notice. Take the newer
+    result (`overlay_take_newer`) clears the conflicts and imports it
+    through the results queue; one that doesn't come in leaves them as they
+    were. Otherwise it comes in once they're settled, as before.
+  - Tests: e2e against the daemon for Keep the older copy, Sync now, Hand
+    to the chat and Take the newer result (`tests/sync.rs`,
+    `tests/landing.rs`), and the bar's states in `isolationBar.test.tsx`.
+  - Not done here: the manual check on a real host.
+- **U06, notices.**
+  - `lib/remoteNotices.ts` tells of what a chat waits on the user for, in
+    the corner. A question notifies as before, and a local chat's approval
+    stays in the chat. A remote chat's approval notifies too ("The agent
+    needs your approval", with its host's name), once: one told again
+    isn't told twice. Show opens the chat (a subagent's lead's), for a
+    local question too; before, it only brought up the chat panel.
+  - While a host connects (the app starting, or its link back), what its
+    chats wait on is told again at once. Those don't notify one by one:
+    once the host has caught up, one notice sums up what waits there
+    ("Waiting for you on Build": "1 approval and 2 questions, in 2
+    chats."), and those told one by one before it went away fold into it.
+    Its Show opens the chat, or the chat list for several. Settling counts
+    it again, and it goes once none of it waits. What waited as the app
+    started (`agent_status`) is counted the same way.
+  - A host that connected but doesn't catch up (a pull that failed) gets
+    its notice 30 seconds after it connected, and what comes after is told
+    on its own: notices don't wait for the mirror's health, which U04's
+    drafts still do.
+  - The hosts connect as the app starts, before its window listens, so the
+    window could miss `CaughtUp`. `Remote::caught_up` keeps it, cleared
+    when the host goes away, and the host summaries carry it (`caughtUp`),
+    which `refreshHosts` applies. U04's draft recovery gains from it too.
+  - Tests: `remoteNotices.test.ts` follows scripted events through the
+    app's start, a caught-up host, a reconnection, a window that missed
+    `caughtUp`, and a host that never catches up; a client unit test and
+    the mirror e2e test check `caught_up`.
+- **A browser check of the U screens.** The frontend ran in Chromium (the
+  Vite dev server, driven by Playwright) on a stand-in for the backend:
+  the hosts page and a host's page, the location chip, its menu and the
+  move dialog, the chat list's badges, an offline chat, the remote
+  isolation bar and its buttons, and the notices, at start-up and through
+  a reconnection. Two things it found are fixed:
+  - With the chat list open, a tall isolation bar left the messages no
+    room: the list's padding spilled over the bar, and the input row went
+    off the window. The bar now gives way (it scrolls), and the squeezed
+    list is clipped.
+  - U06's start-up effect threw on a missing host list, which only the
+    stand-in sent (the backend always sends one); it reads none now.
+  - The real app ran too, under Xvfb, against a daemon on a local socket
+    (`ROVIK_REMOTE_CHATS`) and a scripted model. A remote chat's change
+    conflicted with an edit here, the next message's sync waited, Hand to
+    the chat put the markers in and the chat settled them, and Take the
+    newer result landed both changes in the project. A daemon restart
+    brought one notice summing up the approval waiting there.
+  - A host from `ROVIK_REMOTE_CHATS` wasn't among the hosts' summaries, so
+    a window that missed its first `CaughtUp` told of what waits there only
+    after a reconnection. The summaries now list such a host too, after
+    those of the settings, by its socket's file name: its chats show its
+    connection, U06's notices work from the start, and the location menu
+    offers moving chats there, which goes over the socket as the e2e
+    tests' moves do.
+  - A real connection, deploy and move still need a real server: the
+    manual checks stay open.
+- **R02, version skew.**
+  - The client's check on connection (4.5) and its refusal to move a chat
+    to a daemon without `mirror` were there (P07, M06). The move dialog now
+    says who upgrades such a host: the preflight asks for its `HostInfo`,
+    an administrator there gets "Upgrade for everyone", which runs U01's
+    upgrade, and anyone else is told whom to ask. The dialog asks again as
+    the host's connection changes, so it takes the chat once the host is
+    back on the new Rovik. A newer daemon that still serves the app was
+    fine already; a client test says so now.
+  - The drain. `admin upgrade` runs as root, and the users' daemons take
+    only their computers' tokens, so it can't ask them over the protocol.
+    Each daemon drains when it's asked to stop instead: on SIGTERM,
+    `agent_run::drain` asks every lead's run to pause at its next safe
+    point, with kind `drain`, and starts no new one (`RESTARTING`). The
+    server goes on serving meanwhile, so the clients see the pauses. It
+    waits until each run has paused or waits only for its user, an
+    approval or a question that `Resume` asks again after the restart, for
+    up to 80 s; what's left is cut as a crash cuts it. The unit gets
+    `KillMode=mixed`, so only the daemon hears SIGTERM and the commands
+    it runs can end, and `TimeoutStopSec=90`. An upgrade's `try-restart`,
+    a reboot and `user restart` all drain so. Without systemd the client's
+    stop waits up to 100 s, and after an upgrade it starts the
+    administrator's own daemon on the new build; other users' daemons take
+    it at their next start.
+  - `install` writes the units and `admin upgrade` keeps them: the older
+    binary does the upgrade, and it runs the new build only as the
+    administrator, never as root. A server installed before this keeps its
+    kill mode until `install` runs again, and there systemd's SIGTERM also
+    reaches the commands, which end then.
+  - A run that ends `paused-drain` leaves its chat `running` in
+    `state.json`, where P06's start-up looks (it was marked ended, so
+    P06's test had to fake the drain), and commits no result, since the
+    run isn't over. Its `ContinueRun` doesn't count against the two
+    restarts an hour, which are for crashes.
+  - The drain's pause reads "Paused while Rovik restarted on the server.",
+    not "Paused for an upgrade": reboots and restarts drain too.
+  - The Remote's messages named a host by its id, a UUID for a host of the
+    settings. `Client::name` gives the name its settings give it, which
+    the new messages use.
+  - Tests: the daemon test stops a daemon with SIGTERM while a run's
+    command goes; the command ends, the run pauses with `drain`, its chat
+    stays running, and the next start continues it without counting a
+    restart. A run waiting for an approval doesn't hold the stop up and
+    is asked again after it. Core tests of the drain and of a run waiting
+    on its user, a client test of the refusal for an administrator and for
+    anyone else, and component tests of the dialog's upgrade.
+- **R01, storage and collection.**
+  - `Storage` was U01's. `CleanUp` is new, a feature of its own
+    (`clean-up`): the daemon collects then, as each day it does
+    (`gc.rs`), and answers with `Storage` measured after. The hosts page
+    shows "Clean up now" for a daemon that names the feature, and says
+    how much went.
+  - What goes: the worktree, branch, refs and `state.json` entry of a chat
+    whose rows are gone, deleted or forgotten (`ChatForget`). A forgotten
+    chat keeps them a week after its release (`KEEP_RELEASED_MS`); "Clean
+    up now" doesn't wait. A chat released but not forgotten keeps them:
+    its computer may still finish taking it back, from its last pull
+    (K51), so nothing deletes a released chat's rows but `ChatForget`.
+    Start-up's collection takes the same week now; before, it took a
+    forgotten chat's worktree at the next start.
+  - Folders in `work/` that no chat has go only at start-up: while the
+    daemon serves, one may be the worktree a sync is making. The daily
+    collection holds `imports`, so it doesn't meet a move bringing a chat.
+  - Attachments no message names go once their grace period is over, a
+    batch of 500 at a time (`collect_garbage`, as the desktop's). An
+    upload `BlobsMissing` renewed for a message on its way stays (K43).
+    `ChatForget` collects too, as the desktop does after a deletion, so a
+    forgotten chat's files go then if their hour is over, else the next
+    day.
+  - `git gc --auto` runs in each project's repository where git is
+    installed, with `gc.autoDetach=false` so it doesn't outlive the
+    collection. The chats' kept blobs have their refs (T08), and gc
+    prunes only what no ref reaches, and only after git's own grace.
+  - The daily task starts with the daemon and first runs a day later;
+    start-up has collected by then.
+  - Tests: daemon tests of a chat deleted behind the daemon's back, its
+    worktree, branch and refs gone and the sizes measured again; of an
+    upload past its grace and one renewed; of a forgotten chat's PDF; of
+    a forgotten chat's worktree kept through a restart, then taken a week
+    on, and taken at once when asked; a unit test of the repositories'
+    gc, and component tests of "Clean up now".
+- **R03, doctor.**
+  - `doctor` gathers one report, `host::Doctor` in rovik-protocol, and
+    prints it as lines, or as JSON with `--json`. To the checks P03 made
+    (the folders, config.toml, a daemon answering, FUSE, Chrome, user
+    namespaces) it adds git, which R01's gc needs, and what the connection
+    test reads: the versions and the protocols served, the free space of
+    the file systems Rovik's folders are on, the install's administrators
+    and limits from `agentd.toml`, the heavy-work slots as the daemon
+    would take them (`AdminFile::slots`, with other users' daemons from
+    `/proc`), and what the folders and the logs take.
+  - "Mounts" are taken as the file systems the folders are on, with their
+    free space. The virtual files' mount itself can't be seen from an SSH
+    session: under systemd the daemon mounts them in its own namespace
+    (`PrivateTmp`). The daemon says whether it has them (`HostInfo`), and
+    doctor says whether FUSE works here.
+  - Where it looks is a `Server`: this account and machine, or a test's
+    stand-ins, so the snapshot test renders a fixture's report exactly: an
+    account with two computers, FUSE without Chrome, a team server with
+    limits and another user's daemon, and files of known sizes.
+  - Once the daemon is deployed and answers, the connection test runs
+    `/opt/rovik/bin/rovik-agentd doctor --json` and adds to its Daemon
+    step what would stop the daemon from starting again, which fails the
+    step, its slots and what Rovik's folders take with the least free
+    space. What the probe tells already (Chrome, FUSE, git) isn't said
+    twice. A daemon too old for `--json` leaves the step as it was.
+  - Log rotation was P03's: `agentd.log` rotates at 5 MB with 3 kept, and
+    the core's `agent-log.jsonl` at 5 MB with one kept. The core's own
+    messages go to stderr, the journal under systemd; without it the
+    deploy sends them to `/dev/null`, so nothing grows unseen. Doctor now
+    says what the logs take.
+  - Tests: the snapshot of the fixture's report and its JSON round trip,
+    sizes in words, `--json` from the real binary, the CLI's flag, and a
+    unit test of the connection test's daemon step with a report.
+- **R04, Windows and macOS clients.**
+  - Local paths. A move carries the chat's rows, which name no folder, and
+    its project as id, name and subpath (M06); snapshots, results and the
+    Work group name files from the project's folder with `/` (T01, T05).
+    What was left was the start: a project chat's still named its folder
+    here, `C:\…` on Windows, which the daemon put its worktree's in place
+    of (T04). The client leaves it out now when the daemon takes projects:
+    the daemon names the folder. A daemon without them (`--same-machine`,
+    for development) still gets the folder it runs in.
+  - The editor context names its file from the project's folder (K08), but
+    under a Windows folder the rest kept its `\`. It has `/` now, up to the
+    space or bracket that ends the path, and the folder is found written
+    with either separator. The files the user refers to with "@" were
+    relative with `/` already (`toRelativePath`).
+  - ssh-agent: H02 connects to the OpenSSH agent's pipe
+    (`\\.\pipe\openssh-ssh-agent`, or `SSH_AUTH_SOCK` when it's set), then
+    to Pageant. Nothing new.
+  - Case. Where names that differ only in case are one file (Windows, and
+    macOS unless its disk was formatted otherwise), an import holds back a
+    path the result writes that would be one file with another: another
+    path it writes, or the project's file of that name but for case, unless
+    the result deletes that file. Of the paths it writes, the one spelled as
+    the project's file stays. Before, two such paths broke the import: the
+    checkout wrote both to one file, and taking the second failed. A file
+    moved to a held-back name stays where it was. What's held back stays on
+    the server, listed in the store's record (`case_clashes`), and the app
+    says so once for each new list. `import::case_insensitive` asks the
+    file system: an entry's name with its case turned names the same file.
+  - A rename of case alone lands, as its deletion goes first. Landing one
+    lost the file, though: the new name read as the old file, so the plan
+    wrote nothing there, and the old name's deletion took the file. The
+    plan writes the new name now.
+  - Names that differ only in their Unicode normalization, which macOS
+    takes for one too, aren't checked.
+  - Line endings were T01's and T06's: snapshots and the import's checkouts
+    follow the project's `core.autocrlf` and attributes (K40).
+  - Tests: client tests of a project chat's start with a Windows folder (no
+    folder sent, the context's paths relative with `/`, the folder found
+    written with `/`, a neighbouring folder left as it is) and of a daemon
+    without projects; import tests as on a file system that ignores case
+    (two names added, one beside the project's file, the project's own
+    file changed, a rename of case alone landed, a move to a held-back
+    name), of the file system's answer, and of the landing plan for a
+    rename of case alone; a unit test of the notice. No Windows or macOS
+    machine or CI was at hand: the tests there and the manual check on a
+    Windows laptop (a checkout with `autocrlf`, the agent's pipe, a project
+    on `C:\`) are still to do.

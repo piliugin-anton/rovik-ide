@@ -122,6 +122,17 @@ test('past the edit-distance limit the change is one hunk, and still exact', () 
   checkHunks(['same', ...a, 'end'], ['same', ...b, 'end'], hunks);
 });
 
+test('a big file written over is one hunk, found without a search its size', () => {
+  const big = Array.from({ length: 200_000 }, (_, i) => `line ${i}`);
+  const other = Array.from({ length: 200_000 }, (_, i) => `other ${i}`);
+  const written = diffLines(['old'], big);
+  assert.equal(written.length, 1);
+  assert.equal(written[0].added.length, 200_000);
+  const rewritten = diffLines(big, other);
+  assert.equal(rewritten.length, 1);
+  checkHunks(big, other, rewritten);
+});
+
 test('line endings and the last line', () => {
   assert.deepEqual(splitLines('a\nb\n'), { lines: ['a', 'b', ''], eol: '\n' });
   assert.deepEqual(splitLines('a\r\nb\r\n'), { lines: ['a', 'b', ''], eol: '\r\n' });

@@ -11,6 +11,14 @@
 // A parallel group whose checks gave up can be redone one step at a time
 // (Redo sequentially): its merge is thrown away and the chat is asked to
 // carry out its steps with step workers.
+//
+// A remote chat's bar (U05) lists what the chat changed in its worktree on
+// its host, even while a run goes, with the pending reason and conflicts of
+// the result imported here. Sync now brings the project as it is here into
+// the chat's copy. A sync that waits says why, with Hand to the chat
+// (markers in its files, and it's asked to settle them) and Keep the older
+// copy (the bar stops asking until the next sync). A newer result held
+// back while the conflicts are resolved can be taken in their place.
 
 import { createEffect, createResource, createSignal, For, Show, untrack } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
@@ -25,14 +33,19 @@ import {
   overlayConflictsToChat,
   overlayDiscard,
   overlayFile,
+  overlayKeepOlder,
   overlayLand,
   overlayRedoGroup,
   overlayStatus,
+  overlaySyncNow,
+  overlaySyncToChat,
+  overlayTakeNewer,
   redoGroup,
   overlayUndo,
   overlayUndoMerge,
   overlayUnmark,
   type ChangedFile,
+  type ChatSync,
   type OverlayStatus,
 } from '../lib/overlay';
 
@@ -51,6 +64,10 @@ interface Props {
   onAskChat: (dialogId: string, request: string, shown?: string) => Promise<boolean>;
   /** A chat's title, to name the other chats a clash is with. */
   chatTitle?: (dialogId: string) => string | undefined;
+  /** A chat on a host: it syncs with the project here. */
+  remote?: boolean;
+  /** Why the chat can't change now (its host is offline, or it's moving). */
+  readOnly?: string | null;
 }
 
 const LABEL: Record<ChangedFile['change'], string> = {
@@ -65,6 +82,21 @@ const listPaths = (paths: string[], shown = 8) =>
   paths.length > shown
     ? `${paths.slice(0, shown).join(', ')} and ${paths.length - shown} more`
     : paths.join(', ');
+
+/** Why a remote chat's sync waits, for the bar; none when it doesn't. */
+function syncWaits(sync: ChatSync | undefined): string | undefined {
+  const files = sync?.files ?? [];
+  const n = plural(files.length, 'file');
+  const older = 'The chat goes on with its older copy.';
+  switch (sync?.state) {
+    case 'conflicts':
+      return `Sync waits: ${n} changed both here and in the cloud chat, on the same lines: ${listPaths(files)}. ${older}`;
+    case 'unmergeable':
+      return `Sync waits: ${n} changed both here and in the cloud chat can’t be merged (binary, or deleted on one side): ${listPaths(files)}. ${older}`;
+    default:
+      return undefined;
+  }
+}
 
 /** Build output is shown from this size, and warned about from the next. */
 const BY_PRODUCTS_SHOWN = 1 << 30;
@@ -240,10 +272,11 @@ export default function IsolationBar(props: Props) {
     const landed = await withBusy(async () => {
       const result = await overlayLand(props.dialogId, keepChat);
       if (result.landed) {
+        const n = result.landed.paths.length;
         notify({
           kind: 'success',
           title: 'Landed',
-          message: `${plural(result.landed.paths.length, 'change')} from this chat are in the project.`,
+          message: `${plural(n, 'change')} from this chat ${n === 1 ? 'is' : 'are'} in the project.`,
         });
         return true;
       }
@@ -291,7 +324,7 @@ export default function IsolationBar(props: Props) {
     await withBusy(() => overlayDiscard(props.dialogId), 'Couldn’t discard');
   }
 
-  const disabled = () => props.running || busy();
+  const disabled = () => props.running || busy() || !!props.readOnly;
 
   async function undoMerge() {
     await withBusy(async () => {
@@ -307,6 +340,97 @@ export default function IsolationBar(props: Props) {
       });
     }, 'Couldn’t take the merge back');
   }
+
+  async function syncNow() {
+    await withBusy(async () => {
+      const sync = await overlaySyncNow(props.dialogId);
+      if (!sync) {
+        notify({
+          kind: 'info',
+          title: 'Already in sync',
+          message: 'The chat’s copy has the project as it is here.',
+        });
+      } else if (sync.state === 'synced') {
+        notify({
+          kind: 'success',
+          title: 'Synced',
+          message: 'The project’s changes made here are in the chat’s copy.',
+        });
+      } else if (sync.state === 'marked') {
+        const files = sync.files ?? [];
+        notify({
+          kind: 'success',
+          title: 'Synced, with conflicts for the chat',
+          message: `${plural(files.length, 'file')} got conflict markers: ${listPaths(files)}. The chat settles them with its next message.`,
+        });
+      }
+      // A sync that waits says why in the bar.
+    }, 'Couldn’t sync');
+  }
+
+  async function handSync() {
+    // This chat, whichever is on screen by the time the markers are in.
+    const id = props.dialogId;
+    if (!props.canAskChat) {
+      notify({
+        kind: 'warning',
+        title: 'The chat can’t take it now',
+        message: 'Pick a model, and wait for its run to end, then hand them over again.',
+      });
+      return;
+    }
+    await withBusy(async () => {
+      const handed = await overlaySyncToChat(id);
+      if (handed.request) {
+        const shown = 'Settle the conflicts with the project’s newer changes.';
+        if (!(await props.onAskChat(id, handed.request, shown))) {
+          // Nobody to settle the markers: take these back out; the sync
+          // waits again at the next message.
+          await overlayUnmark(id, handed.sync.files ?? []).catch(() => {});
+        }
+      } else if (handed.sync.state === 'synced') {
+        notify({
+          kind: 'success',
+          title: 'Synced',
+          message:
+            'The project changed again meanwhile, and its changes went in without conflicts.',
+        });
+      } else {
+        notify({
+          kind: 'warning',
+          title: 'Nothing to hand over',
+          message: 'These files can’t take conflict markers (binary, or deleted on one side).',
+        });
+      }
+    }, 'Couldn’t hand the conflicts over');
+  }
+
+  async function keepOlder() {
+    await withBusy(() => overlayKeepOlder(props.dialogId), 'Couldn’t keep the older copy');
+  }
+
+  async function takeNewer() {
+    const ok = await confirmDialog({
+      title: 'Take the newer result?',
+      message:
+        'The chat’s newer result comes in place of these conflicts. What you resolved of them so far is dropped; the newer result’s own conflicts, if any, show next.',
+      confirmLabel: 'Take the newer result',
+    });
+    if (!ok) return;
+    const id = props.dialogId;
+    const taken = await withBusy(async () => {
+      await overlayTakeNewer(id);
+      return true;
+    }, 'Couldn’t take the newer result');
+    if (!taken) return;
+    // A new round of conflicts: the old one's choices go with it.
+    setResolving(null);
+    forgetConflictChoices(`chat:${id}:${untrack(roundKey)}`);
+    setRoundKey(newRound());
+  }
+
+  /** A button's tooltip: why it can't act, when the chat can't change now. */
+  const hint = (title?: string) => props.readOnly ?? title;
 
   return (
     <>
@@ -327,10 +451,26 @@ export default function IsolationBar(props: Props) {
                     {plural(s().files.length, 'changed file')} in this chat, not in the project yet
                   </span>
                 </button>
+                <Show when={props.remote}>
+                  <button
+                    class="isolation-bar-action quiet"
+                    disabled={disabled()}
+                    title={hint(
+                      props.running
+                        ? 'Stop the run first'
+                        : 'Bring the project’s changes made here into the chat’s copy'
+                    )}
+                    onClick={() => void syncNow()}
+                  >
+                    Sync now
+                  </button>
+                </Show>
                 <button
                   class="isolation-bar-action quiet"
                   disabled={disabled()}
-                  title={props.running ? 'Stop the run first' : 'Throw this chat’s changes away'}
+                  title={hint(
+                    props.running ? 'Stop the run first' : 'Throw this chat’s changes away'
+                  )}
                   onClick={() => void discard()}
                 >
                   Discard
@@ -343,6 +483,7 @@ export default function IsolationBar(props: Props) {
                     <button
                       class="isolation-bar-action primary"
                       disabled={disabled()}
+                      title={hint()}
                       onClick={() => void land(false)}
                     >
                       Land
@@ -352,7 +493,7 @@ export default function IsolationBar(props: Props) {
                   <button
                     class="isolation-bar-action primary"
                     disabled={disabled()}
-                    title="Choose, conflict by conflict, what lands"
+                    title={hint('Choose, conflict by conflict, what lands')}
                     onClick={() => setResolving(s().pending?.conflicts[0]?.path ?? null)}
                   >
                     Resolve…
@@ -360,7 +501,9 @@ export default function IsolationBar(props: Props) {
                   <button
                     class="isolation-bar-action"
                     disabled={disabled()}
-                    title="Put conflict markers in the chat’s files and ask it to combine both changes"
+                    title={hint(
+                      'Put conflict markers in the chat’s files and ask it to combine both changes'
+                    )}
                     onClick={() => void askChat()}
                   >
                     Ask the chat
@@ -368,6 +511,7 @@ export default function IsolationBar(props: Props) {
                   <button
                     class="isolation-bar-action"
                     disabled={disabled()}
+                    title={hint()}
                     onClick={() => void land(true)}
                   >
                     Land anyway
@@ -378,6 +522,49 @@ export default function IsolationBar(props: Props) {
             <Show when={s().pending}>
               {(p) => <div class="isolation-bar-reason">{p().reason}</div>}
             </Show>
+            <Show when={s().newerResult}>
+              <div class="isolation-bar-merged isolation-bar-newer">
+                A newer result of this chat is ready. It comes in once these conflicts are settled,
+                or now, in their place.
+                <button
+                  class="isolation-bar-action"
+                  disabled={disabled()}
+                  title={hint('Drop what was resolved so far and bring the newer result in')}
+                  onClick={() => void takeNewer()}
+                >
+                  Take the newer result
+                </button>
+              </div>
+            </Show>
+            <Show when={syncWaits(s().sync)}>
+              {(why) => (
+                <div class="isolation-bar-reason isolation-bar-sync">
+                  {why()}
+                  <Show when={s().sync?.state === 'conflicts'}>
+                    <button
+                      class="isolation-bar-action"
+                      disabled={disabled()}
+                      title={hint(
+                        'Put conflict markers in the chat’s copy of these files and ask it to combine both changes'
+                      )}
+                      onClick={() => void handSync()}
+                    >
+                      Hand to the chat
+                    </button>
+                  </Show>
+                  <button
+                    class="isolation-bar-action"
+                    disabled={disabled()}
+                    title={hint(
+                      'Let the chat go on without these changes: they come up again when its changes land'
+                    )}
+                    onClick={() => void keepOlder()}
+                  >
+                    Keep the older copy
+                  </button>
+                </div>
+              )}
+            </Show>
             <For each={s().redoGroups ?? []}>
               {(group) => (
                 <div class="isolation-bar-merged">
@@ -385,7 +572,9 @@ export default function IsolationBar(props: Props) {
                   <button
                     class="isolation-bar-action"
                     disabled={disabled()}
-                    title="Throw the group’s merged changes away and carry out its steps one at a time"
+                    title={hint(
+                      'Throw the group’s merged changes away and carry out its steps one at a time'
+                    )}
                     onClick={() => void confirmRedo(group)}
                   >
                     Redo sequentially
@@ -418,7 +607,7 @@ export default function IsolationBar(props: Props) {
                 <button
                   class="isolation-bar-action"
                   disabled={disabled()}
-                  title="Put back this chat’s own version of those files"
+                  title={hint('Put back this chat’s own version of those files')}
                   onClick={() => void undoMerge()}
                 >
                   Undo the merge
@@ -508,7 +697,7 @@ export default function IsolationBar(props: Props) {
               <button
                 class="isolation-bar-action"
                 disabled={disabled()}
-                title="Put the project back to how it was before this landing"
+                title={hint('Put the project back to how it was before this landing')}
                 onClick={() => void undo(last().id)}
               >
                 Undo

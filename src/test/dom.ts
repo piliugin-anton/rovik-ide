@@ -11,6 +11,8 @@ const globals = [
   'Node',
   'Element',
   'HTMLElement',
+  // Solid's Portal (ConfirmDialog) checks for it.
+  'HTMLHeadElement',
   'SVGElement',
   'Text',
   'Comment',

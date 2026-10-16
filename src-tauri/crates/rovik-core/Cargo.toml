@@ -1,0 +1,143 @@
+[package]
+name = "rovik-core"
+version.workspace = true
+description = "The agent and everything it calls, without Tauri"
+edition.workspace = true
+
+[features]
+# Test support for other crates' tests (src/testing.rs).
+testing = []
+
+[dependencies]
+rovik-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+bytes = "1.12.1"
+ignore.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros", "net", "io-util"] }
+uuid.workspace = true
+git2.workspace = true
+eoka = "0.5.14"
+rand = "0.10"
+log.workspace = true
+base64 = "0.23.1"
+rusqlite.workspace = true
+sha2.workspace = true
+grep-searcher = "0.1.17"
+grep-regex = "0.1.14"
+grep-matcher = "0.1.9"
+regex.workspace = true
+# Images attached in the chat input (chat_db/images.rs): read (PNG, JPEG,
+# WebP, GIF), scaled down with SIMD, written as PNG.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+fast_image_resize = { version = "6.1.0", features = ["image"] }
+
+# Outlines of source files (src/outline): tree-sitter and its grammars.
+tree-sitter = "0.27"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-python = "=0.25.0"
+tree-sitter-go = "=0.25.0"
+tree-sitter-java = "=0.23.5"
+tree-sitter-c = "=0.24.2"
+tree-sitter-cpp = "=0.23.4"
+tree-sitter-c-sharp = "=0.23.5"
+tree-sitter-ruby = "=0.23.1"
+tree-sitter-php = "=0.25.1"
+tree-sitter-kotlin-ng = "=1.1.0"
+tree-sitter-swift = "=0.7.4"
+tree-sitter-scala = "=0.26.2"
+tree-sitter-lua = "=0.5.0"
+tree-sitter-bash = "=0.25.1"
+tree-sitter-haskell = "=0.24.1"
+tree-sitter-ocaml = "=0.26.0"
+tree-sitter-elixir = "=0.3.5"
+tree-sitter-erlang = "=0.21.0"
+tree-sitter-dart = "=0.2.0"
+tree-sitter-zig = "=1.1.2"
+tree-sitter-julia = "=0.23.1"
+tree-sitter-r = "=1.3.0"
+tree-sitter-objc = "=3.0.2"
+tree-sitter-elm = "=5.9.4"
+tree-sitter-hcl = "=1.1.0"
+tree-sitter-solidity = "=1.2.13"
+tree-sitter-nix = "=0.3.0"
+tree-sitter-css = "=0.25.0"
+tree-sitter-html = "=0.23.2"
+tree-sitter-json = "=0.24.8"
+tree-sitter-yaml = "=0.7.2"
+tree-sitter-toml-ng = "=0.7.0"
+tree-sitter-md = "=0.5.3"
+tree-sitter-proto = "=0.6.0"
+tree-sitter-gleam = "=1.0.0"
+tree-sitter-fsharp = "=0.3.12"
+tree-sitter-groovy = "=0.1.2"
+tree-sitter-powershell = "=0.26.4"
+tree-sitter-commonlisp = "=0.4.1"
+tree-sitter-racket = "=0.25.0"
+tree-sitter-scheme = "=0.24.7"
+tree-sitter-fortran = "=0.6.0"
+tree-sitter-ada = "=0.1.0"
+tree-sitter-pascal = "=0.10.2"
+tree-sitter-vhdl = "=1.4.0"
+tree-sitter-verilog = "=1.0.3"
+tree-sitter-systemverilog = "=0.4.1"
+tree-sitter-d = "=0.8.2"
+tree-sitter-nim = "=0.1.0"
+tree-sitter-crystal = "=0.1.0"
+tree-sitter-odin = "=1.3.0"
+tree-sitter-glsl = "=0.2.0"
+tree-sitter-hlsl = "=0.2.0"
+tree-sitter-cuda = "=0.21.2"
+tree-sitter-make = "=1.1.1"
+tree-sitter-cmake = "=0.7.5"
+tree-sitter-graphql = "=0.3.0"
+tree-sitter-elisp = "=1.7.2"
+tree-sitter-matlab = "=1.3.1"
+tree-sitter-starlark = "=1.3.0"
+tree-sitter-nickel = "=0.5.0"
+tree-sitter-xml = "=0.7.0"
+tree-sitter-puppet = "=1.3.0"
+tree-sitter-kdl = "=2.0.0"
+tree-sitter-sparql = "=0.25.2"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+
+# Virtual files (src/vfs): a user-space filesystem through the OS's driver.
+# Linux: FUSE via the fusermount helper (no libfuse needed at build or run time).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = "0.18"
+
+# macOS: macFUSE, mounted through its helper (src/vfs/macfuse.rs) instead of
+# linking libfuse, so the app starts on Macs without macFUSE installed.
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { version = "0.18", features = ["macos-no-mount", "macfuse-4-compat"] }
+
+# Windows: WinFsp, delay-loaded for the same reason. Building needs LLVM
+# (libclang) for winfsp-sys's bindings.
+[target.'cfg(windows)'.dependencies]
+winfsp = { version = "0.13", default-features = false, features = ["delayload"] }
+winfsp-sys = "0.12"
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
+# The tests' settings (KindConfig::extra_tools).
+[dev-dependencies]
+rovik-protocol = { workspace = true, features = ["testing"] }
+
+# winfsp.dll is delay-loaded in this crate's test binaries too (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winfsp = { version = "0.13", default-features = false, features = ["delayload"] }

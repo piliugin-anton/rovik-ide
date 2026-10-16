@@ -15,11 +15,20 @@ import BuildsSettings from './BuildsSettings';
 import SubagentSettings from './SubagentSettings';
 import { subagentSummary, type SubagentSettings as SubagentChoices } from '../lib/subagentSettings';
 import EditorSettings from './EditorSettings';
+import CloudHostsSettings, { type HostsSettingsController } from './CloudHostsSettings';
 import { editorSettings, EDITOR_THEMES } from '../lib/editorSettings';
 import { plural } from '../lib/textUtils';
 
 export type AiSettingsPage =
-  'menu' | 'editor' | 'providers' | 'permissions' | 'subagents' | 'project' | 'builds' | 'vfs';
+  | 'menu'
+  | 'editor'
+  | 'providers'
+  | 'permissions'
+  | 'subagents'
+  | 'project'
+  | 'builds'
+  | 'vfs'
+  | 'hosts';
 
 interface AiSettingsModalProps {
   providers: Provider[];
@@ -48,6 +57,7 @@ const PAGE_TITLE: Record<AiSettingsPage, string> = {
   project: 'Project checks',
   builds: 'Builds & checks',
   vfs: 'Virtual files',
+  hosts: 'Cloud hosts',
 };
 
 export default function AiSettingsModal(props: AiSettingsModalProps) {
@@ -68,20 +78,30 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
   const [permissions, setPermissions] = createSignal<AgentPermissions>(props.permissions);
   const [subagents, setSubagents] = createSignal<SubagentChoices>(props.subagents);
   const [providersApi, setProvidersApi] = createSignal<ProvidersSettingsController | null>(null);
+  const [hostsApi, setHostsApi] = createSignal<HostsSettingsController | null>(null);
 
   const title = () => {
     if (page() === 'providers') return providersApi()?.draftTitle() ?? PAGE_TITLE.providers;
+    if (page() === 'hosts') return hostsApi()?.title() ?? PAGE_TITLE.hosts;
     return PAGE_TITLE[page()];
   };
 
-  const backLabel = () =>
-    page() === 'providers' && providersApi()?.draftTitle() != null ? 'Model providers' : 'Settings';
+  const backLabel = () => {
+    if (page() === 'providers' && providersApi()?.draftTitle() != null) return 'Model providers';
+    if (page() === 'hosts' && hostsApi()?.title() != null) return 'Cloud hosts';
+    return 'Settings';
+  };
 
   function goBack() {
     const api = providersApi();
     if (page() === 'providers' && api?.draftTitle() != null) {
       // Back from the provider form returns to the list (like Cancel).
       api.closeDraft();
+      return;
+    }
+    const hosts = hostsApi();
+    if (page() === 'hosts' && hosts?.title() != null) {
+      hosts.back();
       return;
     }
     setPage('menu');
@@ -191,6 +211,11 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
                   label="Virtual files"
                   sub="In-memory files commands can use, via FUSE / macFUSE / WinFsp"
                 />
+                <MenuItem
+                  page="hosts"
+                  label="Cloud hosts"
+                  sub="Servers your chats can move to and keep running on, over SSH"
+                />
               </div>
             </Match>
             <Match when={page() === 'editor'}>
@@ -231,6 +256,12 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
             </Match>
             <Match when={page() === 'vfs'}>
               <VirtualFilesSettings />
+            </Match>
+            <Match when={page() === 'hosts'}>
+              <CloudHostsSettings
+                apiUrls={[...new Set(providers().map((p) => p.baseUrl))].filter(Boolean)}
+                controller={setHostsApi}
+              />
             </Match>
           </Switch>
         </div>

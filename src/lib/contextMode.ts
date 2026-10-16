@@ -121,6 +121,16 @@ export async function contextRealPath(dialogId: string, path: string): Promise<s
   return [dir, ...parts].join(sep);
 }
 
+/**
+ * A remote chat's context file as it is now: its latest revision. The volume
+ * it lives on is the server's, so it's read, not opened (U04). Null when the
+ * chat has no revision yet.
+ */
+export async function remoteContextText(dialogId: string): Promise<string | null> {
+  const revision = (await clmStatus(dialogId)).revision;
+  return revision === null ? null : readContextRevision(dialogId, revision);
+}
+
 /** CLM state a run sent after preparing a request, by chat (lib/agentRuns.ts). */
 const [liveStatus, setLiveStatus] = createSignal<Record<string, ClmStatus>>({});
 

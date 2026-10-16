@@ -33,6 +33,7 @@ import type { ComposerPdf } from '../lib/composerAttachments';
 import { copySegments } from '../lib/composerClipboard';
 import { segmentsOfMessage, type DraftSegment } from '../lib/composerSegments';
 import { canRetry, describeFailure, formatDuration } from '../lib/chatErrors';
+import { pauseText } from '../lib/runPause';
 import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
@@ -41,7 +42,7 @@ import ReviewRecord from './ReviewRecord';
 import { liveSubagent } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
 import type { ReviewMeta } from '../lib/changeReview';
-import { requestOpenFile } from '../lib/editorBridge';
+import { openPlan } from '../lib/plans';
 import { isSettled, parseTodo } from '../lib/todo';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 
@@ -97,6 +98,8 @@ export default function MessageList(props: {
   /** The finished Plan-mode reply that gets "Implement this plan". */
   planMessageId?: string | null;
   onImplementPlan?: () => void;
+  /** The chat can't change now (it's moving): no Retry, Continue or Implement. */
+  readOnly?: boolean;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let innerRef: HTMLDivElement | undefined;
@@ -123,7 +126,7 @@ export default function MessageList(props: {
    */
   const isLatest = (m: ChatMessage) => {
     const list = messages();
-    return !props.sending && list[list.length - 1]?.id === m.id;
+    return !props.sending && !props.readOnly && list[list.length - 1]?.id === m.id;
   };
   const requestUndelivered = () => {
     const list = messages();
@@ -1284,11 +1287,7 @@ export default function MessageList(props: {
                         <circle cx="8" cy="8" r="6" />
                         <path d="M6.5 5.75v4.5M9.5 5.75v4.5" />
                       </svg>
-                      <span class="chat-paused-text">
-                        {paused().kind === 'checkpoint'
-                          ? `Paused after ${paused().toolCalls} tool calls.`
-                          : `Paused after ${paused().toolCalls} tool calls: the agent seems stuck, ${paused().reason}.`}
-                      </span>
+                      <span class="chat-paused-text">{pauseText(paused())}</span>
                       <Show when={isLatest(m)}>
                         <button
                           type="button"
@@ -1302,7 +1301,7 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
-                <Show when={props.planMessageId === m.id}>
+                <Show when={props.planMessageId === m.id && !props.readOnly}>
                   <div class="chat-plan-actions">
                     <button
                       type="button"
@@ -1323,7 +1322,7 @@ export default function MessageList(props: {
                         type="button"
                         class="link-button"
                         title={`${file()}: edit it, then implement it from the editor or here`}
-                        onClick={() => requestOpenFile({ path: file() })}
+                        onClick={() => void openPlan(props.dialogId, file())}
                       >
                         {file().split(/[\\/]/).slice(-3).join('/')}
                       </button>

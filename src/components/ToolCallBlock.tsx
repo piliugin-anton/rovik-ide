@@ -49,6 +49,7 @@ import {
   pendingApproval,
   pendingApprovalsOfTask,
   revealEdit,
+  showRemoteEdit,
   type PendingApproval,
 } from '../lib/approvals';
 import {
@@ -490,6 +491,8 @@ function ApprovalBar(props: { request: PendingApproval }) {
   const counts = () => (props.request.edit ? hunkCounts(props.request.edit) : null);
 
   const status = () => {
+    if (props.request.remoteEdit)
+      return 'Waiting for your approval · a change to the server’s file';
     const c = counts();
     if (!c) return 'Waiting for your approval';
     if (c.pending === c.total) {
@@ -511,6 +514,15 @@ function ApprovalBar(props: { request: PendingApproval }) {
         {(command) => <pre class="tool-approval-command">{command()}</pre>}
       </Show>
       <div class="tool-approval-actions">
+        <Show when={props.request.remoteEdit}>
+          <button
+            class="tool-approval-button"
+            onClick={() => showRemoteEdit(dialogId(), id())}
+            title="Compare the file before and after the change"
+          >
+            Show the change
+          </button>
+        </Show>
         <Show
           when={props.request.edit}
           fallback={

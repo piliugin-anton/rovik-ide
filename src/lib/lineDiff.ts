@@ -23,12 +23,16 @@ type Op = 'eq' | 'del' | 'ins';
 function myers(a: string[], b: string[]): Op[] | null {
   const n = a.length;
   const m = b.length;
-  const max = n + m;
+  // At least the difference in length apart: past the limit, no search.
+  if (Math.abs(n - m) > MAX_EDIT_DISTANCE) return null;
+  // The search stops at the limit, so the diagonals it visits, and the copy
+  // of them each step keeps, are bounded by it, not by the texts.
+  const max = Math.min(n + m, MAX_EDIT_DISTANCE);
   const off = max + 1;
   const v = new Int32Array(2 * max + 3);
   const trace: Int32Array[] = [];
 
-  for (let d = 0; d <= Math.min(max, MAX_EDIT_DISTANCE); d++) {
+  for (let d = 0; d <= max; d++) {
     trace.push(v.slice());
     for (let k = -d; k <= d; k += 2) {
       let x =
@@ -119,7 +123,8 @@ export function applyHunks(
   hunks.forEach((hunk, index) => {
     const at = hunk.origStart - 1;
     for (; i < at; i++) out.push(original[i]);
-    out.push(...(keep(hunk, index) ? hunk.added : hunk.deleted));
+    // A line at a time: spreading a hunk of a big file overflows the stack.
+    for (const line of keep(hunk, index) ? hunk.added : hunk.deleted) out.push(line);
     i = at + hunk.deleted.length;
   });
   for (; i < original.length; i++) out.push(original[i]);

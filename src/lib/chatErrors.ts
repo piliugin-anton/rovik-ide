@@ -80,6 +80,8 @@ export function describeFailure(failure: StoredFailure, now = Date.now()): strin
       return 'The model reached its output limit before writing anything.';
     case 'cancelled':
       return 'Stopped.';
+    case 'restarted':
+      return 'The server restarted while the reply was being written.';
     case 'bad_request':
       return 'The provider rejected the request.';
     case 'provider':

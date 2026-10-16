@@ -8,11 +8,15 @@
 //
 //   - messages the run stores, and changes to them, go into the chat store;
 //   - approvals and questions it waits on go to lib/approvals.ts and
-//     lib/questions.ts, where the chat and the editor answer them;
+//     lib/questions.ts, where the chat and the editor answer them, and
+//     lib/remoteNotices.ts tells of them in the corner;
 //   - files it writes refresh open tabs, and unreviewed edits are marked;
 //   - what a reply showed about the model's reasoning goes to the panel,
 //     which keeps it in the settings (queued until the panel is there);
 //   - the CLM state each request went out with goes to lib/contextMode.ts.
+//
+// The events' shapes are rovik-protocol's (src-tauri/crates/rovik-protocol):
+// test-fixtures/agent-events.json holds one of each for both sides' tests.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
@@ -24,10 +28,25 @@ import {
   clearApproval,
   notifyFileDeleted,
   notifyFileWritten,
+  pendingApproval,
   registerApproval,
   type ApprovalRequest,
 } from './approvals';
-import { clearQuestions, registerQuestions, type PendingQuestions } from './questions';
+import {
+  clearQuestions,
+  pendingQuestions,
+  registerQuestions,
+  type PendingQuestions,
+} from './questions';
+import {
+  approvalNoticeId,
+  initRemoteNotices,
+  questionNoticeId,
+  tellWaiting,
+  waitingSettled,
+  type ShowTarget,
+  type Waiting,
+} from './remoteNotices';
 import { clearAgentChanges, recordAgentEdit } from './agentChanges';
 import { clearPendingDraft } from './pendingDraft';
 import { dismiss, notify } from './notifications';
@@ -110,6 +129,8 @@ type AgentEvent =
   | { type: 'checklist'; dialogId: string; items: import('./todo').TodoItem[] }
   | {
       type: 'fileWritten';
+      /** The chat whose run wrote it. */
+      dialogId?: string;
       absPath: string;
       before: string | null;
       content: string;
@@ -123,6 +144,8 @@ type AgentEvent =
   | { type: 'contextUpdated'; dialogId: string; status: ClmStatus }
   | {
       type: 'notice';
+      /** The chat it's about, if it's about one. */
+      dialogId?: string;
       kind: 'info' | 'success' | 'warning' | 'error';
       title: string;
       message: string;
@@ -251,12 +274,59 @@ export function onMessageUnanswered(handler: (dialogId: string, messageId: strin
   };
 }
 
-const showChatListeners = new Set<() => void>();
+const showChatListeners = new Set<(target?: ShowTarget) => void>();
 
-/** "Show" on a question's notification: App opens the chat, the panel scrolls to it. */
-export function onShowChat(listener: () => void): () => void {
+/**
+ * "Show" on a notification of what a chat waits for: App brings up the
+ * chats, and the panel opens the chat, or the chat list, and scrolls to it.
+ */
+export function onShowChat(listener: (target?: ShowTarget) => void): () => void {
   showChatListeners.add(listener);
   return () => showChatListeners.delete(listener);
+}
+
+function showChat(target?: ShowTarget) {
+  for (const l of [...showChatListeners]) l(target);
+}
+
+/** An approval, as lib/remoteNotices.ts tells of it: a remote chat's only. */
+function waitingApproval(request: ApprovalRequest): Waiting {
+  const { dialogId, toolCallId, summary } = request;
+  const chat = request.parentDialogId ?? dialogId;
+  return {
+    kind: 'approval',
+    dialogId,
+    toolCallId,
+    chat,
+    pending: () => !!pendingApproval(dialogId, toolCallId),
+    notice: (host) => ({
+      id: approvalNoticeId(dialogId, toolCallId),
+      title: 'The agent needs your approval',
+      message: host ? `${summary} (on ${host})` : summary,
+      actions: [{ label: 'Show', primary: true, run: () => showChat({ dialogId: chat }) }],
+    }),
+  };
+}
+
+/** A question call, as lib/remoteNotices.ts tells of it, a local chat's too. */
+function waitingQuestions(request: PendingQuestions): Waiting {
+  const { questions, toolCallId, dialogId } = request;
+  return {
+    kind: 'question',
+    dialogId,
+    toolCallId,
+    chat: dialogId,
+    pending: () => !!pendingQuestions(dialogId, toolCallId),
+    notice: () => ({
+      id: questionNoticeId(dialogId, toolCallId),
+      title:
+        questions.length === 1
+          ? 'The agent has a question'
+          : `The agent has ${questions.length} questions`,
+      message: questions[0]?.question,
+      actions: [{ label: 'Show', primary: true, run: () => showChat({ dialogId }) }],
+    }),
+  };
 }
 
 /*
@@ -297,38 +367,31 @@ function handle(event: AgentEvent) {
     case 'subagentEnded':
       noteSubagentEnded(event);
       break;
-    case 'approvalRequested':
+    case 'approvalRequested': {
+      const { dialogId, toolCallId } = event.request;
+      // Told again (a host that came back): it's been told of.
+      const known = !!pendingApproval(dialogId, toolCallId);
       registerApproval(event.request);
+      if (!known) tellWaiting(waitingApproval(event.request));
       break;
+    }
     case 'approvalSettled':
       clearApproval(event.dialogId, event.toolCallId);
+      dismiss(approvalNoticeId(event.dialogId, event.toolCallId));
+      waitingSettled();
       break;
     case 'questionsAsked': {
+      const { dialogId, toolCallId } = event.request;
+      const known = !!pendingQuestions(dialogId, toolCallId);
       registerQuestions(event.request);
       // In the chat; and in the corner, in case the user is working elsewhere.
-      const { questions, toolCallId, dialogId } = event.request;
-      notify({
-        id: `question-${dialogId}-${toolCallId}`,
-        title:
-          questions.length === 1
-            ? 'The agent has a question'
-            : `The agent has ${questions.length} questions`,
-        message: questions[0]?.question,
-        actions: [
-          {
-            label: 'Show',
-            primary: true,
-            run: () => {
-              for (const l of [...showChatListeners]) l();
-            },
-          },
-        ],
-      });
+      if (!known) tellWaiting(waitingQuestions(event.request));
       break;
     }
     case 'questionsSettled':
       clearQuestions(event.dialogId, event.toolCallId);
-      dismiss(`question-${event.dialogId}-${event.toolCallId}`);
+      dismiss(questionNoticeId(event.dialogId, event.toolCallId));
+      waitingSettled();
       break;
     case 'toolNote':
       setState(
@@ -395,7 +458,8 @@ let ready: Promise<void> | null = null;
  * wait on.
  */
 export function initAgentRuns(): Promise<void> {
-  ready ??= (async () => {
+  if (ready) return ready;
+  ready = (async () => {
     await listen<AgentEvent>('agent-event', (e) => handle(e.payload));
     try {
       const status = await invoke<AgentStatus>('agent_status');
@@ -407,5 +471,7 @@ export function initAgentRuns(): Promise<void> {
       console.error('Agent status unavailable:', err);
     }
   })();
+  // What already waited is told of with what its host's notice sums up.
+  initRemoteNotices({ seeded: ready, show: showChat });
   return ready;
 }

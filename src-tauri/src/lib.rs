@@ -1,59 +1,36 @@
-use crate::{browser_tools::BrowserState, filesystem::WatcherState, terminal::TerminalState};
-use std::{collections::HashMap, sync::Mutex};
-use tauri::Manager;
+use crate::{filesystem::WatcherState, terminal::TerminalState};
+use rovik_client::hosts_page::HostsPage;
+use rovik_client::provider_keys::ProviderKeys;
+use rovik_client::secrets::SecretStore;
+use rovik_client::Remote;
+use rovik_core::agent_run::events::{AgentEvent, EVENT};
+use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
+use std::{collections::HashMap, sync::Arc, sync::Mutex};
+use tauri::{Emitter, Manager};
 
-mod agent;
-mod agent_run;
-mod agent_tools;
-mod api_log;
-mod atomic_file;
-mod browser_tools;
-mod chat_db;
-mod chat_request;
-mod clm;
-mod code_search;
-mod command_tool;
-mod edit_file;
-mod file_guard;
+mod commands;
 mod filesystem;
 mod formatter;
 mod git;
 mod git_sync;
-/// The agent without a window, for measuring it (G00): `rovik-headless`.
-#[cfg(any(test, feature = "headless"))]
-pub mod headless;
 mod lsp;
-mod merge;
 mod open_url;
-mod opencode;
-mod outline;
-mod overlay;
-mod process;
 mod project_files;
-mod prompt_cache;
-mod project_profile;
-mod read_file;
-mod read_symbol;
-mod reasoning_echo;
-mod repo_map;
-mod system_one;
+mod remote_chats;
 mod terminal;
 mod typings;
-mod vfs;
-mod workload;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // First, while the process is still single-threaded.
     process::adopt_login_shell_path();
+    // Then the core's runtime (rt.rs), Tauri's too: one for the process.
+    tauri::async_runtime::set(rt::handle().clone());
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(TerminalState::default())
         .manage(lsp::LspState::default())
-        .manage(BrowserState::default())
         .manage(chat_request::ChatRequests::default())
-        .manage(agent_run::AgentState::default())
-        .manage(vfs::VfsState::default())
         .manage(WatcherState {
             active_watcher: Mutex::new(None),
             gitignore: Mutex::new(None),
@@ -69,11 +46,45 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
-            let db = chat_db::DbState::open(&dir).map_err(|e| format!("Chat database: {e}"))?;
-            workload::init(&dir);
-            overlay::chats::init(&dir);
-            app.manage(db);
+            let config = app.path().app_config_dir()?;
+            let data = app.path().app_data_dir()?;
+            // The providers' API keys, in the keychain or the encrypted
+            // file in its place, out of ai-settings.json (H06).
+            let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
+            let keys = ProviderKeys::new(config.join("ai-settings.json"), secrets.clone());
+            app.manage(Arc::new(keys));
+            let paths = Paths::new(data.clone(), config.clone());
+            let core = Core::new(paths, Arc::new(WindowEvents(app.handle().clone())))?;
+            // Chats on hosts (6.1): their requests go to the host, and its
+            // events come back through the core's sink.
+            let remote = Remote::new(core.clone());
+            let window = app.handle().clone();
+            remote.on_cloud(Arc::new(move |event| {
+                if let Err(e) = window.emit(CLOUD_EVENT, &event) {
+                    eprintln!("cloud: could not send an event: {e}");
+                }
+            }));
+            // The chats the database puts on hosts go there from the start.
+            if let Err(e) = rt::block_on(remote.load()) {
+                eprintln!("cloud: the chats on hosts couldn't be read: {e}");
+            }
+            // Settings → Cloud hosts (U01), and the hosts deployed there,
+            // connected from the start.
+            let hosts = HostsPage::new(
+                config,
+                data.join("ssh"),
+                secrets,
+                remote.clone(),
+                env!("CARGO_PKG_VERSION"),
+            );
+            {
+                let _runtime = rt::handle().enter();
+                remote_chats::from_env(&remote);
+                hosts.connect_all();
+            }
+            app.manage(Arc::new(hosts));
+            app.manage(core);
+            app.manage(remote);
             // The main window, as tauri.conf.json describes it (`create`
             // is off there): built here to let its page read the clipboard,
             // which a config can't. Pasting an image into the chat input
@@ -91,10 +102,10 @@ pub fn run() {
         // Screenshots: chat-attachment://localhost/<sha256> (Windows:
         // http://chat-attachment.localhost/<sha256>).
         .register_asynchronous_uri_scheme_protocol("chat-attachment", |ctx, request, responder| {
-            let db = ctx.app_handle().state::<chat_db::DbState>().inner().clone();
+            let core = ctx.app_handle().state::<Core>().inner().clone();
             let path = request.uri().path().to_string();
-            tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(chat_db::attachments::serve(db.data_dir(), &path));
+            rt::spawn_blocking(move || {
+                responder.respond(attachment_response(core.db.data_dir(), &path));
             });
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,29 +125,54 @@ pub fn run() {
             filesystem::dir_entry_count,
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,
-            chat_db::commands::chat_list_dialogs,
-            chat_db::commands::chat_open_project,
-            chat_db::commands::chat_answer_copy,
-            chat_db::commands::chat_answer_moved,
-            chat_db::commands::chat_decline_projects,
-            chat_db::commands::chat_list_projects,
-            chat_db::commands::chat_relink_project,
-            chat_db::commands::chat_delete_project,
-            chat_db::commands::chat_get_messages,
-            chat_db::commands::chat_get_messages_around,
-            chat_db::commands::chat_get_message_body,
-            chat_db::commands::chat_create_dialog,
-            chat_db::commands::chat_append_messages,
-            chat_db::commands::chat_update_message,
-            chat_db::commands::chat_rename_dialog,
-            chat_db::commands::chat_delete_dialog,
-            chat_db::commands::chat_search,
-            chat_db::commands::chat_messages_answered,
-            chat_db::commands::chat_store_attachment,
-            chat_db::commands::chat_save_composer_draft,
-            chat_db::commands::chat_get_composer_draft,
-            chat_db::commands::chat_set_model,
-            chat_db::commands::chat_get_model,
+            commands::chat::chat_list_dialogs,
+            commands::chat::chat_open_project,
+            commands::chat::chat_read_plan,
+            commands::chat::chat_answer_copy,
+            commands::chat::chat_answer_moved,
+            commands::chat::chat_decline_projects,
+            commands::chat::chat_list_projects,
+            commands::chat::chat_relink_project,
+            commands::chat::chat_delete_project,
+            commands::chat::chat_get_messages,
+            commands::chat::chat_get_messages_around,
+            commands::chat::chat_get_message_body,
+            commands::chat::chat_create_dialog,
+            commands::chat::chat_append_messages,
+            commands::chat::chat_update_message,
+            commands::chat::chat_rename_dialog,
+            commands::chat::chat_delete_dialog,
+            commands::chat::chat_resync_dialog,
+            commands::chat::chat_get_dialog,
+            commands::chat::cloud_move_preflight,
+            commands::chat::cloud_move_chat,
+            commands::chat::cloud_move_back,
+            commands::chat::cloud_cancel_move,
+            commands::hosts::hosts_list,
+            commands::hosts::hosts_summaries,
+            commands::hosts::hosts_save,
+            commands::hosts::hosts_remove,
+            commands::hosts::hosts_test,
+            commands::hosts::hosts_trust_key,
+            commands::hosts::hosts_set_policy,
+            commands::hosts::hosts_deploy,
+            commands::hosts::hosts_upgrade,
+            commands::hosts::hosts_run_setup,
+            commands::hosts::hosts_unlock,
+            commands::hosts::hosts_removal,
+            commands::hosts::hosts_remove_rovik,
+            commands::hosts::hosts_details,
+            commands::hosts::hosts_remove_keys,
+            commands::hosts::hosts_clean_up,
+            commands::hosts::hosts_limits,
+            commands::hosts::hosts_set_limits,
+            commands::chat::chat_search,
+            commands::chat::chat_messages_answered,
+            commands::chat::chat_store_attachment,
+            commands::chat::chat_save_composer_draft,
+            commands::chat::chat_get_composer_draft,
+            commands::chat::chat_set_model,
+            commands::chat::chat_get_model,
             filesystem::load_last_project,
             filesystem::save_last_project,
             filesystem::get_path_id,
@@ -185,88 +221,123 @@ pub fn run() {
             lsp::rust_analyzer::ra_install,
             lsp::rust_analyzer::ra_rust_src_status,
             lsp::rust_analyzer::ra_install_rust_src,
-            agent::send_chat_message,
-            chat_request::cancel_chat_request,
-            agent_run::agent_configure,
-            agent_run::agent_start,
-            agent_run::agent_stop,
-            agent_run::agent_set_effort,
-            agent_run::agent_resolve_approval,
-            agent_run::agent_answer_questions,
-            agent_run::agent_status,
-            agent_run::chat_checklist,
-            agent_run::chat_dismiss_checklist,
-            agent::list_models,
-            browser_tools::web_search,
-            browser_tools::browse_url,
-            browser_tools::browser_screenshot,
-            agent_tools::tool_list_dir,
-            agent_tools::tool_search_code,
-            code_search::search_in_files,
-            agent_tools::tool_read_file_range,
-            agent_tools::tool_write_file,
-            agent_tools::tool_edit_file,
-            agent_tools::report_editor_diagnostics,
-            project_profile::project_profile,
-            project_profile::load_project_settings,
-            project_profile::save_project_settings,
-            agent::chat_context_estimate,
-            workload::workload_focus,
-            overlay::chats::overlay_status,
-            overlay::chats::overlay_file,
-            overlay::chats::overlay_discard,
-            overlay::chats::overlay_land,
-            overlay::chats::overlay_undo,
-            overlay::chats::overlay_conflict_file,
-            overlay::chats::overlay_conflict_resolve,
-            overlay::chats::overlay_conflicts_to_chat,
-            overlay::chats::overlay_redo_group,
-            overlay::chats::overlay_undo_merge,
-            overlay::chats::overlay_unmark,
-            workload::workload_set_slots,
-            workload::workload_status,
-            outline::outline_symbols,
-            vfs::vfs_status,
-            vfs::vfs_install_driver,
-            vfs::vfs_mount,
-            vfs::vfs_unmount,
-            vfs::vfs_open_settings,
-            vfs::vfs_write_file,
-            vfs::vfs_read_file,
-            vfs::vfs_list,
-            vfs::vfs_remove,
-            vfs::vfs_revisions,
-            vfs::vfs_read_revision,
-            vfs::vfs_restore_revision,
-            vfs::vfs_set_history_limits,
-            vfs::vfs_subscribe,
-            vfs::vfs_unsubscribe,
-            clm::clm_status,
-            clm::clm_set_mode,
-            clm::clm_reset,
-            clm::clm_list_revisions,
-            clm::clm_read_revision,
-            clm::clm_restore_revision,
-            clm::clm_tool_read,
-            clm::clm_tool_edit,
-            clm::clm_tool_write,
-            clm::clm_recall_hint,
+            commands::agent::send_chat_message,
+            commands::agent::cancel_chat_request,
+            commands::agent::agent_configure,
+            commands::agent::agent_start,
+            commands::agent::agent_stop,
+            commands::agent::agent_set_effort,
+            commands::agent::agent_resolve_approval,
+            commands::agent::agent_answer_questions,
+            commands::agent::agent_status,
+            commands::agent::chat_checklist,
+            commands::agent::chat_dismiss_checklist,
+            commands::agent::list_models,
+            commands::browser::web_search,
+            commands::browser::browse_url,
+            commands::browser::browser_screenshot,
+            commands::tools::tool_list_dir,
+            commands::tools::tool_search_code,
+            commands::tools::search_in_files,
+            commands::tools::tool_read_file_range,
+            commands::tools::tool_write_file,
+            commands::tools::tool_edit_file,
+            commands::tools::report_editor_diagnostics,
+            commands::project::project_profile,
+            commands::project::load_project_settings,
+            commands::project::save_project_settings,
+            commands::agent::chat_context_estimate,
+            commands::workload::workload_focus,
+            commands::overlay::overlay_status,
+            commands::overlay::overlay_file,
+            commands::overlay::overlay_discard,
+            commands::overlay::overlay_land,
+            commands::overlay::overlay_undo,
+            commands::overlay::overlay_conflict_file,
+            commands::overlay::overlay_conflict_resolve,
+            commands::overlay::overlay_conflicts_to_chat,
+            commands::overlay::overlay_redo_group,
+            commands::overlay::overlay_sync_now,
+            commands::overlay::overlay_sync_to_chat,
+            commands::overlay::overlay_keep_older,
+            commands::overlay::overlay_take_newer,
+            commands::overlay::overlay_undo_merge,
+            commands::overlay::overlay_unmark,
+            commands::workload::workload_set_slots,
+            commands::workload::workload_status,
+            commands::tools::outline_symbols,
+            commands::vfs::vfs_status,
+            commands::vfs::vfs_install_driver,
+            commands::vfs::vfs_mount,
+            commands::vfs::vfs_unmount,
+            commands::vfs::vfs_open_settings,
+            commands::vfs::vfs_write_file,
+            commands::vfs::vfs_read_file,
+            commands::vfs::vfs_list,
+            commands::vfs::vfs_remove,
+            commands::vfs::vfs_revisions,
+            commands::vfs::vfs_read_revision,
+            commands::vfs::vfs_restore_revision,
+            commands::vfs::vfs_set_history_limits,
+            commands::vfs::vfs_subscribe,
+            commands::vfs::vfs_unsubscribe,
+            commands::clm::clm_status,
+            commands::clm::clm_set_mode,
+            commands::clm::clm_reset,
+            commands::clm::clm_list_revisions,
+            commands::clm::clm_read_revision,
+            commands::clm::clm_restore_revision,
+            commands::clm::clm_tool_read,
+            commands::clm::clm_tool_edit,
+            commands::clm::clm_tool_write,
+            commands::clm::clm_recall_hint,
             open_url::open_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Don't leave a headless Chrome running after the IDE closes.
             if let tauri::RunEvent::Exit = event {
-                let browser = app.state::<BrowserState>().inner().clone();
-                tauri::async_runtime::block_on(browser.shutdown());
-                // Unmount the virtual files, or the folder stays a dead mount.
-                let _ = app.state::<vfs::VfsState>().unmount();
-                overlay::chats::close_all();
-                workload::shutdown();
-                if let Some(db) = app.try_state::<chat_db::DbState>() {
-                    db.mark_clean_exit();
+                if let Some(core) = app.try_state::<Core>() {
+                    rt::block_on(core.shutdown());
                 }
             }
         });
+}
+
+/// `chat-attachment://localhost/<sha256>`'s response: the attachment, or 404.
+fn attachment_response(
+    data_dir: &std::path::Path,
+    uri_path: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::Response;
+    let not_found = || {
+        Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .expect("static response")
+    };
+    match chat_db::attachments::read(data_dir, uri_path) {
+        Some((mime, bytes)) => Response::builder()
+            .status(200)
+            .header("Content-Type", mime)
+            // Content-addressed: the bytes for an id never change.
+            .header("Cache-Control", "public, max-age=31536000, immutable")
+            .body(bytes)
+            .unwrap_or_else(|_| not_found()),
+        None => not_found(),
+    }
+}
+
+/// The hosts' own events, apart from the chats': connections and transfers.
+const CLOUD_EVENT: &str = "cloud-event";
+
+/// The core's events, to every window (src/lib/agentRuns.ts listens).
+struct WindowEvents(tauri::AppHandle);
+
+impl EventSink for WindowEvents {
+    fn agent(&self, event: &AgentEvent) {
+        if let Err(e) = self.0.emit(EVENT, event) {
+            eprintln!("agent: could not send an event: {e}");
+        }
+    }
 }

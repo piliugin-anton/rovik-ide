@@ -5,7 +5,7 @@
 // doing, it isn't a list to edit. Collapses to the current step.
 import { createSignal, For, Show } from 'solid-js';
 import { isSettled, progressLabel, type TodoItem } from '../lib/todo';
-import { requestOpenFile } from '../lib/editorBridge';
+import { openPlan } from '../lib/plans';
 
 const COLLAPSED_KEY = 'rovik.todoPanelCollapsed';
 
@@ -88,6 +88,8 @@ export function StatusIcon(props: {
 export default function TodoPanel(props: {
   items: TodoItem[];
   plan?: string;
+  /** The chat: its plan opens from its host when it's remote. */
+  dialogId?: string | null;
   /** Idle with an open checklist: "Interrupted · N of M done" + Continue/✕. */
   interrupted?: boolean;
   onContinue?: () => void;
@@ -183,7 +185,7 @@ export default function TodoPanel(props: {
             <button
               type="button"
               class="link-button todo-panel-plan"
-              onClick={() => requestOpenFile({ path: plan() })}
+              onClick={() => void openPlan(props.dialogId ?? null, plan())}
               title="Open the plan"
             >
               {plan()}

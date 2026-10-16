@@ -2,7 +2,7 @@
 
 G01 in [docs/design/subagents-plan.md](../../docs/design/subagents-plan.md): the
 main agent's baseline on a fixed task set, before subagents change anything. The
-headless runner ([src-tauri/src/headless.rs](../../src-tauri/src/headless.rs))
+headless runner ([src-tauri/crates/rovik-headless](../../src-tauri/crates/rovik-headless))
 runs each task as the app would; the task's hidden tests then grade it.
 
 Linux and macOS only: the workspaces, caches and process handling use
@@ -105,9 +105,10 @@ node scripts/eval/eval.mjs run --settings my-settings.json
 node scripts/eval/eval.mjs report eval-results/baseline
 ```
 
-The settings file is the runner's (see `settings.example.json` and
-headless.rs), with `price` in US dollars per million tokens. Keep the API key in
-an environment variable named by `apiKeyEnv`, not in the file. Its
+The settings file is the runner's (see `settings.example.json` and the top of
+its [src/lib.rs](../../src-tauri/crates/rovik-headless/src/lib.rs)), with
+`price` in US dollars per million tokens. Keep the API key in an environment
+variable named by `apiKeyEnv`, not in the file. Its
 `config.permissions` must have `allowAnyCommand: true` (the tasks' test runners
 aren't on the app's default command list) and `toolCallCheckpoint: null` (a
 pause every 50 tool calls would end a headless run; the caps bound it instead).

@@ -1121,6 +1121,9 @@ body.tree-dragging {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  /* Squeezed to nothing (the chat list and the isolation bar open in a
+     short window), the list's padding mustn't spill over the bar. */
+  overflow: hidden;
 }
 
 /* Always bottom center of the visible list. It used to be sticky inside
@@ -7927,7 +7930,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex-shrink: 0;
+  /* It scrolls: short of room, it gives way rather than the input. */
+  flex-shrink: 1;
+  min-height: 0;
   max-height: 35%;
   overflow-y: auto;
   margin: 0 10px 8px;
@@ -8043,6 +8048,14 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .isolation-bar-reason {
   overflow-wrap: break-word;
   color: var(--warning);
+}
+
+/* A remote chat's sync that waits, with what the user can do about it. */
+.isolation-bar-sync {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .isolation-bar-conflict {
@@ -8451,4 +8464,429 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   padding: 0 12px 4px;
   font-size: 11px;
   color: var(--fg-dim);
+}
+
+/* Settings → Cloud hosts (CloudHostsSettings.tsx) */
+
+.cloud-hosts-settings .setting-checkbox,
+.cloud-hosts-settings .settings-section .setting-explain {
+  margin-left: 0;
+}
+
+.cloud-hosts-settings .setting-explain.warning {
+  color: var(--error);
+}
+
+.host-status.ok {
+  color: var(--success);
+}
+
+.host-status.warn {
+  color: var(--warning);
+}
+
+.host-status.error {
+  color: var(--error);
+}
+
+.host-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.host-actions .settings-hint {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.host-form select {
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  font-size: 13px;
+}
+
+.host-steps {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.host-step {
+  display: grid;
+  grid-template-columns: 16px 96px 1fr;
+  gap: 2px 8px;
+  padding: 3px 0;
+}
+
+.host-step-mark {
+  text-align: center;
+  font-weight: 600;
+}
+
+.host-step.passed .host-step-mark {
+  color: var(--success);
+}
+
+.host-step.warning .host-step-mark,
+.host-step.confirm .host-step-mark {
+  color: var(--warning);
+}
+
+.host-step.failed .host-step-mark {
+  color: var(--error);
+}
+
+.host-step.skipped {
+  color: var(--fg-dim);
+}
+
+.host-step-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-dim);
+}
+
+.host-key-confirm {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.host-key-confirm code,
+.host-command {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+
+.host-command {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.host-sudo {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.host-sudo input,
+.host-limit input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+.host-storage-list,
+.host-keys-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.host-keys-list .settings-hint {
+  list-style: none;
+  margin-left: -18px;
+}
+
+.host-key-provider {
+  color: var(--fg);
+}
+
+.host-limits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.host-limit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.host-limit span {
+  flex: 0 0 140px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.host-unlock {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.host-unlock input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 12px;
+}
+
+.host-form textarea {
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.host-setup-output {
+  margin: 8px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* Where the open chat is, and its menu (ChatLocation.tsx) */
+
+.chat-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 45%;
+  margin-left: auto;
+  padding: 2px 8px;
+  background: var(--bg-control);
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chat-location:hover {
+  background: var(--bg-control-hover);
+  color: var(--fg);
+}
+
+.chat-location-dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+}
+
+.chat-location.ok .chat-location-dot {
+  background: var(--success);
+}
+
+.chat-location.warn .chat-location-dot {
+  background: var(--warning);
+}
+
+.chat-location.error .chat-location-dot {
+  background: var(--error);
+}
+
+.chat-location.error {
+  color: var(--error);
+}
+
+.chat-location-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-location-caret {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.chat-location-menu .context-menu-icon {
+  display: none;
+}
+
+.chat-location-menu .context-menu-item.disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.chat-location-menu .context-menu-item.disabled:hover {
+  background: none;
+}
+
+/* Moving a chat to a host or back (MoveChatDialog.tsx) */
+
+.move-chat-dialog {
+  width: 440px;
+}
+
+.move-chat-section {
+  margin-top: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+.move-chat-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.move-chat-note,
+.move-chat-keys {
+  margin-top: 8px;
+}
+
+.move-chat-keys {
+  padding: 6px 8px;
+  background: var(--bg-control);
+  border-radius: 4px;
+}
+
+.move-chat-progress {
+  margin-top: 8px;
+}
+
+.move-chat-step {
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.move-chat-step.done {
+  color: var(--success);
+}
+
+.move-chat-step.failed {
+  color: var(--error);
+}
+
+.move-chat-bytes {
+  color: var(--fg-dim);
+}
+
+.move-chat-reason {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}
+
+/* The chat list's badges (ChatList.tsx, lib/chatBadges.ts) */
+
+.chat-history-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.chat-history-item-meta .chat-history-item-date {
+  flex-shrink: 0;
+}
+
+.chat-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 13px;
+  color: var(--fg-dim);
+}
+
+.chat-badge.waiting {
+  flex-shrink: 0;
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.chat-badge.cloud {
+  color: var(--success);
+}
+
+.chat-badge.offline {
+  color: var(--error);
+}
+
+.chat-badge.moving {
+  color: var(--warning);
+}
+
+.chat-badge.cloud::before,
+.chat-badge.offline::before {
+  content: '☁ ';
+}
+
+/* A remote send's upload (UploadProgress.tsx) */
+
+.chat-upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.chat-upload-bar {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  background: var(--bg-control);
+  border-radius: 2px;
+}
+
+.chat-upload-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
 }
