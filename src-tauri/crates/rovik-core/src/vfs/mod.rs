@@ -701,6 +701,7 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod mount_tests {
     use super::*;
+    use std::os::fd::AsRawFd;
     use std::process::Command;
 
     fn sh(dir: &Path, script: &str) -> (bool, String) {
@@ -875,5 +876,70 @@ mod mount_tests {
             "unmounted"
         );
         let _ = std::fs::remove_dir(&at);
+    }
+
+    /// fuser's "[Not Implemented]" warnings, from every mount in the tests.
+    static UNIMPLEMENTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct Unimplemented;
+
+    impl log::Log for Unimplemented {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record) {
+            let message = record.args().to_string();
+            if message.contains("[Not Implemented]") {
+                UNIMPLEMENTED.lock().unwrap().push(message);
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// What programs ask of any file, and the volume leaves to the kernel,
+    /// gets a disk's answers, without a warning in the log.
+    #[test]
+    fn requests_left_to_the_kernel_log_nothing() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        log::set_logger(&Unimplemented).expect("the only logger in the tests");
+        log::set_max_level(log::LevelFilter::Warn);
+        let state = VfsState::default();
+        let at = std::env::temp_dir().join(format!("rovik-vfs-quiet-{}", std::process::id()));
+        state.mount(Some(at.clone())).unwrap();
+        let path = state.create_file("f.txt", b"hello\n", false).unwrap();
+        let file = std::fs::File::open(path).unwrap();
+        let copy = std::fs::File::create(at.join("copy.txt")).unwrap();
+        let fd = file.as_raw_fd();
+
+        // isatty(), which Python's open() asks: an ioctl.
+        let (tty, error) = unsafe { (libc::isatty(fd), std::io::Error::last_os_error()) };
+        assert_eq!((tty, error.raw_os_error()), (0, Some(libc::ENOTTY)));
+        // An event loop's poll.
+        let mut ready = libc::pollfd {
+            fd,
+            events: libc::POLLIN | libc::POLLOUT,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut ready, 1, 0) }, 1);
+        assert_eq!(ready.revents, libc::POLLIN | libc::POLLOUT);
+        // Looking for holes (tar, cp).
+        assert_eq!(unsafe { libc::lseek(fd, 0, libc::SEEK_HOLE) }, 6);
+        assert_eq!(unsafe { libc::lseek(fd, 0, libc::SEEK_DATA) }, 0);
+        // A copy in the kernel (cp, std::fs::copy).
+        let mut from = 0;
+        let copied = unsafe {
+            libc::copy_file_range(fd, &mut from, copy.as_raw_fd(), std::ptr::null_mut(), 6, 0)
+        };
+        assert_eq!(copied, 6);
+        drop((file, copy));
+        assert_eq!(state.read_file("copy.txt").unwrap(), b"hello\n");
+
+        state.unmount().unwrap();
+        let _ = std::fs::remove_dir(&at);
+        assert_eq!(*UNIMPLEMENTED.lock().unwrap(), Vec::<String>::new());
     }
 }
