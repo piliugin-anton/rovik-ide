@@ -6,6 +6,7 @@
 // run out. Scroll position is kept by hand when content changes above the
 // viewport (native scroll anchoring isn't reliable across WebKit versions).
 import {
+  createComputed,
   createEffect,
   createMemo,
   createSignal,
@@ -67,10 +68,10 @@ const FOLLOW_TOLERANCE_PX = 150;
 const AROUND = 25;
 
 /**
- * Where the reader was in a chat when the list went away (another sidebar
- * tab shown) while not following the newest message: its first visible
- * message and how far that was from the top. Coming back puts them there
- * again, instead of at the end of the chat.
+ * Where the reader was in a chat when they left it (for another chat, or
+ * another sidebar tab) while not following the newest message: its first
+ * visible message and how far that was from the top. Coming back puts
+ * them there again, instead of at the end of the chat.
  */
 const readingPlaces = new Map<string, { id: string; offset: number }>();
 const FLASH_MS = 1600;
@@ -835,11 +836,10 @@ export default function MessageList(props: {
       },
       ([dialogId, length, firstId]) => {
         if (dialogId !== prevDialog) {
-          const mounting = prevDialog === null;
           prevDialog = dialogId;
           // A history load from the previous chat must not hold the new one.
           if (topLock) unlockTopScroll();
-          const place = mounting && dialogId ? readingPlaces.get(dialogId) : undefined;
+          const place = dialogId ? readingPlaces.get(dialogId) : undefined;
           if (dialogId) readingPlaces.delete(dialogId);
           const at = place ? messages().findIndex((m) => m.id === place.id) : -1;
           if (place && at >= 0) {
@@ -880,11 +880,29 @@ export default function MessageList(props: {
     lastScrollTop = el.scrollTop;
   }
 
-  onCleanup(() => {
-    const dialogId = prevDialog;
-    if (!dialogId || stick()) return;
+  function rememberPlace(dialogId: string) {
+    if (stick()) {
+      readingPlaces.delete(dialogId);
+      return;
+    }
     const anchor = captureTopAnchor();
     if (anchor?.id) readingPlaces.set(dialogId, { id: anchor.id, offset: anchor.offset });
+  }
+
+  // Leaving for another chat: a computation, which runs before the list
+  // shows the other chat, while the one left is still there to measure.
+  createComputed(
+    on(
+      () => props.dialogId,
+      (_, left) => {
+        if (left) rememberPlace(left);
+      },
+      { defer: true }
+    )
+  );
+
+  onCleanup(() => {
+    if (prevDialog) rememberPlace(prevDialog);
   });
 
   // While following, stay at the bottom as the last message grows.
