@@ -326,6 +326,45 @@ stops it, answers its approvals and shows its progress.
 runs on any Linux, in `src-tauri/target/agentd/`. To deploy one, start the
 app with `ROVIK_AGENTD_BINARY` set to its path.
 
+### Releases
+
+A release is made from GitHub: in the repository's **Actions** tab, choose
+the **Release** workflow, then **Run workflow**, pick the branch and type
+the version, such as `1.2.3`. The workflow (`.github/workflows/release.yml`)
+does the rest:
+
+1. It sets that version in the sources with `scripts/set-version.sh`, then
+   commits it and tags it `v1.2.3`.
+2. It builds the app for Linux, macOS and Windows, and the daemon for
+   x86_64 and aarch64 Linux servers.
+3. It signs the builds and publishes them on the tag's GitHub release.
+
+The app downloads the daemon for a server from its own version's release,
+and checks it against the release key before it goes to the server. The
+daemon on a server checks an upgrade against the same key.
+
+Before the first release, make the key once:
+
+1. Run `npx tauri signer generate -w ~/.tauri/rovik.key` and choose a
+   password. Keep the file and the password safe: without them there are
+   no more signed releases.
+2. In the repository's **Settings → Secrets and variables → Actions**, add
+   `TAURI_SIGNING_PRIVATE_KEY`, with the contents of `~/.tauri/rovik.key`,
+   and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, with the password.
+3. Paste the public key, the one line in `~/.tauri/rovik.key.pub`, below
+   the comments in `src-tauri/release-key.pub`, and commit it. The app's
+   updater takes the same key (`plugins.updater.pubkey` in
+   `tauri.conf.json`); once `bundle.createUpdaterArtifacts` is `true`
+   there too, each release has the updater's `latest.json`.
+
+Versions have numbers only, such as `1.2.3`, or `1.2.3-4` for a
+pre-release, which GitHub publishes as one: a Windows installer refuses
+anything else. The version is written in `src-tauri/Cargo.toml`
+(`[workspace.package]`) and `package.json`; to change it by hand, run
+`scripts/set-version.sh 1.2.3`. If the branch is protected, add a
+`RELEASE_TOKEN` secret, a token that may push to it, for the version's
+commit and tag.
+
 To debug model requests, set `ROVIK_API_LOG=1`. Every request and response
 is then logged to `<temp dir>/rovik-api-log.jsonl`; set it to a file path
 to log there instead. API keys are not written to the log.

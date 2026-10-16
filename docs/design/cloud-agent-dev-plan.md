@@ -2909,3 +2909,33 @@ Tasks add notes here when reality differs from the plan.
     an unsigned or missing build refused; `admin upgrade` taking a signed
     build where unsigned ones aren't allowed, and refusing the same
     signature on another build.
+- **Versions, and the release workflow.**
+  - The version is written once, under `[workspace.package]` in
+    `src-tauri/Cargo.toml`: every crate takes it, and `tauri.conf.json`
+    names none now, so the app's bundles take the app crate's. It's in
+    `package.json` too. `scripts/set-version.sh 1.2.3` writes both, and
+    their lock files (`cargo update --workspace`, `npm version`), and
+    refuses a version a Windows installer wouldn't take: numbers only,
+    `1.2.3`, or `1.2.3-4` for a pre-release.
+  - B02's workflow is `.github/workflows/release.yml`, not `agentd.yml` on
+    `v*` tags: it's started by hand with the version (Actions, Release,
+    Run workflow), sets it, commits it and tags it `v<version>` itself, so
+    a tag can't name another version than its sources. Then it drafts the
+    release, builds the app on each platform into that draft with
+    `tauri-action`, and the daemon for both CPUs with
+    `scripts/build-agentd.sh`, signs each build and `SHA256SUMS` with
+    `tauri signer sign` (`.sig`, not `.minisig`, as the key is tauri's),
+    gzips the builds, attaches them and publishes the release, a
+    pre-release for `1.2.3-4`.
+  - The key is the developer's to make, once (README, Releases). The
+    updater's own files, `latest.json` and the bundles' signatures, come
+    once `bundle.createUpdaterArtifacts` is on, with the updater plugin.
+  - Checked here: `set-version.sh` in a clone (both manifests and lock
+    files changed, a version with letters refused), after which `tauri
+bundle` named a `.deb` with that version, `Cargo.toml`'s and not
+    `package.json`'s, and `scripts/build-agentd.sh` read it; and the
+    publish step's commands with a throwaway key: each build, unpacked, has the
+    hash the signed `SHA256SUMS` lists, and each signature checks, as
+    minisign's format has it. actionlint and GitHub's schema take the
+    workflow, but it hasn't run: the first release is its test, the
+    Windows and macOS builds included.
