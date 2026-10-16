@@ -223,20 +223,35 @@ async function startApp() {
 }
 
 // Collects the page's errors and alerts, and the notifications it showed.
-// Chromium's "ResizeObserver loop completed with undelivered notifications"
-// is left out: it says an observer resized something observed, by design
-// here (the chat's anchoring), and it came on nearly every step.
+// Left out: Chromium's "ResizeObserver loop completed with undelivered
+// notifications" (an observer resized something observed, by design here:
+// the chat's anchoring), and Monaco's cancelled requests ("Canceled": a
+// deferred result nobody waited for), which came on nearly every step.
+// An error is its name and message, then its stack: WebKit's stack has no
+// message.
 const HOOK = `
 if (!window.__e2e) {
   window.__e2e = { errors: [], alerts: [], notifications: [] };
   const push = (kind, msg) => window.__e2e.errors.push({ kind, msg: String(msg).slice(0, 1500) });
+  // On one line (the report shows the first), with where it came from.
+  const frames = (x) =>
+    String(x.stack || '').split('\\n').map((l) => l.trim()).filter((l) => l && !l.includes(x.message)).slice(0, 3);
+  const text = (x) =>
+    x instanceof Error
+      ? [x.name + ': ' + x.message, ...frames(x)].join(' @ ')
+      : typeof x === 'object' && x !== null
+        ? JSON.stringify(x)
+        : String(x);
   window.addEventListener('error', (e) => {
     if (/^ResizeObserver loop/.test(e.message || '')) return;
     push('error', (e.message || '') + ' ' + ((e.error && e.error.stack) || ''));
   });
-  window.addEventListener('unhandledrejection', (e) => push('rejection', (e.reason && (e.reason.stack || e.reason.message)) || e.reason));
+  window.addEventListener('unhandledrejection', (e) => {
+    if (e.reason && e.reason.name === 'Canceled') return;
+    push('rejection', text(e.reason));
+  });
   const ce = console.error.bind(console);
-  console.error = (...a) => { push('console.error', a.map((x) => (x && x.stack) || (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' ')); ce(...a); };
+  console.error = (...a) => { push('console.error', a.map(text).join(' ')); ce(...a); };
   window.alert = (m) => { window.__e2e.alerts.push(String(m)); push('alert', m); };
   const seen = new WeakSet();
   new MutationObserver(() => {
