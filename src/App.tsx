@@ -50,7 +50,14 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import FileContextMenu from './components/FileContextMenu';
 import { GitPanel } from './components/GitPanel';
-import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './components/ConfirmDialog';
+import {
+  chooseDialog,
+  confirmDialog,
+  ConfirmDialogHost,
+  type ConfirmOptions,
+} from './components/ConfirmDialog';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { projectSession, rememberProjectSession, type SessionFile } from './lib/projectSessions';
 import NotificationHost from './components/NotificationHost';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import NewProjectDialog from './components/NewProjectDialog';
@@ -65,6 +72,7 @@ import {
   onAddToChat,
   onCompareRequest,
   requestCompare,
+  requestEditorFocus,
   onOpenFileRequest,
   setProjectFileResolver,
 } from './lib/editorBridge';
@@ -81,7 +89,7 @@ import {
 } from './lib/intellisense';
 import { scheduleModelPrune, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
-import { toAbsolutePath, toRelativePath } from './lib/fileTools';
+import { movedPath, toAbsolutePath, toRelativePath } from './lib/fileTools';
 import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
 import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
@@ -294,7 +302,9 @@ export default function App() {
   const activeFileContext = createMemo<ActiveFileContext | null>(() => {
     const file = activeFile();
     const info = cursorInfo();
-    if (!file || !info || info.path !== file.path) return null;
+    // A read-only tab (a commit's or a stash's version, a comparison) isn't
+    // a file: its path ("commit@…:…") is nothing the agent can read.
+    if (!file || file.readOnly || !info || info.path !== file.path) return null;
     return {
       path: file.path,
       language: file.language,
@@ -320,20 +330,7 @@ export default function App() {
     const lastProject = await loadLastProject();
     if (!lastProject || !lastProject.path) return null;
     const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
-    // A file deleted while the app was closed is skipped: one missing file
-    // used to fail the whole restore.
-    const restored = await Promise.all(
-      openedFilesRaw.map(async (f): Promise<OpenFile | null> => {
-        try {
-          const content = await readFileContent(f.path);
-          return { ...f, content, originalContent: content, dirty: false };
-        } catch (err) {
-          console.warn(`Not restoring ${f.path}:`, err);
-          return null;
-        }
-      })
-    );
-    const openFiles = restored.filter((f): f is OpenFile => f !== null);
+    const openFiles = await reopenFiles(openedFilesRaw);
 
     return [
       lastProject.path,
@@ -343,6 +340,74 @@ export default function App() {
     ];
   }
 
+  /** Tabs saved for later, read again from disk. */
+  async function reopenFiles(saved: SessionFile[]): Promise<OpenFile[]> {
+    // A file deleted since is skipped: one missing file used to fail the
+    // whole restore.
+    const restored = await Promise.all(
+      saved.map(async (f): Promise<OpenFile | null> => {
+        try {
+          const content = await readFileContent(f.path);
+          return { ...f, content, originalContent: content, dirty: false };
+        } catch (err) {
+          console.warn(`Not restoring ${f.path}:`, err);
+          return null;
+        }
+      })
+    );
+    return restored.filter((f): f is OpenFile => f !== null);
+  }
+
+  /**
+   * Tabs with unsaved text, before they close (another project opens, or
+   * the window closes): saved, or let go, as the user says. False: stay
+   * (cancelled, or a save didn't go through). Switching projects used to
+   * drop the text without a word, and so did closing the window.
+   */
+  async function settleUnsavedTabs(leaving: 'project' | 'app'): Promise<boolean> {
+    const unsaved = openFiles().filter((f) => f.dirty && !f.readOnly);
+    if (unsaved.length === 0) return true;
+    const choice = await chooseDialog({
+      title:
+        unsaved.length === 1
+          ? `Save changes to ${unsaved[0].name}?`
+          : `Save changes to ${unsaved.length} files?`,
+      message:
+        `${unsaved.map((f) => f.name).join(', ')} ${unsaved.length === 1 ? 'has' : 'have'} ` +
+        `changes that aren’t saved. ` +
+        (leaving === 'app'
+          ? 'They’re lost when the window closes, unless they’re saved.'
+          : 'The tabs close when another project opens, so they’re lost unless they’re saved.'),
+      confirmLabel: 'Save',
+      alternateLabel: 'Don’t save',
+    });
+    if (choice === 'cancel') return false;
+    if (choice === 'alternate') return true;
+    for (const f of unsaved) {
+      if (!openFiles().some((o) => o.path === f.path && o.dirty)) continue;
+      setActivePath(f.path);
+      await saveActiveFile();
+    }
+    // A save refused (changed on disk and kept to compare, or an error).
+    return !openFiles().some((f) => f.dirty && !f.readOnly);
+  }
+
+  // Closing the window with unsaved tabs asks first.
+  onMount(() => {
+    let stop: (() => void) | undefined;
+    let gone = false;
+    void getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        if (!(await settleUnsavedTabs('app'))) event.preventDefault();
+      })
+      .then((unlisten) => (gone ? unlisten() : (stop = unlisten)))
+      .catch((err) => console.error('No close guard:', err));
+    onCleanup(() => {
+      gone = true;
+      stop?.();
+    });
+  });
+
   const [newProjectOpen, setNewProjectOpen] = createSignal(false);
 
   async function handlePickFolder() {
@@ -351,8 +416,24 @@ export default function App() {
   }
 
   /** Opens a project folder: Files, Chat and Git switch to it. */
-  function openProjectAt(folder: string) {
+  async function openProjectAt(folder: string) {
     if (folder === rootPath()) return;
+    if (!(await settleUnsavedTabs('project'))) return;
+    // Chosen meanwhile (the dialog was open), or the same one again.
+    if (folder === rootPath()) return;
+    // The project left keeps its tabs for coming back to it.
+    const left = rootPath();
+    if (left) {
+      rememberProjectSession(left, {
+        files: openFiles()
+          .filter((f) => !f.readOnly)
+          .map(({ id, path, name, language }) => ({ id, path, name, language })),
+        active: activePath(),
+        expanded: [...tree.expanded()],
+      });
+    }
+    const session = projectSession(folder);
+    if (session) tree.presetExpanded(folder, session.expanded);
     for (const m of monaco.editor.getModels()) m.dispose();
     // The old project's change marks; its tabs close below.
     for (const { absPath } of markedFiles()) clearGitBase(absPath);
@@ -361,6 +442,15 @@ export default function App() {
     setActivePath(null);
     setSelectedFileIds(new Set<string>());
     setLastSelectedId(null);
+    if (!session?.files.length) return;
+    // Its own tabs, as it was left.
+    const files = await reopenFiles(session.files);
+    // Another project chosen since, or a file opened meanwhile: leave it.
+    if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
+    setOpenFiles(files);
+    setActivePath(
+      files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
+    );
   }
 
   // Which project the open folder is, and so whose chats are shown.
@@ -460,7 +550,7 @@ export default function App() {
       if (activate) setActivePath(row.path);
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);
-      if (activate) window.alert(String(err));
+      if (activate) window.alert(`Couldn't open ${row.name}: ${String(err)}`);
     } finally {
       opening.delete(row.path);
     }
@@ -483,8 +573,9 @@ export default function App() {
   // The agent's edits: open files to review them when the "Open files
   // after agent edits" editor setting is on, and refresh open tabs
   // after a write (an unsaved tab keeps the user's text).
-  const stopReveal = onRevealEdit((path) => {
-    if (!editorSettings().openFilesAfterAgentEdits) return;
+  // "Review in editor" (explicit) always opens it.
+  const stopReveal = onRevealEdit((path, explicit) => {
+    if (!explicit && !editorSettings().openFilesAfterAgentEdits) return;
     void openPath(path);
   });
   const stopWritten = onFileWritten((path, content) => {
@@ -1360,10 +1451,11 @@ export default function App() {
         if (entry.mode === 'copy') {
           await copyPathOnDisk(id, destDirId);
         } else {
-          const oldPath = openFiles().find((f) => f.id === id)?.path;
+          const oldPath =
+            tree.rows().find((r) => r.id === id)?.path ??
+            openFiles().find((f) => f.id === id)?.path;
           const newPath = await movePathOnDisk(id, destDirId);
-          setOpenFiles((prev) => prev.map((f) => (f.id === id ? { ...f, path: newPath } : f)));
-          if (oldPath && activePath() === oldPath) setActivePath(newPath);
+          if (oldPath) followMoves([{ from: oldPath, to: newPath }]);
         }
       }
     } catch (err) {
@@ -1426,26 +1518,7 @@ export default function App() {
     }
 
     if (moved.length > 0) {
-      // Tabs at or inside a moved path follow it to the new location.
-      setOpenFiles((prev) =>
-        prev.map((f) => {
-          const m = moved.find((m) => f.path === m.from || isAtOrUnder(f.path, m.from));
-          if (!m) return f;
-          const rest = f.path.slice(m.from.length).replace(/^[\\/]/, '');
-          const path = rest ? `${m.to}/${rest}` : m.to;
-          const name = path.split(/[\\/]/).pop() ?? f.name;
-          return { ...f, path, name, language: languageForFile(name) };
-        })
-      );
-      if (activePath()) {
-        const m = moved.find((m) => activePath() === m.from || isAtOrUnder(activePath()!, m.from));
-        if (m) {
-          const rest = activePath()!
-            .slice(m.from.length)
-            .replace(/^[\\/]/, '');
-          setActivePath(rest ? `${m.to}/${rest}` : m.to);
-        }
-      }
+      followMoves(moved);
       // Refresh both sides right away instead of waiting for the watcher.
       for (const m of moved) {
         tree.refresh(m.from);
@@ -1458,6 +1531,27 @@ export default function App() {
       }
     }
     if (failures.length > 0) window.alert(failures.join('\n'));
+  }
+
+  /**
+   * Tabs at or inside a renamed or moved file or folder follow it to its new
+   * path, by path: a tab opened by path (go to definition, a search result,
+   * a chat link, a restored session) has no tree id to match, and the files
+   * inside a folder never do.
+   */
+  function followMoves(moves: { from: string; to: string }[]) {
+    for (const { from, to } of moves) tree.moved(from, to);
+    setOpenFiles((prev) =>
+      prev.map((f) => {
+        const path = movedPath(f.path, moves);
+        if (!path) return f;
+        const name = path.split(/[\\/]/).pop() ?? f.name;
+        return { ...f, path, name, language: languageForFile(name) };
+      })
+    );
+    const active = activePath();
+    const next = active ? movedPath(active, moves) : null;
+    if (next) setActivePath(next);
   }
 
   function parentPathOf(path: string): string | null {
@@ -1544,12 +1638,7 @@ export default function App() {
     if (!name || name === row.name) return;
     try {
       const newPath = await renamePathOnDisk(row.id, name);
-      setOpenFiles((prev) =>
-        prev.map((f) =>
-          f.id === row.id ? { ...f, path: newPath, name, language: languageForFile(name) } : f
-        )
-      );
-      if (activePath() === row.path) setActivePath(newPath);
+      followMoves([{ from: row.path, to: newPath }]);
     } catch (err) {
       console.error('Failed to rename:', err);
       window.alert(fsErrorMessage(err));
@@ -2009,7 +2098,10 @@ export default function App() {
           <Tabs
             files={openFiles}
             activePath={activePath}
-            onSelect={setActivePath}
+            onSelect={(path) => {
+              requestEditorFocus(path);
+              setActivePath(path);
+            }}
             onClose={closeFile}
           />
           {/* A Markdown file: source, source and preview, or preview. */}

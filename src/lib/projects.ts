@@ -19,10 +19,30 @@ export const projectList = all;
 
 export async function refreshProjects() {
   try {
-    setAll(await chatApi.listProjects());
+    const list = await chatApi.listProjects();
+    // A project that didn't change keeps its object, and its row in the
+    // switcher: the list is read again each time the menu opens, and new
+    // rows under a click on one (open, Relink…) lost it.
+    setAll((old) => {
+      const known = new Map(old.map((p) => [p.id, p]));
+      return list.map((p) => {
+        const was = known.get(p.id);
+        return was && sameProject(was, p) ? was : p;
+      });
+    });
   } catch (err) {
     console.error('Listing projects failed:', err);
   }
+}
+
+function sameProject(a: ProjectSummary, b: ProjectSummary) {
+  return (
+    a.name === b.name &&
+    a.path === b.path &&
+    a.chatCount === b.chatCount &&
+    a.lastOpenedAt === b.lastOpenedAt &&
+    a.missing === b.missing
+  );
 }
 
 let resolving = 0;

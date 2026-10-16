@@ -350,7 +350,7 @@ body {
 
 .tree-root-drop {
   position: sticky;
-  top: 0;
+  bottom: 0;
   z-index: 3;
   padding: 8px;
   background: var(--bg);
@@ -1696,6 +1696,10 @@ body.tree-dragging {
   justify-content: flex-end;
   gap: 8px;
   padding: 0 16px 14px;
+}
+
+.confirm-dialog-actions .confirm-dialog-alternate {
+  margin-right: auto;
 }
 
 .confirm-dialog-actions button {
@@ -3282,6 +3286,10 @@ body.tree-dragging {
 
 .review-zone {
   width: 100%;
+  /* Above Monaco's text layer: .view-lines comes after the zones and is as
+     tall as the whole content, so it took every click on a change's
+     Accept / Reject. The zones hold no text lines for it to cover. */
+  z-index: 1;
 }
 
 .review-added {
@@ -6809,7 +6817,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .provider-models-list {
   display: grid;
   /* The name column: never narrower than the longest name, and takes any spare room. */
-  grid-template-columns: minmax(max-content, 1fr) 112px 52px 40px 44px 68px 60px 22px;
+  /* Context: wide enough for its placeholder, "1,000,000 reported". */
+  grid-template-columns: minmax(max-content, 1fr) 136px 52px 40px 44px 68px 60px 22px;
   align-content: start;
   column-gap: 8px;
   overflow: auto;

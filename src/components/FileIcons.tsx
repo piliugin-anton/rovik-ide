@@ -3,6 +3,7 @@
 // File tree icons. Same drawing language as the context menu's icons in
 // App.tsx (16px grid, 1.5 stroke, currentColor, rounded joins), so the
 // tree, the menu and its "New file" / "New folder" entries read as one set.
+import { Show } from 'solid-js';
 
 const base = {
   width: 14,
@@ -25,16 +26,22 @@ export function ChevronIcon(props: { open: boolean }) {
   );
 }
 
+/** Open or closed with its folder: a component's body runs once, so `<Show>` follows `open`. */
 export function FolderIcon(props: { open: boolean }) {
-  return props.open ? (
-    <svg {...base} class="tree-icon tree-icon-folder">
-      <path d="M2 12.5V4.5a1 1 0 0 1 1-1h3.5l1.2 1.5H12a1 1 0 0 1 1 1v1.5" />
-      <path d="M2 12.5 4 7.5h10.5l-2 5H2Z" />
-    </svg>
-  ) : (
-    <svg {...base} class="tree-icon tree-icon-folder">
-      <path d="M2 4.5a1 1 0 0 1 1-1h3.5l1.2 1.5H13a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5Z" />
-    </svg>
+  return (
+    <Show
+      when={props.open}
+      fallback={
+        <svg {...base} class="tree-icon tree-icon-folder">
+          <path d="M2 4.5a1 1 0 0 1 1-1h3.5l1.2 1.5H13a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5Z" />
+        </svg>
+      }
+    >
+      <svg {...base} class="tree-icon tree-icon-folder">
+        <path d="M2 12.5V4.5a1 1 0 0 1 1-1h3.5l1.2 1.5H12a1 1 0 0 1 1 1v1.5" />
+        <path d="M2 12.5 4 7.5h10.5l-2 5H2Z" />
+      </svg>
+    </Show>
   );
 }
 

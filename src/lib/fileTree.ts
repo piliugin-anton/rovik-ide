@@ -122,6 +122,33 @@ export function createFileTreeController(rootPath: () => string | null) {
     }
   });
 
+  /**
+   * A file or folder renamed or moved: what was expanded in it stays
+   * expanded at its new place, instead of the folder closing. Before its
+   * listings reload, which forget expanded folders that aren't there any
+   * more.
+   */
+  function moved(from: string, to: string) {
+    setExpanded((prev) => {
+      const inside = [...prev].filter((p) => isAtOrUnder(p, from));
+      if (inside.length === 0) return prev;
+      const next = new Set(prev);
+      for (const p of inside) {
+        next.delete(p);
+        next.add(to + p.slice(from.length));
+      }
+      return next;
+    });
+    // Its contents are read again at the new place.
+    setCache((prev) => {
+      const stale = [...prev.keys()].filter((p) => isAtOrUnder(p, from));
+      if (stale.length === 0) return prev;
+      const next = new Map(prev);
+      for (const p of stale) next.delete(p);
+      return next;
+    });
+  }
+
   function toggle(entry: { path: string; isDir: boolean; ignored?: boolean }) {
     if (!entry.isDir) return;
     setExpanded((prev) => {
@@ -256,5 +283,5 @@ export function createFileTreeController(rootPath: () => string | null) {
     return out;
   });
 
-  return { rows, expanded, toggle, refresh, refreshAncestors, files, presetExpanded };
+  return { rows, expanded, toggle, refresh, refreshAncestors, files, presetExpanded, moved };
 }

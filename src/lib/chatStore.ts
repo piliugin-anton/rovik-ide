@@ -11,7 +11,8 @@
 // persist. Writes go through one queue, so the database sees them in the
 // order they were made, even though Tauri may run concurrent commands in
 // parallel. What a run stores is already in the database when it arrives.
-import { createStore, produce } from 'solid-js/store';
+import { batch } from 'solid-js';
+import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ChatMessage, ChatPlace, DialogCursor, DialogSummary, MessageStatus } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 
@@ -57,6 +58,11 @@ interface ChatState {
 export type MessagePatch = Partial<
   Pick<ChatMessage, 'content' | 'toolCalls' | 'error' | 'failed' | 'pending' | 'meta' | 'finalized'>
 > & { status?: MessageStatus | null };
+
+/** A patch's object field, merged into the store's (reconcile); none clears it. */
+export function merged<T extends object>(value: T | null | undefined) {
+  return value ? reconcile(value) : undefined;
+}
 
 const UNREAD_KEY = 'rovik.chatUnread';
 /** Where the unread ids were kept before the app was renamed. */
@@ -547,14 +553,24 @@ export function createChatStore() {
       return;
     }
     const message = messagesOf(dialogId)[i];
-    const { status, ...fields } = patch;
+    const { status, toolCalls, meta, ...fields } = patch;
     const next: Partial<ChatMessage> = { ...fields };
     if ('status' in patch) next.status = status ?? undefined;
     // A reply still being written (also after a reload, when its stored copy
     // didn't say so).
     if (!fields.finalized && !message.finalized && message.role === 'assistant')
       next.pending = true;
-    setState('open', dialogId, 'messages', i, next);
+    batch(() => {
+      setState('open', dialogId, 'messages', i, next);
+      // Merged into what's there, not swapped for new objects: the parts
+      // that didn't change keep theirs, and so does what's drawn from them
+      // (a tool call's block opened while the reply streams, a failed
+      // check's output opened in the verification record), which a click
+      // landing as a patch came in otherwise missed.
+      if ('toolCalls' in patch)
+        setState('open', dialogId, 'messages', i, 'toolCalls', merged(toolCalls));
+      if ('meta' in patch) setState('open', dialogId, 'messages', i, 'meta', merged(meta));
+    });
 
     const content = fields.content ?? message.content;
     if (fields.finalized && message.role === 'assistant' && !fields.error && content.trim()) {

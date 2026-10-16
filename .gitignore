@@ -5,3 +5,5 @@ rovik-ide.zip*.tsbuildinfo
 
 .eval-cache
 eval-results
+dist-e2e
+e2e-out

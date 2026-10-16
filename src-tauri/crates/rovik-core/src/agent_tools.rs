@@ -51,8 +51,8 @@ pub(crate) fn is_denylisted_name(name: &str) -> bool {
 }
 
 fn canonicalize_or_err(p: &Path) -> Result<PathBuf, String> {
-    p.canonicalize()
-        .map_err(|e| format!("{}: {e}", p.display()))
+    // Not `canonicalize`: an isolated chat's view on Windows can't be.
+    crate::vfs::canonical(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
 /// `path` with symlinks resolved as far as it exists: its deepest existing

@@ -20,7 +20,7 @@
 // copy (the bar stops asking until the next sync). A newer result held
 // back while the conflicts are resolved can be taken in their place.
 
-import { createEffect, createResource, createSignal, For, Show, untrack } from 'solid-js';
+import { createEffect, createResource, createSignal, For, Index, Show, untrack } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
 import { ConflictResolver, forgetConflictChoices, type ConflictSource } from './ConflictResolver';
 import type { GitOperation } from '../types';
@@ -78,6 +78,9 @@ const LABEL: Record<ChangedFile['change'], string> = {
 };
 
 /** Paths for a message: the first few, then how many more. */
+/** How long a plain "done" notice stays in the corner. */
+const SUCCESS_MS = 6_000;
+
 const listPaths = (paths: string[], shown = 8) =>
   paths.length > shown
     ? `${paths.slice(0, shown).join(', ')} and ${paths.length - shown} more`
@@ -277,6 +280,8 @@ export default function IsolationBar(props: Props) {
           kind: 'success',
           title: 'Landed',
           message: `${plural(n, 'change')} from this chat ${n === 1 ? 'is' : 'are'} in the project.`,
+          // The bar says so too, with Undo; these piled up in the corner.
+          timeout: SUCCESS_MS,
         });
         return true;
       }
@@ -303,6 +308,8 @@ export default function IsolationBar(props: Props) {
         message: kept.length
           ? `${plural(kept.length, 'file')} changed since and stayed as they are: ${listPaths(kept.map((k) => k.path))}.`
           : 'The project is back to how it was before.',
+        // What stayed is worth reading; that it went back isn't, for long.
+        timeout: kept.length ? undefined : SUCCESS_MS,
       });
     }, 'Couldn’t undo');
   }
@@ -355,6 +362,7 @@ export default function IsolationBar(props: Props) {
           kind: 'success',
           title: 'Synced',
           message: 'The project’s changes made here are in the chat’s copy.',
+          timeout: SUCCESS_MS,
         });
       } else if (sync.state === 'marked') {
         const files = sync.files ?? [];
@@ -362,6 +370,7 @@ export default function IsolationBar(props: Props) {
           kind: 'success',
           title: 'Synced, with conflicts for the chat',
           message: `${plural(files.length, 'file')} got conflict markers: ${listPaths(files)}. The chat settles them with its next message.`,
+          timeout: 12_000,
         });
       }
       // A sync that waits says why in the bar.
@@ -394,6 +403,7 @@ export default function IsolationBar(props: Props) {
           title: 'Synced',
           message:
             'The project changed again meanwhile, and its changes went in without conflicts.',
+          timeout: SUCCESS_MS,
         });
       } else {
         notify({
@@ -616,33 +626,36 @@ export default function IsolationBar(props: Props) {
             </Show>
             <Show when={open() || !!s().pending?.conflicts.length}>
               <ul class="isolation-bar-files">
-                <For each={s().files}>
+                {/* By position: the status is read again every few seconds
+                    while the chat runs, all new objects, and new rows under
+                    a click on a file lost it. */}
+                <Index each={s().files}>
                   {(file) => (
                     <li>
                       <button
                         class="isolation-bar-file"
                         title={
-                          conflicted(file.path) && !disabled()
+                          conflicted(file().path) && !disabled()
                             ? 'Resolve this file’s conflicts'
                             : 'Compare with the project’s version'
                         }
                         onClick={() =>
-                          conflicted(file.path) && !disabled()
-                            ? setResolving(file.path)
-                            : void compare(file)
+                          conflicted(file().path) && !disabled()
+                            ? setResolving(file().path)
+                            : void compare(file())
                         }
                       >
-                        <span class={`isolation-bar-kind ${file.change}`}>
-                          {LABEL[file.change]}
+                        <span class={`isolation-bar-kind ${file().change}`}>
+                          {LABEL[file().change]}
                         </span>
-                        <span class="isolation-bar-path">{file.path}</span>
-                        <Show when={file.from}>
-                          <span class="isolation-bar-from">from {file.from}</span>
+                        <span class="isolation-bar-path">{file().path}</span>
+                        <Show when={file().from}>
+                          <span class="isolation-bar-from">from {file().from}</span>
                         </Show>
-                        <Show when={conflicted(file.path)}>
+                        <Show when={conflicted(file().path)}>
                           <span class="isolation-bar-conflict">conflict</span>
                         </Show>
-                        <Show when={!conflicted(file.path) && peerOf(file.path)}>
+                        <Show when={!conflicted(file().path) && peerOf(file().path)}>
                           {(peer) => (
                             <span
                               class="isolation-bar-conflict"
@@ -663,7 +676,7 @@ export default function IsolationBar(props: Props) {
                       </button>
                     </li>
                   )}
-                </For>
+                </Index>
               </ul>
             </Show>
           </div>

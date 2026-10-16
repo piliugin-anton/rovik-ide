@@ -1,4 +1,4 @@
-import { For, type Accessor } from 'solid-js';
+import { Index, type Accessor } from 'solid-js';
 import type { OpenFile } from '../types';
 
 interface TabsProps {
@@ -11,16 +11,19 @@ interface TabsProps {
 export default function Tabs(props: TabsProps) {
   return (
     <div class="tabs">
-      <For each={props.files()}>
+      {/* By position, not by object: a tab's file is a new object on every
+          write to it (the agent's too), and a new tab element under a click
+          (select, close) lost the click. */}
+      <Index each={props.files()}>
         {(file) => (
           <div
             class="tab"
             classList={{
-              active: file.path === props.activePath(),
-              deleted: !!file.deleted,
-              readonly: !!file.readOnly,
+              active: file().path === props.activePath(),
+              deleted: !!file().deleted,
+              readonly: !!file().readOnly,
             }}
-            onClick={() => props.onSelect(file.path)}
+            onClick={() => props.onSelect(file().path)}
             // Middle click closes, as in browsers and most editors. Pressing
             // the wheel would otherwise start autoscroll.
             onMouseDown={(e) => {
@@ -29,32 +32,32 @@ export default function Tabs(props: TabsProps) {
             onAuxClick={(e) => {
               if (e.button !== 1) return;
               e.preventDefault();
-              props.onClose(file.path);
+              props.onClose(file().path);
             }}
-            title={
-              file.stash
-                ? `${file.stash.file} — stashed preview (${file.stash.message ?? `stash@${file.stash.index}`}), read-only`
-                : file.deleted
-                  ? `${file.path} (deleted from disk; save to restore)`
-                  : file.path
-            }
+            title={tabTitle(file())}
           >
             <span class="tab-name">
-              {file.deleted ? `${file.name} [DELETED]` : file.name}
-              {file.dirty ? ' •' : ''}
+              {file().deleted ? `${file().name} [DELETED]` : file().name}
+              {file().dirty ? ' •' : ''}
             </span>
             <span
               class="tab-close"
               onClick={(e) => {
                 e.stopPropagation();
-                props.onClose(file.path);
+                props.onClose(file().path);
               }}
             >
               ×
             </span>
           </div>
         )}
-      </For>
+      </Index>
     </div>
   );
+}
+
+function tabTitle(file: OpenFile): string {
+  if (file.stash)
+    return `${file.stash.file} — stashed preview (${file.stash.message ?? `stash@${file.stash.index}`}), read-only`;
+  return file.deleted ? `${file.path} (deleted from disk; save to restore)` : file.path;
 }

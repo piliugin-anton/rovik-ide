@@ -7,6 +7,7 @@ import {
   on,
   onCleanup,
   Show,
+  untrack,
   type Accessor,
 } from 'solid-js';
 import type { TreeRow } from '../types';
@@ -353,6 +354,20 @@ export default function FileTree(props: FileTreeProps) {
     });
   }
 
+  /**
+   * Inputs whose edit is over: Enter, Escape or leaving it ends an edit once.
+   * Chromium (WebView2) fires blur on an input as it's removed, so ending
+   * the edit (which removes it) was followed by a submit from the blur: a
+   * new file was created twice ("already exists"), and Escape renamed the
+   * file or created the new one anyway.
+   */
+  const ended = new WeakSet<HTMLInputElement>();
+  function endEdit(input: HTMLInputElement, end: () => void) {
+    if (ended.has(input)) return;
+    ended.add(input);
+    end();
+  }
+
   return (
     <div
       class="file-tree"
@@ -368,15 +383,6 @@ export default function FileTree(props: FileTreeProps) {
         '-webkit-user-select': 'none',
       }}
     >
-      <Show when={dragging()}>
-        <div
-          class="tree-root-drop"
-          data-root-drop={ROOT_TARGET_ID}
-          classList={{ 'drop-destination': dropTargetId() === ROOT_TARGET_ID }}
-        >
-          Drop here to move to the project root
-        </div>
-      </Show>
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -437,7 +443,10 @@ export default function FileTree(props: FileTreeProps) {
                     >
                       <input
                         class="tree-row-input"
-                        value={currentRow().name}
+                        // Once, not kept in step with the row: a refresh of
+                        // the folder (any file written in it) brings a new
+                        // row, and put the old name back over what was typed.
+                        value={untrack(() => currentRow().name)}
                         ref={focusAndSelect}
                         onMouseDown={(e) => {
                           // Allow normal text editing/selection inside
@@ -449,25 +458,20 @@ export default function FileTree(props: FileTreeProps) {
                         }}
                         onKeyDown={(e) => {
                           e.stopPropagation();
+                          const input = e.currentTarget as HTMLInputElement;
 
                           if (e.key === 'Enter') {
                             e.preventDefault();
-
-                            props.onEditSubmit(
-                              currentRow(),
-                              (e.currentTarget as HTMLInputElement).value
-                            );
+                            endEdit(input, () => props.onEditSubmit(currentRow(), input.value));
                           } else if (e.key === 'Escape') {
                             e.preventDefault();
-                            props.onEditCancel(currentRow());
+                            endEdit(input, () => props.onEditCancel(currentRow()));
                           }
                         }}
-                        onBlur={(e) =>
-                          props.onEditSubmit(
-                            currentRow(),
-                            (e.currentTarget as HTMLInputElement).value
-                          )
-                        }
+                        onBlur={(e) => {
+                          const input = e.currentTarget as HTMLInputElement;
+                          endEdit(input, () => props.onEditSubmit(currentRow(), input.value));
+                        }}
                       />
                     </Show>
                   </div>
@@ -477,6 +481,17 @@ export default function FileTree(props: FileTreeProps) {
           }}
         </For>
       </div>
+      {/* After the rows, sticking to the bottom: above them, it pushed every
+          row down as the drag began, and the drop landed a row too high. */}
+      <Show when={dragging()}>
+        <div
+          class="tree-root-drop"
+          data-root-drop={ROOT_TARGET_ID}
+          classList={{ 'drop-destination': dropTargetId() === ROOT_TARGET_ID }}
+        >
+          Drop here to move to the project root
+        </div>
+      </Show>
     </div>
   );
 }

@@ -5,9 +5,9 @@
 // file names open in the editor; the line opens to each call's own block
 // (a single call's already expanded). A call waiting for the user (an
 // approval, a question) keeps the line open, so the request is never hidden.
-import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
+import { createMemo, createSignal, For, Index, Show, type JSX } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
-import { describeGroup, editCounts } from '../lib/toolGroups';
+import { describeGroup, editCounts, sameGroupLabel } from '../lib/toolGroups';
 import { callStatus, parseArgsLenient } from '../lib/toolArgs';
 import LineCounts from './LineCounts';
 import { pendingApproval, pendingApprovalsOfTask } from '../lib/approvals';
@@ -71,13 +71,18 @@ export default function ToolCallGroup(props: {
     );
   });
 
-  const label = createMemo(() =>
-    describeGroup(
-      props.name,
-      props.calls.map((c) => parseArgsLenient(c.arguments)),
-      active(),
-      props.calls.map((c) => props.result(c)?.meta)
-    )
+  // Worked out again whenever the chat changes (each streamed token); the
+  // same label is kept, so nothing on the line is drawn anew.
+  const label = createMemo(
+    () =>
+      describeGroup(
+        props.name,
+        props.calls.map((c) => parseArgsLenient(c.arguments)),
+        active(),
+        props.calls.map((c) => props.result(c)?.meta)
+      ),
+    undefined,
+    { equals: sameGroupLabel }
   );
 
   const toggle = (e: MouseEvent) => {
@@ -111,15 +116,17 @@ export default function ToolCallGroup(props: {
           {label().verb}
         </button>
         <span class="tool-group-items">
-          <For each={label().items}>
+          {/* By position: a changed label updates its items in place, never
+              under a click (a new node between press and release is no click). */}
+          <Index each={label().items}>
             {(item, i) => (
               <>
-                {i() > 0 ? ', ' : ''}
+                {i > 0 ? ', ' : ''}
                 <Show
-                  when={item.path}
+                  when={item().path}
                   fallback={
-                    <span class="tool-group-item" title={item.title}>
-                      {item.text}
+                    <span class="tool-group-item" title={item().title}>
+                      {item().text}
                     </span>
                   }
                 >
@@ -127,31 +134,31 @@ export default function ToolCallGroup(props: {
                     <button
                       type="button"
                       class="tool-group-file"
-                      title={`${item.title ?? path()}: open in the editor`}
+                      title={`${item().title ?? path()}: open in the editor`}
                       onClick={() =>
                         requestOpenFile(
                           // A written file: as the chat has it when that's
                           // not the project's file yet, else marked against
                           // git; centered on the first change unless the
                           // call named a line.
-                          item.written
+                          item().written
                             ? {
                                 path: path(),
-                                line: item.line,
+                                line: item().line,
                                 changes: true,
                                 dialogId: props.dialogId,
                               }
-                            : { path: path(), line: item.line ?? 1 }
+                            : { path: path(), line: item().line ?? 1 }
                         )
                       }
                     >
-                      {item.text}
+                      {item().text}
                     </button>
                   )}
                 </Show>
               </>
             )}
-          </For>
+          </Index>
           <Show when={label().more > 0}>
             <span class="tool-group-item"> and {label().more} more</span>
           </Show>

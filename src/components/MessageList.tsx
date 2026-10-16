@@ -6,6 +6,7 @@
 // run out. Scroll position is kept by hand when content changes above the
 // viewport (native scroll anchoring isn't reliable across WebKit versions).
 import {
+  createComputed,
   createEffect,
   createMemo,
   createSignal,
@@ -65,6 +66,30 @@ const FOLLOW_INTENT_MS = 1200;
  */
 const FOLLOW_TOLERANCE_PX = 150;
 const AROUND = 25;
+
+/**
+ * Where the reader was in a chat when they left it (for another chat, or
+ * another sidebar tab) while not following the newest message: its first
+ * visible message and how far that was from the top. Coming back puts
+ * them there again, instead of at the end of the chat.
+ */
+const readingPlaces = new Map<string, { id: string; offset: number }>();
+
+/**
+ * Real heights by message id, for its placeholder when it's rendered again:
+ * kept while the list is away too, so the messages around a reading place
+ * come back at their height and the place with them.
+ */
+const measuredHeights = new Map<string, number>();
+const MEASURED_LIMIT = 20_000;
+function measured(id: string, height: number) {
+  measuredHeights.delete(id);
+  measuredHeights.set(id, height);
+  if (measuredHeights.size > MEASURED_LIMIT) {
+    const oldest = measuredHeights.keys().next().value;
+    if (oldest !== undefined) measuredHeights.delete(oldest);
+  }
+}
 const FLASH_MS = 1600;
 
 export interface MessageListController {
@@ -296,6 +321,32 @@ export default function MessageList(props: {
    * -----------------------------------------------------------------------
    */
 
+  /*
+   * A press on a message holds the view still until it's released.
+   * Following a reply as it streamed moved what was under the pointer
+   * between press and release, so the click (on a link, a file name, a
+   * group's header) was lost or landed on the line below, and a drag to
+   * select text ran off. Following goes on once the button is up.
+   */
+  let held = false;
+  const following = () => stick() && !held;
+
+  function hold() {
+    if (held) return;
+    held = true;
+    const release = () => {
+      held = false;
+      window.removeEventListener('mouseup', release, true);
+      window.removeEventListener('blur', release);
+      window.removeEventListener('dragend', release, true);
+      // After the click this release makes, which is dispatched first.
+      requestAnimationFrame(() => !topLock && following() && scrollToBottom());
+    };
+    window.addEventListener('mouseup', release, true);
+    window.addEventListener('blur', release);
+    window.addEventListener('dragend', release, true);
+  }
+
   function scrollToBottom() {
     // A pending correction no longer matters once the view goes to the newest.
     if (pendingCorrection !== 0) {
@@ -324,11 +375,18 @@ export default function MessageList(props: {
     if (!anchorId) return;
     const again = el.querySelector<HTMLElement>(`.chat-item[data-id="${CSS.escape(anchorId)}"]`);
     if (again) queueAnchorCorrection(again.getBoundingClientRect().top - top - offset);
-    // Messages just inserted are laid out at their placeholder height
-    // (content-visibility): the anchoring above used it. Their real height
-    // comes a frame later, and the item observer only corrects *changes* to
-    // a height it has seen: without this, it saw the real height first and
-    // corrected nothing, so every batch of older messages jumped the view.
+    seedItemHeights(el);
+  }
+
+  /**
+   * Messages just inserted are laid out at their placeholder height
+   * (content-visibility), and anchoring to them used it. Their real height
+   * comes a frame later, and the item observer only corrects *changes* to a
+   * height it has seen: without this, it saw the real height first and
+   * corrected nothing, so the view jumped (every batch of older messages,
+   * and the reading place come back to).
+   */
+  function seedItemHeights(el: HTMLElement) {
     for (const item of el.querySelectorAll<HTMLElement>('.chat-item')) {
       if (!itemHeights.has(item)) itemHeights.set(item, item.getBoundingClientRect().height);
     }
@@ -740,6 +798,7 @@ export default function MessageList(props: {
   }
 
   function handleSelectMouseDown(e: MouseEvent) {
+    if (e.button === 0 && e.target !== scrollRef) hold();
     clickStart =
       e.button === 0 && e.detail <= 1 && !e.shiftKey && !onScrollbar(e)
         ? { x: e.clientX, y: e.clientY, hadSelection: !!listSelection() }
@@ -803,9 +862,18 @@ export default function MessageList(props: {
           prevDialog = dialogId;
           // A history load from the previous chat must not hold the new one.
           if (topLock) unlockTopScroll();
-          setWin(initialWindow(length));
-          setStick(true);
-          requestAnimationFrame(scrollToBottom);
+          const place = dialogId ? readingPlaces.get(dialogId) : undefined;
+          if (dialogId) readingPlaces.delete(dialogId);
+          const at = place ? messages().findIndex((m) => m.id === place.id) : -1;
+          if (place && at >= 0) {
+            setWin(clampWindow({ start: at - AROUND, end: at + AROUND + 1 }, length));
+            setStick(false);
+            requestAnimationFrame(() => returnTo(place));
+          } else {
+            setWin(initialWindow(length));
+            setStick(true);
+            requestAnimationFrame(scrollToBottom);
+          }
         } else if (prevFirstId && firstId !== prevFirstId) {
           const shiftedBy = messages().findIndex((m) => m.id === prevFirstId);
           if (shiftedBy > 0) {
@@ -825,6 +893,42 @@ export default function MessageList(props: {
     )
   );
 
+  /** Back where the reader was when the list last went away. */
+  function returnTo(place: { id: string; offset: number }) {
+    const el = scrollRef;
+    const item = el?.querySelector<HTMLElement>(`.chat-item[data-id="${CSS.escape(place.id)}"]`);
+    if (!el || !item) return;
+    el.scrollTop +=
+      item.getBoundingClientRect().top - el.getBoundingClientRect().top - place.offset;
+    lastScrollTop = el.scrollTop;
+    seedItemHeights(el);
+  }
+
+  function rememberPlace(dialogId: string) {
+    if (stick()) {
+      readingPlaces.delete(dialogId);
+      return;
+    }
+    const anchor = captureTopAnchor();
+    if (anchor?.id) readingPlaces.set(dialogId, { id: anchor.id, offset: anchor.offset });
+  }
+
+  // Leaving for another chat: a computation, which runs before the list
+  // shows the other chat, while the one left is still there to measure.
+  createComputed(
+    on(
+      () => props.dialogId,
+      (_, left) => {
+        if (left) rememberPlace(left);
+      },
+      { defer: true }
+    )
+  );
+
+  onCleanup(() => {
+    if (prevDialog) rememberPlace(prevDialog);
+  });
+
   // While following, stay at the bottom as the last message grows.
   createEffect(
     on(
@@ -834,7 +938,7 @@ export default function MessageList(props: {
         return [list.length, last?.content.length, last?.toolCalls?.length];
       },
       () => {
-        if (stick()) requestAnimationFrame(() => stick() && scrollToBottom());
+        if (following()) requestAnimationFrame(() => following() && scrollToBottom());
       }
     )
   );
@@ -851,7 +955,10 @@ export default function MessageList(props: {
       // compensates every height change, so stay out of its way (but keep
       // lastHeight fresh, so unlocking never sees a stale "shrank").
       if (topLock) return;
-      if (stick()) return scrollToBottom();
+      if (stick()) {
+        if (!held) scrollToBottom();
+        return;
+      }
       // Content shrinking under the view (a tool result collapsed) can leave
       // it at the very end: nothing is below any more, so follow again, or
       // "Scroll to latest" stays up with nothing to scroll to.
@@ -866,6 +973,22 @@ export default function MessageList(props: {
     onCleanup(() => observer.disconnect());
   });
 
+  // The view itself resizing: a bar opening under the list (a landing's
+  // Undo, the checklist, a question) shrinks it from below, and the newest
+  // message slid out of sight while following.
+  onMount(() => {
+    const el = scrollRef;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      // Next frame: scrolling inside the callback renders more items, whose
+      // resizing the observers would only hear of in the frame after.
+      if (!topLock && following())
+        requestAnimationFrame(() => !topLock && following() && scrollToBottom());
+    });
+    observer.observe(el);
+    onCleanup(() => observer.disconnect());
+  });
+
   /*
    * Scroll anchoring, by hand. Items render lazily (content-visibility) and
    * code blocks colorize after mounting, so a message's height changes as it
@@ -876,8 +999,6 @@ export default function MessageList(props: {
    * twice.
    */
   const itemHeights = new WeakMap<Element, number>();
-  /** Real heights by message id, for its placeholder when it's rendered again. */
-  const measuredHeights = new Map<string, number>();
   const placeholderHeight = (m: ChatMessage) => measuredHeights.get(m.id) ?? estimatedHeight(m);
 
   const itemObserver = new ResizeObserver((entries) => {
@@ -906,7 +1027,7 @@ export default function MessageList(props: {
       const skipped = item.checkVisibility
         ? !item.checkVisibility({ contentVisibilityAuto: true })
         : true;
-      if (item.dataset.id && !skipped) measuredHeights.set(item.dataset.id, height);
+      if (item.dataset.id && !skipped) measured(item.dataset.id, height);
       // While the top lock is held its settle loop owns every compensation;
       // still record heights above so placeholders stay accurate.
       if (before === undefined || !el || stick() || topLock || entry.target === lastItem) continue;

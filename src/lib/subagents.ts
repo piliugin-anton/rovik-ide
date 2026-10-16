@@ -7,10 +7,11 @@
 // it's done. Its own messages (the transcript) load when the block opens it
 // and follow its run from then on; they never go to the chat store, so a
 // subagent's chat never shows up as a chat or as unread.
+import { batch } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import type { ChatMessage } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
-import type { MessagePatch } from './chatStore';
+import { merged, type MessagePatch } from './chatStore';
 import { SUBAGENT_KINDS } from './subagentSettings';
 import { plural } from './textUtils';
 
@@ -257,7 +258,15 @@ export function patchSubagentMessage(
   if (t.loading) return arrive(childDialogId, { messageId, patch: next });
   const i = t.messages.findIndex((m) => m.id === messageId);
   if (i < 0) return;
-  setState('transcripts', childDialogId, 'messages', i, next);
+  // Tool calls and meta merged into what's there (as in the chat store): a
+  // call's block opened in "Show its work" stays open as the call streams.
+  const { toolCalls, meta, ...plain } = next;
+  batch(() => {
+    setState('transcripts', childDialogId, 'messages', i, plain);
+    if ('toolCalls' in next)
+      setState('transcripts', childDialogId, 'messages', i, 'toolCalls', merged(toolCalls));
+    if ('meta' in next) setState('transcripts', childDialogId, 'messages', i, 'meta', merged(meta));
+  });
 }
 
 /*

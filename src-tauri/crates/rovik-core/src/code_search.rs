@@ -427,7 +427,8 @@ pub async fn search_in_files(
     exclude: Option<String>,
     max_results: Option<usize>,
 ) -> Result<SearchResult, String> {
-    let root = std::fs::canonicalize(&root).map_err(|e| format!("{root}: {e}"))?;
+    let root =
+        crate::vfs::canonical(std::path::Path::new(&root)).map_err(|e| format!("{root}: {e}"))?;
     let split = |list: Option<String>| split_globs(&list.unwrap_or_default());
     let mut globs = split(include);
     globs.extend(

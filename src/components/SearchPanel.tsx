@@ -35,19 +35,44 @@ function splitPath(path: string): { name: string; dir: string } {
     : { name: normalized.slice(slash + 1), dir: normalized.slice(0, slash) };
 }
 
+/**
+ * The search as it was left: the panel goes while another sidebar tab is
+ * shown, and coming back to Files showed an empty search.
+ */
+const kept = {
+  query: '',
+  caseSensitive: false,
+  wholeWord: false,
+  regex: false,
+  showGlobs: false,
+  include: '',
+  exclude: '',
+};
+
 export default function SearchPanel(props: {
   rootPath: Accessor<string | null>;
   onOpenMatch: (target: SearchMatchTarget) => void;
   /** True while a query is entered (the Files tab then hides the tree). */
   onActiveChange?: (active: boolean) => void;
 }) {
-  const [query, setQuery] = createSignal('');
-  const [caseSensitive, setCaseSensitive] = createSignal(false);
-  const [wholeWord, setWholeWord] = createSignal(false);
-  const [regex, setRegex] = createSignal(false);
-  const [showGlobs, setShowGlobs] = createSignal(false);
-  const [include, setInclude] = createSignal('');
-  const [exclude, setExclude] = createSignal('');
+  const [query, setQuery] = createSignal(kept.query);
+  const [caseSensitive, setCaseSensitive] = createSignal(kept.caseSensitive);
+  const [wholeWord, setWholeWord] = createSignal(kept.wholeWord);
+  const [regex, setRegex] = createSignal(kept.regex);
+  const [showGlobs, setShowGlobs] = createSignal(kept.showGlobs);
+  const [include, setInclude] = createSignal(kept.include);
+  const [exclude, setExclude] = createSignal(kept.exclude);
+  createEffect(() =>
+    Object.assign(kept, {
+      query: query(),
+      caseSensitive: caseSensitive(),
+      wholeWord: wholeWord(),
+      regex: regex(),
+      showGlobs: showGlobs(),
+      include: include(),
+      exclude: exclude(),
+    })
+  );
 
   const [result, setResult] = createSignal<ToolSearchResult | null>(null);
   const [error, setError] = createSignal<string | null>(null);

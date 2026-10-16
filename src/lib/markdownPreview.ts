@@ -407,6 +407,31 @@ export function resolvePreviewLink(
   return fragment ? { kind: 'file', path, anchor: fragment } : { kind: 'file', path };
 }
 
+export type ChatLink =
+  { kind: 'web'; url: string } | { kind: 'file'; path: string; line?: number } | { kind: 'none' };
+
+/**
+ * What a link in a chat reply does when clicked: a web link opens in the
+ * browser, a path is a file of the project (models link the files they
+ * mention), opened in the editor, at its line for GitHub's `#L12`. From
+ * the link as written: the page's own URL would make a path a web address
+ * (http://tauri.localhost/… on Windows).
+ */
+export function resolveChatLink(href: string): ChatLink {
+  const link = href.trim();
+  if (link === '' || link.startsWith('#')) return { kind: 'none' };
+  if (/^(https?:|mailto:)/i.test(link)) return { kind: 'web', url: link };
+  if (link.startsWith('//')) return { kind: 'web', url: `https:${link}` };
+  if (SCHEME.test(link) && !WINDOWS_DRIVE.test(link)) return { kind: 'none' };
+  const hash = link.indexOf('#');
+  const pathPart = (hash === -1 ? link : link.slice(0, hash)).replace(/\?.*$/, '');
+  if (pathPart === '') return { kind: 'none' };
+  const fragment = hash === -1 ? '' : decode(link.slice(hash + 1));
+  const lines = /^L(\d+)/.exec(fragment);
+  const path = decode(pathPart).replace(/^\.[\\/]/, '');
+  return lines ? { kind: 'file', path, line: Number(lines[1]) } : { kind: 'file', path };
+}
+
 export type PreviewImage =
   | { kind: 'local'; path: string; type: string }
   | { kind: 'remote'; url: string }

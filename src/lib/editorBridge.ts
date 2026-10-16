@@ -3,9 +3,34 @@
 // Messages between the editor and the chat, without prop chains through
 // App > ChatPanel > MessageList > ToolCallBlock:
 //   chat -> editor: open a file at a line (read's "Open in editor");
-//   editor -> chat: reference the selected lines ("Add to chat").
+//   editor -> chat: reference the selected lines ("Add to chat");
+//   tab -> editor: a clicked tab's editor takes the keyboard.
 
+import { createSignal } from 'solid-js';
 import type { FileSuggestion } from '../types';
+
+/*
+ * A click on a file's tab gives its editor the keyboard, at the place it
+ * was left (lib/viewStates.ts), as editors do. Only a click: a tab the
+ * agent or a link switches to mustn't take the keyboard from the chat. The
+ * request waits for the editor, which mounts once its tab is active.
+ */
+const [focusRequest, setFocusRequest] = createSignal<string | null>(null);
+
+/** The tab of `path` was clicked: its editor should take the keyboard. */
+export function requestEditorFocus(path: string) {
+  setFocusRequest(path);
+}
+
+/** The pending request, for the editor of that path to take. */
+export const editorFocusRequest = focusRequest;
+
+/** True when the editor of `path` was asked to take the keyboard (once). */
+export function takeEditorFocus(path: string): boolean {
+  if (focusRequest() !== path) return false;
+  setFocusRequest(null);
+  return true;
+}
 
 /**
  * "Open in editor" anywhere in the chat: opens the file in a tab (switching

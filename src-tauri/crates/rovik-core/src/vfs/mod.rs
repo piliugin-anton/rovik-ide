@@ -159,6 +159,46 @@ pub fn default_mountpoint() -> PathBuf {
     }
 }
 
+/// `path` canonicalized, as far as the file system it's on allows. On
+/// Windows a WinFsp volume mounted on a folder (a chat's view) can't be:
+/// asking for a path's final name there fails (ERROR_UNRECOGNIZED_VOLUME),
+/// and every agent tool in an isolated chat failed with it. Such a path is
+/// the folder the volume is mounted on, canonicalized, then the rest as
+/// written: that file system has no links of its own to resolve.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    canonical_with(
+        path,
+        |p| p.canonicalize(),
+        |e| cfg!(windows) && e.raw_os_error() == Some(1005),
+    )
+}
+
+fn canonical_with(
+    path: &Path,
+    canonicalize: impl Fn(&Path) -> std::io::Result<PathBuf>,
+    unrecognized_volume: impl Fn(&std::io::Error) -> bool,
+) -> std::io::Result<PathBuf> {
+    let error = match canonicalize(path) {
+        Err(e) if unrecognized_volume(&e) => e,
+        done => return done,
+    };
+    let absolute = std::path::absolute(path)?;
+    let mut rest = Vec::new();
+    let mut at = absolute.as_path();
+    while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
+        rest.push(name);
+        match canonicalize(parent) {
+            Ok(mut base) => {
+                base.extend(rest.iter().rev());
+                return Ok(base);
+            }
+            Err(e) if unrecognized_volume(&e) => at = parent,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(error)
+}
+
 struct Mounted {
     at: PathBuf,
     mount: Mount,
@@ -685,6 +725,32 @@ pub async fn vfs_remove(state: &VfsState, path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_on_a_folder_mounted_volume_is_canonical_up_to_its_folder() {
+        // As on Windows: the volume mounted on /data/chats/c1 can't be
+        // canonicalized; the folders it's mounted in can (here, /data is
+        // really /mnt/disk).
+        let unrecognized = || std::io::Error::from_raw_os_error(1005);
+        let canonicalize = |p: &Path| {
+            if p.starts_with("/data/chats/c1") {
+                Err(unrecognized())
+            } else {
+                Ok(Path::new("/mnt/disk").join(p.strip_prefix("/data").unwrap()))
+            }
+        };
+        let is = |e: &std::io::Error| e.raw_os_error() == Some(1005);
+        let canonical = |p: &str| canonical_with(Path::new(p), canonicalize, is).unwrap();
+        assert_eq!(
+            canonical("/data/chats/c1/src/main.ts"),
+            Path::new("/mnt/disk/chats/c1/src/main.ts")
+        );
+        assert_eq!(canonical("/data/chats/c1"), Path::new("/mnt/disk/chats/c1"));
+        assert_eq!(canonical("/data/project"), Path::new("/mnt/disk/project"));
+        // Any other error is the error.
+        let missing = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(canonical_with(Path::new("/data/x"), missing, is).is_err());
+    }
 
     #[test]
     fn clean_keeps_paths_inside_the_volume() {

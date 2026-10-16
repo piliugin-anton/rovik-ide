@@ -538,7 +538,7 @@ function ApprovalBar(props: { request: PendingApproval }) {
         >
           <button
             class="tool-approval-button primary"
-            onClick={() => revealEdit(dialogId(), id())}
+            onClick={() => revealEdit(dialogId(), id(), true)}
             title="Open the file with the changes highlighted"
           >
             Review in editor

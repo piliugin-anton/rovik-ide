@@ -55,6 +55,34 @@ const [state, setState] = createStore<{ pending: Record<string, PendingQuestions
 
 const keyOf = (dialogId: string, toolCallId: string) => `${dialogId}\n${toolCallId}`;
 
+/**
+ * Answers given so far in the panel (QuestionPanel), before "Send answers".
+ * Kept here, not in the panel: it's gone while another sidebar tab or
+ * another chat is shown, and answering went back to the first question.
+ */
+export interface QuestionsDraft {
+  /** The question shown; the questions' count: the review. */
+  step: number;
+  answers: (QuestionAnswer | undefined)[];
+  /** "Other…" text typed per question. */
+  custom: string[];
+  /** Changing an answer from the review: answering goes back to it. */
+  fromReview: boolean;
+}
+
+const drafts = new Map<string, QuestionsDraft>();
+
+export function questionsDraft(dialogId: string, toolCallId: string): QuestionsDraft | undefined {
+  return drafts.get(keyOf(dialogId, toolCallId));
+}
+
+export function saveQuestionsDraft(dialogId: string, toolCallId: string, draft: QuestionsDraft) {
+  // Only while they wait: a draft saved as the panel goes, once answered,
+  // would outlive them.
+  const key = keyOf(dialogId, toolCallId);
+  if (state.pending[key]) drafts.set(key, draft);
+}
+
 /** A run waits for the user's answer to a call's questions. */
 export function registerQuestions(request: PendingQuestions) {
   setState('pending', keyOf(request.dialogId, request.toolCallId), request);
@@ -63,6 +91,7 @@ export function registerQuestions(request: PendingQuestions) {
 /** Answered, or no longer waited for (the run stopped). */
 export function clearQuestions(dialogId: string, toolCallId: string) {
   const key = keyOf(dialogId, toolCallId);
+  drafts.delete(key);
   if (!state.pending[key]) return;
   setState(
     'pending',

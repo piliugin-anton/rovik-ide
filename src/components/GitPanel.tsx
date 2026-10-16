@@ -13,7 +13,7 @@ import {
   type JSX,
 } from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
-import { createVirtualizer, Virtualizer } from '@tanstack/solid-virtual';
+import { createVirtualizer } from '@tanstack/solid-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import {
   GitFileStatusCode,
@@ -33,6 +33,9 @@ import { PullStrategyDialog, type PullStrategyPick } from './PullStrategyDialog'
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
 const GIT_ROW_HEIGHT = 22;
+
+/** Commit messages being written, by project: the panel goes while another sidebar tab is shown. */
+const commitDrafts = new Map<string, string>();
 
 interface GitPanelProps {
   /** Absolute path to the currently open project/workspace. */
@@ -371,17 +374,29 @@ function flattenGitTree(root: GitDirNode, collapsed: Set<string>): GitTreeRow[] 
 export function GitPanel(props: GitPanelProps) {
   //let gitFilesScrollEl: HTMLDivElement | undefined;
   const [gitFilesScrollEl, setGitFilesScrollEl] = createSignal<HTMLDivElement | null>(null);
-  const [gitFilesVirtualizer, setGitFilesVirtualizer] = createSignal<Virtualizer<
-    HTMLDivElement,
-    Element
-  > | null>(null);
 
   const [phase, setPhase] = createSignal<GitPanelPhase>('uninitialized');
   const [status, setStatus] = createSignal<GitStatus | null>(null);
   const [errorMsg, setErrorMsg] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
 
-  const [commitMessage, setCommitMessage] = createSignal('');
+  // Kept by project while the panel is away (another sidebar tab shown).
+  const [commitMessage, setCommitMessageSignal] = createSignal(
+    commitDrafts.get(props.projectPath) ?? ''
+  );
+  const setCommitMessage = (message: string) => {
+    setCommitMessageSignal(message);
+    if (message) commitDrafts.set(props.projectPath, message);
+    else commitDrafts.delete(props.projectPath);
+  };
+  // Another project opened: its own message, if one was being written.
+  createEffect(
+    on(
+      () => props.projectPath,
+      (path) => setCommitMessageSignal(commitDrafts.get(path) ?? ''),
+      { defer: true }
+    )
+  );
   const [branchOpen, setBranchOpen] = createSignal(false);
   interface GitBranch {
     name: string;
@@ -745,7 +760,14 @@ export function GitPanel(props: GitPanelProps) {
     setBranchesLoading(true);
     try {
       const list = await invoke<GitBranch[]>('git_branches', { path: props.projectPath });
-      setBranches(list);
+      // The branches already listed keep their rows, whatever else came or
+      // went: a click on one as the list came in was lost.
+      setBranches((old) => {
+        const key = (b: GitBranch) => `${b.is_remote ? 'remote' : 'local'}:${b.name}`;
+        const listed = new Map(old.map((b) => [key(b), b]));
+        const next = list.map((b) => listed.get(key(b)) ?? b);
+        return next.length === old.length && next.every((b, i) => b === old[i]) ? old : next;
+      });
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -879,11 +901,18 @@ export function GitPanel(props: GitPanelProps) {
     if (view === 'stash-list') void loadStashes();
   };
 
+  const sameStashes = (a: GitStashEntry[], b: GitStashEntry[]) =>
+    a.length === b.length &&
+    a.every((s, i) => s.index === b[i].index && s.message === b[i].message);
+
   const loadStashes = async () => {
     setStashesLoading(true);
     try {
       const list = await invoke<GitStashEntry[]>('git_stash_list', { path: props.projectPath });
-      setStashes(list);
+      // The same stashes keep their rows: opening the list loads them again
+      // right after the menu did, and new rows replaced the ones a click
+      // (Pop, a stash opened) was landing on.
+      setStashes((old) => (sameStashes(old, list) ? old : list));
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1083,6 +1112,8 @@ export function GitPanel(props: GitPanelProps) {
       await invoke('git_create_branch', { path: props.projectPath, name, checkout, from });
       setNewBranchName('');
       closeMore();
+      // The branch menu lists it from the start, not a moment after opening.
+      await loadBranches();
       await refreshStatus();
       if (checkout) refreshHistoryIfOpen();
     });
@@ -1273,24 +1304,19 @@ export function GitPanel(props: GitPanelProps) {
     void withBusy(refreshStatus);
   });
 
-  // Recreate virtualizer whenever count or scroll element changes
-  createEffect(() => {
-    const scrollEl = gitFilesScrollEl();
-
-    if (!scrollEl) {
-      setGitFilesVirtualizer(null);
-      return;
-    }
-
-    const count = treeRows().length;
-    const v = createVirtualizer({
-      count,
-      getScrollElement: () => scrollEl,
-      estimateSize: () => GIT_ROW_HEIGHT,
-      overscan: 12,
-    });
-
-    setGitFilesVirtualizer(v);
+  // One virtualizer per scroll element, its row count following the
+  // status. A new one per status refresh (any save, any agent write) or
+  // folder toggle scrolled the list back to its top and drew every row
+  // anew, so a click landing as it refreshed was lost.
+  // (The list's element comes and goes with its <Show>: the virtualizer
+  // reads it again whenever it changes.)
+  const gitFilesVirtualizer = createVirtualizer({
+    get count() {
+      return treeRows().length;
+    },
+    getScrollElement: () => gitFilesScrollEl(),
+    estimateSize: () => GIT_ROW_HEIGHT,
+    overscan: 12,
   });
 
   return (
@@ -1402,7 +1428,9 @@ export function GitPanel(props: GitPanelProps) {
 
           <Show when={branchOpen()}>
             <div class="git-branch-dropdown context-menu">
-              <Show when={branchesLoading()}>
+              {/* Only while there's nothing to list yet: over the rows, it
+                  moved them all down and back while they refreshed. */}
+              <Show when={branchesLoading() && branches().length === 0}>
                 <div class="context-menu-item context-menu-loading">
                   <IconSpinner /> <span>Loading branches...</span>
                 </div>
@@ -1613,7 +1641,9 @@ export function GitPanel(props: GitPanelProps) {
                   <IconBack />
                   <span>Delete branch</span>
                 </button>
-                <Show when={branchesLoading()}>
+                {/* As in the branch menu: over the rows it moved them, and a
+                    click on one's delete button could land on the next. */}
+                <Show when={branchesLoading() && branches().length === 0}>
                   <div class="context-menu-item context-menu-loading">
                     <IconSpinner /> <span>Loading branches...</span>
                   </div>
@@ -2167,14 +2197,19 @@ export function GitPanel(props: GitPanelProps) {
         </Show>
 
         <Show when={filesCount() > 0}>
-          <div class="git-files file-tree" ref={setGitFilesScrollEl}>
+          <div
+            class="git-files file-tree"
+            // Once it's in the page: a ref comes as the element is made,
+            // and measured then it has no size (and no rows were drawn).
+            ref={(el) => queueMicrotask(() => setGitFilesScrollEl(el))}
+          >
             <div
               style={{
-                height: `${gitFilesVirtualizer()?.getTotalSize() ?? 0}px`,
+                height: `${gitFilesVirtualizer.getTotalSize()}px`,
                 position: 'relative',
               }}
             >
-              <For each={gitFilesVirtualizer()?.getVirtualItems() ?? []}>
+              <For each={gitFilesVirtualizer.getVirtualItems()}>
                 {(item) => {
                   const rowStyle = (depth: number): JSX.CSSProperties => ({
                     position: 'absolute',

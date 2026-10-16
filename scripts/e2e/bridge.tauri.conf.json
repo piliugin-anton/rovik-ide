@@ -1,0 +1,14 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build -- --outDir dist-e2e && node scripts/e2e/inject-bridge.mjs dist-e2e",
+    "frontendDist": "../dist-e2e"
+  },
+  "app": {
+    "security": {
+      "csp": {
+        "script-src": "'self' 'unsafe-eval'",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:17999"
+      }
+    }
+  }
+}

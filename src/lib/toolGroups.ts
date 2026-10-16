@@ -77,6 +77,30 @@ export interface GroupLabel {
 
 const MAX_ITEMS = 4;
 
+/**
+ * Whether two labels read the same. The label is worked out again on every
+ * streamed token (it follows the calls' results); kept when it's the same,
+ * the line's file names aren't drawn anew under the pointer, which ate
+ * clicks on them while the model was writing or thinking.
+ */
+export function sameGroupLabel(a: GroupLabel, b: GroupLabel): boolean {
+  return (
+    a.verb === b.verb &&
+    a.more === b.more &&
+    a.items.length === b.items.length &&
+    a.items.every((item, i) => {
+      const other = b.items[i];
+      return (
+        item.text === other.text &&
+        item.path === other.path &&
+        item.line === other.line &&
+        item.title === other.title &&
+        item.written === other.written
+      );
+    })
+  );
+}
+
 function short(text: string, max = 40): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

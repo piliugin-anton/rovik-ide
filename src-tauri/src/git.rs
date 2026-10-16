@@ -2050,10 +2050,34 @@ pub fn git_commit_file_preview_blocking(
     let content = read_tree_blob(&repo, Some(&tree), rel)?
         .map(|id| read_blob_text(&repo, id, &file))
         .transpose()?;
-    let base = read_tree_blob(&repo, parent_tree.as_ref(), rel)?
+    let mut base_id = read_tree_blob(&repo, parent_tree.as_ref(), rel)?;
+    // Not in the parent under this name: moved (or copied) there by the
+    // commit, its change is against where it was. As a new file, every
+    // line of a plain rename showed as added.
+    if base_id.is_none() {
+        if let Some(old) = renamed_from(&repo, &commit, rel) {
+            base_id = read_tree_blob(&repo, parent_tree.as_ref(), &old)?;
+        }
+    }
+    let base = base_id
         .map(|id| read_blob_text(&repo, id, &file))
         .transpose()?;
     Ok(GitStashFilePreview { content, base })
+}
+
+/// Where a file of `commit` was in its parent, when the commit moved or
+/// copied it there (git's rename detection, as the commit's file list).
+fn renamed_from(
+    repo: &Repository,
+    commit: &git2::Commit,
+    path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let diff = commit_diff(repo, commit, &mut git2::DiffOptions::new()).ok()?;
+    let delta = diff.deltas().find(|d| {
+        matches!(d.status(), git2::Delta::Renamed | git2::Delta::Copied)
+            && d.new_file().path() == Some(path)
+    })?;
+    delta.old_file().path().map(std::path::Path::to_path_buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -2644,6 +2668,37 @@ mod revert_tests {
         assert_eq!(p.content.as_deref(), Some("c\n"));
         assert_eq!(p.base, None);
         assert!(git_commit_file_preview_blocking(path(&dir), oid, "../etc/passwd".into()).is_err());
+    }
+
+    #[test]
+    fn commit_file_preview_bases_a_renamed_file_on_its_old_path() {
+        let (dir, repo) = repo_with_commit();
+        let commit_all = |message: &str| {
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.update_all(["*"].iter(), None).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head])
+                .unwrap()
+                .to_string()
+        };
+        let before: String = (1..=10).map(|i| format!("line {i}\n")).collect();
+        fs::write(dir.join("notes.txt"), &before).unwrap();
+        commit_all("add notes");
+        // Moved into docs/ with a line added.
+        fs::create_dir_all(dir.join("docs")).unwrap();
+        fs::remove_file(dir.join("notes.txt")).unwrap();
+        fs::write(dir.join("docs/notes.txt"), format!("{before}more\n")).unwrap();
+        let oid = commit_all("move notes");
+        let p = git_commit_file_preview_blocking(path(&dir), oid, "docs/notes.txt".into()).unwrap();
+        assert_eq!(p.content, Some(format!("{before}more\n")));
+        // What it was before the move: only "more" is new.
+        assert_eq!(p.base, Some(before));
     }
 
     #[test]

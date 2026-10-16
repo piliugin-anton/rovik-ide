@@ -15,7 +15,7 @@ import type { RevealRequest } from '../types';
 import type { CursorInfo } from '../lib/activeContext';
 import { selectedLines } from '../lib/activeContext';
 import { selectionReference } from '../lib/fileReferences';
-import { addToChat } from '../lib/editorBridge';
+import { addToChat, editorFocusRequest, takeEditorFocus } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
 import { diffLines, splitLines } from '../lib/lineDiff';
@@ -62,6 +62,7 @@ import {
   toggleSplit,
   type MarkdownView,
 } from '../lib/markdownView';
+import { recallViewState, rememberViewState } from '../lib/viewStates';
 
 interface EditorProps {
   projectDir: Accessor<string | null>;
@@ -132,6 +133,8 @@ export default function Editor(props: EditorProps) {
     // component unmounts while typings are still loading.
     onCleanup(() => {
       disposed = true;
+      // Where it was (scroll, cursor, selection), for when its tab is shown again.
+      if (editor) rememberViewState(props.currentFilePath, editor.saveViewState());
       editor?.dispose();
       editor = undefined;
       // NOTE: we intentionally do NOT dispose the Monaco model here.
@@ -194,6 +197,15 @@ export default function Editor(props: EditorProps) {
       readOnlyMessage: { value: props.readOnlyMessage ?? 'This preview is read-only.' },
     });
     setInstance(editor);
+    // Back where it was when its tab was last left. A reveal (a search
+    // result, a link to a line) still moves it, below.
+    const viewState = recallViewState<monaco.editor.ICodeEditorViewState>(props.currentFilePath);
+    if (viewState) editor.restoreViewState(viewState);
+    // Its tab was clicked (now, or just before it mounted): type on from there.
+    createEffect(() => {
+      if (editorFocusRequest() !== props.currentFilePath) return;
+      if (editor && !disposed && takeEditorFocus(props.currentFilePath)) editor.focus();
+    });
 
     // Read-only preview tabs (e.g. stashed content): lock the editor.
     // The component remounts per tab (keyed), so the creation flag above
@@ -325,15 +337,19 @@ export default function Editor(props: EditorProps) {
     const initial = editor.getSelection();
     if (initial) reportCursor(initial);
 
-    const addToChatWidget = mountAddToChat(editor, () => ({
-      path: props.currentFilePath,
-      root: props.projectDir(),
-    }));
+    // Not on a read-only tab (a commit's or a stash's version, a
+    // comparison): its path ("commit@…:…") is nothing the agent can read.
+    const addToChatWidget = untrack(() => props.readOnly?.() ?? false)
+      ? null
+      : mountAddToChat(editor, () => ({
+          path: props.currentFilePath,
+          root: props.projectDir(),
+        }));
 
     onCleanup(() => {
       contentDisposable.dispose();
       selectionDisposable.dispose();
-      addToChatWidget.dispose();
+      addToChatWidget?.dispose();
     });
 
     // Runs for an already-open file and for one that just opened (this
@@ -372,17 +388,24 @@ export default function Editor(props: EditorProps) {
       });
     });
 
+    // This file's pending edit and its text, compared: read as they are,
+    // any approval in any chat and any open file's change re-ran the
+    // effects below, which redrew the review's widgets (a click on Accept
+    // landing just then was lost).
+    const review = createMemo(() => pendingEditFor(props.currentFilePath));
+    const text = createMemo(() => props.content());
+
     /*
      * A pending agent edit of this file (lib/approvals.ts): drawn over the
      * file, redrawn whenever a change is accepted or rejected. Read-only
      * meanwhile, so the changes' line numbers stay valid.
      */
     createEffect(() => {
-      const approval = pendingEditFor(props.currentFilePath);
+      const approval = review();
       const ed = editor;
       if (!approval?.edit || !ed) return;
       // Re-checked when the content changes (e.g. the user saves or undoes).
-      props.content();
+      text();
       const model = ed.getModel();
       if (!model) return;
 
@@ -413,7 +436,7 @@ export default function Editor(props: EditorProps) {
 
     // Scroll to the next undecided change when the review asks for it.
     createEffect(() => {
-      const approval = pendingEditFor(props.currentFilePath);
+      const approval = review();
       const nonce = approval?.edit?.revealNonce;
       if (!approval?.edit || !nonce || !editor) return;
       // Only the nonce triggers a scroll, not each decision.
@@ -437,7 +460,7 @@ export default function Editor(props: EditorProps) {
     let drawnFor: AgentChange | undefined;
     createEffect(() => {
       const change = agentChangesFor(props.currentFilePath);
-      props.content(); // re-checked once the new content is in the editor
+      text(); // re-checked once the new content is in the editor
       const ed = editor;
       const model = ed?.getModel();
       if (!ed || !model) return;
