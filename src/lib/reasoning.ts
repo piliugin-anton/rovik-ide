@@ -125,13 +125,28 @@ export function mergeLearned(
   const unknown = unresolved.filter(valid).filter((f) => !acc.has(f));
   if (unknown.length === 1) reject(unknown[0]);
   else for (const f of unknown) if (!rej.has(f)) suspect.add(f);
-  return {
+  const next: ReasoningLearned = {
     accepted: REASONING_FIELDS.filter((f) => acc.has(f)),
     rejected: [...rej].map(([field, at]) => ({ field, at })),
     reasons: prev?.reasons,
     ...(suspect.size ? { suspect: REASONING_FIELDS.filter((f) => suspect.has(f)) } : {}),
     at: now,
   };
+  // Nothing new (a field known to work worked again, as on most requests):
+  // the same object, so the settings aren't saved again after every reply.
+  return prev && sameLearned(prev, next) ? prev : next;
+}
+
+/** The same knowledge, whenever it was learned. */
+function sameLearned(a: ReasoningLearned, b: ReasoningLearned): boolean {
+  const same = <T>(x: T[] = [], y: T[] = [], eq = (p: T, q: T) => p === q) =>
+    x.length === y.length && x.every((v, i) => eq(v, y[i]));
+  return (
+    same(a.accepted, b.accepted) &&
+    same(a.rejected, b.rejected, (p, q) => p.field === q.field && p.at === q.at) &&
+    same(a.suspect, b.suspect) &&
+    !!a.reasons === !!b.reasons
+  );
 }
 
 /** For the settings tooltip. */
