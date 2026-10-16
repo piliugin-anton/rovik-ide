@@ -131,6 +131,15 @@ Each daemon has its own `/tmp` (`PrivateTmp=yes`), and the agent's
 commands keep their temporary files in `~/.local/share/rovik/tmp`, so
 nothing of one user's work lands in a shared `/tmp`.
 
+## Checking a server
+
+`rovik-agentd doctor`, run by a user, says what their account and the
+server lack for their daemon, then the versions, the free space where
+Rovik's folders are, the install and its limits, the heavy commands
+their daemon runs at once, and what its folders and logs take. The app's
+connection test reads the same once Rovik is deployed. The daemon's log,
+`~/.rovik/logs/agentd.log`, is rotated at 5 MB, with 3 older files kept.
+
 ## Cleaning up
 
 Each daemon cleans up after its user once a day, and when they click

@@ -3,7 +3,9 @@
 //! name and TCP; the handshake and the host's key; logging in; the probe,
 //! a script that says in one exec what the server offers (`probe`); and,
 //! once the daemon is deployed, its health and version through the
-//! tunnel. A failed step that the next ones need ends the test.
+//! tunnel, with what `rovik-agentd doctor` says of it (R03): what stops it
+//! from starting, its heavy-work slots and what Rovik's folders take. A
+//! failed step that the next ones need ends the test.
 //!
 //! The first connection stops at the host's key, before any credential
 //! goes: the step carries the key and its fingerprint, for the user to
@@ -11,9 +13,11 @@
 
 pub mod probe;
 
+use crate::deploy::Layout;
 use crate::http;
 use crate::ssh::{Ssh, SshAuth, SshConnector, SshError, SshTarget};
 use probe::{Probe, PROBE};
+use rovik_protocol::host::{Doctor, Level};
 use rovik_protocol::PROTOCOL;
 use serde::Serialize;
 use std::net::{IpAddr, SocketAddr};
@@ -176,7 +180,13 @@ pub async fn test_connection(
         steps.push(step);
     }
     if options.deployed || probe.socket {
-        steps.push(daemon(connector).await);
+        let mut step = daemon(connector).await;
+        if step.outcome != Outcome::Failed {
+            if let Some(report) = doctor(&ssh).await {
+                step = with_doctor(step, &report);
+            }
+        }
+        steps.push(step);
     } else {
         steps.push(Step::new(
             Check::Daemon,
@@ -319,6 +329,83 @@ pub(crate) async fn probe_server(ssh: &Ssh, urls: &[String]) -> Result<Probe, St
     Ok(probe)
 }
 
+/// What `rovik-agentd doctor --json` says there: none from a daemon too
+/// old to say it.
+async fn doctor(ssh: &Ssh) -> Option<Doctor> {
+    let command = format!("{} doctor --json", Layout::default().installed);
+    let run = tokio::time::timeout(STEP_WAIT, ssh.exec(&command));
+    let output = run.await.ok()?.ok()?;
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+/// The daemon's step, with what its doctor says: what would stop it from
+/// starting again, its heavy-work slots, and what Rovik's folders take.
+/// What the probe tells already (Chrome, FUSE, git) isn't said twice.
+fn with_doctor(step: Step, report: &Doctor) -> Step {
+    let problems: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|f| f.level == Level::Problem)
+        .map(|f| f.text.as_str())
+        .collect();
+    let outcome = match problems.is_empty() {
+        true => step.outcome,
+        false => Outcome::Failed,
+    };
+    let mut message = step.message.clone();
+    for problem in problems {
+        let problem = problem.trim_end_matches('.');
+        message.push_str(&format!(" It can't start again: {problem}."));
+    }
+    let at_once = match report.slots {
+        Some(1) if report.other_daemons > 0 => {
+            "1 heavy command at a time, while other users' daemons run".to_string()
+        }
+        Some(1) => "1 heavy command at a time".to_string(),
+        Some(n) => format!("{n} heavy commands at a time"),
+        None => "1 or 2 heavy commands at a time, as the machine allows".to_string(),
+    };
+    let cap = report
+        .slot_cap
+        .map(|cap| format!(", {cap} at most"))
+        .unwrap_or_default();
+    let s = &report.storage;
+    let folders = bytes(s.projects + s.work + s.data + s.tmp);
+    let free = report
+        .disks
+        .iter()
+        .map(|d| d.free)
+        .min()
+        .map(|free| format!(", with {} free", bytes(free)))
+        .unwrap_or_default();
+    message.push_str(&format!(
+        " It runs {at_once}{cap}. Rovik's folders take {folders}{free}."
+    ));
+    Step {
+        outcome,
+        message,
+        ..step
+    }
+}
+
+/// Bytes for people: B, then KB to TB, a decimal under 10.
+fn bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let mut value = n as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    match value < 10.0 {
+        true => format!("{value:.1} {}", UNITS[unit]),
+        false => format!("{value:.0} {}", UNITS[unit]),
+    }
+}
+
 /// The daemon's health and version, through the tunnel.
 async fn daemon(connector: &SshConnector) -> Step {
     let step = |outcome, message: String| Step::new(Check::Daemon, outcome, message);
@@ -378,6 +465,62 @@ mod tests {
             lookup.iter().any(|m| unknown.message.starts_with(m)),
             "{}",
             unknown.message
+        );
+    }
+
+    /// R03: once deployed, the daemon's step says what its doctor found:
+    /// its slots and what Rovik's folders take, and what would stop it
+    /// from starting again; not what the probe told already.
+    #[test]
+    fn the_daemon_step_says_what_its_doctor_found() {
+        use rovik_protocol::host::{Disk, Finding, Storage};
+        let answers = "Your daemon, rovik-agentd 0.2.0, answers (protocol 1).";
+        let health = Step::new(Check::Daemon, Outcome::Passed, answers.into());
+        let mut report = Doctor {
+            slots: Some(1),
+            slot_cap: Some(2),
+            other_daemons: 1,
+            storage: Storage {
+                projects: 3 << 20,
+                work: 1 << 20,
+                data: 0,
+                tmp: 0,
+            },
+            disks: vec![Disk {
+                folder: "/home/ann/.rovik".into(),
+                free: 12 << 30,
+                total: 40 << 30,
+            }],
+            findings: vec![Finding {
+                level: Level::Warning,
+                text: "no Chrome or Chromium: the browser tools won't work".into(),
+            }],
+            ..Doctor::default()
+        };
+        let step = with_doctor(health.clone(), &report);
+        assert_eq!(
+            step.outcome,
+            Outcome::Passed,
+            "Chrome is the probe's to say"
+        );
+        assert_eq!(
+            step.message,
+            format!(
+                "{answers} It runs 1 heavy command at a time, while other users' daemons run, \
+                 2 at most. Rovik's folders take 4.0 MB, with 12 GB free."
+            )
+        );
+        report.findings.push(Finding {
+            level: Level::Problem,
+            text: "/home/ann/.rovik is open to others.".into(),
+        });
+        let step = with_doctor(health, &report);
+        assert_eq!(step.outcome, Outcome::Failed);
+        assert!(
+            step.message
+                .contains("It can't start again: /home/ann/.rovik is open to others. It runs"),
+            "{}",
+            step.message
         );
     }
 

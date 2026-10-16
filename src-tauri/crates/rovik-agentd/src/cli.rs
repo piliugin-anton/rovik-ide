@@ -22,8 +22,9 @@ usage: rovik-agentd <command>
       CLM chats fall back to trimming.
   attach --stdio [--socket PATH]
       Bridge stdin and stdout to the daemon's socket (an SSH exec channel).
-  doctor [--socket PATH] [--data DIR]
-      Check this account and server for the daemon.
+  doctor [--socket PATH] [--data DIR] [--json]
+      Check this account and server for the daemon, and say what Rovik's
+      folders take and its limits here. --json prints it for the app.
   version
       Print the daemon's version and protocol.
   token add COMPUTER [--data DIR]
@@ -79,6 +80,8 @@ pub struct Options {
     pub data: Option<PathBuf>,
     pub same_machine: bool,
     pub no_virtual_files: bool,
+    /// `doctor`'s report as JSON.
+    pub json: bool,
 }
 
 pub fn parse(argv: &[String]) -> Result<Command, String> {
@@ -105,6 +108,7 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
             "--data" if command != "attach" => options.data = Some(value()?),
             "--same-machine" if command == "serve" => options.same_machine = true,
             "--no-virtual-files" if command == "serve" => options.no_virtual_files = true,
+            "--json" if command == "doctor" => options.json = true,
             "--stdio" if command == "attach" => stdio = true,
             "--help" | "-h" => return Ok(Command::Help),
             other => return Err(format!("unknown argument {other} for {command}")),
@@ -253,6 +257,7 @@ mod tests {
                 data: Some("/d".into()),
                 same_machine: true,
                 no_virtual_files: false,
+                json: false,
             }))
         );
         assert_eq!(
@@ -276,6 +281,13 @@ mod tests {
                 ..Default::default()
             }))
         );
+        assert_eq!(
+            parsed(&["doctor", "--json"]),
+            Ok(Command::Doctor(Options {
+                json: true,
+                ..Default::default()
+            }))
+        );
         assert_eq!(parsed(&["version"]), Ok(Command::Version));
         assert_eq!(parsed(&[]), Ok(Command::Help));
         assert_eq!(parsed(&["serve", "--help"]), Ok(Command::Help));
@@ -286,6 +298,7 @@ mod tests {
         assert!(parsed(&["attach"]).unwrap_err().contains("--stdio"));
         assert!(parsed(&["attach", "--stdio", "--data", "/d"]).is_err());
         assert!(parsed(&["doctor", "--same-machine"]).is_err());
+        assert!(parsed(&["serve", "--json"]).is_err());
         assert!(parsed(&["serve", "--socket"])
             .unwrap_err()
             .contains("needs a value"));

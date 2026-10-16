@@ -565,7 +565,9 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
     assert_eq!(outcome(13).0, Outcome::Passed, "{}", outcome(13).1);
     let version = env!("CARGO_PKG_VERSION");
     assert!(outcome(13).1.contains(version), "{}", outcome(13).1);
-    assert_eq!(server.execs.load(ordering), 1, "the probe, in one exec");
+    // The probe, in one exec, and doctor once deployed (R03): not installed
+    // under /opt/rovik here, so the daemon's step stays as its health says.
+    assert_eq!(server.execs.load(ordering), 2, "the probe and doctor");
     assert!(
         server.most_open.load(ordering) >= 1,
         "/health on a streamlocal channel"

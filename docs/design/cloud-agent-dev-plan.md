@@ -2758,3 +2758,36 @@ Tasks add notes here when reality differs from the plan.
     a forgotten chat's worktree kept through a restart, then taken a week
     on, and taken at once when asked; a unit test of the repositories'
     gc, and component tests of "Clean up now".
+- **R03, doctor.**
+  - `doctor` gathers one report, `host::Doctor` in rovik-protocol, and
+    prints it as lines, or as JSON with `--json`. To the checks P03 made
+    (the folders, config.toml, a daemon answering, FUSE, Chrome, user
+    namespaces) it adds git, which R01's gc needs, and what the connection
+    test reads: the versions and the protocols served, the free space of
+    the file systems Rovik's folders are on, the install's administrators
+    and limits from `agentd.toml`, the heavy-work slots as the daemon
+    would take them (`AdminFile::slots`, with other users' daemons from
+    `/proc`), and what the folders and the logs take.
+  - "Mounts" are taken as the file systems the folders are on, with their
+    free space. The virtual files' mount itself can't be seen from an SSH
+    session: under systemd the daemon mounts them in its own namespace
+    (`PrivateTmp`). The daemon says whether it has them (`HostInfo`), and
+    doctor says whether FUSE works here.
+  - Where it looks is a `Server`: this account and machine, or a test's
+    stand-ins, so the snapshot test renders a fixture's report exactly: an
+    account with two computers, FUSE without Chrome, a team server with
+    limits and another user's daemon, and files of known sizes.
+  - Once the daemon is deployed and answers, the connection test runs
+    `/opt/rovik/bin/rovik-agentd doctor --json` and adds to its Daemon
+    step what would stop the daemon from starting again, which fails the
+    step, its slots and what Rovik's folders take with the least free
+    space. What the probe tells already (Chrome, FUSE, git) isn't said
+    twice. A daemon too old for `--json` leaves the step as it was.
+  - Log rotation was P03's: `agentd.log` rotates at 5 MB with 3 kept, and
+    the core's `agent-log.jsonl` at 5 MB with one kept. The core's own
+    messages go to stderr, the journal under systemd; without it the
+    deploy sends them to `/dev/null`, so nothing grows unseen. Doctor now
+    says what the logs take.
+  - Tests: the snapshot of the fixture's report and its JSON round trip,
+    sizes in words, `--json` from the real binary, the CLI's flag, and a
+    unit test of the connection test's daemon step with a report.

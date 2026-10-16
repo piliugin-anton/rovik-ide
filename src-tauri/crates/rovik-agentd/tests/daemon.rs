@@ -421,3 +421,29 @@ async fn keys_are_listed_without_themselves_then_removed() {
     };
     assert!(storage.data > 0, "the chat database: {storage:?}");
 }
+
+/// R03: `doctor --json` says what the connection test reads, from the
+/// daemon's own folders.
+#[tokio::test]
+async fn doctor_says_it_as_json_for_the_app() {
+    let daemon = Daemon::start(&[]).await;
+    let out = Command::new(BINARY)
+        .args(["doctor", "--json", "--data"])
+        .arg(&daemon.data)
+        .arg("--socket")
+        .arg(&daemon.socket)
+        .env("HOME", &daemon.dir.0)
+        .output()
+        .await
+        .unwrap();
+    let report: rovik_protocol::host::Doctor = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    assert_eq!(report.protocol, PROTOCOL);
+    let answers = format!("a daemon answers at {}", daemon.socket.display());
+    assert!(
+        report.findings.iter().any(|f| f.text == answers),
+        "{report:?}"
+    );
+    assert!(report.storage.data > 0, "the chat database: {report:?}");
+    assert_eq!(report.disks.len(), 1, "--data: one folder");
+}

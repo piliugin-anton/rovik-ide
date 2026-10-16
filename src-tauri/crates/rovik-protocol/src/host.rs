@@ -63,3 +63,74 @@ pub struct Storage {
     /// The agent's temporary files.
     pub tmp: u64,
 }
+
+/// What `rovik-agentd doctor --json` says of the account and the server
+/// (R03): its checks, a line each, and what the connection test reads once
+/// the daemon is deployed (H04).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Doctor {
+    /// The daemon's version, and the protocols it speaks and serves.
+    pub version: String,
+    pub protocol: u32,
+    pub min_protocol: u32,
+    /// git's version, where it's installed: the repositories' cleanup runs
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
+    pub findings: Vec<Finding>,
+    /// The file systems Rovik's folders are on.
+    #[serde(default)]
+    pub disks: Vec<Disk>,
+    /// Rovik's install for the whole server, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<InstallLimits>,
+    /// The heavy commands the daemon runs at once (5.5): the number the
+    /// user set, or one while other users' daemons run; none when the
+    /// machine decides. Never more than the administrators' cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_cap: Option<usize>,
+    /// Other users' daemons running here.
+    pub other_daemons: u32,
+    pub storage: Storage,
+    /// What the daemon's logs take, rotated as they grow.
+    pub logs: u64,
+}
+
+/// One of `doctor`'s checks.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Finding {
+    pub level: Level,
+    pub text: String,
+}
+
+/// How a check went: a problem stops the daemon from starting, a warning
+/// names what won't work.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum Level {
+    Ok,
+    Warning,
+    Problem,
+}
+
+/// A folder of Rovik's, and the free and total bytes of its file system.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Disk {
+    pub folder: String,
+    pub free: u64,
+    pub total: u64,
+}
+
+/// Rovik's install for the whole server: its administrators, and each
+/// limit with its value, `none` when it isn't set (5.5).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallLimits {
+    pub admins: Vec<String>,
+    pub limits: Vec<(String, String)>,
+}
