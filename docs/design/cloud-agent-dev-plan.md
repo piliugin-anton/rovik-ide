@@ -2650,3 +2650,16 @@ Tasks add notes here when reality differs from the plan.
     app's start, a caught-up host, a reconnection, a window that missed
     `caughtUp`, and a host that never catches up; a client unit test and
     the mirror e2e test check `caught_up`.
+- **A browser check of the U screens.** The frontend ran in Chromium (the
+  Vite dev server, driven by Playwright) on a stand-in for the backend:
+  the hosts page and a host's page, the location chip, its menu and the
+  move dialog, the chat list's badges, an offline chat, the remote
+  isolation bar and its buttons, and the notices, at start-up and through
+  a reconnection. Two things it found are fixed:
+  - With the chat list open, a tall isolation bar left the messages no
+    room: the list's padding spilled over the bar, and the input row went
+    off the window. The bar now gives way (it scrolls), and the squeezed
+    list is clipped.
+  - U06's start-up effect read the hosts before their summaries came.
+  - A real connection, deploy and move still need a real server: the
+    manual checks stay open.

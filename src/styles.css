@@ -1121,6 +1121,9 @@ body.tree-dragging {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  /* Squeezed to nothing (the chat list and the isolation bar open in a
+     short window), the list's padding mustn't spill over the bar. */
+  overflow: hidden;
 }
 
 /* Always bottom center of the visible list. It used to be sticky inside
@@ -7927,7 +7930,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  flex-shrink: 0;
+  /* It scrolls: short of room, it gives way rather than the input. */
+  flex-shrink: 1;
+  min-height: 0;
   max-height: 35%;
   overflow-y: auto;
   margin: 0 10px 8px;
