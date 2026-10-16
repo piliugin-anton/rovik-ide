@@ -491,7 +491,10 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
     pinned.host_key = Some(seen.key);
     let socket = daemon.socket.to_string_lossy().into_owned();
     let connector = SshConnector::new(pinned).with_socket(socket);
-    let options = TestOptions { deployed: true };
+    let options = TestOptions {
+        deployed: true,
+        ..Default::default()
+    };
     told.lock().unwrap().clear();
     let steps = test_connection(&connector, &options, &report).await;
     assert_eq!(*told.lock().unwrap(), steps);

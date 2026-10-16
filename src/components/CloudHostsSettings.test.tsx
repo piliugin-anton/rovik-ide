@@ -253,6 +253,35 @@ test('a new server’s key: compared, trusted, then tested again', async () => {
   assert.equal(root.querySelector('.host-key-confirm'), null);
 });
 
+test('a build that changed on the server: compared, trusted, then tested again', async () => {
+  const build = { sha256: 'cd'.repeat(32), version: '0.3.0' };
+  let tests = 0;
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_test: async () =>
+      ++tests === 1
+        ? [step('install', 'passed'), { ...step('build', 'confirm'), build }]
+        : [step('install', 'passed'), step('build', 'passed')],
+    hosts_trust_build: () => null,
+  });
+  button(root, 'Test connection')!.click();
+  await flush();
+  assert.equal(
+    root.querySelector('.host-test .host-status')?.textContent,
+    'Check Rovik’s build there'
+  );
+  assert.equal(root.querySelector('.host-build-confirm code')?.textContent, build.sha256);
+  button(root, 'Trust this build')!.click();
+  await flush();
+  assert.deepEqual(sent('hosts_trust_build'), [{ id: 'h1', sha256: build.sha256 }]);
+  assert.equal(tests, 2);
+  assert.equal(root.querySelector('.host-build-confirm'), null);
+});
+
+test('a deployed host the app can’t reach says how to find out why', async () => {
+  const { root } = await hostPage(hostsList({ ...DEPLOYED, state: 'offline' }));
+  assert.match(root.textContent!, /Test the connection to see why/);
+});
+
 test('needs someone with root: the command to run is shown', async () => {
   const command = 'sudo /tmp/rovik-agentd-0.2.0 install --admin dev';
   const { root } = await hostPage(hostsList(), {

@@ -11,6 +11,7 @@ mod common;
 
 use common::ssh::{Account, SshServer, PASSWORD, USER};
 use common::BINARY;
+use rovik_client::connection_test::{test_connection, Check, Outcome, TestOptions};
 use rovik_client::deploy::{self, Binary, DeployError, Layout};
 use rovik_client::ssh::{SshAuth, SshConnector, SshTarget};
 use rovik_client::Identity;
@@ -191,9 +192,10 @@ fn texts_under(dir: &Path) -> Vec<(PathBuf, String)> {
 
 /// H05: a first deploy installs Rovik, its user the administrator, starts
 /// the daemon with this computer's token, and the daemon answers Hello;
-/// the token is nowhere on the server, only its hash. The check each
-/// connection makes passes for the build installed and reports another;
-/// a removal stops the daemon and deletes the user's two folders.
+/// the token is nowhere on the server, only its hash. The deploy trusts
+/// the build the server runs, the one each connection checks: another is
+/// reported as changed, for the user to compare. A removal stops the
+/// daemon and deletes the user's two folders.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     let host = Host::new().await;
@@ -210,7 +212,12 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     .await
     .unwrap_or_else(|e| panic!("{e}\nsudo said: {}", host.sudo_log()));
     assert_eq!(deployed.daemon.protocol, PROTOCOL);
-    assert_eq!(deployed.sha256, build.sha256);
+    // What the server runs, not what went up: here the installed link is
+    // the real daemon, as it would be another user's install.
+    let agentd = std::fs::read(BINARY).unwrap();
+    let known = vec![sha256(&agentd)];
+    assert_eq!(deployed.sha256, known[0]);
+    assert_ne!(deployed.sha256, build.sha256);
 
     let user = match host.ids {
         Some(_) => "nobody".to_string(),
@@ -246,17 +253,35 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     }
 
     // The check each connection makes (D5).
-    let agentd = std::fs::read(BINARY).unwrap();
-    let known = vec![sha256(&agentd)];
     let ssh = connector.session().await.unwrap();
-    deploy::check_install(&ssh, &known, &user, &host.layout())
-        .await
-        .unwrap();
+    let checked = deploy::check_install(&ssh, &known, &user, &host.layout()).await;
+    assert_eq!(checked.unwrap().sha256, known[0]);
     let changed = deploy::check_install(&ssh, &["00".repeat(32)], &user, &host.layout()).await;
-    let Err(DeployError::Tampered(why)) = changed else {
+    let Err(DeployError::Changed(now)) = changed else {
         panic!("a binary changed behind the app's back wasn't reported: {changed:?}");
     };
-    assert!(why.contains(&known[0]), "{why}");
+    assert_eq!(now.sha256, known[0]);
+    assert_eq!(
+        now.version, None,
+        "a build of its own, not rovik-agentd-<version>"
+    );
+    // The connection test shows a changed build for the user to compare
+    // and trust, and stops there; the build trusted passes.
+    let options = |trusted: &str| TestOptions {
+        deployed: true,
+        known: vec![trusted.to_string()],
+        layout: host.layout(),
+    };
+    let steps = test_connection(&connector, &options(&"00".repeat(32)), &|_| {}).await;
+    let last = steps.last().unwrap();
+    assert_eq!((last.check, last.outcome), (Check::Build, Outcome::Confirm));
+    assert_eq!(
+        last.build.as_ref().map(|b| b.sha256.as_str()),
+        Some(known[0].as_str())
+    );
+    let steps = test_connection(&connector, &options(&known[0]), &|_| {}).await;
+    let build = steps.iter().find(|s| s.check == Check::Build).unwrap();
+    assert_eq!(build.outcome, Outcome::Passed, "{}", build.message);
     // A connector that checks on each connection looks where the installer
     // puts Rovik, which has nothing here: refused, saying so.
     let checked = host.connector().with_install_check(known.clone());

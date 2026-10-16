@@ -2,18 +2,20 @@
 //! result, so the hosts page shows how far it got and what's wrong. The
 //! name and TCP; the handshake and the host's key; logging in; the probe,
 //! a script that says in one exec what the server offers (`probe`); and,
-//! once the daemon is deployed, its health and version through the
-//! tunnel, with what `rovik-agentd doctor` says of it (R03): what stops it
-//! from starting, its heavy-work slots and what Rovik's folders take. A
+//! once the daemon is deployed, Rovik's binary there against the build
+//! this computer trusts (D5), then the daemon's health and version through
+//! the tunnel, with what `rovik-agentd doctor` says of it (R03): what stops
+//! it from starting, its heavy-work slots and what Rovik's folders take. A
 //! failed step that the next ones need ends the test.
 //!
 //! The first connection stops at the host's key, before any credential
 //! goes: the step carries the key and its fingerprint, for the user to
-//! compare and confirm, and the test runs again with the key pinned.
+//! compare and confirm, and the test runs again with the key pinned. A
+//! build that changed since it was trusted stops the test the same way.
 
 pub mod probe;
 
-use crate::deploy::Layout;
+use crate::deploy::{self, DeployError, InstalledBuild, Layout};
 use crate::http;
 use crate::ssh::{Ssh, SshAuth, SshConnector, SshError, SshTarget};
 use probe::{Probe, PROBE};
@@ -49,6 +51,8 @@ pub enum Check {
     /// Rovik on the server: its version and administrators, or how a
     /// deploy would install it.
     Install,
+    /// Rovik's binary there against the build this computer trusts.
+    Build,
     /// The user's daemon, through the tunnel.
     Daemon,
 }
@@ -60,8 +64,8 @@ pub enum Outcome {
     /// It works, with something missing or worth knowing.
     Warning,
     Failed,
-    /// The host's key isn't pinned yet: the user is to compare and confirm
-    /// it.
+    /// The host's key isn't pinned yet, or Rovik's build there isn't the
+    /// one trusted: the user is to compare and confirm it.
     Confirm,
     /// Not tested, and why.
     Skipped,
@@ -78,6 +82,9 @@ pub struct Step {
     /// The host's key, when it's to be confirmed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_key: Option<SeenKey>,
+    /// Rovik's build there, when it's to be trusted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<InstalledBuild>,
 }
 
 /// A host key as the host showed it.
@@ -97,6 +104,7 @@ impl Step {
             outcome,
             message,
             host_key: None,
+            build: None,
         }
     }
 
@@ -111,6 +119,11 @@ impl Step {
 pub struct TestOptions {
     /// The daemon is deployed: its health is asked for.
     pub deployed: bool,
+    /// The builds this computer trusts there, by their SHA-256: Rovik's
+    /// binary is checked against them once it's deployed. None, it isn't.
+    pub known: Vec<String>,
+    /// Where Rovik is installed there.
+    pub layout: Layout,
 }
 
 /// The steps so far, each told to `report` as it ends.
@@ -175,6 +188,12 @@ pub async fn test_connection(
     for step in probe.findings() {
         steps.push(step);
     }
+    if options.deployed && !options.known.is_empty() {
+        let step = build(&ssh, options, &target.user).await;
+        if !steps.push(step) {
+            return steps.done;
+        }
+    }
     if options.deployed || probe.socket {
         let mut step = daemon(connector).await;
         if step.outcome != Outcome::Failed {
@@ -191,6 +210,26 @@ pub async fn test_connection(
         ));
     }
     steps.done
+}
+
+/// Rovik's binary there, as each connection checks it (D5): a build that
+/// changed since it was trusted is for the user to compare and trust.
+async fn build(ssh: &Ssh, options: &TestOptions, user: &str) -> Step {
+    let step = |outcome, message: String| Step::new(Check::Build, outcome, message);
+    match deploy::check_install(ssh, &options.known, user, &options.layout).await {
+        Ok(build) => step(
+            Outcome::Passed,
+            match &build.version {
+                Some(version) => format!("Rovik {version} there is the build you trusted."),
+                None => "Rovik there is the build you trusted.".into(),
+            },
+        ),
+        Err(DeployError::Changed(build)) => Step {
+            build: Some(build.clone()),
+            ..step(Outcome::Confirm, DeployError::Changed(build).to_string())
+        },
+        Err(e) => step(Outcome::Failed, e.to_string()),
+    }
 }
 
 /// The name, then a TCP connection to the SSH port at one of its

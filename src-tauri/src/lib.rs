@@ -154,6 +154,7 @@ pub fn run() {
             commands::hosts::hosts_remove,
             commands::hosts::hosts_test,
             commands::hosts::hosts_trust_key,
+            commands::hosts::hosts_trust_build,
             commands::hosts::hosts_set_policy,
             commands::hosts::hosts_deploy,
             commands::hosts::hosts_upgrade,

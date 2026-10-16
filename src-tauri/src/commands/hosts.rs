@@ -88,6 +88,16 @@ pub async fn hosts_trust_key(
     page.trust_key(&id, &key)
 }
 
+/// Trusts the build of Rovik the host runs now, once the user compared it.
+#[tauri::command]
+pub async fn hosts_trust_build(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+    sha256: String,
+) -> Result<(), String> {
+    page.trust_build(&id, &sha256)
+}
+
 #[tauri::command]
 pub async fn hosts_set_policy(
     page: State<'_, Arc<HostsPage>>,

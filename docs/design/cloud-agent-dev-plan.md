@@ -2455,6 +2455,19 @@ Tasks add notes here when reality differs from the plan.
     login is refused before anything is uploaded. A second user's
     deploy, a deploy without sudo, and a changed binary on a real server
     stay manual checks on a systemd host.
+  - Later, an interim fix for D5 on servers others install or upgrade.
+    Every user but the one who installed Rovik was refused once deployed:
+    a deploy kept the hash of the build it uploaded, but on a server with
+    Rovik it only starts the build installed there. Everyone was refused
+    after an administrator's upgrade from another computer too. Neither
+    showed: the connection test didn't run the check, so the host only
+    read as offline. Now a deploy trusts the build the server runs once
+    it's done. A build that isn't the one trusted is `Changed`, with its
+    SHA-256 and the version its name says (`rovik-agentd-<version>`): the
+    connection test shows it under Build with "Trust this build"
+    (`hosts_trust_build`), as it shows a new host key, and stops there.
+    The page says to test the connection when a deployed host is
+    offline. Signed releases (B02) let the check take any release build.
 - **H08 is skipped for now, as asked.** The agent's Chrome stays on eoka
   0.5.14's DevTools port on `127.0.0.1`, so on a shared server other users
   can reach the browser that runs as you (K52). `docs/cloud-hosts.md`

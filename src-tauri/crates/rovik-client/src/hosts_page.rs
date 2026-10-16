@@ -158,7 +158,9 @@ impl From<DeployError> for DeployFailure {
             DeployError::Unsupported(_) => DeployFailure::Unsupported { message },
             DeployError::SudoPassword => DeployFailure::SudoPassword { message },
             DeployError::NeedsRoot { command } => DeployFailure::NeedsRoot { command, message },
-            DeployError::Tampered(_) => DeployFailure::Tampered { message },
+            DeployError::Tampered(_) | DeployError::Changed(_) => {
+                DeployFailure::Tampered { message }
+            }
             DeployError::AskAdmins(admins) => DeployFailure::AskAdmins { admins, message },
             DeployError::Failed(_) => DeployFailure::Failed { message },
         }
@@ -452,8 +454,17 @@ impl HostsPage {
     ) -> Result<Vec<Step>, String> {
         let host = self.host(id)?;
         let connector = SshConnector::new(self.target(&host)?);
+        let known = match &host.deploy {
+            DeployState::Deployed {
+                sha256: Some(sha256),
+                ..
+            } => vec![sha256.clone()],
+            _ => Vec::new(),
+        };
         let options = TestOptions {
             deployed: matches!(host.deploy, DeployState::Deployed { .. }),
+            known,
+            layout: Layout::default(),
         };
         Ok(test_connection(&connector, &options, report).await)
     }
@@ -470,6 +481,26 @@ impl HostsPage {
         probe.pinned_fingerprint().map_err(|e| e.to_string())?;
         self.change_host(id, |host| host.host_key = Some(key.to_string()))?;
         Ok(())
+    }
+
+    /// Trusts the build of Rovik the host runs now, once the user compared
+    /// it with what the connection test showed: an administrator's
+    /// upgrade, say. The host connects again, checked against it (D5).
+    pub fn trust_build(&self, id: &str, sha256: &str) -> Result<(), String> {
+        let hex = sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit());
+        if !hex {
+            return Err(format!("{sha256} isn't a SHA-256."));
+        }
+        let host = self.host(id)?;
+        if !matches!(host.deploy, DeployState::Deployed { .. }) {
+            return Err("Rovik isn't deployed for you on this host.".into());
+        }
+        let host = self.change_host(id, |host| {
+            if let DeployState::Deployed { sha256: kept, .. } = &mut host.deploy {
+                *kept = Some(sha256.to_ascii_lowercase());
+            }
+        })?;
+        self.connect(&self.settings()?.computer, &host)
     }
 
     /// Who approves on the host while nobody is there (6.9).
@@ -951,6 +982,41 @@ mod tests {
         host.host = "build.example.com".into();
         host.port = 0;
         assert!(check(&host).is_err());
+    }
+
+    /// D5: a build the user compared is the one each connection checks
+    /// from then on, on a deployed host alone.
+    #[tokio::test]
+    async fn a_build_the_user_trusts_is_kept_for_the_host() {
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("pw")).unwrap();
+        let sha256 = "AB".repeat(32);
+        let undeployed = setup.page.trust_build(&saved.id, &sha256);
+        assert!(undeployed.unwrap_err().contains("isn't deployed"));
+        setup
+            .page
+            .change_host(&saved.id, |host| {
+                host.deploy = DeployState::Deployed {
+                    version: "0.1.0".into(),
+                    sha256: Some("00".repeat(32)),
+                }
+            })
+            .unwrap();
+        let token = SecretName::Token {
+            host: saved.id.clone(),
+        };
+        setup
+            .page
+            .secrets
+            .set(&token, &Secret("token".into()))
+            .unwrap();
+        assert!(setup.page.trust_build(&saved.id, "abc").is_err());
+        setup.page.trust_build(&saved.id, &sha256).unwrap();
+        let host = setup.page.host(&saved.id).unwrap();
+        let DeployState::Deployed { sha256: kept, .. } = host.deploy else {
+            panic!("{:?}", host.deploy);
+        };
+        assert_eq!(kept, Some("ab".repeat(32)));
     }
 
     #[test]
