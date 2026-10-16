@@ -183,9 +183,15 @@ impl Reply {
     }
 }
 
-/// A local server answering each request with the next scripted reply (the
-/// last one again once they run out). Returns its base URL and the request
-/// bodies it saw.
+/// What a provider without the Responses API answers on `/responses`,
+/// where a model is asked first (`chat_request::responses`).
+pub const NO_RESPONSES_API: &str =
+    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// A local server answering each chat completions request with the next
+/// scripted reply (the last one again once they run out). It has no
+/// Responses API (`NO_RESPONSES_API`). Returns its base URL and the chat
+/// completions request bodies it saw.
 pub async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
     model_routed(Vec::new(), replies).await
 }
@@ -234,7 +240,12 @@ pub async fn model_routed(
             // Each connection answered on its own: a slow reply to one run
             // doesn't hold up another's.
             tokio::spawn(async move {
-                let body = read_request(&mut socket).await;
+                let (path, body) = read_request(&mut socket).await;
+                if path.ends_with("/responses") {
+                    let _ = socket.write_all(NO_RESPONSES_API.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                    return;
+                }
                 let which = route_of(&body, &markers).unwrap_or(scripts.len() - 1);
                 log.lock().unwrap().push(body);
                 let (pieces, hangs) = {
@@ -265,7 +276,8 @@ pub async fn model_routed(
     (url, seen)
 }
 
-async fn read_request(socket: &mut tokio::net::TcpStream) -> Value {
+/// A request's path and JSON body.
+async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 65536];
     // Where the body starts and how long it is, once the headers are in:
@@ -293,11 +305,22 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Value {
         }
         if let Some((start, length)) = body {
             if buf.len() >= start + length {
-                return serde_json::from_slice(&buf[start..start + length]).unwrap_or_default();
+                let body = serde_json::from_slice(&buf[start..start + length]).unwrap_or_default();
+                return (path_of(&buf), body);
             }
         }
     }
-    Value::Null
+    (path_of(&buf), Value::Null)
+}
+
+/// The path on a request's first line ("POST /v1/chat/completions HTTP/1.1").
+fn path_of(request: &[u8]) -> String {
+    let line = request.split(|b| *b == b'\n').next().unwrap_or_default();
+    String::from_utf8_lossy(line)
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .to_string()
 }
 
 /*

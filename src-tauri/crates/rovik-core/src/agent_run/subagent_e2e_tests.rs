@@ -1226,7 +1226,14 @@ async fn the_api_log_tags_each_request_with_its_role_and_kind() {
         .unwrap()
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|l| l["dir"] == "request")
+        // Those the model answered: the lead's first went to `/responses`
+        // before, which the test model doesn't have.
+        .filter(|l| {
+            l["dir"] == "request"
+                && l["url"]
+                    .as_str()
+                    .is_some_and(|u| u.ends_with("/chat/completions"))
+        })
         .map(|l| l["tags"].clone())
         .filter(|t| t["dialogId"] == h.dialog_id.as_str() || t["dialogId"] == child.id.as_str())
         .collect();

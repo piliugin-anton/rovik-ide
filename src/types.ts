@@ -66,9 +66,10 @@ export interface ModelProfile {
 }
 
 /**
- * Which OpenAI API a model is served on: `/chat/completions`, or
- * `/responses` for models only offered there. Detected by the backend
- * (src-tauri/src/chat_request/responses.rs) and saved with the model.
+ * Which OpenAI API a model is served on: `/responses`, or
+ * `/chat/completions` for providers and models without it. Detected by the
+ * backend (src-tauri/crates/rovik-core/src/chat_request/responses.rs) and
+ * saved with the model; one with none saved is asked on `/responses` first.
  */
 export type ApiRoute = 'chat_completions' | 'responses';
 
