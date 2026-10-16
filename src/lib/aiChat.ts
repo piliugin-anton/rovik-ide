@@ -140,7 +140,8 @@ export function estimateContext(args: {
   dialogId: string;
   /** The open project (its tools and prompt section are counted). */
   root: string | null;
-  mode: 'agent' | 'plan';
+  /** Autopilot's next request is its task's plan (agent.rs counts it so). */
+  mode: import('./chatMode').ChatMode;
   reasoningEffort?: OpenAIChatOptions['reasoning_effort'];
 }): Promise<ContextEstimate> {
   return invoke<ContextEstimate>('chat_context_estimate', {

@@ -1724,12 +1724,17 @@ pub async fn chat_context_estimate(
     let (db, vfs) = (&core.db, &core.vfs);
     let permissions = core.agents.config_for(&dialog_id).permissions;
     let root = root.filter(|r| !r.trim().is_empty());
+    // An Autopilot message starts a task with its plan: a Plan-mode request.
+    let plan_mode = matches!(
+        mode.as_deref(),
+        Some("plan") | Some(crate::agent_run::autopilot::MODE)
+    );
     let tools = crate::agent_run::tools::tools_for(
         root.is_some(),
         vision,
         no_tools.unwrap_or(false),
         &permissions,
-        mode.as_deref() == Some("plan"),
+        plan_mode,
         // The estimate is shown for Trimming only.
         false,
         false,
@@ -1756,7 +1761,7 @@ pub async fn chat_context_estimate(
             vision,
             no_tools.unwrap_or(false),
             &permissions,
-            mode.as_deref() == Some("plan"),
+            plan_mode,
             true,
             false,
         );

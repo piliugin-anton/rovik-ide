@@ -2,6 +2,7 @@
 //! now (the core's agent_run). The frontend builds these as
 //! src/lib/agentRuns.ts types them.
 
+use crate::autopilot::AutopilotConfig;
 use crate::diff::Hunk;
 use crate::events::{ApprovalRequest, QuestionsRequest};
 use crate::permissions::Permissions;
@@ -102,6 +103,8 @@ pub struct AgentConfig {
     pub approval_profiles: Vec<ModelProfile>,
     /// Subagents: off unless the user turns them on.
     pub subagents: SubagentConfig,
+    /// How Autopilot's tasks run: read only by chats in Autopilot.
+    pub autopilot: AutopilotConfig,
 }
 
 impl AgentConfig {

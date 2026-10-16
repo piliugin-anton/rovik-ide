@@ -5644,7 +5644,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg);
 }
 
-.mode-option.plan.active svg {
+.mode-option.plan.active svg,
+.mode-option.autopilot.active svg {
   color: var(--accent);
 }
 

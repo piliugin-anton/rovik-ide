@@ -3851,7 +3851,9 @@ export default function ChatPanel(props: ChatProps) {
                     ? 'Answer the question above, or type your own answer…'
                     : chatMode() === 'plan'
                       ? 'Describe what to plan…'
-                      : 'Message the model...'
+                      : chatMode() === 'autopilot'
+                        ? 'Describe the task…'
+                        : 'Message the model...'
             }
           />
 

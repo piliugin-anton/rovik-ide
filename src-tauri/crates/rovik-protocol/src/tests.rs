@@ -3,6 +3,7 @@
 //! here fails `covers`, so a new request can't go untested.
 
 use crate::agent::*;
+use crate::autopilot::{AutopilotConfig, Budget, Effort, DEFAULT_AUTOPILOT_DENYLIST};
 use crate::chat::{ChatModel, MessagePatch, ToolCall};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
@@ -204,6 +205,15 @@ fn config() -> AgentConfig {
             max_run_tokens: Some(1_000_000),
             parallel_workers: true,
             ..Default::default()
+        },
+        autopilot: AutopilotConfig {
+            effort: Effort::Thorough,
+            budget: Budget {
+                max_hours: Some(1.5),
+                max_cost: None,
+            },
+            prepare: false,
+            denied_commands: vec!["git push".into()],
         },
     }
 }
@@ -1144,6 +1154,44 @@ fn a_configuration_without_its_keys() {
     assert!(keyless.models().all(|m| m.api_key.is_empty()));
     assert_eq!(keyless.models().count(), named.len());
     assert!(config.models().all(|m| !m.api_key.is_empty()), "untouched");
+}
+
+/// Autopilot's settings (A01): a configuration from a peer that has none
+/// reads with Autopilot's defaults, as does one that sends only some, and
+/// the effort is its id on the wire.
+#[test]
+fn autopilot_settings_round_trip_and_default_when_missing() {
+    let mut older = serde_json::to_value(config()).unwrap();
+    older.as_object_mut().unwrap().remove("autopilot");
+    let older: AgentConfig = serde_json::from_value(older).unwrap();
+    assert_eq!(older.autopilot, AutopilotConfig::default());
+
+    let defaults = AutopilotConfig::default();
+    assert_eq!(defaults.effort, Effort::Balanced);
+    assert!(defaults.prepare, "D19: on by default");
+    assert_eq!(defaults.budget, Budget::default());
+    assert_eq!(defaults.denied_commands, DEFAULT_AUTOPILOT_DENYLIST);
+
+    let some: AutopilotConfig = serde_json::from_value(json!({ "effort": "thorough" })).unwrap();
+    assert_eq!(
+        some,
+        AutopilotConfig {
+            effort: Effort::Thorough,
+            ..AutopilotConfig::default()
+        }
+    );
+    assert_eq!(
+        round_trip(&config().autopilot),
+        json!({
+            "effort": "thorough",
+            "budget": { "maxHours": 1.5, "maxCost": null },
+            "prepare": false,
+            "deniedCommands": ["git push"],
+        })
+    );
+    for effort in [Effort::Balanced, Effort::Thorough] {
+        assert_eq!(round_trip(&effort), json!(effort.id()));
+    }
 }
 
 /// The bodies of `/packs` (4.4), and the query of a push.

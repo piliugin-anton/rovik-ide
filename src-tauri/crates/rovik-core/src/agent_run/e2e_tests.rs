@@ -24,6 +24,10 @@ mod repair_tests;
 #[path = "context_e2e_tests.rs"]
 mod context_tests;
 
+#[cfg(test)]
+#[path = "autopilot_e2e_tests.rs"]
+mod autopilot_tests;
+
 /*
  * The operations, as the app and the daemon call them: through `dispatch`.
  * These stand in for agent_run's functions of the same names, so every
@@ -195,6 +199,7 @@ impl Harness {
                 permissions,
                 approval_profiles: Vec::new(),
                 subagents: Default::default(),
+                autopilot: Default::default(),
             }),
             isolate: Some(false),
             project_settings: None,

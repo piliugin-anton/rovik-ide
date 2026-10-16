@@ -10,6 +10,10 @@
 //          decisions, validation). "Implement
 //          this plan" then hands it to Agent mode. A question asked in
 //          Plan mode is answered in the reply; no plan is written for it.
+//   Autopilot  one message is a whole task, done without asking: a plan,
+//          its review, the implementation, the checks, the delivery
+//          (docs/design/autopilot-plan.md). The backend drives its stages
+//          (src-tauri/crates/rovik-core/src/agent_run/autopilot.rs).
 //
 // A run keeps the mode of the message that started it, so switching the
 // selector mid-run (or before a Continue) doesn't change a run under way.
@@ -17,13 +21,20 @@
 // (src-tauri/src/agent_run/plan.rs).
 import { createSignal } from 'solid-js';
 
-export type ChatMode = 'agent' | 'plan';
+export type ChatMode = 'agent' | 'plan' | 'autopilot';
+
+const MODES: ChatMode[] = ['agent', 'plan', 'autopilot'];
 
 const KEY = 'rovik.chatMode';
 
+/** A saved mode, or Agent for anything else. */
+export function savedMode(saved: string | null): ChatMode {
+  return MODES.includes(saved as ChatMode) ? (saved as ChatMode) : 'agent';
+}
+
 function load(): ChatMode {
   try {
-    return localStorage.getItem(KEY) === 'plan' ? 'plan' : 'agent';
+    return savedMode(localStorage.getItem(KEY));
   } catch {
     return 'agent';
   }

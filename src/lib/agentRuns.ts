@@ -98,7 +98,7 @@ export interface StartRequest {
   profile: ModelProfile;
   options?: OpenAIChatOptions;
   /** The mode selected in the chat, for a run whose message didn't record one. */
-  mode: 'agent' | 'plan';
+  mode: import('./chatMode').ChatMode;
   contextMode: 'trimming' | 'clm';
   root: string | null;
   /** The request's user message as sent (with editor context). */

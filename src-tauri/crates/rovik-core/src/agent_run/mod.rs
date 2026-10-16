@@ -17,9 +17,11 @@
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   change_review.rs  a fresh-context review of the change before the checks
 //!   tools.rs      tool schemas and running a tool
+//!   autopilot.rs  a task carried out with nobody there: its stages
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
 
+pub mod autopilot;
 pub mod causes;
 pub mod change_review;
 pub mod check_output;

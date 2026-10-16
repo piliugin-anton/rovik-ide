@@ -11,6 +11,7 @@
 //! wire can't drift from it.
 
 pub mod agent;
+pub mod autopilot;
 pub mod chat;
 pub mod clm;
 pub mod diff;

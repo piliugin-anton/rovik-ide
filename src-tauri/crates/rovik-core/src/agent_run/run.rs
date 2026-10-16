@@ -116,6 +116,9 @@ pub struct Run {
     pub(super) options: Option<OpenAIChatOptions>,
     /// The mode of the message that started the run (Plan or Agent).
     pub(super) plan_mode: bool,
+    /// The run is part of an Autopilot task (autopilot.rs): its request was
+    /// sent in Autopilot mode.
+    pub(super) autopilot: bool,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
     /// The project folder itself. Differs from `root` in an isolated chat,
@@ -383,7 +386,10 @@ impl Run {
         let mode = run_mode_for(&recent)
             .or(request.mode.clone())
             .unwrap_or_else(|| "agent".into());
-        let plan_mode = mode == "plan";
+        // An Autopilot task starts with a plan: its first run is a
+        // Plan-mode run.
+        let autopilot = mode == super::autopilot::MODE;
+        let plan_mode = mode == "plan" || autopilot;
         let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
         // An isolated chat works in its overlay: the project with its own
         // changes on top, mounted as a folder (src/overlay). Plan mode
@@ -715,6 +721,7 @@ impl Run {
 
         let run = Run {
             plan_mode,
+            autopilot,
             context_mode: request
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
@@ -766,6 +773,7 @@ impl Run {
             profile,
             options,
             plan_mode: false,
+            autopilot: false,
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
             project_root: None,
@@ -1006,6 +1014,9 @@ impl Run {
         });
         if let Some(open) = self.open_steps_at_end {
             entry["openSteps"] = json!(open);
+        }
+        if self.autopilot {
+            entry["autopilot"] = json!(true);
         }
         log::write(&self.core, entry);
         outcome
