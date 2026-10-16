@@ -280,18 +280,23 @@ pub struct Run {
     pub(super) review_note_id: Option<String>,
     /// What the last failure triage found, for the next one (triage.rs).
     pub(super) last_triage: Option<super::triage::Triage>,
-    /// Plan reviews in this run, the findings that held a plan back, and
-    /// the `submit_plan` call they answered (plan_review.rs).
     /// The running parallel group's extend_scope grants.
     pub(super) group_grants: super::group::GroupGrants,
     /// P4.7: earlier runs' saved check output was removed.
     pub(super) cleaned_this_run: bool,
+    /// Plan reviews in this run, the findings that hold a plan back (until
+    /// a plan is saved), and the `submit_plan` call they answered
+    /// (plan_review.rs).
     pub(super) plan_reviews: u32,
     pub(super) plan_findings: Vec<super::change_review::Finding>,
     /// The plan as it was held with those findings (round 3): sent again
-    /// unchanged, every repeated finding stands; revised, repeats may go.
+    /// unchanged with nothing said, every one stays open; the follow-up
+    /// review is shown what a revision changed (B13).
     pub(super) plan_held: Option<String>,
     pub(super) plan_review_call: Option<String>,
+    /// Submits sent back since the hold for leaving a held finding
+    /// unanswered (B12, at most `MAX_ANSWER_NUDGES`).
+    pub(super) plan_answer_nudges: u32,
     /// Plan steps step workers finished in this run (worker.rs, D03).
     pub(super) worker_steps: Vec<super::worker::DoneStep>,
     /// Files the test writer wrote, those the lead changed after it, and
@@ -841,6 +846,7 @@ impl Run {
             plan_findings: Vec::new(),
             plan_held: None,
             plan_review_call: None,
+            plan_answer_nudges: 0,
             worker_steps: Vec::new(),
             test_writer_files: Vec::new(),
             tests_changed: Vec::new(),

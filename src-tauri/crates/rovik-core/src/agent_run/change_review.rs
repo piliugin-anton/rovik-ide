@@ -18,7 +18,7 @@
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
-use super::{log, plan, tools};
+use super::{log, plan, plan_review, tools};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -251,6 +251,11 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             .any(|l| HEADER.is_match(l))
             .then(|| t.trim().to_string())
     }) else {
+        // B13: a follow-up plan review with only its verdicts on the
+        // earlier findings has nothing new to report.
+        if !plan_review::parse_verdicts(unfenced(text)).is_empty() {
+            return Ok(Vec::new());
+        }
         return Err(if plan::looks_like_plan(text) {
             format!(
                 "it is the plan sent back, not a report: reply with \"## Findings\" and your findings ({FORMAT_HINT})"
@@ -259,6 +264,13 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             format!("it has no \"## Findings\" section ({FORMAT_HINT})")
         });
     };
+    // B13: a verdict on an earlier finding ("Earlier 1: resolved — …") put
+    // under the findings heading isn't a finding.
+    let body = body
+        .lines()
+        .filter(|l| !plan_review::is_verdict(l))
+        .collect::<Vec<_>>()
+        .join("\n");
     let body = body.as_str();
     // P4.5: "None." with a reason after it is none too; so is "No new
     // findings." or "All four earlier findings are addressed." with
@@ -427,7 +439,7 @@ pub(super) fn reviewer_skip_reason(skip: &Skip) -> String {
 
 /// Whether two findings are about the same thing: the same file, and the
 /// same lines (near enough, edits move them) or the same title.
-fn same_finding(a: &Finding, b: &Finding) -> bool {
+pub(super) fn same_finding(a: &Finding, b: &Finding) -> bool {
     let near = matches!((a.line, b.line), (Some(x), Some(y)) if x.abs_diff(y) <= 8);
     let same_title = !a.title.is_empty()
         && super::plan::simple_words(&a.title) == super::plan::simple_words(&b.title);

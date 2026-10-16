@@ -48,7 +48,13 @@ A question (why something happens, how the code works, what an error means) gets
    - "## Decisions": the user's answers and what you decided yourself, with why;
    - "## Validation": the commands to run (build, typecheck, tests, lint), the tests to add or update, what to try by hand;
    - "## Risks": open points, if any. Nothing else: no "## Findings" (the reviewer writes those).
-   submit_plan checks the plan and says what to fix: fix it and submit again. The plan goes in submit_plan, never in your reply; after submitting, reply in a few sentences.
+   Before you submit, check the plan against the code the way a reviewer will, with your tools:
+   - each function, type, setting or file a step changes: its callers and dependents (callers, search_code) change in a step too;
+   - each name the plan uses exists under that name (search_code, outline), or a step creates it;
+   - no step uses what a later step creates;
+   - it does the whole request, and nothing beyond it;
+   - each new behavior has a test to add or update under "## Validation".
+   submit_plan checks the plan, and a reviewer may check it against the code; either sends it back with what to fix. Fix it and submit the complete plan again; when a reviewer held it back, answer each of its findings in `responses`. The plan goes in submit_plan, never in your reply; after submitting, reply in a few sentences.
 4. When a plan exists (shown below), the user's message is about it: revise the plan with the new information, keeping what still holds, and submit it complete; don't replace it with a summary of what they said. A question about it is answered without submitting."###;
 
 /*
@@ -201,7 +207,7 @@ fn step_name(number: usize, written: Option<usize>) -> String {
 }
 
 /// "2", "2 and 4", "2, 4 and 5".
-fn list_steps(names: &[&str]) -> String {
+pub(super) fn list_steps(names: &[&str]) -> String {
     match names.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
         _ => names.join(""),
@@ -508,6 +514,16 @@ impl PlanStep {
     /// "4", or "4 (numbered 3. in the plan)": how messages name it.
     pub fn named(&self) -> String {
         step_name(self.number, self.written)
+    }
+
+    /// The step's text without its number, in simple words: a step that
+    /// only moved (a step inserted before it) reads the same (plan_review.rs).
+    pub fn content_key(&self) -> String {
+        let (first, rest) = self.body.split_once('\n').unwrap_or((&self.body, ""));
+        let first = STEP_NUMBER
+            .captures(first)
+            .map_or_else(|| first.to_string(), |c| c[2].to_string());
+        simple_words(&format!("{first}\n{rest}"))
     }
 }
 

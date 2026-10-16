@@ -24,6 +24,20 @@ export interface ReviewFinding {
   newEvidence?: string;
 }
 
+/** A follow-up plan review's word on one earlier finding (plan_review.rs, B13). */
+export interface EarlierCheck {
+  /** Its number, as the agent got it. */
+  finding: number;
+  severity: FindingSeverity;
+  location: string;
+  title: string;
+  /** The agent's answer (submit_plan's `responses`), when it gave one. */
+  response: { action: 'fixed' | 'not_a_problem'; note: string } | null;
+  resolved: boolean;
+  /** The reviewer's reason, or why the IDE decided (it wasn't checked, nothing changed). */
+  reason: string;
+}
+
 export type ReviewStatus =
   /** The reviewer is reading the change. */
   | 'running'
@@ -62,6 +76,10 @@ export interface ReviewMeta {
   held?: boolean;
   /** plan: findings still open after the last round, saved at the end of the plan. */
   open?: number;
+  /** plan, a follow-up review: each earlier finding, the agent's answer and the verdict. */
+  earlier?: EarlierCheck[];
+  /** plan, a follow-up review: new findings below high about steps the revision didn't change; shown, not held. */
+  notHeld?: ReviewFinding[];
   /** change: R08's review once the checks pass after a repair: only high findings go back. */
   afterGreen?: boolean;
   usage?: import('./subagents').SubagentUsage;
@@ -102,10 +120,15 @@ function planHeadline(meta: ReviewMeta): string {
   switch (meta.status) {
     case 'running':
       return 'Reviewing the plan against the code…';
-    case 'clean':
-      return meta.reason
-        ? `The plan reviewer reported nothing to fix: ${meta.reason}.`
-        : 'The plan reviewer found nothing to fix.';
+    case 'clean': {
+      if (meta.reason) return `The plan reviewer reported nothing to fix: ${meta.reason}.`;
+      const earlier = meta.earlier?.length ?? 0;
+      if (!earlier) return 'The plan reviewer found nothing to fix.';
+      const notHeld = meta.notHeld?.length
+        ? ` (${plural(meta.notHeld.length, 'finding')} about what the revision didn’t change, not held)`
+        : '';
+      return `The plan reviewer found the earlier ${earlier === 1 ? 'finding' : 'findings'} resolved and nothing new to fix${notHeld}.`;
+    }
     case 'findings': {
       const all = meta.findings ?? [];
       const count = plural(all.length, 'finding');
@@ -151,6 +174,12 @@ export function reviewFacts(meta: ReviewMeta): [string, string][] {
   if (meta.files?.length) facts.push(['Files', meta.files.join(', ')]);
   if (meta.changedLines !== undefined) facts.push(['Changed lines', String(meta.changedLines)]);
   if (meta.findings?.length) facts.push(['Findings', String(meta.findings.length)]);
+  if (meta.earlier?.length) {
+    const open = meta.earlier.filter((e) => !e.resolved).length;
+    facts.push(['Earlier findings', `${meta.earlier.length - open} resolved, ${open} still open`]);
+  }
+  if (meta.notHeld?.length)
+    facts.push(['Not held', `${meta.notHeld.length}, about what the revision didn’t change`]);
   if (meta.dropped?.length) facts.push(['Repeated, not sent again', String(meta.dropped.length)]);
   if (meta.held) facts.push(['Plan', 'held back for the agent to fix']);
   if (meta.open) facts.push(['Open findings', `${meta.open}, saved at the end of the plan`]);

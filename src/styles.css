@@ -8425,6 +8425,33 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   cursor: pointer;
 }
 
+/* A follow-up plan review's verdicts on the earlier findings. */
+.review-earlier-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--fg);
+}
+
+.review-earlier-item .review-finding-body {
+  flex-basis: 100%;
+}
+
+.review-earlier-verdict {
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 15px;
+  text-transform: uppercase;
+  background: var(--bg-editor);
+  color: var(--warning);
+}
+
+.review-earlier-item.resolved .review-earlier-verdict {
+  color: var(--success);
+}
+
 /* The card's "Details" expander: the record's facts, and a skipped
    review's report as the reviewer wrote it. */
 .review-details {

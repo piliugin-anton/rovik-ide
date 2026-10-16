@@ -133,6 +133,67 @@ test('a review card has a Details expander with the record’s facts and a kept 
   assert.equal(running.querySelector('details.review-details'), null);
 });
 
+test('a follow-up plan review shows its verdicts and what it didn’t hold', () => {
+  const finding = (severity: 'high' | 'medium', step: number, title: string) => ({
+    severity,
+    location: `Step ${step}`,
+    path: null,
+    line: null,
+    title,
+    scenario: 's',
+    fix: 'f',
+    confidence: 'confirmed' as const,
+    step,
+  });
+  const meta: ReviewMeta = {
+    kind: 'plan',
+    status: 'findings',
+    round: 2,
+    maxRounds: 2,
+    open: 1,
+    findings: [{ ...finding('high', 2, 'CLI not updated'), newEvidence: 'Still one call site.' }],
+    earlier: [
+      {
+        finding: 1,
+        severity: 'high',
+        location: 'Step 2',
+        title: 'CLI not updated',
+        response: { action: 'fixed', note: 'Added step 3.' },
+        resolved: false,
+        reason: 'Still one call site.',
+      },
+      {
+        finding: 2,
+        severity: 'medium',
+        location: 'Step 1',
+        title: 'No index',
+        response: { action: 'not_a_problem', note: 'The table is tiny.' },
+        resolved: true,
+        reason: 'The answer holds.',
+      },
+    ],
+    notHeld: [finding('medium', 1, 'Untouched step')],
+  };
+  const root = container();
+  render(() => <ReviewRecord meta={meta} dialogId="d" recordId="m5" live={false} />, root);
+  const items = [...root.querySelectorAll('.review-earlier-item')];
+  assert.equal(items.length, 2);
+  assert.ok(!items[0].classList.contains('resolved') && items[1].classList.contains('resolved'));
+  assert.match(
+    items[0].textContent ?? '',
+    /still open.*Earlier 1 · Step 2.*Agent: fixed — Added step 3\..*Why: Still one call site\./
+  );
+  assert.match(items[1].textContent ?? '', /resolved.*Agent: not a problem — The table is tiny\./);
+  const notHeld = [...root.querySelectorAll('details.review-dropped')].find((d) =>
+    d.querySelector('summary')?.textContent?.includes('not held')
+  );
+  assert.equal(
+    notHeld?.querySelector('summary')?.textContent,
+    '1 about what the revision didn’t change, not held'
+  );
+  assert.match(notHeld?.textContent ?? '', /Untouched step/);
+});
+
 test('checks saved as running with no run going read as interrupted', () => {
   const meta = {
     status: 'running' as const,
