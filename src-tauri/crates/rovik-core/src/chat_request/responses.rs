@@ -1,15 +1,17 @@
-//! OpenAI's Responses API (`/responses`), for models that aren't served on
-//! `/chat/completions` (OpenAI's codex and *-pro models, some gateways).
-//! Requests are built as chat completions everywhere else: this module
-//! translates the body on the way out and the replies on the way in, so the
-//! rest of the app never sees which route a model is on.
+//! OpenAI's Responses API (`/responses`): where a model is tried first, and
+//! the only route for models that aren't served on `/chat/completions`
+//! (OpenAI's codex and *-pro models, some gateways). Requests are built as
+//! chat completions everywhere else: this module translates the body on the
+//! way out and the replies on the way in, so the rest of the app never sees
+//! which route a model is on.
 //!
 //! Which route: a model starts on the route it was last found to work on
 //! (remembered here, and saved with the model in the settings), else on
-//! `/chat/completions`. A refusal that suggests the other route
-//! (`wrong_route`) sends the same request there once
-//! (`agent::run_with_reasoning`); when that works, the model is remembered
-//! on it and the frontend is told, so it's saved (`ChatStreamEvent::ApiRoute`).
+//! `/responses`. A refusal that suggests the other route (`wrong_route`; a
+//! provider without the Responses API, or without the model on it) sends
+//! the same request there once (`agent::run_with_reasoning`); when that
+//! works, the model is remembered on it and the frontend is told, so it's
+//! saved (`ChatStreamEvent::ApiRoute`).
 
 use super::{classify_body_error, ChatError, ErrorKind, ReplyParser};
 use crate::agent::ChatStreamEvent;
@@ -19,8 +21,9 @@ use std::sync::{LazyLock, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Api {
-    #[default]
     ChatCompletions,
+    /// Where a model starts while no route is known for it.
+    #[default]
     Responses,
 }
 
@@ -113,11 +116,16 @@ pub fn responses_url(chat_url: &str) -> Option<String> {
 /// - OpenAI's "Invalid URL (POST /v1/…)": the server has no such route;
 /// - a 404 or 405 that isn't a provider's JSON error: the same, from a
 ///   server that answers unknown paths with a bare page;
+/// - on `/responses`, any 404 or 405: providers without the Responses API
+///   also say "Not Found" in JSON of their own, and some serve only part of
+///   their models there ("The model … does not exist"). `/chat/completions`,
+///   which every OpenAI-compatible provider has, is worth the one try;
 /// - "ModelProtocolUnsupported" / "Model does not support this protocol.",
 ///   which doesn't say which API the model wants: the other one, either way
 ///   (`super::looks_like_unsupported_protocol`).
 ///
-/// A missing model, a rejected field, an auth failure: not the route.
+/// A rejected field, an auth failure, a model missing from
+/// `/chat/completions`: not the route.
 pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
     if error.partial || !matches!(error.kind, ErrorKind::BadRequest | ErrorKind::NotFound) {
         return false;
@@ -163,12 +171,13 @@ pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
     let named = needles.iter().any(|needle| text.contains(needle));
     let invalid_url = text.contains("invalid url") && text.contains(path);
     let no_route = matches!(error.status, Some(404 | 405))
-        && error
-            .details
-            .as_deref()
-            .and_then(|d| serde_json::from_str::<Value>(d).ok())
-            .and_then(|v| super::error_message_from(&v))
-            .is_none();
+        && (sent_to == Api::Responses
+            || error
+                .details
+                .as_deref()
+                .and_then(|d| serde_json::from_str::<Value>(d).ok())
+                .and_then(|v| super::error_message_from(&v))
+                .is_none());
     let protocol = super::looks_like_unsupported_protocol(&text);
     named || invalid_url || no_route || protocol
 }
@@ -1040,7 +1049,14 @@ mod tests {
         // A missing model, a bad field, an auth failure: not the route.
         let missing = r#"{"error":{"message":"The model `nope` does not exist or you do not have access to it."}}"#;
         assert!(!wrong_route(&classify(404, missing), chat));
-        assert!(!wrong_route(&classify(404, missing), Api::Responses));
+        // On `/responses`, any 404: the model may be on chat completions
+        // only, and a provider without the Responses API may say "Not
+        // Found" in JSON of its own.
+        assert!(wrong_route(&classify(404, missing), Api::Responses));
+        let not_found =
+            r#"{"type":"error","error":{"type":"not_found_error","message":"Not Found"}}"#;
+        assert!(wrong_route(&classify(404, not_found), Api::Responses));
+        assert!(!wrong_route(&classify(404, not_found), chat));
         // Says nothing about which API: the other one, from either side.
         let protocol = r#"{"type":"error","error":{"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}}"#;
         assert!(wrong_route(&classify(400, protocol), chat));
@@ -1058,6 +1074,7 @@ mod tests {
         assert!(wrong_route(&in_body, Api::Responses));
         let field = r#"{"error":{"message":"Unrecognized request argument supplied: reasoning"}}"#;
         assert!(!wrong_route(&classify(400, field), chat));
+        assert!(!wrong_route(&classify(400, field), Api::Responses));
         assert!(!wrong_route(&classify(401, openai), chat));
     }
 

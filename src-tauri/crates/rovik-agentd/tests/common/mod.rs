@@ -526,7 +526,9 @@ pub fn start_request(url: &str, project: &std::path::Path, text: String) -> Star
             context_tokens: Some(4_000_000),
             no_tools: false,
             first_byte_timeout_ms: None,
-            api_route: None,
+            // Found there before: the test model has chat completions only
+            // (`testing::model`), and a run doesn't ask `/responses` first.
+            api_route: Some("chat_completions".into()),
         },
         options: None,
         mode: Some("agent".into()),

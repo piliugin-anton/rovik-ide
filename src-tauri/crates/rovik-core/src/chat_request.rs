@@ -1,7 +1,7 @@
 //! Sending one chat completion request: timeouts, retries, cancellation and
 //! typed errors. `agent::send_chat_message` builds the request body; this
-//! module runs it, on `/chat/completions` or, for models that need it,
-//! OpenAI's Responses API (`responses`).
+//! module runs it, on OpenAI's Responses API (`responses`) or, for
+//! providers and models without it, on `/chat/completions`.
 //!
 //! - Every failure becomes a `ChatError` with a kind, so the UI can explain
 //!   it and offer the right action.
