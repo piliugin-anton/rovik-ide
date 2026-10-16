@@ -511,6 +511,7 @@ async function step(name, fn, { optional = false } = {}) {
   if (ONLY && !ONLY.test(name)) return;
   const started = Date.now();
   const entry = { name, ok: true };
+  const shownBefore = d ? (await notifications()).length : 0;
   try {
     await fn();
     // An alert is the app telling the user something went wrong.
@@ -533,6 +534,12 @@ async function step(name, fn, { optional = false } = {}) {
     `${entry.ok ? 'PASS' : optional ? 'WARN' : 'FAIL'} ${name} (${entry.ms} ms)${entry.ok ? '' : `: ${entry.error}`}`
   );
   for (const e of entry.errors) log(`   js ${e.kind}: ${e.msg.split('\n')[0]}`);
+  if (!entry.ok) {
+    // What the app said and showed: the report's artifact may not be at hand.
+    const shown = d ? (await notifications()).slice(shownBefore) : [];
+    for (const n of shown) log(`   notification: ${n.slice(0, 300)}`);
+    if (entry.body) log(`   page: ${entry.body.replace(/\s+/g, ' ').trim().slice(0, 1200)}`);
+  }
   writeReport();
 }
 
@@ -588,7 +595,8 @@ async function run() {
     const td = args['tauri-driver'] ?? 'tauri-driver';
     const tdArgs = ['--port', '4444'];
     if (args['native-driver']) tdArgs.push('--native-driver', args['native-driver']);
-    startChild(td, tdArgs, { name: 'tauri-driver' });
+    // The app's log: a Windows release build has no stderr to read.
+    startChild(td, tdArgs, { name: 'tauri-driver', env: { ROVIK_LOG_FILE: join(OUT, 'app.log') } });
     await waitHttp('http://127.0.0.1:4444/status');
   }
 

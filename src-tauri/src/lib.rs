@@ -22,6 +22,7 @@ mod typings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    log_to_file();
     // First, while the process is still single-threaded.
     process::adopt_login_shell_path();
     // Then the core's runtime (rt.rs), Tauri's too: one for the process.
@@ -352,6 +353,42 @@ impl log::Log for StderrLog {
     }
 
     fn flush(&self) {}
+}
+
+/// `ROVIK_LOG_FILE=<path>`: what the app writes to stderr (its log, and
+/// every message printed there) is appended to that file instead. A Windows
+/// release build is a GUI app, whose stderr goes nowhere: this is how its
+/// log is seen (the end-to-end runs use it).
+fn log_to_file() {
+    let Some(path) = std::env::var_os("ROVIK_LOG_FILE") else {
+        return;
+    };
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::fd::IntoRawFd;
+        // SAFETY: points descriptor 2 at the file, whose own descriptor is
+        // left open for the life of the process.
+        unsafe { libc::dup2(file.into_raw_fd(), 2) };
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::IntoRawHandle;
+        const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetStdHandle(std_handle: u32, handle: *mut std::ffi::c_void) -> i32;
+        }
+        // SAFETY: the file's handle, left open for the life of the process;
+        // std looks the stderr handle up on each write.
+        unsafe { SetStdHandle(STD_ERROR_HANDLE, file.into_raw_handle()) };
+    }
 }
 
 fn init_log() {

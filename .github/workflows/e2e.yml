@@ -59,8 +59,10 @@ jobs:
           # Kept when the scenarios fail too, as they do while being fixed:
           # the next run then doesn't build from nothing.
           cache-on-failure: true
-          # The app's own crates too: they're most of the build.
+          # The app's own crates too: they're most of the build. (A key of
+          # its own: a cache restored by an exact key is never saved again.)
           cache-workspace-crates: true
+          key: app-crates
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -166,9 +168,13 @@ jobs:
         if: steps.webdriver.outcome == 'failure'
         shell: bash
         run: |
-          for f in e2e-out/run.log e2e-out/tauri-driver.log; do
+          for f in e2e-out/run.log e2e-out/tauri-driver.log e2e-out/app.log; do
             [ -f "$f" ] && { echo "=== $f"; tail -n 60 "$f"; }
           done
+          echo "=== what the agent's tools returned"
+          node scripts/e2e/model-log.mjs e2e-out/fake-model.jsonl | tail -n 40
+          log="$(cygpath "$APPDATA")/rovik-ide/agent-log.jsonl"
+          [ -f "$log" ] && { echo "=== agent-log.jsonl"; tail -n 15 "$log" | cut -c1-400; }
           true
       # WebDriver couldn't start the app: the scenarios through the in-page
       # bridge instead, as on macOS (a build of its own).
@@ -187,6 +193,10 @@ jobs:
           for f in e2e-bridge/run.log e2e-bridge/app.log; do
             [ -f "$f" ] && { echo "=== $f"; tail -n 60 "$f"; }
           done
+          echo "=== what the agent's tools returned"
+          node scripts/e2e/model-log.mjs e2e-bridge/fake-model.jsonl | tail -n 40
+          log="$(cygpath "$APPDATA")/rovik-ide/agent-log.jsonl"
+          [ -f "$log" ] && { echo "=== agent-log.jsonl"; tail -n 15 "$log" | cut -c1-400; }
           true
       - name: Report
         if: always()
@@ -235,8 +245,10 @@ jobs:
           # Kept when the scenarios fail too, as they do while being fixed:
           # the next run then doesn't build from nothing.
           cache-on-failure: true
-          # The app's own crates too: they're most of the build.
+          # The app's own crates too: they're most of the build. (A key of
+          # its own: a cache restored by an exact key is never saved again.)
           cache-workspace-crates: true
+          key: app-crates
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -291,6 +303,10 @@ jobs:
           for f in e2e-out/run.log e2e-out/app.log; do
             [ -f "$f" ] && { echo "=== $f"; tail -n 80 "$f"; }
           done
+          echo "=== what the agent's tools returned"
+          node scripts/e2e/model-log.mjs e2e-out/fake-model.jsonl | tail -n 40
+          log="$HOME/Library/Application Support/rovik-ide/agent-log.jsonl"
+          [ -f "$log" ] && { echo "=== agent-log.jsonl"; tail -n 15 "$log" | cut -c1-400; }
           true
       - name: Report
         if: always()
@@ -328,8 +344,10 @@ jobs:
           # Kept when the scenarios fail too, as they do while being fixed:
           # the next run then doesn't build from nothing.
           cache-on-failure: true
-          # The app's own crates too: they're most of the build.
+          # The app's own crates too: they're most of the build. (A key of
+          # its own: a cache restored by an exact key is never saved again.)
           cache-workspace-crates: true
+          key: app-crates
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -346,9 +364,13 @@ jobs:
       - name: Logs of a failed run
         if: failure()
         run: |
-          for f in e2e-out/run.log e2e-out/tauri-driver.log; do
+          for f in e2e-out/run.log e2e-out/tauri-driver.log e2e-out/app.log; do
             [ -f "$f" ] && { echo "=== $f"; tail -n 80 "$f"; }
           done
+          echo "=== what the agent's tools returned"
+          node scripts/e2e/model-log.mjs e2e-out/fake-model.jsonl | tail -n 40
+          log="$HOME/.local/share/rovik-ide/agent-log.jsonl"
+          [ -f "$log" ] && { echo "=== agent-log.jsonl"; tail -n 15 "$log" | cut -c1-400; }
           true
       - name: Report
         if: always()
