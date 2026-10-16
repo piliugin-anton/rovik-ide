@@ -68,6 +68,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The demo project's type check runs `npx tsc`: TypeScript on PATH, as
+      # on a developer's machine (without it npx fetches an unrelated "tsc"
+      # package, the check fails and the agent's changes don't land).
+      - run: npm install -g typescript
       - name: Build the app and its installers
         run: npx tauri build
       - name: Install it (NSIS, silently)
@@ -128,8 +132,12 @@ jobs:
         run: |
           choco install winfsp gsudo -y --no-progress
           (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\WinFsp' -ErrorAction SilentlyContinue).InstallDir
-          $gsudo = Get-ChildItem 'C:\Program Files\gsudo', 'C:\tools\gsudo', 'C:\ProgramData\chocolatey\lib\gsudo' -Recurse -Filter gsudo.exe -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+          # Where choco puts it (a search of its folders took minutes).
+          $gsudo = Get-Item 'C:\tools\gsudo\Current\gsudo.exe' -ErrorAction SilentlyContinue
+          if (-not $gsudo) {
+            $gsudo = Get-ChildItem 'C:\tools\gsudo', 'C:\Program Files\gsudo' -Recurse -Filter gsudo.exe -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
           "gsudo: $($gsudo.FullName)"
           $gsudo.DirectoryName >> $env:GITHUB_PATH
           # The run's output goes in the workspace: a user's to write in.
@@ -254,6 +262,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The demo project's type check runs `npx tsc`: TypeScript on PATH, as
+      # on a developer's machine (without it npx fetches an unrelated "tsc"
+      # package, the check fails and the agent's changes don't land).
+      - run: npm install -g typescript
       - name: Build the app
         run: npx tauri build --bundles app
       - name: Package it as a disk image
@@ -353,6 +365,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The demo project's type check runs `npx tsc`: TypeScript on PATH, as
+      # on a developer's machine (without it npx fetches an unrelated "tsc"
+      # package, the check fails and the agent's changes don't land).
+      - run: npm install -g typescript
       - name: Build the app and its packages
         run: npx tauri build --bundles deb,rpm,appimage
       - name: Install tauri-driver

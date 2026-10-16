@@ -10,8 +10,10 @@ with 1 when a step failed.
 node scripts/e2e/run.mjs --app <built binary> --out e2e-out [--only <regex>]
 ```
 
-It needs `git` and Node 22. Everything else it starts itself: the fake
-model (port 18080), and `tauri-driver` (port 4444) unless `--driver bridge`.
+It needs `git`, Node 22 and TypeScript (`tsc` on PATH: the demo project's
+type check is one of the checks an agent's change has to pass before it
+lands). Everything else it starts itself: the fake model (port 18080), and
+`tauri-driver` (port 4444) unless `--driver bridge`.
 
 ## Linux
 
