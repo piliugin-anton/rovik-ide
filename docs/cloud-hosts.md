@@ -179,6 +179,11 @@ with its signature in `FILE.sig`, which the installed binary checks with
 the release key built into it, so a new build can't vouch for itself. The
 app uploads both. A build of your own has no signature: it goes in only
 once you allow that by setting `allow_unsigned = true` in `agentd.toml`.
+A build older than the installed one is refused unless the command says
+`--allow-downgrade`. The installer reads FILE once, and installs what it
+read: a file in your home is yours to change meanwhile, so it never goes
+back to it, and asks the copy under `/opt/rovik/bin` its version, as you
+rather than as root.
 
 ## Removing Rovik
 

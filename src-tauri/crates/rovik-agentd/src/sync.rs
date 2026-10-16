@@ -83,6 +83,13 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
         .filter_map(|delta| delta.new_file().path().or(delta.old_file().path()))
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
+    // A snapshot comes from a pushed pack, whose trees could name what no
+    // checkout writes: nothing of it reaches the worktree.
+    if let Some(stray) = paths.iter().find(|path| !in_worktree(path)) {
+        return Err(bad_request(&format!(
+            "{stray}: the snapshot names a path outside the project."
+        )));
+    }
 
     let (mut apply, mut merged, mut marked, mut stuck) = (Vec::new(), vec![], vec![], vec![]);
     let mut diffs = Vec::new();
@@ -90,6 +97,12 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
     // replaces them.
     let mut replaced = Vec::new();
     for path in paths {
+        // A link on the way (one the chat's run made, say) would have the
+        // write land outside the worktree: the user's to settle.
+        if through_link(worktree, &path) {
+            stuck.push(path);
+            continue;
+        }
         let side = |tree: &Tree| in_tree(&repo, tree, &path).map_err(git);
         let (was, now) = (side(&old)?, side(&new)?);
         let chats = on_disk(&worktree.join(&path));
@@ -268,10 +281,39 @@ fn on_disk(path: &Path) -> Option<Entry> {
     })
 }
 
+/// Whether a folder on the way to `path` in the worktree is a link.
+fn through_link(worktree: &Path, path: &str) -> bool {
+    let mut at = worktree.to_path_buf();
+    let parts: Vec<&str> = path.split('/').collect();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        at.push(part);
+        if fs::symlink_metadata(&at).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A path a tree names that a worktree can hold: from its root, never out
+/// of it, and never its `.git`.
+fn in_worktree(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path.split('/').all(|part| {
+            !part.is_empty() && part != "." && part != ".." && !part.eq_ignore_ascii_case(".git")
+        })
+}
+
 /// Puts `entry` at `path`, in place of what was there; None deletes it.
 fn write(path: &Path, entry: Option<&Entry>) -> io::Result<()> {
-    let is_file = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file());
-    if !matches!(entry, Some(Entry::File { .. })) || !is_file {
+    let there = fs::symlink_metadata(path).ok();
+    let is_file = there.as_ref().is_some_and(|meta| meta.is_file());
+    if there.is_some_and(|meta| meta.is_dir()) {
+        // A folder the project replaced with a file or a link: all of it
+        // goes, the files in it the snapshot never had included.
+        fs::remove_dir_all(path)?;
+    } else if !matches!(entry, Some(Entry::File { .. })) || !is_file {
         match fs::remove_file(path) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
             _ => {}

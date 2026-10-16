@@ -36,6 +36,8 @@ export interface Host {
 
 export interface HostRow extends Host {
   state?: HostState;
+  /** Why the app couldn't connect to it, when it couldn't: no token saved here, say. */
+  problem?: string;
   /** The user's chats there, or moving there. */
   chats: number;
   /** Whether a password or a key passphrase is saved: never the secret. */
@@ -205,12 +207,18 @@ export const hostLimits = (id: string) => invoke<[string, string][]>('hosts_limi
 export const setHostLimits = (id: string, changes: [string, string][]) =>
   invoke<void>('hosts_set_limits', { id, changes });
 
-/** Calls `handler` with each step of a connection test as it ends, until stopped. */
-export function onHostTest(handler: (hostId: string, step: Step) => void): () => void {
-  const listening = listen<{ hostId: string; step: Step }>('host-test', (e) =>
+/**
+ * Calls `handler` with each step of a connection test as it ends, until the
+ * function it resolves with is called. Resolves once it listens: a test
+ * started before that would have its first steps missed.
+ */
+export async function onHostTest(
+  handler: (hostId: string, step: Step) => void
+): Promise<() => void> {
+  const stop = await listen<{ hostId: string; step: Step }>('host-test', (e) =>
     handler(e.payload.hostId, e.payload.step)
   );
-  return () => void listening.then((stop) => stop());
+  return stop;
 }
 
 /** A new host's form. */
@@ -229,7 +237,7 @@ export function emptyHost(): Host {
 
 /** The host of a row, without what the list adds to it. */
 export function hostOf(row: HostRow): Host {
-  const { state, chats, passwordSaved, passphraseSaved, ...host } = row;
+  const { state, problem, chats, passwordSaved, passphraseSaved, ...host } = row;
   return host;
 }
 

@@ -15,15 +15,15 @@ the first one lands.
 
 ## Phases at a glance
 
-| Phase | What                                                    | Why first                          | Size    |
-|-------|---------------------------------------------------------|------------------------------------|---------|
-| 1     | Close the paths where work can be lost or overwritten   | The promise must hold              | 2 days  |
-| 2     | Wrong behaviour (settings, checks, queue, UI)           | Visible bugs in everyday use       | 2 days  |
-| 3     | Early warning between running chats                     | The clash is known while it's small| 1 day   |
-| 4     | Conflicts go to the chat that's still running           | No waiting for the user            | 0.5 day |
-| 5     | Bottlenecks                                             | Speed under load                   | 1.5 days|
-| 6     | Tests that run every time (CI)                          | Keep it fixed                      | 0.5 day |
-| 7     | (Optional) land after each finished step                | Smaller clashes                    | 1 day   |
+| Phase | What                                                  | Why first                           | Size     |
+| ----- | ----------------------------------------------------- | ----------------------------------- | -------- |
+| 1     | Close the paths where work can be lost or overwritten | The promise must hold               | 2 days   |
+| 2     | Wrong behaviour (settings, checks, queue, UI)         | Visible bugs in everyday use        | 2 days   |
+| 3     | Early warning between running chats                   | The clash is known while it's small | 1 day    |
+| 4     | Conflicts go to the chat that's still running         | No waiting for the user             | 0.5 day  |
+| 5     | Bottlenecks                                           | Speed under load                    | 1.5 days |
+| 6     | Tests that run every time (CI)                        | Keep it fixed                       | 0.5 day  |
+| 7     | (Optional) land after each finished step              | Smaller clashes                     | 1 day    |
 
 Each phase is one commit (or a few), pushed when its tests pass. Each task
 lists the problem, the fix, and the test that proves it.
@@ -33,6 +33,7 @@ lists the problem, the fix, and the test that proves it.
 ## Phase 1: nothing is lost
 
 ### 1.1 Deletes and moves are checked like edits
+
 - **Problem:** a chat's delete always lands (`land.rs` `plan`, the `Delete`
   arm). If the user or another chat changed the file meanwhile, that change
   is gone; only Undo brings it back. Same for a deleted or moved folder and
@@ -44,7 +45,7 @@ lists the problem, the fix, and the test that proves it.
     `(path, hash)` for the files in it. Store it in `OverlayChange::Delete`
     as `base: Option<DeletedBase>` (saved in the manifest).
   - Large folders (over 2,000 files or 50 MB) keep only `(path, size,
-    mtime)`; a mismatch there is reported as a conflict to confirm rather
+mtime)`; a mismatch there is reported as a conflict to confirm rather
     than merged.
   - `plan`: a delete whose target no longer matches its base is a
     `Conflict { reason: "the chat deleted it, and it changed in the project" }`.
@@ -54,6 +55,7 @@ lists the problem, the fix, and the test that proves it.
   an untouched file → lands. Project already deleted it → nothing to land.
 
 ### 1.2 Moved-and-edited files, and delete-then-recreate, keep their base
+
 - **Problem:**
   - A file the chat moves and edits always conflicts: the plan reads "the
     project's file now" at the new path, finds nothing, and says "deleted
@@ -73,6 +75,7 @@ lists the problem, the fix, and the test that proves it.
   if the project changed other lines.
 
 ### 1.3 A failed landing is undone, and crash recovery checks before writing
+
 - **Problem:**
   - A write error partway through `apply` leaves the project half-landed,
     with the journal saying "applying".
@@ -95,6 +98,7 @@ lists the problem, the fix, and the test that proves it.
   since → that path untouched, others finished, notice lists it.
 
 ### 1.4 Undo leaves what it didn't land
+
 - **Problem:**
   - Undoing a folder the landing created removes it with everything in it,
     including files added later and files Undo reported as "kept".
@@ -110,6 +114,7 @@ lists the problem, the fix, and the test that proves it.
   symlink → symlink restored.
 
 ### 1.5 Land anyway names what it overrides
+
 - **Problem:** "Land anyway" takes the chat's whole file for every
   conflicted file in one click, and the confirm doesn't say which.
 - **Fix:** the confirm lists the conflicted files and the deletes it will
@@ -117,6 +122,7 @@ lists the problem, the fix, and the test that proves it.
 - **Test:** the frontend shows the list; the backend is unchanged.
 
 ### 1.6 The overlay's list of changes can't point at deleted files
+
 - **Problem:** a replaced or deleted change file (`upper/N`, `base/N`) is
   removed from disk at once, but the manifest is saved at most every 2
   seconds. A crash in between leaves the manifest pointing at a file that
@@ -133,6 +139,7 @@ lists the problem, the fix, and the test that proves it.
   at once → the newest list wins.
 
 ### 1.7 Merging the project in keeps the chat's own version
+
 - **Problem:** `take_merged` (before landing, and before the post-merge
   checks) overwrites the chat's file with the merged result and drops the
   old base. If the merge is wrong, the chat's own version is gone.
@@ -146,6 +153,7 @@ lists the problem, the fix, and the test that proves it.
   "Undo the merge" restores it with the old base.
 
 ### 1.8 Hardlinks can't crash a chat's mount
+
 - **Problem:** a hardlinked untouched file whose project original is
   deleted gets dropped from the inode table while it still has a name.
   The next lookup indexes a missing node and panics; the mount dies.
@@ -157,6 +165,7 @@ lists the problem, the fix, and the test that proves it.
   folder, read `keep.rs` → still readable, no panic.
 
 ### 1.9 Settling a conflicted file is atomic
+
 - **Problem:** `rebase_file` truncates, writes and swaps the base in three
   steps, so the chat's processes can see an empty file in between.
 - **Fix:** write a new upper file and a new base file first, then swap
@@ -164,6 +173,7 @@ lists the problem, the fix, and the test that proves it.
 - **Test:** concurrent reader during `rebase_file` never sees an empty file.
 
 ### 1.10 Commands from the frontend can't reach outside their folders
+
 - **Problem:** `overlay_discard`, `overlay_undo`, `forget` and the
   conflict commands build paths from `dialog_id` unchecked (`../..` would
   delete outside the overlays folder). `overlay_file` reads any absolute
@@ -173,9 +183,10 @@ lists the problem, the fix, and the test that proves it.
   - Paths must be relative, without `..`, and must be one of the chat's
     changes (`overlay_file`, the conflict commands).
 - **Tests:** `overlay_discard("../x")` → error. `overlay_file(id,
-  "/etc/passwd")` → error.
+"/etc/passwd")` → error.
 
 ### 1.11 Without the driver, chats can't overwrite each other's files
+
 - **Problem:** when the view can't be mounted, a chat works in the project
   directly. File tools are guarded, but its commands (`sed`, generators)
   aren't, so two chats can overwrite each other.
@@ -193,6 +204,7 @@ lists the problem, the fix, and the test that proves it.
 ## Phase 2: wrong behaviour
 
 ### 2.1 Checks and runs
+
 - **Project settings looked up under the wrong folder.** `project::load`
   gets the chat's mount path, so the project's saved check settings
   (disabled checks, custom commands) are ignored in isolated chats.
@@ -224,6 +236,7 @@ lists the problem, the fix, and the test that proves it.
   - Fix: word it per cause.
 
 ### 2.2 Paths
+
 - **Different spellings of one project folder.**
   - Problem: symlinked paths, `/private` on macOS and letter case on
     Windows make the watcher's events miss a chat, and reopening a chat
@@ -243,6 +256,7 @@ lists the problem, the fix, and the test that proves it.
   - Fix: drop a chat's view-path entries when its overlay closes.
 
 ### 2.3 Commands in chats
+
 - **The git refusal is easy to get around.**
   - Problem: the subcommand is taken as the first word that isn't an
     option, so `git -C /p commit` and `git -c k=v commit` pass;
@@ -272,6 +286,7 @@ lists the problem, the fix, and the test that proves it.
     Merge other bytes with `merge3_raw` directly.
 
 ### 2.4 The queue for heavy work
+
 - **The terminal holds the slot forever.** The presence of a compiler
   process (Vite's `esbuild --service`, `tsc -w`, watch-mode test runners)
   makes it count as heavy whatever its CPU use, so the terminal holds the
@@ -302,6 +317,7 @@ lists the problem, the fix, and the test that proves it.
     sampled yet.
 
 ### 2.5 Frontend
+
 - **The bar outlives a chat switch.**
   - Problem: the IsolationBar is reused across chats, so "Ask the chat"
     can send its request to the chat switched to.
@@ -364,9 +380,9 @@ This finds it when the second chat's change is written.
     then merge the results.
   - Clean: nothing to say (they'll merge).
   - Conflict: both chats get a note in their next tool result: "Chat
-    *<title>* is also changing lines 40–60 of `src/a.rs`, in a way that
+    _<title>_ is also changing lines 40–60 of `src/a.rs`, in a way that
     clashes with yours. Avoid those lines if you can, or say so in your
-    summary." The bars show "Clashes with chat *<title>*: `src/a.rs`" with
+    summary." The bars show "Clashes with chat _<title>_: `src/a.rs`" with
     a Compare button (three-way: base, this chat, the other chat).
   - Said once per file pair until either side changes it again.
 - **Cost:** only files changed by both chats are merged, once per tool
@@ -407,6 +423,7 @@ This finds it when the second chat's change is written.
 ## Phase 5: bottlenecks
 
 ### 5.1 The chat's view (overlay/fs.rs)
+
 - **First-write copies hold the lock.** The first write to a large file
   copies it twice (chat version and base) under the one lock, blocking
   every file access in that chat's view.
@@ -432,6 +449,7 @@ This finds it when the second chat's change is written.
   - Look for ignore files at any depth, not just the root.
 
 ### 5.2 The queue's sampler
+
 - **Process-group lookups.** One process-group lookup per process per
   job on every tick.
   - Fix: one per process, shared by all jobs.
@@ -441,6 +459,7 @@ This finds it when the second chat's change is written.
   - Build command lines only for processes in tracked trees.
 
 ### 5.3 Blocking work on async threads
+
 - **Where:**
   - Landing's plan and merge, `take_merged`, `merge_into_current`.
   - File-guarded writes that wait for a landing's locks.
@@ -448,6 +467,7 @@ This finds it when the second chat's change is written.
 - **Fix:** run them all in `spawn_blocking`.
 
 ### 5.4 Branch switches
+
 - **Problem:** a branch switch or another large change checks nothing for
   conflicts, so they show up only at landing.
 - **Fix:** after the project settles, check every file the chat changed
@@ -464,7 +484,7 @@ This finds it when the second chat's change is written.
 
 - **A CI workflow** in `.github/workflows/ci.yml`, on Ubuntu:
   - Install `fuse3`, then run `cargo test --lib`, `cargo test --lib --
-    --ignored` (FUSE tests) and `npm test`, plus a type check.
+--ignored` (FUSE tests) and `npm test`, plus a type check.
   - Confinement tests skip themselves if user namespaces are forbidden.
 - **Per-test data folders:** a test-only override of the overlays' data
   folder, so the FUSE tests can run in parallel.
@@ -501,7 +521,7 @@ This finds it when the second chat's change is written.
   commit (`.git/HEAD`, `ORIG_HEAD`). The watcher ignores `target/` and
   `node_modules/`.
 - **"A move reads the chat's content from the project's old path."** That
-  is the content of an untouched moved file. The real bug (moved *and*
+  is the content of an untouched moved file. The real bug (moved _and_
   edited) is task 1.2.
 
 ## Order
@@ -591,7 +611,7 @@ and 4 for a while.
     have; much memory with little CPU isn't idle; a pause clears idle and
     a resume starts a fresh window; nothing is paused after exit starts;
     the slots page reads the machine without keeping the reading; `bun
-    test` is heavy whatever package.json says.
+test` is heavy whatever package.json says.
   - Chats are compared only when one of them changed since the last
     comparison.
   - UI: a round of conflicts keeps its resolver choices until it's over;

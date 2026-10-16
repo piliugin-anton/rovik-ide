@@ -310,7 +310,8 @@ export default function ContextControls(props: {
                 {' · '}~{short(status()!.tokens)}/{short(budget())}
               </Show>
               <Show when={status()!.compliance}>
-                {' · '}{status()!.compliance}
+                {' · '}
+                {status()!.compliance}
               </Show>
             </Show>
           </span>

@@ -125,7 +125,11 @@ impl Kdf {
 }
 
 pub struct SecretStore {
-    backend: Backend,
+    /// Chosen on first use (`backend`): asking the keychain may take a
+    /// moment, or ask the user, which the app's start mustn't wait for.
+    backend: std::sync::OnceLock<Backend>,
+    /// The encrypted file in the keychain's place, when none answers.
+    fallback: PathBuf,
 }
 
 enum Backend {
@@ -134,13 +138,12 @@ enum Backend {
 }
 
 impl SecretStore {
-    /// The keychain if it answers, else the encrypted file at `fallback`.
+    /// The keychain if it answers, else the encrypted file at `fallback`;
+    /// asked on first use.
     pub fn open(fallback: PathBuf) -> SecretStore {
-        match keychain_answers() {
-            true => SecretStore {
-                backend: Backend::Keychain,
-            },
-            false => SecretStore::file(fallback, Kdf::DEFAULT),
+        SecretStore {
+            backend: std::sync::OnceLock::new(),
+            fallback,
         }
     }
 
@@ -148,16 +151,43 @@ impl SecretStore {
     /// derives its key as `kdf` says, an existing one as it says.
     pub fn file(path: PathBuf, kdf: Kdf) -> SecretStore {
         SecretStore {
-            backend: Backend::File(FileStore {
-                path,
+            backend: std::sync::OnceLock::from(Backend::File(FileStore {
+                path: path.clone(),
                 kdf,
                 opened: Mutex::new(None),
-            }),
+            })),
+            fallback: path,
         }
     }
 
+    /// Where the secrets are. An encrypted file once in use stays in use:
+    /// its secrets would be out of reach if the keychain answered on a
+    /// later start. The keychain is asked again when it doesn't answer at
+    /// first: a Secret Service that is just starting takes a moment, and
+    /// falling back for one start would put that start's secrets in a
+    /// file the next start never reads.
+    fn backend(&self) -> &Backend {
+        self.backend.get_or_init(|| {
+            if !self.fallback.is_file() {
+                for attempt in 0..3 {
+                    if keychain_answers() {
+                        return Backend::Keychain;
+                    }
+                    if attempt < 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                    }
+                }
+            }
+            Backend::File(FileStore {
+                path: self.fallback.clone(),
+                kdf: Kdf::DEFAULT,
+                opened: Mutex::new(None),
+            })
+        })
+    }
+
     pub fn kind(&self) -> StoreKind {
-        match &self.backend {
+        match self.backend() {
             Backend::Keychain => StoreKind::Keychain,
             Backend::File(file) => StoreKind::File {
                 unlocked: file.lock().is_some(),
@@ -169,14 +199,14 @@ impl SecretStore {
     /// made with it, an existing one must open with it. The keychain needs
     /// none.
     pub fn unlock(&self, passphrase: &Secret) -> Result<(), SecretError> {
-        match &self.backend {
+        match self.backend() {
             Backend::Keychain => Ok(()),
             Backend::File(file) => file.unlock(passphrase),
         }
     }
 
     pub fn get(&self, name: &SecretName) -> Result<Secret, SecretError> {
-        match &self.backend {
+        match self.backend() {
             Backend::Keychain => {
                 let entry = keychain_entry(name)?;
                 entry
@@ -193,7 +223,7 @@ impl SecretStore {
     }
 
     pub fn set(&self, name: &SecretName, value: &Secret) -> Result<(), SecretError> {
-        match &self.backend {
+        match self.backend() {
             Backend::Keychain => {
                 let entry = keychain_entry(name)?;
                 entry
@@ -208,7 +238,7 @@ impl SecretStore {
 
     /// Forgets it: done already when it wasn't saved.
     pub fn delete(&self, name: &SecretName) -> Result<(), SecretError> {
-        match &self.backend {
+        match self.backend() {
             Backend::Keychain => {
                 let entry = keychain_entry(name)?;
                 match entry.delete_credential() {

@@ -41,6 +41,10 @@ pub struct HostsPage {
     version: String,
     /// One change of the settings file at a time.
     file: Mutex<()>,
+    /// Why a deployed host couldn't be connected, by its id: no token
+    /// saved here, the store locked. Shown in place of "Connecting…",
+    /// which it would otherwise say for good.
+    unconnected: Mutex<HashMap<String, String>>,
 }
 
 /// The hosts, as the page lists them.
@@ -64,6 +68,10 @@ pub struct HostRow {
     /// Its connection, once deployed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<HostState>,
+    /// Why the app couldn't connect to it, when it couldn't: no token for
+    /// it is saved here, say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
     /// The user's chats there or moving there.
     pub chats: usize,
     /// Whether a password and a key passphrase are saved: never the secrets.
@@ -192,7 +200,16 @@ impl HostsPage {
             remote,
             version: version.to_string(),
             file: Mutex::new(()),
+            unconnected: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Why each host that couldn't be connected couldn't, by its id.
+    fn unconnected(&self) -> HashMap<String, String> {
+        self.unconnected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn settings(&self) -> Result<HostSettings, String> {
@@ -243,6 +260,20 @@ impl HostsPage {
     /// connection: through the user's own ssh, or Rovik's, which checks the
     /// install on each new connection (D5).
     fn connect(&self, computer: &str, host: &Host) -> Result<(), String> {
+        let connected = self.connect_in(computer, host);
+        let mut unconnected = self.unconnected.lock().unwrap_or_else(|e| e.into_inner());
+        match &connected {
+            Ok(()) => {
+                unconnected.remove(&host.id);
+            }
+            Err(why) => {
+                unconnected.insert(host.id.clone(), why.clone());
+            }
+        }
+        connected
+    }
+
+    fn connect_in(&self, computer: &str, host: &Host) -> Result<(), String> {
         let DeployState::Deployed { sha256, .. } = &host.deploy else {
             return Ok(());
         };
@@ -332,7 +363,13 @@ impl HostsPage {
     pub fn summaries(&self) -> Result<Vec<HostSummary>, String> {
         let settings = self.settings()?;
         let states = self.remote.states();
-        let state_of = |id: &str| states.iter().find(|(host, _)| host == id).map(|(_, s)| *s);
+        let unconnected = self.unconnected();
+        // A deployed host the app couldn't connect to is as good as offline
+        // to its chats, not forever connecting.
+        let state_of = |id: &str| {
+            let known = states.iter().find(|(host, _)| host == id).map(|(_, s)| *s);
+            known.or_else(|| unconnected.contains_key(id).then_some(HostState::Offline))
+        };
         let mut summaries: Vec<HostSummary> = settings
             .hosts
             .into_iter()
@@ -365,11 +402,17 @@ impl HostsPage {
     pub async fn list(&self) -> Result<HostsList, String> {
         let settings = self.settings()?;
         let states: HashMap<String, HostState> = self.remote.states().into_iter().collect();
+        let unconnected = self.unconnected();
         let mut hosts = Vec::new();
         for host in settings.hosts {
             let id = host.id.clone();
+            let problem = unconnected.get(&id).cloned();
             hosts.push(HostRow {
-                state: states.get(&id).copied(),
+                state: states
+                    .get(&id)
+                    .copied()
+                    .or(problem.as_ref().map(|_| HostState::Offline)),
+                problem,
                 chats: self.remote.chats_on(&id).await?,
                 password_saved: self
                     .secret(SecretName::Password { host: id.clone() })
@@ -434,7 +477,11 @@ impl HostsPage {
             settings.put(host.clone());
             Ok((host.clone(), settings.computer.clone()))
         })?;
-        self.connect(&computer, &saved)?;
+        // Saved either way: a connection that can't be made (no token here
+        // yet) is the host's state on the page, not the form's failure.
+        if let Err(e) = self.connect(&computer, &saved) {
+            log::warn!("{}: {e}", saved.name);
+        }
         Ok(saved)
     }
 
@@ -450,6 +497,10 @@ impl HostsPage {
             ));
         }
         self.remote.disconnect(id);
+        self.unconnected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
         self.change(|settings| {
             let removed = settings.remove(id, &self.secrets);
             removed.map(|_| ()).map_err(|e| e.to_string())
@@ -706,13 +757,31 @@ impl HostsPage {
 /// The host's fields the page fills in, before they're saved.
 fn check(host: &Host) -> Result<(), String> {
     let blank = |text: &str| text.trim().is_empty();
+    // The id names a socket file (`local`) and goes in paths: letters,
+    // digits, - and _, as a UUID has.
+    let plain_id = host
+        .id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    if !plain_id || host.id.len() > 64 {
+        return Err("The host's id is letters, digits, - and _.".into());
+    }
     if blank(&host.name) {
         return Err("Give the host a name.".into());
     }
-    if blank(&host.host) || host.host.contains(char::is_whitespace) {
+    // An address or a user that starts with - would be an option to ssh.
+    if blank(&host.host)
+        || host.host.contains(char::is_whitespace)
+        || host.host.starts_with('-')
+        || host.host.contains(char::is_control)
+    {
         return Err("Enter the host's name or address.".into());
     }
-    if blank(&host.user) || host.user.contains(char::is_whitespace) {
+    if blank(&host.user)
+        || host.user.contains(char::is_whitespace)
+        || host.user.starts_with('-')
+        || host.user.contains(char::is_control)
+    {
         return Err("Enter the user to log in as.".into());
     }
     if host.port == 0 {

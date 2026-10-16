@@ -107,24 +107,6 @@ export const chatApi = {
     projectId: string | null;
   }) => invoke<void>('chat_create_dialog', { dialog }),
 
-  appendMessages: (dialogId: string, messages: ChatMessage[]) =>
-    invoke<number[]>('chat_append_messages', {
-      dialogId,
-      messages: messages.map((m) => ({
-        id: m.id,
-        role: m.role,
-        content: m.content,
-        toolCalls: m.toolCalls?.length ? m.toolCalls : null,
-        toolCallId: m.tool_call_id ?? null,
-        meta: m.meta ?? null,
-        error: m.error ?? null,
-        failed: !!m.failed,
-        attachments: m.attachments ?? [],
-        createdAt: m.createdAt ?? Date.now(),
-        finalized: !!m.finalized,
-      })),
-    }),
-
   updateMessage: (
     messageId: string,
     patch: {

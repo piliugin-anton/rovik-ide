@@ -820,9 +820,8 @@ pub fn section(markdown: &str, name: &str) -> Option<String> {
 /// A findings heading an agent may put in its plan (`## Findings`,
 /// `## Review findings`), or the IDE's `## Open review findings` from an
 /// earlier save: findings are the reviewer's, never the plan's.
-static FINDINGS_HEADING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^##\s+(?:open\s+)?(?:review\s+)?findings\s*:?\s*$").unwrap()
-});
+static FINDINGS_HEADING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^##\s+(?:open\s+)?(?:review\s+)?findings\s*:?\s*$").unwrap());
 
 /// The plan without its findings sections (an agent revising a reviewed
 /// plan sometimes ends it with "## Findings" and "None.", or keeps the
@@ -1968,17 +1967,38 @@ mod tests {
                  ## Validation\n- `cargo test`\n"
             );
             let s = steps(&plan);
-            assert_eq!(s.iter().map(|s| (s.number, s.title.as_str())).collect::<Vec<_>>(), [(1, "One"), (2, "Two")], "{one}: {s:#?}");
-            assert_eq!(s[0].files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["src/a.rs"], "{one}");
+            assert_eq!(
+                s.iter()
+                    .map(|s| (s.number, s.title.as_str()))
+                    .collect::<Vec<_>>(),
+                [(1, "One"), (2, "Two")],
+                "{one}: {s:#?}"
+            );
+            assert_eq!(
+                s[0].files
+                    .iter()
+                    .map(|f| f.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["src/a.rs"],
+                "{one}"
+            );
             assert_eq!(s[1].files.len(), 2, "{one}");
             assert!(s[1].files[1].new, "{one}");
-            assert_eq!(plan_problems_in(&plan, Some(&tree.0)), Vec::<String>::new(), "{one}");
+            assert_eq!(
+                plan_problems_in(&plan, Some(&tree.0)),
+                Vec::<String>::new(),
+                "{one}"
+            );
         }
         // Headings inside a listed step don't split it.
         let listed = "# P\n\n## Steps\n\n1. **One**\n   - Files: `src/a.rs`\n   ### Step 1a: detail\n   - Add the loader to it.\n\
             2. **Two**\n   - Files: `src/b.rs`\n   - Add the saver to it.\n\n## Validation\n- `cargo test`\n";
         assert_eq!(steps(listed).len(), 2);
-        assert!(plan_problems(listed).is_empty(), "{:?}", plan_problems(listed));
+        assert!(
+            plan_problems(listed).is_empty(),
+            "{:?}",
+            plan_problems(listed)
+        );
     }
 
     /// The Files label in its other spellings: `File:` for one file,
@@ -1986,12 +2006,21 @@ mod tests {
     #[test]
     fn files_label_variants() {
         for label in ["File", "file", "Paths", "Path", "File paths", "**File**"] {
-            let step = format!("1. **A**\n   - {label}: `src/a.rs` (new), `src/b.rs`\n   - Add a to it.");
+            let step =
+                format!("1. **A**\n   - {label}: `src/a.rs` (new), `src/b.rs`\n   - Add a to it.");
             let files = step_files(&step).files;
-            assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["src/a.rs", "src/b.rs"], "{label}");
+            assert_eq!(
+                files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+                ["src/a.rs", "src/b.rs"],
+                "{label}"
+            );
             assert!(files[0].new, "{label}");
         }
-        assert!(step_files("1. **A**\n   - Profile: `src/a.rs`\n   - Add a.").files.is_empty());
+        assert!(
+            step_files("1. **A**\n   - Profile: `src/a.rs`\n   - Add a.")
+                .files
+                .is_empty()
+        );
     }
 
     /// P4.4: CRLF, `1. 1. 1.` numbering, `Group: none`, a "Next steps"

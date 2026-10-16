@@ -137,9 +137,10 @@ pub struct System {
 
 impl System {
     pub fn new(root: Option<PathBuf>) -> System {
-        System {
-            root: root.unwrap_or_else(|| PathBuf::from("/")),
-        }
+        let root = root.unwrap_or_else(|| PathBuf::from("/"));
+        // As the file system has it: `/..` is `/`, and live.
+        let root = root.canonicalize().unwrap_or(root);
+        System { root }
     }
 
     fn live(&self) -> bool {
@@ -209,6 +210,13 @@ impl System {
             let _ = std::fs::remove_file(&temp);
             format!("{} to {}: {e}", from.display(), path.display())
         })
+    }
+
+    /// Moves `from` to `absolute`, both under the root.
+    fn rename(&self, from: &str, absolute: &str) -> Result<(), String> {
+        let (from, to) = (self.path(from), self.path(absolute));
+        std::fs::rename(&from, &to)
+            .map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))
     }
 
     /// Points the link `absolute` at `target`, the same way.
@@ -323,7 +331,8 @@ pub fn user(sys: &System, args: &[String]) -> Result<(), String> {
 }
 
 /// `admin ...`: the limits, the administrators, upgrades and removal.
-pub fn admin(sys: &System, args: &[String]) -> Result<(), String> {
+/// `allow_downgrade`: an upgrade may install an older build.
+pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(), String> {
     let caller = caller(sys)?;
     let mut file = AdminFile::read(&sys.path(ADMIN_FILE))?.ok_or("Rovik isn't installed here.")?;
     if !file.admins.contains(&caller.name) {
@@ -373,11 +382,11 @@ pub fn admin(sys: &System, args: &[String]) -> Result<(), String> {
             write_settings(sys, &file)?;
             leave_group(sys, user)
         }
-        ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller),
+        ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller, allow_downgrade),
         ["uninstall"] => uninstall(sys),
         _ => Err(
-            "admin takes: limits [name=value ...], add USER, remove USER, upgrade FILE, \
-             uninstall"
+            "admin takes: limits [name=value ...], add USER, remove USER, upgrade FILE \
+             [--allow-downgrade], uninstall"
                 .into(),
         ),
     }
@@ -390,8 +399,22 @@ pub fn admin(sys: &System, args: &[String]) -> Result<(), String> {
 /// `FILE.sig`, checked with the key this binary was built with, so a new
 /// build can't vouch for itself (B02); a build of one's own goes in only
 /// where `agentd.toml` allows unsigned builds (B03).
-fn upgrade(sys: &System, file: &AdminFile, from: &Path, caller: &Passwd) -> Result<(), String> {
-    match signed(from) {
+///
+/// FILE is the administrator's own file, read once: what was read is what's
+/// checked, asked its version and installed, so a file put in its place
+/// meanwhile is never the one root installs. Its version is asked of the
+/// copy under `/opt/rovik/bin`, run as the administrator, never as root.
+/// A build older than the installed one is refused unless the command says
+/// `--allow-downgrade`.
+fn upgrade(
+    sys: &System,
+    file: &AdminFile,
+    from: &Path,
+    caller: &Passwd,
+    allow_downgrade: bool,
+) -> Result<(), String> {
+    let bytes = read_build(from)?;
+    match signed(from, &bytes) {
         Ok(true) => {}
         Ok(false) if file.allow_unsigned => {}
         Ok(false) => {
@@ -403,8 +426,15 @@ fn upgrade(sys: &System, file: &AdminFile, from: &Path, caller: &Passwd) -> Resu
         }
         Err(why) => return Err(format!("{}: {why} It wasn't installed.", from.display())),
     }
-    let version = version_of(sys, from, caller)?;
-    install_binary(sys, from, &version)?;
+    let staged = format!("{BIN_DIR}/.rovik-agentd.upgrade.{}", std::process::id());
+    sys.write(&staged, &bytes, 0o755)?;
+    let version = match place_build(sys, &staged, from, caller, allow_downgrade) {
+        Ok(version) => version,
+        Err(why) => {
+            let _ = std::fs::remove_file(sys.path(&staged));
+            return Err(why);
+        }
+    };
     if sys.systemd() {
         sys.run("systemctl", &["try-restart", "rovik-agentd@*.service"])?;
     }
@@ -413,6 +443,91 @@ fn upgrade(sys: &System, file: &AdminFile, from: &Path, caller: &Passwd) -> Resu
          on it."
     );
     Ok(())
+}
+
+/// The build staged under `/opt/rovik/bin` as `rovik-agentd-<version>`,
+/// the link moved to it: its version. `named` is the file it came from,
+/// for the messages.
+fn place_build(
+    sys: &System,
+    staged: &str,
+    named: &Path,
+    caller: &Passwd,
+    allow_downgrade: bool,
+) -> Result<String, String> {
+    let version = version_of(sys, &sys.path(staged), named, caller)?;
+    if !allow_downgrade {
+        if let Some(installed) = installed_version(sys) {
+            if older(&version, &installed) == Some(true) {
+                return Err(format!(
+                    "Rovik {version} is older than the installed {installed}. To install it \
+                     anyway, add --allow-downgrade."
+                ));
+            }
+        }
+    }
+    let name = format!("rovik-agentd-{version}");
+    sys.rename(staged, &format!("{BIN_DIR}/{name}"))?;
+    sys.link(INSTALLED, &name)?;
+    Ok(version)
+}
+
+/// FILE's bytes, read once from the regular file it is. Not through a
+/// link, whose target its owner could move meanwhile.
+fn read_build(from: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(from)
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::ELOOP) => format!("{} is a link: name the build itself.", from.display()),
+            _ => format!("{}: {e}", from.display()),
+        })?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("{}: {e}", from.display()))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "{} isn't a regular file: name the build itself.",
+            from.display()
+        ));
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|e| format!("{}: {e}", from.display()))?;
+    Ok(bytes)
+}
+
+/// The version the installed link names, `rovik-agentd-<version>`, if it
+/// does.
+fn installed_version(sys: &System) -> Option<String> {
+    let target = std::fs::read_link(sys.path(INSTALLED)).ok()?;
+    let name = target.file_name()?.to_str()?;
+    name.strip_prefix("rovik-agentd-").map(str::to_string)
+}
+
+/// Whether `version` comes before `than`, both numbered as releases are
+/// (`1.2.3`, or `1.2.3-4` for a pre-release, which comes before `1.2.3`);
+/// none when either isn't.
+fn older(version: &str, than: &str) -> Option<bool> {
+    Some(release_number(version)? < release_number(than)?)
+}
+
+/// `(major, minor, patch, pre-release)`: a release itself gets the highest
+/// pre-release number, so its pre-releases come before it.
+fn release_number(version: &str) -> Option<(u64, u64, u64, u64)> {
+    let (numbers, pre) = match version.split_once('-') {
+        Some((numbers, pre)) => (numbers, pre.parse::<u64>().ok()?),
+        None => (version, u64::MAX),
+    };
+    let mut parts = numbers.split('.').map(|part| part.parse::<u64>().ok());
+    let (major, minor, patch) = (parts.next()??, parts.next()??, parts.next()??);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch, pre))
 }
 
 /// `admin uninstall`: every daemon stopped, and Rovik's files gone. Each
@@ -585,16 +700,20 @@ fn regular_user(name: &str) -> Result<Passwd, String> {
     Ok(account)
 }
 
-/// What `from version` says, run as the administrator, not as root.
-fn version_of(sys: &System, from: &Path, caller: &Passwd) -> Result<String, String> {
-    let mut command = Command::new(from);
+/// What `run version` says, run as the administrator whenever this process
+/// is root: a build that isn't a release's is the administrator's own
+/// program. `named` is the file as the administrator gave it, for the
+/// messages.
+fn version_of(sys: &System, run: &Path, named: &Path, caller: &Passwd) -> Result<String, String> {
+    let _ = sys;
+    let mut command = Command::new(run);
     command.arg("version");
-    if sys.live() {
+    if euid() == 0 {
         command.uid(caller.uid).gid(caller.gid);
     }
     let out = command
         .output()
-        .map_err(|e| format!("{}: {e}", from.display()))?;
+        .map_err(|e| format!("{}: {e}", named.display()))?;
     let text = String::from_utf8_lossy(&out.stdout);
     let version = text
         .strip_prefix("rovik-agentd ")
@@ -603,14 +722,14 @@ fn version_of(sys: &System, from: &Path, caller: &Passwd) -> Result<String, Stri
             v.chars()
                 .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c))
         })
-        .ok_or_else(|| format!("{} isn't a rovik-agentd build.", from.display()))?;
+        .ok_or_else(|| format!("{} isn't a rovik-agentd build.", named.display()))?;
     Ok(version.to_string())
 }
 
-/// Whether `from` comes with a signature, `<from>.sig`, that this binary's
-/// release key checks; an error when it has one that doesn't. Without a
-/// key, nothing is taken as signed.
-fn signed(from: &Path) -> Result<bool, String> {
+/// Whether `from`, read as `bytes`, comes with a signature, `<from>.sig`,
+/// that this binary's release key checks; an error when it has one that
+/// doesn't. Without a key, nothing is taken as signed.
+fn signed(from: &Path, bytes: &[u8]) -> Result<bool, String> {
     let mut signature = from.as_os_str().to_owned();
     signature.push(release::SIGNATURE);
     let Ok(signature) = std::fs::read_to_string(PathBuf::from(signature)) else {
@@ -619,8 +738,7 @@ fn signed(from: &Path) -> Result<bool, String> {
     let Some(key) = release::key() else {
         return Ok(false);
     };
-    let bytes = std::fs::read(from).map_err(|e| e.to_string())?;
-    release::verify(&key, &bytes, &signature).map(|()| true)
+    release::verify(&key, bytes, &signature).map(|()| true)
 }
 
 fn euid() -> u32 {
@@ -705,6 +823,23 @@ mod tests {
             .unwrap();
         let said = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && said.trim().is_empty(), "{said}");
+    }
+
+    #[test]
+    fn releases_are_ordered_by_their_numbers() {
+        assert_eq!(older("1.2.3", "1.2.4"), Some(true));
+        assert_eq!(older("1.2.4", "1.2.3"), Some(false));
+        assert_eq!(older("1.10.0", "1.9.9"), Some(false));
+        assert_eq!(older("2.0.0", "1.99.99"), Some(false));
+        // A pre-release comes before its release, and after the one before.
+        assert_eq!(older("1.2.3-4", "1.2.3"), Some(true));
+        assert_eq!(older("1.2.3-4", "1.2.3-5"), Some(true));
+        assert_eq!(older("1.2.3-4", "1.2.2"), Some(false));
+        assert_eq!(older("1.2.3", "1.2.3"), Some(false));
+        assert_eq!(older("dev", "1.2.3"), None);
+        assert_eq!(older("1.2", "1.2.3"), None);
+        assert_eq!(older("1.2.3.4", "1.2.3"), None);
+        assert_eq!(older("1.2.3-beta", "1.2.3"), None);
     }
 
     #[test]

@@ -8,3 +8,5 @@ src-tauri
 scripts/eval/expected
 .eval-cache
 eval-results
+# Monaco theme data, vendored as they came
+src/lib/monacoThemes/data

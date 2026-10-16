@@ -25,7 +25,7 @@ use rovik_protocol::Secret;
 use russh::client::{self, AuthResult, Handle, Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::agent::AgentIdentity;
-use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
+use russh::keys::{Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::ChannelMsg;
 use std::fmt;
 use std::future::Future;
@@ -42,6 +42,15 @@ pub const KEEPALIVE: Duration = Duration::from_secs(15);
 
 /// How long the TCP connection and the handshake may take.
 const CONNECT_WAIT: Duration = Duration::from_secs(20);
+
+/// How long a command on the host may take before it's given up on
+/// (`exec`): the setup commands take seconds, a daemon's stop at most
+/// 100 s.
+pub const EXEC_WAIT: Duration = Duration::from_secs(15 * 60);
+
+/// The most of a command's output kept, per stream: a host that never
+/// stops printing can't fill the app's memory.
+const OUTPUT_CAP: usize = 16 << 20;
 
 /// The command whose stdin and stdout reach the daemon's socket, where the
 /// host refuses streamlocal forwarding: the installed binary (5.3).
@@ -209,7 +218,15 @@ impl Ssh {
             pinned: pinned.clone(),
             seen: Arc::clone(&seen),
         };
+        let mut preferred = russh::Preferred::DEFAULT.clone();
+        if let Some(pinned) = &pinned {
+            // The pinned key's kind first, as ssh does with known_hosts: a
+            // host that has keys of several kinds shows the one it's known
+            // by, not one it gained since, which would read as a change.
+            preferred.key = preferring(&pinned.algorithm(), &preferred.key).into();
+        }
         let config = Arc::new(client::Config {
+            preferred,
             keepalive_interval: Some(KEEPALIVE),
             keepalive_max: 3,
             inactivity_timeout: None,
@@ -299,11 +316,38 @@ impl Ssh {
     }
 
     /// Runs `command` on the host with `input` on its stdin, then the end
-    /// of it, and collects its output.
+    /// of it, and collects its output; given up on after `EXEC_WAIT`.
     pub async fn exec_with_input(&self, command: &str, input: &[u8]) -> Result<Output, SshError> {
+        self.exec_within(command, input, EXEC_WAIT).await
+    }
+
+    /// `exec_with_input`, given up on after `wait`: a host that hangs
+    /// mustn't hang the app.
+    pub async fn exec_within(
+        &self,
+        command: &str,
+        input: &[u8],
+        wait: Duration,
+    ) -> Result<Output, SshError> {
+        match tokio::time::timeout(wait, self.exec_now(command, input)).await {
+            Ok(result) => result,
+            Err(_) => Err(SshError::Failed(format!(
+                "`{command}` didn't finish on the host in {} s.",
+                wait.as_secs()
+            ))),
+        }
+    }
+
+    async fn exec_now(&self, command: &str, input: &[u8]) -> Result<Output, SshError> {
         let failed = |e: russh::Error| SshError::Failed(format!("`{command}`: {e}"));
         let mut channel = self.handle.channel_open_session().await.map_err(failed)?;
-        channel.exec(true, command).await.map_err(failed)?;
+        // Through sh: the commands are written for it, and the login shell
+        // the host would run them in may be another (fish, say).
+        let through_sh = format!("sh -c {}", quote(command));
+        channel
+            .exec(true, through_sh.as_str())
+            .await
+            .map_err(failed)?;
         if !input.is_empty() {
             channel.data(input).await.map_err(failed)?;
         }
@@ -311,8 +355,8 @@ impl Ssh {
         let mut output = Output::default();
         while let Some(message) = channel.wait().await {
             match message {
-                ChannelMsg::Data { data } => output.stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, ext: 1 } => output.stderr.extend_from_slice(&data),
+                ChannelMsg::Data { data } => keep(&mut output.stdout, &data),
+                ChannelMsg::ExtendedData { data, ext: 1 } => keep(&mut output.stderr, &data),
                 ChannelMsg::ExitStatus { exit_status } => output.status = Some(exit_status),
                 ChannelMsg::Failure => {
                     return Err(SshError::Failed(format!(
@@ -325,6 +369,31 @@ impl Ssh {
         }
         Ok(output)
     }
+}
+
+/// Appends `data` to `into`, up to `OUTPUT_CAP`: the start of a long
+/// output is what the commands' readers look at.
+fn keep(into: &mut Vec<u8>, data: &[u8]) {
+    let room = OUTPUT_CAP.saturating_sub(into.len());
+    into.extend_from_slice(&data[..data.len().min(room)]);
+}
+
+/// `text` in single quotes, for sh.
+pub fn quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// `order`, with the algorithms of `pinned`'s kind first: RSA keys sign
+/// with any of their hashes, ECDSA keys are their curve's.
+fn preferring(pinned: &Algorithm, order: &[Algorithm]) -> Vec<Algorithm> {
+    let same_kind = |a: &Algorithm| match (a, pinned) {
+        (Algorithm::Rsa { .. }, Algorithm::Rsa { .. }) => true,
+        (Algorithm::Ecdsa { curve }, Algorithm::Ecdsa { curve: pinned }) => curve == pinned,
+        (a, pinned) => a == pinned,
+    };
+    let (first, rest): (Vec<Algorithm>, Vec<Algorithm>) =
+        order.iter().cloned().partition(same_kind);
+    first.into_iter().chain(rest).collect()
 }
 
 /// Why the host's key was refused: not pinned yet, or not the one pinned.
@@ -403,22 +472,34 @@ async fn with_agent(
         .await
         .map_err(dropped)?
         .flatten();
+    let mut last_error = None;
     for identity in identities {
         // Certificates are the user's own ssh's (H03).
         let AgentIdentity::PublicKey { key, .. } = identity else {
             continue;
         };
-        let tried = handle
+        // A key the agent won't sign with (a security key not touched in
+        // time, a confirmation declined) leaves the others to try.
+        let tried = match handle
             .authenticate_publickey_with(user, key, hash, &mut agent)
             .await
-            .map_err(|e| SshError::Key(format!("the SSH agent: {e:?}")))?;
+        {
+            Ok(tried) => tried,
+            Err(e) => {
+                last_error = Some(format!("{e:?}"));
+                continue;
+            }
+        };
         if tried.success() {
             return Ok(());
         }
     }
-    Err(SshError::Denied(format!(
-        "none of the SSH agent's keys is the way in for {user}."
-    )))
+    Err(SshError::Denied(match last_error {
+        Some(e) => {
+            format!("none of the SSH agent's keys is the way in for {user} (the agent said: {e}).")
+        }
+        None => format!("none of the SSH agent's keys is the way in for {user}."),
+    }))
 }
 
 type AnyAgent = AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>>;
@@ -486,7 +567,7 @@ async fn interactively(
                         "each of the host's questions needs an answer.".into(),
                     ));
                 }
-                let answers = answers.into_iter().map(|a| a.0).collect();
+                let answers = answers.iter().map(|a| a.0.clone()).collect();
                 reply = handle
                     .authenticate_keyboard_interactive_respond(answers)
                     .await

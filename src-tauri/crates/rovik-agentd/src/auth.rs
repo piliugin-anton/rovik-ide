@@ -17,7 +17,14 @@ impl Tokens {
             let hash = parse_hex(hex).ok_or_else(|| {
                 format!("config.toml: the token hash of {computer} isn't 64 hex digits")
             })?;
-            by_hash.insert(hash, computer.clone());
+            // One token names one computer: with two, which connected
+            // would be a matter of order.
+            if let Some(other) = by_hash.insert(hash, computer.clone()) {
+                return Err(format!(
+                    "config.toml: {other} and {computer} have the same token: remove one \
+                     of them, and deploy again from that computer"
+                ));
+            }
         }
         Ok(Tokens(by_hash))
     }
@@ -66,6 +73,15 @@ mod tests {
         assert_eq!(tokens.computer("secret-2"), Some("desk"));
         assert_eq!(tokens.computer("secret-3"), None);
         assert_eq!(tokens.len(), 2);
+    }
+
+    #[test]
+    fn two_computers_with_one_token_are_refused() {
+        let mut hashes = BTreeMap::new();
+        hashes.insert("laptop".to_string(), hex(&hash("secret-1")));
+        hashes.insert("desk".to_string(), hex(&hash("secret-1")));
+        let err = Tokens::new(&hashes).err().unwrap();
+        assert!(err.contains("desk") && err.contains("laptop"), "{err}");
     }
 
     #[test]

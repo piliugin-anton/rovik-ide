@@ -4959,6 +4959,7 @@ dependencies = [
  "git2",
  "ignore",
  "libc",
+ "log",
  "notify",
  "portable-pty",
  "regex",
@@ -4991,6 +4992,7 @@ dependencies = [
  "minisign-verify",
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]

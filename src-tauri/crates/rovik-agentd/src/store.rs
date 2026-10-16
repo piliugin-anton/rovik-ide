@@ -182,6 +182,11 @@ pub struct Store {
     state_file: PathBuf,
     keys_file: PathBuf,
     inner: Mutex<Inner>,
+    /// Taken before `inner` by what changes the state, and held while
+    /// state.json is written: the writes go out in the order of the
+    /// changes, and the readers of `inner` (every event's route) wait for
+    /// none of them.
+    writing: Mutex<()>,
 }
 
 struct Inner {
@@ -220,11 +225,17 @@ impl Store {
                 keys,
                 configs,
             }),
+            writing: Mutex::new(()),
         })
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The turn to change the state and write it, before `lock`.
+    fn writing(&self) -> MutexGuard<'_, ()> {
+        self.writing.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The computer that started the chat here.
@@ -240,6 +251,7 @@ impl Store {
     /// settings and configuration, without them, to state.json. Another
     /// computer's chat is refused.
     pub fn started(&self, computer: &str, start: &StartRequest) -> Result<(), Fail> {
+        let _writing = self.writing();
         let mut inner = self.lock();
         let earlier = inner.state.chats.get(&start.dialog_id).cloned();
         inner.check_owner(computer, &start.dialog_id)?;
@@ -257,18 +269,19 @@ impl Store {
         if keys_changed {
             inner.keys.write(&self.keys_file).map_err(internal)?;
         }
-        self.save(&inner).map_err(internal)
+        self.save(inner).map_err(internal)
     }
 
     /// `computer`'s configuration from now on, and only its: the app sends
     /// it without keys, which come from keys.json.
     pub fn configure(&self, computer: &str, config: AgentConfig) -> Result<(), String> {
+        let _writing = self.writing();
         let mut inner = self.lock();
         if inner.keys.take(config.models()) {
             inner.keys.write(&self.keys_file)?;
         }
         inner.set_config(computer, config);
-        self.save(&inner)
+        self.save(inner)
     }
 
     /// The providers whose key keys.json keeps, and their base URLs: never
@@ -306,6 +319,7 @@ impl Store {
 
     /// The project as its computer last described it (6.4).
     pub fn ensure_project(&self, project: &Project, settings: Option<Value>) -> Result<(), String> {
+        let _writing = self.writing();
         let mut inner = self.lock();
         let state = ProjectState {
             name: project.name.clone(),
@@ -316,7 +330,7 @@ impl Store {
             return Ok(());
         }
         inner.state.projects.insert(project.id.clone(), state);
-        self.save(&inner)
+        self.save(inner)
     }
 
     pub fn project(&self, id: &str) -> Option<ProjectState> {
@@ -331,6 +345,7 @@ impl Store {
         place: Place,
         base: &str,
     ) -> Result<(), Fail> {
+        let _writing = self.writing();
         let mut inner = self.lock();
         inner.check_owner(computer, dialog_id)?;
         let chat = inner
@@ -344,7 +359,7 @@ impl Store {
         chat.project = Some(place.project);
         chat.worktree = Some(place.worktree);
         chat.base = Some(base.to_string());
-        self.save(&inner).map_err(internal)
+        self.save(inner).map_err(internal)
     }
 
     /// Where the chat works, once it has a worktree.
@@ -355,6 +370,15 @@ impl Store {
             project: chat.project.clone()?,
             worktree: chat.worktree.clone()?,
         })
+    }
+
+    /// The chat's worktree went (R01), its rows staying: a released chat's.
+    pub fn worktree_gone(&self, dialog_id: &str) {
+        self.change(dialog_id, |chat| {
+            chat.worktree = None;
+            chat.project = None;
+            chat.base = None;
+        });
     }
 
     /// The commit the chat's worktree is based on.
@@ -470,6 +494,7 @@ impl Store {
     /// `computer` moved the chat here (6.8): the import's state replaces
     /// all an earlier stay left.
     pub fn imported(&self, computer: &str, dialog_id: &str, moved: Moved) -> Result<(), Fail> {
+        let _writing = self.writing();
         let mut inner = self.lock();
         inner.check_owner(computer, dialog_id)?;
         let chat = ChatState {
@@ -483,7 +508,7 @@ impl Store {
             ..ChatState::default()
         };
         inner.state.chats.insert(dialog_id.to_string(), chat);
-        self.save(&inner).map_err(internal)
+        self.save(inner).map_err(internal)
     }
 
     /// The chat as this daemon has it (`ChatOwner`): none when it doesn't
@@ -549,9 +574,10 @@ impl Store {
 
     /// A deleted chat: nothing of it is kept.
     pub fn forget(&self, dialog_id: &str) {
+        let _writing = self.writing();
         let mut inner = self.lock();
         if inner.state.chats.remove(dialog_id).is_some() {
-            if let Err(e) = self.save(&inner) {
+            if let Err(e) = self.save(inner) {
                 log::error!("state.json: {e}");
             }
         }
@@ -643,6 +669,7 @@ impl Store {
 
     /// Changes a chat known here, and saves what changed.
     fn change(&self, dialog_id: &str, f: impl FnOnce(&mut ChatState)) {
+        let _writing = self.writing();
         let mut inner = self.lock();
         let Some(chat) = inner.state.chats.get_mut(dialog_id) else {
             return;
@@ -652,13 +679,17 @@ impl Store {
         if *chat == before {
             return;
         }
-        if let Err(e) = self.save(&inner) {
+        if let Err(e) = self.save(inner) {
             log::error!("state.json: {e}");
         }
     }
 
-    fn save(&self, inner: &Inner) -> Result<(), String> {
+    /// Writes the state, letting go of `inner` first: the write syncs the
+    /// file to disk, which every event's route would otherwise wait for.
+    /// The caller holds `writing`, so the writes keep the changes' order.
+    fn save(&self, inner: MutexGuard<'_, Inner>) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(&inner.state).map_err(|e| e.to_string())?;
+        drop(inner);
         rovik_core::atomic_file::write_atomic_private(&self.state_file, &bytes)
             .map_err(|e| format!("{}: {e}", self.state_file.display()))
     }

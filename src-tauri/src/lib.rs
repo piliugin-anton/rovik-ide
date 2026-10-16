@@ -26,7 +26,16 @@ pub fn run() {
     process::adopt_login_shell_path();
     // Then the core's runtime (rt.rs), Tauri's too: one for the process.
     tauri::async_runtime::set(rt::handle().clone());
+    init_log();
     tauri::Builder::default()
+        // Must be the first plugin: a second launch focuses this window
+        // instead of opening the chat database a second time.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(TerminalState::default())
         .manage(lsp::LspState::default())
@@ -36,14 +45,6 @@ pub fn run() {
             gitignore: Mutex::new(None),
             id_to_path: Mutex::new(HashMap::new()),
         }) // Register our state manager
-        // Must be the first plugin: a second launch focuses this window
-        // instead of opening the chat database a second time.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = app.path().app_config_dir()?;
@@ -70,21 +71,23 @@ pub fn run() {
             }
             // Settings → Cloud hosts (U01), and the hosts deployed there,
             // connected from the start.
-            let hosts = HostsPage::new(
+            let hosts = Arc::new(HostsPage::new(
                 config,
                 data.join("ssh"),
                 secrets,
                 remote.clone(),
                 env!("CARGO_PKG_VERSION"),
-            );
-            {
-                let _runtime = rt::handle().enter();
+            ));
+            app.manage(hosts.clone());
+            app.manage(core);
+            app.manage(remote.clone());
+            // Off the main thread: connecting reads the hosts' tokens from
+            // the keychain, which may take a moment or ask the user, and
+            // the window comes first.
+            rt::spawn_blocking(move || {
                 remote_chats::from_env(&remote);
                 hosts.connect_all();
-            }
-            app.manage(Arc::new(hosts));
-            app.manage(core);
-            app.manage(remote);
+            });
             // The main window, as tauri.conf.json describes it (`create`
             // is off there): built here to let its page read the clipboard,
             // which a config can't. Pasting an image into the chat input
@@ -138,7 +141,6 @@ pub fn run() {
             commands::chat::chat_get_messages_around,
             commands::chat::chat_get_message_body,
             commands::chat::chat_create_dialog,
-            commands::chat::chat_append_messages,
             commands::chat::chat_update_message,
             commands::chat::chat_rename_dialog,
             commands::chat::chat_delete_dialog,
@@ -331,6 +333,35 @@ fn attachment_response(
 
 /// The hosts' own events, apart from the chats': connections and transfers.
 const CLOUD_EVENT: &str = "cloud-event";
+
+/// The `log` crate's messages (rovik-client's, mostly) on stderr, where
+/// the app's own go. `ROVIK_LOG` sets the level (error, warn, info, debug,
+/// trace); info without it.
+struct StderrLog;
+
+impl log::Log for StderrLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{} {}: {}", record.level(), record.target(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn init_log() {
+    let level = std::env::var("ROVIK_LOG")
+        .ok()
+        .and_then(|level| level.parse::<log::LevelFilter>().ok())
+        .unwrap_or(log::LevelFilter::Info);
+    if log::set_logger(&StderrLog).is_ok() {
+        log::set_max_level(level);
+    }
+}
 
 /// The core's events, to every window (src/lib/agentRuns.ts listens).
 struct WindowEvents(tauri::AppHandle);

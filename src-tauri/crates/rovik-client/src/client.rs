@@ -19,13 +19,19 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::{self, ClientRequestBuilder, Message};
 
 /// How long a call waits for its reply, unless it says otherwise.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a call over HTTP (`POST /call`) may take: a message of
+/// megabytes (attached text files) on a slow uplink, or a reply of that
+/// size, which a frame's 60 s would cut, and the daemon then run while
+/// the app gives the message back to the input (6.11).
+pub const POST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long the daemon has to answer `Hello`.
 const WELCOME_WAIT: Duration = Duration::from_secs(10);
 /// After a lost link, the client waits this long before connecting again,
@@ -99,8 +105,9 @@ pub type Sink = Arc<dyn Fn(Incoming) + Send + Sync>;
 #[derive(Clone)]
 pub struct Client {
     shared: Arc<Shared>,
-    /// Dropped with the last clone, which ends the connection's task.
-    _alive: Arc<oneshot::Sender<()>>,
+    /// Dropped with the last clone, which ends the connection's task; or
+    /// told to end it (`stop`), for a client put in place of this one.
+    alive: Arc<watch::Sender<bool>>,
 }
 
 struct Shared {
@@ -137,12 +144,19 @@ impl Client {
             next_id: AtomicU64::new(1),
             link: Mutex::new(Link::default()),
         });
-        let (alive, stop) = oneshot::channel();
+        let (alive, stop) = watch::channel(false);
         tokio::spawn(run(shared.clone(), stop));
         Client {
             shared,
-            _alive: Arc::new(alive),
+            alive: Arc::new(alive),
         }
+    }
+
+    /// Ends the connection and its task, whatever clones are still held
+    /// (a call waiting on it fails as the link drops): for a client another
+    /// takes the place of.
+    pub fn stop(&self) {
+        let _ = self.alive.send(true);
     }
 
     pub fn state(&self) -> HostState {
@@ -189,16 +203,6 @@ impl Client {
                 ),
             ));
         }
-        let reply = async {
-            if call.len() > MAX_FRAME {
-                return self.post_call(call).await;
-            }
-            match self.over_websocket(id, call.clone()).await {
-                // Only a read's reply is that big, so asking again is safe.
-                Err(fail) if fail.code == FailCode::TooLarge => self.post_call(call).await,
-                reply => reply,
-            }
-        };
         let late = || {
             self.shared.lock().waiting.remove(&id);
             Fail::new(
@@ -206,9 +210,22 @@ impl Client {
                 format!("{host} didn't answer in time."),
             )
         };
-        tokio::time::timeout(timeout, reply)
-            .await
-            .unwrap_or_else(|_| Err(late()))
+        // A call over HTTP carries a big message, or brings a big reply, on
+        // a link that may be slow: it gets `POST_TIMEOUT`, not the frame's.
+        let posted = |call: String| async {
+            tokio::time::timeout(POST_TIMEOUT, self.post_call(call))
+                .await
+                .unwrap_or_else(|_| Err(late()))
+        };
+        if call.len() > MAX_FRAME {
+            return posted(call).await;
+        }
+        match tokio::time::timeout(timeout, self.over_websocket(id, call.clone())).await {
+            // Only a read's reply is that big, so asking again is safe.
+            Ok(Err(fail)) if fail.code == FailCode::TooLarge => posted(call).await,
+            Ok(reply) => reply,
+            Err(_) => Err(late()),
+        }
     }
 
     async fn over_websocket(&self, id: u64, call: String) -> Result<Response, Fail> {
@@ -381,15 +398,16 @@ enum Ended {
     Slept,
 }
 
-/// Sessions, one after another, until the client goes.
-async fn run(shared: Arc<Shared>, mut stop: oneshot::Receiver<()>) {
+/// Sessions, one after another, until the client goes: its last clone
+/// dropped, or `stop` told.
+async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
     let mut wait = FIRST_BACKOFF;
     loop {
         shared.set_state(HostState::Connecting);
         let ended = tokio::select! {
             ended = session(&shared) => ended,
             _ = slept(CLOCK_TICK, SystemTime::now) => Ended::Slept,
-            _ = &mut stop => break,
+            _ = stop.changed() => break,
         };
         shared.end_session();
         match ended {
@@ -408,11 +426,22 @@ async fn run(shared: Arc<Shared>, mut stop: oneshot::Receiver<()>) {
         tokio::select! {
             _ = tokio::time::sleep(wait) => {}
             _ = slept(CLOCK_TICK, SystemTime::now) => {}
-            _ = &mut stop => break,
+            _ = stop.changed() => break,
         }
         wait = (wait * 2).min(MAX_BACKOFF);
     }
     shared.end_session();
+}
+
+/// A task that ends with the session it serves, however the session ends:
+/// dropped when the session's future is (the computer slept, the client
+/// stopped), not only when it returns.
+struct Ending(tokio::task::JoinHandle<()>);
+
+impl Drop for Ending {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Once the computer has slept: `wall` went `SLEPT` further than the
@@ -480,14 +509,14 @@ async fn session(shared: &Shared) -> Ended {
     let (writer, mut frames) = mpsc::unbounded_channel::<String>();
     let subscribe = serde_json::to_string(&Frame::Subscribe { since }).expect("a frame");
     let _ = writer.send(subscribe);
-    let writing = tokio::spawn(async move {
+    let _writing = Ending(tokio::spawn(async move {
         while let Some(frame) = frames.recv().await {
             if sink.send(Message::Text(frame.into())).await.is_err() {
                 break;
             }
         }
         let _ = sink.close().await;
-    });
+    }));
     shared.lock().writer = Some(writer);
     shared.set_state(HostState::Ready);
     while let Some(frame) = next_frame(&mut stream).await {
@@ -513,7 +542,6 @@ async fn session(shared: &Shared) -> Ended {
             _ => {}
         }
     }
-    writing.abort();
     Ended::Lost { served: true }
 }
 

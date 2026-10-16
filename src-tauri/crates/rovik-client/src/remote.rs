@@ -29,6 +29,10 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
+/// How long a host has to answer what every host is asked (its status, a
+/// setting): one that stalls can't hold the others up.
+const HOSTS_WAIT: Duration = Duration::from_secs(15);
+
 mod back;
 mod bar;
 mod mirror;
@@ -645,12 +649,26 @@ impl Remote {
             .await
     }
 
-    /// What runs and waits, here and on every connected host (6.1).
+    /// What runs and waits, here and on every connected host (6.1). The
+    /// hosts are asked side by side, and a host that doesn't answer in
+    /// `HOSTS_WAIT` is left out, so one that stalls holds up neither the
+    /// others nor the frontend's start.
     pub async fn status(&self) -> Result<AgentStatus, Fail> {
         let reply = rovik_core::dispatch(&self.core, Request::AgentStatus).await?;
         let mut status = AgentStatus::try_from(reply)?;
-        for (host, client) in self.hosts.ready() {
-            match client.request::<AgentStatus>(Request::AgentStatus).await {
+        let asked = self
+            .hosts
+            .ready()
+            .into_iter()
+            .map(|(host, client)| async move {
+                let theirs = client
+                    .call_within(Request::AgentStatus, HOSTS_WAIT)
+                    .await
+                    .and_then(AgentStatus::try_from);
+                (host, theirs)
+            });
+        for (host, theirs) in futures_util::future::join_all(asked).await {
+            match theirs {
                 Ok(theirs) => {
                     status.runs.extend(theirs.runs);
                     status.subagents.extend(theirs.subagents);
@@ -666,20 +684,24 @@ impl Remote {
     }
 
     /// A setting every run follows, applied here and sent to every
-    /// connected host (6.1). A configuration goes without its keys, which
-    /// the host has from the starts (D11), and under the host's policy.
+    /// connected host (6.1), side by side. A configuration goes without its
+    /// keys, which the host has from the starts (D11), and under the host's
+    /// policy.
     pub async fn everywhere(&self, request: Request) -> Result<Response, Fail> {
         let reply = rovik_core::dispatch(&self.core, request.clone()).await?;
-        for (host, client) in self.hosts.ready() {
+        let sent = self.hosts.ready().into_iter().map(|(host, client)| {
             let mut request = request.clone();
             if let Request::AgentConfigure(config) = &mut request {
                 *config = config.without_keys();
                 self.policy(&host).apply(config);
             }
-            if let Err(fail) = client.call(request).await {
-                log::warn!("{host} didn't take a setting: {fail}");
+            async move {
+                if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
+                    log::warn!("{host} didn't take a setting: {fail}");
+                }
             }
-        }
+        });
+        futures_util::future::join_all(sent).await;
         Ok(reply)
     }
 
@@ -761,9 +783,14 @@ impl Remote {
                 self.place(child_dialog_id, host);
             }
         }
-        // The daemon sends only this computer's chats: a second guard.
+        // The daemon sends only this computer's chats: a second guard. A
+        // chat not placed here yet, a subagent's made on the host while
+        // this computer was away and brought by a pull, is placed by what
+        // the database says of it.
         if let Some(dialog) = event.dialog_id() {
-            if self.host_of(dialog).as_deref() != Some(host) {
+            if self.host_of(dialog).as_deref() != Some(host)
+                && !self.placed_by_location(dialog, host).await
+            {
                 return;
             }
         }
@@ -844,12 +871,75 @@ impl Remote {
         self.core.emit(event);
     }
 
+    /// Whether the database puts the chat on `host`: placed here when it
+    /// does, so its events and requests are routed from then on.
+    async fn placed_by_location(&self, dialog_id: &str, host: &str) -> bool {
+        let id = dialog_id.to_string();
+        let located = self.core.db.read(move |c| location::of_chat(c, &id)).await;
+        match located {
+            Ok(Location::Host(at)) if at == host => {
+                self.place(dialog_id, host);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Subagents' chats that this computer learns of from the host's rows,
+    /// not from a `SubagentStarted` it saw (made while this computer was
+    /// away): placed here, and the frontend told of each as of one that
+    /// started, so their chats show as subagents' and their approvals can be
+    /// answered.
+    pub(super) async fn note_children(&self, host: &str, chats: &[String]) {
+        for chat in chats {
+            let id = chat.clone();
+            let child = self
+                .core
+                .db
+                .read(move |c| store::child_dialog(c, &id))
+                .await;
+            let Ok(Some((child, title))) = child else {
+                continue;
+            };
+            if self.host_of(&child.parent_id).as_deref() != Some(host) {
+                continue;
+            }
+            self.place(&child.id, host);
+            self.core.emit(AgentEvent::SubagentStarted {
+                dialog_id: child.parent_id,
+                tool_call_id: child.parent_call_id,
+                child_dialog_id: child.id,
+                kind: child.kind,
+                model: String::new(),
+                goal: title,
+            });
+        }
+    }
+
     /// Back after missing events (4.3): the frontend is told what runs and
-    /// waits on the host now, and of the runs that ended meanwhile.
+    /// waits on the host now, of the runs that ended meanwhile, and of the
+    /// subagents going there, whose chats it may not have seen start.
     async fn catch_up(&self, host: &str) {
         let Some(mut status) = self.status_of(host).await else {
             return;
         };
+        for subagent in std::mem::take(&mut status.subagents) {
+            if self.host_of(&subagent.parent_dialog_id).as_deref() != Some(host) {
+                continue;
+            }
+            self.place(&subagent.dialog_id, host);
+            if let Some(info) = subagent.info {
+                let started = AgentEvent::SubagentStarted {
+                    dialog_id: subagent.parent_dialog_id,
+                    tool_call_id: subagent.parent_call_id,
+                    child_dialog_id: subagent.dialog_id,
+                    kind: info.kind,
+                    model: info.model,
+                    goal: info.goal,
+                };
+                self.agent_event(host, started).await;
+            }
+        }
         let runs = std::mem::take(&mut status.runs);
         let now: HashSet<&str> = runs.iter().map(|r| r.dialog_id.as_str()).collect();
         let ended: Vec<(String, String)> = self

@@ -9,7 +9,9 @@ use crate::subagents::{ModelChoice, SubagentConfig};
 use serde::{Deserialize, Serialize};
 
 /// A model, resolved by the frontend from the providers in its settings.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// Its `Debug` leaves the key out, so a request that gets logged can't
+/// leak it (plan rule 9).
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelProfile {
     /// `${providerId}::${modelId}`.
@@ -35,6 +37,25 @@ pub struct ModelProfile {
     /// "responses"), once found (`chat_request::responses`).
     #[serde(default)]
     pub api_route: Option<String>,
+}
+
+impl std::fmt::Debug for ModelProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelProfile")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &if self.api_key.is_empty() { "" } else { "…" })
+            .field("stream", &self.stream)
+            .field("vision", &self.vision)
+            .field("pdf", &self.pdf)
+            .field("context_tokens", &self.context_tokens)
+            .field("no_tools", &self.no_tools)
+            .field("first_byte_timeout_ms", &self.first_byte_timeout_ms)
+            .field("api_route", &self.api_route)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]

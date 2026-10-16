@@ -132,7 +132,8 @@ static HEADER: LazyLock<Regex> = LazyLock::new(|| {
 });
 /// "## Findings" at another level, in bold, or as a line of its own.
 static FINDINGS_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\s*(?:#{1,6}\s*)?[*_]*\s*findings(?:\s*\([^)\n]*\))?\s*:?\s*[*_]*\s*$").unwrap()
+    Regex::new(r"(?i)^\s*(?:#{1,6}\s*)?[*_]*\s*findings(?:\s*\([^)\n]*\))?\s*:?\s*[*_]*\s*$")
+        .unwrap()
 });
 static ANY_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*#{1,6}\s").unwrap());
 
@@ -968,9 +969,17 @@ mod tests {
             .unwrap_err()
             .contains("confirmed or plausible"));
         // Other words for it read as the nearer of the two.
-        for (written, read) in [("high", "confirmed"), ("Likely", "plausible"), ("medium", "plausible")] {
+        for (written, read) in [
+            ("high", "confirmed"),
+            ("Likely", "plausible"),
+            ("medium", "plausible"),
+        ] {
             let text = bad_confidence.replace("Confidence: 42", &format!("Confidence: {written}"));
-            assert_eq!(parse_findings(&text).unwrap()[0].confidence, read, "{written}");
+            assert_eq!(
+                parse_findings(&text).unwrap()[0].confidence,
+                read,
+                "{written}"
+            );
         }
         // A severity outside the three is read as the nearest of them.
         let critical = "## Findings\n1. [critical] a.rs:3 — x\n - Scenario: y\n - Fix: z\n - Confidence: confirmed";
@@ -1265,11 +1274,21 @@ mod tests {
         let fenced = format!("```markdown\n{GOOD}\n```");
         assert_eq!(parse_findings(&fenced).unwrap().len(), 2);
         assert!(subagent::format_problem(Kind::Reviewer.spec(), &fenced).is_none());
-        assert_eq!(parse_findings("```\n## Findings\nNone.\n```").unwrap(), vec![]);
-        assert_eq!(parse_findings(&format!("Here it is:\n```\n{GOOD}\n```")).unwrap().len(), 2);
-        assert!(parse_findings("My findings are below, in prose: the plan is fine.")
-            .unwrap_err()
-            .contains("no \"## Findings\" section"));
+        assert_eq!(
+            parse_findings("```\n## Findings\nNone.\n```").unwrap(),
+            vec![]
+        );
+        assert_eq!(
+            parse_findings(&format!("Here it is:\n```\n{GOOD}\n```"))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            parse_findings("My findings are below, in prose: the plan is fine.")
+                .unwrap_err()
+                .contains("no \"## Findings\" section")
+        );
     }
 
     /// Round 2 (§4.2), decided: `subagent::sections` takes only backtick
@@ -1394,11 +1413,22 @@ mod tests {
         ] {
             let f = parse_findings(&report).unwrap_or_else(|e| panic!("{report}: {e}"));
             assert_eq!(f.len(), 2, "{report}");
-            assert_eq!((f[0].severity.as_str(), f[0].step), ("high", Some(5)), "{report}");
+            assert_eq!(
+                (f[0].severity.as_str(), f[0].step),
+                ("high", Some(5)),
+                "{report}"
+            );
             assert_eq!(f[0].title, "The chip is lost", "{report}");
-            assert_eq!((f[1].location.as_str(), f[1].step), ("The plan", None), "{report}");
+            assert_eq!(
+                (f[1].location.as_str(), f[1].step),
+                ("The plan", None),
+                "{report}"
+            );
             assert_eq!(f[1].title, "Misses the request's second half", "{report}");
-            assert!(subagent::format_problem(Kind::Reviewer.spec(), &report).is_none(), "{report}");
+            assert!(
+                subagent::format_problem(Kind::Reviewer.spec(), &report).is_none(),
+                "{report}"
+            );
         }
         assert_eq!(parse_findings("# Findings\n\nNone.").unwrap(), vec![]);
         assert!(parse_findings("# Review\n\nFindings are listed below.").is_err());
@@ -1414,11 +1444,16 @@ mod tests {
         assert_eq!((f.len(), f[0].step), (1, Some(2)));
         let plan = "# Users\n\n## Steps\n\n1. **Table**\n   - Files: `src/db.rs`\n   - Add the table.\n\n## Validation\n- `cargo test`\n";
         let e = parse_findings(plan).unwrap_err();
-        assert!(e.starts_with("it is the plan sent back, not a report"), "{e}");
+        assert!(
+            e.starts_with("it is the plan sent back, not a report"),
+            "{e}"
+        );
         assert!(findingless(plan));
         assert!(findingless("Looks fine to me."));
         assert!(!findingless(bare));
-        assert!(!findingless("The plan misses the CLI caller.\n- Scenario: the CLI won't build.\n- Fix: add a step."));
+        assert!(!findingless(
+            "The plan misses the CLI caller.\n- Scenario: the CLI won't build.\n- Fix: add a step."
+        ));
     }
 
     /// A later round with nothing left: the words reviewers use for it,

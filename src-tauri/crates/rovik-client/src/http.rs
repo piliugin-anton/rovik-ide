@@ -171,14 +171,22 @@ where
 {
     let response = send(connector, identity, method, path, content_type, body).await?;
     let status = response.status();
-    let body = response
-        .into_body()
-        .collect()
+    let body = tokio::time::timeout(BODY_WAIT, response.into_body().collect())
         .await
+        .map_err(|_| unreachable(&identity.host))?
         .map_err(|_| unreachable(&identity.host))?
         .to_bytes();
     Ok((status, body))
 }
+
+/// How long the daemon has to answer a request's headers once it's sent:
+/// a link that half-dies (no keepalive on a Unix socket) would otherwise
+/// hold the caller, and whatever waits on it, for good.
+const RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a reply's body may take to arrive whole: they're bounded
+/// (`MAX_CALL`, `MAX_BLOB`), on a link that may be slow.
+const BODY_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// One request with this computer's token, on a connection of its own:
 /// the response, with its body still to come. A body of unknown length
@@ -195,8 +203,10 @@ where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let lost = |_| unreachable(&identity.host);
-    let io = connector.connect().await.map_err(lost)?;
+    let io = tokio::time::timeout(RESPONSE_WAIT, connector.connect())
+        .await
+        .map_err(|_| unreachable(&identity.host))?
+        .map_err(|_| unreachable(&identity.host))?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))
         .await
         .map_err(|_| unreachable(&identity.host))?;
@@ -213,9 +223,9 @@ where
     let request = request
         .body(body)
         .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
-    sender
-        .send_request(request)
+    tokio::time::timeout(RESPONSE_WAIT, sender.send_request(request))
         .await
+        .map_err(|_| unreachable(&identity.host))?
         .map_err(|_| unreachable(&identity.host))
 }
 

@@ -104,7 +104,10 @@ where
         )
         .await;
     }
-    log::info!("{computer} connected ({client}, protocol {protocol})");
+    log::info!(
+        "{computer} connected ({}, protocol {protocol})",
+        plain(&client)
+    );
 
     let (tx, mut rx) = mpsc::channel::<Out>(QUEUE);
     let writer = tokio::spawn(async move {
@@ -124,7 +127,18 @@ where
             Incoming::Frame(Frame::Call { id, req }) => {
                 let (daemon, tx, computer) = (daemon.clone(), tx.clone(), computer.clone());
                 tokio::spawn(async move {
-                    let res = daemon.answer(&computer, req).await;
+                    // A call that panics is still answered: its task alone
+                    // ends, and the client would otherwise wait for a reply
+                    // that never comes.
+                    let answered =
+                        tokio::spawn(async move { daemon.answer(&computer, req).await }).await;
+                    let res = answered.unwrap_or_else(|e| {
+                        log::error!("a call failed on the server: {e}");
+                        Err(Fail::new(
+                            FailCode::Internal,
+                            "The request failed on the server; its log says why.",
+                        ))
+                    });
                     let _ = tx.send(Out::Frame(Frame::Reply { id, res })).await;
                 });
             }
@@ -196,6 +210,19 @@ async fn subscribe(
             }
         }
     })
+}
+
+/// What a client says of itself, fit for one line of the log: control
+/// characters out, and no longer than a line.
+fn plain(client: &str) -> String {
+    let mut text: String = client
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if text.chars().count() > 80 {
+        text = text.chars().take(79).chain(std::iter::once('…')).collect();
+    }
+    text
 }
 
 enum Incoming {

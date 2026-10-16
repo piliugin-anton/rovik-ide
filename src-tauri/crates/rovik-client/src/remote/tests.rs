@@ -294,6 +294,40 @@ async fn events_reach_the_frontend_as_6_1_says() {
     assert!(sent[4]["request"].get("remote").is_none(), "a command");
 }
 
+/// A chat the database puts on the host, which nothing placed here yet (a
+/// subagent's chat made while this computer was away, brought by a pull):
+/// its events are passed on, and it's routed from then on; one on no host
+/// is dropped as before.
+#[tokio::test]
+async fn a_chat_the_database_puts_on_the_host_is_placed_by_its_first_event() {
+    let app = App::new();
+    app.chat("sub", None, Vec::new()).await;
+    app.chat("elsewhere", None, Vec::new()).await;
+    app.core
+        .db
+        .write(|c| location::set(c, "sub", &Location::Host(HOST.into())))
+        .await
+        .unwrap();
+    let remote = Remote::new(app.core.clone());
+    assert_eq!(remote.host_of("sub"), None);
+    for chat in ["sub", "elsewhere"] {
+        let started = AgentEvent::RunStarted {
+            dialog_id: chat.into(),
+            run_id: "r".into(),
+        };
+        remote.receive(HOST, event(started)).await;
+    }
+    assert_eq!(remote.host_of("sub").as_deref(), Some(HOST));
+    assert_eq!(remote.host_of("elsewhere"), None);
+    let sent = app.sent();
+    let chats: Vec<&str> = sent
+        .iter()
+        .filter(|e| e["type"] == "runStarted")
+        .map(|e| e["dialogId"].as_str().unwrap())
+        .collect();
+    assert_eq!(chats, ["sub"]);
+}
+
 /// 6.1: a request keyed by a message goes to its chat's owner, found from
 /// the message's row here; a local chat's stays here.
 #[tokio::test]

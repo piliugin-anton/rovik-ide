@@ -5,7 +5,8 @@
 // itself was on something editable, where pasting is the expected behavior.
 
 // Monaco and xterm handle middle clicks themselves.
-const EDITABLE = 'input, textarea, [contenteditable]:not([contenteditable="false"]), .monaco-editor, .xterm';
+const EDITABLE =
+  'input, textarea, [contenteditable]:not([contenteditable="false"]), .monaco-editor, .xterm';
 
 function onMouseUp(e: MouseEvent) {
   if (e.button !== 1) return;

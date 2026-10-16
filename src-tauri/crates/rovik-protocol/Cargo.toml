@@ -14,3 +14,5 @@ serde_json.workspace = true
 # Releases' signatures (B02): minisign, as `tauri signer` makes them.
 minisign-verify = "0.3.0"
 base64 = "0.23.1"
+# `Secret`'s memory is wiped when it's dropped.
+zeroize = "1.9"

@@ -14,17 +14,17 @@ same facts.
 
 ## Decisions
 
-| Question | Decision | Where |
-|---|---|---|
-| How the code is laid out | Split `src-tauri` into a Cargo workspace: `rovik-core` (no Tauri), `rovik-protocol`, `rovik-agentd`, and the Tauri app on top | §2.1 |
-| How the project gets to the server and back | **P1**: git carries it both ways. A snapshot commit is pushed up, the chat works in a worktree of its own on the server, and its result comes back as a ref and lands through the existing landing code | §3 |
-| How the desktop reaches the daemon | **T3**: an Axum daemon bound to localhost (or a Unix socket) on the server, reached through an SSH tunnel; `attach --stdio` for hosts without port forwarding | §4 |
-| How a chat moves | **M1**: ownership moves at a turn boundary; the local rows stay as a mirror | §5 |
-| Provider API keys on the server | **Stored on the server** in a 0600 file, and refreshed from the desktop every time a cloud run starts | §6 |
-| Where a remote chat's calls are routed | **In the Rust command layer**: the commands the frontend already calls forward a remote chat's calls to its host, and its events come back as the same `agent-event`. The webview's CSP allows connections only to IPC | §2.3 |
-| How git objects travel | **Packs through the tunnel**: the client builds them with libgit2 and posts them to the daemon over HTTP. One SSH library on the client (russh) | §3.2 |
-| Where snapshot commits are made | **A shadow repository for every project**, borrowing a git project's objects through alternates. Nothing is written to the project's `.git` | §3.2 |
-| Which servers | **Shared team servers, each person with their own SSH account and their own daemon.** A single-user server is the same case with one account | §10, open questions |
+| Question                                    | Decision                                                                                                                                                                                                               | Where               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| How the code is laid out                    | Split `src-tauri` into a Cargo workspace: `rovik-core` (no Tauri), `rovik-protocol`, `rovik-agentd`, and the Tauri app on top                                                                                          | §2.1                |
+| How the project gets to the server and back | **P1**: git carries it both ways. A snapshot commit is pushed up, the chat works in a worktree of its own on the server, and its result comes back as a ref and lands through the existing landing code                | §3                  |
+| How the desktop reaches the daemon          | **T3**: an Axum daemon bound to localhost (or a Unix socket) on the server, reached through an SSH tunnel; `attach --stdio` for hosts without port forwarding                                                          | §4                  |
+| How a chat moves                            | **M1**: ownership moves at a turn boundary; the local rows stay as a mirror                                                                                                                                            | §5                  |
+| Provider API keys on the server             | **Stored on the server** in a 0600 file, and refreshed from the desktop every time a cloud run starts                                                                                                                  | §6                  |
+| Where a remote chat's calls are routed      | **In the Rust command layer**: the commands the frontend already calls forward a remote chat's calls to its host, and its events come back as the same `agent-event`. The webview's CSP allows connections only to IPC | §2.3                |
+| How git objects travel                      | **Packs through the tunnel**: the client builds them with libgit2 and posts them to the daemon over HTTP. One SSH library on the client (russh)                                                                        | §3.2                |
+| Where snapshot commits are made             | **A shadow repository for every project**, borrowing a git project's objects through alternates. Nothing is written to the project's `.git`                                                                            | §3.2                |
+| Which servers                               | **Shared team servers, each person with their own SSH account and their own daemon.** A single-user server is the same case with one account                                                                           | §10, open questions |
 
 The last four were decided on 2026-10-14, after the plan was checked
 against the code. [`cloud-agent-dev-plan.md`](cloud-agent-dev-plan.md)
@@ -49,7 +49,7 @@ Facts that shape the design (paths under `src-tauri/src/`):
   frontend calls them from 25 files through `invoke`.
 - **The agent is already generic over `tauri::Runtime`.** `agent_run`,
   `agent.rs`, `chat_request.rs`, `clm` take `AppHandle<R>`. That's why
-  `headless.rs` (`rovik-headless`) can run the agent on Tauri's *mock*
+  `headless.rs` (`rovik-headless`) can run the agent on Tauri's _mock_
   runtime (`features = ["tauri/test"]`). It proves the agent runs without
   a window, but it's a test harness, not something to ship on a server.
 - **What the agent actually uses `AppHandle` for** is small:
@@ -168,10 +168,10 @@ src-tauri/                 (workspace)
 
 What goes where, from what the modules import today:
 
-| Crate | Modules |
-|---|---|
-| `rovik-core` | `agent_run`, `agent`, `chat_request`, `chat_db`, `clm`, `overlay`, `vfs`, `workload`; the tools they call: `agent_tools`, `read_file`, `read_symbol`, `edit_file`, `code_search`, `outline`, `repo_map`, `command_tool`, `process`, `browser_tools`, `file_guard`, `merge`, `project_profile`, `git_sync`; and `api_log`, `prompt_cache`, `reasoning_echo`, `opencode`, `system_one`, `atomic_file` |
-| `rovik-ide` (the app) | `lib.rs` (setup and the command wrappers), `filesystem` (the editor's file commands and the watcher behind `fs-changes`/`git-changed`), `git` (the editor's git commands), `lsp`, `formatter`, `terminal`, `typings`, `project_files`, `open_url` |
+| Crate                 | Modules                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rovik-core`          | `agent_run`, `agent`, `chat_request`, `chat_db`, `clm`, `overlay`, `vfs`, `workload`; the tools they call: `agent_tools`, `read_file`, `read_symbol`, `edit_file`, `code_search`, `outline`, `repo_map`, `command_tool`, `process`, `browser_tools`, `file_guard`, `merge`, `project_profile`, `git_sync`; and `api_log`, `prompt_cache`, `reasoning_echo`, `opencode`, `system_one`, `atomic_file` |
+| `rovik-ide` (the app) | `lib.rs` (setup and the command wrappers), `filesystem` (the editor's file commands and the watcher behind `fs-changes`/`git-changed`), `git` (the editor's git commands), `lsp`, `formatter`, `terminal`, `typings`, `project_files`, `open_url`                                                                                                                                                   |
 
 Three imports cross that line today and move into the core first:
 `filesystem::write_app_file` (plan files, `agent_run/plan.rs`), the git
@@ -245,13 +245,13 @@ pub trait EventSink: Send + Sync {
 
 Not every command needs to go remote. Group them:
 
-| Group | Examples | Remote? |
-|---|---|---|
-| Agent runs | `agent_start/stop/resolve_approval/answer_questions/status/configure/set_effort`, `chat_checklist` | **Yes**, core of the feature |
-| Chat DB | `chat_get_messages*`, `chat_append_messages`, `chat_rename_dialog`, `chat_search`, `chat_set_model`, drafts | **Yes**, for remote chats |
-| Overlay/landing | `overlay_status/file/land/discard/undo/conflict_*` | **Yes**, so changes come back (§3) |
-| CLM | `clm_status/set_mode/list_revisions/…` | Yes |
-| Editor/FS/git/LSP/terminal | `read_file_content`, `git_*`, `lsp_*`, `spawn_terminal` | **No, at first.** The editor stays on the local copy. A remote terminal is a later nice-to-have |
+| Group                      | Examples                                                                                                    | Remote?                                                                                         |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Agent runs                 | `agent_start/stop/resolve_approval/answer_questions/status/configure/set_effort`, `chat_checklist`          | **Yes**, core of the feature                                                                    |
+| Chat DB                    | `chat_get_messages*`, `chat_append_messages`, `chat_rename_dialog`, `chat_search`, `chat_set_model`, drafts | **Yes**, for remote chats                                                                       |
+| Overlay/landing            | `overlay_status/file/land/discard/undo/conflict_*`                                                          | **Yes**, so changes come back (§3)                                                              |
+| CLM                        | `clm_status/set_mode/list_revisions/…`                                                                      | Yes                                                                                             |
+| Editor/FS/git/LSP/terminal | `read_file_content`, `git_*`, `lsp_*`, `spawn_terminal`                                                     | **No, at first.** The editor stays on the local copy. A remote terminal is a later nice-to-have |
 
 Define these as one `Request` enum + `Response` + `Event` in
 `rovik-protocol` (JSON, `serde(tag = "method")`), with an `id` per call,
@@ -443,6 +443,7 @@ and events are newline-delimited JSON (or length-prefixed) over the
 channel.
 
 Pros:
+
 - **No new attack surface:** no open port, no TLS, no certificates, no
   tokens. Auth = SSH auth, which the user already configures.
 - Works behind NAT and firewalls, and on any host where only port 22 is
@@ -452,6 +453,7 @@ Pros:
   can also do SFTP-free uploads through the channel.
 
 Cons:
+
 - **The process lives as long as the SSH session.** Runs must survive
   disconnects (laptop sleep is the main reason to go to the cloud), so
   the stdio process cannot be the agent itself. It has to be a thin
@@ -470,6 +472,7 @@ A daemon (systemd user unit) listens on `host:port`; REST for
 request/response, one WebSocket for events.
 
 Pros:
+
 - Daemon independent of any client connection; several clients
   (desktop, a future web/mobile view) can watch the same run.
 - Standard tooling: HTTP/2, compression, `tower` middleware, rate
@@ -478,6 +481,7 @@ Pros:
   blocking events.
 
 Cons:
+
 - **A public port running an agent that executes shell commands** is a
   high-value target: TLS, auth, brute-force protection and updates
   become security-critical.
@@ -507,6 +511,7 @@ like `ssh -L`), then speaks HTTP + WebSocket to it.
 > D8 and H05 address.
 
 Pros:
+
 - Daemon outlives connections (runs continue while the laptop is
   closed); reconnect = new tunnel + resume events from a sequence number.
   With the keys stored on the server (§6) it also outlives its own
@@ -518,12 +523,13 @@ Pros:
 - Same Axum code as T2. Exposing it publicly later is a config switch
   (`--listen 0.0.0.0:443 --tls auto`), not a rewrite.
 - With the protocol as one message stream (§2.3), a `rovik-agentd
-  attach --stdio` mode that bridges the stream to the daemon's Unix
+attach --stdio` mode that bridges the stream to the daemon's Unix
   socket is a hundred lines, so T1 comes for free for hosts where port
   forwarding is disabled (`AllowTcpForwarding no`).
 - One credential set (SSH), which the settings page already collects.
 
 Cons:
+
 - Still requires SSH reachability from the client (but so does deploy).
 - Two layers (SSH + HTTP) to debug.
 - A future browser/mobile client needs T2 mode anyway.
@@ -559,18 +565,18 @@ and SSL" means in each case:
 
 "Move this chat to <host>" at any moment. What has to travel:
 
-| What | Where it lives | How it moves |
-|---|---|---|
-| The chat and its subagent chats | `dialogs`, `messages`, `message_bodies`, `tool_call_extras` (children via `overlay::chats::CHILDREN` / dialog parent links) | Export rows |
-| Context-management state | `clm_state`, `clm_revisions` | Export rows |
-| Screenshots | `attachments` + `attachments/<sha256>` | Upload blobs the server doesn't have (content-addressed, dedups) |
-| Project identity | `projects`, `project_paths` | Export the row; the server maps it to the chat's worktree (`project_decisions` stay local) |
-| Model, mode, context mode | `dialogs` columns, `chat_set_model` | Part of the dialog row |
-| Private changes | `overlays/<chat id>/` | Simplest: land locally first, then move a clean chat. Otherwise the overlay's `upper/` files are part of the snapshot commit (§3.2) and `base/` is the parent tree, so the worktree starts with the chat's changes |
-| Agent settings | `AgentConfig` (permissions, approval profiles, subagents), project settings | Sent with the move, in the start request (`StartRequest.config`); the daemon stores the last one, keys stripped (§6) |
-| Model profiles + API keys | Frontend memory (`ai-settings.json` is the frontend's file) | In the start request, as today; the daemon stores the keys and every later start refreshes them (§6) |
-| Fix-round state waiting on approval | `AgentState.carries` (memory) | Not moved: the stop drops it and the checks run again on the other side (below) |
-| Pending approvals/questions | `AgentState` (memory) | Not moved: they're re-asked after `Resume` |
+| What                                | Where it lives                                                                                                              | How it moves                                                                                                                                                                                                       |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The chat and its subagent chats     | `dialogs`, `messages`, `message_bodies`, `tool_call_extras` (children via `overlay::chats::CHILDREN` / dialog parent links) | Export rows                                                                                                                                                                                                        |
+| Context-management state            | `clm_state`, `clm_revisions`                                                                                                | Export rows                                                                                                                                                                                                        |
+| Screenshots                         | `attachments` + `attachments/<sha256>`                                                                                      | Upload blobs the server doesn't have (content-addressed, dedups)                                                                                                                                                   |
+| Project identity                    | `projects`, `project_paths`                                                                                                 | Export the row; the server maps it to the chat's worktree (`project_decisions` stay local)                                                                                                                         |
+| Model, mode, context mode           | `dialogs` columns, `chat_set_model`                                                                                         | Part of the dialog row                                                                                                                                                                                             |
+| Private changes                     | `overlays/<chat id>/`                                                                                                       | Simplest: land locally first, then move a clean chat. Otherwise the overlay's `upper/` files are part of the snapshot commit (§3.2) and `base/` is the parent tree, so the worktree starts with the chat's changes |
+| Agent settings                      | `AgentConfig` (permissions, approval profiles, subagents), project settings                                                 | Sent with the move, in the start request (`StartRequest.config`); the daemon stores the last one, keys stripped (§6)                                                                                               |
+| Model profiles + API keys           | Frontend memory (`ai-settings.json` is the frontend's file)                                                                 | In the start request, as today; the daemon stores the keys and every later start refreshes them (§6)                                                                                                               |
+| Fix-round state waiting on approval | `AgentState.carries` (memory)                                                                                               | Not moved: the stop drops it and the checks run again on the other side (below)                                                                                                                                    |
+| Pending approvals/questions         | `AgentState` (memory)                                                                                                       | Not moved: they're re-asked after `Resume`                                                                                                                                                                         |
 
 > **Changed (2026-10-14).** Screenshots are no longer the only
 > attachments: the chat input attaches images and PDFs, stored on the
@@ -607,6 +613,7 @@ and SSL" means in each case:
    > `MessagePatched` has no `seq`, the text streamed between checkpoints
    > is never stored, and a ring buffer can't cover a night's sleep. See
    > the development plan, D9 and §6.3.
+
 4. The server starts the chat with `StartKind::Resume` or `ContinueRun`,
    whichever applies; both already exist. This start request carries the
    chat's profile and the agent settings with their keys, which is when
@@ -885,33 +892,33 @@ LSP downloader stay out of the server crate.
 
 ## 8. Summary of options and decisions
 
-| | Effort | Code layout enforced by | Verdict |
-|---|---|---|---|
+|                                                                    | Effort                   | Code layout enforced by       | Verdict    |
+| ------------------------------------------------------------------ | ------------------------ | ----------------------------- | ---------- |
 | **Workspace**: `rovik-core`, `rovik-protocol`, `rovik-agentd`, app | Medium (part of phase 1) | The compiler (crate boundary) | **Chosen** |
-| One crate, daemon behind a `server` feature | Low | Convention and feature gates | Not chosen |
+| One crate, daemon behind a `server` feature                        | Low                      | Convention and feature gates  | Not chosen |
 
-| | Effort | Survives disconnect | Attack surface | Future web/mobile | Verdict |
-|---|---|---|---|---|---|
-| **T1** SSH stdio | Low | Only with a daemon behind it | Minimal (SSH) | No | Kept as T3's `attach --stdio` mode |
-| **T2** Axum public HTTPS | High | Yes | Public port | Yes | Later, as an opt-in mode (phase 6) |
-| **T3** Axum on localhost + SSH tunnel | Medium | Yes | Minimal (SSH) | Switchable to T2 | **Chosen** |
+|                                       | Effort | Survives disconnect          | Attack surface | Future web/mobile | Verdict                            |
+| ------------------------------------- | ------ | ---------------------------- | -------------- | ----------------- | ---------------------------------- |
+| **T1** SSH stdio                      | Low    | Only with a daemon behind it | Minimal (SSH)  | No                | Kept as T3's `attach --stdio` mode |
+| **T2** Axum public HTTPS              | High   | Yes                          | Public port    | Yes               | Later, as an opt-in mode (phase 6) |
+| **T3** Axum on localhost + SSH tunnel | Medium | Yes                          | Minimal (SSH)  | Switchable to T2  | **Chosen**                         |
 
-| | Effort | Offline-friendly | Reuses existing code | Verdict |
-|---|---|---|---|---|
-| **P1** git push of a snapshot up / result ref down, worktree per chat on the server | Medium | Yes | libgit2 + landing | **Chosen** |
-| **P2** continuous two-way sync | High | Yes | Little | Not chosen |
-| **P3** remote-first project | Very high | No | Little | Long-term option |
+|                                                                                     | Effort    | Offline-friendly | Reuses existing code | Verdict          |
+| ----------------------------------------------------------------------------------- | --------- | ---------------- | -------------------- | ---------------- |
+| **P1** git push of a snapshot up / result ref down, worktree per chat on the server | Medium    | Yes              | libgit2 + landing    | **Chosen**       |
+| **P2** continuous two-way sync                                                      | High      | Yes              | Little               | Not chosen       |
+| **P3** remote-first project                                                         | Very high | No               | Little               | Long-term option |
 
-| | Effort | Conflicts | Verdict |
-|---|---|---|---|
-| **M1** move ownership at a turn boundary, local mirror follows | Medium | None (one owner) | **Chosen** |
-| **M2** server owns all chats | High | None | Not chosen (breaks offline) |
-| **M3** replicate the database | Very high | Many | Not chosen |
+|                                                                | Effort    | Conflicts        | Verdict                     |
+| -------------------------------------------------------------- | --------- | ---------------- | --------------------------- |
+| **M1** move ownership at a turn boundary, local mirror follows | Medium    | None (one owner) | **Chosen**                  |
+| **M2** server owns all chats                                   | High      | None             | Not chosen (breaks offline) |
+| **M3** replicate the database                                  | Very high | Many             | Not chosen                  |
 
-| | Runs after a daemon restart | Keys at rest on the server | Verdict |
-|---|---|---|---|
-| **Stored on the server**, refreshed at every cloud start | Come back by themselves | Yes, one 0600 file | **Chosen** |
-| Sent per session, kept in memory | Wait for a client | No | Not chosen |
+|                                                          | Runs after a daemon restart | Keys at rest on the server | Verdict    |
+| -------------------------------------------------------- | --------------------------- | -------------------------- | ---------- |
+| **Stored on the server**, refreshed at every cloud start | Come back by themselves     | Yes, one 0600 file         | **Chosen** |
+| Sent per session, kept in memory                         | Wait for a client           | No                         | Not chosen |
 
 ---
 

@@ -21,7 +21,11 @@ impl Hosts {
         sink: Sink,
     ) -> Client {
         let client = Client::connect(connector, identity, sink);
-        self.lock().insert(host.to_string(), client.clone());
+        // The one before stops now, whatever calls still hold a clone of it:
+        // two connections would feed the same events twice.
+        if let Some(old) = self.lock().insert(host.to_string(), client.clone()) {
+            old.stop();
+        }
         client
     }
 
@@ -48,9 +52,11 @@ impl Hosts {
             .collect()
     }
 
-    /// Forgets the host: its connection closes once no call holds it.
+    /// Forgets the host: its connection closes now.
     pub fn disconnect(&self, host: &str) {
-        self.lock().remove(host);
+        if let Some(old) = self.lock().remove(host) {
+            old.stop();
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, BTreeMap<String, Client>> {

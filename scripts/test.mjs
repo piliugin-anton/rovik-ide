@@ -54,10 +54,12 @@ const solidJsx = {
 const browserOnly = {
   name: 'browser-only',
   setup(b) {
-    b.onResolve({ filter: /^monaco-editor(\/|$)|\?worker$/ }, (args) => ({
-      path: args.path,
-      namespace: 'stub',
-    }));
+    b.onResolve({ filter: /^monaco-editor(\/|$)|\?worker$/ }, (args) => {
+      // Monaco's TypeScript worker is TypeScript's own services, which run
+      // in Node as they do: the project worker's test runs on the real one.
+      if (args.path === 'monaco-editor/language/typescript/ts.worker.js') return undefined;
+      return { path: args.path, namespace: 'stub' };
+    });
     b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
       contents:
         'const stub = new Proxy(function () {}, { get: (_, k) => (k === "__esModule" ? false : stub), apply: () => stub, construct: () => stub });\nmodule.exports = stub;',

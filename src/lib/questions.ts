@@ -7,6 +7,7 @@
 // back to the run, and to the model as the tool's result.
 import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
+import { notify } from './notifications';
 
 export interface QuestionOption {
   label: string;
@@ -96,10 +97,20 @@ export function pendingQuestionsIn(dialogId: string): PendingQuestions | undefin
 }
 
 export function answerQuestions(dialogId: string, toolCallId: string, outcome: QuestionsOutcome) {
+  const key = keyOf(dialogId, toolCallId);
+  const asked = state.pending[key] ? { ...state.pending[key] } : null;
   clearQuestions(dialogId, toolCallId);
-  void invoke('agent_answer_questions', { dialogId, toolCallId, outcome }).catch((err) =>
-    console.error('Answer not delivered:', err)
-  );
+  void invoke('agent_answer_questions', { dialogId, toolCallId, outcome }).catch((err) => {
+    console.error('Answer not delivered:', err);
+    // Back in the chat, to be answered again once its host can be reached
+    // (6.10): the run still waits for it.
+    if (asked && !state.pending[key]) setState('pending', key, asked);
+    notify({
+      kind: 'error',
+      title: 'The answer didn’t reach the agent',
+      message: String(err),
+    });
+  });
 }
 
 /**

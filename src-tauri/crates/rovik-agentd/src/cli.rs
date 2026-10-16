@@ -38,13 +38,13 @@ usage: rovik-agentd <command>
       this one unless told.
   user start|stop|restart|status [--root DIR]
       Through sudo: your own daemon.
-  admin [limits [NAME=VALUE ...] | add USER | remove USER | upgrade FILE |
-         uninstall] [--root DIR]
+  admin [limits [NAME=VALUE ...] | add USER | remove USER |
+         upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
       Through sudo, for Rovik's administrators: the limits on each user's
       daemon (none takes one away), the administrators, an upgrade for
       everyone (a release's build, signed in FILE.sig, or a build of one's
-      own where agentd.toml allows unsigned ones), or Rovik's removal from
-      the server.
+      own where agentd.toml allows unsigned ones; an older build only with
+      --allow-downgrade), or Rovik's removal from the server.
   --root DIR puts / at DIR and prints the commands that would change the
   system instead of running them.";
 
@@ -73,6 +73,8 @@ pub enum Command {
     Admin {
         args: Vec<String>,
         root: Option<PathBuf>,
+        /// `upgrade` may install an older build.
+        allow_downgrade: bool,
     },
 }
 
@@ -159,6 +161,7 @@ fn parse_token(rest: &[String]) -> Result<Command, String> {
 /// `install`, `user` and `admin`: words and a few options.
 fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
     let (mut root, mut admin, mut binary) = (None, None, None);
+    let mut allow_downgrade = false;
     let mut words = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -171,6 +174,7 @@ fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
             "--root" => root = Some(PathBuf::from(value()?)),
             "--admin" if command == "install" => admin = Some(value()?),
             "--binary" if command == "install" => binary = Some(PathBuf::from(value()?)),
+            "--allow-downgrade" if command == "admin" => allow_downgrade = true,
             "--help" | "-h" => return Ok(Command::Help),
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown argument {flag} for {command}"))
@@ -186,7 +190,11 @@ fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
             root,
         }),
         "user" => Ok(Command::User { args: words, root }),
-        _ => Ok(Command::Admin { args: words, root }),
+        _ => Ok(Command::Admin {
+            args: words,
+            root,
+            allow_downgrade,
+        }),
     }
 }
 
@@ -217,7 +225,11 @@ pub fn run(argv: &[String]) -> i32 {
             root,
         } => installer::install(&System::new(root), &admin, binary),
         Command::User { args, root } => installer::user(&System::new(root), &args),
-        Command::Admin { args, root } => installer::admin(&System::new(root), &args),
+        Command::Admin {
+            args,
+            root,
+            allow_downgrade,
+        } => installer::admin(&System::new(root), &args, allow_downgrade),
     };
     match result {
         Ok(()) => 0,
@@ -341,7 +353,17 @@ mod tests {
             Ok(Command::Admin {
                 args: vec!["limits".into(), "max_slots=2".into()],
                 root: Some("/r".into()),
+                allow_downgrade: false,
             })
         );
+        assert_eq!(
+            parsed(&["admin", "upgrade", "/tmp/b", "--allow-downgrade"]),
+            Ok(Command::Admin {
+                args: vec!["upgrade".into(), "/tmp/b".into()],
+                root: None,
+                allow_downgrade: true,
+            })
+        );
+        assert!(parsed(&["user", "start", "--allow-downgrade"]).is_err());
     }
 }

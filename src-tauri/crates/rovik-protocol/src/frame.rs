@@ -119,7 +119,7 @@ impl fmt::Display for Fail {
 impl std::error::Error for Fail {}
 
 /// A token or a key. `Debug` doesn't show it, so a frame that gets logged
-/// can't leak it (plan rule 9).
+/// can't leak it (plan rule 9), and its memory is wiped when it's dropped.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct Secret(pub String);
@@ -127,5 +127,11 @@ pub struct Secret(pub String);
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Secret(…)")
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
     }
 }

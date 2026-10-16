@@ -1038,8 +1038,21 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   async function deleteDialog(id: string) {
+    // A chat that is moving can't change until the move ends (6.8): the
+    // list would lose it here and keep it there.
+    const place = store.summaryOf(id)?.place;
+    if (place && place.kind !== 'host') {
+      notify({
+        kind: 'warning',
+        title: 'This chat is moving',
+        message: readOnlyReason(place, cloud.hosts) ?? 'Wait until the move ends.',
+      });
+      return;
+    }
     const wasActive = activeDialogId() === id;
-    if (store.isRunning(id)) await stopRun(id);
+    // A remote chat whose host can't be reached: its deletion stops the run
+    // there once it can be.
+    if (store.isRunning(id)) await stopRun(id).catch(() => undefined);
     takePendingDraft(id);
     cancelComposerDraft(id);
     // A deleted chat leaves search results right away.
@@ -2434,12 +2447,16 @@ export default function ChatPanel(props: ChatProps) {
    * or crashed mid-request. Mark their messages failed and bring the text
    * back for the dialog that's open.
    */
+  // The drafts still to judge: all of them at first, then those left for
+  // later (a running chat's, a remote chat's until its host caught up), so
+  // a host catching up doesn't judge the others again.
+  let draftsToJudge: PendingDraft[] | null = null;
   async function recoverDraftsAfterRestart() {
-    const drafts = listPendingDrafts();
+    const drafts = draftsToJudge ?? listPendingDrafts();
     if (drafts.length === 0) return;
     try {
       // A running chat's and a remote chat's wait (lib/remoteGuards.ts).
-      await recoverDrafts(drafts, {
+      draftsToJudge = await recoverDrafts(drafts, {
         isRunning: (id) => store.isRunning(id),
         placeOf: async (id) => {
           const known = store.summaryOf(id);
@@ -2930,7 +2947,12 @@ export default function ChatPanel(props: ChatProps) {
   /** Stop: the run ends as soon as it can; what it waits on is answered "no". */
   function stopRequest() {
     const dialogId = activeDialogId();
-    if (dialogId) void stopRun(dialogId).catch((err) => console.error('Stop failed:', err));
+    if (!dialogId) return;
+    void stopRun(dialogId).catch((err) => {
+      console.error('Stop failed:', err);
+      // A remote chat's host out of reach (6.10): the run goes on there.
+      notify({ kind: 'error', title: 'Stop didn’t reach the agent', message: String(err) });
+    });
   }
 
   /**

@@ -2456,7 +2456,10 @@ async fn a_plan_reviewer_sending_the_plan_back_counts_as_no_findings() {
             .contains("no Findings section"),
         "{review}"
     );
-    assert!(review["report"].as_str().unwrap().contains("## Steps"), "{review}");
+    assert!(
+        review["report"].as_str().unwrap().contains("## Steps"),
+        "{review}"
+    );
     assert_eq!(h.plan_files().len(), 1);
 }
 

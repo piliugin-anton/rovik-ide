@@ -289,8 +289,14 @@ pub async fn deploy(
 /// The server must be Linux on x86_64 or aarch64, logged into as a
 /// regular user.
 fn supported(probe: &Probe) -> Result<(), DeployError> {
-    if probe.uid == Some(0) {
-        return Err(DeployError::RootLogin);
+    match probe.uid {
+        Some(0) => return Err(DeployError::RootLogin),
+        Some(_) => {}
+        None => {
+            return Err(DeployError::Unsupported(
+                "the server didn't say which account this is (`id -u` printed nothing).".into(),
+            ))
+        }
     }
     let arch = matches!(
         probe.arch.as_str(),
@@ -492,11 +498,15 @@ fn read_installed(text: &str) -> (Option<InstalledBuild>, String) {
     (build, shown)
 }
 
-/// `/opt/rovik/bin/rovik-agentd-0.2.0`: `0.2.0`.
+/// `/opt/rovik/bin/rovik-agentd-0.2.0`: `0.2.0`. Only a version as the
+/// daemon names one: it goes into a release's URL and a folder's name.
 fn version_of(path: &str) -> Option<String> {
     let name = path.rsplit('/').next()?;
     let version = name.strip_prefix("rovik-agentd-")?;
-    Some(version.to_string()).filter(|v| !v.is_empty())
+    let plain = version
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c));
+    Some(version.to_string()).filter(|v| !v.is_empty() && plain)
 }
 
 /// The command lines in what `systemctl show -p ExecStart --value` prints:
@@ -667,6 +677,9 @@ pub struct SetupRun {
 /// The most of a setup script's output kept, in bytes.
 const SETUP_OUTPUT: usize = 16 * 1024;
 
+/// How long a setup script may take: it installs toolchains.
+const SETUP_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
 /// Runs the host's setup script (design §7) as the user, in their home
 /// folder: with bash where there is one, else sh, the script on stdin.
 pub async fn run_setup(connector: &SshConnector, script: &str) -> Result<SetupRun, DeployError> {
@@ -674,7 +687,7 @@ pub async fn run_setup(connector: &SshConnector, script: &str) -> Result<SetupRu
     let command = "cd && if command -v bash >/dev/null 2>&1; \
                    then exec bash -s 2>&1; else exec sh -s 2>&1; fi";
     let out = ssh
-        .exec_with_input(command, script.as_bytes())
+        .exec_within(command, script.as_bytes(), SETUP_WAIT)
         .await
         .map_err(|e| DeployError::Failed(e.to_string()))?;
     let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -805,9 +818,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `text` in single quotes for the login shell.
+/// `text` in single quotes, for sh.
 fn quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
+    crate::ssh::quote(text)
 }
 
 #[cfg(test)]
