@@ -484,10 +484,10 @@ function HostPage(props: {
     setSteps([]);
     setTestError(null);
     setTesting(true);
-    stopListening = onHostTest((hostId, step) => {
-      if (hostId === id) setSteps((s) => [...s, step]);
-    });
     try {
+      stopListening = await onHostTest((hostId, step) => {
+        if (hostId === id) setSteps((s) => [...s, step]);
+      });
       setSteps(await testHost(id));
     } catch (err) {
       setTestError(String(err));
@@ -688,7 +688,10 @@ function HostPage(props: {
           </span>
           <button onClick={props.onEdit}>Edit</button>
         </div>
-        <Show when={deployed() && props.row.state === 'offline'}>
+        <Show when={deployed() && props.row.problem}>
+          <p class="settings-hint setting-explain warning">{props.row.problem}</p>
+        </Show>
+        <Show when={deployed() && props.row.state === 'offline' && !props.row.problem}>
           <p class="settings-hint">
             The app can’t reach Rovik there right now. Test the connection to see why.
           </p>

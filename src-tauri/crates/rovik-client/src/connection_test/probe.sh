@@ -42,7 +42,7 @@ if [ -d /run/systemd/system ]; then say systemd yes; else say systemd no; fi
 if command -v sudo >/dev/null 2>&1; then
   if sudo -n true 2>/dev/null; then
     say sudo yes
-  elif sudo -n true 2>&1 | grep -qi password; then
+  elif LC_ALL=C sudo -n true 2>&1 | grep -qi password; then
     say sudo password
   else
     say sudo no
