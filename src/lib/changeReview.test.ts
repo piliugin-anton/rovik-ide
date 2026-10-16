@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reviewDetails, reviewHeadline, type ReviewFinding, type ReviewMeta } from './changeReview';
+import {
+  reviewDetails,
+  reviewFacts,
+  reviewHeadline,
+  type ReviewFinding,
+  type ReviewMeta,
+} from './changeReview';
 
 const finding = (severity: ReviewFinding['severity']): ReviewFinding => ({
   severity,
@@ -103,6 +109,44 @@ test('a plan review’s headline says what happened to the plan', () => {
     reviewHeadline({ ...plan, status: 'clean' }, false),
     'The plan reviewer found nothing to fix.'
   );
+});
+
+test('a follow-up plan review says what became of the earlier findings', () => {
+  const check = (finding: number, resolved: boolean) => ({
+    finding,
+    severity: 'high' as const,
+    location: `Step ${finding}`,
+    title: 't',
+    response: { action: 'fixed' as const, note: 'Added step 3.' },
+    resolved,
+    reason: 'r',
+  });
+  const clean: ReviewMeta = {
+    kind: 'plan',
+    status: 'clean',
+    round: 2,
+    maxRounds: 2,
+    earlier: [check(1, true)],
+  };
+  assert.equal(
+    reviewHeadline(clean, false),
+    'The plan reviewer found the earlier finding resolved and nothing new to fix.'
+  );
+  assert.equal(
+    reviewHeadline({ ...clean, notHeld: [finding('medium')] }, false),
+    'The plan reviewer found the earlier finding resolved and nothing new to fix (1 finding about what the revision didn’t change, not held).'
+  );
+  const open: ReviewMeta = {
+    ...clean,
+    status: 'findings',
+    open: 1,
+    findings: [finding('high')],
+    earlier: [check(1, true), check(2, false)],
+    notHeld: [finding('medium'), finding('low')],
+  };
+  const facts = new Map(reviewFacts(open));
+  assert.equal(facts.get('Earlier findings'), '1 resolved, 1 still open');
+  assert.equal(facts.get('Not held'), '2, about what the revision didn’t change');
 });
 
 test('a plan saved past the review budget says so', () => {

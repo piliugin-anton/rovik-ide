@@ -8,6 +8,7 @@ import {
   reviewDetails,
   reviewFacts,
   reviewHeadline,
+  type EarlierCheck,
   type ReviewFinding,
   type ReviewMeta,
 } from '../lib/changeReview';
@@ -48,6 +49,34 @@ function FindingItem(props: { finding: ReviewFinding; dropped?: boolean }) {
           </div>
         </Show>
       </div>
+    </li>
+  );
+}
+
+/** A follow-up plan review's verdict on an earlier finding, with the agent's answer. */
+function EarlierItem(props: { check: EarlierCheck }) {
+  const c = () => props.check;
+  return (
+    <li class="review-earlier-item" classList={{ resolved: c().resolved }}>
+      <span class="review-earlier-verdict">{c().resolved ? 'resolved' : 'still open'}</span>
+      <span class="review-location">
+        Earlier {c().finding} · {c().location}
+      </span>
+      <span class="review-title">{c().title}</span>
+      <Show when={c().response}>
+        {(r) => (
+          <div class="review-finding-body">
+            <span class="review-label">Agent:</span>{' '}
+            {r().action === 'fixed' ? 'fixed' : 'not a problem'}
+            {r().note ? ` — ${r().note}` : ''}
+          </div>
+        )}
+      </Show>
+      <Show when={c().reason}>
+        <div class="review-finding-body">
+          <span class="review-label">Why:</span> {c().reason}
+        </div>
+      </Show>
     </li>
   );
 }
@@ -94,10 +123,25 @@ export default function ReviewRecord(props: {
       <Show when={props.meta.status === 'running' && !interrupted() && progress()}>
         {(p) => <div class="chat-verify-progress">{liveLabel(p())}</div>}
       </Show>
+      <Show when={props.meta.earlier?.length}>
+        <ul class="review-findings review-earlier">
+          <For each={props.meta.earlier}>{(c) => <EarlierItem check={c} />}</For>
+        </ul>
+      </Show>
       <Show when={props.meta.findings?.length}>
         <ul class="review-findings">
           <For each={props.meta.findings}>{(f) => <FindingItem finding={f} />}</For>
         </ul>
+      </Show>
+      <Show when={props.meta.notHeld?.length}>
+        <details class="review-dropped">
+          <summary>
+            {props.meta.notHeld!.length} about what the revision didn’t change, not held
+          </summary>
+          <ul class="review-findings">
+            <For each={props.meta.notHeld}>{(f) => <FindingItem finding={f} dropped />}</For>
+          </ul>
+        </details>
       </Show>
       <Show when={props.meta.dropped?.length}>
         <details class="review-dropped">

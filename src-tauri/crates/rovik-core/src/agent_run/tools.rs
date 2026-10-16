@@ -309,11 +309,24 @@ fn submit_plan_schema() -> Value {
         "type": "function",
         "function": {
             "name": "submit_plan",
-            "description": "Save the plan, when the user asked for a change or a plan (a question is answered in the reply, without one). Pass the complete plan as Markdown in the format your instructions give: a \"# \" title and summary, \"## Steps\" with a \"Files:\" line per step, \"## Decisions\", \"## Validation\", \"## Risks\". It is checked and saved to the project, where the user edits and implements it; a revision passes the complete revised plan. The plan goes here, not in your reply.",
+            "description": "Save the plan, when the user asked for a change or a plan (a question is answered in the reply, without one). Pass the complete plan as Markdown in the format your instructions give: a \"# \" title and summary, \"## Steps\" with a \"Files:\" line per step, \"## Decisions\", \"## Validation\", \"## Risks\". It is checked and saved to the project, where the user edits and implements it; a revision passes the complete revised plan. The plan goes here, not in your reply. When a review held the plan back, pass `responses` too: an answer to each of its findings.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "plan": { "type": "string", "description": "The complete plan in Markdown; rejected, with what to fix, when it doesn't follow the format." }
+                    "plan": { "type": "string", "description": "The complete plan in Markdown; rejected, with what to fix, when it doesn't follow the format." },
+                    "responses": {
+                        "type": "array",
+                        "description": "After a review held the plan back: one answer for each of its findings, by the finding's number.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "finding": { "type": "integer", "description": "The finding's number, as the review listed it." },
+                                "action": { "type": "string", "enum": ["fixed", "not_a_problem"], "description": "fixed: the revised plan settles it. not_a_problem: the finding is wrong, and the note says why." },
+                                "note": { "type": "string", "description": "What you changed in the plan, or why the finding isn't a problem, from the code." }
+                            },
+                            "required": ["finding", "action", "note"]
+                        }
+                    }
                 },
                 "required": ["plan"]
             }

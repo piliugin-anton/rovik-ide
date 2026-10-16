@@ -2190,6 +2190,12 @@ async fn with_triage_off_a_large_failure_is_saved_and_named() {
 const PLAN_REVIEW: &str = "# Review this plan";
 const PLAN_FINDING: &str = "## Findings\n\n1. [high] Step 2 — `list_users` is also called from `src/cli.rs`\n   - Scenario: the CLI keeps the old signature and won't build.\n   - Fix: add a step updating `src/cli.rs`.\n   - Confidence: confirmed";
 const PLAN_FINDING_2: &str = "## Findings\n\n1. [medium] Step 1 — The table has no index on `email`\n   - Scenario: lookups by email scan the table.\n   - Fix: add the index in step 1.\n   - Confidence: plausible";
+/// B13: follow-up reviews of `users_plan(.., 1)` after PLAN_FINDING held
+/// `users_plan(.., 0)` back: the earlier finding resolved or not, and a new
+/// medium finding about step 3, which the revision added.
+const PLAN_RESOLVED: &str = "## Earlier findings\n\n- Earlier 1: resolved — step 3 updates `src/cli.rs`.\n\n## Findings\n\nNone.";
+const PLAN_UNRESOLVED: &str = "## Earlier findings\n\n- Earlier 1: not resolved — `src/cli.rs` calls `list_users` twice, and step 3 updates one.\n\n## Findings\n\nNone.";
+const PLAN_FINDING_3: &str = "## Earlier findings\n\n- Earlier 1: resolved — step 3 updates `src/cli.rs`.\n\n## Findings\n\n1. [medium] Step 3 — The CLI prints each user unformatted\n   - Scenario: `print` shows the struct's debug form.\n   - Fix: print the user's email in step 3.\n   - Confidence: plausible";
 
 fn plan_reviewer_on(extra: Value) -> subagent::SubagentConfig {
     let mut kind = json!({ "enabled": true });
@@ -2226,6 +2232,20 @@ fn submit(id: &'static str, plan: String) -> Reply {
     }
 }
 
+/// B12: a submit after a hold, with the agent's answers.
+fn submit_with(id: &'static str, plan: String, responses: Value) -> Reply {
+    Reply::Call {
+        id,
+        name: "submit_plan",
+        args: json!({ "plan": plan, "responses": responses }),
+    }
+}
+
+/// The agent's answer to PLAN_FINDING.
+fn added_the_step() -> Value {
+    json!([{ "finding": 1, "action": "fixed", "note": "Added step 3, which updates `src/cli.rs`." }])
+}
+
 impl Harness {
     fn plan_request(&self, url: &str, subagents: subagent::SubagentConfig) -> StartRequest {
         let mut request = self.request(url, plan_send("Add users"), quiet_permissions());
@@ -2250,12 +2270,12 @@ async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
     let (url, seen) = model_routed(
         vec![(
             PLAN_REVIEW,
-            vec![Reply::Text(PLAN_FINDING), Reply::Text(NO_FINDINGS)],
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_RESOLVED)],
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
-            // Held: the agent adds the missing step and submits again.
-            submit("p2", users_plan("Users", 1)),
+            // Held: the agent adds the missing step, says so, and submits again.
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved the plan."),
         ],
     )
@@ -2275,6 +2295,12 @@ async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
     assert!(first
         .content
         .contains("1. [high] Step 2 — `list_users` is also called"));
+    // B11: how to answer, and that the next review is the last.
+    assert!(
+        first.content.contains("`responses`") && first.content.contains("this run's last review"),
+        "{}",
+        first.content
+    );
     let review = &first.meta.as_ref().unwrap()["review"];
     assert_eq!(
         (review["kind"].as_str(), review["status"].as_str()),
@@ -2290,14 +2316,25 @@ async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
         "{}",
         second.content
     );
-    assert_eq!(second.meta.as_ref().unwrap()["review"]["status"], "clean");
-    assert_eq!(second.meta.as_ref().unwrap()["review"]["round"], 2);
+    let review = &second.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (review["status"].as_str(), review["round"].as_u64()),
+        (Some("clean"), Some(2))
+    );
+    // B13: the follow-up said the earlier finding is resolved, and why.
+    assert_eq!(review["earlier"][0]["resolved"], true, "{review}");
+    assert_eq!(
+        review["earlier"][0]["reason"],
+        "step 3 updates `src/cli.rs`."
+    );
+    assert_eq!(review["earlier"][0]["response"]["action"], "fixed");
     let files = h.plan_files();
     assert_eq!(files.len(), 1);
     assert!(files[0].contains("**Caller 0**") && !files[0].contains("Open review findings"));
 
     // The reviewer saw the request and the plan, never the lead's
-    // conversation; read-only tools; round 2 saw its earlier finding.
+    // conversation; read-only tools; round 2 saw its earlier finding, the
+    // agent's answer and what the revision changed.
     let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
         .iter()
         .map(|b| {
@@ -2311,7 +2348,20 @@ async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
     assert!(briefs[0].contains("## The user's request\n\nAdd users"));
     assert!(briefs[0].contains("## The plan\n\n````markdown\n# Users"));
     assert!(!briefs[0].contains("The plan wasn't saved"));
+    assert!(!briefs[0].contains("## The earlier review"));
     assert!(briefs[1].contains("## The earlier review") && briefs[1].contains("Caller 0"));
+    assert!(
+        briefs[1]
+            .contains("   - The agent's answer: fixed — Added step 3, which updates `src/cli.rs`."),
+        "{}",
+        briefs[1]
+    );
+    assert!(
+        briefs[1].contains("## What the revision changed\n\n````diff\n")
+            && briefs[1].contains("+3. **Caller 0**"),
+        "{}",
+        briefs[1]
+    );
     let tools = tool_names(&requests_with(&seen, PLAN_REVIEW)[0]);
     assert!(tools.contains(&"callers".to_string()));
     for t in ["write", "bash", "task", "submit_plan", "web_search"] {
@@ -2328,12 +2378,13 @@ async fn after_the_last_round_open_findings_go_in_the_plan_and_no_third_review()
     let (url, seen) = model_routed(
         vec![(
             PLAN_REVIEW,
-            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_2)],
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_UNRESOLVED)],
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
-            submit("p2", users_plan("Users", 1)),
-            // A third submit in the run: saved without a review.
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
+            // A third submit in the run: saved without a review, and with
+            // no answers owed (the save ended the hold).
             submit("p3", users_plan("Users v3", 3)),
             Reply::Text("Saved."),
         ],
@@ -2351,7 +2402,18 @@ async fn after_the_last_round_open_findings_go_in_the_plan_and_no_third_review()
         "{}",
         second.content
     );
-    assert_eq!(second.meta.as_ref().unwrap()["review"]["open"], 1);
+    let review = &second.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["open"], 1);
+    // B13: the earlier finding is what's open, with the follow-up's reason.
+    assert_eq!(review["earlier"][0]["resolved"], false, "{review}");
+    assert_eq!(review["findings"][0]["step"], 2, "{review}");
+    assert!(
+        review["findings"][0]["newEvidence"]
+            .as_str()
+            .unwrap()
+            .contains("step 3 updates one"),
+        "{review}"
+    );
     let third = result_of(&messages, "p3");
     assert!(
         third.content.starts_with("Saved the plan"),
@@ -2382,11 +2444,11 @@ async fn the_open_findings_section_is_in_the_saved_plan() {
     let (url, _) = model_routed(
         vec![(
             PLAN_REVIEW,
-            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_2)],
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_3)],
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
-            submit("p2", users_plan("Users", 1)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved."),
         ],
     )
@@ -2396,7 +2458,202 @@ async fn the_open_findings_section_is_in_the_saved_plan() {
     assert_eq!(h.run_end().await, "done");
     let files = h.plan_files();
     assert!(files[0].contains("## Open review findings"), "{}", files[0]);
-    assert!(files[0].contains("**[medium] Step 1 — The table has no index on `email`**"));
+    // A new medium finding counts in a follow-up: step 3 is the revision's.
+    assert!(files[0].contains("**[medium] Step 3 — The CLI prints each user unformatted**"));
+    assert!(
+        !files[0].contains("`list_users` is also called"),
+        "{}",
+        files[0]
+    );
+}
+
+/// B13: a follow-up review's new findings below high about steps the
+/// revision didn't change are shown in its record but hold nothing: the
+/// plan is saved clean.
+#[tokio::test]
+async fn a_follow_up_holds_nothing_new_where_the_revision_changed_nothing() {
+    let h = plan_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_2)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let second = result_of(&messages, "p2");
+    assert!(
+        second.content.starts_with("Saved the plan to")
+            && !second.content.contains("still reported"),
+        "{}",
+        second.content
+    );
+    let review = &second.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["status"], "clean", "{review}");
+    assert_eq!(review["notHeld"][0]["step"], 1, "{review}");
+    assert!(review.get("open").is_none(), "{review}");
+    // Not mentioned by the follow-up: settled by the agent's fix.
+    assert_eq!(review["earlier"][0]["resolved"], true, "{review}");
+    let files = h.plan_files();
+    assert!(
+        !files[0].contains("## Open review findings"),
+        "{}",
+        files[0]
+    );
+}
+
+/// B12: after a hold, a submit that leaves a finding unanswered (none, or
+/// "not a problem" without why) goes back without a review; one with the
+/// answers, in any shape the parser takes, is reviewed.
+#[tokio::test]
+async fn an_unanswered_hold_goes_back_without_a_review() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_RESOLVED)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            // Revised, but no answers.
+            submit("p2", users_plan("Users", 1)),
+            // Answers that don't say why, under other names.
+            submit_with(
+                "p3",
+                users_plan("Users", 1),
+                json!([{ "id": "1", "status": "not a problem" }]),
+            ),
+            submit_with(
+                "p4",
+                users_plan("Users", 1),
+                json!("[{\"finding\": 1, \"action\": \"Fixed\", \"note\": \"Added step 3.\"}]"),
+            ),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    for (id, tail) in [
+        ("p2", "Finding 1 has no answer yet."),
+        (
+            "p3",
+            "Finding 1 has no answer yet (a not_a_problem answer needs a note saying why).",
+        ),
+    ] {
+        let r = result_of(&messages, id);
+        assert!(
+            r.content
+                .starts_with("Error: the plan wasn't saved. Fix this and call submit_plan again")
+                && r.content
+                    .contains("Answer the review's findings in `responses`")
+                && r.content.ends_with(tail),
+            "{id}: {}",
+            r.content
+        );
+        assert!(r.meta.is_none(), "{id}: no review record");
+    }
+    assert_eq!(
+        requests_with(&seen, PLAN_REVIEW).len(),
+        2,
+        "no review spent"
+    );
+    let fourth = result_of(&messages, "p4");
+    assert!(
+        fourth.content.starts_with("Saved the plan to"),
+        "{}",
+        fourth.content
+    );
+    let review = &fourth.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (review["round"].as_u64(), review["status"].as_str()),
+        (Some(2), Some("clean"))
+    );
+    assert_eq!(review["earlier"][0]["response"]["note"], "Added step 3.");
+    assert_eq!(h.plan_files().len(), 1);
+}
+
+/// B12: the answers are owed MAX_ANSWER_NUDGES times a hold; past that, the
+/// plan sent again as it was, with nothing said, is reviewed, and the held
+/// finding stays open whatever the review says (round 3).
+#[tokio::test]
+async fn hold_then_identical_resubmits_are_nudged_then_reviewed() {
+    let h = plan_project().await;
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_RESOLVED)],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit("p2", users_plan("Users", 0)),
+            submit("p3", users_plan("Users", 0)),
+            submit("p4", users_plan("Users", 0)),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    for id in ["p2", "p3"] {
+        let r = result_of(&messages, id);
+        assert!(
+            r.content.contains("Finding 1 has no answer yet."),
+            "{id}: {}",
+            r.content
+        );
+    }
+    let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
+        .iter()
+        .map(|b| {
+            b["messages"][1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(briefs.len(), 2, "p4 was reviewed, p2 and p3 weren't");
+    assert!(
+        briefs[1].contains("   - The agent's answer: none")
+            && briefs[1].contains(
+                "## What the revision changed\n\nNothing: the agent sent the plan again as it was."
+            ),
+        "{}",
+        briefs[1]
+    );
+    let fourth = result_of(&messages, "p4");
+    assert!(
+        fourth.content.starts_with("Saved the plan to")
+            && fourth
+                .content
+                .contains("still reported 1 finding after its last round"),
+        "{}",
+        fourth.content
+    );
+    let review = &fourth.meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (&review["round"], &review["status"], &review["open"]),
+        (&json!(2), &json!("findings"), &json!(1)),
+        "{review}"
+    );
+    assert_eq!(review["earlier"][0]["resolved"], false, "{review}");
+    assert_eq!(
+        review["earlier"][0]["reason"],
+        "the plan was sent again unchanged, with no answer"
+    );
+    assert!(h.plan_files()[0].contains("## Open review findings"));
 }
 
 #[tokio::test]
@@ -2489,7 +2746,7 @@ async fn a_plan_reviewer_out_of_budget_still_reports_findings() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
-            submit("p2", users_plan("Users", 1)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved the plan."),
         ],
     )
@@ -2627,7 +2884,11 @@ async fn a_small_revert_after_a_hold_is_still_reviewed() {
         vec![
             submit("p1", users_plan("Users", 6)),
             // Held; the agent reverts to (nearly) the saved plan.
-            submit("p2", users_plan("Users (again)", 0)),
+            submit_with(
+                "p2",
+                users_plan("Users (again)", 0),
+                json!([{ "finding": 1, "action": "not_a_problem", "note": "The CLI goes in a later change." }]),
+            ),
             Reply::Text("Saved."),
         ],
     )
@@ -2640,7 +2901,20 @@ async fn a_small_revert_after_a_hold_is_still_reviewed() {
     assert_eq!(briefs.len(), 2, "the revert was reviewed");
     let messages = h.messages().await;
     let second = result_of(&messages, "p2");
-    assert_eq!(second.meta.as_ref().unwrap()["review"]["round"], 2);
+    let review = &second.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["round"], 2);
+    // B13: a repeat with new evidence keeps the earlier finding open.
+    assert_eq!(
+        (
+            &review["earlier"][0]["resolved"],
+            &review["earlier"][0]["reason"]
+        ),
+        (
+            &json!(false),
+            &json!("the revision dropped the step again.")
+        ),
+        "{review}"
+    );
     let files = h.plan_files();
     assert!(files[0].starts_with("# Users (again)"), "{files:#?}");
     assert!(
@@ -9749,7 +10023,7 @@ async fn budget_used_record_shape() {
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
-            submit("p2", users_plan("Users", 1)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
             submit("p3", users_plan("Users v3", 3)),
             Reply::Text("Saved."),
         ],
@@ -9792,11 +10066,11 @@ async fn plan_review_across_a_second_run() {
     let (url, seen) = model_routed(
         vec![(
             PLAN_REVIEW,
-            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING_2)],
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_UNRESOLVED)],
         )],
         vec![
             submit("p1", users_plan("Users", 0)),
-            submit("p2", users_plan("Users", 1)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
             Reply::Text("Saved, with one finding open."),
         ],
     )
@@ -9986,87 +10260,11 @@ async fn second_run_cleans_earlier_output() {
     assert_eq!(first["checks"][0]["savedOutput"], saved, "{first}");
 }
 
-/// P4.6: a held plan sent again unchanged, with no reply, is reviewed again
-/// (round 2) with the held finding in its brief, and the reviewer's repeat
-/// of it stands: with nothing said against it, it isn't dropped (B04 drops
-/// repeats an answer may have settled), so the plan is saved with it open.
-#[tokio::test]
-async fn hold_then_identical_resubmit_is_reviewed() {
-    let h = plan_project().await;
-    let (url, seen) = model_routed(
-        vec![(
-            PLAN_REVIEW,
-            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_FINDING)],
-        )],
-        vec![
-            submit("p1", users_plan("Users", 0)),
-            // Held: the agent sends the very same plan again, saying nothing.
-            submit("p2", users_plan("Users", 0)),
-            Reply::Text("Saved."),
-        ],
-    )
-    .await;
-    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
-        .await;
-    assert_eq!(h.run_end().await, "done");
-    let messages = h.messages().await;
-    let first = result_of(&messages, "p1");
-    assert!(
-        first
-            .content
-            .starts_with("Error: The plan wasn't saved yet"),
-        "{}",
-        first.content
-    );
-    assert_eq!(first.meta.as_ref().unwrap()["review"]["held"], true);
-
-    // Reviewed again: the held finding is in the brief, and no reply.
-    let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
-        .iter()
-        .map(|b| {
-            b["messages"][1]["content"]
-                .as_str()
-                .unwrap_or("")
-                .to_string()
-        })
-        .collect();
-    assert_eq!(briefs.len(), 2, "the unchanged plan was reviewed again");
-    assert!(
-        briefs[1].contains("## The earlier review")
-            && briefs[1]
-                .contains("1. [high] Step 2 — `list_users` is also called from `src/cli.rs`"),
-        "{}",
-        briefs[1]
-    );
-    assert!(
-        briefs[1].contains(
-            "The agent's replies since:\n\n(none: it sent the plan again without comment)"
-        ),
-        "{}",
-        briefs[1]
-    );
-    let second = result_of(&messages, "p2");
-    assert!(
-        second
-            .content
-            .starts_with("Saved the plan to .rovik/plans/"),
-        "{}",
-        second.content
-    );
-    let review = &second.meta.as_ref().unwrap()["review"];
-    assert_eq!(review["round"], 2);
-    assert_eq!(review["status"], "findings", "{review}");
-    assert_eq!(review["findings"][0]["step"], 2, "{review}");
-    assert!(review.get("dropped").is_none(), "{review}");
-    assert_eq!(review["open"], 1, "{review}");
-    let files = h.plan_files();
-    assert_eq!(files.len(), 1);
-    assert!(files[0].contains("## Open review findings"), "{}", files[0]);
-}
-
 /// Round 3: held, the agent revises the plan and sends it again without a
-/// word (the hold allows a fix in place of a reply): a finding the reviewer
-/// repeats is dropped as before, and the plan is saved clean.
+/// word. Past the answer nudges (B12) it's reviewed: the brief says it
+/// answered nothing and shows what it changed, and a finding the reviewer
+/// repeats without new evidence is dropped as before (B04): the plan is
+/// saved clean.
 #[tokio::test]
 async fn hold_then_silent_revision_drops_a_repeat() {
     let h = plan_project().await;
@@ -10079,6 +10277,8 @@ async fn hold_then_silent_revision_drops_a_repeat() {
             submit("p1", users_plan("Users", 0)),
             // Held: it adds the step the finding asked for, saying nothing.
             submit("p2", users_plan("Users", 1)),
+            submit("p3", users_plan("Users", 1)),
+            submit("p4", users_plan("Users", 1)),
             Reply::Text("Saved."),
         ],
     )
@@ -10091,6 +10291,12 @@ async fn hold_then_silent_revision_drops_a_repeat() {
         result_of(&messages, "p1").meta.as_ref().unwrap()["review"]["held"],
         true
     );
+    for id in ["p2", "p3"] {
+        assert!(
+            result_of(&messages, id).meta.is_none(),
+            "{id}: not reviewed"
+        );
+    }
     let briefs: Vec<String> = requests_with(&seen, PLAN_REVIEW)
         .iter()
         .map(|b| {
@@ -10102,25 +10308,28 @@ async fn hold_then_silent_revision_drops_a_repeat() {
         .collect();
     assert_eq!(briefs.len(), 2);
     assert!(
-        briefs[1].contains("(none: it revised the plan without comment)"),
+        briefs[1].contains("   - The agent's answer: none")
+            && !briefs[1].contains("The agent sent no answers with the plan")
+            && briefs[1].contains("+3. **Caller 0**"),
         "{}",
         briefs[1]
     );
-    let second = result_of(&messages, "p2");
+    let fourth = result_of(&messages, "p4");
     assert!(
-        second
+        fourth
             .content
             .starts_with("Saved the plan to .rovik/plans/"),
         "{}",
-        second.content
+        fourth.content
     );
-    let review = &second.meta.as_ref().unwrap()["review"];
+    let review = &fourth.meta.as_ref().unwrap()["review"];
     assert_eq!(review["status"], "clean", "{review}");
     assert_eq!(
         review["dropped"].as_array().map(Vec::len),
         Some(1),
         "{review}"
     );
+    assert_eq!(review["earlier"][0]["resolved"], true, "{review}");
     assert!(review.get("open").is_none(), "{review}");
     let files = h.plan_files();
     assert_eq!(files.len(), 1);

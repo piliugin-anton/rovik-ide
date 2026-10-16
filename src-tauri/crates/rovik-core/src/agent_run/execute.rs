@@ -1618,9 +1618,14 @@ impl Run {
         let (plan_text, findings_dropped) =
             plan::without_findings(args.get("plan").and_then(|p| p.as_str()).unwrap_or(""));
         let plan_text = plan_text.as_str();
+        // B12: the agent's answers to the findings that held the plan back.
+        let responses = super::plan_review::parse_responses(args.get("responses"));
         // B07: against the project too, as this chat sees it.
-        let problems =
+        let mut problems =
             plan::plan_problems_in(plan_text, self.root.as_deref().map(std::path::Path::new));
+        // B12: a held finding left unanswered sends the plan back with the
+        // checker's problems, before a review is spent on it.
+        problems.extend(self.unanswered(&responses));
         if !problems.is_empty() {
             let content = format!(
                 "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- {}",
@@ -1651,7 +1656,7 @@ impl Run {
         let existing = chat_plan_file(&recent);
         // B09: the plan reviewer, when it's on, before the plan is saved.
         let review = self
-            .review_plan(&tc.id, plan_text, existing.as_deref())
+            .review_plan(&tc.id, plan_text, existing.as_deref(), &responses)
             .await?;
         let record = review.record;
         let (plan_text, note) = match review.decision {

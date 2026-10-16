@@ -136,8 +136,12 @@ Rovik already has most of the pieces a subagent system needs:
   - registration points (such as `lib.rs` or `commands.ts`) that several
     steps of one group would all edit.
 
-  At most 2 rounds. Anything still open is listed at the end of the plan
-  for the user.
+  At most 2 rounds. The agent answers each finding by number (fixed, or
+  not a problem and why), and the second round checks those answers
+  against the revision: it says which earlier findings are resolved and
+  adds only new findings that are high or about what the revision
+  changed. Anything still open is listed at the end of the plan for the
+  user.
 
 **C. Failure triage.**
 

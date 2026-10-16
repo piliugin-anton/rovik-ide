@@ -1,4 +1,4 @@
-//! The plan reviewer (docs/design/subagents-plan.md, B08–B10): when the
+//! The plan reviewer (docs/design/subagents-plan.md, B08–B13): when the
 //! agent submits a plan, a subagent checks it against the code before it's
 //! saved. It sees the user's request, their answers to the agent's
 //! questions and the plan, never the agent's conversation or its scouts'
@@ -7,29 +7,47 @@
 //! Findings use the change reviewer's format (change_review.rs), with
 //! "Step 3" in place of `path:line`. High and medium ones keep the plan
 //! from being saved: the `submit_plan` result lists them, and the agent
-//! fixes the plan or answers each. At most MAX_PLAN_REVIEW_ROUNDS reviews a
-//! run; after the last, the plan is saved and what's still open is added at
-//! its end for the user. A reviewer that fails is recorded as skipped and
-//! the plan is saved with a note (layer 7).
+//! fixes the plan or answers each, by number, in `submit_plan`'s
+//! `responses` (B12). The review after a hold is a follow-up (B13): it gets
+//! the earlier findings with the agent's answers and what the revision
+//! changed, says of each earlier finding whether it's resolved, and adds
+//! only new findings that are high or about what the revision changed. At
+//! most MAX_PLAN_REVIEW_ROUNDS reviews a run; after the last, the plan is
+//! saved and what's still open is added at its end for the user. A
+//! reviewer that fails is recorded as skipped and the plan is saved with a
+//! note (layer 7).
 
 use super::change_review::{
-    drop_repeats, findingless, parse_findings, reviewer_skip_reason, skipped, Finding,
+    describe, drop_repeats, findingless, parse_findings, reviewer_skip_reason, same_finding,
+    skipped, Finding,
 };
+use super::permissions::trimmed_str;
 use super::run::Run;
 use super::subagent::{self, Budget, Format, Kind, KindSpec, SubagentSettings};
-use super::{diff, log};
-use crate::chat_db::store::MessageRow;
+use super::{diff, log, plan};
+use crate::chat_db::store::{char_prefix, MessageRow};
+use regex::Regex;
+use serde::Serialize;
 use serde_json::{json, Value};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 /// Plan reviews in one run; past them, a plan is saved as it is.
 pub const MAX_PLAN_REVIEW_ROUNDS: u32 = 2;
+/// B12: after a hold, a submit that leaves a held finding unanswered goes
+/// back, without a review, at most this many times; then it's reviewed
+/// with the answers it has.
+pub const MAX_ANSWER_NUDGES: u32 = 2;
 /// A revision changing fewer lines than this from the saved plan is saved
 /// without a review.
 pub const MIN_REVISION_LINES: usize = 10;
 /// The heading open findings go under, at the end of a saved plan.
 pub const OPEN_FINDINGS_HEADING: &str = "## Open review findings";
 const MAX_ANSWERS_CHARS: usize = 4_000;
+/// B13: what a revision changed, as a follow-up review's brief shows it.
+const MAX_CHANGES_CHARS: usize = 12_000;
+/// B12: an answer's note, as a follow-up review's brief shows it.
+const MAX_NOTE_CHARS: usize = 1_000;
 
 const PLAN_REVIEWER_PROMPT: &str = r###"You are a plan reviewer: a read-only helper of a coding agent. The agent investigated the user's project and wrote an implementation plan. You see the user's request, their answers to the agent's questions, and the plan, but not the agent's conversation, on purpose: check the plan against the code with fresh eyes, before anyone builds it.
 
@@ -53,7 +71,7 @@ Wording, formatting and naming are not findings, and neither is a different desi
 
 ## Report
 
-Reply with exactly this, most severe first, and nothing before or after it (don't repeat the plan):
+Reply with exactly this, most severe first, and nothing else (don't repeat the plan):
 
 ## Findings
 
@@ -62,7 +80,16 @@ Reply with exactly this, most severe first, and nothing before or after it (don'
    - Fix: the change to the plan you suggest.
    - Confidence: confirmed or plausible.
 
-Use "Step N" for the step a finding is about, or "Plan" for the plan as a whole. Severity: high (the plan can't work or misses part of the request), medium (it would need rework), low (minor). With nothing to report, reply "## Findings" and then "None."."###;
+Use "Step N" for the step a finding is about, or "Plan" for the plan as a whole. Severity: high (the plan can't work or misses part of the request), medium (it would need rework), low (minor). With nothing to report, reply "## Findings" and then "None.".
+
+A follow-up review (the brief has "## The earlier review") starts with one more section, one line for each earlier finding, in order:
+
+## Earlier findings
+
+- Earlier 1: resolved — how the revised plan settles it, or why the agent's answer holds.
+- Earlier 2: not resolved — what is still wrong, and what in the code shows it.
+
+Then "## Findings", with only new findings: high ones anywhere in the plan, and others only about what the revision changed."###;
 
 pub static PLAN_REVIEWER: KindSpec = KindSpec {
     label: "Plan reviewer",
@@ -95,13 +122,25 @@ pub struct BriefParts<'a> {
     /// The user's answers to the agent's questions, as the agent got them.
     pub answers: &'a [String],
     pub plan: &'a str,
-    /// A later round: the earlier findings and the agent's replies since.
-    pub earlier: Option<(&'a [Finding], &'a str)>,
+    /// B13: a follow-up review, after a hold.
+    pub earlier: Option<Earlier<'a>>,
+}
+
+/// B13: what a follow-up review is told of the hold before it.
+pub struct Earlier<'a> {
+    /// The findings that held the plan back, numbered as the agent got them.
+    pub findings: &'a [Finding],
+    /// The agent's answers to them (B12).
+    pub responses: &'a [Response],
+    /// What the agent wrote since the hold: shown when it gave no answers.
+    pub replies: &'a str,
+    /// What the revision changed (`revision_changes`): empty when nothing.
+    pub changes: &'a str,
 }
 
 /// B08: the reviewer's brief. The harness writes it; nothing from the
-/// agent's conversation but its plan (and, in a later round, its replies
-/// to the findings).
+/// agent's conversation but its plan (and, in a follow-up review, its
+/// answers to the findings).
 pub fn brief(p: &BriefParts) -> String {
     let mut out = String::from(
         "# Review this plan\n\nA coding agent wrote the plan below for the user's request. Check it against the code, then report your findings in the required format.",
@@ -118,40 +157,75 @@ pub fn brief(p: &BriefParts) -> String {
         "\n\n## The plan\n\n````markdown\n{}\n````",
         p.plan.trim()
     ));
-    if let Some((findings, replies)) = p.earlier {
-        let list = findings
+    if let Some(e) = &p.earlier {
+        let list = e
+            .findings
             .iter()
             .enumerate()
-            .map(|(i, f)| super::change_review::describe(f, i + 1))
+            .map(|(i, f)| {
+                let answer = e
+                    .responses
+                    .iter()
+                    .find(|r| r.finding == i + 1)
+                    .map_or_else(|| "none".to_string(), Response::describe);
+                format!("{}\n   - The agent's answer: {answer}", describe(f, i + 1))
+            })
             .collect::<Vec<_>>()
             .join("\n\n");
         out.push_str(&format!(
-            "\n\n## The earlier review\n\nAn earlier review of this plan sent these findings to the agent:\n\n{list}\n\n\
-             The agent's replies since:\n\n{}\n\n\
-             Don't report again a finding the agent fixed in the plan or explained, unless you have new evidence; then add a \"- New evidence:\" line saying what's new.",
-            if replies.trim().is_empty() {
-                "(none: it sent the plan again without comment)"
-            } else {
-                replies.trim()
-            }
+            "\n\n## The earlier review\n\nThis is a follow-up review. An earlier review held the plan back with these findings (Earlier 1, Earlier 2, …), and the agent revised it. Under each finding is the agent's answer.\n\n{list}"
         ));
+        if e.responses.is_empty() && !e.replies.trim().is_empty() {
+            out.push_str(&format!(
+                "\n\nThe agent sent no answers with the plan. What it wrote since the hold:\n\n{}",
+                e.replies.trim()
+            ));
+        }
+        out.push_str("\n\n## What the revision changed\n\n");
+        if e.changes.trim().is_empty() {
+            out.push_str("Nothing: the agent sent the plan again as it was.");
+        } else {
+            out.push_str(&format!("````diff\n{}\n````", e.changes.trim_end()));
+        }
+        out.push_str(
+            "\n\n## This review\n\n\
+             First check each earlier finding against the revised plan and the code, and say under \"## Earlier findings\" whether it's resolved, one line each: \
+             \"- Earlier 1: resolved — …\" or \"- Earlier 1: not resolved — …\". \
+             A finding the agent answered as not a problem is resolved unless the code shows the answer is wrong; then say what shows it. \
+             Then, under \"## Findings\", report only new findings: high ones anywhere in the plan, and others only about what the revision changed. \
+             Don't report an earlier finding again there.",
+        );
     }
     out
 }
 
-/// The `submit_plan` result when findings keep the plan from being saved.
+/// The `submit_plan` result when findings keep the plan from being saved:
+/// with how to check, fix and answer them, and what the next review is
+/// (B11).
 pub fn findings_result(findings: &[Finding], round: u32) -> String {
     let list = findings
         .iter()
         .enumerate()
-        .map(|(i, f)| super::change_review::describe(f, i + 1))
+        .map(|(i, f)| describe(f, i + 1))
         .collect::<Vec<_>>()
         .join("\n\n");
+    let left = MAX_PLAN_REVIEW_ROUNDS.saturating_sub(round);
+    let next = if left <= 1 {
+        "Your next submit gets this run's last review: what it still finds is saved at the end of the plan for the user, not sent back to you.".to_string()
+    } else {
+        format!("{left} more reviews are left in this run.")
+    };
     format!(
         "The plan wasn't saved yet: a reviewer checked it against the code (review {round} of at most {MAX_PLAN_REVIEW_ROUNDS}) and found problems. \
-         It saw the request, the user's answers and the plan, not this conversation; its findings are another model's opinion, so check each against the code.\n\n{list}\n\n\
-         Fix the plan for each finding, or say in your reply why it isn't a problem (\"1: not a problem, because …\"). \
-         Then call submit_plan again with the complete plan."
+         It saw the request, the user's answers and the plan, not this conversation; its findings are another model's opinion.\n\n{list}\n\n\
+         Before you submit again:\n\
+         - Check each finding against the code with your tools (read, search_code, callers) before you change the plan.\n\
+         - Where a finding is right, fix it in the plan, and look for the same kind of problem in the other steps: a caller missed in one step is often missed in others.\n\
+         - Where it's wrong, leave that part of the plan as it is.\n\
+         - Change only what the findings need: anything else you change is reviewed as new.\n\n\
+         Then call submit_plan again with the complete plan and `responses`, one answer for each finding by its number: \
+         {{\"finding\": 1, \"action\": \"fixed\", \"note\": \"what you changed\"}} or \
+         {{\"finding\": 2, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}. {next}"
     )
 }
 
@@ -233,7 +307,463 @@ fn replies_after(recent: &[MessageRow], call_id: &str) -> String {
         .map(|m| m.content.trim().to_string())
         .collect::<Vec<_>>()
         .join("\n\n");
-    crate::chat_db::store::char_prefix(&text, MAX_ANSWERS_CHARS).to_string()
+    char_prefix(&text, MAX_ANSWERS_CHARS).to_string()
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The agent's answers (B12)
+ * ---------------------------------------------------------------------------
+ */
+
+/// The agent's answer to one held finding: an item of `submit_plan`'s
+/// `responses`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Response {
+    /// The finding's number, as the hold listed it.
+    pub finding: usize,
+    pub action: Action,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// The revised plan settles it.
+    Fixed,
+    /// The finding is wrong; the note says why.
+    NotAProblem,
+}
+
+impl Response {
+    /// An answer a hold takes: "not a problem" says why.
+    fn usable(&self) -> bool {
+        self.action == Action::Fixed || !self.note.is_empty()
+    }
+
+    /// "fixed — what changed", on one line, as a follow-up review's brief
+    /// shows it.
+    fn describe(&self) -> String {
+        let action = match self.action {
+            Action::Fixed => "fixed",
+            Action::NotAProblem => "not a problem",
+        };
+        let note = self.note.split_whitespace().collect::<Vec<_>>().join(" ");
+        if note.is_empty() {
+            action.to_string()
+        } else {
+            format!("{action} — {}", char_prefix(&note, MAX_NOTE_CHARS))
+        }
+    }
+}
+
+/// Where an answer's number, note and action may be, as models name them.
+const NUMBER_KEYS: &[&str] = &["finding", "number", "n", "id", "index"];
+const NOTE_KEYS: &[&str] = &[
+    "note",
+    "reason",
+    "comment",
+    "explanation",
+    "why",
+    "details",
+    "answer",
+];
+const ACTION_KEYS: &[&str] = &["action", "status", "verdict", "resolution"];
+
+static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+").unwrap());
+/// An answer written as one line: "2: not a problem — the CLI is gone".
+static NUMBERED_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)^\D*?(\d+)\s*[:.)—–-]*\s*(.*)$").unwrap());
+/// An action at the start of a text, and what follows it.
+static ACTION_LEAD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)^[\s*_`]*(fixed|resolved|addressed|done|not\s+a\s+problem|not\s+an\s+issue|no\s+problem|not\s+a\s+bug|won'?t\s+fix|false\s+positive)\b[\s*_:;,.—–-]*(.*)$",
+    )
+    .unwrap()
+});
+
+/// A finding's number: 2, "2", "#2", "Finding 2".
+fn number_of(v: &Value) -> Option<usize> {
+    let n = match v {
+        Value::Number(n) => n.as_f64().filter(|n| n.is_finite()).map(|n| n as usize),
+        Value::String(s) => NUMBER.find(s).and_then(|m| m.as_str().parse().ok()),
+        _ => None,
+    }?;
+    (n >= 1).then_some(n)
+}
+
+/// An action in any spelling: "fixed", "Not a problem", "notAProblem",
+/// "won't fix".
+fn action_of(text: &str) -> Option<Action> {
+    let key: String = text
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    match key.as_str() {
+        "fixed" | "fix" | "resolved" | "addressed" | "done" | "changed" | "updated" => {
+            Some(Action::Fixed)
+        }
+        "notaproblem" | "notproblem" | "noproblem" | "notanissue" | "noissue" | "notabug"
+        | "wontfix" | "rejected" | "declined" | "disagree" | "invalid" | "falsepositive" => {
+            Some(Action::NotAProblem)
+        }
+        _ => None,
+    }
+}
+
+/// One answer: an object, or a "2: fixed — …" line. `number`: the key it
+/// was under, in an object of answers by number.
+fn response_of(number: Option<usize>, item: &Value) -> Option<Response> {
+    match item {
+        Value::Object(o) => {
+            let finding = number.or_else(|| {
+                NUMBER_KEYS
+                    .iter()
+                    .find_map(|k| o.get(*k).and_then(number_of))
+            })?;
+            let note = NOTE_KEYS
+                .iter()
+                .find_map(|k| trimmed_str(o.get(*k)))
+                .unwrap_or("")
+                .to_string();
+            // Left out, the action may open the note ("Not a problem: …").
+            let action = ACTION_KEYS
+                .iter()
+                .find_map(|k| o.get(*k).and_then(Value::as_str).and_then(action_of))
+                .or_else(|| ACTION_LEAD.captures(&note).and_then(|c| action_of(&c[1])))?;
+            Some(Response {
+                finding,
+                action,
+                note,
+            })
+        }
+        Value::String(s) => {
+            let (finding, rest) = match number {
+                Some(n) => (n, s.as_str()),
+                None => {
+                    let c = NUMBERED_LINE.captures(s)?;
+                    let n = c[1].parse::<usize>().ok().filter(|n| *n >= 1)?;
+                    (n, c.get(2).map_or("", |m| m.as_str()))
+                }
+            };
+            let c = ACTION_LEAD.captures(rest)?;
+            Some(Response {
+                finding,
+                action: action_of(&c[1])?,
+                note: c[2].trim().to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// B12: the agent's answers in `submit_plan`'s `responses`, tolerating the
+/// shapes models produce: a list of objects or of "2: fixed — …" lines, the
+/// list as its JSON text, one object, or an object of answers by number;
+/// the action in any spelling, or opening the note when it's left out. The
+/// first answer to a number counts.
+pub fn parse_responses(value: Option<&Value>) -> Vec<Response> {
+    let decoded;
+    let value = match value {
+        // The list sent as its JSON text.
+        Some(Value::String(s)) if s.trim_start().starts_with(['[', '{']) => {
+            match serde_json::from_str::<Value>(s.trim()) {
+                Ok(v) => {
+                    decoded = v;
+                    &decoded
+                }
+                Err(_) => return Vec::new(),
+            }
+        }
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    let found: Vec<Response> = match value {
+        Value::Array(items) => items.iter().filter_map(|v| response_of(None, v)).collect(),
+        Value::Object(o) if NUMBER_KEYS.iter().any(|k| o.contains_key(*k)) => {
+            response_of(None, value).into_iter().collect()
+        }
+        Value::Object(o) => o
+            .iter()
+            .filter_map(|(k, v)| response_of(Some(number_of(&Value::String(k.clone()))?), v))
+            .collect(),
+        Value::String(s) => s
+            .lines()
+            .filter_map(|l| response_of(None, &Value::String(l.to_string())))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut out: Vec<Response> = Vec::new();
+    for r in found {
+        if !out.iter().any(|o| o.finding == r.finding) {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// B12: what a submit after a hold is missing when a held finding has no
+/// answer the hold takes (a "not a problem" one says why), for the
+/// checker's list; None when each has one.
+pub fn unanswered_problem(held: usize, responses: &[Response]) -> Option<String> {
+    let missing: Vec<String> = (1..=held)
+        .filter(|n| !responses.iter().any(|r| r.finding == *n && r.usable()))
+        .map(|n| n.to_string())
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = missing.iter().map(String::as_str).collect();
+    let why = if responses.iter().any(|r| !r.usable()) {
+        " (a not_a_problem answer needs a note saying why)"
+    } else {
+        ""
+    };
+    Some(format!(
+        "Answer the review's findings in `responses`, one entry for each, by its number: \
+         {{\"finding\": 1, \"action\": \"fixed\", \"note\": \"what you changed in the plan\"}} or \
+         {{\"finding\": 1, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}. \
+         {} {} {} no answer yet{why}.",
+        if missing.len() == 1 {
+            "Finding"
+        } else {
+            "Findings"
+        },
+        plan::list_steps(&names),
+        if missing.len() == 1 { "has" } else { "have" },
+    ))
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Follow-up reviews (B13)
+ * ---------------------------------------------------------------------------
+ */
+
+/// A follow-up review's word on an earlier finding.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Verdict {
+    pub finding: usize,
+    pub resolved: bool,
+    pub reason: String,
+}
+
+/// "- Earlier 2: not resolved — step 3 still calls it", in bold, numbered
+/// or with a mark, with a note in brackets after the number, or "Earlier 2
+/// is resolved". "Earlier" may be left out under the "## Earlier findings"
+/// heading.
+static VERDICT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^[\s>]*(?:[-*+•✅✓✔❌✗✘]\s*)*\**\s*(earlier(?:\s+finding)?\s*)?#?\s*(\d+)\b\**(?:\s*[\[(][^\])\n]*[\])])?\s*\**\s*[:.)—–-]*\s*(?:(?:is|was|remains|stays)\s+)?\**\s*(not\s+resolved|unresolved|not\s+fixed|still\s+open|partly\s+resolved|partially\s+resolved|open|resolved|fixed|settled|addressed)\b\**\s*[.:;,—–-]*\s*(.*)$",
+    )
+    .unwrap()
+});
+/// A heading, or a bold line standing for one.
+static HEADING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:#{1,6}\s+(.*)|\*\*([^*]+)\*\*:?\s*)$").unwrap());
+
+/// B13: a follow-up review's verdicts on the earlier findings, by number:
+/// the lines under its "## Earlier findings" heading, and "Earlier N: …"
+/// lines anywhere else. The first verdict on a number counts.
+pub fn parse_verdicts(text: &str) -> Vec<Verdict> {
+    let mut out: Vec<Verdict> = Vec::new();
+    let mut under_earlier = false;
+    for line in text.lines() {
+        if let Some(c) = VERDICT.captures(line) {
+            if c.get(1).is_none() && !under_earlier {
+                continue;
+            }
+            let Ok(finding) = c[2].parse::<usize>() else {
+                continue;
+            };
+            if out.iter().any(|v| v.finding == finding) {
+                continue;
+            }
+            let word = c[3].split_whitespace().collect::<Vec<_>>().join(" ");
+            out.push(Verdict {
+                finding,
+                resolved: matches!(
+                    word.to_lowercase().as_str(),
+                    "resolved" | "fixed" | "settled" | "addressed"
+                ),
+                reason: c[4].trim().trim_matches('*').trim().to_string(),
+            });
+        } else if let Some(c) = HEADING.captures(line) {
+            let title = c.get(1).or(c.get(2)).map_or("", |m| m.as_str());
+            under_earlier = title.to_lowercase().contains("earlier");
+        }
+    }
+    out
+}
+
+/// A verdict line that names its earlier finding ("Earlier 2: resolved —
+/// …"): never a finding, wherever a report puts it (change_review.rs).
+pub(super) fn is_verdict(line: &str) -> bool {
+    VERDICT.captures(line).is_some_and(|c| c.get(1).is_some())
+}
+
+/// The revision's steps the held plan doesn't have, by number: new ones
+/// and changed ones. A step that only moved (a step inserted before it)
+/// isn't changed.
+pub fn changed_steps(held: &str, plan: &str) -> Vec<usize> {
+    let before: Vec<String> = plan::steps(held)
+        .iter()
+        .map(plan::PlanStep::content_key)
+        .collect();
+    plan::steps(plan)
+        .iter()
+        .filter(|s| !before.contains(&s.content_key()))
+        .map(|s| s.number)
+        .collect()
+}
+
+/// What a revision changed from the held plan, for the follow-up review's
+/// brief: the changed lines, cut to MAX_CHANGES_CHARS (the whole plan is
+/// in the brief too); empty when nothing changed.
+pub fn revision_changes(held: &str, plan: &str) -> String {
+    let (before, after) = (held.replace("\r\n", "\n"), plan.replace("\r\n", "\n"));
+    let hunks = diff::diff_lines(
+        &diff::split_lines(before.trim()),
+        &diff::split_lines(after.trim()),
+    );
+    let text = diff::compact_diff(&hunks);
+    if text.chars().count() <= MAX_CHANGES_CHARS {
+        return text;
+    }
+    format!(
+        "{}\n… (cut: the revision changed more; the whole plan is above)",
+        char_prefix(&text, MAX_CHANGES_CHARS)
+    )
+}
+
+static STEP_RANGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d+)(?:\s*[-–]\s*(\d+))?").unwrap());
+
+/// The steps a finding is about: "Step 3", "Steps 2 and 4", "Steps 2–4";
+/// none for the plan as a whole, or a path.
+fn steps_of(f: &Finding) -> Vec<usize> {
+    if !f.location.trim().to_lowercase().starts_with("step") {
+        return f.step.map(|s| vec![s as usize]).unwrap_or_default();
+    }
+    let mut out = Vec::new();
+    for c in STEP_RANGE.captures_iter(&f.location) {
+        let Ok(from) = c[1].parse::<usize>() else {
+            continue;
+        };
+        let to = c
+            .get(2)
+            .and_then(|m| m.as_str().parse::<usize>().ok())
+            .filter(|to| *to >= from && to - from <= 50)
+            .unwrap_or(from);
+        out.extend(from..=to);
+    }
+    out
+}
+
+/// What a follow-up review is judged against.
+pub struct Facts<'a> {
+    /// The findings that held the plan back.
+    pub earlier: &'a [Finding],
+    pub responses: &'a [Response],
+    pub verdicts: &'a [Verdict],
+    /// The plan came back as it was held, with nothing said.
+    pub unchanged_and_silent: bool,
+    /// The revision's new and changed steps (`changed_steps`).
+    pub changed: &'a [usize],
+}
+
+/// What a follow-up review leaves open.
+#[derive(Debug, Default)]
+pub struct FollowUp {
+    /// Open after the review: the earlier findings it didn't find resolved
+    /// (its reason as their new evidence), then the new findings that count.
+    pub open: Vec<Finding>,
+    /// New findings below high about steps the revision didn't change:
+    /// shown, never held.
+    pub not_held: Vec<Finding>,
+    /// New findings repeating an earlier one without new evidence (B04).
+    pub dropped: Vec<Finding>,
+    /// Each earlier finding with the agent's answer and the verdict, for
+    /// the record.
+    pub earlier: Vec<Value>,
+}
+
+const UNCHANGED_REASON: &str = "the plan was sent again unchanged, with no answer";
+const NOT_CHECKED_REASON: &str =
+    "the reviewer didn't say; taken as settled by the revision and the agent's answer";
+
+/// B13: a follow-up review's findings, judged against the hold before it.
+/// An earlier finding stays open when the review says it isn't resolved
+/// or repeats it with new evidence, and when the plan came back unchanged
+/// with nothing said; one the review doesn't mention is settled (B04). A
+/// new finding counts when it's high, about the whole plan, or about a
+/// step the revision changed: below high, what the revision didn't touch
+/// isn't reopened.
+pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
+    let (kept, dropped) = drop_repeats(found, facts.earlier);
+    // The repeats drop_repeats keeps have new evidence: they speak for the
+    // earlier finding they repeat.
+    let mut reopened: Vec<(usize, String)> = Vec::new();
+    let mut new: Vec<Finding> = Vec::new();
+    for f in kept {
+        match facts.earlier.iter().position(|e| same_finding(&f, e)) {
+            Some(i) => reopened.push((i + 1, f.new_evidence.clone().unwrap_or_default())),
+            None => new.push(f),
+        }
+    }
+    let mut out = FollowUp {
+        dropped,
+        ..Default::default()
+    };
+    for (i, e) in facts.earlier.iter().enumerate() {
+        let n = i + 1;
+        let verdict = facts.verdicts.iter().find(|v| v.finding == n);
+        // Resolved, why, and whether the review said it.
+        let (resolved, reason, said) = if let Some((_, evidence)) =
+            reopened.iter().find(|(k, _)| *k == n)
+        {
+            (false, evidence.clone(), true)
+        } else if facts.unchanged_and_silent {
+            match verdict {
+                Some(v) if !v.resolved && !v.reason.is_empty() => (false, v.reason.clone(), true),
+                _ => (false, UNCHANGED_REASON.to_string(), false),
+            }
+        } else if let Some(v) = verdict {
+            (v.resolved, v.reason.clone(), true)
+        } else {
+            (true, NOT_CHECKED_REASON.to_string(), false)
+        };
+        if !resolved {
+            let mut f = e.clone();
+            if said && !reason.is_empty() {
+                f.new_evidence = Some(reason.clone());
+            }
+            out.open.push(f);
+        }
+        out.earlier.push(json!({
+            "finding": n,
+            "severity": e.severity,
+            "location": e.location,
+            "title": e.title,
+            "response": facts.responses.iter().find(|r| r.finding == n),
+            "resolved": resolved,
+            "reason": reason,
+        }));
+    }
+    for f in new {
+        let steps = steps_of(&f);
+        if f.severity == "high"
+            || steps.is_empty()
+            || steps.iter().any(|s| facts.changed.contains(s))
+        {
+            out.open.push(f);
+        } else {
+            out.not_held.push(f);
+        }
+    }
+    out
 }
 
 /*
@@ -258,13 +788,57 @@ pub struct Outcome {
 }
 
 impl Run {
+    /// Whether a submitted plan gets a review: the lead's, with a project,
+    /// while the plan reviewer is on.
+    fn plan_reviewer_on(&self) -> bool {
+        self.sub().is_none()
+            && !self.stopped()
+            && self.root.is_some()
+            && self.config().subagents.kind(Kind::PlanReviewer).is_some()
+    }
+
+    /// B12: after a hold, what a submit is missing when it leaves a held
+    /// finding unanswered. It goes back with the checker's problems and
+    /// uses no review, at most MAX_ANSWER_NUDGES times a hold; past that,
+    /// the submit is reviewed with the answers it has.
+    pub(super) fn unanswered(&mut self, responses: &[Response]) -> Option<String> {
+        if self.plan_findings.is_empty()
+            || self.plan_answer_nudges >= MAX_ANSWER_NUDGES
+            || !self.plan_reviewer_on()
+        {
+            return None;
+        }
+        let problem = unanswered_problem(self.plan_findings.len(), responses)?;
+        self.plan_answer_nudges += 1;
+        Some(problem)
+    }
+
     /// B09: reviews a submitted plan that passed the checker, before it's
-    /// saved. `saved`: the chat's plan file as it is now.
+    /// saved. `saved`: the chat's plan file as it is now; `responses`: the
+    /// agent's answers to the held findings (B12). A saved plan ends the
+    /// hold: no answers are owed, and a later review starts afresh.
     pub(super) async fn review_plan(
         &mut self,
         call_id: &str,
         plan: &str,
         saved: Option<&str>,
+        responses: &[Response],
+    ) -> Result<Outcome, String> {
+        let outcome = self.plan_review(call_id, plan, saved, responses).await?;
+        if matches!(outcome.decision, Decision::Save { .. }) {
+            self.plan_findings.clear();
+            self.plan_held = None;
+            self.plan_review_call = None;
+        }
+        Ok(outcome)
+    }
+
+    async fn plan_review(
+        &mut self,
+        call_id: &str,
+        plan: &str,
+        saved: Option<&str>,
+        responses: &[Response],
     ) -> Result<Outcome, String> {
         let save = |note: Option<String>| Outcome {
             decision: Decision::Save {
@@ -273,11 +847,7 @@ impl Run {
             },
             record: None,
         };
-        if self.sub().is_some() || self.stopped() || self.root.is_none() {
-            return Ok(save(None));
-        }
-        let config = self.config().subagents;
-        if config.kind(Kind::PlanReviewer).is_none() {
+        if !self.plan_reviewer_on() {
             return Ok(save(None));
         }
         // P4.6: a save past the budget says so, in the result and its record.
@@ -308,28 +878,32 @@ impl Run {
         let request = self.latest_user_request().await;
         let answers = answers_in(&recent);
         let earlier = self.plan_findings.clone();
+        let held = self.plan_held.clone().unwrap_or_default();
+        // B12: the answers come with the submit; what the agent wrote since
+        // the hold stands in for them only when it sent none.
         let replies = match &self.plan_review_call {
-            Some(id) => replies_after(&recent, id),
-            None => String::new(),
+            Some(id) if responses.is_empty() => replies_after(&recent, id),
+            _ => String::new(),
         };
         // Round 3: the plan sent again as it was, with nothing said, keeps
-        // every repeated finding; a revision without comment may settle
-        // some (B04), and the reviewer is told which it was.
-        let unchanged = self
-            .plan_held
-            .as_deref()
-            .is_some_and(|held| changed_lines(held, plan) == 0);
-        let silent = replies.trim().is_empty();
-        let shown = if silent && !unchanged && !earlier.is_empty() {
-            "(none: it revised the plan without comment)".to_string()
+        // every earlier finding open.
+        let unchanged = self.plan_held.is_some() && changed_lines(&held, plan) == 0;
+        let silent = responses.is_empty() && replies.trim().is_empty();
+        let changes = if earlier.is_empty() {
+            String::new()
         } else {
-            replies.clone()
+            revision_changes(&held, plan)
         };
         let message = brief(&BriefParts {
             request: &request,
             answers: &answers,
             plan,
-            earlier: (!earlier.is_empty()).then_some((earlier.as_slice(), shown.as_str())),
+            earlier: (!earlier.is_empty()).then_some(Earlier {
+                findings: &earlier,
+                responses,
+                replies: &replies,
+                changes: &changes,
+            }),
         });
 
         let started = Instant::now();
@@ -342,41 +916,75 @@ impl Run {
             "maxRounds": MAX_PLAN_REVIEW_ROUNDS,
             "ms": started.elapsed().as_millis() as u64,
         });
-        let mut serious: Vec<Finding> = Vec::new();
-        match subagent::outcome_of(&mut review, outcome) {
-            subagent::SubOutcome::Stopped => review["status"] = json!("stopped"),
+        // The findings it reported and its report, when it could be read.
+        let report: Option<(Vec<Finding>, String)> = match subagent::outcome_of(
+            &mut review,
+            outcome,
+        ) {
+            subagent::SubOutcome::Stopped => {
+                review["status"] = json!("stopped");
+                None
+            }
             // Out of format twice with nothing finding-shaped (the plan
             // sent back, a sentence): no findings, said so in the record.
             subagent::SubOutcome::Skipped(subagent::Skip::Unformatted { text, .. })
                 if findingless(&text) =>
             {
-                review["status"] = json!("clean");
-                review["findings"] = json!([]);
                 review["reason"] = json!(
                     "its reply had no Findings section and nothing that reads as a finding, so it counts as none"
                 );
+                Some((Vec::new(), text))
             }
             subagent::SubOutcome::Skipped(skip) => {
-                skipped(&mut review, reviewer_skip_reason(&skip))
+                skipped(&mut review, reviewer_skip_reason(&skip));
+                None
             }
             subagent::SubOutcome::Report(r) => match parse_findings(&r.text) {
-                Err(e) => skipped(&mut review, format!("its report couldn't be read: {e}")),
-                Ok(found) => {
-                    // B04 drops a repeat an answer may have settled; with
-                    // nothing said, it stands (an unchanged plan sent again).
-                    let (kept, dropped) = if silent && unchanged {
-                        (found, Vec::new())
-                    } else {
-                        drop_repeats(found, &earlier)
-                    };
-                    serious = kept.iter().filter(|f| f.serious()).cloned().collect();
-                    review["status"] = json!(if kept.is_empty() { "clean" } else { "findings" });
-                    review["findings"] = json!(kept);
-                    if !dropped.is_empty() {
-                        review["dropped"] = json!(dropped);
-                    }
+                Err(e) => {
+                    skipped(&mut review, format!("its report couldn't be read: {e}"));
+                    None
                 }
+                Ok(found) => Some((found, r.text)),
             },
+        };
+        let mut serious: Vec<Finding> = Vec::new();
+        let mut still_open = 0;
+        if let Some((found, text)) = report {
+            let shown = if earlier.is_empty() {
+                found
+            } else {
+                // B13: a follow-up review.
+                let follow = follow_up(
+                    &Facts {
+                        earlier: &earlier,
+                        responses,
+                        verdicts: &parse_verdicts(&text),
+                        unchanged_and_silent: unchanged && silent,
+                        changed: &changed_steps(&held, plan),
+                    },
+                    found,
+                );
+                still_open = follow
+                    .earlier
+                    .iter()
+                    .filter(|e| e["resolved"] == false)
+                    .count();
+                review["earlier"] = json!(follow.earlier);
+                if !follow.not_held.is_empty() {
+                    review["notHeld"] = json!(follow.not_held);
+                }
+                if !follow.dropped.is_empty() {
+                    review["dropped"] = json!(follow.dropped);
+                }
+                follow.open
+            };
+            serious = shown.iter().filter(|f| f.serious()).cloned().collect();
+            review["status"] = json!(if shown.is_empty() {
+                "clean"
+            } else {
+                "findings"
+            });
+            review["findings"] = json!(shown);
         }
         log::write(
             &self.core,
@@ -387,6 +995,7 @@ impl Run {
                 "status": review["status"],
                 "findings": review["findings"].as_array().map_or(0, Vec::len),
                 "serious": serious.len(),
+                "earlierOpen": still_open,
                 "ms": review["ms"],
             }),
         );
@@ -405,9 +1014,12 @@ impl Run {
                 note: None,
             }
         } else if round < MAX_PLAN_REVIEW_ROUNDS {
+            // B13: what's still open is what the next review checks, by the
+            // numbers the agent answers to.
             self.plan_review_call = Some(call_id.to_string());
-            self.plan_findings.extend(serious.iter().cloned());
+            self.plan_findings = serious.clone();
             self.plan_held = Some(plan.to_string());
+            self.plan_answer_nudges = 0;
             review["held"] = json!(true);
             Decision::Hold {
                 result: findings_result(&serious, round),
@@ -487,16 +1099,396 @@ mod tests {
         assert!(text.contains("## The plan\n\n````markdown\n# Users"));
         assert!(!text.contains("earlier review"));
         let f = parse_findings(STEP_FINDINGS).unwrap();
+        let responses = parse_responses(Some(&json!([{
+            "finding": 1,
+            "action": "not_a_problem",
+            "note": "The CLI is gone:\nsrc/cli.rs was removed."
+        }])));
         let later = brief(&BriefParts {
             request: "r",
             answers: &[],
             plan: "p",
-            earlier: Some((&f[..1], "1: not a problem, the CLI is gone.")),
+            earlier: Some(Earlier {
+                findings: &f,
+                responses: &responses,
+                replies: "Not shown: the answers came with the plan.",
+                changes: "@@ line 3 @@\n-1. x\n+1. y",
+            }),
         });
-        assert!(later.contains("## The earlier review"));
-        assert!(later.contains("1. [high] Step 2 — `list_users`"));
-        assert!(later.contains("1: not a problem, the CLI is gone."));
+        assert!(later.contains("## The earlier review\n\nThis is a follow-up review."));
+        // B13: each finding with the agent's answer, on one line, or none.
+        assert!(
+            later.contains(
+                "1. [high] Step 2 — `list_users` is called from `src/cli.rs` too\n   - Scenario:"
+            ),
+            "{later}"
+        );
+        assert!(
+            later.contains("   - Confidence: confirmed\n   - The agent's answer: not a problem — The CLI is gone: src/cli.rs was removed."),
+            "{later}"
+        );
+        assert!(
+            later.contains("   - Confidence: plausible\n   - The agent's answer: none"),
+            "{later}"
+        );
+        assert!(!later.contains("Not shown"), "{later}");
+        assert!(later.contains(
+            "## What the revision changed\n\n````diff\n@@ line 3 @@\n-1. x\n+1. y\n````"
+        ));
+        assert!(
+            later.contains("## This review\n\n") && later.contains("\"- Earlier 1: resolved — …\"")
+        );
         assert!(!later.contains("answers to the agent's questions"));
+        // No answers with the plan: its replies stand in. Nothing changed: said so.
+        let silent = brief(&BriefParts {
+            request: "r",
+            answers: &[],
+            plan: "p",
+            earlier: Some(Earlier {
+                findings: &f[..1],
+                responses: &[],
+                replies: "1: not a problem, the CLI is gone.",
+                changes: "",
+            }),
+        });
+        assert!(silent.contains(
+            "The agent sent no answers with the plan. What it wrote since the hold:\n\n1: not a problem, the CLI is gone."
+        ));
+        assert!(silent.contains(
+            "## What the revision changed\n\nNothing: the agent sent the plan again as it was."
+        ));
+    }
+
+    /// B11: the hold says how to check, fix and answer the findings, and
+    /// that the next review is the last.
+    #[test]
+    fn the_hold_asks_for_checked_fixes_and_answers() {
+        let f = parse_findings(STEP_FINDINGS).unwrap();
+        let result = findings_result(&f, 1);
+        assert!(result.starts_with("The plan wasn't saved yet"), "{result}");
+        assert!(result.contains("1. [high] Step 2 — `list_users` is called"));
+        assert!(result.contains("look for the same kind of problem in the other steps"));
+        assert!(result.contains("Change only what the findings need"));
+        assert!(result.contains(
+            "{\"finding\": 2, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}"
+        ));
+        assert!(
+            result.ends_with("not sent back to you."),
+            "the next review is the run's last: {result}"
+        );
+    }
+
+    /// B12: the shapes models send `responses` in.
+    #[test]
+    fn responses_are_read_in_the_shapes_models_send() {
+        let read = |v: Value| parse_responses(Some(&v));
+        let fixed = |finding, note: &str| Response {
+            finding,
+            action: Action::Fixed,
+            note: note.into(),
+        };
+        let not = |finding, note: &str| Response {
+            finding,
+            action: Action::NotAProblem,
+            note: note.into(),
+        };
+        // As the schema has them.
+        assert_eq!(
+            read(json!([
+                { "finding": 1, "action": "fixed", "note": "Added step 3." },
+                { "finding": 2, "action": "not_a_problem", "note": "The CLI is gone." }
+            ])),
+            vec![fixed(1, "Added step 3."), not(2, "The CLI is gone.")]
+        );
+        // As JSON text, with numbers in words, other keys and spellings;
+        // the first answer to a number counts.
+        assert_eq!(
+            read(json!(
+                "[{\"finding\": \"#1\", \"status\": \"Fixed\", \"reason\": \"x\"}, \
+                  {\"id\": \"Finding 2\", \"action\": \"Not a problem\", \"explanation\": \"y\"}, \
+                  {\"finding\": 1, \"action\": \"not_a_problem\", \"note\": \"z\"}]"
+            )),
+            vec![fixed(1, "x"), not(2, "y")]
+        );
+        // No action: the note's start says it.
+        assert_eq!(
+            read(json!([{ "finding": 3, "note": "Not a problem: the route exists." }])),
+            vec![not(3, "Not a problem: the route exists.")]
+        );
+        // Lines, one object, and answers by number.
+        assert_eq!(
+            read(json!([
+                "1: fixed — added step 3",
+                "Finding 2 - won't fix: out of scope"
+            ])),
+            vec![fixed(1, "added step 3"), not(2, "out of scope")]
+        );
+        assert_eq!(
+            read(json!({ "finding": 2, "action": "notAProblem", "note": "n" })),
+            vec![not(2, "n")]
+        );
+        assert_eq!(
+            read(json!({ "1": "fixed: added the step", "2": { "action": "fixed", "note": "" } })),
+            vec![fixed(1, "added the step"), fixed(2, "")]
+        );
+        // Nothing to take.
+        assert!(read(json!([
+            { "finding": 0, "action": "fixed" },
+            { "action": "fixed", "note": "which?" },
+            { "finding": 1, "action": "maybe" },
+            7
+        ]))
+        .is_empty());
+        assert!(read(json!("not json")).is_empty());
+        assert!(parse_responses(None).is_empty());
+    }
+
+    /// B12: what a submit after a hold still owes, by number.
+    #[test]
+    fn unanswered_findings_are_named() {
+        let fixed = Response {
+            finding: 1,
+            action: Action::Fixed,
+            note: String::new(),
+        };
+        assert_eq!(unanswered_problem(1, std::slice::from_ref(&fixed)), None);
+        let p = unanswered_problem(3, std::slice::from_ref(&fixed)).unwrap();
+        assert!(
+            p.starts_with("Answer the review's findings in `responses`"),
+            "{p}"
+        );
+        assert!(p.ends_with("Findings 2 and 3 have no answer yet."), "{p}");
+        // "Not a problem" without why isn't an answer.
+        let bare = Response {
+            finding: 2,
+            action: Action::NotAProblem,
+            note: String::new(),
+        };
+        let p = unanswered_problem(2, &[fixed, bare]).unwrap();
+        assert!(
+            p.ends_with(
+                "Finding 2 has no answer yet (a not_a_problem answer needs a note saying why)."
+            ),
+            "{p}"
+        );
+        assert_eq!(unanswered_problem(0, &[]), None);
+    }
+
+    /// B13: a follow-up review's verdicts, as reviewers write them, are
+    /// never read as findings.
+    #[test]
+    fn verdicts_are_read_where_reviewers_put_them() {
+        let report = "## Earlier findings\n\n\
+            - Earlier 1: resolved — step 3 now updates `src/cli.rs`.\n\
+            - **Earlier 2 (Step 1 — no index):** not resolved — step 1 still has no index.\n\
+            3. Unresolved: the route still isn't registered.\n\
+            - Earlier 4 is resolved.\n\
+            - Earlier 1: not resolved — a second verdict on 1 doesn't count.\n\n\
+            ## Findings\n\n\
+            Earlier 5: still open — the CLI.\n\n\
+            None.";
+        let got: Vec<(usize, bool, String)> = parse_verdicts(report)
+            .into_iter()
+            .map(|v| (v.finding, v.resolved, v.reason))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (1, true, "step 3 now updates `src/cli.rs`.".to_string()),
+                (2, false, "step 1 still has no index.".to_string()),
+                (3, false, "the route still isn't registered.".to_string()),
+                (4, true, String::new()),
+                (5, false, "the CLI.".to_string()),
+            ]
+        );
+        assert_eq!(parse_findings(report).unwrap(), vec![]);
+        assert!(subagent::format_problem(&PLAN_REVIEWER, report).is_none());
+        // Verdicts alone: nothing new.
+        let only = "## Earlier findings\n\n- Earlier 1: resolved — fixed in step 3.";
+        assert_eq!(parse_findings(only).unwrap(), vec![]);
+        // A finding after a verdict under "## Findings" is still read.
+        let mixed = "## Findings\n\n- Earlier 1: resolved.\n\n\
+            1. [high] Step 3 — New\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: confirmed";
+        let f = parse_findings(mixed).unwrap();
+        assert_eq!((f.len(), f[0].step), (1, Some(3)));
+        // Without "Earlier", only under its heading; a finding copied there
+        // isn't a verdict.
+        assert!(parse_verdicts("## Findings\n\n6: resolved — x").is_empty());
+        assert!(
+            parse_verdicts("## Earlier findings\n\n1. [high] Step 2 — `list_users` is called")
+                .is_empty()
+        );
+    }
+
+    /// B13: a step inserted before others doesn't make them changed.
+    #[test]
+    fn changed_steps_are_new_or_rewritten_not_moved() {
+        let held = "# P\n\n## Steps\n\n\
+            1. **Table**\n   - Files: `src/db.rs`\n   - Add a table.\n\
+            2. **API**\n   - Files: `src/api.rs`\n   - Add `list_users`.\n\n\
+            ## Validation\n- `cargo test`\n";
+        let revised = held
+            .replace(
+                "2. **API**",
+                "2. **CLI**\n   - Files: `src/cli.rs`\n   - Call `list_users`.\n3. **API**",
+            )
+            .replace("Add a table.", "Add a table with an index on `email`.");
+        assert_eq!(changed_steps(held, &revised), vec![1, 2]);
+        assert!(changed_steps(held, held).is_empty());
+        // Line endings and the numbers' style alone change no step.
+        let restyled = held
+            .replace("1. **Table**", "1) **Table**")
+            .replace('\n', "\r\n");
+        assert!(changed_steps(held, &restyled).is_empty());
+        let changes = revision_changes(held, &revised);
+        assert!(
+            changes.contains("+2. **CLI**") && changes.contains("-2. **API**"),
+            "{changes}"
+        );
+        assert!(revision_changes(held, &held.replace('\n', "\r\n")).is_empty());
+    }
+
+    fn finding(severity: &str, location: &str, title: &str) -> Finding {
+        parse_findings(&format!(
+            "## Findings\n\n1. [{severity}] {location} — {title}\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: confirmed"
+        ))
+        .unwrap()
+        .remove(0)
+    }
+
+    /// B13: what a follow-up review leaves open: the earlier findings it
+    /// didn't find resolved, and new ones that are high, about the whole
+    /// plan, or about a step the revision changed.
+    #[test]
+    fn a_follow_up_keeps_what_is_unresolved_and_new_findings_where_the_plan_changed() {
+        let earlier = vec![
+            finding("high", "Step 2", "`list_users` is also called from the CLI"),
+            finding("medium", "Step 1", "No index on `email`"),
+            finding("medium", "Step 4", "Wrong order"),
+        ];
+        let mut evidence = finding("medium", "Step 4", "Wrong order");
+        evidence.new_evidence = Some("step 4 still runs before step 3.".into());
+        let found = vec![
+            // A repeat without new evidence, and one with it.
+            finding("high", "Step 2", "`list_users` is also called from the CLI"),
+            evidence,
+            finding("medium", "Step 5", "Changed step"),
+            finding("low", "Step 5", "A nit in it"),
+            finding("medium", "Step 6", "Untouched step"),
+            finding("high", "Step 6", "Untouched but high"),
+            finding("medium", "Plan", "The whole plan"),
+            finding("medium", "Steps 3-5", "Spans a changed step"),
+        ];
+        let responses = parse_responses(Some(&json!([
+            { "finding": 1, "action": "fixed", "note": "Added step 5." },
+            { "finding": 2, "action": "not_a_problem", "note": "The table is tiny." }
+        ])));
+        let verdicts = parse_verdicts(
+            "## Earlier findings\n\n- Earlier 1: resolved — step 5 updates the CLI.\n\
+             - Earlier 2: not resolved — lookups by email are the hot path.",
+        );
+        let follow = follow_up(
+            &Facts {
+                earlier: &earlier,
+                responses: &responses,
+                verdicts: &verdicts,
+                unchanged_and_silent: false,
+                changed: &[5],
+            },
+            found,
+        );
+        let titles = |list: &[Finding]| list.iter().map(|f| f.title.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            titles(&follow.open),
+            [
+                "No index on `email`",
+                "Wrong order",
+                "Changed step",
+                "A nit in it",
+                "Untouched but high",
+                "The whole plan",
+                "Spans a changed step",
+            ]
+        );
+        assert_eq!(
+            follow.open[0].new_evidence.as_deref(),
+            Some("lookups by email are the hot path.")
+        );
+        assert_eq!(
+            follow.open[1].new_evidence.as_deref(),
+            Some("step 4 still runs before step 3.")
+        );
+        assert_eq!(titles(&follow.not_held), ["Untouched step"]);
+        assert_eq!(
+            titles(&follow.dropped),
+            ["`list_users` is also called from the CLI"]
+        );
+        let e = &follow.earlier;
+        assert_eq!(
+            (
+                &e[0]["resolved"],
+                &e[0]["reason"],
+                &e[0]["response"]["action"]
+            ),
+            (
+                &json!(true),
+                &json!("step 5 updates the CLI."),
+                &json!("fixed")
+            )
+        );
+        assert_eq!(
+            (&e[1]["resolved"], &e[1]["response"]["action"]),
+            (&json!(false), &json!("not_a_problem"))
+        );
+        assert_eq!(
+            (&e[2]["resolved"], &e[2]["response"], &e[2]["location"]),
+            (&json!(false), &Value::Null, &json!("Step 4"))
+        );
+
+        // Not mentioned: settled. The plan back unchanged with nothing said:
+        // everything stays open, whatever the review says.
+        let quiet = follow_up(
+            &Facts {
+                earlier: &earlier[..1],
+                responses: &[],
+                verdicts: &[],
+                unchanged_and_silent: false,
+                changed: &[],
+            },
+            Vec::new(),
+        );
+        assert!(quiet.open.is_empty());
+        assert_eq!(quiet.earlier[0]["reason"], NOT_CHECKED_REASON);
+        let stuck = follow_up(
+            &Facts {
+                earlier: &earlier[..2],
+                responses: &[],
+                verdicts: &parse_verdicts("Earlier 1: resolved — looks fine."),
+                unchanged_and_silent: true,
+                changed: &[],
+            },
+            vec![finding("medium", "Step 1", "Something new")],
+        );
+        assert_eq!(
+            titles(&stuck.open),
+            [
+                "`list_users` is also called from the CLI",
+                "No index on `email`"
+            ]
+        );
+        assert_eq!(stuck.open[0].new_evidence, None);
+        assert_eq!(stuck.earlier[0]["reason"], UNCHANGED_REASON);
+        assert_eq!(titles(&stuck.not_held), ["Something new"]);
+    }
+
+    #[test]
+    fn the_steps_a_finding_names() {
+        let steps = |loc: &str| steps_of(&finding("medium", loc, "t"));
+        assert_eq!(steps("Step 3"), [3]);
+        assert_eq!(steps("Steps 2 and 4"), [2, 4]);
+        assert_eq!(steps("Steps 2-4"), [2, 3, 4]);
+        assert!(steps("Plan").is_empty());
+        assert!(steps("src/a.rs").is_empty());
     }
 
     #[test]

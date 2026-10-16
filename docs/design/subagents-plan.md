@@ -2191,3 +2191,73 @@ closes every connection before removing its own folder; `--help` names
 `--max-tokens`. Two evaluation campaigns at once have their own
 workspaces, and a campaign folder is locked while it runs. A subagent's
 asked-again reply line names its parent, so its usage is in the report.
+
+### B11–B13: plan reviews that converge
+
+With smaller lead models, the one revision a hold allows often left
+findings open, and the second review saved the plan with them. The lead
+didn't know what the reviewer checks. Its revision fixed the flagged
+spot and missed the same problem elsewhere. Its "not a problem" answers
+were lost when it called `submit_plan` without a message. The second
+review read the whole plan afresh and raised new points, and it didn't
+recognise its repeats either: a finding is the same only at the same
+step with the same title, and an inserted step renumbers the rest.
+
+- **B11. Hints.** Plan mode's instructions end with a self-check that
+  mirrors the reviewer's list: callers and dependents (`callers`,
+  `search_code`), names that exist (`search_code`, `outline`), order,
+  scope, and a test for each new behavior. A hold's result says to check
+  each finding with the tools before changing the plan, to look for the
+  same kind of problem in the other steps, and to change only what the
+  findings need. It also says how to answer the findings, and that the
+  next review is the run's last.
+- **B12. Answers.** `submit_plan` takes `responses`:
+  `[{finding, action: fixed | not_a_problem, note}]`, one for each held
+  finding, by its number.
+  - After a hold, a submit that leaves a finding unanswered (or answers
+    "not a problem" without a note) goes back with the checker's problems
+    and spends no review. That happens at most `MAX_ANSWER_NUDGES = 2`
+    times a hold; past that, the submit is reviewed with what it has.
+  - The parser takes the shapes models send: the list as JSON text, an
+    object by number, "2: fixed — …" lines, other key names and
+    spellings, the action at the start of the note.
+  - The answers go to the follow-up review in place of the agent's
+    messages, which stand in only when it sent none.
+- **B13. The follow-up review.** The review after a hold gets each
+  earlier finding with the agent's answer, and the diff from the held
+  plan to the revision. Its report starts with "## Earlier findings": one
+  verdict line each ("- Earlier 1: resolved — …" or "not resolved —
+  …"). Under "## Findings" it reports only new findings that are high or
+  about what the revision changed. The harness then decides what stays
+  open:
+  - an earlier finding the review didn't find resolved, with its reason
+    as the finding's new evidence (a repeat with new evidence counts as
+    not resolved);
+  - a new finding that is high, about the whole plan, or about a step the
+    revision added or changed (a step that only moved isn't changed);
+  - nothing else. Other new findings are recorded as `notHeld` and hold
+    nothing.
+
+  An earlier finding the review doesn't mention is settled, as B04
+  settles repeats. The plan sent again unchanged, with nothing said,
+  keeps every earlier finding open. Verdict lines are never read as
+  findings, and a report of verdicts alone has none. The held findings
+  are replaced at each hold and cleared when a plan is saved, so a submit
+  after the last round owes no answers.
+
+- **Record and UI.** A follow-up's `review` record has `earlier` (each
+  finding, the agent's response, resolved and why) and `notHeld`. The
+  review card lists the verdicts and keeps the not-held findings in an
+  expander; its Details count both.
+- **Tests:**
+  - Unit: the hold's text, the answers and what's still owed, the
+    verdicts, changed steps, and what a follow-up keeps open.
+  - E2e:
+    - a hold answered and resolved;
+    - an unresolved finding saved open;
+    - a new medium finding counted on a changed step, and not held on an
+      unchanged one;
+    - unanswered submits sent back without a review;
+    - identical resubmits nudged, then reviewed and kept open;
+    - a silent revision past the nudges.
+  - Component: the follow-up's card.
