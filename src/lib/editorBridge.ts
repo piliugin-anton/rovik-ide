@@ -28,6 +28,13 @@ export interface OpenFileRequest {
    * or snippet says where to go.
    */
   changes?: boolean;
+  /**
+   * With `changes`, the chat that wrote it. An isolated chat's write isn't
+   * in the project's file yet (a remote chat's is on its host): the file
+   * then opens as the chat has it, compared with the project's version,
+   * instead of the project's file.
+   */
+  dialogId?: string | null;
 }
 
 const listeners = new Set<(request: OpenFileRequest) => void>();

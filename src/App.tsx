@@ -85,6 +85,7 @@ import { toAbsolutePath, toRelativePath } from './lib/fileTools';
 import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
 import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
+import { overlayFile } from './lib/overlay';
 import { notify } from './lib/notifications';
 import {
   startVirtualFiles,
@@ -575,11 +576,19 @@ export default function App() {
   // file, then center its start position: the line given, or where the
   // given code is found. Without either, the file just opens. A file the
   // agent wrote opens with its changes marked against git, like the Git
-  // tab opens it, and centered on the first one.
-  const stopOpenRequests = onOpenFileRequest(({ path, line, snippet, changes }) => {
+  // tab opens it, and centered on the first one; when the chat that wrote
+  // it is isolated and its change hasn't reached the project, the chat's
+  // version is shown instead, against the project's.
+  const stopOpenRequests = onOpenFileRequest(({ path, line, snippet, changes, dialogId }) => {
     const root = rootPath();
     if (!root && !isContextPath(path)) return;
     void (async () => {
+      // Before the project's file is looked for: an isolated chat's new
+      // file isn't there at all.
+      if (changes && dialogId && root && !isContextPath(path)) {
+        const rel = toRelativePath(toAbsolutePath(path, root), root);
+        if (await openChatVersion(dialogId, rel, { line, snippet })) return;
+      }
       const abs = await resolveOpenPath(path, root);
       if (!abs && (await openRemoteContext(path))) return;
       if (!abs) {
@@ -608,6 +617,40 @@ export default function App() {
       else await openPathAtLine(abs, target);
     })();
   });
+  /**
+   * A file as the chat that wrote it has it, when that isn't the project's
+   * file: an isolated chat's change that hasn't landed, or a remote chat's,
+   * on its host (lib/overlay.ts). A read-only comparison tab, like the
+   * isolation bar's Compare, centered on the line asked for, else on the
+   * first change. False when the chat's version is the project's (the chat
+   * isn't isolated, or the change landed), so the file itself opens.
+   */
+  async function openChatVersion(
+    dialogId: string,
+    rel: string,
+    at: { line?: number; snippet?: string }
+  ): Promise<boolean> {
+    const versions = await overlayFile(dialogId, rel).catch(() => null);
+    if (!versions || versions.chat === null || versions.chat === versions.project) return false;
+    const name = rel.split('/').pop() ?? rel;
+    const id = `chat:${dialogId}:${rel}`;
+    requestCompare({
+      id,
+      title: `${name} (this chat)`,
+      fileName: name,
+      before: versions.project ?? '',
+      after: versions.chat,
+    });
+    const found = at.snippet ? findSnippetLine(versions.chat, at.snippet) : null;
+    const target =
+      at.line ??
+      found ??
+      diffLines(splitLines(versions.project ?? '').lines, splitLines(versions.chat).lines)[0]
+        ?.origStart;
+    if (target !== undefined && activePath() === id)
+      setRevealRequest({ path: id, line: target, column: 1, length: 0, nonce: Date.now() });
+    return true;
+  }
   /**
    * A remote chat's context file, read-only from its latest revision: the
    * folder it's in is on the server (U04). False when `path` isn't that
