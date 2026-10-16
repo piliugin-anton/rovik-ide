@@ -1,5 +1,7 @@
 //! `rovik-agentd serve`: start-up in the order of section 5.2, then serving
-//! until SIGTERM or SIGINT, then the core's shutdown.
+//! until SIGTERM or SIGINT. Then the runs pause at their next safe point,
+//! for the next start to continue them (R02), while the clients still hear
+//! of it, and the core shuts down.
 
 use crate::auth::Tokens;
 use crate::cli::{Options, VERSION};
@@ -17,10 +19,16 @@ use crate::server::{self, OwnUser};
 use crate::store::Store;
 use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
+use rovik_core::agent_run::{self, recovery};
 use rovik_core::{process, rt, workload, Core, EventSink, Paths};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// How long a stopping daemon waits for its runs to pause (R02): a
+/// command at its default limit (2 minutes) may still be cut. systemd
+/// gives the unit 90 s (`TimeoutStopSec`), then kills what's left.
+pub const DRAIN_WAIT: Duration = Duration::from_secs(80);
 
 pub fn serve(options: Options) -> Result<(), String> {
     // 1. While the process is still single-threaded: it sets the
@@ -153,8 +161,15 @@ async fn run(
         listener,
         uid: home::uid(),
     };
+    let draining = core.clone();
     let served = axum::serve(listener, server::router(daemon))
-        .with_graceful_shutdown(stopped())
+        .with_graceful_shutdown(async move {
+            stopped().await;
+            log::info!("stopping: the runs pause first, for up to {DRAIN_WAIT:?}");
+            let paused = agent_run::drain(&draining, DRAIN_WAIT).await;
+            let runs = if paused == 1 { "run" } else { "runs" };
+            log::info!("{paused} {runs} paused for the next start");
+        })
         .await;
     log::info!("stopping");
     core.shutdown().await;
@@ -246,6 +261,9 @@ impl EventSink for Tap {
             AgentEvent::RunStarted { dialog_id, run_id } => {
                 self.store.run_started(dialog_id, run_id)
             }
+            // A run the daemon's stop paused stays running, for the next
+            // start to continue (5.4), and has no result yet.
+            AgentEvent::RunEnded { outcome, .. } if drained(outcome) => {}
             AgentEvent::RunEnded {
                 dialog_id, outcome, ..
             } => self.store.ended(dialog_id, Some(outcome)),
@@ -257,7 +275,14 @@ impl EventSink for Tap {
             dialog_id, outcome, ..
         } = event
         {
-            self.results.after_run(dialog_id, outcome);
+            if !drained(outcome) {
+                self.results.after_run(dialog_id, outcome);
+            }
         }
     }
+}
+
+/// A run's outcome when the daemon's stop paused it (R02).
+fn drained(outcome: &str) -> bool {
+    outcome.strip_prefix("paused-") == Some(recovery::DRAIN)
 }

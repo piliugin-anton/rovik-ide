@@ -280,12 +280,13 @@ async fn start(ssh: &Ssh, probe: &Probe, layout: &Layout) -> Result<(), DeployEr
 }
 
 /// Stops the user's daemon that runs without systemd, and waits up to
-/// 30 s for it to go: another can't start while it holds its lock.
+/// 100 s for it to go: stopping, it pauses its runs for up to 80 s first
+/// (R02), and another can't start while it holds its lock.
 fn stop_unmanaged(layout: &Layout) -> String {
     let pattern = quote(&format!("^{} serve", layout.installed));
     format!(
         "pkill -u \"$(id -u)\" -f {pattern}; i=0; \
-         while pgrep -u \"$(id -u)\" -f {pattern} >/dev/null && [ $i -lt 30 ]; do \
+         while pgrep -u \"$(id -u)\" -f {pattern} >/dev/null && [ $i -lt 100 ]; do \
          sleep 1; i=$((i + 1)); done"
     )
 }
@@ -372,7 +373,9 @@ fn exec_starts(shown: &str) -> Vec<String> {
 }
 
 /// An upgrade for everyone, by an administrator (`admin upgrade`); anyone
-/// else is told whom to ask. The daemons that ran start again on it.
+/// else is told whom to ask. The daemons that ran pause their runs and
+/// start again on it (R02). Without systemd only the administrator's own
+/// daemon is started again here; the others' take it at their next start.
 pub async fn upgrade(
     connector: &SshConnector,
     binary: &Binary,
@@ -397,7 +400,11 @@ pub async fn upgrade(
     );
     let upgraded = run(&ssh, &command, b"").await;
     let _ = ssh.exec(&format!("rm -f {}", quote(&upload))).await;
-    upgraded
+    upgraded?;
+    if !probe.systemd {
+        start(&ssh, &probe, layout).await?;
+    }
+    Ok(())
 }
 
 /// The limits on each user's daemon, as `admin limits` shows them to an

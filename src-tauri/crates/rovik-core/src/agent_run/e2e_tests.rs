@@ -1220,67 +1220,122 @@ async fn stop_still_ends_a_run_pausing_for_a_move() {
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
 
-/// R02: a drain pauses every run at its safe point, and the start-up of
-/// the new binary continues them (5.4).
-#[tokio::test]
-async fn a_drain_pauses_every_run_for_the_next_binary_to_continue() {
-    let a = harness(&[]).await;
-    let b_id = uuid::Uuid::new_v4().to_string();
+/// A second chat in the harness's database, for runs side by side.
+async fn other_chat(h: &Harness) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
     let dialog = NewDialog {
-        id: b_id.clone(),
+        id: id.clone(),
         title: "B".into(),
         created_at: 0,
         updated_at: 0,
         project_id: None,
     };
-    let db = a.core.db.clone();
+    let db = h.core.db.clone();
     db.write(move |c| store::create_dialog(c, &dialog))
         .await
         .unwrap();
+    id
+}
+
+/// R02: a drain pauses every run at its safe point, once the command it
+/// runs has ended; no run starts meanwhile, and the next start of the
+/// daemon continues them (5.4).
+#[tokio::test]
+async fn a_drain_pauses_every_run_for_the_next_binary_to_continue() {
+    let a = harness(&[]).await;
+    let b_id = other_chat(&a).await;
+    // Each command goes on until the test lets it end, once the drain was
+    // asked of both runs. Each chat works in a folder of its own: in the
+    // same one, only one chat at a time runs commands that write.
     let (url, seen) = model(vec![Reply::Call {
+        id: "r1",
+        name: "bash",
+        args: json!({ "command": "echo ran > started; while [ ! -e go ]; do sleep 0.05; done" }),
+    }])
+    .await;
+    let unattended = || Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    let b_root = a._dir.0.join("project-b");
+    std::fs::create_dir_all(&b_root).unwrap();
+    a.start(a.request(&url, Harness::send("A"), unattended()))
+        .await;
+    let mut b = a.request(&url, Harness::send("B"), unattended());
+    b.dialog_id = b_id.clone();
+    b.root = Some(b_root.to_string_lossy().into_owned());
+    a.start(b).await;
+    let roots = [a.project.clone(), b_root];
+    for _ in 0..400 {
+        if roots.iter().all(|r| r.join("started").exists()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        roots.iter().all(|r| r.join("started").exists()),
+        "both commands run"
+    );
+
+    let core = a.core.clone();
+    let draining = tokio::spawn(async move { drain(&core, Duration::from_secs(30)).await });
+    for chat in [&a.dialog_id, &b_id] {
+        for _ in 0..400 {
+            if a.core.agents.pause_asked(chat).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let asked = a.core.agents.pause_asked(chat).map(|p| p.kind);
+        assert_eq!(asked, Some(recovery::DRAIN));
+    }
+    for root in &roots {
+        std::fs::write(root.join("go"), "").unwrap();
+    }
+    let paused = within("the drain", draining).await.unwrap();
+    let ended = a.events_of("runEnded");
+    let outcomes: Vec<&str> = ended.iter().filter_map(|e| e["outcome"].as_str()).collect();
+    assert_eq!(outcomes, ["paused-drain", "paused-drain"], "{ended:?}");
+    assert_eq!(paused, 2, "both paused once their commands ended");
+    assert_eq!(seen.lock().unwrap().len(), 2, "no request after the pauses");
+    for chat in [&a.dialog_id, &b_id] {
+        let next = recovery::after_crash(&a.core, chat).await.unwrap();
+        assert_eq!(next, recovery::Recovery::Start(StartKind::ContinueRun));
+    }
+    let start = a.request(&url, StartKind::ContinueRun, unattended());
+    let refused = agent_start(&a.core, start).await.unwrap_err();
+    assert_eq!(refused, RESTARTING);
+}
+
+/// R02: a run that waits for its user's approval doesn't hold a drain up.
+/// Cut there, it loses nothing: `Resume` asks again after the restart.
+#[tokio::test]
+async fn a_run_waiting_for_its_user_doesnt_hold_a_drain_up() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![Reply::Call {
         id: "r1",
         name: "bash",
         args: json!({ "command": "ls" }),
     }])
     .await;
-    a.start(a.request(&url, Harness::send("A"), ask_approval("commands")))
+    h.start(h.request(&url, Harness::send("A"), ask_approval("commands")))
         .await;
-    let mut b = a.request(&url, Harness::send("B"), ask_approval("commands"));
-    b.dialog_id = b_id.clone();
-    a.start(b).await;
-    for chat in [&a.dialog_id, &b_id] {
-        a.wait_for("approvalRequested", |e| {
-            e["type"] == "approvalRequested" && e["request"]["dialogId"] == chat.as_str()
-        })
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
-    }
+    assert!(h.core.agents.waits_on_user(&h.dialog_id));
 
-    let core = a.core.clone();
-    let draining = tokio::spawn(async move { drain(&core).await });
-    let core = a.core.clone();
-    for chat in [&a.dialog_id, &b_id] {
-        for _ in 0..400 {
-            if core.agents.pause_asked(chat).is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        let asked = core.agents.pause_asked(chat).map(|p| p.kind);
-        assert_eq!(asked, Some(recovery::DRAIN));
-        let approved =
-            agent_resolve_approval(&core, chat.clone(), "r1".into(), ApprovalDecision::Allow);
-        assert!(approved.await);
-    }
-    let paused = within("the drain", draining).await.unwrap();
-    assert_eq!(paused, 2, "both paused");
-    let ended = a.events_of("runEnded");
-    let outcomes: Vec<&str> = ended.iter().filter_map(|e| e["outcome"].as_str()).collect();
-    assert_eq!(outcomes, ["paused-drain", "paused-drain"]);
-    assert_eq!(seen.lock().unwrap().len(), 2, "no request after the pauses");
-    for chat in [&a.dialog_id, &b_id] {
-        let next = recovery::after_crash(&core, chat).await.unwrap();
-        assert_eq!(next, recovery::Recovery::Start(StartKind::ContinueRun));
-    }
+    let began = std::time::Instant::now();
+    let paused = drain(&h.core, Duration::from_secs(30)).await;
+    assert_eq!(paused, 0);
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        began.elapsed()
+    );
+    assert!(
+        h.core.agents.is_running(&h.dialog_id),
+        "still waiting, to be cut"
+    );
 }
 
 #[tokio::test]

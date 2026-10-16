@@ -263,6 +263,52 @@ test('a move that can’t happen now says why, and offers no Move', async () => 
   assert.equal(button('Move')?.disabled, true);
 });
 
+test('a host too old to take chats: its administrator upgrades it for everyone from the dialog', async () => {
+  let upgraded = false;
+  await app(HOSTS, {
+    cloud_move_preflight: () =>
+      upgraded
+        ? PREFLIGHT
+        : {
+            ...PREFLIGHT,
+            blocked:
+              'Build runs Rovik 0.1.0, which can’t take chats: upgrade it for everyone first.',
+            upgrade: true,
+          },
+    hosts_upgrade: () => {
+      upgraded = true;
+      return null;
+    },
+  });
+  const { button, text } = await moveDialog('there');
+  assert.match(text(), /upgrade it for everyone first/);
+  assert.equal(button('Move')?.disabled, true);
+  button('Upgrade for everyone')!.click();
+  await flush();
+  assert.deepEqual(sent('hosts_upgrade'), [{ id: 'h1' }]);
+  // Its daemons start again on the new Rovik: once it's back, the dialog
+  // asks again.
+  emit({ type: 'host', host: 'h1', state: 'connecting' });
+  emit({ type: 'host', host: 'h1', state: 'ready' });
+  await flush();
+  assert.match(text(), /What will wait for you there/);
+  assert.equal(button('Move')?.disabled, false);
+  assert.equal(button('Upgrade for everyone'), undefined);
+});
+
+test('a host too old to take chats, for anyone else: whom to ask, and nothing to do', async () => {
+  await app(HOSTS, {
+    cloud_move_preflight: () => ({
+      ...PREFLIGHT,
+      blocked: 'Build runs Rovik 0.1.0, which can’t take chats: ask ann or bo to upgrade it.',
+    }),
+  });
+  const { button, text } = await moveDialog('there');
+  assert.match(text(), /ask ann or bo to upgrade it\./);
+  assert.equal(button('Upgrade for everyone'), undefined);
+  assert.equal(button('Move')?.disabled, true);
+});
+
 test('the move: its steps as they come, Cancel move, and how it ended', async () => {
   let finish = () => {};
   await app(HOSTS, {

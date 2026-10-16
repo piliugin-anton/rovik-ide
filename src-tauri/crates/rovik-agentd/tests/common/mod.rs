@@ -104,6 +104,21 @@ impl Daemon {
         self.child.wait().await.unwrap();
     }
 
+    /// SIGTERM, as systemd stops the unit for an upgrade or a reboot: the
+    /// daemon pauses its runs first (R02), then exits. How long it took.
+    pub async fn stop(&mut self) -> Duration {
+        let began = std::time::Instant::now();
+        let pid = self.child.id().expect("the daemon runs") as libc::pid_t;
+        // SAFETY: a signal to the test's own child.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        let waited = tokio::time::timeout(Duration::from_secs(120), self.child.wait()).await;
+        let status = waited
+            .unwrap_or_else(|_| panic!("the daemon didn't stop:\n{}", self.output()))
+            .unwrap();
+        assert!(status.success(), "{status}\n{}", self.output());
+        began.elapsed()
+    }
+
     /// The daemon again, on the same folder, socket and arguments.
     pub async fn restart(&mut self) {
         self.child = spawn(&self.dir, &self.data, &self.socket, &self.args);

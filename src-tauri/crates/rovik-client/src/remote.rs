@@ -319,6 +319,14 @@ impl Remote {
             .ok_or_else(|| Fail::new(FailCode::Unreachable, format!("{host} isn't set up.")))
     }
 
+    /// What the user calls `host`, for what they read: the name its
+    /// settings give it, its id when it isn't set up.
+    fn host_name(&self, host: &str) -> String {
+        self.hosts
+            .client(host)
+            .map_or_else(|| host.to_string(), |client| client.name())
+    }
+
     /*
      * Requests
      */

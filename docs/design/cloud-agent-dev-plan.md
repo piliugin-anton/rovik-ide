@@ -2677,3 +2677,49 @@ Tasks add notes here when reality differs from the plan.
     tests' moves do.
   - A real connection, deploy and move still need a real server: the
     manual checks stay open.
+- **R02, version skew.**
+  - The client's check on connection (4.5) and its refusal to move a chat
+    to a daemon without `mirror` were there (P07, M06). The move dialog now
+    says who upgrades such a host: the preflight asks for its `HostInfo`,
+    an administrator there gets "Upgrade for everyone", which runs U01's
+    upgrade, and anyone else is told whom to ask. The dialog asks again as
+    the host's connection changes, so it takes the chat once the host is
+    back on the new Rovik. A newer daemon that still serves the app was
+    fine already; a client test says so now.
+  - The drain. `admin upgrade` runs as root, and the users' daemons take
+    only their computers' tokens, so it can't ask them over the protocol.
+    Each daemon drains when it's asked to stop instead: on SIGTERM,
+    `agent_run::drain` asks every lead's run to pause at its next safe
+    point, with kind `drain`, and starts no new one (`RESTARTING`). The
+    server goes on serving meanwhile, so the clients see the pauses. It
+    waits until each run has paused or waits only for its user, an
+    approval or a question that `Resume` asks again after the restart, for
+    up to 80 s; what's left is cut as a crash cuts it. The unit gets
+    `KillMode=mixed`, so only the daemon hears SIGTERM and the commands
+    it runs can end, and `TimeoutStopSec=90`. An upgrade's `try-restart`,
+    a reboot and `user restart` all drain so. Without systemd the client's
+    stop waits up to 100 s, and after an upgrade it starts the
+    administrator's own daemon on the new build; other users' daemons take
+    it at their next start.
+  - `install` writes the units and `admin upgrade` keeps them: the older
+    binary does the upgrade, and it runs the new build only as the
+    administrator, never as root. A server installed before this keeps its
+    kill mode until `install` runs again, and there systemd's SIGTERM also
+    reaches the commands, which end then.
+  - A run that ends `paused-drain` leaves its chat `running` in
+    `state.json`, where P06's start-up looks (it was marked ended, so
+    P06's test had to fake the drain), and commits no result, since the
+    run isn't over. Its `ContinueRun` doesn't count against the two
+    restarts an hour, which are for crashes.
+  - The drain's pause reads "Paused while Rovik restarted on the server.",
+    not "Paused for an upgrade": reboots and restarts drain too.
+  - The Remote's messages named a host by its id, a UUID for a host of the
+    settings. `Client::name` gives the name its settings give it, which
+    the new messages use.
+  - Tests: the daemon test stops a daemon with SIGTERM while a run's
+    command goes; the command ends, the run pauses with `drain`, its chat
+    stays running, and the next start continues it without counting a
+    restart. A run waiting for an approval doesn't hold the stop up and
+    is asked again after it. Core tests of the drain and of a run waiting
+    on its user, a client test of the refusal for an administrator and for
+    anyone else, and component tests of the dialog's upgrade.

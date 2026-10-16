@@ -1,19 +1,21 @@
 //! Runs a `kill -9` cut, picked up when the daemon starts again (P06, 5.4):
 //! a reply cut mid-stream is continued, or taken again when nothing of it
 //! came, a tool call cut mid-way asks the user first, a run cut in its
-//! end-of-run checks ends `interrupted`, a run an upgrade drained
-//! continues, and a chat cut twice within the hour waits for the user.
+//! end-of-run checks ends `interrupted`, and a chat cut twice within the
+//! hour waits for the user. And runs the daemon's own stop paused (R02),
+//! which continue, while one waiting for its user doesn't hold it up.
 
 mod common;
 
 use common::{files_under, start_request, until, Daemon, Row};
-use rovik_core::agent_run::permissions::Permissions;
+use rovik_core::agent_run::permissions::{ApprovalRule, Approver, Permissions};
 use rovik_core::agent_run::{AgentConfig, StartRequest};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::events::ApprovalRequest;
 use rovik_protocol::{Frame, Request, Response};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const CHAT: &str = "chat-1";
 /// Leaves a line in `runs` each time it runs, then takes a while.
@@ -279,56 +281,78 @@ async fn a_run_cut_in_its_end_of_run_checks_ends_interrupted() {
     assert_eq!(seen.lock().unwrap().len(), 2, "no request after the cut");
 }
 
+/// R02: the daemon's stop, as an upgrade restarts it, lets the command a
+/// run is in end and pauses the run there; the next start continues it,
+/// and a clean stop doesn't count as one of a crashing run's restarts.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_an_upgrade_drained_continues() {
     let mut daemon = Daemon::start(&["--same-machine"]).await;
     let project = project(&daemon);
     let (url, seen) = model(vec![
         Reply::Call {
-            id: "l1",
-            name: "list_dir",
-            args: json!({ "path": "." }),
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": "echo ran >> runs && sleep 2 && echo ended >> runs" }),
         },
         Reply::Text("All done."),
     ])
     .await;
-    let permissions = Permissions {
-        tool_call_checkpoint: Some(1),
-        ..unattended()
-    };
-    started(&daemon, start(&url, &project, permissions)).await;
-    // It pauses after its call, as an upgrade's drain pauses it (R02).
-    until("the pause", || {
-        (chat_state(&daemon)["outcome"] == "paused-checkpoint").then_some(())
+    started(&daemon, start(&url, &project, unattended())).await;
+    until("the command ran", || {
+        project.join("runs").exists().then_some(())
     })
     .await;
-    daemon.kill().await;
-    drained(&daemon);
-    daemon.restart().await;
+    daemon.stop().await;
 
+    let runs = std::fs::read_to_string(project.join("runs")).unwrap();
+    assert_eq!(runs, "ran\nended\n", "its command ended first");
+    let rows = daemon.rows(CHAT);
+    let paused = &rows.last().unwrap().meta["paused"];
+    assert_eq!(paused["kind"], "drain", "{rows:?}");
+    assert_eq!(chat_state(&daemon)["running"], true, "for the next start");
+    assert!(daemon.log().contains("1 run paused for the next start"));
+    assert_eq!(seen.lock().unwrap().len(), 1, "no request after the pause");
+
+    daemon.restart().await;
     let events = events_of_this_boot(&daemon).await;
     assert_eq!(events.last().unwrap()["outcome"], "done", "{events:?}");
     let rows = daemon.rows(CHAT);
     assert_eq!(rows.last().unwrap().content, "All done.", "{rows:?}");
     assert_eq!(seen.lock().unwrap().len(), 2);
-    assert_eq!(restarts(&daemon), 1);
+    assert_eq!(restarts(&daemon), 0, "a clean stop isn't a crash");
+    let runs = std::fs::read_to_string(project.join("runs")).unwrap();
+    assert_eq!(runs.lines().count(), 2, "its command didn't run again");
 }
 
-/// What a drain leaves, until R02 makes one: the run's pause of kind
-/// `drain`, and the chat still running.
-fn drained(daemon: &Daemon) {
-    let db = rusqlite::Connection::open(daemon.data.join("data/chats.db")).unwrap();
-    let changed = db
-        .execute(
-            "UPDATE messages SET meta = json_set(meta, '$.paused.kind', 'drain') \
-             WHERE dialog_id = ?1 AND json_extract(meta, '$.paused') IS NOT NULL",
-            [CHAT],
-        )
-        .unwrap();
-    assert_eq!(changed, 1);
-    let mut state = daemon.state();
-    state["chats"][CHAT]["running"] = json!(true);
-    std::fs::write(daemon.data.join("state.json"), state.to_string()).unwrap();
+/// R02: a run waiting for its user's approval doesn't hold the daemon's
+/// stop up. Cut there, it loses nothing: the next start asks again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_waiting_for_its_user_doesnt_hold_the_stop_up() {
+    let mut daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let (url, _) = model(vec![slow_command(), Reply::Text("Done.")]).await;
+    let asks = Permissions {
+        command_approval: ApprovalRule {
+            required: true,
+            by: Approver::User,
+        },
+        ..unattended()
+    };
+    started(&daemon, start(&url, &project, asks)).await;
+    assert_eq!(waiting_approval(&daemon).await.tool_call_id, "c1");
+    let took = daemon.stop().await;
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(!project.join("runs").exists(), "nothing ran");
+
+    daemon.restart().await;
+    assert_eq!(waiting_approval(&daemon).await.tool_call_id, "c1");
+    let mut session = daemon.session().await;
+    let stopped = session
+        .call(Request::AgentStop {
+            dialog_id: CHAT.into(),
+        })
+        .await;
+    assert_eq!(stopped, Ok(Response::Bool(true)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

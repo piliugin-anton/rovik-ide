@@ -5,6 +5,7 @@ use crate::client::Identity;
 use crate::connector::{Connecting, Connector, Stream};
 use futures_util::{SinkExt, StreamExt};
 use rovik_protocol::agent::AgentStatus;
+use rovik_protocol::host::HostInfo;
 use rovik_protocol::{Frame, Request, Response, Secret, PROTOCOL};
 use std::sync::{Arc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
@@ -33,20 +34,26 @@ pub fn identity(host: &str) -> Identity {
 #[derive(Clone, Default)]
 pub struct Fake {
     pub requests: Arc<Mutex<Vec<Request>>>,
+    /// What it answers `HostInfo` with, once set.
+    pub info: Arc<Mutex<Option<HostInfo>>>,
 }
 
 impl Connector for Fake {
     fn connect(&self) -> Connecting<'_> {
-        let requests = self.requests.clone();
+        let (requests, info) = (self.requests.clone(), self.info.clone());
         Box::pin(async move {
             let (client, server) = tokio::io::duplex(1 << 16);
-            tokio::spawn(serve(server, requests));
+            tokio::spawn(serve(server, requests, info));
             Ok(Box::new(client) as Stream)
         })
     }
 }
 
-async fn serve(io: tokio::io::DuplexStream, requests: Arc<Mutex<Vec<Request>>>) {
+async fn serve(
+    io: tokio::io::DuplexStream,
+    requests: Arc<Mutex<Vec<Request>>>,
+    info: Arc<Mutex<Option<HostInfo>>>,
+) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(io).await else {
         return;
     };
@@ -65,7 +72,11 @@ async fn serve(io: tokio::io::DuplexStream, requests: Arc<Mutex<Vec<Request>>>) 
                 complete: true,
             },
             Ok(Frame::Call { id, req }) => {
-                let res = Ok(answer(&req));
+                let info = info.lock().unwrap().clone();
+                let res = Ok(match (&req, info) {
+                    (Request::HostInfo, Some(info)) => Response::HostInfo(info),
+                    _ => answer(&req),
+                });
                 requests.lock().unwrap().push(req);
                 Frame::Reply { id, res }
             }

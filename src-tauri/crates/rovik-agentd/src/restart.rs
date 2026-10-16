@@ -1,11 +1,12 @@
-//! Runs that a crash, a kill or an upgrade cut (5.4): at start-up, each
-//! chat whose run was going picks up where its stored rows say, unless it
-//! was restarted twice within the hour. Start-up's events reach the
-//! clients that subscribe from the start of this boot.
+//! Runs that a crash, a kill or the daemon's stop cut or paused (5.4): at
+//! start-up, each chat whose run was going picks up where its stored rows
+//! say, unless a crash cut it twice within the hour. Start-up's events
+//! reach the clients that subscribe from the start of this boot.
 
 use crate::daemon::Daemon;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::agent_run::recovery::{self, Recovery};
+use rovik_core::agent_run::StartKind;
 use rovik_core::chat_db::store::now_ms;
 use rovik_protocol::Response;
 
@@ -33,7 +34,10 @@ async fn restart(daemon: &Daemon, dialog_id: &str) {
         log::warn!("chat {dialog_id}: not restarted: {fail}");
         return interrupted(daemon, dialog_id);
     }
-    if !daemon.store.count_restart(dialog_id, now_ms()) {
+    // A run the daemon's stop paused (R02) went down cleanly: it doesn't
+    // count against the restarts a crashing run is allowed.
+    let drained = start == StartKind::ContinueRun;
+    if !drained && !daemon.store.count_restart(dialog_id, now_ms()) {
         log::warn!("chat {dialog_id}: restarted twice within the hour, so not again");
         daemon.core.emit(AgentEvent::Notice {
             dialog_id: Some(dialog_id.to_string()),

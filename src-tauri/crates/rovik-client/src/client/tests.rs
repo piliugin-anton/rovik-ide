@@ -1,28 +1,40 @@
-//! The client against daemons of the tests' own: one that answers, one
-//! that serves only newer apps, and none at all.
+//! The client against daemons of the tests' own: one that answers, a newer
+//! one that still serves this app, one that serves only newer apps, and
+//! none at all.
 
 use super::*;
 use crate::connector::{Connecting, Stream as Io};
 use crate::testing::{identity, Nowhere};
 
-/// A daemon on the other end of each connection, which welcomes with
-/// `min_protocol` and answers every call `Done`.
+/// A daemon on the other end of each connection, which welcomes with its
+/// `protocol` and `min_protocol` and answers every call `Done`.
 struct Fake {
+    protocol: u32,
     min_protocol: u32,
+}
+
+impl Fake {
+    /// A daemon that speaks `protocol` and serves only apps that do.
+    fn speaking(protocol: u32) -> Fake {
+        Fake {
+            protocol,
+            min_protocol: protocol,
+        }
+    }
 }
 
 impl Connector for Fake {
     fn connect(&self) -> Connecting<'_> {
-        let min_protocol = self.min_protocol;
+        let (protocol, min_protocol) = (self.protocol, self.min_protocol);
         Box::pin(async move {
             let (client, server) = tokio::io::duplex(1 << 16);
-            tokio::spawn(serve(server, min_protocol));
+            tokio::spawn(serve(server, protocol, min_protocol));
             Ok(Box::new(client) as Io)
         })
     }
 }
 
-async fn serve(io: tokio::io::DuplexStream, min_protocol: u32) {
+async fn serve(io: tokio::io::DuplexStream, protocol: u32, min_protocol: u32) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(io).await else {
         return;
     };
@@ -30,7 +42,7 @@ async fn serve(io: tokio::io::DuplexStream, min_protocol: u32) {
         return;
     };
     let welcome = Frame::Welcome {
-        protocol: min_protocol,
+        protocol,
         min_protocol,
         daemon: "fake".into(),
         boot: "boot".into(),
@@ -73,9 +85,7 @@ async fn until_state(heard: &mut mpsc::UnboundedReceiver<Incoming>, state: HostS
 
 #[tokio::test]
 async fn calls_are_answered_on_the_websocket_by_their_id() {
-    let (client, mut heard) = client(Fake {
-        min_protocol: PROTOCOL,
-    });
+    let (client, mut heard) = client(Fake::speaking(PROTOCOL));
     until_state(&mut heard, HostState::Ready).await;
     assert_eq!(client.call(Request::HostInfo).await, Ok(Response::Done));
     let (a, b) = tokio::join!(
@@ -87,12 +97,22 @@ async fn calls_are_answered_on_the_websocket_by_their_id() {
     assert_eq!((a, b), (Ok(Response::Done), Ok(Response::Done)));
 }
 
+/// 4.5, R02: a daemon newer than this app that still serves it is fine.
+#[tokio::test]
+async fn a_newer_daemon_that_still_serves_this_app_is_ready() {
+    let (client, mut heard) = client(Fake {
+        protocol: PROTOCOL + 1,
+        min_protocol: PROTOCOL,
+    });
+    until_state(&mut heard, HostState::Ready).await;
+    assert_eq!(client.daemon().unwrap().protocol, PROTOCOL + 1);
+    assert_eq!(client.call(Request::HostInfo).await, Ok(Response::Done));
+}
+
 /// 4.5: a daemon that serves only newer apps is no use to this one.
 #[tokio::test]
 async fn a_daemon_for_newer_apps_is_a_version_mismatch() {
-    let (client, mut heard) = client(Fake {
-        min_protocol: PROTOCOL + 1,
-    });
+    let (client, mut heard) = client(Fake::speaking(PROTOCOL + 1));
     until_state(&mut heard, HostState::VersionMismatch).await;
     assert_eq!(client.daemon().unwrap().min_protocol, PROTOCOL + 1);
     let refused = client.call(Request::AgentStatus).await.unwrap_err();

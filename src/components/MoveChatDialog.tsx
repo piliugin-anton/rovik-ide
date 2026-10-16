@@ -4,9 +4,10 @@
 // preflight says what moves, what will wait for you there (the permissions
 // with the host's approval policy), whether its CLM context becomes
 // trimming, that the server keeps your API keys, and what the project's
-// push carries that you'd want to know. Then the move's steps as
-// `cloud-event` tells them (lib/cloud.ts), with "Cancel move" while it
-// goes, and how it ended.
+// push carries that you'd want to know; a host whose Rovik is too old to
+// take chats is upgraded for everyone from here by its administrators
+// (R02). Then the move's steps as `cloud-event` tells them (lib/cloud.ts),
+// with "Cancel move" while it goes, and how it ended.
 import { createResource, createSignal, For, Match, onMount, Show, Switch } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import type { StartRequest } from '../lib/agentRuns';
@@ -20,6 +21,7 @@ import {
   startMove,
   type MovePreflight,
 } from '../lib/cloud';
+import { asDeployFailure, upgradeHost } from '../lib/hosts';
 import { formatBytes, plural } from '../lib/textUtils';
 
 /** What the move dialog says of a server's keeping your keys (design §6). */
@@ -44,9 +46,12 @@ export default function MoveChatDialog(props: {
       ? `Move “${props.chatTitle}” to ${name()}`
       : `Move “${props.chatTitle}” back to this computer`;
 
+  // Asked again as the host's connection changes: back on a new Rovik
+  // after an upgrade, it may take the chat.
+  const hostState = () => cloud.hosts.find((h) => h.id === props.host)?.state ?? '';
   const [preflight] = createResource(
-    () => there && props.dialogId,
-    (dialogId) => movePreflight(dialogId, props.host)
+    () => there && `${props.dialogId}\n${hostState()}`,
+    () => movePreflight(props.dialogId, props.host)
   );
   const [started, setStarted] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -57,6 +62,23 @@ export default function MoveChatDialog(props: {
     const p = preflight.state === 'ready' ? preflight() : undefined;
     return !!p && !p.blocked;
   };
+
+  const offersUpgrade = () => {
+    const p = preflight.state === 'ready' ? preflight() : undefined;
+    return !!p?.blocked && !!p.upgrade;
+  };
+  const [upgrading, setUpgrading] = createSignal(false);
+  async function upgrade() {
+    setError(null);
+    setUpgrading(true);
+    try {
+      await upgradeHost(props.host);
+    } catch (err) {
+      setError(asDeployFailure(err).message);
+    } finally {
+      setUpgrading(false);
+    }
+  }
 
   const [preparing, setPreparing] = createSignal(false);
   async function go() {
@@ -166,6 +188,11 @@ export default function MoveChatDialog(props: {
                 <button ref={first} type="button" onClick={close}>
                   Cancel
                 </button>
+                <Show when={offersUpgrade()}>
+                  <button type="button" disabled={upgrading()} onClick={() => void upgrade()}>
+                    {upgrading() ? 'Upgrading…' : 'Upgrade for everyone'}
+                  </button>
+                </Show>
                 <button
                   type="button"
                   class="primary"

@@ -61,6 +61,11 @@ PrivateTmp=yes
 # score back to 0, which needs no privilege.
 OOMPolicy=continue
 OOMScoreAdjust=-500
+# Stopping, the daemon lets the commands it runs end and pauses its runs
+# for its next start, for up to 80 s: only it hears SIGTERM, and what's
+# left is killed after 90 s.
+KillMode=mixed
+TimeoutStopSec=90
 Restart=on-failure
 RestartSec=5
 
@@ -378,10 +383,11 @@ pub fn admin(sys: &System, args: &[String]) -> Result<(), String> {
 }
 
 /// `admin upgrade FILE`: the build beside the installed ones, the link
-/// moved to it, and the daemons that ran started again. Releases are to be
-/// checked against the key compiled into this binary (B02); until they're
-/// signed, only a server whose `agentd.toml` allows unsigned builds takes
-/// one (B03). The daemons restart rather than drain (R02 drains them).
+/// moved to it, and the daemons that ran started again. Each one, stopped,
+/// pauses its runs at their next safe point and the new binary continues
+/// them (R02, 5.4). Releases are to be checked against the key compiled
+/// into this binary (B02); until they're signed, only a server whose
+/// `agentd.toml` allows unsigned builds takes one (B03).
 fn upgrade(sys: &System, file: &AdminFile, from: &Path, caller: &Passwd) -> Result<(), String> {
     if !file.allow_unsigned {
         return Err(format!(
@@ -394,7 +400,10 @@ fn upgrade(sys: &System, file: &AdminFile, from: &Path, caller: &Passwd) -> Resu
     if sys.systemd() {
         sys.run("systemctl", &["try-restart", "rovik-agentd@*.service"])?;
     }
-    println!("Rovik {version} is installed, and the daemons that ran start again on it.");
+    println!(
+        "Rovik {version} is installed. The daemons that ran paused their runs and start again \
+         on it."
+    );
     Ok(())
 }
 
@@ -687,6 +696,9 @@ mod tests {
         assert!(slice(&file).ends_with("MemoryMax=6553M\nCPUQuota=400%\n"));
         assert!(unit().contains("ExecStart=/opt/rovik/bin/rovik-agentd serve\n"));
         assert!(unit().contains("PrivateTmp=yes\n"));
+        // Stopping, only the daemon hears SIGTERM, while its runs pause (R02).
+        assert!(unit().contains("KillMode=mixed\nTimeoutStopSec=90\n"));
+        assert!(crate::serve::DRAIN_WAIT < std::time::Duration::from_secs(90));
         assert_eq!(instance("ann"), "rovik-agentd@ann.service");
     }
 }

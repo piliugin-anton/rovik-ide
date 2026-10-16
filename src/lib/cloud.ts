@@ -57,6 +57,11 @@ export interface MovePreflight {
   /** The files its messages name that the host lacks, and their size. */
   files: number;
   fileBytes: number;
+  /**
+   * The host's Rovik is too old to take the chat, and the user is one of its
+   * administrators there, who upgrade it for everyone.
+   */
+  upgrade?: boolean;
 }
 
 export const movePreflight = (dialogId: string, host: string) =>

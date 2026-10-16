@@ -494,6 +494,43 @@ fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
     );
 }
 
+/// R02, 4.5: a host whose Rovik is too old to take chats blocks the move.
+/// An administrator there is offered the upgrade for everyone; anyone
+/// else is told whom to ask.
+#[tokio::test]
+async fn a_host_too_old_for_chats_says_who_upgrades_it() {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let (remote, fake) = connected(&app).await;
+    let info = |user: &str| rovik_protocol::host::HostInfo {
+        version: "0.1.0".into(),
+        user: user.into(),
+        install: Some(rovik_protocol::host::Install {
+            admins: vec!["ann".into(), "bo".into()],
+        }),
+        ..Default::default()
+    };
+    *fake.info.lock().unwrap() = Some(info("cy"));
+    let preflight = remote.move_preflight("chat", HOST).await.unwrap();
+    assert_eq!(
+        preflight.blocked.as_deref(),
+        Some("test-server runs Rovik 0.1.0, which can't take chats: ask ann or bo to upgrade it.")
+    );
+    assert!(!preflight.upgrade);
+
+    *fake.info.lock().unwrap() = Some(info("bo"));
+    let preflight = remote.move_preflight("chat", HOST).await.unwrap();
+    assert_eq!(
+        preflight.blocked.as_deref(),
+        Some(
+            "test-server runs Rovik 0.1.0, which can't take chats: upgrade it for everyone first."
+        )
+    );
+    assert!(preflight.upgrade);
+    let moved = remote.move_chat("chat", HOST, None).await.unwrap_err();
+    assert_eq!(moved.code, FailCode::Version);
+}
+
 /// K46, 4.5: a daemon that doesn't name the attachments feature would send
 /// the message to the model without its files: it isn't sent at all.
 #[tokio::test]

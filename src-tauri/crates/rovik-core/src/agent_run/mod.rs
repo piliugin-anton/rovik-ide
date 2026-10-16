@@ -195,7 +195,12 @@ struct Inner {
     /// A run's fix-round state while its checks wait for the user's
     /// approval, by chat (verify.rs `VerifyCarry`).
     carries: HashMap<String, verify::VerifyCarry>,
+    /// The daemon is stopping (R02): its runs pause, and no new one starts.
+    draining: bool,
 }
+
+/// Why a run doesn't start while the daemon stops (R02).
+pub const RESTARTING: &str = "Rovik on the server is restarting: send it again in a minute.";
 
 /// See `AgentState::registered`.
 pub(super) struct Registered {
@@ -399,9 +404,11 @@ impl AgentState {
         self.lock().runs.get(dialog_id)?.pause.get()
     }
 
-    /// Asks every lead's run to pause for a drain: their chats.
+    /// Asks every lead's run to pause for a drain, and lets no new one
+    /// start: their chats.
     pub fn drain(&self) -> Vec<String> {
-        let inner = self.lock();
+        let mut inner = self.lock();
+        inner.draining = true;
         let request = PauseRequest {
             kind: recovery::DRAIN,
             host: None,
@@ -502,6 +509,40 @@ impl AgentState {
                 .runs
                 .values()
                 .any(|r| r.parent.as_deref() == Some(dialog_id))
+    }
+
+    /// Whether the chat's run goes on only by waiting for the user: each
+    /// of its runs, its own and its subagents', waits on an approval or a
+    /// question, or on subagents of its own. Cut now, it loses nothing
+    /// that `Resume` doesn't ask for again (5.4).
+    pub fn waits_on_user(&self, dialog_id: &str) -> bool {
+        let inner = self.lock();
+        let mut family = vec![dialog_id.to_string()];
+        let mut i = 0;
+        while i < family.len() {
+            let children = inner
+                .runs
+                .iter()
+                .filter(|(_, r)| r.parent.as_deref() == Some(family[i].as_str()))
+                .map(|(d, _)| d.clone());
+            family.extend(children.collect::<Vec<_>>());
+            i += 1;
+        }
+        let running: Vec<&String> = family
+            .iter()
+            .filter(|d| inner.runs.contains_key(d.as_str()))
+            .collect();
+        !running.is_empty()
+            && running.iter().all(|d| {
+                let asks = |key: &WaitKey| &key.0 == *d;
+                inner.approvals.keys().any(asks)
+                    || inner.questions.keys().any(asks)
+                    || inner.runs.values().any(|r| r.parent.as_ref() == Some(*d))
+            })
+    }
+
+    fn draining(&self) -> bool {
+        self.lock().draining
     }
 
     /// Stops the chat's run: its current request, its next steps, and
@@ -783,6 +824,9 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
     if let StartKind::Send { message } = &mut request.start {
         check_attachments(db, message).await?;
     }
+    if state.draining() {
+        return Err(RESTARTING.into());
+    }
     let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone())
     else {
         return Err("The agent is already working in this chat.".into());
@@ -911,15 +955,25 @@ pub async fn agent_pause(core: &Core, dialog_id: String, host: String) -> Result
     last_paused_for(core, &dialog_id, MOVE).await
 }
 
-/// Pauses every run for an upgrade of the server's Rovik (R02), each at
-/// its next safe point, as `agent_pause` does. Returns once all of them
-/// have ended: how many paused for it, which the new binary continues
-/// (5.4).
-pub async fn drain(core: &Core) -> usize {
+/// Pauses every run as the daemon stops, for an upgrade or a restart of
+/// the server's Rovik (R02), each at its next safe point, as `agent_pause`
+/// does; no run starts meanwhile. Returns once each has ended or waits
+/// only for the user, or once `wait` has passed: how many paused for it,
+/// which the next start of the daemon continues (5.4). What's left is cut
+/// as a crash cuts it.
+pub async fn drain(core: &Core, wait: std::time::Duration) -> usize {
+    let chats = core.agents.drain();
+    let until = std::time::Instant::now() + wait;
+    let busy = |chat: &String| core.agents.is_running(chat) && !core.agents.waits_on_user(chat);
+    while chats.iter().any(busy) && std::time::Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     let mut paused = 0;
-    for chat in core.agents.drain() {
-        ended(core, &chat).await;
-        if last_paused_for(core, &chat, recovery::DRAIN)
+    for chat in &chats {
+        if core.agents.is_running(chat) {
+            continue;
+        }
+        if last_paused_for(core, chat, recovery::DRAIN)
             .await
             .unwrap_or(false)
         {

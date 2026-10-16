@@ -31,6 +31,7 @@ use rovik_core::chat_db::{attachments, projects, store, sync};
 use rovik_core::clm::store as clm;
 use rovik_core::overlay::chats;
 use rovik_core::rt;
+use rovik_protocol::host::HostInfo;
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::sync::{ChatBundle, Ownership};
 use rovik_protocol::work::Project;
@@ -57,6 +58,10 @@ pub struct MovePreflight {
     /// The files its messages name that the host lacks, and their size.
     pub files: usize,
     pub file_bytes: u64,
+    /// The host's Rovik is too old to take the chat, and the user is one
+    /// of its administrators there, who upgrade it for everyone (R02).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub upgrade: bool,
 }
 
 impl Remote {
@@ -68,6 +73,7 @@ impl Remote {
         };
         let client = match self.ready(host) {
             Ok(client) => client,
+            Err(fail) if fail.code == FailCode::Version => return Ok(self.too_old(host).await),
             Err(fail) => return Ok(blocked(fail.message)),
         };
         let (project, root) = match self.movable(dialog_id).await {
@@ -91,7 +97,7 @@ impl Remote {
             }
         }
 
-        let info: rovik_protocol::host::HostInfo = client.request(Request::HostInfo).await?;
+        let info: HostInfo = client.request(Request::HostInfo).await?;
         let id = dialog_id.to_string();
         let mode = self.core.db.read(move |c| clm::context_mode(c, &id));
         let clm = mode.await.map_err(internal)?.as_deref() == Some("clm");
@@ -582,6 +588,42 @@ impl Remote {
         Ok(place)
     }
 
+    /// A host whose Rovik is older than this app's, which can't take chats
+    /// (4.5, R02): an administrator there upgrades it for everyone, and
+    /// anyone else is told whom to ask.
+    async fn too_old(&self, host: &str) -> MovePreflight {
+        let name = self.host_name(host);
+        let info: Option<HostInfo> = match self.client(host) {
+            Ok(client) => client.request(Request::HostInfo).await.ok(),
+            Err(_) => None,
+        };
+        let version = info.as_ref().map(|i| i.version.as_str());
+        let runs = match version.filter(|v| !v.is_empty()) {
+            Some(version) => format!("{name} runs Rovik {version}"),
+            None => format!("{name} runs an older Rovik"),
+        };
+        let admins = info
+            .as_ref()
+            .and_then(|i| i.install.as_ref())
+            .map_or_else(Vec::new, |i| i.admins.clone());
+        let upgrade = info.as_ref().is_some_and(|i| admins.contains(&i.user));
+        let blocked = match admins.as_slice() {
+            _ if upgrade => {
+                format!("{runs}, which can't take chats: upgrade it for everyone first.")
+            }
+            [] => format!("{runs}, which can't take chats: it needs an upgrade first."),
+            admins => format!(
+                "{runs}, which can't take chats: ask {} to upgrade it.",
+                admins.join(" or ")
+            ),
+        };
+        MovePreflight {
+            blocked: Some(blocked),
+            upgrade,
+            ..MovePreflight::default()
+        }
+    }
+
     /// `host`'s connection, if it can take a chat: ready, and its Rovik as
     /// new as this app's (4.5).
     pub(super) fn ready(&self, host: &str) -> Result<Client, Fail> {
@@ -596,9 +638,10 @@ impl Remote {
             d.protocol >= PROTOCOL && d.features.iter().any(|f| f == features::MIRROR)
         });
         if !takes {
+            let name = self.host_name(host);
             return Err(Fail::new(
                 FailCode::Version,
-                format!("{host} runs an older Rovik, which can't take chats: upgrade it first."),
+                format!("{name} runs an older Rovik, which can't take chats: upgrade it first."),
             ));
         }
         Ok(client)

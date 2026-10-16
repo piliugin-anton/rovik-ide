@@ -67,6 +67,12 @@ sudo /opt/rovik/bin/rovik-agentd user status
 The app runs `user start` when it deploys to a server that already has
 Rovik. Each daemon starts at boot, so nobody needs to stay logged in.
 
+When a daemon stops, for an upgrade, a reboot or `user restart`, it lets
+the commands its runs are in end and pauses each run there, for up to
+80 seconds. A run waiting for its user's answer doesn't hold it up. Its
+next start continues them. A command still running after that is cut,
+and the user is asked before it runs again.
+
 ## The administrators
 
 Administrators run the `admin` commands. The sudoers rule allows them to
@@ -148,7 +154,8 @@ you don't trust.
 ## Upgrades
 
 `admin upgrade FILE` installs a new build beside the current one, moves
-the link and restarts the daemons that were running. Releases are to be
+the link and restarts the daemons that were running, which pause their
+runs first and continue them on the new build. Releases are to be
 signed, and the installed binary will check them with a key built into it.
 Until signed releases are published, it takes only a build you allow by
 setting `allow_unsigned = true` in `agentd.toml`.

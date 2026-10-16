@@ -149,6 +149,11 @@ impl Client {
         self.shared.lock().state
     }
 
+    /// What the user calls the host: its settings' name (`Identity::host`).
+    pub fn name(&self) -> String {
+        self.shared.identity.host.clone()
+    }
+
     /// The daemon's `Welcome`, once one came.
     pub fn daemon(&self) -> Option<DaemonInfo> {
         self.shared.lock().daemon.clone()

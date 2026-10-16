@@ -12,8 +12,11 @@ test('a move back names no host', () => {
   assert.equal(pauseText({ kind: 'move', toolCalls: 7 }), 'Moved back to this computer.');
 });
 
-test('a pause for an upgrade says so', () => {
-  assert.equal(pauseText({ kind: 'drain', toolCalls: 3 }), 'Paused for an upgrade.');
+test('a pause while the server’s Rovik restarted says so', () => {
+  assert.equal(
+    pauseText({ kind: 'drain', toolCalls: 3 }),
+    'Paused while Rovik restarted on the server.'
+  );
 });
 
 test('a checkpoint and a loop keep their own text', () => {
