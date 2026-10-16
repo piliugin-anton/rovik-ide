@@ -2144,14 +2144,33 @@ pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutc
         .workdir()
         .ok_or("the repository has no working folder")?
         .to_path_buf();
-    let rel = std::path::Path::new(&file);
-    if rel.is_absolute()
-        || rel
+    inside_repo(&file)?;
+    revert_in(&repo, &workdir, &file)
+}
+
+/// `rel`, a path the frontend sends, as one inside the repository: relative,
+/// not empty, and never going up.
+fn inside_repo(rel: &str) -> Result<&std::path::Path, String> {
+    let path = std::path::Path::new(rel);
+    if rel.is_empty()
+        || path.is_absolute()
+        || path
             .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
     {
-        return Err(format!("{file}: not a path inside the repository"));
+        return Err(format!("{rel}: not a path inside the repository"));
     }
+    Ok(path)
+}
+
+/// Reverts one file of `repo` (see git_revert_file); `file` is relative to
+/// `workdir` and checked already.
+fn revert_in(
+    repo: &Repository,
+    workdir: &std::path::Path,
+    file: &str,
+) -> Result<RevertOutcome, String> {
+    let rel = std::path::Path::new(file);
     let abs = workdir.join(rel);
     let status = repo.status_file(rel).map_err(|e| e.to_string())?;
     if status.is_conflicted() {
@@ -2159,7 +2178,7 @@ pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutc
     }
 
     // New: nothing to go back to. Out of the index, into the trash.
-    if base_blob(&repo, &file)?.is_none() {
+    if base_blob(repo, file)?.is_none() {
         if status.is_index_new() {
             let mut index = repo.index().map_err(|e| e.to_string())?;
             index.remove_path(rel).map_err(|e| e.to_string())?;
@@ -2214,6 +2233,87 @@ pub fn git_revert_file_blocking(path: String, file: String) -> Result<RevertOutc
         backed_up,
         removed: false,
     })
+}
+
+/// What reverting a folder did. Paths are relative to the working folder
+/// and `/`-separated, as the status lists them.
+#[derive(Debug, Serialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderRevertOutcome {
+    /// Put back, or moved to the trash when new (see RevertOutcome).
+    pub reverted: Vec<String>,
+    /// Left as they are: conflicted, or renamed (their rows offer no revert
+    /// either).
+    pub skipped: Vec<String>,
+    /// Left as they are because their revert failed, with why.
+    pub failed: Vec<FailedRevert>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedRevert {
+    pub path: String,
+    pub reason: String,
+}
+
+/// Reverts every changed file under `folder` (relative to the working
+/// folder), each as git_revert_file does. Conflicted and renamed files are
+/// left as they are, as is a file whose revert fails; the rest go on, and
+/// the outcome lists each.
+#[tauri::command]
+pub async fn git_revert_folder(
+    path: String,
+    folder: String,
+) -> Result<FolderRevertOutcome, String> {
+    // Isolated chats on the project wait while its files are rewritten.
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
+    off_main_thread(move || git_revert_folder_blocking(path, folder)).await
+}
+
+pub fn git_revert_folder_blocking(
+    path: String,
+    folder: String,
+) -> Result<FolderRevertOutcome, String> {
+    let repo = open_repo(&path)?;
+    let workdir = repo
+        .workdir()
+        .ok_or("the repository has no working folder")?
+        .to_path_buf();
+    let folder = folder.trim_end_matches('/');
+    inside_repo(folder)?;
+    let prefix = format!("{folder}/");
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .renames_head_to_index(true);
+    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+    let mut outcome = FolderRevertOutcome::default();
+    for entry in statuses.iter() {
+        let s = entry.status();
+        if s.is_ignored() {
+            continue;
+        }
+        let file = String::from_utf8_lossy(entry.path_bytes()).into_owned();
+        if !file.starts_with(&prefix) {
+            continue;
+        }
+        if s.is_conflicted() || s.is_index_renamed() || s.is_wt_renamed() {
+            outcome.skipped.push(file);
+            continue;
+        }
+        match revert_in(&repo, &workdir, &file) {
+            Ok(_) => outcome.reverted.push(file),
+            Err(e) => {
+                // The reasons name the file; here its row does.
+                let reason = e
+                    .strip_prefix(&format!("{file}: "))
+                    .map_or(e.clone(), str::to_string);
+                outcome.failed.push(FailedRevert { path: file, reason });
+            }
+        }
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -2342,6 +2442,46 @@ mod revert_tests {
     fn refuses_paths_outside_the_repository() {
         let (dir, _repo) = repo_with_commit();
         assert!(git_revert_file_blocking(path(&dir), "../etc/passwd".into()).is_err());
+        assert!(git_revert_folder_blocking(path(&dir), "../etc".into()).is_err());
+        assert!(git_revert_folder_blocking(path(&dir), "".into()).is_err());
+        assert!(git_revert_folder_blocking(path(&dir), "/".into()).is_err());
+    }
+
+    #[test]
+    fn a_folder_reverts_every_file_below_it_and_leaves_what_it_cant() {
+        let (dir, repo) = repo_with_commit();
+        fs::write(dir.join("src/a.rs"), "fn a() { changed }\n").unwrap();
+        fs::write(dir.join("src/new.rs"), "new").unwrap();
+        fs::create_dir_all(dir.join("src/deep")).unwrap();
+        fs::write(dir.join("src/deep/n.txt"), "n").unwrap();
+        fs::write(dir.join("b.txt"), "outside\n").unwrap();
+        let out = git_revert_folder_blocking(path(&dir), "src/".into()).unwrap();
+        assert_eq!(out.reverted, ["src/a.rs", "src/deep/n.txt", "src/new.rs"]);
+        assert!(out.skipped.is_empty() && out.failed.is_empty(), "{out:?}");
+        assert_eq!(
+            fs::read_to_string(dir.join("src/a.rs")).unwrap(),
+            "fn a() {}\n"
+        );
+        assert!(!dir.join("src/new.rs").exists() && !dir.join("src/deep/n.txt").exists());
+        assert_eq!(
+            fs::read_to_string(dir.join("b.txt")).unwrap(),
+            "outside\n",
+            "a file outside the folder is left alone"
+        );
+
+        // A staged rename in the folder is left as it is, and listed under
+        // the path git lists it by (the old one, as its row in the Git tab);
+        // the folder's other change goes back.
+        fs::rename(dir.join("src/a.rs"), dir.join("src/c.rs")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.remove_path(std::path::Path::new("src/a.rs")).unwrap();
+        index.add_path(std::path::Path::new("src/c.rs")).unwrap();
+        index.write().unwrap();
+        fs::write(dir.join("src/d.rs"), "d").unwrap();
+        let out = git_revert_folder_blocking(path(&dir), "src".into()).unwrap();
+        assert_eq!(out.skipped, ["src/a.rs"]);
+        assert_eq!(out.reverted, ["src/d.rs"]);
+        assert!(dir.join("src/c.rs").exists() && !dir.join("src/d.rs").exists());
     }
 
     #[test]

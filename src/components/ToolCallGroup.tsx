@@ -130,10 +130,17 @@ export default function ToolCallGroup(props: {
                       title={`${item.title ?? path()}: open in the editor`}
                       onClick={() =>
                         requestOpenFile(
-                          // A written file: marked against git, centered on
-                          // the first change unless the call named a line.
+                          // A written file: as the chat has it when that's
+                          // not the project's file yet, else marked against
+                          // git; centered on the first change unless the
+                          // call named a line.
                           item.written
-                            ? { path: path(), line: item.line, changes: true }
+                            ? {
+                                path: path(),
+                                line: item.line,
+                                changes: true,
+                                dialogId: props.dialogId,
+                              }
                             : { path: path(), line: item.line ?? 1 }
                         )
                       }

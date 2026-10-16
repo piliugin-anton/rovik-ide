@@ -230,6 +230,34 @@ function statusMeta(status: GitFileStatusCode): {
 
 type GitFile = GitStatus['files'][number];
 
+/** What reverting a folder did (src-tauri/src/git.rs, git_revert_folder). */
+interface FolderRevertOutcome {
+  reverted: string[];
+  /** Conflicted or renamed: left as they are. */
+  skipped: string[];
+  failed: { path: string; reason: string }[];
+}
+
+/** The revert buttons' arrow, on file and folder rows. */
+function RevertIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3.5 6.5h6.25a3.25 3.25 0 0 1 0 6.5H6" />
+      <path d="M6 3.5 3 6.5l3 3" />
+    </svg>
+  );
+}
+
 /** `+3 −3` line counts, green for additions and red for deletions. */
 function DiffStats(props: { additions?: number; deletions?: number }) {
   const additions = props.additions ?? 0;
@@ -443,6 +471,64 @@ export function GitPanel(props: GitPanelProps) {
       await invoke('git_revert_file', { path: props.projectPath, file: file.path });
       props.onFileReverted?.(absPathOf(file.path));
       await refreshStatus();
+    });
+  };
+
+  /** The files below a folder of the Git tree, at any depth. */
+  const filesBelow = (node: GitDirNode): GitFile[] => [
+    ...node.files,
+    ...[...node.dirs.values()].flatMap(filesBelow),
+  ];
+  /** What a folder's revert takes: conflicted and renamed files are left (their rows offer no revert either). */
+  const revertable = (node: GitDirNode) =>
+    filesBelow(node).filter((f) => f.status !== 'U' && f.status !== 'R');
+
+  /**
+   * Reverts every file below a folder as revertFile does each, in one go
+   * (src-tauri/src/git.rs, git_revert_folder): changed files go back to the
+   * last committed version with the current versions in the trash, and new
+   * files go to the trash.
+   */
+  const revertFolder = async (dir: GitDirNode) => {
+    const files = revertable(dir);
+    if (files.length === 0) return;
+    const fresh = files.filter((f) => f.status === '?' || f.status === 'A').length;
+    const changed = files.length - fresh;
+    const left = dir.count - files.length;
+    const one = (n: number, single: string, more: string) => (n === 1 ? single : more);
+    const message = [
+      changed > 0 &&
+        `${changed} changed ${one(changed, 'file goes', 'files go')} back to the last committed version; your current ${one(changed, 'version is', 'versions are')} moved to the trash as “… (before revert)”, so you can get ${one(changed, 'it', 'them')} back.`,
+      fresh > 0 &&
+        `${fresh} new ${one(fresh, 'file isn’t', 'files aren’t')} in git yet, so there’s no earlier version: ${one(fresh, 'it’s', 'they’re')} moved to the trash, where you can restore ${one(fresh, 'it', 'them')}.`,
+      left > 0 &&
+        `${left} conflicted or renamed ${one(left, 'file is', 'files are')} left as ${one(left, 'it is', 'they are')}.`,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const ok = await confirmDialog({
+      title:
+        changed === 0
+          ? `Remove the ${one(fresh, 'new file', `${fresh} new files`)} in ${dir.path}?`
+          : `Revert ${one(files.length, 'the file', `${files.length} files`)} in ${dir.path}?`,
+      message,
+      confirmLabel: changed === 0 ? 'Move to Trash' : 'Revert',
+      danger: true,
+    });
+    if (!ok) return;
+    await withBusy(async () => {
+      const outcome = await invoke<FolderRevertOutcome>('git_revert_folder', {
+        path: props.projectPath,
+        folder: dir.path,
+      });
+      for (const file of outcome.reverted) props.onFileReverted?.(absPathOf(file));
+      await refreshStatus();
+      if (outcome.failed.length > 0) {
+        const list = outcome.failed.map((f) => `${f.path} (${f.reason})`).join('; ');
+        throw new Error(
+          `${outcome.failed.length} ${one(outcome.failed.length, 'file wasn’t', 'files weren’t')} reverted: ${list}`
+        );
+      }
     });
   };
 
@@ -2131,6 +2217,21 @@ export function GitPanel(props: GitPanelProps) {
                                     <FolderIcon open={open()} />
                                   </span>
                                   <span class="tree-row-name">{dirRow().name}</span>
+                                  <Show when={revertable(dir()).length > 0}>
+                                    <button
+                                      type="button"
+                                      class="git-revert-button"
+                                      title="Revert every changed file in this folder"
+                                      aria-label={`Revert ${dir().path}`}
+                                      disabled={busy()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void revertFolder(dir());
+                                      }}
+                                    >
+                                      <RevertIcon />
+                                    </button>
+                                  </Show>
                                   <DiffStats
                                     additions={dir().additions}
                                     deletions={dir().deletions}
@@ -2200,20 +2301,7 @@ export function GitPanel(props: GitPanelProps) {
                                         void revertFile(file());
                                       }}
                                     >
-                                      <svg
-                                        width="13"
-                                        height="13"
-                                        viewBox="0 0 16 16"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        stroke-width="1.5"
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        aria-hidden="true"
-                                      >
-                                        <path d="M3.5 6.5h6.25a3.25 3.25 0 0 1 0 6.5H6" />
-                                        <path d="M6 3.5 3 6.5l3 3" />
-                                      </svg>
+                                      <RevertIcon />
                                     </button>
                                   </Show>
                                   <DiffStats

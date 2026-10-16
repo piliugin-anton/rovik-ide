@@ -927,7 +927,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
     if (!path) return;
     // A file the agent wrote opens with its changes marked against git.
     const changes = (isWrite() || isEdit()) && !isContextFile();
-    requestOpenFile({ path, ...openTarget(), changes });
+    requestOpenFile({ path, ...openTarget(), changes, dialogId: props.dialogId });
   };
 
   // Code arguments are shown highlighted below, not as escaped JSON strings.

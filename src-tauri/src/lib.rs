@@ -200,6 +200,7 @@ pub fn run() {
             git::git_status,
             git::git_base_content,
             git::git_revert_file,
+            git::git_revert_folder,
             git::git_create_branch,
             git::git_delete_branch,
             git::git_stash_push,

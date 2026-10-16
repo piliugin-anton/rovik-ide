@@ -2939,3 +2939,15 @@ bundle` named a `.deb` with that version, `Cargo.toml`'s and not
     minisign's format has it. actionlint and GitHub's schema take the
     workflow, but it hasn't run: the first release is its test, the
     Windows and macOS builds included.
+- **§2.3, a host's configuration on connecting.** `Remote::everywhere`
+  reached only the hosts ready when a setting changed, so a host set up
+  during a session, or back from being away, ran this computer's chats
+  with its daemon's defaults (`work.rs` takes `config_of(chat)` with
+  `unwrap_or_default`: no approvals, no subagents) until the app's next
+  start or the next change of a setting, which is why adding a host looked
+  like it needed a restart. `Remote` now sends the configuration it last
+  applied on each host's `Subscribed`, before catching up, without keys and
+  under the host's policy; a host connecting before the frontend applied
+  its settings isn't sent a configuration nobody set (the frontend's
+  reaches it, ready by then). Tests: a host connecting after the settings
+  were applied gets them first; one connecting before gets none.
