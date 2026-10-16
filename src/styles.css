@@ -1698,6 +1698,10 @@ body.tree-dragging {
   padding: 0 16px 14px;
 }
 
+.confirm-dialog-actions .confirm-dialog-alternate {
+  margin-right: auto;
+}
+
 .confirm-dialog-actions button {
   min-width: 72px;
   padding: 6px 12px;

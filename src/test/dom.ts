@@ -26,6 +26,7 @@ const globals = [
   'getComputedStyle',
   'requestAnimationFrame',
   'cancelAnimationFrame',
+  'localStorage',
 ] as const;
 for (const name of globals) {
   const value = name === 'window' ? window : (window as unknown as Record<string, unknown>)[name];

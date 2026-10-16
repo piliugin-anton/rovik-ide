@@ -20,6 +20,8 @@ export interface ConfirmOptions {
   message?: JSX.Element;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** A third way out, at the left (chooseDialog): "Don't save". */
+  alternateLabel?: string;
   /** Destructive action: red confirm button, and Cancel gets initial focus. */
   danger?: boolean;
 }
@@ -27,7 +29,11 @@ export interface ConfirmOptions {
 export interface ConfirmDialogProps extends ConfirmOptions {
   onConfirm: () => void;
   onCancel: () => void;
+  onAlternate?: () => void;
 }
+
+/** What chooseDialog() resolves to. */
+export type DialogChoice = 'confirm' | 'alternate' | 'cancel';
 
 let nextId = 0;
 
@@ -105,6 +111,15 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
           </div>
 
           <div class="confirm-dialog-actions">
+            <Show when={props.alternateLabel}>
+              <button
+                type="button"
+                class="confirm-dialog-alternate"
+                onClick={() => props.onAlternate?.()}
+              >
+                {props.alternateLabel}
+              </button>
+            </Show>
             <button ref={cancelRef} type="button" onClick={() => props.onCancel()}>
               {props.cancelLabel ?? 'Cancel'}
             </button>
@@ -130,7 +145,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
  */
 
 interface PendingConfirm extends ConfirmOptions {
-  resolve: (confirmed: boolean) => void;
+  resolve: (choice: DialogChoice) => void;
 }
 
 // Requests made while a dialog is open wait their turn.
@@ -138,30 +153,40 @@ const [queue, setQueue] = createSignal<PendingConfirm[]>([]);
 
 /** Shows a confirmation dialog; resolves true on confirm, false otherwise. */
 export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
+  return chooseDialog(options).then((choice) => choice === 'confirm');
+}
+
+/** The same, with its third button (`alternateLabel`) told apart. */
+export function chooseDialog(options: ConfirmOptions): Promise<DialogChoice> {
   return new Promise((resolve) => {
     setQueue((q) => [...q, { ...options, resolve }]);
   });
 }
 
-function settle(confirmed: boolean) {
+function settle(choice: DialogChoice) {
   const [current, ...rest] = queue();
   if (!current) return;
   setQueue(rest);
-  current.resolve(confirmed);
+  current.resolve(choice);
 }
 
 /** Renders the dialog for confirmDialog(). Mount once near the app root. */
 export function ConfirmDialogHost() {
   // Anything still pending when the host unmounts counts as cancelled.
   onCleanup(() => {
-    for (const pending of queue()) pending.resolve(false);
+    for (const pending of queue()) pending.resolve('cancel');
     setQueue([]);
   });
 
   return (
     <Show when={queue()[0]} keyed>
       {(current) => (
-        <ConfirmDialog {...current} onConfirm={() => settle(true)} onCancel={() => settle(false)} />
+        <ConfirmDialog
+          {...current}
+          onConfirm={() => settle('confirm')}
+          onCancel={() => settle('cancel')}
+          onAlternate={() => settle('alternate')}
+        />
       )}
     </Show>
   );

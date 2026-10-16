@@ -50,7 +50,14 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import FileContextMenu from './components/FileContextMenu';
 import { GitPanel } from './components/GitPanel';
-import { confirmDialog, ConfirmDialogHost, type ConfirmOptions } from './components/ConfirmDialog';
+import {
+  chooseDialog,
+  confirmDialog,
+  ConfirmDialogHost,
+  type ConfirmOptions,
+} from './components/ConfirmDialog';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { projectSession, rememberProjectSession, type SessionFile } from './lib/projectSessions';
 import NotificationHost from './components/NotificationHost';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import NewProjectDialog from './components/NewProjectDialog';
@@ -323,20 +330,7 @@ export default function App() {
     const lastProject = await loadLastProject();
     if (!lastProject || !lastProject.path) return null;
     const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
-    // A file deleted while the app was closed is skipped: one missing file
-    // used to fail the whole restore.
-    const restored = await Promise.all(
-      openedFilesRaw.map(async (f): Promise<OpenFile | null> => {
-        try {
-          const content = await readFileContent(f.path);
-          return { ...f, content, originalContent: content, dirty: false };
-        } catch (err) {
-          console.warn(`Not restoring ${f.path}:`, err);
-          return null;
-        }
-      })
-    );
-    const openFiles = restored.filter((f): f is OpenFile => f !== null);
+    const openFiles = await reopenFiles(openedFilesRaw);
 
     return [
       lastProject.path,
@@ -346,6 +340,74 @@ export default function App() {
     ];
   }
 
+  /** Tabs saved for later, read again from disk. */
+  async function reopenFiles(saved: SessionFile[]): Promise<OpenFile[]> {
+    // A file deleted since is skipped: one missing file used to fail the
+    // whole restore.
+    const restored = await Promise.all(
+      saved.map(async (f): Promise<OpenFile | null> => {
+        try {
+          const content = await readFileContent(f.path);
+          return { ...f, content, originalContent: content, dirty: false };
+        } catch (err) {
+          console.warn(`Not restoring ${f.path}:`, err);
+          return null;
+        }
+      })
+    );
+    return restored.filter((f): f is OpenFile => f !== null);
+  }
+
+  /**
+   * Tabs with unsaved text, before they close (another project opens, or
+   * the window closes): saved, or let go, as the user says. False: stay
+   * (cancelled, or a save didn't go through). Switching projects used to
+   * drop the text without a word, and so did closing the window.
+   */
+  async function settleUnsavedTabs(leaving: 'project' | 'app'): Promise<boolean> {
+    const unsaved = openFiles().filter((f) => f.dirty && !f.readOnly);
+    if (unsaved.length === 0) return true;
+    const choice = await chooseDialog({
+      title:
+        unsaved.length === 1
+          ? `Save changes to ${unsaved[0].name}?`
+          : `Save changes to ${unsaved.length} files?`,
+      message:
+        `${unsaved.map((f) => f.name).join(', ')} ${unsaved.length === 1 ? 'has' : 'have'} ` +
+        `changes that aren’t saved. ` +
+        (leaving === 'app'
+          ? 'They’re lost when the window closes, unless they’re saved.'
+          : 'The tabs close when another project opens, so they’re lost unless they’re saved.'),
+      confirmLabel: 'Save',
+      alternateLabel: 'Don’t save',
+    });
+    if (choice === 'cancel') return false;
+    if (choice === 'alternate') return true;
+    for (const f of unsaved) {
+      if (!openFiles().some((o) => o.path === f.path && o.dirty)) continue;
+      setActivePath(f.path);
+      await saveActiveFile();
+    }
+    // A save refused (changed on disk and kept to compare, or an error).
+    return !openFiles().some((f) => f.dirty && !f.readOnly);
+  }
+
+  // Closing the window with unsaved tabs asks first.
+  onMount(() => {
+    let stop: (() => void) | undefined;
+    let gone = false;
+    void getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        if (!(await settleUnsavedTabs('app'))) event.preventDefault();
+      })
+      .then((unlisten) => (gone ? unlisten() : (stop = unlisten)))
+      .catch((err) => console.error('No close guard:', err));
+    onCleanup(() => {
+      gone = true;
+      stop?.();
+    });
+  });
+
   const [newProjectOpen, setNewProjectOpen] = createSignal(false);
 
   async function handlePickFolder() {
@@ -354,8 +416,24 @@ export default function App() {
   }
 
   /** Opens a project folder: Files, Chat and Git switch to it. */
-  function openProjectAt(folder: string) {
+  async function openProjectAt(folder: string) {
     if (folder === rootPath()) return;
+    if (!(await settleUnsavedTabs('project'))) return;
+    // Chosen meanwhile (the dialog was open), or the same one again.
+    if (folder === rootPath()) return;
+    // The project left keeps its tabs for coming back to it.
+    const left = rootPath();
+    if (left) {
+      rememberProjectSession(left, {
+        files: openFiles()
+          .filter((f) => !f.readOnly)
+          .map(({ id, path, name, language }) => ({ id, path, name, language })),
+        active: activePath(),
+        expanded: [...tree.expanded()],
+      });
+    }
+    const session = projectSession(folder);
+    if (session) tree.presetExpanded(folder, session.expanded);
     for (const m of monaco.editor.getModels()) m.dispose();
     // The old project's change marks; its tabs close below.
     for (const { absPath } of markedFiles()) clearGitBase(absPath);
@@ -364,6 +442,15 @@ export default function App() {
     setActivePath(null);
     setSelectedFileIds(new Set<string>());
     setLastSelectedId(null);
+    if (!session?.files.length) return;
+    // Its own tabs, as it was left.
+    const files = await reopenFiles(session.files);
+    // Another project chosen since, or a file opened meanwhile: leave it.
+    if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
+    setOpenFiles(files);
+    setActivePath(
+      files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
+    );
   }
 
   // Which project the open folder is, and so whose chats are shown.
