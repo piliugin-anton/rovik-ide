@@ -1,16 +1,11 @@
-import { createMemo } from 'solid-js';
+import { createEffect, createMemo } from 'solid-js';
 import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { invoke } from '@tauri-apps/api/core';
-
-// Extend Solid's HTML attributes for TypeScript recognition
-declare module 'solid-js' {
-  namespace JSX {
-    interface HTMLAttributes<T> {
-      'prop:innerHTML'?: string;
-    }
-  }
-}
+import { resolveChatLink } from '../lib/markdownPreview';
+import { requestOpenFile, resolveProjectFile } from '../lib/editorBridge';
+import { notify } from '../lib/notifications';
+import { morphHtml } from '../lib/morphHtml';
 
 interface FormattedTextProps {
   text: string;
@@ -46,17 +41,37 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 
 /*
  * The webview ignores target="_blank" and following the link would replace
- * the IDE, so a click hands web links to the default browser instead.
+ * the IDE, so a click hands web links to the default browser instead, and
+ * a link to a file of the project opens it in the editor.
  */
 function openLink(e: MouseEvent) {
   if (e.button !== 0 && e.button !== 1) return;
   const anchor = (e.target as Element | null)?.closest?.('a[href]');
   if (!anchor) return;
   e.preventDefault();
-  const href = (anchor as HTMLAnchorElement).href;
-  if (/^(https?:|mailto:)/i.test(href)) {
-    invoke('open_url', { url: href }).catch((err) => console.error('Open link:', err));
+  const link = resolveChatLink(anchor.getAttribute('href') ?? '');
+  if (link.kind === 'web') {
+    invoke('open_url', { url: link.url }).catch((err) => console.error('Open link:', err));
+  } else if (link.kind === 'file' && e.button === 0) {
+    void openProjectFile(link.path, link.line);
   }
+}
+
+async function openProjectFile(path: string, line?: number) {
+  // A leading `/` is the project's root on GitHub, where models learned it.
+  const file =
+    (await resolveProjectFile(path)) ??
+    (/^[\\/]/.test(path) ? await resolveProjectFile(path.replace(/^[\\/]+/, '')) : null);
+  if (!file) {
+    notify({
+      kind: 'warning',
+      title: `Can't open ${path}`,
+      message: 'The link points to a folder or to a file that doesn’t exist.',
+      timeout: 6_000,
+    });
+    return;
+  }
+  requestOpenFile({ path: file, line });
 }
 
 export default function FormattedText(props: FormattedTextProps) {
@@ -65,9 +80,14 @@ export default function FormattedText(props: FormattedTextProps) {
     return DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target'] });
   });
 
+  let el!: HTMLDivElement;
+  // Not innerHTML: a streaming reply's text is new on every token, and
+  // what's already written keeps its nodes (links stay clickable).
+  createEffect(() => morphHtml(el, formattedHtml()));
+
   return (
     <div
-      prop:innerHTML={formattedHtml()}
+      ref={el}
       class={`${props.class ?? ''} markdown-body`}
       onClick={openLink}
       onAuxClick={openLink}

@@ -15,7 +15,7 @@ import type { RevealRequest } from '../types';
 import type { CursorInfo } from '../lib/activeContext';
 import { selectedLines } from '../lib/activeContext';
 import { selectionReference } from '../lib/fileReferences';
-import { addToChat } from '../lib/editorBridge';
+import { addToChat, editorFocusRequest, takeEditorFocus } from '../lib/editorBridge';
 import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
 import { diffLines, splitLines } from '../lib/lineDiff';
@@ -62,6 +62,7 @@ import {
   toggleSplit,
   type MarkdownView,
 } from '../lib/markdownView';
+import { recallViewState, rememberViewState } from '../lib/viewStates';
 
 interface EditorProps {
   projectDir: Accessor<string | null>;
@@ -132,6 +133,8 @@ export default function Editor(props: EditorProps) {
     // component unmounts while typings are still loading.
     onCleanup(() => {
       disposed = true;
+      // Where it was (scroll, cursor, selection), for when its tab is shown again.
+      if (editor) rememberViewState(props.currentFilePath, editor.saveViewState());
       editor?.dispose();
       editor = undefined;
       // NOTE: we intentionally do NOT dispose the Monaco model here.
@@ -194,6 +197,15 @@ export default function Editor(props: EditorProps) {
       readOnlyMessage: { value: props.readOnlyMessage ?? 'This preview is read-only.' },
     });
     setInstance(editor);
+    // Back where it was when its tab was last left. A reveal (a search
+    // result, a link to a line) still moves it, below.
+    const viewState = recallViewState<monaco.editor.ICodeEditorViewState>(props.currentFilePath);
+    if (viewState) editor.restoreViewState(viewState);
+    // Its tab was clicked (now, or just before it mounted): type on from there.
+    createEffect(() => {
+      if (editorFocusRequest() !== props.currentFilePath) return;
+      if (editor && !disposed && takeEditorFocus(props.currentFilePath)) editor.focus();
+    });
 
     // Read-only preview tabs (e.g. stashed content): lock the editor.
     // The component remounts per tab (keyed), so the creation flag above

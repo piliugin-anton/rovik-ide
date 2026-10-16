@@ -34,6 +34,9 @@ import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 
 const GIT_ROW_HEIGHT = 22;
 
+/** Commit messages being written, by project: the panel goes while another sidebar tab is shown. */
+const commitDrafts = new Map<string, string>();
+
 interface GitPanelProps {
   /** Absolute path to the currently open project/workspace. */
   projectPath: string;
@@ -381,7 +384,23 @@ export function GitPanel(props: GitPanelProps) {
   const [errorMsg, setErrorMsg] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
 
-  const [commitMessage, setCommitMessage] = createSignal('');
+  // Kept by project while the panel is away (another sidebar tab shown).
+  const [commitMessage, setCommitMessageSignal] = createSignal(
+    commitDrafts.get(props.projectPath) ?? ''
+  );
+  const setCommitMessage = (message: string) => {
+    setCommitMessageSignal(message);
+    if (message) commitDrafts.set(props.projectPath, message);
+    else commitDrafts.delete(props.projectPath);
+  };
+  // Another project opened: its own message, if one was being written.
+  createEffect(
+    on(
+      () => props.projectPath,
+      (path) => setCommitMessageSignal(commitDrafts.get(path) ?? ''),
+      { defer: true }
+    )
+  );
   const [branchOpen, setBranchOpen] = createSignal(false);
   interface GitBranch {
     name: string;

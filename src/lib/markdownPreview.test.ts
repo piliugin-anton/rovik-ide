@@ -11,6 +11,7 @@ import {
   headingLine,
   headingSlug,
   renderMarkdown,
+  resolveChatLink,
   resolveDocumentPath,
   resolvePreviewImage,
   resolvePreviewLink,
@@ -215,6 +216,34 @@ test('links: anchors, web pages, files at a heading or a line', () => {
   assert.deepEqual(resolvePreviewLink('vscode:extension/x', doc, '/p'), { kind: 'none' });
   assert.deepEqual(resolvePreviewLink('?tab=1', doc, '/p'), { kind: 'none' });
   assert.deepEqual(resolvePreviewLink('', doc, '/p'), { kind: 'none' });
+});
+
+test('chat links: web pages, project files at a line, nothing else', () => {
+  assert.deepEqual(resolveChatLink('https://a.dev/x'), { kind: 'web', url: 'https://a.dev/x' });
+  assert.deepEqual(resolveChatLink('mailto:me@a.dev'), { kind: 'web', url: 'mailto:me@a.dev' });
+  assert.deepEqual(resolveChatLink('//a.dev/x'), { kind: 'web', url: 'https://a.dev/x' });
+  assert.deepEqual(resolveChatLink('src/app.ts'), { kind: 'file', path: 'src/app.ts' });
+  assert.deepEqual(resolveChatLink('./src/app.ts#L12'), {
+    kind: 'file',
+    path: 'src/app.ts',
+    line: 12,
+  });
+  assert.deepEqual(resolveChatLink('my%20notes.md?plain=1#L3-L9'), {
+    kind: 'file',
+    path: 'my notes.md',
+    line: 3,
+  });
+  assert.deepEqual(resolveChatLink('/src/app.ts'), { kind: 'file', path: '/src/app.ts' });
+  assert.deepEqual(resolveChatLink('C:\\work\\a.rs#L2'), {
+    kind: 'file',
+    path: 'C:\\work\\a.rs',
+    line: 2,
+  });
+  assert.deepEqual(resolveChatLink('#Usage'), { kind: 'none' });
+  assert.deepEqual(resolveChatLink('javascript:alert(1)'), { kind: 'none' });
+  assert.deepEqual(resolveChatLink('vscode:extension/x'), { kind: 'none' });
+  assert.deepEqual(resolveChatLink('?tab=1'), { kind: 'none' });
+  assert.deepEqual(resolveChatLink(''), { kind: 'none' });
 });
 
 test('images: local ones with their type, remote ones never fetched', () => {

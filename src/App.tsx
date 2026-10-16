@@ -65,6 +65,7 @@ import {
   onAddToChat,
   onCompareRequest,
   requestCompare,
+  requestEditorFocus,
   onOpenFileRequest,
   setProjectFileResolver,
 } from './lib/editorBridge';
@@ -2009,7 +2010,10 @@ export default function App() {
           <Tabs
             files={openFiles}
             activePath={activePath}
-            onSelect={setActivePath}
+            onSelect={(path) => {
+              requestEditorFocus(path);
+              setActivePath(path);
+            }}
             onClose={closeFile}
           />
           {/* A Markdown file: source, source and preview, or preview. */}

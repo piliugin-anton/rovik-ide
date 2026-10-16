@@ -10,18 +10,36 @@
 // review lists every answer with "Change". Nothing reaches the agent until
 // "Send answers". The message's own card (QuestionCard) only points here
 // while it waits, and records the decisions once answered.
-import { createSignal, For, Index, Show } from 'solid-js';
-import { answerQuestions, type PendingQuestions, type QuestionAnswer } from '../lib/questions';
+import { createEffect, createSignal, For, Index, Show } from 'solid-js';
+import {
+  answerQuestions,
+  questionsDraft,
+  saveQuestionsDraft,
+  type PendingQuestions,
+  type QuestionAnswer,
+} from '../lib/questions';
 
 export default function QuestionPanel(props: { pending: PendingQuestions }) {
   const questions = () => props.pending.questions;
   const count = () => questions().length;
+  // Answering picks up where it was left: the panel goes with the chat
+  // when another sidebar tab or another chat is shown (lib/questions.ts).
+  const { dialogId, toolCallId } = props.pending;
+  const draft = questionsDraft(dialogId, toolCallId);
   /** 0..count-1: a question; count: the review. */
-  const [step, setStep] = createSignal(0);
-  const [answers, setAnswers] = createSignal<(QuestionAnswer | undefined)[]>([]);
-  const [custom, setCustom] = createSignal<string[]>([]);
+  const [step, setStep] = createSignal(Math.min(draft?.step ?? 0, count()));
+  const [answers, setAnswers] = createSignal<(QuestionAnswer | undefined)[]>(draft?.answers ?? []);
+  const [custom, setCustom] = createSignal<string[]>(draft?.custom ?? []);
   /** Editing from the review: answering goes straight back to it. */
-  const [fromReview, setFromReview] = createSignal(false);
+  const [fromReview, setFromReview] = createSignal(draft?.fromReview ?? false);
+  createEffect(() =>
+    saveQuestionsDraft(dialogId, toolCallId, {
+      step: step(),
+      answers: answers(),
+      custom: custom(),
+      fromReview: fromReview(),
+    })
+  );
 
   const reviewing = () => step() >= count();
   const current = () => questions()[step()];
