@@ -1453,6 +1453,7 @@ export default function App() {
    * inside a folder never do.
    */
   function followMoves(moves: { from: string; to: string }[]) {
+    for (const { from, to } of moves) tree.moved(from, to);
     setOpenFiles((prev) =>
       prev.map((f) => {
         const path = movedPath(f.path, moves);

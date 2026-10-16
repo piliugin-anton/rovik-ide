@@ -6800,7 +6800,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .provider-models-list {
   display: grid;
   /* The name column: never narrower than the longest name, and takes any spare room. */
-  grid-template-columns: minmax(max-content, 1fr) 112px 52px 40px 44px 68px 60px 22px;
+  /* Context: wide enough for its placeholder, "1,000,000 reported". */
+  grid-template-columns: minmax(max-content, 1fr) 136px 52px 40px 44px 68px 60px 22px;
   align-content: start;
   column-gap: 8px;
   overflow: auto;
