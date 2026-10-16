@@ -13,7 +13,7 @@ mod common;
 
 use common::app::{landed_as, App};
 use common::project::{
-    message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
+    ended, message, read, ready_to_run, start, unattended, writes, Setup, CHAT, PROJECT,
 };
 use common::{until, write};
 use git2::{Repository, Status, StatusOptions};
@@ -244,7 +244,10 @@ async fn without_the_chat_resolving_the_sync_waits() {
     let bar = app.remote.overlay_status(CHAT).await.unwrap();
     assert_eq!(bar.sync, None);
     assert_eq!(read(&root.join("src/main.rs")), "fn main() { remote() }\n");
-    // Sync now waits the same, and the bar asks again.
+    // Sync now waits the same, and the bar asks again. It comes once the
+    // run has ended, as the app's command sees to: a sync under a run
+    // that writes the worktree is refused.
+    ended(&setup.client).await;
     let again = app.remote.sync_now(CHAT).await.unwrap().unwrap();
     assert_eq!(again.state, SyncState::Conflicts);
     let bar = app.remote.overlay_status(CHAT).await.unwrap();
