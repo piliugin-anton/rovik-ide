@@ -2,4 +2,6 @@
 2. In Git tab add a revert to folders
 3. In chat when clicking on edited file it opens a current version, not agent's version
 4. Missing settings for maximum number of plan review tries
-   Notes: planning starts working with models from Muse Glimmer 30B
+5. Get rid of requirement to restart app after adding a cloud host
+Notes: planning starts working with models from Muse Glimmer 30B
+
