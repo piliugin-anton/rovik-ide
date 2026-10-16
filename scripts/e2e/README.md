@@ -53,6 +53,6 @@ its CSP allows `eval` and a connection to the runner.
 ## In CI
 
 `.github/workflows/e2e.yml` runs it on one platform at a time: from the
-Actions tab (Run workflow), or for a push whose head commit's message has
-`[e2e windows]`, `[e2e macos]` or `[e2e linux]`. The report is the job's
-summary; the screenshots and logs are its artifact.
+Actions tab (Run workflow), or for a push whose head commit's message
+starts with `[e2e windows]`, `[e2e macos]` or `[e2e linux]`. The report is
+the job's summary; the screenshots and logs are its artifact.

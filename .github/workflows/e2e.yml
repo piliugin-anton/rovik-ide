@@ -7,8 +7,9 @@
 # One platform at a time, as each costs (macOS minutes count tenfold in a
 # private repository):
 # - from the Actions tab: Run workflow, with the platform;
-# - on a push: "[e2e windows]", "[e2e macos]" or "[e2e linux]" in the head
-#   commit's message. Without one, nothing runs.
+# - on a push whose head commit's message starts with "[e2e windows]",
+#   "[e2e macos]" or "[e2e linux]" (only at the start: a message that
+#   mentions them doesn't run anything). Without one, nothing runs.
 #
 # Windows and Linux are driven through WebDriver (tauri-driver, with
 # msedgedriver or WebKitWebDriver). WKWebView has none, so on macOS the
@@ -39,7 +40,7 @@ env:
 jobs:
   windows:
     name: Windows
-    if: inputs.platform == 'windows' || contains(github.event.head_commit.message, '[e2e windows]')
+    if: inputs.platform == 'windows' || startsWith(github.event.head_commit.message, '[e2e windows]')
     # Per job: a push that runs nothing doesn't cancel a run under way.
     concurrency:
       group: e2e-windows-${{ github.ref }}
@@ -120,7 +121,7 @@ jobs:
 
   macos:
     name: macOS
-    if: inputs.platform == 'macos' || contains(github.event.head_commit.message, '[e2e macos]')
+    if: inputs.platform == 'macos' || startsWith(github.event.head_commit.message, '[e2e macos]')
     # Per job: a push that runs nothing doesn't cancel a run under way.
     concurrency:
       group: e2e-macos-${{ github.ref }}
@@ -162,7 +163,7 @@ jobs:
 
   linux:
     name: Linux
-    if: inputs.platform == 'linux' || contains(github.event.head_commit.message, '[e2e linux]')
+    if: inputs.platform == 'linux' || startsWith(github.event.head_commit.message, '[e2e linux]')
     # Per job: a push that runs nothing doesn't cancel a run under way.
     concurrency:
       group: e2e-linux-${{ github.ref }}
