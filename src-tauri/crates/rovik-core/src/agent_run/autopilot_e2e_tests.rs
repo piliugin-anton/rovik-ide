@@ -72,6 +72,87 @@ async fn an_autopilot_message_starts_a_plan_mode_run() {
     assert_eq!(runs.last().unwrap()["autopilot"], true, "{runs:?}");
 }
 
+/// A02: a stage record is a row of the chat, shown as it's added and as it
+/// ends; read back from the database it's the same, also by a core opened
+/// afresh on the same data (an app that reopens), and also when hundreds of
+/// messages have come since.
+#[tokio::test]
+async fn stage_records_are_rows_that_read_back_after_a_reload() {
+    use super::autopilot::{
+        add_stage, end_stage, load, records_of, Effort, Stage, StageRecord, Status,
+    };
+    let h = harness(&[]).await;
+    let core = h.core.clone();
+    let plan = add_stage(
+        &core,
+        &h.dialog_id,
+        &StageRecord::running("task-1", Stage::Plan, 1, Effort::Balanced),
+    )
+    .await
+    .unwrap();
+    let ended = end_stage(&core, &h.dialog_id, &plan, |r| {
+        r.status = Status::Done;
+        r.summary = Some("Saved the plan".into());
+        r.reference = Some("m-plan".into());
+    })
+    .await
+    .unwrap();
+    assert_eq!(ended.status, Status::Done);
+    let skipped = StageRecord::ended(
+        "task-1",
+        Stage::Prepare,
+        1,
+        Effort::Balanced,
+        Status::Skipped,
+    )
+    .with_summary("Not available yet");
+    add_stage(&core, &h.dialog_id, &skipped).await.unwrap();
+
+    // Shown as they came: added, then the plan's end.
+    let added: Vec<Value> = h
+        .events_of("messagesAdded")
+        .iter()
+        .flat_map(|e| e["messages"].as_array().cloned().unwrap_or_default())
+        .collect();
+    assert_eq!(added.len(), 2);
+    assert_eq!(added[0]["meta"]["stage"]["status"], "running");
+    assert_eq!(added[0]["role"], "assistant");
+    assert_eq!(added[0]["content"], "");
+    let patched = h.events_of("messagePatched");
+    assert_eq!(patched[0]["messageId"], plan.as_str());
+    assert_eq!(patched[0]["patch"]["meta"]["stage"]["status"], "done");
+
+    // Hundreds of messages later, still found.
+    let (id, many) = (
+        h.dialog_id.clone(),
+        (0..600)
+            .map(|i| run::new_message(if i % 2 == 0 { "user" } else { "assistant" }, "x"))
+            .collect::<Vec<_>>(),
+    );
+    h.core
+        .db
+        .write(move |c| store::append_messages(c, &id, &many))
+        .await
+        .unwrap();
+    let all = load(&core, &h.dialog_id).await.unwrap();
+    let records: Vec<StageRecord> = records_of(&all, "task-1")
+        .into_iter()
+        .map(|r| r.record.clone())
+        .collect();
+    assert_eq!(records, vec![ended.clone(), skipped.clone()]);
+    assert_eq!(all[0].id, plan);
+
+    // A core opened afresh on the same data reads the same.
+    let reopened = Core::open(
+        crate::core::Paths::new(h._dir.0.join("data"), h._dir.0.join("config")),
+        Arc::new(crate::testing::Recorder(Arc::new(Mutex::new(Vec::new())))),
+    )
+    .unwrap();
+    let again = load(&reopened, &h.dialog_id).await.unwrap();
+    assert_eq!(again, all);
+    assert!(records_of(&again, "another task").is_empty());
+}
+
 /// A01: an Agent-mode run's log line says nothing of Autopilot.
 #[tokio::test]
 async fn an_agent_mode_run_is_not_autopilots() {

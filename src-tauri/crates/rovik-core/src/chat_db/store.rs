@@ -1111,6 +1111,68 @@ pub fn get_messages_around(
     })
 }
 
+/// The chat's messages whose meta has `key` at its top, oldest first, after
+/// `after_seq` (None: from the start): the records of one kind (a task's
+/// stages, a run's check rounds) however far back they are, which a page
+/// of the latest messages may not reach.
+pub fn messages_with_meta(
+    conn: &Connection,
+    dialog_id: &str,
+    key: &str,
+    after_seq: Option<i64>,
+) -> DbResult<Vec<MessageRow>> {
+    // A rough filter in SQL (`_` matches any character there), the exact
+    // one on the meta as read.
+    let mut stmt = conn
+        .prepare_cached(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages
+             WHERE dialog_id = ?1 AND seq > ?2 AND meta LIKE ?3 ORDER BY seq ASC"
+        ))
+        .map_err(err)?;
+    let mut messages: Vec<MessageRow> = stmt
+        .query_map(
+            params![
+                dialog_id,
+                after_seq.unwrap_or(i64::MIN),
+                format!("%\"{key}\"%")
+            ],
+            message_from_row,
+        )
+        .map_err(err)?
+        .collect::<Result<_, _>>()
+        .map_err(err)?;
+    messages.retain(|m| {
+        m.meta
+            .as_ref()
+            .and_then(|meta| meta.get(key))
+            .is_some_and(|v| !v.is_null())
+    });
+    attach_attachments(conn, &mut messages)?;
+    Ok(messages)
+}
+
+/// The chat's messages of `role` after `after_seq`, oldest first.
+pub fn role_messages_after(
+    conn: &Connection,
+    dialog_id: &str,
+    role: &str,
+    after_seq: i64,
+) -> DbResult<Vec<MessageRow>> {
+    let mut stmt = conn
+        .prepare_cached(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages
+             WHERE dialog_id = ?1 AND role = ?2 AND seq > ?3 ORDER BY seq ASC"
+        ))
+        .map_err(err)?;
+    let mut messages: Vec<MessageRow> = stmt
+        .query_map(params![dialog_id, role, after_seq], message_from_row)
+        .map_err(err)?
+        .collect::<Result<_, _>>()
+        .map_err(err)?;
+    attach_attachments(conn, &mut messages)?;
+    Ok(messages)
+}
+
 pub fn get_message_body(conn: &Connection, message_id: &str) -> DbResult<String> {
     let external: Option<String> = conn
         .query_row(

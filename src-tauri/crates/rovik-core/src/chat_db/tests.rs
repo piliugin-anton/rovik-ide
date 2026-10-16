@@ -83,6 +83,63 @@ fn mark(text: &str, ranges: &[[usize; 2]]) -> String {
     out
 }
 
+/// A02: the rows with a record of one kind, oldest first, after a place:
+/// a meta that only mentions the key (in a message's text) isn't one, nor
+/// one that holds null under it.
+#[test]
+fn rows_with_a_meta_key_are_found_and_only_those() {
+    let mut conn = db();
+    dialog(&mut conn, "d", "Chat", 0);
+    dialog(&mut conn, "other", "Other", 0);
+    let with = |id: &str, role: &str, meta: serde_json::Value| NewMessage {
+        meta: Some(meta),
+        ..message(id, role, "")
+    };
+    add(
+        &mut conn,
+        "d",
+        vec![
+            with(
+                "s1",
+                "assistant",
+                serde_json::json!({ "stage": { "name": "plan" } }),
+            ),
+            with(
+                "u1",
+                "user",
+                serde_json::json!({ "sentContent": "rename \"stage\" to \"step\"" }),
+            ),
+            with("n1", "assistant", serde_json::json!({ "stage": null })),
+            message("plain", "assistant", "text"),
+            with(
+                "s2",
+                "assistant",
+                serde_json::json!({ "stage": { "name": "deliver" } }),
+            ),
+        ],
+    );
+    add(
+        &mut conn,
+        "other",
+        vec![with("s3", "assistant", serde_json::json!({ "stage": {} }))],
+    );
+    let ids = |rows: Vec<MessageRow>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+    let found = messages_with_meta(&conn, "d", "stage", None).unwrap();
+    let first_seq = found[0].seq;
+    assert_eq!(ids(found), ["s1", "s2"]);
+    assert_eq!(
+        ids(messages_with_meta(&conn, "d", "stage", Some(first_seq)).unwrap()),
+        ["s2"]
+    );
+    assert_eq!(
+        ids(role_messages_after(&conn, "d", "user", first_seq).unwrap()),
+        ["u1"]
+    );
+    assert!(role_messages_after(&conn, "d", "tool", first_seq)
+        .unwrap()
+        .is_empty());
+}
+
 #[test]
 fn paging_dialogs_by_cursor() {
     let mut conn = db();
