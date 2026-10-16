@@ -2660,6 +2660,7 @@ Tasks add notes here when reality differs from the plan.
     room: the list's padding spilled over the bar, and the input row went
     off the window. The bar now gives way (it scrolls), and the squeezed
     list is clipped.
-  - U06's start-up effect read the hosts before their summaries came.
+  - U06's start-up effect threw on a missing host list, which only the
+    stand-in sent (the backend always sends one); it reads none now.
   - A real connection, deploy and move still need a real server: the
     manual checks stay open.
