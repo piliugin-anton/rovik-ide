@@ -369,6 +369,10 @@ To debug model requests, set `ROVIK_API_LOG=1`. Every request and response
 is then logged to `<temp dir>/rovik-api-log.jsonl`; set it to a file path
 to log there instead. API keys are not written to the log.
 
+The app's own log goes to stderr: what its hosts' connections, mirrors and
+moves report, at level info. `ROVIK_LOG=debug` (or `trace`, `warn`,
+`error`) sets the level.
+
 ### Project layout
 
 ```

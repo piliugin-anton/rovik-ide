@@ -131,6 +131,14 @@ impl Remote {
             let note = format!("{path} has Windows line endings: it won't run on the server.");
             preflight.notes.push(note);
         }
+        if guards.history > crate::shadow::LARGE_HISTORY {
+            let note = format!(
+                "The project's history is {} GB: its first push to the host carries it, \
+                 which takes a while.",
+                guards.history.div_ceil(1 << 30)
+            );
+            preflight.notes.push(note);
+        }
 
         let status = chats::overlay_status(dialog_id.to_string()).await;
         preflight.redo_lost = status.is_ok_and(|s| !s.redo_groups.is_empty());

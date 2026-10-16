@@ -221,6 +221,12 @@ impl Remote {
                 // Not on that host any more.
                 return Ok(());
             };
+            // Chats the pull brought, a subagent's made while this computer
+            // was away: routed from now on, and told of as the lead's.
+            for chat in &applied.new_chats {
+                self.place(chat, host);
+            }
+            self.note_children(host, &applied.new_chats).await;
             self.tell(applied).await;
             match next {
                 Some(next) => cursor = Some(next),
