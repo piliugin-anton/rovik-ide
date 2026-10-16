@@ -153,7 +153,10 @@ pub enum Request {
     /// Brings the chat's worktree to a snapshot pushed before it (6.7). A
     /// chat without one gets it there, on its own branch (6.4), with
     /// `changes`, a commit on the snapshot, written into it: a chat that
-    /// moved with its overlay (T09). → `Synced`.
+    /// moved with its overlay (T09). With `mark`, the user handed the
+    /// sync's text conflicts to the chat (U05): they get markers whatever
+    /// "chat resolves conflicts" says, and the message that asks the chat
+    /// to settle them tells it. → `Synced`.
     WorkSync {
         dialog_id: String,
         project: String,
@@ -162,6 +165,8 @@ pub enum Request {
         excludes: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         changes: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark: bool,
     },
     /// Commits the chat's worktree as its result now, as a run's end does
     /// (6.5). → `ChatResult`.

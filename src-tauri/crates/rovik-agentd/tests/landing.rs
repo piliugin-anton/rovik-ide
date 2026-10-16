@@ -1,7 +1,8 @@
 //! Remote chats' results, back on the desktop (T06, 6.5): the app imports
 //! each result as the chat's overlay store and lands it by itself in the
 //! open project, a conflict waits for the user, who resolves it or lands
-//! anyway, the daemon hears of every landing so an undone one stays
+//! anyway, a newer result waits meanwhile unless the user takes it in
+//! their place, the daemon hears of every landing so an undone one stays
 //! undone, a result that ended while the app was away comes in when it
 //! connects, and text comes back with the project's own line endings.
 //! Results are numbered: an older one told again is passed over, and the
@@ -86,13 +87,15 @@ async fn a_remote_change_lands_here_and_an_undo_stays_undone() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_conflict_waits_for_resolve_and_land_anyway() {
-    let mut setup = Setup::new().await;
+/// A result's conflicts with changes made here meanwhile wait in the open
+/// project, and the chat's newer result, which went on with its older copy
+/// of their files, is held back while they're settled. Returns the app,
+/// and the chat's landing base on the daemon.
+async fn conflicts_and_a_newer_result(setup: &mut Setup) -> (App, String) {
     write(&setup.project.join("src/lib.rs"), "pub fn lib() {}\n");
-    let app = App::new(&mut setup).await;
-    app.connect(&setup).await;
-    ready_to_run(&setup).await;
+    let app = App::new(setup).await;
+    app.connect(setup).await;
+    ready_to_run(setup).await;
     app.remote.set_open_project(None);
     let (url, _) = model(vec![
         writes("w1", "src/main.rs", "fn main() { remote() }\n"),
@@ -108,7 +111,7 @@ async fn a_conflict_waits_for_resolve_and_land_anyway() {
         chat_resolves_conflicts: false,
         ..unattended()
     };
-    app.remote.start(start(&setup, &url, keeps)).await.unwrap();
+    app.remote.start(start(setup, &url, keeps)).await.unwrap();
     until("the result waiting for its project", || {
         chats::pending(CHAT).filter(|p| p.reason == import::READY)
     })
@@ -138,15 +141,18 @@ async fn a_conflict_waits_for_resolve_and_land_anyway() {
     );
     let snapshot = setup.base();
     // The chat goes on meanwhile: its newer result waits while the
-    // conflicts are settled.
-    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
-    until("the newer result held back", || {
-        let events = app.test.events.lock().unwrap();
-        let held = |e: &&Value| e["title"] == "A newer result of this chat is ready";
-        events.iter().find(held).cloned()
-    })
-    .await;
+    // conflicts are settled, and the bar says so.
+    app.remote.start(message(setup, &url, "u2")).await.unwrap();
+    app.bar("the newer result held back", |s| s.newer_result)
+        .await;
     assert_eq!(chats::pending(CHAT).unwrap().conflicts.len(), 2);
+    (app, snapshot)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conflict_waits_for_resolve_and_land_anyway() {
+    let mut setup = Setup::new().await;
+    let (app, snapshot) = conflicts_and_a_newer_result(&mut setup).await;
 
     // Resolve takes both sides of one file, Land anyway the chat's side of
     // the other.
@@ -164,6 +170,40 @@ async fn a_conflict_waits_for_resolve_and_land_anyway() {
     // The newer result comes in now, on the new base: only its own change.
     assert_eq!(landed(&setup, "src/later.rs").await, "fn later() {}\n");
     assert_eq!(project("src/main.rs"), "fn main() { local(); remote() }\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_newer_result_taken_comes_in_place_of_the_conflicts() {
+    let mut setup = Setup::new().await;
+    let (app, snapshot) = conflicts_and_a_newer_result(&mut setup).await;
+    let older = import::imported(CHAT).unwrap().commit;
+    // One of the two files resolved so far.
+    chats::conflict_file(CHAT, "src/main.rs").unwrap();
+    let both = b"fn main() { local(); remote() }\n".to_vec();
+    let left = chats::resolve_conflict(CHAT, "src/main.rs", Some(both), None).unwrap();
+    assert_eq!(left.len(), 1);
+
+    app.remote.take_newer(CHAT).await.unwrap();
+
+    // The newer result is the chat's store now: its own change with the
+    // older ones, and both conflicts again, what was resolved gone.
+    let imported = import::imported(CHAT).unwrap();
+    assert_ne!(imported.commit, older);
+    assert!(
+        imported.changed.iter().any(|p| p == "src/later.rs"),
+        "{imported:?}"
+    );
+    let pending = chats::pending(CHAT).unwrap();
+    assert_eq!(pending.conflicts.len(), 2, "{pending:?}");
+    let bar = app.remote.overlay_status(CHAT).await.unwrap();
+    assert!(!bar.newer_result);
+    let project = |path: &str| read(&setup.project.join(path));
+    assert_eq!(project("src/main.rs"), "fn main() { local() }\n");
+    assert!(
+        !setup.project.join("src/later.rs").exists(),
+        "nothing landed"
+    );
+    assert_eq!(setup.base(), snapshot);
 }
 
 #[tokio::test(flavor = "multi_thread")]

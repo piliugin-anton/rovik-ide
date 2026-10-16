@@ -243,6 +243,7 @@ async fn a_released_chat_is_only_read() {
             snapshot: bundle.snapshot.clone(),
             excludes: Vec::new(),
             changes: None,
+            mark: false,
         },
         Request::ChatDelete {
             dialog_id: CHAT.into(),

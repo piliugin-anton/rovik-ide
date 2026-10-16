@@ -7,7 +7,7 @@ use super::{until, COMPUTER};
 use rovik_client::{shadow, HostState, Identity, Remote, UnixConnector};
 use rovik_core::chat_db::projects;
 use rovik_core::chat_db::store::{self, NewDialog};
-use rovik_core::overlay::chats;
+use rovik_core::overlay::chats::{self, OverlayStatus};
 use rovik_core::testing::TestCore;
 use rovik_protocol::Secret;
 use std::sync::Arc;
@@ -101,6 +101,18 @@ impl App {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         panic!("never connected\n{}", setup.daemon.output());
+    }
+
+    /// The chat's isolation bar, once it shows what `check` looks for.
+    pub async fn bar(&self, what: &str, check: impl Fn(&OverlayStatus) -> bool) -> OverlayStatus {
+        for _ in 0..1200 {
+            let status = self.remote.overlay_status(CHAT).await.unwrap();
+            if check(&status) {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("never: {what}");
     }
 }
 

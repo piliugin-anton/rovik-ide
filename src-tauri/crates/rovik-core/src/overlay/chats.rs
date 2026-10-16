@@ -1702,6 +1702,10 @@ pub struct OverlayStatus {
     /// A remote chat's last sync with the project (6.7).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<rovik_protocol::work::ChatSync>,
+    /// A remote chat's newer result, held back while its conflicts are
+    /// resolved (6.5): the bar offers it in their place.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub newer_result: bool,
 }
 
 fn summarize(changes: &[OverlayChange]) -> Vec<ChangedFile> {
@@ -1798,6 +1802,7 @@ fn status(dialog_id: String) -> OverlayStatus {
             Vec::new()
         },
         sync: None,
+        newer_result: false,
     }
 }
 

@@ -124,6 +124,7 @@ pub async fn sync_as(client: &Client, chat: &str, snapshot: &str) -> Result<Sync
         snapshot: snapshot.into(),
         excludes: vec!["*.mine".into()],
         changes: None,
+        mark: false,
     };
     client.request(sync).await
 }

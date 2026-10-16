@@ -2587,3 +2587,39 @@ Tasks add notes here when reality differs from the plan.
     longer depends on the localStorage copy either (K49).
   - A chat on an offline host, or one that needs a newer app, is
     read-only, and its input says why (6.10).
+- **U05, the isolation bar for remote chats.**
+  - The bar lists what a remote chat changed in its worktree (`WorkStatus`),
+    looked at every few seconds while a run goes as a local chat's is,
+    with the pending reason and conflicts of the result imported here. Its
+    buttons are off while the run goes, and while the chat can't change
+    (its host offline, or the chat moving), with the reason as their
+    tooltip.
+  - Sync now (`overlay_sync_now`) takes a snapshot and syncs as before a
+    message, and says when the chat had the project already: its last sync
+    took the same snapshot and applied. It's refused while the chat's run
+    goes on its host, as merging under a running agent could undo what it
+    writes.
+  - A sync that waits shows in the bar with why and its files, in place of
+    T07's notice. Keep the older copy (`overlay_keep_older`) hides it until
+    the next sync; the landing base stays, so the conflicts come up when
+    the result lands. Hand to the chat (`overlay_sync_to_chat`) syncs the
+    project as it is now with `WorkSync { mark: true }` (additive, under
+    `projects`): the daemon marks text conflicts whatever "chat resolves
+    conflicts" says and keeps the marked files without telling the next
+    start, and the bar asks the chat with `resolve_request` as Ask the chat
+    does. A chat that can't take it now isn't handed anything, and markers
+    whose message didn't start come back out (Unmark). Files that can't
+    take markers can only wait.
+  - The bar doesn't show a `marked` sync: the chat may settle the markers
+    before its next sync, and its next result's `marked` list makes landing
+    wait with its own reason.
+  - A result that comes while the user resolves the chat's conflicts is
+    held back (`Remote.held`), and the bar says a newer result is ready
+    (`OverlayStatus.newer_result`), in place of the notice. Take the newer
+    result (`overlay_take_newer`) clears the conflicts and imports it
+    through the results queue; one that doesn't come in leaves them as they
+    were. Otherwise it comes in once they're settled, as before.
+  - Tests: e2e against the daemon for Keep the older copy, Sync now, Hand
+    to the chat and Take the newer result (`tests/sync.rs`,
+    `tests/landing.rs`), and the bar's states in `isolationBar.test.tsx`.
+  - Not done here: the manual check on a real host.

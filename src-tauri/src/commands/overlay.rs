@@ -2,15 +2,18 @@
 //! the project, undoing a landing, and their conflicts. What changes a
 //! chat's files is refused while its run is going. A remote chat's bar
 //! asks its host for what's there (rovik-client's `remote/bar.rs`), and
-//! works on its imported result here for the rest (6.1).
+//! works on its imported result here for the rest (6.1). It also has the
+//! chat's sync with the project (`remote/sync.rs`) and a newer result held
+//! back while its conflicts are resolved (U05).
 
-use rovik_client::Remote;
+use rovik_client::{HandedSync, Remote};
 use rovik_core::merge::ConflictFile;
 use rovik_core::overlay::chats::{
     self, FileVersions, HandedOver, LandResult, OverlayStatus, UndoneMerge,
 };
 use rovik_core::overlay::land::Conflict;
 use rovik_core::Core;
+use rovik_protocol::work::ChatSync;
 use std::sync::Arc;
 use tauri::State;
 
@@ -156,4 +159,43 @@ pub async fn overlay_redo_group(
 ) -> Result<String, String> {
     remote.local_only(&dialog_id)?;
     chats::overlay_redo_group(&core.agents, dialog_id, group).await
+}
+
+/// A remote chat's Sync now: its worktree takes the project as it is here.
+/// None: it had it already.
+#[tauri::command]
+pub async fn overlay_sync_now(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+) -> Result<Option<ChatSync>, String> {
+    remote.check_idle(&dialog_id).await?;
+    remote.sync_now(&dialog_id).await
+}
+
+/// A remote chat's Hand to the chat: the sync's text conflicts marked in
+/// its files, and the message that asks it to settle them.
+#[tauri::command]
+pub async fn overlay_sync_to_chat(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+) -> Result<HandedSync, String> {
+    remote.check_idle(&dialog_id).await?;
+    remote.sync_to_chat(&dialog_id).await
+}
+
+/// A remote chat's Keep the older copy: its bar stops asking about the
+/// sync that waits until the next one.
+#[tauri::command]
+pub fn overlay_keep_older(remote: State<'_, Arc<Remote>>, dialog_id: String) {
+    remote.keep_older_copy(&dialog_id);
+}
+
+/// A remote chat's Take the newer result, in place of the conflicts being
+/// resolved.
+#[tauri::command]
+pub async fn overlay_take_newer(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+) -> Result<(), String> {
+    remote.take_newer(&dialog_id).await
 }

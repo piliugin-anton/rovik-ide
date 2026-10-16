@@ -109,9 +109,10 @@ impl Daemon {
                 snapshot,
                 excludes,
                 changes,
+                mark,
             } => {
                 let at = (dialog_id.as_str(), project.as_str());
-                work::sync(self, computer, at, &snapshot, excludes, changes).await
+                work::sync(self, computer, at, &snapshot, excludes, changes, mark).await
             }
             Request::WorkResult { dialog_id } => {
                 self.store.check_owner(computer, &dialog_id)?;

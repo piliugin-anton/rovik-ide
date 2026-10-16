@@ -29,11 +29,13 @@ impl Remote {
     }
 
     /// The bar's status: the imported result's, with the files the chat
-    /// changed in its worktree so far, and its last sync. While its host
-    /// can't be reached, the imported result's files.
+    /// changed in its worktree so far, its last sync, and whether a newer
+    /// result waits for its conflicts to be settled. While its host can't
+    /// be reached, the imported result's files.
     pub async fn overlay_status(&self, dialog_id: &str) -> Result<OverlayStatus, String> {
         let mut status = chats::overlay_status(dialog_id.to_string()).await?;
-        status.sync = self.sync_state(dialog_id);
+        status.sync = self.bar_sync(dialog_id);
+        status.newer_result = self.newer_result(dialog_id);
         let ask = Request::WorkStatus {
             dialog_id: dialog_id.to_string(),
         };

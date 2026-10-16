@@ -2,8 +2,10 @@
 //! each message (6.7, D14): a snapshot of the project, pushed when it
 //! changed since the chat's last sync, and `WorkSync`, which merges it on
 //! the host. The message goes whatever the sync found. When the sync waits,
-//! the chat goes on with the older copy and a notice says why. Each chat's
-//! last sync is kept for the isolation bar.
+//! the chat goes on with the older copy. Each chat's last sync is kept for
+//! the isolation bar, which says why it waits and has the rest (U05): Sync
+//! now, Hand to the chat (the text conflicts marked for the chat to settle)
+//! and Keep the older copy (the bar stops asking until the next sync).
 //!
 //! A result that would land merged with the project's newer changes goes
 //! back the same way, with `WorkRecheck`: the host merges them and runs the
@@ -14,10 +16,25 @@ use crate::client::Client;
 use crate::shadow::{self, Shadow};
 use git2::Oid;
 use rovik_core::chat_db::projects;
+use rovik_core::overlay::chats;
 use rovik_core::{project_profile, rt};
 use rovik_protocol::work::{ChatSync, Project, SyncState, Synced};
 use rovik_protocol::Request;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
+
+/// Why Sync now and Hand to the chat do nothing for a chat: it works in a
+/// folder its start names, with no project of this computer's.
+const NO_PROJECT: &str = "This chat has no project to sync.";
+
+/// What Hand to the chat did: the chat's sync, and the message that asks
+/// it to settle the markers it put in (empty: none went in).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HandedSync {
+    pub sync: ChatSync,
+    pub request: String,
+}
 
 /// A snapshot of a chat's project, and what goes to the host with it.
 pub(super) struct Snapshot {
@@ -43,16 +60,98 @@ impl Remote {
         }
     }
 
-    /// The chat's last sync, for the isolation bar.
+    /// The chat's last sync.
     pub fn sync_state(&self, dialog_id: &str) -> Option<ChatSync> {
         self.lock().syncs.get(dialog_id).cloned()
+    }
+
+    /// The chat's last sync as its isolation bar shows it: not once the
+    /// user let it wait (Keep the older copy), until the next one.
+    pub(super) fn bar_sync(&self, dialog_id: &str) -> Option<ChatSync> {
+        let state = self.lock();
+        let kept = state.kept.contains(dialog_id);
+        state.syncs.get(dialog_id).filter(|_| !kept).cloned()
     }
 
     /// A sync of the chat, as its host told it.
     pub(super) fn synced(&self, sync: ChatSync) {
         let chat = sync.dialog_id.clone();
-        self.lock().syncs.insert(chat.clone(), sync);
+        {
+            let mut state = self.lock();
+            // The event of the sync the bar shows, come late, leaves what
+            // the user chose about it.
+            if state.syncs.get(&chat) != Some(&sync) {
+                state.kept.remove(&chat);
+            }
+            state.syncs.insert(chat.clone(), sync);
+        }
         self.changed(&chat);
+    }
+
+    /// Sync now: the project as it is here, merged into the chat's
+    /// worktree on its host as before a message. None when the chat has it
+    /// already: its last sync took it, and applied.
+    pub async fn sync_now(&self, dialog_id: &str) -> Result<Option<ChatSync>, String> {
+        let (host, client, snapshot) = self.to_sync(dialog_id).await?;
+        let had = {
+            let state = self.lock();
+            let applied = state.syncs.get(dialog_id).is_some_and(|s| applied(s.state));
+            applied && state.last_sync.get(dialog_id) == Some(&snapshot.commit)
+        };
+        if had {
+            return Ok(None);
+        }
+        let sync = self.sync_with(&host, &client, dialog_id, &snapshot, false);
+        sync.await.map(Some)
+    }
+
+    /// Hand to the chat: the project as it is here, merged into the chat's
+    /// worktree with markers in the files that conflict on the same lines,
+    /// whatever its setting, and the message that asks it to settle them.
+    /// A sync that applies without conflicts now, or waits for files that
+    /// can't take markers, has no message.
+    pub async fn sync_to_chat(&self, dialog_id: &str) -> Result<HandedSync, String> {
+        let (host, client, snapshot) = self.to_sync(dialog_id).await?;
+        let sync = self
+            .sync_with(&host, &client, dialog_id, &snapshot, true)
+            .await?;
+        let request = match sync.state {
+            SyncState::Marked => chats::resolve_request(&sync.files),
+            _ => String::new(),
+        };
+        Ok(HandedSync { sync, request })
+    }
+
+    /// Keep the older copy: the chat goes on without the project's changes
+    /// its sync waits with, and its bar stops asking until the next sync.
+    /// Its landing base stays, so landing its result brings the conflicts
+    /// up here.
+    pub fn keep_older_copy(&self, dialog_id: &str) {
+        {
+            let mut state = self.lock();
+            let waits = state
+                .syncs
+                .get(dialog_id)
+                .is_some_and(|s| !applied(s.state));
+            if waits {
+                state.kept.insert(dialog_id.to_string());
+            }
+        }
+        self.changed(dialog_id);
+    }
+
+    /// What a sync the bar asks for takes: the chat's host, its client,
+    /// and the project's snapshot now.
+    async fn to_sync(&self, dialog_id: &str) -> Result<(String, Client, Snapshot), String> {
+        let host = self
+            .host_of(dialog_id)
+            .ok_or("This chat isn't on a host.")?;
+        let client = self.client(&host).map_err(|fail| fail.message)?;
+        if !takes_projects(&client) {
+            return Err(NO_PROJECT.into());
+        }
+        let snapshot = self.snapshot(dialog_id).await?.ok_or(NO_PROJECT)?;
+        Ok((host, client, snapshot))
     }
 
     /// Sends the project as it is now to the chat's host to merge into its
@@ -86,18 +185,32 @@ impl Remote {
         if self.lock().last_sync.get(dialog_id) == Some(&snapshot.commit) {
             return Ok(());
         }
-        self.carry(host, &client, dialog_id, &snapshot).await?;
+        let sync = self.sync_with(host, &client, dialog_id, &snapshot, false);
+        sync.await.map(drop)
+    }
+
+    /// Carries the snapshot to the chat's host and merges it into the
+    /// chat's worktree there (`mark`: the text conflicts marked whatever
+    /// the chat's setting), and keeps what that did.
+    async fn sync_with(
+        &self,
+        host: &str,
+        client: &Client,
+        dialog_id: &str,
+        snapshot: &Snapshot,
+        mark: bool,
+    ) -> Result<ChatSync, String> {
+        self.carry(host, client, dialog_id, snapshot).await?;
         let sync = Request::WorkSync {
             dialog_id: dialog_id.to_string(),
             project: snapshot.project.clone(),
             snapshot: snapshot.commit.to_string(),
             excludes: snapshot.excludes.clone(),
             changes: None,
+            mark,
         };
         let synced: Synced = client.request(sync).await.map_err(|f| f.message)?;
-        self.tell_sync(dialog_id, &synced);
-        self.keep_sync(dialog_id, snapshot.commit, &synced);
-        Ok(())
+        Ok(self.keep_sync(dialog_id, snapshot.commit, &synced))
     }
 
     /// The chat's project as it is now, in its shadow; none when the chat
@@ -141,18 +254,20 @@ impl Remote {
 
     /// What a sync or a recheck did, kept: the snapshot it took, and its
     /// state for the bar.
-    fn keep_sync(&self, dialog_id: &str, commit: Oid, synced: &Synced) {
+    fn keep_sync(&self, dialog_id: &str, commit: Oid, synced: &Synced) -> ChatSync {
+        let sync = ChatSync {
+            dialog_id: dialog_id.to_string(),
+            state: synced.state,
+            files: synced.files.clone(),
+        };
         {
             let mut state = self.lock();
             state.last_sync.insert(dialog_id.to_string(), commit);
-            let sync = ChatSync {
-                dialog_id: dialog_id.to_string(),
-                state: synced.state,
-                files: synced.files.clone(),
-            };
-            state.syncs.insert(dialog_id.to_string(), sync);
+            state.kept.remove(dialog_id);
+            state.syncs.insert(dialog_id.to_string(), sync.clone());
         }
         self.changed(dialog_id);
+        sync
     }
 
     /// The project on the host, with its name, its folder in its
@@ -180,23 +295,12 @@ impl Remote {
         self.lock().ensured.insert(key);
         Ok(())
     }
+}
 
-    /// A sync that waits says why: the chat goes on with the older copy.
-    fn tell_sync(&self, dialog_id: &str, synced: &Synced) {
-        let n = synced.files.len();
-        let files = format!("{n} file{}", if n == 1 { "" } else { "s" });
-        let why = match synced.state {
-            SyncState::Synced | SyncState::Marked => return,
-            SyncState::Conflicts => {
-                format!("{files} changed both here and in the cloud chat, on the same lines.")
-            }
-            SyncState::Unmergeable => format!(
-                "{files} changed both here and in the cloud chat can't be merged: binary, or deleted on one side."
-            ),
-        };
-        let message = format!("{why} The chat goes on with the older copy.");
-        self.notice(dialog_id, "warning", "Sync waits", &message);
-    }
+/// Whether a sync in `state` brought the project's changes: one that waits
+/// left the chat with the older copy.
+fn applied(state: SyncState) -> bool {
+    matches!(state, SyncState::Synced | SyncState::Marked)
 }
 
 /// The project's settings here, when it has any.

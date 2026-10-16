@@ -51,4 +51,6 @@ pub use client::{welcome, Client, DaemonInfo, HostState, Identity, Incoming, Sin
 pub use connector::UnixConnector;
 pub use connector::{Connecting, Connector, Io, Stream};
 pub use hosts::Hosts;
-pub use remote::{ApprovalPolicy, CloudEvent, CloudSink, MovePreflight, Remote, LOCAL_ONLY};
+pub use remote::{
+    ApprovalPolicy, CloudEvent, CloudSink, HandedSync, MovePreflight, Remote, LOCAL_ONLY,
+};

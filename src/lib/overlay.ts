@@ -3,6 +3,9 @@
 // An isolated chat's changes (src-tauri/src/overlay): the chat works in its
 // own view of the project, and its changes reach the project only when they
 // land. This lists them, shows each against the project, and discards them.
+// A remote chat's are its worktree's on its host, with its sync with the
+// project here (6.7) and a newer result held back while its conflicts are
+// resolved (6.5).
 
 import { invoke } from '@tauri-apps/api/core';
 import type { GitConflictFile } from '../types';
@@ -35,6 +38,22 @@ export interface PeerConflict {
   sameLines: boolean;
 }
 
+/**
+ * Where a remote chat's worktree stands after its last sync brought the
+ * project's changes (6.7): applied (`synced`), applied with conflict
+ * markers for the chat to settle (`marked`), or waiting, the chat going on
+ * with its older copy: the same lines changed on both sides (`conflicts`),
+ * or files that can't be merged (`unmergeable`).
+ */
+export type SyncState = 'synced' | 'marked' | 'conflicts' | 'unmergeable';
+
+export interface ChatSync {
+  dialogId: string;
+  state: SyncState;
+  /** The files `state` is about. */
+  files?: string[];
+}
+
 export interface OverlayStatus {
   /** The chat has isolated changes (or an overlay with none yet). */
   isolated: boolean;
@@ -55,6 +74,10 @@ export interface OverlayStatus {
   byProducts: number;
   /** Parallel groups whose merge can be thrown away and redone one step at a time. */
   redoGroups?: string[];
+  /** A remote chat's last sync, unless the user let a waiting one be. */
+  sync?: ChatSync;
+  /** A remote chat's newer result waits while its conflicts are resolved. */
+  newerResult?: boolean;
 }
 
 export interface FileVersions {
@@ -181,4 +204,28 @@ export function overlayUndoMerge(dialogId: string): Promise<UndoneMerge> {
 /** Takes markers just handed to the chat back out of these files (it couldn't take them). */
 export function overlayUnmark(dialogId: string, files: string[]): Promise<UndoneMerge> {
   return invoke<UndoneMerge>('overlay_unmark', { dialogId, files });
+}
+
+/** A remote chat's Sync now; resolves with the sync, or null when the chat had the project already. */
+export function overlaySyncNow(dialogId: string): Promise<ChatSync | null> {
+  return invoke<ChatSync | null>('overlay_sync_now', { dialogId });
+}
+
+/**
+ * A remote chat's Hand to the chat: the sync's text conflicts get markers.
+ * Resolves with the sync, and the message to send the chat (empty when no
+ * markers went in).
+ */
+export function overlaySyncToChat(dialogId: string): Promise<{ sync: ChatSync; request: string }> {
+  return invoke('overlay_sync_to_chat', { dialogId });
+}
+
+/** A remote chat's Keep the older copy: the bar stops asking until the next sync. */
+export function overlayKeepOlder(dialogId: string): Promise<void> {
+  return invoke<void>('overlay_keep_older', { dialogId });
+}
+
+/** A remote chat's newer result, in place of the conflicts being resolved. */
+export function overlayTakeNewer(dialogId: string): Promise<void> {
+  return invoke<void>('overlay_take_newer', { dialogId });
 }

@@ -87,6 +87,7 @@ async fn a_moved_chats_changes_land_as_its_overlays_would() {
         snapshot: folded.base.to_string(),
         excludes: Vec::new(),
         changes: Some(folded.start.to_string()),
+        mark: false,
     };
     let synced: Synced = setup.client.request(sync).await.unwrap();
     chats::discard(CHAT).unwrap();

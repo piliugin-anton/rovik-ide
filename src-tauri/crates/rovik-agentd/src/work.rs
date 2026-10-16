@@ -52,7 +52,8 @@ pub async fn ensure_project(
 
 /// `WorkSync` of `(chat, project)`: a chat without a worktree gets one at
 /// the snapshot, with `changes` written into it when it moved with its
-/// overlay (T09). A chat that has one gets the snapshot merged into it.
+/// overlay (T09). A chat that has one gets the snapshot merged into it,
+/// text conflicts marked with `mark` whatever its setting (U05).
 pub async fn sync(
     daemon: &Daemon,
     computer: &str,
@@ -60,6 +61,7 @@ pub async fn sync(
     snapshot: &str,
     excludes: Vec<String>,
     changes: Option<String>,
+    mark: bool,
 ) -> Result<Response, Fail> {
     if !plain(chat) {
         return Err(bad_request(format!("{chat} isn't a chat's id.")));
@@ -70,7 +72,7 @@ pub async fn sync(
     })?;
     let base = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
     if let Some(root) = root(daemon, chat) {
-        let merged = merge_into(daemon, chat, project, base, excludes).await?;
+        let merged = merge_into(daemon, chat, project, base, excludes, mark).await?;
         return Ok(Response::Synced(Synced {
             root: text(&root),
             state: merged.state,
@@ -113,7 +115,7 @@ pub async fn recheck(
     let root = root(daemon, chat)
         .ok_or_else(|| bad_request("This chat has no worktree on this server."))?;
     let snapshot = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
-    let merged = merge_into(daemon, chat, project, snapshot, excludes).await?;
+    let merged = merge_into(daemon, chat, project, snapshot, excludes, false).await?;
     if merged.state == SyncState::Synced {
         if merged.files.is_empty() {
             let outcome = daemon.store.outcome_of(chat);
@@ -132,18 +134,21 @@ pub async fn recheck(
 }
 
 /// Merges the snapshot into the chat's worktree, under the client's ignore
-/// rules (sync.rs), and tells the chat's computer what it did.
+/// rules (sync.rs), and tells the chat's computer what it did. Text
+/// conflicts get markers when the chat resolves conflicts, or with `mark`,
+/// when the user handed them to it.
 async fn merge_into(
     daemon: &Daemon,
     chat: &str,
     project: &str,
     snapshot: Oid,
     excludes: Vec<String>,
+    mark: bool,
 ) -> Result<Merged, Fail> {
     let place = daemon.store.place(chat).filter(|p| p.project == project);
     let place = place.ok_or_else(|| bad_request("This chat works in another project here."))?;
     let config = daemon.store.config_of(chat).unwrap_or_default();
-    let resolves = config.permissions.chat_resolves_conflicts;
+    let resolves = mark || config.permissions.chat_resolves_conflicts;
     let _base = daemon.results.hold_base().await;
     let base = daemon
         .store
@@ -160,7 +165,9 @@ async fn merge_into(
         daemon.results.keep(chat, merged.kept.clone()).await;
     }
     if merged.state == SyncState::Marked {
-        daemon.store.mark(chat, &merged.files, true);
+        // Handed over by the user, they're told of by the message that
+        // asks the chat to settle them.
+        daemon.store.mark(chat, &merged.files, !mark);
     }
     let told = ChatSync {
         dialog_id: chat.to_string(),

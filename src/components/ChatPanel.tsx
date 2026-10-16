@@ -3749,6 +3749,8 @@ export default function ChatPanel(props: ChatProps) {
             canAskChat={!!activeProfile() && !isRunning(id)}
             onAskChat={askToResolve}
             chatTitle={(other) => store.state.list.items.find((d) => d.id === other)?.title}
+            remote={store.summaryOf(id)?.place?.kind === 'host'}
+            readOnly={readOnly()}
           />
         )}
       </Show>

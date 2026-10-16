@@ -8045,6 +8045,14 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--warning);
 }
 
+/* A remote chat's sync that waits, with what the user can do about it. */
+.isolation-bar-sync {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .isolation-bar-conflict {
   flex-shrink: 0;
   margin-left: auto;

@@ -20,7 +20,7 @@ use rovik_core::chat_db::{api, attachments, moves};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
-use rovik_protocol::work::ChatSync;
+use rovik_protocol::work::{ChatResult, ChatSync};
 use rovik_protocol::{features, Access, Event, Fail, FailCode, Request, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +38,7 @@ mod sync;
 
 pub use bar::LOCAL_ONLY;
 pub use moving::MovePreflight;
+pub use sync::HandedSync;
 
 /// The outcome told for a run that ended while its host was away: the
 /// client can't know it until results come (T05).
@@ -166,6 +167,12 @@ struct State {
     ensured: HashSet<(String, String)>,
     /// Each chat's last sync, as its host told it.
     syncs: HashMap<String, ChatSync>,
+    /// The chats whose waiting sync the user let be (Keep the older copy):
+    /// the bar leaves it out until the next sync.
+    kept: HashSet<String>,
+    /// Each chat's newer result held back while its conflicts are resolved
+    /// (6.5), with its host: the bar offers it in their place.
+    held: HashMap<String, (String, ChatResult)>,
     /// How many times each chat's result went back to be checked merged
     /// with the project's newer changes (6.6), since its last message.
     rechecks: HashMap<String, u32>,

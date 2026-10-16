@@ -10,7 +10,9 @@
 //! waits as "Ready to land" otherwise. Each landing is reported to the host
 //! with `WorkLanded`, at once or after its next connection, which
 //! `mirror_state` remembers across a restart, so the next result doesn't
-//! bring back what the user undid (K34).
+//! bring back what the user undid (K34). A result that comes while the
+//! user resolves the chat's conflicts is held back: the bar offers it in
+//! their place, and it comes in by itself once they're settled.
 
 use super::{takes_projects, Remote};
 use crate::shadow::{self, Shadow};
@@ -50,6 +52,11 @@ pub(super) enum Job {
         dialog_id: String,
         keep_chat: bool,
         reply: oneshot::Sender<Result<Option<Landed>, LandError>>,
+    },
+    /// The bar's Take the newer result.
+    TakeNewer {
+        dialog_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -95,6 +102,26 @@ impl Remote {
         let gone = || LandError::Failed("The app is closing.".into());
         self.jobs.send(job).map_err(|_| gone())?;
         landed.await.unwrap_or_else(|_| Err(gone()))
+    }
+
+    /// Take the newer result: the chat's result held back while its
+    /// conflicts were resolved comes in now, in their place, and what was
+    /// resolved of them goes.
+    pub async fn take_newer(&self, dialog_id: &str) -> Result<(), String> {
+        let (reply, taken) = oneshot::channel();
+        let job = Job::TakeNewer {
+            dialog_id: dialog_id.to_string(),
+            reply,
+        };
+        let gone = || "The app is closing.".to_string();
+        self.jobs.send(job).map_err(|_| gone())?;
+        taken.await.unwrap_or_else(|_| Err(gone()))
+    }
+
+    /// Whether a newer result of the chat waits for its conflicts to be
+    /// settled, for the bar.
+    pub(super) fn newer_result(&self, dialog_id: &str) -> bool {
+        self.lock().held.contains_key(dialog_id) && import::resolving(dialog_id)
     }
 
     /// A result its host told of, into the queue.
@@ -176,7 +203,38 @@ impl Remote {
                     self.ask_results(&host, Some(&dialog_id)).await;
                 }
             }
+            Job::TakeNewer {
+                dialog_id, reply, ..
+            } if self.is_moving_back(&dialog_id) => {
+                let _ = reply.send(Err(super::back::MOVING_BACK.into()));
+            }
+            Job::TakeNewer { dialog_id, reply } => {
+                let _ = reply.send(self.take_held(&dialog_id).await);
+                self.changed(&dialog_id);
+            }
         }
+    }
+
+    /// The chat's result held back while its conflicts were resolved,
+    /// imported in their place. One that doesn't come in leaves them as
+    /// they were.
+    async fn take_held(&self, dialog_id: &str) -> Result<(), String> {
+        let Some((host, result)) = self.lock().held.remove(dialog_id) else {
+            return Ok(());
+        };
+        let pending = chats::pending(dialog_id);
+        let before = import::imported(dialog_id).map(|i| i.commit);
+        chats::set_pending(dialog_id, None);
+        let imported = self.import(&host, result.clone()).await;
+        if imported.is_err() {
+            self.lock()
+                .held
+                .insert(dialog_id.to_string(), (host, result));
+        }
+        if import::imported(dialog_id).map(|i| i.commit) == before {
+            chats::set_pending(dialog_id, pending.as_ref());
+        }
+        imported
     }
 
     /// Fetches the chat's result and imports it, unless it came in before
@@ -227,16 +285,13 @@ impl Remote {
                     .await
             }
             Err(ImportError::Resolving) => {
-                self.notice(
-                    &chat,
-                    "info",
-                    "A newer result of this chat is ready",
-                    "It comes in once its conflicts are settled.",
-                );
+                // The bar offers it in place of the conflicts.
+                self.lock().held.insert(chat, (host.to_string(), result));
                 return Ok(());
             }
             Err(ImportError::Failed(e)) => return Err(e),
         }
+        self.lock().held.remove(&chat);
         self.saw(&chat, &result).await;
         Ok(())
     }

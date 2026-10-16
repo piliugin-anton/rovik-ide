@@ -3,9 +3,11 @@
 //! resolves conflicts" on, a conflicting text edit gets the local kind of
 //! markers there, the chat is told, its run is reminded of them as it
 //! ends, and its result waits until they're gone, by itself and with a
-//! manual Land. With it off the sync waits, the
-//! chat goes on with its older copy, and the app says why. A binary
-//! conflict waits whatever the setting.
+//! manual Land. With it off the sync waits, the chat goes on with its
+//! older copy, and the bar says why: the user lets it wait (Keep the older
+//! copy) or hands the conflicts to the chat, which gets the markers then.
+//! A binary conflict waits whatever the setting. Sync now brings the
+//! project as it is here between messages (U05).
 
 mod common;
 
@@ -16,7 +18,7 @@ use common::project::{
 use common::{until, write};
 use git2::{Repository, Status, StatusOptions};
 use rovik_core::agent_run::permissions::Permissions;
-use rovik_core::overlay::{chats, import};
+use rovik_core::overlay::{chats, import, markers};
 use rovik_core::testing::{model, Reply};
 use rovik_protocol::work::SyncState;
 use serde_json::Value;
@@ -216,7 +218,8 @@ async fn without_the_chat_resolving_the_sync_waits() {
         chat_resolves_conflicts: false,
         ..unattended()
     };
-    app.remote.start(start(&setup, &url, keeps)).await.unwrap();
+    let first = start(&setup, &url, keeps.clone());
+    app.remote.start(first).await.unwrap();
     result_waits().await;
     let base = setup.base();
     write(
@@ -224,21 +227,79 @@ async fn without_the_chat_resolving_the_sync_waits() {
         "fn main() { local() }\n",
     );
 
-    app.remote.start(message(&setup, &url, "u2")).await.unwrap();
+    let mut next = message(&setup, &url, "u2");
+    next.config = start(&setup, &url, keeps).config;
+    app.remote.start(next).await.unwrap();
 
     assert_eq!(read(&root.join("src/main.rs")), "fn main() { remote() }\n");
     assert_eq!(setup.base(), base, "nothing applied");
     let sync = app.remote.sync_state(CHAT).unwrap();
     assert_eq!(sync.state, SyncState::Conflicts);
     assert_eq!(sync.files, ["src/main.rs"]);
-    let said = app
-        .test
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|e| e["type"] == "notice" && e["title"] == "Sync waits" && e["dialogId"] == CHAT);
-    assert!(said, "the app says why");
+    let bar = app.remote.overlay_status(CHAT).await.unwrap();
+    assert_eq!(bar.sync.as_ref(), Some(&sync), "the bar says why");
+
+    // Keep the older copy: the bar stops asking.
+    app.remote.keep_older_copy(CHAT);
+    let bar = app.remote.overlay_status(CHAT).await.unwrap();
+    assert_eq!(bar.sync, None);
+    assert_eq!(read(&root.join("src/main.rs")), "fn main() { remote() }\n");
+    // Sync now waits the same, and the bar asks again.
+    let again = app.remote.sync_now(CHAT).await.unwrap().unwrap();
+    assert_eq!(again.state, SyncState::Conflicts);
+    let bar = app.remote.overlay_status(CHAT).await.unwrap();
+    assert_eq!(bar.sync, Some(again));
+
+    // Hand to the chat: the markers go in, the sync applies, and the
+    // message that asks the chat to settle them tells it of them.
+    let handed = app.remote.sync_to_chat(CHAT).await.unwrap();
+    assert_eq!(handed.sync.state, SyncState::Marked);
+    assert_eq!(handed.sync.files, ["src/main.rs"]);
+    assert!(
+        handed.request.contains("`src/main.rs`"),
+        "{}",
+        handed.request
+    );
+    let marked = read(&root.join("src/main.rs"));
+    let sides = ["fn main() { local() }", "fn main() { remote() }"];
+    assert!(sides.iter().all(|side| marked.contains(side)), "{marked}");
+    assert!(markers::left_in(marked.as_bytes()), "{marked}");
+    assert_ne!(setup.base(), base, "applied");
+    let state = setup.daemon.state();
+    let chat = &state["chats"][CHAT];
+    assert_eq!(chat["marked"], serde_json::json!(["src/main.rs"]));
+    assert!(
+        chat.get("tellMarked").is_none(),
+        "not again at the next start: {chat}"
+    );
+    assert_eq!(app.remote.sync_now(CHAT).await.unwrap(), None, "it has it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_now_brings_the_project_between_messages() {
+    let mut setup = Setup::new().await;
+    let app = App::new(&mut setup).await;
+    app.remote.set_open_project(None);
+    app.connect(&setup).await;
+    let root = ready_to_run(&setup).await;
+    let (url, _) = model(vec![
+        writes("w1", "src/main.rs", "fn main() { remote() }\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    app.remote
+        .start(start(&setup, &url, unattended()))
+        .await
+        .unwrap();
+    result_waits().await;
+    write(&setup.project.join("src/other.rs"), "fn other() {}\n");
+
+    let sync = app.remote.sync_now(CHAT).await.unwrap().unwrap();
+
+    assert_eq!(sync.state, SyncState::Synced);
+    assert_eq!(read(&root.join("src/other.rs")), "fn other() {}\n");
+    assert_eq!(read(&root.join("src/main.rs")), "fn main() { remote() }\n");
+    assert_eq!(app.remote.sync_now(CHAT).await.unwrap(), None, "it has it");
 }
 
 #[tokio::test(flavor = "multi_thread")]
