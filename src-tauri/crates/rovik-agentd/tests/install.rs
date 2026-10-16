@@ -317,6 +317,45 @@ fn admin_commands_are_for_administrators() {
         .file(&format!("/opt/rovik/bin/rovik-agentd-{VERSION}"))
         .exists());
 
+    // An older build goes in only when asked to, and never through a link,
+    // whose target could be moved while root reads it.
+    let older = server.dir.0.join("older");
+    script(&older, "9.9.8");
+    let older = older.to_string_lossy().into_owned();
+    let refused = server.run(&["admin", "upgrade", &older], Some(NOBODY));
+    assert_eq!(refused.status.code(), Some(1), "{}", said(&refused));
+    assert!(
+        said(&refused).contains("older than the installed 9.9.9"),
+        "{}",
+        said(&refused)
+    );
+    let link = std::fs::read_link(server.file("/opt/rovik/bin/rovik-agentd")).unwrap();
+    assert_eq!(link, Path::new("rovik-agentd-9.9.9"));
+    let linked = server.dir.0.join("linked");
+    std::os::unix::fs::symlink(&older, &linked).unwrap();
+    let linked = linked.to_string_lossy().into_owned();
+    let refused = server.run(
+        &["admin", "upgrade", &linked, "--allow-downgrade"],
+        Some(NOBODY),
+    );
+    assert_eq!(refused.status.code(), Some(1), "{}", said(&refused));
+    assert!(said(&refused).contains("is a link"), "{}", said(&refused));
+    let downgraded = server.run(
+        &["admin", "upgrade", &older, "--allow-downgrade"],
+        Some(NOBODY),
+    );
+    assert!(downgraded.status.success(), "{}", said(&downgraded));
+    let link = std::fs::read_link(server.file("/opt/rovik/bin/rovik-agentd")).unwrap();
+    assert_eq!(link, Path::new("rovik-agentd-9.9.8"));
+    // Nothing staged stays behind, installed or refused.
+    let staged: Vec<String> = std::fs::read_dir(server.file("/opt/rovik/bin"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with('.'))
+        .collect();
+    assert!(staged.is_empty(), "{staged:?}");
+
     let wants = server.file("/etc/systemd/system/multi-user.target.wants");
     std::fs::create_dir_all(&wants).unwrap();
     std::fs::write(wants.join("rovik-agentd@nobody.service"), "").unwrap();
