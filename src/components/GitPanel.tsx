@@ -764,7 +764,13 @@ export function GitPanel(props: GitPanelProps) {
     setBranchesLoading(true);
     try {
       const list = await invoke<GitBranch[]>('git_branches', { path: props.projectPath });
-      setBranches(list);
+      // Unchanged, the rows stay (a click on one as the list came in was lost).
+      setBranches((old) =>
+        old.length === list.length &&
+        old.every((b, i) => b.name === list[i].name && b.is_remote === list[i].is_remote)
+          ? old
+          : list
+      );
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -898,11 +904,18 @@ export function GitPanel(props: GitPanelProps) {
     if (view === 'stash-list') void loadStashes();
   };
 
+  const sameStashes = (a: GitStashEntry[], b: GitStashEntry[]) =>
+    a.length === b.length &&
+    a.every((s, i) => s.index === b[i].index && s.message === b[i].message);
+
   const loadStashes = async () => {
     setStashesLoading(true);
     try {
       const list = await invoke<GitStashEntry[]>('git_stash_list', { path: props.projectPath });
-      setStashes(list);
+      // The same stashes keep their rows: opening the list loads them again
+      // right after the menu did, and new rows replaced the ones a click
+      // (Pop, a stash opened) was landing on.
+      setStashes((old) => (sameStashes(old, list) ? old : list));
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
