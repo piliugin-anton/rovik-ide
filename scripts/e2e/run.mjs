@@ -130,6 +130,11 @@ function setupProject() {
       '\n'
   );
   write(join(DEMO, '.gitignore'), 'node_modules\n');
+  // What `npm test` runs (node --test): the agent runs it in its copy.
+  write(
+    join(DEMO, 'test', 'project.test.js'),
+    "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\n\ntest('the project is there', () => {\n  assert.match(readFileSync(new URL('../package.json', import.meta.url), 'utf8'), /\"demo\"/);\n});\n"
+  );
   git(DEMO, 'init', '-q');
   git(DEMO, 'checkout', '-q', '-b', 'main');
   git(DEMO, 'config', 'user.email', 'e2e@example.com');
@@ -498,6 +503,22 @@ async function send(text) {
 }
 
 const chatText = () => panelText('.chat-panel');
+/** What the agent's tools returned, in order (the fake model's requests). */
+const toolResults = () => {
+  const file = join(OUT, 'fake-model.jsonl');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .trim()
+    .split('\n')
+    .flatMap((line) => {
+      try {
+        const last = JSON.parse(line).body?.messages?.at(-1);
+        return last?.role === 'tool' ? [String(last.content)] : [];
+      } catch {
+        return [];
+      }
+    });
+};
 const lastRequest = () => {
   const file = join(OUT, 'fake-model.jsonl');
   if (!existsSync(file)) return null;
@@ -1148,6 +1169,18 @@ async function run() {
       });
     await click(await buttonByText('Undo'));
     await waitFor(() => !existsSync(join(DEMO, 'hello.txt')), 'the landing undone', 30_000);
+  });
+
+  await step('chat: the agent runs the tests in its copy of the project', async () => {
+    // In an isolated chat, its view (FUSE, WinFsp): npm, node and the
+    // shell all work there as in the project.
+    const before = toolResults().length;
+    await send('Run the tests\n@tool bash {"command":"npm test"}\n@text Ran them.');
+    const result = await waitFor(() => toolResults()[before], "the command's result", 120_000);
+    assert(
+      /^exit code 0\b/m.test(result) && /pass 1\b/.test(result),
+      `npm test in the chat: ${result.slice(0, 800)}`
+    );
   });
 
   await step('chat: Stop ends a streaming reply', async () => {
