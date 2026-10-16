@@ -120,16 +120,105 @@ impl Finding {
     pub fn serious(&self) -> bool {
         self.severity != "low"
     }
+
+    /// "Step 3 — its title", or the one of them it has.
+    pub fn headline(&self) -> String {
+        match (self.location.is_empty(), self.title.is_empty()) {
+            (false, false) => format!("{} — {}", self.location, self.title),
+            (false, true) => self.location.clone(),
+            (true, _) => self.title.clone(),
+        }
+    }
 }
 
 // The severity and the location may be in bold or backticks; a note in
-// parentheses may follow the location; "Steps 2 and 4" is a location.
+// parentheses may follow the location; "Steps 2 and 4" is a location. The
+// title's separator is TITLE_SEPARATOR's: a hyphen, en dash or colon in a
+// word ("Steps 2–4 and …", "Cross-step …", "a.ts:42 and …") is no
+// separator, so such a line's location is one of several words.
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s*[-–]\s*)\d+)*|(?:(?:the|whole|overall|entire|general)\s+)?plan|[^\s`*]+)`?\**:?(?:\s*\([^)\n]*\))?\s*(?:[—–:-]+\s*(.*))?$",
+        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s*[-–]\s*)\d+)*|(?:(?:the|whole|overall|entire|general)\s+)?plan|[^\s`*]+)`?\**:?(?:\s*\([^)\n]*\))?(?:(?:\s*:)?(?:\s*—[—–-]*|\s+[-–]+\s|\s*:\s)\s*(.*)|\s*)$",
     )
     .unwrap()
 });
+/// HEADER with the title glued to the colon after a step, or after a path
+/// (with a dot or a slash) and its line: "Step 3:Title", "src/a.ts:42:Off
+/// by one". The number says where the location ends. One colon, and a
+/// title that doesn't start with a digit, colon or slash: `a.ts:42:7` is a
+/// column, and `Config::load` and `https://` aren't split. After a word a
+/// glued colon is no separator ("Validation:no test", "a:hover styles").
+static GLUED_TITLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s*[-–]\s*)\d+)*|[^\s`*:]*[./][^\s`*:]*:\d+(?:[:-]\d+)?)`?\**(?:\s*\([^)\n]*\))?:([^\d\s:/\\].*)$",
+    )
+    .unwrap()
+});
+/// A finding's numbered line in any shape: its severity, then what HEADER
+/// doesn't take, a location in several words ("Validation section", "Step
+/// 2, Step 5") or none at all, and the title. Every HEADER line is one.
+static SEVERITY_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*(.*)$",
+    )
+    .unwrap()
+});
+/// What ends a location of several words: an em dash, a hyphen or an en
+/// dash with spaces around it (not "Steps 2–4"), or a colon and a space.
+/// Opening the line, there's no location.
+static TITLE_SEPARATOR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:[-–:]+\s+|—+\s*)|(?:\s*:)?\s*—+\s*|(?:\s*:)?\s+[-–]+\s+|:\s+").unwrap()
+});
+
+/// A finding's numbered line: its severity, location and title. The
+/// location is a step, the plan or a path as the format has them (after a
+/// step or a line, the title may be glued to the colon); else
+/// the words before the first dash or colon outside code and brackets
+/// (B08: a reviewer names a part of the plan in its own words, "Validation
+/// section — …"); with neither, the line is the title and the location is
+/// empty (the plan, or the change, as a whole).
+fn header_of(line: &str) -> Option<(String, String, String)> {
+    if let Some(c) = HEADER.captures(line).or_else(|| GLUED_TITLE.captures(line)) {
+        return Some((
+            severity_of(&c[1]),
+            // P4.5: `src/a.ts:42`, in backticks, with a colon after.
+            c[2].trim_end_matches([',', ';', ':'])
+                .trim_matches('`')
+                .trim_end_matches(':')
+                .to_string(),
+            c.get(3).map_or("", |m| m.as_str()).trim().to_string(),
+        ));
+    }
+    let c = SEVERITY_LINE.captures(line)?;
+    let rest = c[2].trim();
+    let (location, title) = match TITLE_SEPARATOR
+        .find_iter(rest)
+        .find(|m| outside_code(&rest[..m.start()]))
+    {
+        Some(m) => (&rest[..m.start()], &rest[m.end()..]),
+        None => ("", rest),
+    };
+    let location = location.trim().trim_matches('*').trim();
+    let location = location.trim_end_matches([',', ';', ':']);
+    // One code span: without its backticks, as HEADER takes a path.
+    let location = match location.strip_prefix('`').and_then(|l| l.strip_suffix('`')) {
+        Some(inner) if !inner.contains('`') => inner,
+        _ => location,
+    };
+    Some((
+        severity_of(&c[1]),
+        location.to_string(),
+        title.trim().to_string(),
+    ))
+}
+
+/// Whether `prefix` leaves no code span or bracket open: a separator after
+/// it ends a location ("`f(x: u32)` — …" isn't cut at its colon).
+fn outside_code(prefix: &str) -> bool {
+    let count = |set: &[char]| prefix.chars().filter(|c| set.contains(c)).count();
+    count(&['`']) % 2 == 0 && count(&['(', '[']) <= count(&[')', ']'])
+}
+
 /// "## Findings" at another level, in bold, or as a line of its own.
 static FINDINGS_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(?:#{1,6}\s*)?[*_]*\s*findings(?:\s*\([^)\n]*\))?\s*:?\s*[*_]*\s*$")
@@ -233,8 +322,8 @@ fn plain_lead(line: &str) -> String {
 static AT_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(.+?):(\d+)(?:[:-]\d+)?$").unwrap());
 
-const FORMAT_HINT: &str = "each finding is a numbered line \"1. [high] path:line — title\" (\"Step 3\" in place of \
-     path:line for a plan) followed by \
+const FORMAT_HINT: &str = "each finding is a numbered line \"1. [high] path:line — title\" (\"Step 3\", or \"Plan\" \
+     for the whole of it, in place of path:line for a plan) followed by \
      \"- Scenario:\", \"- Fix:\" and \"- Confidence:\" (confirmed or plausible) lines; with nothing to report, \
      \"None.\"";
 
@@ -248,7 +337,7 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
     let Some(body) = findings_body(text).or_else(|| {
         let t = unfenced(text);
         t.lines()
-            .any(|l| HEADER.is_match(l))
+            .any(|l| SEVERITY_LINE.is_match(l))
             .then(|| t.trim().to_string())
     }) else {
         // B13: a follow-up plan review with only its verdicts on the
@@ -281,7 +370,7 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         .map(plain_lead)
         .find(|l| !l.is_empty())
         .is_some_and(|l| NOTHING.is_match(&l));
-    let has_header = body.lines().any(|l| HEADER.is_match(l));
+    let has_header = body.lines().any(|l| SEVERITY_LINE.is_match(l));
     if says_nothing && !has_header && !body.lines().any(|l| FIELD.is_match(l)) {
         return Ok(Vec::new());
     }
@@ -294,17 +383,9 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
     // A line of prose before the first finding ("None of these break the
     // build, but:") is the reviewer's lead-in, not a finding.
     for line in body.lines() {
-        if let Some(c) = HEADER.captures(line) {
+        if let Some(header) = header_of(line) {
             drafts.push(Draft {
-                header: (
-                    severity_of(&c[1]),
-                    // P4.5: `src/a.ts:42`, in backticks, with a colon after.
-                    c[2].trim_end_matches([',', ';', ':'])
-                        .trim_matches('`')
-                        .trim_end_matches(':')
-                        .to_string(),
-                    c.get(3).map_or("", |m| m.as_str()).trim().to_string(),
-                ),
+                header,
                 fields: Vec::new(),
             });
             continue;
@@ -385,7 +466,8 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
         let (severity, location, title) = d.header;
         let step = STEP.captures(&location).and_then(|c| c[1].parse().ok());
         let (path, line) = match AT_LINE.captures(&location) {
-            _ if step.is_some() => (None, None),
+            // A step, or words ("Validation section"), aren't a path.
+            _ if step.is_some() || location.contains(char::is_whitespace) => (None, None),
             Some(c) => (Some(c[1].to_string()), c[2].parse().ok()),
             None if location.contains('/') || location.contains('.') => {
                 (Some(location.clone()), None)
@@ -414,7 +496,8 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
 /// plan sent back, a sentence) is read as no findings, with a note.
 pub fn findingless(text: &str) -> bool {
     let t = unfenced(text);
-    !t.lines().any(|l| HEADER.is_match(l) || FIELD.is_match(l))
+    !t.lines()
+        .any(|l| SEVERITY_LINE.is_match(l) || FIELD.is_match(l))
 }
 
 /// A review's record when it's skipped, with the reason.
@@ -444,7 +527,8 @@ pub(super) fn same_finding(a: &Finding, b: &Finding) -> bool {
     let same_title = !a.title.is_empty()
         && super::plan::simple_words(&a.title) == super::plan::simple_words(&b.title);
     // P4.5: without lines to compare, or for one plan step, only the same
-    // title is the same finding (another problem in the step is new).
+    // title is the same finding (another problem in the step is new). So
+    // too for the plan as a whole: two findings at "Plan" aren't one.
     match (&a.path, &b.path) {
         (Some(p), Some(q)) => {
             let (p, q) = (p.trim_start_matches("./"), q.trim_start_matches("./"));
@@ -456,7 +540,7 @@ pub(super) fn same_finding(a: &Finding, b: &Finding) -> bool {
                 }
         }
         _ if a.step.is_some() && b.step.is_some() => a.step == b.step && same_title,
-        _ => a.location == b.location || same_title,
+        _ => same_title,
     }
 }
 
@@ -472,14 +556,9 @@ pub fn drop_repeats(findings: Vec<Finding>, earlier: &[Finding]) -> (Vec<Finding
 /// that copies the shape of what it sees writes a report that parses.
 pub(super) fn describe(f: &Finding, n: usize) -> String {
     let mut out = format!(
-        "{n}. [{}] {}{}\n   - Scenario: {}\n   - Fix: {}\n   - Confidence: {}",
+        "{n}. [{}] {}\n   - Scenario: {}\n   - Fix: {}\n   - Confidence: {}",
         f.severity,
-        f.location,
-        if f.title.is_empty() {
-            String::new()
-        } else {
-            format!(" — {}", f.title)
-        },
+        f.headline(),
         f.scenario.replace('\n', "\n     "),
         f.fix.replace('\n', "\n     "),
         f.confidence
@@ -1444,6 +1523,236 @@ mod tests {
         }
         assert_eq!(parse_findings("# Findings\n\nNone.").unwrap(), vec![]);
         assert!(parse_findings("# Review\n\nFindings are listed below.").is_err());
+    }
+
+    /// B08: a finding located in the reviewer's own words rather than
+    /// "Step 3", "Plan" or a path, or not located at all, is read: its
+    /// location is what comes before the first dash or colon outside code
+    /// and brackets, else none. Before, such a report couldn't be read, and
+    /// a plan whose findings didn't say "Plan" went unreviewed.
+    #[test]
+    fn locations_in_other_words_parse() {
+        let read = |header: &str| {
+            let text = format!(
+                "## Findings\n\n{header}\n   - Scenario: s\n   - Fix: f\n   - Confidence: confirmed"
+            );
+            assert!(
+                subagent::format_problem(Kind::PlanReviewer.spec(), &text).is_none(),
+                "{header}"
+            );
+            let f = parse_findings(&text)
+                .unwrap_or_else(|e| panic!("{header}: {e}"))
+                .remove(0);
+            (f.location, f.title, f.step, f.path)
+        };
+        let words = |location: &str, title: &str| (location.into(), title.into(), None, None);
+        for (header, location, title) in [
+            (
+                "1. [medium] Validation section — No test for the route",
+                "Validation section",
+                "No test for the route",
+            ),
+            (
+                "1. [high] Plan as a whole — Misses the export",
+                "Plan as a whole",
+                "Misses the export",
+            ),
+            (
+                "1. [high] **Missing step**: `src/cli.rs` isn't updated",
+                "Missing step",
+                "`src/cli.rs` isn't updated",
+            ),
+            (
+                "1. [low] The overall approach - Two caches",
+                "The overall approach",
+                "Two caches",
+            ),
+            // A colon in code or brackets doesn't end the location.
+            (
+                "1. [high] `fn list(db: &Db)` signature — Takes no page",
+                "`fn list(db: &Db)` signature",
+                "Takes no page",
+            ),
+            (
+                "1. [high] Validation section (see: Decisions) — No test",
+                "Validation section (see: Decisions)",
+                "No test",
+            ),
+            // Paths among words aren't the finding's path.
+            (
+                "1. [high] src/a.ts and src/b.ts — Two parsers",
+                "src/a.ts and src/b.ts",
+                "Two parsers",
+            ),
+            // No location: the line is the title.
+            (
+                "1. [high] No step updates `src/cli.rs`",
+                "",
+                "No step updates `src/cli.rs`",
+            ),
+            (
+                "1. [high] — No step updates the CLI",
+                "",
+                "No step updates the CLI",
+            ),
+        ] {
+            assert_eq!(read(header), words(location, title), "{header}");
+        }
+        // Steps in other words are still steps.
+        let (location, title, step, path) =
+            read("1. [high] Step 2, Step 5 — Both call the old API");
+        assert_eq!(
+            (location.as_str(), title.as_str(), step, path),
+            ("Step 2, Step 5", "Both call the old API", Some(2), None)
+        );
+        // A hyphen, en dash or colon in a word doesn't end the location: a
+        // range's, a compound's, a path's line. Before, the header was cut
+        // there ("Steps 2" — "4 and Validation — No test").
+        assert_eq!(
+            read("1. [high] Validation of steps 2–4 — No test"),
+            words("Validation of steps 2–4", "No test")
+        );
+        let (location, title, step, path) = read("1. [high] Steps 2–4 and Validation — No test");
+        assert_eq!(
+            (location.as_str(), title.as_str(), step, path),
+            ("Steps 2–4 and Validation", "No test", Some(2), None)
+        );
+        for (header, location, title) in [
+            (
+                "1. [medium] Cross-step ordering — Step 3 runs first",
+                "Cross-step ordering",
+                "Step 3 runs first",
+            ),
+            ("1. [medium] Plan-wide — No test", "Plan-wide", "No test"),
+            (
+                "1. [high] src/a.ts:42 and src/b.ts:7 — Two parsers",
+                "src/a.ts:42 and src/b.ts:7",
+                "Two parsers",
+            ),
+            (
+                "1. [high] `Config::load` callers — Read the old path",
+                "`Config::load` callers",
+                "Read the old path",
+            ),
+        ] {
+            assert_eq!(read(header), words(location, title), "{header}");
+        }
+        // A spaced hyphen still ends a step, a number after it or not.
+        let (location, title, step, _) = read("1. [high] Step 2 - 3 callers aren't updated");
+        assert_eq!(
+            (location.as_str(), title.as_str(), step),
+            ("Step 2", "3 callers aren't updated", Some(2))
+        );
+        // A title glued to the colon after a step or a path's line is split
+        // there: the number says where the location ends.
+        for (header, location, title, step, path) in [
+            ("1. [high] Step 3:Title", "Step 3", "Title", Some(3), None),
+            (
+                "1. [high] `Steps 2 and 4`:Two consumers",
+                "Steps 2 and 4",
+                "Two consumers",
+                Some(2),
+                None,
+            ),
+            (
+                "1. [high] src/a.ts:42:Off by one",
+                "src/a.ts:42",
+                "Off by one",
+                None,
+                Some("src/a.ts"),
+            ),
+            (
+                "1. [high] src/a.ts:42:7:Off by one",
+                "src/a.ts:42:7",
+                "Off by one",
+                None,
+                Some("src/a.ts"),
+            ),
+        ] {
+            let (l, t, s, p) = read(header);
+            assert_eq!(
+                (l.as_str(), t.as_str(), s, p.as_deref()),
+                (location, title, step, path),
+                "{header}"
+            );
+        }
+        // Anywhere else a glued colon is part of the location: two of them,
+        // a slash or a number after it, a word before it.
+        for (header, location, title) in [
+            (
+                "1. [high] std::fs::read callers — Read the old path",
+                "std::fs::read callers",
+                "Read the old path",
+            ),
+            (
+                "1. [high] https://example.com/x callers — Old host",
+                "https://example.com/x callers",
+                "Old host",
+            ),
+            (
+                "1. [high] node:18:slim base image — End of life",
+                "node:18:slim base image",
+                "End of life",
+            ),
+            (
+                "1. [low] a:hover styles — Lost on focus",
+                "a:hover styles",
+                "Lost on focus",
+            ),
+            // "Validation:no" reads like "a:hover": the line is the title.
+            ("1. [high] Validation:no test", "", "Validation:no test"),
+        ] {
+            assert_eq!(read(header), words(location, title), "{header}");
+        }
+        // The shapes the format has read as they did.
+        let (location, title, _, path) = read("1. [high] src/a.ts:42: Off by one");
+        assert_eq!(
+            (location.as_str(), title.as_str(), path.as_deref()),
+            ("src/a.ts:42", "Off by one", Some("src/a.ts"))
+        );
+        assert_eq!(read("1. [low] Validation — x"), words("Validation", "x"));
+        // Each reads as written, the one it has when it lacks the other.
+        let f = |header: &str| {
+            parse_findings(&format!(
+                "## Findings\n{header}\n - Scenario: s\n - Fix: f\n - Confidence: plausible"
+            ))
+            .unwrap()
+            .remove(0)
+        };
+        assert!(describe(&f("1. [high] No step updates the CLI"), 1)
+            .starts_with("1. [high] No step updates the CLI\n   - Scenario: s"));
+        assert!(describe(&f("1. [high] Validation section — x"), 2)
+            .starts_with("2. [high] Validation section — x\n"));
+        assert!(!findingless("1. [high] Validation section — x"));
+        // Still out of format: no severity, or a bullet for the number.
+        assert!(parse_findings("## Findings\n1. Validation section — x\n - Scenario: s\n - Fix: f\n - Confidence: confirmed").is_err());
+        assert!(findingless("1. Validation section — x"));
+    }
+
+    /// Two findings about the plan as a whole are one only with the same
+    /// title: a new problem at "Plan" isn't dropped as a repeat of another.
+    #[test]
+    fn findings_about_the_whole_plan_are_the_same_only_by_title() {
+        let finding = |location: &str, title: &str| {
+            parse_findings(&format!(
+                "## Findings\n1. [medium] {location} — {title}\n - Scenario: s\n - Fix: f\n - Confidence: confirmed"
+            ))
+            .unwrap()
+            .remove(0)
+        };
+        let earlier = [finding("Plan", "No test for the route")];
+        let (kept, dropped) = drop_repeats(
+            vec![
+                finding("Plan", "Misses the export"),
+                finding("Validation section", "No test for the route"),
+                finding("", "No test for the route"),
+                finding("Plan", "no test for the route!"),
+            ],
+            &earlier,
+        );
+        let titles = |list: &[Finding]| list.iter().map(|f| f.title.clone()).collect::<Vec<_>>();
+        assert_eq!(titles(&kept), ["Misses the export"]);
+        assert_eq!(dropped.len(), 3);
     }
 
     /// Findings without the "## Findings" heading are still findings; a

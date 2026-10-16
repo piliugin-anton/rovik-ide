@@ -2922,6 +2922,58 @@ async fn a_plan_reviewer_sending_the_plan_back_counts_as_no_findings() {
     assert_eq!(h.plan_files().len(), 1);
 }
 
+/// A finding about the plan as a whole, located in words other than "Plan"
+/// ("Validation section"), holds the plan like any other. Before, the
+/// report couldn't be read, the repair turn got the same shape back, and
+/// the plan was saved unreviewed: "Review skipped: its report didn't
+/// follow the format".
+#[tokio::test]
+async fn a_plan_finding_located_without_the_word_plan_is_read() {
+    let h = plan_project().await;
+    let report = "## Findings\n\n1. [medium] Validation section — No test covers `list_users`\n   \
+        - Scenario: a broken `list_users` passes `cargo test`.\n   \
+        - Fix: add a test for `list_users` under Validation.\n   \
+        - Confidence: confirmed";
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(report), Reply::Text(report)])],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            Reply::Text("I'll add the test."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let r = result_of(&messages, "p1");
+    assert!(
+        r.content.starts_with("Error: The plan wasn't saved yet"),
+        "{}",
+        r.content
+    );
+    assert!(
+        r.content
+            .contains("1. [medium] Validation section — No test covers `list_users`"),
+        "{}",
+        r.content
+    );
+    let review = &r.meta.as_ref().unwrap()["review"];
+    assert_eq!(review["status"], "findings", "{review}");
+    assert_eq!(review["findings"][0]["location"], "Validation section");
+    assert!(h.plan_files().is_empty());
+    // Read the first time: no repair turn.
+    let child = h.child_of("p1").await;
+    let work = h.messages_of(&child.id).await;
+    assert!(
+        !work.iter().any(|m| m
+            .meta
+            .as_ref()
+            .is_some_and(|m| m["harness"] == "subagentFormat")),
+        "{work:#?}"
+    );
+}
+
 /// A plan reviewer cut short by its budget writes its report like any
 /// other: checked against the findings format, with the repair turn. Before,
 /// the budget's report went to the parser unchecked, and a reviewer that

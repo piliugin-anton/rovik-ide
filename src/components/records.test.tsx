@@ -208,6 +208,45 @@ test('a follow-up plan review shows its verdicts and what it didn’t hold', () 
   assert.match(notHeld?.textContent ?? '', /Untouched step/);
 });
 
+test('a finding the reviewer gave no location shows its title alone', () => {
+  const meta: ReviewMeta = {
+    kind: 'plan',
+    status: 'findings',
+    round: 2,
+    maxRounds: 2,
+    findings: [
+      {
+        severity: 'high',
+        location: '',
+        path: null,
+        line: null,
+        title: 'No step updates the CLI',
+        scenario: 's',
+        fix: 'f',
+        confidence: 'confirmed',
+      },
+    ],
+    earlier: [
+      {
+        finding: 1,
+        severity: 'medium',
+        location: '',
+        title: 'No test for the route',
+        resolved: true,
+        checked: true,
+        reason: 'Validation adds it.',
+      },
+    ],
+  };
+  const root = container();
+  render(() => <ReviewRecord meta={meta} dialogId="d" recordId="m6" live={false} />, root);
+  const head = root.querySelector('.review-finding-head')!;
+  assert.equal(head.querySelector('.review-location'), null);
+  assert.equal(head.querySelector('.review-title')?.textContent, 'No step updates the CLI');
+  const earlier = root.querySelector('.review-earlier-item .review-location');
+  assert.equal(earlier?.textContent, 'Earlier 1');
+});
+
 test('checks saved as running with no run going read as interrupted', () => {
   const meta = {
     status: 'running' as const,
