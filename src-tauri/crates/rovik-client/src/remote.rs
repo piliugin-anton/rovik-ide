@@ -183,6 +183,9 @@ struct State {
     /// How many times each chat's result went back to be checked merged
     /// with the project's newer changes (6.6), since its last message.
     rechecks: HashMap<String, u32>,
+    /// Whether a configuration was applied this session (`everywhere`): a
+    /// host connecting after that is sent it (`configure`).
+    configured: bool,
 }
 
 impl Remote {
@@ -689,6 +692,9 @@ impl Remote {
     /// policy.
     pub async fn everywhere(&self, request: Request) -> Result<Response, Fail> {
         let reply = rovik_core::dispatch(&self.core, request.clone()).await?;
+        if matches!(request, Request::AgentConfigure(_)) {
+            self.lock().configured = true;
+        }
         let sent = self.hosts.ready().into_iter().map(|(host, client)| {
             let mut request = request.clone();
             if let Request::AgentConfigure(config) = &mut request {
@@ -703,6 +709,30 @@ impl Remote {
         });
         futures_util::future::join_all(sent).await;
         Ok(reply)
+    }
+
+    /// On connecting (§2.3: "on connect and on every change"): the
+    /// configuration as `everywhere` last applied it, to a host that wasn't
+    /// ready then. A host set up during the session otherwise ran this
+    /// computer's chats with its daemon's defaults (no approvals, no
+    /// subagents) until the app's next start or the next change of a
+    /// setting, and one back from being away kept the settings from before
+    /// it went. Before the frontend applied its settings nothing goes: the
+    /// host keeps what it has rather than take a configuration nobody set,
+    /// and the frontend's reaches it, ready by then.
+    async fn configure(&self, host: &str) {
+        if !self.lock().configured {
+            return;
+        }
+        let Ok(client) = self.client(host) else {
+            return;
+        };
+        let mut config = self.core.agents.config().without_keys();
+        self.policy(host).apply(&mut config);
+        let sent = client.call_within(Request::AgentConfigure(config), HOSTS_WAIT);
+        if let Err(fail) = sent.await {
+            log::warn!("{host} didn't take the configuration: {fail}");
+        }
     }
 
     /// Refused while the project has chats on a host, or moving to one:
@@ -741,6 +771,7 @@ impl Remote {
                 }
             }
             Incoming::Subscribed { complete } => {
+                self.configure(host).await;
                 if !complete {
                     self.catch_up(host).await;
                 }

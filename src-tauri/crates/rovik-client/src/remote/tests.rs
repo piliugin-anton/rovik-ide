@@ -552,6 +552,62 @@ async fn a_configuration_goes_to_every_host_without_its_keys() {
     assert_eq!(requests, [Request::AgentConfigure(config.without_keys())]);
 }
 
+/// The fake's requests once the connection caught up (its `AgentStatus`),
+/// those before it kept.
+async fn requests_once_caught_up(fake: &Fake) -> Vec<Request> {
+    for _ in 0..400 {
+        let requests = fake.requests.lock().unwrap().clone();
+        if requests.contains(&Request::AgentStatus) {
+            return requests;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the fake daemon never answered");
+}
+
+/// §2.3: a host connecting after the settings were applied (one just set
+/// up, or back from being away) is sent them on connecting, before
+/// anything else, without keys.
+#[tokio::test]
+async fn a_host_connecting_after_the_settings_were_applied_gets_them() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let mut config = AgentConfig::default();
+    config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
+    // Applied with no host connected: nowhere to send it yet.
+    let reply = remote
+        .everywhere(Request::AgentConfigure(config.clone()))
+        .await;
+    assert_eq!(reply, Ok(Response::Done));
+    let fake = Fake::default();
+    remote.connect(HOST, fake.clone(), identity(HOST));
+    let requests = requests_once_caught_up(&fake).await;
+    assert_eq!(
+        requests[..2],
+        [
+            Request::AgentConfigure(config.without_keys()),
+            Request::AgentStatus
+        ]
+    );
+}
+
+/// A host connecting before any settings were applied isn't sent a
+/// configuration nobody set: it keeps its own until the frontend's comes.
+#[tokio::test]
+async fn a_host_connecting_first_keeps_its_configuration() {
+    let app = App::new();
+    let remote = Remote::new(app.core.clone());
+    let fake = Fake::default();
+    remote.connect(HOST, fake.clone(), identity(HOST));
+    let requests = requests_once_caught_up(&fake).await;
+    assert!(
+        !requests
+            .iter()
+            .any(|r| matches!(r, Request::AgentConfigure(_))),
+        "{requests:?}"
+    );
+}
+
 #[test]
 fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
     let mut config = AgentConfig {
