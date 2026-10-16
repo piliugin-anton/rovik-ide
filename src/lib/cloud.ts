@@ -115,6 +115,11 @@ export interface HostSummary {
    * `caughtUp`, as the hosts connect while the app starts.
    */
   caughtUp?: boolean;
+  /**
+   * A terminal can open on it: a host of the settings, which SSH reaches,
+   * not a daemon that the developer setting names by its socket.
+   */
+  terminal?: boolean;
 }
 
 export const hostSummaries = () => invoke<HostSummary[]>('hosts_summaries');

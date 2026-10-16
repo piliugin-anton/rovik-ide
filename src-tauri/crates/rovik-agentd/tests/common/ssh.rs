@@ -7,19 +7,21 @@
 //! up so does. An exec channel runs its command with `sh -c` here, its
 //! stdin and stdout the channel's; one started `as_user` runs it with that
 //! home, and as that account when the test runs as root, and refuses
-//! streamlocal, whose connections would come from the test's account.
+//! streamlocal, whose connections would come from the test's account. A
+//! shell channel runs a plain `sh` the same way, and the server notes
+//! what's asked of its terminal: its type and size, then each new size.
 
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, Response, Session};
-use russh::{Channel, ChannelId, ChannelMsg, ChannelOpenFailure};
+use russh::{Channel, ChannelId, ChannelMsg, ChannelOpenFailure, Pty};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
@@ -44,6 +46,9 @@ pub struct SshServer {
     pub most_open: Arc<AtomicUsize>,
     /// The commands run so far.
     pub execs: Arc<AtomicUsize>,
+    /// What the shells' terminals were asked, in order: "pty <term>
+    /// <cols>x<rows>", then "resize <cols>x<rows>" for each new size.
+    pub terminals: Arc<Mutex<Vec<String>>>,
 }
 
 impl SshServer {
@@ -74,9 +79,11 @@ impl SshServer {
         });
         let most_open = Arc::new(AtomicUsize::new(0));
         let execs = Arc::new(AtomicUsize::new(0));
+        let terminals = Arc::new(Mutex::new(Vec::new()));
         let (open, most) = (Arc::new(AtomicUsize::new(0)), Arc::clone(&most_open));
         let accepted = user_key.public_key().clone();
         let counted = Arc::clone(&execs);
+        let asked = Arc::clone(&terminals);
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let side = ServerSide {
@@ -84,6 +91,7 @@ impl SshServer {
                     open: Arc::clone(&open),
                     most: Arc::clone(&most),
                     execs: Arc::clone(&counted),
+                    terminals: Arc::clone(&asked),
                     refuse_streamlocal,
                     sessions: HashMap::new(),
                     account: account.clone(),
@@ -102,6 +110,7 @@ impl SshServer {
             user_key,
             most_open,
             execs,
+            terminals,
         }
     }
 
@@ -145,6 +154,7 @@ struct ServerSide {
     open: Arc<AtomicUsize>,
     most: Arc<AtomicUsize>,
     execs: Arc<AtomicUsize>,
+    terminals: Arc<Mutex<Vec<String>>>,
     refuse_streamlocal: bool,
     /// The session channels waiting for their command.
     sessions: HashMap<ChannelId, Channel<Msg>>,
@@ -245,6 +255,45 @@ impl server::Handler for ServerSide {
         let account = self.account.clone();
         tokio::spawn(run(command, channel, session.handle(), account));
         Ok(())
+    }
+
+    async fn pty_request(
+        &mut self,
+        id: ChannelId,
+        term: &str,
+        cols: u32,
+        rows: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _modes: &[(Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let asked = format!("pty {term} {cols}x{rows}");
+        self.terminals.lock().unwrap().push(asked);
+        session.channel_success(id)
+    }
+
+    async fn window_change_request(
+        &mut self,
+        _id: ChannelId,
+        cols: u32,
+        rows: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let asked = format!("resize {cols}x{rows}");
+        self.terminals.lock().unwrap().push(asked);
+        Ok(())
+    }
+
+    /// The login shell: a plain sh, reading what's typed.
+    async fn shell_request(
+        &mut self,
+        id: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.exec_request(id, b"exec sh", session).await
     }
 }
 

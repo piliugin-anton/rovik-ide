@@ -4,7 +4,7 @@
 //! removal (H05). Once connected, its daemon says what it is, which keys it
 //! keeps and what its folders take (the Host group). Deployed hosts are
 //! connected when the app starts, each through Rovik's SSH or the user's
-//! own (H02, H03).
+//! own (H02, H03), which the terminal panel's remote terminals take too.
 //!
 //! The test and the deploy go through Rovik's own SSH, which runs their
 //! commands; a host set to "Use my system ssh" is deployed with another
@@ -123,6 +123,19 @@ pub struct HostSummary {
     /// that missed `CaughtUp`, as the hosts connect while the app starts.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub caught_up: bool,
+    /// A terminal can open on it (`HostsPage::shell_access`): a host of
+    /// the settings, which SSH reaches, not a daemon that the developer
+    /// setting names by its socket.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
+}
+
+/// How a terminal reaches a host's shell (`HostsPage::shell_access`).
+pub enum ShellAccess {
+    /// Rovik's own SSH, logged in as the host's settings say.
+    Ssh(SshTarget),
+    /// The user's own ssh, run in a terminal here (H03).
+    System(SystemSsh),
 }
 
 /// A deploy's, an upgrade's or a removal's failure, as the page takes it.
@@ -289,12 +302,7 @@ impl HostsPage {
         };
         self.remote.set_policy(&host.id, host.approval_policy);
         if host.auth == AuthKind::SystemSsh {
-            let ssh = SystemSsh {
-                destination: format!("{}@{}", host.user, host.host),
-                port: (host.port != 22).then_some(host.port),
-                program: "ssh".into(),
-            };
-            let connector = SystemSshConnector::new(ssh, self.local(host)?);
+            let connector = SystemSshConnector::new(system_ssh(host), self.local(host)?);
             self.remote.connect(&host.id, connector, identity);
             return Ok(());
         }
@@ -355,6 +363,16 @@ impl HostsPage {
         })
     }
 
+    /// How a terminal reaches the host's shell: the user's own ssh for a
+    /// host set to it, Rovik's SSH with the host's way in otherwise.
+    pub fn shell_access(&self, id: &str) -> Result<ShellAccess, String> {
+        let host = self.host(id)?;
+        match host.auth {
+            AuthKind::SystemSsh => Ok(ShellAccess::System(system_ssh(&host))),
+            _ => Ok(ShellAccess::Ssh(self.target(&host)?)),
+        }
+    }
+
     /// The hosts' names and connections, for the chats (U02, U03): no
     /// secret is read for them. After those of the settings come those the
     /// app connects to without settings, the daemons whose sockets the
@@ -377,6 +395,7 @@ impl HostsPage {
                 state: state_of(&host.id),
                 deployed: matches!(host.deploy, DeployState::Deployed { .. }),
                 caught_up: self.remote.caught_up(&host.id),
+                terminal: true,
                 id: host.id,
                 name: host.name,
             })
@@ -391,6 +410,7 @@ impl HostsPage {
                 deployed: true,
                 state: Some(*state),
                 caught_up: self.remote.caught_up(id),
+                terminal: false,
                 id: id.clone(),
             });
         }
@@ -798,6 +818,15 @@ fn check(host: &Host) -> Result<(), String> {
     Ok(())
 }
 
+/// The user's own ssh to `host`, as its settings reach it (H03).
+fn system_ssh(host: &Host) -> SystemSsh {
+    SystemSsh {
+        destination: format!("{}@{}", host.user, host.host),
+        port: (host.port != 22).then_some(host.port),
+        program: "ssh".into(),
+    }
+}
+
 /// Answers each of the server's questions with the saved password, or
 /// gives up without one.
 fn answering(password: Option<Secret>) -> Answerer {
@@ -911,16 +940,54 @@ mod tests {
         }
         let shown: Vec<_> = summaries
             .iter()
-            .map(|s| (s.name.as_str(), s.deployed, s.state, s.caught_up))
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.deployed,
+                    s.state,
+                    s.caught_up,
+                    s.terminal,
+                )
+            })
             .collect();
         assert_eq!(
             shown,
             [
-                ("Build box", false, None, false),
-                ("agentd.sock", true, Some(HostState::Ready), true),
+                ("Build box", false, None, false, true),
+                ("agentd.sock", true, Some(HostState::Ready), true, false),
             ]
         );
         assert_eq!(summaries[1].id, socket);
+    }
+
+    /// A terminal reaches a host as its daemon's connection does: Rovik's
+    /// SSH with the saved way in, or the user's own ssh.
+    #[tokio::test]
+    async fn a_terminal_reaches_a_host_the_way_its_settings_say() {
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("hunter2")).unwrap();
+        let Ok(ShellAccess::Ssh(target)) = setup.page.shell_access(&saved.id) else {
+            panic!("not through Rovik's SSH");
+        };
+        let SshAuth::Password(secret) = &target.auth else {
+            panic!("not with the password");
+        };
+        let reached = (target.host.as_str(), target.port, target.user.as_str());
+        assert_eq!(reached, ("build.example.com", 22, "ann"));
+        assert_eq!(secret.0, "hunter2");
+
+        let own = Host {
+            auth: AuthKind::SystemSsh,
+            port: 2222,
+            ..saved
+        };
+        let own = setup.page.save(own, HostSecrets::default()).unwrap();
+        let Ok(ShellAccess::System(ssh)) = setup.page.shell_access(&own.id) else {
+            panic!("not through the user's own ssh");
+        };
+        assert_eq!(ssh.destination, "ann@build.example.com");
+        assert_eq!(ssh.port, Some(2222));
+        assert!(setup.page.shell_access("gone").is_err());
     }
 
     #[tokio::test]

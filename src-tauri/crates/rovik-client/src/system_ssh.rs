@@ -3,7 +3,9 @@
 //! rest of their SSH configuration apply as they do in a terminal. It runs
 //! under the app, started with the first stream and again once it has
 //! exited, and stopped when the connector goes. The daemon's socket there
-//! comes from `$HOME`, asked once through the same ssh.
+//! comes from `$HOME`, asked once through the same ssh. The terminal
+//! panel's remote terminals on such a host run it too, each in a terminal
+//! here (`terminal_args`).
 //!
 //! The forward listens on a socket in a folder of the app's on Unix, and
 //! on a port of 127.0.0.1 elsewhere, which only this user's processes
@@ -80,6 +82,15 @@ impl SystemSsh {
         let mut args = self.options();
         args.push(self.destination.clone().into());
         args.push(command.into());
+        args
+    }
+
+    /// A terminal's: `ssh -t <destination>`, the user's login shell there
+    /// on a pseudo-terminal, run in one here.
+    pub fn terminal_args(&self) -> Vec<OsString> {
+        let mut args: Vec<OsString> = vec!["-t".into()];
+        args.extend(self.options());
+        args.push(self.destination.clone().into());
         args
     }
 }
@@ -264,6 +275,24 @@ mod tests {
         assert_eq!(args[at + 1], "127.0.0.1:40123:/h/.rovik/agentd.sock");
         assert!(!args.contains(&"-p".to_string()));
         assert_eq!(args.last().unwrap(), "build-box");
+    }
+
+    #[test]
+    fn a_terminal_runs_the_users_ssh_with_a_terminal_there() {
+        let args = strings(ssh().terminal_args());
+        assert_eq!(
+            args,
+            [
+                "-t",
+                "-p",
+                "2222",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
+                "build-box",
+            ]
+        );
     }
 
     #[test]
