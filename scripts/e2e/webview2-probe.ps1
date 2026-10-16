@@ -9,8 +9,12 @@ param(
   [int] $Port = 9333
 )
 
-$base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
-$data = Join-Path $base "wv2-probe-$Port"
+$me = [Security.Principal.WindowsIdentity]::GetCurrent()
+$admin = ([Security.Principal.WindowsPrincipal]$me).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$level = (whoami /groups | Select-String 'Mandatory Level' | Select-Object -First 1).Line -replace '\s{2,}.*', ''
+"As $($me.Name), $(if ($admin) { 'elevated' } else { 'not elevated' }) ($level)"
+
+$data = Join-Path ([System.IO.Path]::GetTempPath()) "wv2-probe-$Port"
 New-Item -ItemType Directory -Force $data | Out-Null
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$Port"
 $env:WEBVIEW2_USER_DATA_FOLDER = $data

@@ -35,8 +35,10 @@ node scripts/e2e/run.mjs --app src-tauri/target/release/rovik-ide.exe --out e2e-
 ```
 
 msedgedriver attaches through the debugging port it asks WebView2 for
-(`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`); `webview2-probe.ps1 -App <exe>`
-shows whether a build opens it, and what its WebView2 was started with.
+(`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`), which an elevated app's WebView2
+ignores (Runtime 150 on): run it as a user, not as administrator (CI, whose
+runner is elevated: `gsudo --integrity Medium`). `webview2-probe.ps1 -App
+<exe>` shows whether the port opens, and what WebView2 was started with.
 Where it doesn't, the bridge (below) drives a Windows build too. Chats are
 isolated only with WinFsp installed; without it the agent's run says so and
 works in the project itself, which the run notes.
