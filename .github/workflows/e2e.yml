@@ -242,10 +242,41 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build the app and its disk image
+      - name: Build the app
+        run: npx tauri build --bundles app
+      - name: Package it as a disk image
+        id: dmg
+        continue-on-error: true
+        timeout-minutes: 15
         run: |
-          npx tauri build --bundles app,dmg
+          npx tauri build --bundles dmg
           ls -l src-tauri/target/release/bundle/dmg
+      # The shipped app, as a user gets it: from the disk image, into
+      # Applications, started. The scenarios then run on the bridge build.
+      - name: Install it from the disk image and start it
+        if: steps.dmg.outcome == 'success'
+        continue-on-error: true
+        run: |
+          dmg=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          mkdir -p ~/Applications
+          cp -R "$mnt"/*.app ~/Applications/
+          hdiutil detach "$mnt"
+          app=$(ls -d ~/Applications/*.app | head -1)
+          exe="$app/Contents/MacOS/$(ls "$app/Contents/MacOS" | head -1)"
+          echo "Installed: $app"
+          "$exe" > "$RUNNER_TEMP/installed-app.log" 2>&1 &
+          pid=$!
+          sleep 15
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "It runs."
+            kill "$pid"
+          else
+            echo "It exited:"
+            cat "$RUNNER_TEMP/installed-app.log"
+            exit 1
+          fi
       - name: Build it again with the end-to-end bridge
         run: |
           npx tauri build --bundles app --config scripts/e2e/bridge.tauri.conf.json
