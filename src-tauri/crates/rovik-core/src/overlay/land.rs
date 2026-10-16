@@ -380,6 +380,18 @@ pub struct Landed {
     pub paths: Vec<String>,
 }
 
+impl Landed {
+    /// What its notice says: how many changes are in the project, then
+    /// `more`, then where Undo is.
+    pub fn notice(&self, more: &str) -> String {
+        let n = self.paths.len();
+        let (s, are) = if n == 1 { ("", "is") } else { ("s", "are") };
+        format!(
+            "{n} change{s} from this chat {are} in the project.{more} Undo is above the message box."
+        )
+    }
+}
+
 #[derive(Debug)]
 pub enum LandError {
     /// The same lines changed in the chat and the project.
@@ -1049,4 +1061,25 @@ pub fn undo(
     journal.state = "undone".into();
     save_journal(&dir, &journal)?;
     Ok(kept)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Landed;
+
+    #[test]
+    fn a_landings_notice_says_how_many_changes_are_in_the_project() {
+        let landed = |n: usize| Landed {
+            id: "l1".into(),
+            paths: (0..n).map(|i| format!("src/{i}.rs")).collect(),
+        };
+        assert_eq!(
+            landed(1).notice(""),
+            "1 change from this chat is in the project. Undo is above the message box."
+        );
+        assert_eq!(
+            landed(3).notice(" No checks ran."),
+            "3 changes from this chat are in the project. No checks ran. Undo is above the message box."
+        );
+    }
 }

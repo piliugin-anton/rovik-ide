@@ -272,10 +272,11 @@ export default function IsolationBar(props: Props) {
     const landed = await withBusy(async () => {
       const result = await overlayLand(props.dialogId, keepChat);
       if (result.landed) {
+        const n = result.landed.paths.length;
         notify({
           kind: 'success',
           title: 'Landed',
-          message: `${plural(result.landed.paths.length, 'change')} from this chat are in the project.`,
+          message: `${plural(n, 'change')} from this chat ${n === 1 ? 'is' : 'are'} in the project.`,
         });
         return true;
       }

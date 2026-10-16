@@ -475,12 +475,7 @@ impl Remote {
         let didnt = "This chat's changes didn't land";
         match landed {
             Ok(Some(landed)) => {
-                let n = landed.paths.len();
-                let message = format!(
-                    "{n} change{} from this chat are in the project. Undo is above the message box.",
-                    if n == 1 { "" } else { "s" }
-                );
-                self.notice(dialog_id, "success", "Landed", &message);
+                self.notice(dialog_id, "success", "Landed", &landed.notice(""));
             }
             Ok(None) => {}
             Err(LandError::Conflicts(_)) => self.notice(

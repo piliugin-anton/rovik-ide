@@ -1,9 +1,10 @@
 // Component test: a remote chat's isolation bar (U05). It lists what the
 // chat changed in its worktree while a run goes, its result's pending
 // reason and conflicts, a newer result held back while they're resolved,
-// a sync that waits with Hand to the chat and Keep the older copy, and
-// Sync now. A local chat's bar has no sync, and a chat that can't change
-// now has its buttons off, saying why. Run with: npm test
+// a sync that waits with Hand to the chat and Keep the older copy, Sync
+// now, and how many changes Land landed. A local chat's bar has no sync,
+// and a chat that can't change now has its buttons off, saying why. Run
+// with: npm test
 import { container } from '../test/dom';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -303,4 +304,23 @@ test('a local chat’s bar doesn’t sync; one that can’t change has its butto
     assert.equal(button(root, label)!.disabled, true, label);
     assert.equal(button(root, label)!.title, offline, label);
   }
+});
+
+test('Land says how many of the chat’s changes are in the project', async () => {
+  status = remoteStatus();
+  let paths = ['src/main.rs'];
+  answers = { overlay_land: () => ({ landed: { id: 'l1', paths }, conflicts: [] }) };
+  const { root } = await bar();
+  const before = notifications().length;
+  button(root, 'Land')!.click();
+  await settle();
+  paths = ['src/main.rs', 'src/new.rs'];
+  button(root, 'Land')!.click();
+  await settle();
+  assert.deepEqual(
+    notifications()
+      .slice(before)
+      .map((n) => n.message),
+    ['1 change from this chat is in the project.', '2 changes from this chat are in the project.']
+  );
 });

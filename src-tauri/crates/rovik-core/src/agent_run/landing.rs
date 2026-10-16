@@ -239,14 +239,7 @@ impl Run {
                 } else {
                     ""
                 };
-                self.notice(
-                    "success",
-                    "Landed",
-                    &format!(
-                        "{n} change{} from this chat are in the project.{unchecked} Undo is above the message box.",
-                        if n == 1 { "" } else { "s" }
-                    ),
-                );
+                self.notice("success", "Landed", &landed.notice(unchecked));
                 // The project changed under the chat's view: the next run
                 // starts from it.
                 self.landed = true;
