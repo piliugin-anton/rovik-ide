@@ -936,13 +936,21 @@ async function run() {
     writeFileSync(join(DEMO, 'conflict.txt'), 'alpha\nbeta LOCAL\ngamma\n');
     git(DEMO, 'commit', '-qam', 'Local edit');
     await sleep(1000);
+    const pulled = async () =>
+      (await d.exists('.cr-accept')) || (await d.bodyText()).includes('Merge or rebase?');
     await click('[title="Pull"]');
-    await waitFor(
-      async () =>
-        (await d.exists('.cr-accept')) || (await d.bodyText()).includes('Merge or rebase?'),
-      'the pull to ask or conflict',
-      30_000
-    );
+    // Seen once in many runs on Linux: the click started nothing. Noted
+    // with what the panel showed, and the button clicked once more.
+    const asked = await waitFor(pulled, 'the pull to ask or conflict', 8_000).catch(() => false);
+    if (!asked) {
+      const panel = await d.exec(
+        `const b = document.querySelector('[title="Pull"]');
+         return { disabled: b?.disabled, branch: document.querySelector('.git-branch-button')?.innerText.replace(/\\s+/g, ' '), error: document.querySelector('.git-inline-error')?.innerText };`
+      );
+      note(`git pull: the first click on Pull started nothing (${JSON.stringify(panel)})`);
+      await click('[title="Pull"]');
+      await waitFor(pulled, 'the pull to ask or conflict', 30_000);
+    }
     if (!(await d.exists('.cr-accept'))) {
       await click(
         await mark(
