@@ -30,6 +30,7 @@ import { formatBytes, plural } from '../lib/textUtils';
 import {
   addressOf,
   asDeployFailure,
+  AUTH_HINTS,
   AUTH_LABELS,
   CHECK_LABELS,
   deployHost,
@@ -386,12 +387,19 @@ function HostForm(props: {
       </label>
       <label>
         Log in with
-        <select value={auth()} onChange={(e) => patch({ auth: e.currentTarget.value as AuthKind })}>
+        <select
+          value={auth()}
+          onChange={(e) => patch({ auth: e.currentTarget.value as AuthKind })}
+          aria-describedby="host-auth-hint"
+        >
           <For each={Object.entries(AUTH_LABELS)}>
             {([kind, label]) => <option value={kind}>{label}</option>}
           </For>
         </select>
       </label>
+      <p class="settings-hint" id="host-auth-hint">
+        {AUTH_HINTS[auth()]}
+      </p>
       <Show when={auth() === 'key'}>
         <label>
           Key file
@@ -422,13 +430,6 @@ function HostForm(props: {
             placeholder={savedHint(props.row?.passwordSaved)}
           />
         </label>
-      </Show>
-      <Show when={auth() === 'system-ssh'}>
-        <p class="settings-hint">
-          Your own ssh connects, with your configuration: jump hosts, security keys and
-          certificates. Testing and deploying need one of the other ways in, which Rovik runs its
-          setup commands through.
-        </p>
       </Show>
       <label>
         Setup script

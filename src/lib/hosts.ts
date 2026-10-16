@@ -246,8 +246,21 @@ export const AUTH_LABELS: Record<AuthKind, string> = {
   key: 'A key file',
   agent: 'My SSH agent',
   password: 'A password',
-  'keyboard-interactive': 'The server’s questions',
+  'keyboard-interactive': 'A password the server asks for (keyboard-interactive)',
   'system-ssh': 'My system ssh',
+};
+
+/** What each way in takes, under the form's "Log in with". */
+export const AUTH_HINTS: Record<AuthKind, string> = {
+  key: 'A private key on this computer whose public key is in ~/.ssh/authorized_keys on the server.',
+  agent:
+    'A key loaded in your SSH agent (ssh-add), or on Windows in the OpenSSH agent or Pageant. The key never leaves the agent.',
+  password:
+    'Your account’s password on the server. If the server refuses the right password, it may only take one when it asks for it: choose “A password the server asks for”.',
+  'keyboard-interactive':
+    'For servers that take a password only at their own prompts. Rovik answers each prompt with the password below, so a server that also asks for a two-factor code won’t let you in.',
+  'system-ssh':
+    'Your own ssh connects, with your configuration: jump hosts, security keys and certificates. Testing and deploying need one of the other ways in, which Rovik runs its setup commands through.',
 };
 
 export const CHECK_LABELS: Record<Check, string> = {

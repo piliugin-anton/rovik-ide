@@ -454,6 +454,41 @@ test('a host’s form: saved secrets aren’t shown, and an empty field keeps th
   assert.ok(button(root, 'Test connection'), 'back on the host’s page');
 });
 
+test('a host’s form: under “Log in with”, a hint says what each way in takes', async () => {
+  const { root } = await hostsPage(hostsList());
+  button(root, '+ Add host')!.click();
+  await flush();
+  const field = [...root.querySelectorAll('.host-form label')].find((l) =>
+    l.textContent?.startsWith('Log in with')
+  )!;
+  const select = field.querySelector('select') as HTMLSelectElement;
+  assert.deepEqual(
+    [...select.options].map((o) => o.textContent),
+    [
+      'A key file',
+      'My SSH agent',
+      'A password',
+      'A password the server asks for (keyboard-interactive)',
+      'My system ssh',
+    ]
+  );
+  const hints: [string, RegExp][] = [
+    ['key', /whose public key is in ~\/\.ssh\/authorized_keys on the server/],
+    ['agent', /The key never leaves the agent/],
+    ['password', /choose “A password the server asks for”/],
+    ['keyboard-interactive', /also asks for a two-factor code won’t let you in/],
+    ['system-ssh', /Testing and deploying need one of the other ways in/],
+  ];
+  for (const [kind, says] of hints) {
+    select.value = kind;
+    select.dispatchEvent(new Event('change'));
+    await flush();
+    const hint = field.nextElementSibling as HTMLElement;
+    assert.equal(hint.id, select.getAttribute('aria-describedby'), kind);
+    assert.match(hint.textContent!, says, kind);
+  }
+});
+
 test('a new host: Back from its form returns to the list', async () => {
   const { root, api } = await hostsPage(hostsList());
   button(root, '+ Add host')!.click();

@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 /// Why a host set to the user's own ssh is neither tested nor deployed.
 const SYSTEM_SSH: &str = "Testing and deploying go through Rovik's own SSH, which runs their \
                           commands. Log in with a key, your SSH agent or a password to deploy; \
-                          \"Use my system ssh\" connects once Rovik runs there.";
+                          \"My system ssh\" connects once Rovik runs there.";
 
 pub struct HostsPage {
     config_dir: PathBuf,

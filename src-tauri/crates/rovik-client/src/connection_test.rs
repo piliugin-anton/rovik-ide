@@ -241,7 +241,7 @@ fn logged_in(target: &SshTarget) -> Step {
         SshAuth::Key { path, .. } => format!("with the key {}", path.display()),
         SshAuth::Agent { .. } => "with a key from your SSH agent".into(),
         SshAuth::Password(_) => "with your password".into(),
-        SshAuth::KeyboardInteractive(_) => "by answering the server's questions".into(),
+        SshAuth::KeyboardInteractive(_) => "with your password, at the server's prompts".into(),
     };
     Step::new(
         Check::LogIn,
