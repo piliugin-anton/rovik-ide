@@ -1,9 +1,9 @@
-//! Limits on what a walk may load for the editor. The loaded set is sent to
+//! Limits on what a load may hand the editor. The loaded set is sent to
 //! the webview as one payload and kept there, in the main thread and in the
 //! TypeScript worker, so it must have a ceiling: beyond it the editor loses
 //! some definitions instead of all of its memory.
 
-use super::{Link, LoadedFile, LoadedFiles};
+use super::LoadedFile;
 use std::fs;
 use std::path::Path;
 
@@ -45,15 +45,21 @@ impl Collector {
     /// Loads `path` (`len` bytes) unless a limit says otherwise: an oversize
     /// file is skipped on its own, a limit on the set stops the walk. A file
     /// that can't be read as text (binary, vanished meanwhile) is skipped.
+    /// Returns the content loaded, for a caller that reads it too.
     pub fn add(&mut self, path: &Path, len: u64) -> Walk {
+        self.load(path, len).1
+    }
+
+    /// `add`, with the content loaded (None when skipped).
+    pub fn load(&mut self, path: &Path, len: u64) -> (Option<&str>, Walk) {
         if len > self.limits.max_file_bytes {
-            return Walk::Continue;
+            return (None, Walk::Continue);
         }
         if self.files.len() >= self.limits.max_files
             || self.total + len > self.limits.max_total_bytes
         {
             self.truncated = true;
-            return Walk::Stop;
+            return (None, Walk::Stop);
         }
         if let Ok(content) = fs::read_to_string(path) {
             self.total += len;
@@ -61,20 +67,20 @@ impl Collector {
                 path: path.to_string_lossy().into_owned(),
                 content,
             });
+            return (
+                self.files.last().map(|f| f.content.as_str()),
+                Walk::Continue,
+            );
         }
-        Walk::Continue
+        (None, Walk::Continue)
     }
 
-    pub fn finish(self) -> LoadedFiles {
-        self.finish_with_links(Vec::new())
+    pub fn truncated(&self) -> bool {
+        self.truncated
     }
 
-    pub fn finish_with_links(self, links: Vec<Link>) -> LoadedFiles {
-        LoadedFiles {
-            files: self.files,
-            links,
-            truncated: self.truncated,
-        }
+    pub fn finish(self) -> (Vec<LoadedFile>, bool) {
+        (self.files, self.truncated)
     }
 }
 
@@ -100,9 +106,9 @@ mod tests {
         assert_eq!(collector.add(&dir.join("big"), 7), Walk::Continue);
         assert_eq!(collector.add(&dir.join("c"), 3), Walk::Continue);
         assert_eq!(collector.add(&dir.join("d"), 1), Walk::Stop);
-        let loaded = collector.finish();
-        assert!(loaded.truncated);
-        assert_eq!(relative_paths(&dir, &loaded), ["a", "c"]);
+        let (files, truncated) = collector.finish();
+        assert!(truncated);
+        assert_eq!(relative_paths(&dir, &files), ["a", "c"]);
     }
 
     #[test]
@@ -111,9 +117,9 @@ mod tests {
         let mut collector = Collector::new(SMALL);
         assert_eq!(collector.add(&dir.join("a"), 5), Walk::Continue);
         assert_eq!(collector.add(&dir.join("b"), 4), Walk::Stop);
-        let loaded = collector.finish();
-        assert!(loaded.truncated);
-        assert_eq!(relative_paths(&dir, &loaded), ["a"]);
+        let (files, truncated) = collector.finish();
+        assert!(truncated);
+        assert_eq!(relative_paths(&dir, &files), ["a"]);
     }
 
     #[test]
@@ -121,9 +127,10 @@ mod tests {
         let dir = temp_project("budget-unreadable", &[("a", "aaa")]);
         let mut collector = Collector::new(SMALL);
         assert_eq!(collector.add(&dir.join("missing"), 1), Walk::Continue);
-        assert_eq!(collector.add(&dir.join("a"), 3), Walk::Continue);
-        let loaded = collector.finish();
-        assert!(!loaded.truncated);
-        assert_eq!(relative_paths(&dir, &loaded), ["a"]);
+        let (content, walk) = collector.load(&dir.join("a"), 3);
+        assert_eq!((content, walk), (Some("aaa"), Walk::Continue));
+        let (files, truncated) = collector.finish();
+        assert!(!truncated);
+        assert_eq!(relative_paths(&dir, &files), ["a"]);
     }
 }
