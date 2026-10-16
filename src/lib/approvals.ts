@@ -18,6 +18,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
 import { requestCompare } from './editorBridge';
 import { applyHunks, diffLines, splitLines, type DiffHunk } from './lineDiff';
+import { notify } from './notifications';
 
 export type HunkState = 'pending' | 'accepted' | 'rejected';
 
@@ -123,22 +124,27 @@ export function buildEditReview(
   };
 }
 
-/** A run waits for the user's decision on a tool call. File edits open in the editor. */
-export function registerApproval(request: ApprovalRequest) {
+/**
+ * A run waits for the user's decision on a tool call. File edits open in
+ * the editor as they're asked; not when `reveal` is false, as when what
+ * waited already is read back at the app's start, which would open a tab
+ * for each.
+ */
+export function registerApproval(request: ApprovalRequest, reveal = true) {
   const key = keyOf(request.dialogId, request.toolCallId);
   if (state.pending[key]) return;
   const { edit, remote, ...rest } = request;
   if (edit && remote) {
     const { relPath, current, proposed } = edit;
     setState('pending', key, { ...rest, remoteEdit: { relPath, current, proposed } });
-    showRemoteEdit(request.dialogId, request.toolCallId);
+    if (reveal) showRemoteEdit(request.dialogId, request.toolCallId);
     return;
   }
   const review = edit
     ? buildEditReview(edit.absPath, edit.relPath, edit.current, edit.proposed)
     : null;
   setState('pending', key, { ...rest, ...(review ? { edit: review } : {}) });
-  if (review) revealEdit(request.dialogId, request.toolCallId);
+  if (review && reveal) revealEdit(request.dialogId, request.toolCallId);
 }
 
 /** Answered, or no longer waited for (the run stopped). */
@@ -228,10 +234,20 @@ const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+/g, '/');
  */
 
 function settle(dialogId: string, toolCallId: string, decision: ManualDecision) {
+  const key = keyOf(dialogId, toolCallId);
+  const asked = state.pending[key] ? { ...state.pending[key] } : null;
   clearApproval(dialogId, toolCallId);
-  void invoke('agent_resolve_approval', { dialogId, toolCallId, decision }).catch((err) =>
-    console.error('Approval not delivered:', err)
-  );
+  void invoke('agent_resolve_approval', { dialogId, toolCallId, decision }).catch((err) => {
+    console.error('Approval not delivered:', err);
+    // Back in the chat, to be answered again once its host can be reached
+    // (6.10): the run still waits for it.
+    if (asked && !state.pending[key]) setState('pending', key, asked);
+    notify({
+      kind: 'error',
+      title: 'The answer didn’t reach the agent',
+      message: String(err),
+    });
+  });
 }
 
 export const allow = (dialogId: string, toolCallId: string) =>

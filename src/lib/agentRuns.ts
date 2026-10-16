@@ -465,7 +465,8 @@ export function initAgentRuns(): Promise<void> {
       const status = await invoke<AgentStatus>('agent_status');
       for (const run of status.runs) chatStore.setRunning(run.dialogId, true);
       for (const sub of status.subagents ?? []) seedRunningSubagent(sub);
-      for (const request of status.approvals) registerApproval(request);
+      // What waited already: in the chats, without a compare tab for each.
+      for (const request of status.approvals) registerApproval(request, false);
       for (const request of status.questions) registerQuestions(request);
     } catch (err) {
       console.error('Agent status unavailable:', err);

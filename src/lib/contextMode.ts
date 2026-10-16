@@ -88,8 +88,10 @@ export async function setContextMode(dialogId: string | null, mode: ContextMode)
     // Not persisted; fine for this session.
   }
   if (!dialogId) return;
-  setModes((m) => ({ ...m, [dialogId]: mode }));
+  // The chat's mode once its owner took it: a remote chat's host may refuse
+  // (6.10), and the row shows what is, not what was asked.
   await invoke('clm_set_mode', { dialogId, mode });
+  setModes((m) => ({ ...m, [dialogId]: mode }));
 }
 
 export function clmStatus(dialogId: string): Promise<ClmStatus> {

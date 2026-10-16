@@ -211,7 +211,14 @@ function markCaughtUp(host: string) {
 function track(event: CloudEvent) {
   switch (event.type) {
     case 'host':
-      setCloud('hosts', (h) => h.id === event.host, 'state', event.state);
+      // A host the list doesn't have yet (the list read before it was
+      // added, or before the app's hosts connected): read again, which
+      // brings its state with it.
+      if (!cloud.hosts.some((h) => h.id === event.host)) {
+        void refreshHosts();
+      } else {
+        setCloud('hosts', (h) => h.id === event.host, 'state', event.state);
+      }
       // Away, it has to catch up again once it's back.
       if (event.state !== 'ready') {
         setCloud(
