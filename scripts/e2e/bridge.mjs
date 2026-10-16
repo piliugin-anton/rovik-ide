@@ -207,6 +207,11 @@ export class BridgeDriver {
     return this.pointAt(el, undefined, { strict: true });
   }
 
+  /** A click held down a moment before its release, as a person's is. */
+  async holdClick(el, ms = 150) {
+    return this.pointAt(el, { hold: ms }, { strict: true });
+  }
+
   async clickCss(css, opts) {
     return this.click(await this.find(css, opts));
   }

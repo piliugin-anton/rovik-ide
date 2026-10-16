@@ -7,7 +7,8 @@
 //   @slow <seconds>            stream the final reply slowly over that long
 //   @error <status> [message]  answer with that HTTP error
 //   @think <text>              send reasoning_content before the reply
-//   @thinkslow <seconds>       stream (lorem) reasoning for that long first
+//   @thinkslow <seconds>       stream (lorem) reasoning for that long before
+//                              the reply (after the tool calls, if any)
 //   @parallel                  send all @tool calls in one reply
 //
 // Without directives it echoes the request in Markdown (with a code block
@@ -94,7 +95,7 @@ function plan(body) {
     text: echo,
     slow: d.slow,
     think: d.tools.length ? null : d.think,
-    thinkSlow: d.tools.length ? 0 : d.thinkSlow,
+    thinkSlow: d.thinkSlow,
   };
 }
 
@@ -113,20 +114,15 @@ async function stream(res, r, model) {
     }
   }
   if (r.thinkSlow) {
-    const words = 'Let me think about this carefully and look at the code before answering. '.split(
+    // A word every 50 ms, a sentence a line.
+    const words = 'Let me think about this carefully and look at the code before answering.'.split(
       ' '
     );
     const end = Date.now() + r.thinkSlow * 1000;
     for (let i = 0; Date.now() < end; i++) {
       if (res.destroyed) return;
-      chunk({
-        choices: [
-          {
-            index: 0,
-            delta: { role: 'assistant', reasoning_content: words[i % words.length] + ' ' },
-          },
-        ],
-      });
+      const word = words[i % words.length] + (i % words.length === words.length - 1 ? '\n' : ' ');
+      chunk({ choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: word } }] });
       await sleep(50);
     }
   }

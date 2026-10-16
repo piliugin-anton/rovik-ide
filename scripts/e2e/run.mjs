@@ -347,6 +347,25 @@ async function click(target) {
   }
 }
 
+/**
+ * A click held down a moment before its release, as a person's is: what was
+ * pressed must still be there, and where it was, when it's let go. Not
+ * retried: an element drawn anew in the meantime is what it looks for.
+ */
+async function holdClick(target, ms = 150) {
+  const el = typeof target === 'string' ? await d.find(target) : target;
+  if (X) {
+    const [x, y] = await screenPoint(el);
+    xdo('mousemove', x, y);
+    await sleep(60);
+    xdo('mousedown', 1);
+    await sleep(ms);
+    xdo('mouseup', 1);
+    return;
+  }
+  return d.holdClick(el, ms);
+}
+
 async function rightClick(target) {
   const el = typeof target === 'string' ? await d.find(target) : target;
   if (X) {
@@ -1220,6 +1239,101 @@ async function run() {
     await sleep(3000);
     await click('.chat-send-button.stop');
     await waitFor(async () => (await chatText()).includes('Stopped'), 'the reply stopped', 15_000);
+  });
+
+  await step('chat: what the model showed stays clickable while it thinks and writes', async () => {
+    // Two reads (one line: "Read package.json, long.ts"), then thinking and
+    // a reply written slowly, a link first. Every token changes the chat,
+    // and what it doesn't change has to stay as it is: the same elements,
+    // so a click (held a moment, as a person's is) lands on what was pressed.
+    const streaming = async (what) =>
+      assert(await d.exists('.chat-send-button.stop'), `the reply ended before ${what}`);
+    const thinking = async (what) =>
+      assert((await chatText()).includes('Thinking…'), `the thinking ended before ${what}`);
+    const before = (await d.findAll('.chat-message.assistant .markdown-body')).at(-1);
+    await send(
+      'Look at the project\n@tool read {"path":"package.json"}\n@tool read {"path":"long.ts"}\n' +
+        '@thinkslow 15\n@slow 10\n@text See [the math module](src/lib/math.ts) first. ' +
+        'More of the answer follows, a few words at a time. '.repeat(5)
+    );
+    await waitFor(
+      async () => (await chatText()).includes('Thinking…'),
+      'the model thinking',
+      30_000
+    );
+    // Marked: an element drawn anew loses its mark.
+    const toggle = await mark(
+      `return [...document.querySelectorAll('.tool-group-toggle')].filter((b) => b.textContent.trim() === 'Thinking…').pop();`,
+      'thinking'
+    );
+    const reads = await mark(
+      `return [...document.querySelectorAll('.tool-group')].filter((g) =>
+         [...g.querySelectorAll('.tool-group-file')].map((b) => b.textContent.trim()).join() ===
+           'package.json,long.ts').pop();`,
+      'reads'
+    );
+    const file = await mark(
+      `return [...document.querySelectorAll('[data-e2e="reads"] .tool-group-file')].find((b) => b.textContent.trim() === 'package.json');`,
+      'read-file'
+    );
+    const same = async (css, what) =>
+      assert(await d.exists(css), `${what} was drawn anew while the model wrote`);
+    // Nothing above the thinking is drawn anew by its tokens.
+    const kept = [
+      ...(await d.findAll(`${reads} .tool-group-file`)),
+      await d.find(`${reads} .tool-group-toggle`),
+      ...(before ? [before] : []),
+    ];
+    await sleep(1500);
+    for (const el of kept) {
+      const there = await d
+        .exec('return arguments[0].isConnected', d.ref(el))
+        .catch((e) => String(e.message).split('\n')[0]);
+      assert(there === true, `something above the thinking was drawn anew: ${there}`);
+    }
+    await thinking('the rows above were checked');
+
+    // The reads open, and one of their files opens in the editor.
+    await holdClick(`${reads} .tool-group-toggle`);
+    await waitFor(() => d.exists(`${reads}.open .tool-group-calls`), 'the reads opened', 3000);
+    await thinking('the reads opened');
+    await same(file, 'the file name');
+    await holdClick(file);
+    await waitFor(async () => (await activeTab()) === 'package.json', 'package.json opened', 5000);
+    await thinking('package.json opened');
+
+    // The thinking opens: its toggle still the one marked when it began.
+    await same(toggle, "the thinking's toggle");
+    await holdClick(toggle);
+    await waitFor(() => d.exists(`${toggle}[aria-expanded="true"]`), 'the thinking opened', 3000);
+    await thinking('the thinking opened');
+
+    // The reply's link: the same element while the rest of the reply comes
+    // in (by its reference: the reply's text keeps only its own attributes).
+    await waitFor(
+      () => d.exists('.chat-message.assistant a[href="src/lib/math.ts"]'),
+      'the link in the reply',
+      30_000
+    );
+    const reply = await mark(
+      `return [...document.querySelectorAll('.chat-message.assistant .markdown-body')].filter((b) => b.querySelector('a[href="src/lib/math.ts"]')).pop();`,
+      'reply'
+    );
+    const link = `${reply} a[href="src/lib/math.ts"]`;
+    const found = await d.find(link);
+    await sleep(1000);
+    const there = await d
+      .exec('return arguments[0].isConnected', d.ref(found))
+      .catch((e) => String(e.message).split('\n')[0]);
+    assert(there === true, `the link was drawn anew while the reply came in: ${there}`);
+    await holdClick(link);
+    await waitFor(
+      async () => (await activeTab()) === 'math.ts',
+      'math.ts opened by the link',
+      5000
+    );
+    await streaming('math.ts opened');
+    await waitFor(() => d.exists('.chat-send-button:not(.stop)'), 'the run to end', 60_000);
   });
 
   await step('chat: a rejected API key is explained', async () => {

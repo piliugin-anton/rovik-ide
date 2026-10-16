@@ -231,6 +231,16 @@ export class WebDriver {
     await this.req('DELETE', this.s('/actions')).catch(() => {});
   }
 
+  /** A click held down a moment before its release, as a person's is. */
+  async holdClick(el, ms = 150) {
+    await this.pointer([
+      { type: 'pointerMove', origin: { [ELEMENT]: el }, x: 0, y: 0 },
+      { type: 'pointerDown', button: 0 },
+      { type: 'pause', duration: ms },
+      { type: 'pointerUp', button: 0 },
+    ]);
+  }
+
   async rightClick(el) {
     await this.pointer([
       { type: 'pointerMove', origin: { [ELEMENT]: el }, x: 0, y: 0 },

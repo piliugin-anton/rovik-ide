@@ -108,8 +108,20 @@
   const FOCUSABLE =
     'input, textarea, select, button, a[href], [contenteditable="true"], [contenteditable=""], [tabindex]';
 
-  /** A press and release at the element's center, on whatever is on top there. */
-  function click(el, { button = 0, mods = {}, count = 1 } = {}) {
+  /** What two elements are both in, as a click goes to when its press and release differ. */
+  function sharedAncestor(a, b) {
+    for (let p = a; p; p = p.parentNode) if (p.contains(b)) return p;
+    return null;
+  }
+
+  /**
+   * A press and release at the element's center, on whatever is on top
+   * there. `hold`: milliseconds between them, as a person's click takes;
+   * the release then goes to whatever is there by that time, and the click,
+   * as browsers send it, to what the pressed and released elements share,
+   * or nowhere when the pressed one left the page meanwhile (redrawn).
+   */
+  async function click(el, { button = 0, mods = {}, count = 1, hold = 0 } = {}) {
     const { x, y } = center(el);
     const target = document.elementFromPoint(x, y) || el;
     const buttons = button === 2 ? 2 : 1;
@@ -124,9 +136,15 @@
         if (focusable && focusable.isContentEditable) caretToEnd(focusable);
       }
       if (button === 2) fire(target, 'contextmenu', { ...base, buttons, detail: i });
-      fire(target, 'pointerup', { ...base, ...pointer, buttons: 0, detail: i });
-      fire(target, 'mouseup', { ...base, buttons: 0, detail: i });
-      if (button === 0) fire(target, 'click', { ...base, buttons: 0, detail: i });
+      let released = target;
+      if (hold > 0) {
+        await new Promise((r) => setTimeout(r, hold));
+        released = document.elementFromPoint(x, y) || document.body;
+      }
+      fire(released, 'pointerup', { ...base, ...pointer, buttons: 0, detail: i });
+      fire(released, 'mouseup', { ...base, buttons: 0, detail: i });
+      const clicked = target.isConnected ? sharedAncestor(target, released) : null;
+      if (button === 0 && clicked) fire(clicked, 'click', { ...base, buttons: 0, detail: i });
     }
     if (count === 2) fire(target, 'dblclick', { ...base, buttons: 0, detail: 2 });
     return target === el || el.contains(target)
