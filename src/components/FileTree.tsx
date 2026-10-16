@@ -354,6 +354,20 @@ export default function FileTree(props: FileTreeProps) {
     });
   }
 
+  /**
+   * Inputs whose edit is over: Enter, Escape or leaving it ends an edit once.
+   * Chromium (WebView2) fires blur on an input as it's removed, so ending
+   * the edit (which removes it) was followed by a submit from the blur: a
+   * new file was created twice ("already exists"), and Escape renamed the
+   * file or created the new one anyway.
+   */
+  const ended = new WeakSet<HTMLInputElement>();
+  function endEdit(input: HTMLInputElement, end: () => void) {
+    if (ended.has(input)) return;
+    ended.add(input);
+    end();
+  }
+
   return (
     <div
       class="file-tree"
@@ -444,25 +458,20 @@ export default function FileTree(props: FileTreeProps) {
                         }}
                         onKeyDown={(e) => {
                           e.stopPropagation();
+                          const input = e.currentTarget as HTMLInputElement;
 
                           if (e.key === 'Enter') {
                             e.preventDefault();
-
-                            props.onEditSubmit(
-                              currentRow(),
-                              (e.currentTarget as HTMLInputElement).value
-                            );
+                            endEdit(input, () => props.onEditSubmit(currentRow(), input.value));
                           } else if (e.key === 'Escape') {
                             e.preventDefault();
-                            props.onEditCancel(currentRow());
+                            endEdit(input, () => props.onEditCancel(currentRow()));
                           }
                         }}
-                        onBlur={(e) =>
-                          props.onEditSubmit(
-                            currentRow(),
-                            (e.currentTarget as HTMLInputElement).value
-                          )
-                        }
+                        onBlur={(e) => {
+                          const input = e.currentTarget as HTMLInputElement;
+                          endEdit(input, () => props.onEditSubmit(currentRow(), input.value));
+                        }}
                       />
                     </Show>
                   </div>

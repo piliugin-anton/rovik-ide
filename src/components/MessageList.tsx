@@ -74,6 +74,22 @@ const AROUND = 25;
  * them there again, instead of at the end of the chat.
  */
 const readingPlaces = new Map<string, { id: string; offset: number }>();
+
+/**
+ * Real heights by message id, for its placeholder when it's rendered again:
+ * kept while the list is away too, so the messages around a reading place
+ * come back at their height and the place with them.
+ */
+const measuredHeights = new Map<string, number>();
+const MEASURED_LIMIT = 20_000;
+function measured(id: string, height: number) {
+  measuredHeights.delete(id);
+  measuredHeights.set(id, height);
+  if (measuredHeights.size > MEASURED_LIMIT) {
+    const oldest = measuredHeights.keys().next().value;
+    if (oldest !== undefined) measuredHeights.delete(oldest);
+  }
+}
 const FLASH_MS = 1600;
 
 export interface MessageListController {
@@ -359,11 +375,18 @@ export default function MessageList(props: {
     if (!anchorId) return;
     const again = el.querySelector<HTMLElement>(`.chat-item[data-id="${CSS.escape(anchorId)}"]`);
     if (again) queueAnchorCorrection(again.getBoundingClientRect().top - top - offset);
-    // Messages just inserted are laid out at their placeholder height
-    // (content-visibility): the anchoring above used it. Their real height
-    // comes a frame later, and the item observer only corrects *changes* to
-    // a height it has seen: without this, it saw the real height first and
-    // corrected nothing, so every batch of older messages jumped the view.
+    seedItemHeights(el);
+  }
+
+  /**
+   * Messages just inserted are laid out at their placeholder height
+   * (content-visibility), and anchoring to them used it. Their real height
+   * comes a frame later, and the item observer only corrects *changes* to a
+   * height it has seen: without this, it saw the real height first and
+   * corrected nothing, so the view jumped (every batch of older messages,
+   * and the reading place come back to).
+   */
+  function seedItemHeights(el: HTMLElement) {
     for (const item of el.querySelectorAll<HTMLElement>('.chat-item')) {
       if (!itemHeights.has(item)) itemHeights.set(item, item.getBoundingClientRect().height);
     }
@@ -878,6 +901,7 @@ export default function MessageList(props: {
     el.scrollTop +=
       item.getBoundingClientRect().top - el.getBoundingClientRect().top - place.offset;
     lastScrollTop = el.scrollTop;
+    seedItemHeights(el);
   }
 
   function rememberPlace(dialogId: string) {
@@ -975,8 +999,6 @@ export default function MessageList(props: {
    * twice.
    */
   const itemHeights = new WeakMap<Element, number>();
-  /** Real heights by message id, for its placeholder when it's rendered again. */
-  const measuredHeights = new Map<string, number>();
   const placeholderHeight = (m: ChatMessage) => measuredHeights.get(m.id) ?? estimatedHeight(m);
 
   const itemObserver = new ResizeObserver((entries) => {
@@ -1005,7 +1027,7 @@ export default function MessageList(props: {
       const skipped = item.checkVisibility
         ? !item.checkVisibility({ contentVisibilityAuto: true })
         : true;
-      if (item.dataset.id && !skipped) measuredHeights.set(item.dataset.id, height);
+      if (item.dataset.id && !skipped) measured(item.dataset.id, height);
       // While the top lock is held its settle loop owns every compensation;
       // still record heights above so placeholders stay accurate.
       if (before === undefined || !el || stick() || topLock || entry.target === lastItem) continue;
