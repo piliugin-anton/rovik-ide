@@ -2306,7 +2306,10 @@ follow the format").
   it was cut to "Steps 2", with "4 and Validation — …" as its title. So
   were "Cross-step …", "src/a.ts:42 and …" and "`Config::load` callers …".
   The title's separator is an em dash, a spaced hyphen or en dash, or a
-  colon and a space ("Step 3:Title" no longer splits).
+  colon and a space. After a step or a path's line, a colon glued to the
+  title is one too ("Step 3:Title", "src/a.ts:42:Off by one"): the number
+  says where the location ends. Not after a word ("Validation:no test"
+  reads like "a:hover styles"), nor in `::`, `://` or `:42:7`.
 - Two findings with no path and no step are the same only with the same
   title. Before, any two at `Plan` were one, so a follow-up's new finding
   about the whole plan was dropped as a repeat of an earlier one.

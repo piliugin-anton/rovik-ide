@@ -142,6 +142,18 @@ static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+/// HEADER with the title glued to the colon after a step, or after a path
+/// (with a dot or a slash) and its line: "Step 3:Title", "src/a.ts:42:Off
+/// by one". The number says where the location ends. One colon, and a
+/// title that doesn't start with a digit, colon or slash: `a.ts:42:7` is a
+/// column, and `Config::load` and `https://` aren't split. After a word a
+/// glued colon is no separator ("Validation:no test", "a:hover styles").
+static GLUED_TITLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s*[-–]\s*)\d+)*|[^\s`*:]*[./][^\s`*:]*:\d+(?:[:-]\d+)?)`?\**(?:\s*\([^)\n]*\))?:([^\d\s:/\\].*)$",
+    )
+    .unwrap()
+});
 /// A finding's numbered line in any shape: its severity, then what HEADER
 /// doesn't take, a location in several words ("Validation section", "Step
 /// 2, Step 5") or none at all, and the title. Every HEADER line is one.
@@ -159,13 +171,14 @@ static TITLE_SEPARATOR: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// A finding's numbered line: its severity, location and title. The
-/// location is a step, the plan or a path as the format has them; else
+/// location is a step, the plan or a path as the format has them (after a
+/// step or a line, the title may be glued to the colon); else
 /// the words before the first dash or colon outside code and brackets
 /// (B08: a reviewer names a part of the plan in its own words, "Validation
 /// section — …"); with neither, the line is the title and the location is
 /// empty (the plan, or the change, as a whole).
 fn header_of(line: &str) -> Option<(String, String, String)> {
-    if let Some(c) = HEADER.captures(line) {
+    if let Some(c) = HEADER.captures(line).or_else(|| GLUED_TITLE.captures(line)) {
         return Some((
             severity_of(&c[1]),
             // P4.5: `src/a.ts:42`, in backticks, with a colon after.
@@ -1630,6 +1643,67 @@ mod tests {
             (location.as_str(), title.as_str(), step),
             ("Step 2", "3 callers aren't updated", Some(2))
         );
+        // A title glued to the colon after a step or a path's line is split
+        // there: the number says where the location ends.
+        for (header, location, title, step, path) in [
+            ("1. [high] Step 3:Title", "Step 3", "Title", Some(3), None),
+            (
+                "1. [high] `Steps 2 and 4`:Two consumers",
+                "Steps 2 and 4",
+                "Two consumers",
+                Some(2),
+                None,
+            ),
+            (
+                "1. [high] src/a.ts:42:Off by one",
+                "src/a.ts:42",
+                "Off by one",
+                None,
+                Some("src/a.ts"),
+            ),
+            (
+                "1. [high] src/a.ts:42:7:Off by one",
+                "src/a.ts:42:7",
+                "Off by one",
+                None,
+                Some("src/a.ts"),
+            ),
+        ] {
+            let (l, t, s, p) = read(header);
+            assert_eq!(
+                (l.as_str(), t.as_str(), s, p.as_deref()),
+                (location, title, step, path),
+                "{header}"
+            );
+        }
+        // Anywhere else a glued colon is part of the location: two of them,
+        // a slash or a number after it, a word before it.
+        for (header, location, title) in [
+            (
+                "1. [high] std::fs::read callers — Read the old path",
+                "std::fs::read callers",
+                "Read the old path",
+            ),
+            (
+                "1. [high] https://example.com/x callers — Old host",
+                "https://example.com/x callers",
+                "Old host",
+            ),
+            (
+                "1. [high] node:18:slim base image — End of life",
+                "node:18:slim base image",
+                "End of life",
+            ),
+            (
+                "1. [low] a:hover styles — Lost on focus",
+                "a:hover styles",
+                "Lost on focus",
+            ),
+            // "Validation:no" reads like "a:hover": the line is the title.
+            ("1. [high] Validation:no test", "", "Validation:no test"),
+        ] {
+            assert_eq!(read(header), words(location, title), "{header}");
+        }
         // The shapes the format has read as they did.
         let (location, title, _, path) = read("1. [high] src/a.ts:42: Off by one");
         assert_eq!(
