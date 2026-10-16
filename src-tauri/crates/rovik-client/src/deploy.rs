@@ -160,7 +160,7 @@ pub async fn deploy(
     layout: &Layout,
 ) -> Result<Deployed, DeployError> {
     let ssh = session(connector).await?;
-    let probe = probe_server(&ssh, &[]).await.map_err(DeployError::Failed)?;
+    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     supported(&probe)?;
     let upload = upload(&ssh, binary).await?;
     let token = new_token();
@@ -382,7 +382,7 @@ pub async fn upgrade(
     layout: &Layout,
 ) -> Result<(), DeployError> {
     let ssh = session(connector).await?;
-    let probe = probe_server(&ssh, &[]).await.map_err(DeployError::Failed)?;
+    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     let Some(install) = &probe.install else {
         return Err(DeployError::Failed(
             "Rovik isn't installed on this server: deploy it first.".into(),
@@ -497,7 +497,7 @@ pub async fn remove(
         }
     }
     let ssh = session(connector).await?;
-    let probe = probe_server(&ssh, &[]).await.map_err(DeployError::Failed)?;
+    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     let stop = match (probe.systemd, &probe.install) {
         (true, Some(_)) => format!("{} -n {} user stop", layout.sudo, quote(&layout.installed)),
         _ => format!("{}; true", stop_unmanaged(layout)),

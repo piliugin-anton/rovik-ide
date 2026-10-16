@@ -71,7 +71,6 @@ export type Check =
   | 'isolation'
   | 'service'
   | 'install'
-  | 'api'
   | 'daemon';
 
 export type Outcome = 'passed' | 'warning' | 'failed' | 'confirm' | 'skipped';
@@ -158,9 +157,8 @@ export const saveHost = (host: Host, secrets?: HostSecrets) =>
 
 export const removeHost = (id: string) => invoke<void>('hosts_remove', { id });
 
-/** Tests the host; `apiUrls` are the providers' addresses to try from it. */
-export const testHost = (id: string, apiUrls: string[]) =>
-  invoke<Step[]>('hosts_test', { id, apiUrls });
+/** Tests the host's connection; each step comes on `host-test` as it ends. */
+export const testHost = (id: string) => invoke<Step[]>('hosts_test', { id });
 
 export const trustKey = (id: string, key: string) => invoke<void>('hosts_trust_key', { id, key });
 
@@ -280,7 +278,6 @@ export const CHECK_LABELS: Record<Check, string> = {
   isolation: 'Isolation extras',
   service: 'Service',
   install: 'Rovik',
-  api: 'Provider',
   daemon: 'Daemon',
 };
 

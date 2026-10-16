@@ -78,8 +78,6 @@ export interface HostsSettingsController {
 }
 
 interface CloudHostsSettingsProps {
-  /** The providers' base URLs: the test tries each from the server. */
-  apiUrls: string[];
   controller?: (api: HostsSettingsController) => void;
 }
 
@@ -180,7 +178,6 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
             <HostPage
               row={host()}
               build={list()?.build}
-              apiUrls={props.apiUrls}
               onEdit={() => setView({ kind: 'form', host: hostOf(host()), isNew: false })}
               onChanged={refresh}
             />
@@ -468,7 +465,6 @@ function HostForm(props: {
 function HostPage(props: {
   row: HostRow;
   build?: string;
-  apiUrls: string[];
   onEdit: () => void;
   onChanged: () => Promise<void>;
 }) {
@@ -491,7 +487,7 @@ function HostPage(props: {
       if (hostId === id) setSteps((s) => [...s, step]);
     });
     try {
-      setSteps(await testHost(id, props.apiUrls));
+      setSteps(await testHost(id));
     } catch (err) {
       setTestError(String(err));
     } finally {

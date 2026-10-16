@@ -36,7 +36,7 @@ pub enum Check {
     /// The handshake, and the host's key against the one pinned.
     HostKey,
     LogIn,
-    /// The probe's findings, from here to `Api`.
+    /// The probe's findings, from here to `Install`.
     System,
     Account,
     Disk,
@@ -49,8 +49,6 @@ pub enum Check {
     /// Rovik on the server: its version and administrators, or how a
     /// deploy would install it.
     Install,
-    /// A provider's API, from the server: one step an address.
-    Api,
     /// The user's daemon, through the tunnel.
     Daemon,
 }
@@ -111,8 +109,6 @@ impl Step {
 /// What's tested besides the connection.
 #[derive(Clone, Debug, Default)]
 pub struct TestOptions {
-    /// The providers' API addresses, tried from the server.
-    pub api_urls: Vec<String>,
     /// The daemon is deployed: its health is asked for.
     pub deployed: bool,
 }
@@ -169,7 +165,7 @@ pub async fn test_connection(
             return steps.done;
         }
     };
-    let probe = match run_probe(&ssh, &options.api_urls).await {
+    let probe = match run_probe(&ssh).await {
         Ok(probe) => probe,
         Err(step) => {
             steps.push(step);
@@ -302,17 +298,16 @@ fn refused(target: &SshTarget, e: SshError) -> Vec<Step> {
 }
 
 /// Runs the probe, and reads what it says.
-async fn run_probe(ssh: &Ssh, urls: &[String]) -> Result<Probe, Step> {
+async fn run_probe(ssh: &Ssh) -> Result<Probe, Step> {
     let failed = |why: String| Step::new(Check::System, Outcome::Failed, why);
-    probe_server(ssh, urls).await.map_err(failed)
+    probe_server(ssh).await.map_err(failed)
 }
 
 /// What the server offers, as the probe says (H04, and the deploy).
-pub(crate) async fn probe_server(ssh: &Ssh, urls: &[String]) -> Result<Probe, String> {
-    // Chrome may take 30 s to start, and each address 10 s.
-    let wait = Duration::from_secs(60 + 15 * urls.len() as u64);
-    let command = probe::command(urls);
-    let run = ssh.exec_with_input(&command, PROBE.as_bytes());
+pub(crate) async fn probe_server(ssh: &Ssh) -> Result<Probe, String> {
+    // Chrome may take 30 s to start.
+    let wait = Duration::from_secs(60);
+    let run = ssh.exec_with_input(probe::COMMAND, PROBE.as_bytes());
     let output = match tokio::time::timeout(wait, run).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => return Err(format!("The probe couldn't run on the server: {e}")),

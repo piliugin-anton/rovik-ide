@@ -258,10 +258,7 @@ export default function AiSettingsModal(props: AiSettingsModalProps) {
               <VirtualFilesSettings />
             </Match>
             <Match when={page() === 'hosts'}>
-              <CloudHostsSettings
-                apiUrls={[...new Set(providers().map((p) => p.baseUrl))].filter(Boolean)}
-                controller={setHostsApi}
-              />
+              <CloudHostsSettings controller={setHostsApi} />
             </Match>
           </Switch>
         </div>

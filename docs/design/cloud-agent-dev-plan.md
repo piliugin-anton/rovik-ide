@@ -2341,6 +2341,10 @@ Tasks add notes here when reality differs from the plan.
     used yet. The e2e test runs the probe on this machine through the
     test SSH server, against a local API that answers 401 and a closed
     port. The run against a VPS stays manual.
+  - Later, at the user's request, the providers went from the test: Test
+    connection asks no provider anything, from the server or from here,
+    and shows no Provider step. The probe takes no arguments (`sh -s`),
+    and the e2e test has no local API.
 - **H06, the desktop's API keys.**
   - `rovik_client::provider_keys::ProviderKeys` stands between the two
     settings commands and `ai-settings.json`. The file is now version 3:
@@ -2478,8 +2482,8 @@ Tasks add notes here when reality differs from the plan.
     with chats on it, or moving there, isn't removed, and Rovik isn't
     removed from it; the page says so before asking the server anything.
   - Test connection shows each step as it ends (`host-test`), with the
-    fingerprint and "Trust this key" on first use, then tests again. The
-    providers' base URLs go to its API step. Deploy asks for the sudo
+    fingerprint and "Trust this key" on first use, then tests again. It
+    asks no provider anything (H04's notes). Deploy asks for the sudo
     password when sudo wants one and shows the command for someone with
     root when sudo isn't the user's. Without `ROVIK_AGENTD_BINARY` there
     is nothing to deploy, and the page says so.

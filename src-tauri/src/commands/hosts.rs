@@ -58,14 +58,12 @@ pub async fn hosts_remove(page: State<'_, Arc<HostsPage>>, id: String) -> Result
     page.remove(&id).await
 }
 
-/// Tests the host's connection; `api_urls` are the providers' addresses to
-/// try from the server.
+/// Tests the host's connection, each step on `host-test` as it ends.
 #[tauri::command]
 pub async fn hosts_test(
     app: AppHandle,
     page: State<'_, Arc<HostsPage>>,
     id: String,
-    api_urls: Vec<String>,
 ) -> Result<Vec<Step>, String> {
     let host_id = id.clone();
     let report = move |step: &Step| {
@@ -77,7 +75,7 @@ pub async fn hosts_test(
             eprintln!("hosts: a test's step couldn't be told: {e}");
         }
     };
-    page.test(&id, &api_urls, &report).await
+    page.test(&id, &report).await
 }
 
 /// Pins the host's key, once the user compared its fingerprint.

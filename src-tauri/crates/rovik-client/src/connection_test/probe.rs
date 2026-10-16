@@ -3,15 +3,17 @@
 //! back; and what each answer means for the hosts page, a step each.
 //!
 //! The script goes on stdin to `sh -s`, so the user's login shell parses
-//! only that command and the quoted addresses after it, whatever the shell
-//! is. Busybox runs it as well as bash or dash. An answer it couldn't get
-//! reads as "no".
+//! only that command, whatever the shell is. Busybox runs it as well as
+//! bash or dash. An answer it couldn't get reads as "no". It asks nothing
+//! of the network: the providers' addresses aren't tried from the server.
 
 use super::{Check, Outcome, Step};
 use rovik_protocol::PROTOCOL;
 
 /// The script.
 pub const PROBE: &str = include_str!("probe.sh");
+/// The command that runs it, from stdin.
+pub const COMMAND: &str = "sh -s";
 
 /// Under this much free space in the home folder, a deploy can't go on.
 const DISK_NEEDED: u64 = 1 << 30;
@@ -53,8 +55,6 @@ pub struct Probe {
     pub socket: bool,
     /// The other users running a daemon here.
     pub daemons: Vec<String>,
-    /// The providers' API addresses, as tried from the server.
-    pub reach: Vec<Reach>,
 }
 
 /// What `sudo -n` said.
@@ -76,38 +76,6 @@ pub struct Installed {
     pub version: Option<String>,
     pub protocol: Option<u32>,
     pub admins: Vec<String>,
-}
-
-/// A provider's API address, as tried from the server.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Reach {
-    pub url: String,
-    pub answer: Answer,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Answer {
-    /// It answered, with this HTTP status.
-    Status(u16),
-    Failed,
-    /// Neither curl nor wget is on the server.
-    Untested,
-}
-
-/// The command that runs the script with `urls` as its arguments.
-pub fn command(urls: &[String]) -> String {
-    let mut command = String::from("sh -s --");
-    for url in urls {
-        command.push(' ');
-        command.push_str(&quote(url));
-    }
-    command
-}
-
-/// `text` in single quotes, for a POSIX shell (fish and csh read it the
-/// same way).
-fn quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 impl Probe {
@@ -157,18 +125,6 @@ impl Probe {
                         probe.daemons.push(value.into());
                     }
                 }
-                "reach" => {
-                    let (url, said) = value.rsplit_once(' ').unwrap_or((value, ""));
-                    let answer = match said {
-                        "failed" => Answer::Failed,
-                        "untested" => Answer::Untested,
-                        code => code.parse().map(Answer::Status).unwrap_or(Answer::Failed),
-                    };
-                    probe.reach.push(Reach {
-                        url: url.into(),
-                        answer,
-                    });
-                }
                 _ => {}
             }
         }
@@ -178,7 +134,7 @@ impl Probe {
 
     /// What it found, a step each, in the order the hosts page shows them.
     pub fn findings(&self) -> Vec<Step> {
-        let mut steps = vec![
+        vec![
             self.system(),
             self.account(),
             self.disk(),
@@ -187,9 +143,7 @@ impl Probe {
             self.isolation(),
             self.service(),
             self.install(),
-        ];
-        steps.extend(self.reach.iter().map(api));
-        steps
+        ]
     }
 
     fn system(&self) -> Step {
@@ -440,43 +394,6 @@ impl Probe {
     }
 }
 
-fn api(reach: &Reach) -> Step {
-    let url = &reach.url;
-    let step = |outcome, message: String| Step::new(Check::Api, outcome, message);
-    match reach.answer {
-        Answer::Status(403) => step(
-            Outcome::Warning,
-            format!(
-                "{url} answered 403 Forbidden from the server: the provider may not serve \
-                 its region, or it needs a proxy."
-            ),
-        ),
-        Answer::Status(407) => step(
-            Outcome::Warning,
-            format!("{url}: the server's proxy wants to be logged in to."),
-        ),
-        Answer::Status(code) if code >= 500 => step(
-            Outcome::Warning,
-            format!("{url} answered {code} from the server: the provider had a problem."),
-        ),
-        Answer::Status(code) => step(
-            Outcome::Passed,
-            format!("{url} answers from the server ({code})."),
-        ),
-        Answer::Failed => step(
-            Outcome::Failed,
-            format!(
-                "{url} can't be reached from the server, so runs there would fail. It may \
-                 need a proxy, or the provider may block its network."
-            ),
-        ),
-        Answer::Untested => step(
-            Outcome::Warning,
-            format!("There's no curl or wget on the server to try {url} with."),
-        ),
-    }
-}
-
 /// `rovik-agentd 0.1.0 (protocol 1)`: the version and the protocol.
 fn version(line: &str) -> (Option<String>, Option<u32>) {
     let Some(rest) = line.strip_prefix("rovik-agentd ") else {
@@ -540,8 +457,6 @@ fusermount=/usr/bin/fusermount3
 systemd=yes
 sudo=password
 socket=no
-reach=https://api.anthropic.com/v1/models 401
-reach=https://api.openai.com/v1/models 403
 ";
 
     /// A Debian server with Rovik installed by ann, who runs her daemon
@@ -565,7 +480,6 @@ rovik=rovik-agentd 0.1.0 (protocol 1)
 rovik_admins=[\"ann\"]
 socket=yes
 daemon=ann
-reach=https://api.anthropic.com/v1/models 401
 ";
 
     /// Alpine: busybox, no sudo, no git, no Chrome, not much disk, and
@@ -585,11 +499,10 @@ fusermount=
 systemd=no
 sudo=none
 socket=no
-reach=https://api.anthropic.com/v1/models 401
 ";
 
-    /// A container without systemd, logged in as root, whose network
-    /// reaches nothing outside: what this test's own container said.
+    /// A container without systemd, logged in as root: what this test's
+    /// own container said.
     const CONTAINER: &str = "\
 os=Linux
 arch=x86_64
@@ -605,7 +518,6 @@ fusermount=/usr/bin/fusermount3
 systemd=no
 sudo=yes
 socket=no
-reach=https://example.invalid failed
 ";
 
     fn outcomes(probe: &Probe) -> Vec<(Check, Outcome)> {
@@ -629,19 +541,6 @@ reach=https://example.invalid failed
         assert_eq!(probe.disk_free, Some(40 << 30));
         assert_eq!(probe.sudo, Sudo::Password);
         assert_eq!(probe.install, None);
-        assert_eq!(
-            probe.reach,
-            [
-                Reach {
-                    url: "https://api.anthropic.com/v1/models".into(),
-                    answer: Answer::Status(401),
-                },
-                Reach {
-                    url: "https://api.openai.com/v1/models".into(),
-                    answer: Answer::Status(403),
-                },
-            ]
-        );
         use Check::*;
         use Outcome::*;
         assert_eq!(
@@ -655,8 +554,6 @@ reach=https://example.invalid failed
                 (Isolation, Warning),
                 (Service, Passed),
                 (Install, Passed),
-                (Api, Passed),
-                (Api, Warning),
             ]
         );
         assert_eq!(message(&probe, Disk), "40 GB free in your home folder.");
@@ -691,7 +588,6 @@ reach=https://example.invalid failed
                 (Isolation, Warning),
                 (Service, Passed),
                 (Install, Passed),
-                (Api, Passed),
             ]
         );
         assert_eq!(message(&probe, System), "Linux on aarch64.");
@@ -725,7 +621,6 @@ reach=https://example.invalid failed
                 (Isolation, Warning),
                 (Service, Warning),
                 (Install, Warning),
-                (Api, Passed),
             ]
         );
         assert!(message(&probe, Install).contains("there's no sudo"));
@@ -750,22 +645,18 @@ reach=https://example.invalid failed
                 (Isolation, Passed),
                 (Service, Warning),
                 (Install, Warning),
-                (Api, Failed),
             ]
         );
         assert!(message(&probe, Account).contains("never runs as root"));
-        assert!(message(&probe, Api).starts_with("https://example.invalid can't be reached"));
     }
 
     #[test]
     fn what_the_probe_says_is_read_leniently() {
         let probe = Probe::parse(
-            "os=Linux\r\narch=riscv64\r\nnoise\nlater=a new key\nreach=https://x/?a=b 200\n\
-             rovik=\nrovik_admins=['ann', \"bo\"]\ndaemon=ann\ndaemon=ann\ndaemon=cy\n",
+            "os=Linux\r\narch=riscv64\r\nnoise\nlater=a new key\nrovik=\n\
+             rovik_admins=['ann', \"bo\"]\ndaemon=ann\ndaemon=ann\ndaemon=cy\n",
         );
         assert_eq!(probe.arch, "riscv64");
-        assert_eq!(probe.reach[0].url, "https://x/?a=b");
-        assert_eq!(probe.reach[0].answer, Answer::Status(200));
         assert_eq!(probe.daemons, ["ann", "cy"]);
         let installed = probe.install.clone().unwrap();
         assert_eq!((installed.version, installed.admins.len()), (None, 2));
@@ -794,18 +685,6 @@ reach=https://example.invalid failed
         let older = Probe::parse("rovik=rovik-agentd 0.0.9 (protocol 0)");
         assert_eq!(older.install().outcome, Outcome::Warning);
         assert!(older.install().message.contains("upgraded"));
-    }
-
-    #[test]
-    fn the_addresses_reach_the_script_quoted() {
-        let urls: [String; 2] = [
-            "https://api.example.com/v1".into(),
-            "https://x/it's;rm -rf ~".into(),
-        ];
-        assert_eq!(
-            command(&urls),
-            r"sh -s -- 'https://api.example.com/v1' 'https://x/it'\''s;rm -rf ~'"
-        );
     }
 
     /// Each line the script can print is one the parser reads.

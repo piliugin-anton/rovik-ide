@@ -1,7 +1,7 @@
 # What a server offers Rovik (H04): one `key=value` line each, read by
 # `rovik_client::probe`. POSIX sh, as busybox runs it too: it's sent on
-# stdin to `sh -s`, so the user's login shell never parses it. Its
-# arguments are the providers' API addresses to try from the server.
+# stdin to `sh -s`, so the user's login shell never parses it. It asks
+# nothing of the network.
 say() { printf '%s=%s\n' "$1" "$2"; }
 say os "$(uname -s)"
 say arch "$(uname -m)"
@@ -63,21 +63,5 @@ for status in $(grep -ls '^Name:[[:space:]]*rovik-agentd$' /proc/[0-9]*/status);
   if [ -n "$uid" ] && [ "$uid" != "$me" ]; then
     name=$(awk -F: -v uid="$uid" '$3 == uid { print $1; exit }' /etc/passwd)
     say daemon "${name:-$uid}"
-  fi
-done
-for url in "$@"; do
-  if command -v curl >/dev/null 2>&1; then
-    if code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null) && [ "$code" != 000 ]; then
-      say reach "$url $code"
-    else
-      say reach "$url failed"
-    fi
-  elif command -v wget >/dev/null 2>&1; then
-    # The status from the headers: busybox's exit code can't tell a
-    # refusal from no answer.
-    code=$(wget -S --spider -T 10 "$url" 2>&1 | awk '$1 ~ /^HTTP\// { code = $2 } END { print code }')
-    say reach "$url ${code:-failed}"
-  else
-    say reach "$url untested"
   fi
 done

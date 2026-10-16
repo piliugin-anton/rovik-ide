@@ -448,13 +448,11 @@ impl HostsPage {
     pub async fn test(
         &self,
         id: &str,
-        api_urls: &[String],
         report: &(dyn Fn(&Step) + Send + Sync),
     ) -> Result<Vec<Step>, String> {
         let host = self.host(id)?;
         let connector = SshConnector::new(self.target(&host)?);
         let options = TestOptions {
-            api_urls: api_urls.to_vec(),
             deployed: matches!(host.deploy, DeployState::Deployed { .. }),
         };
         Ok(test_connection(&connector, &options, report).await)

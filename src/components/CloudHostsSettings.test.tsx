@@ -132,10 +132,7 @@ async function hostsPage(list: HostsList, answers: typeof backend = {}): Promise
   disposePage = render(
     () => (
       <>
-        <CloudHostsSettings
-          apiUrls={['https://api.openai.com/v1']}
-          controller={(controller) => (api = controller)}
-        />
+        <CloudHostsSettings controller={(controller) => (api = controller)} />
         <ConfirmDialogHost />
       </>
     ),
@@ -198,7 +195,8 @@ test('testing: each step shows as it ends, then the verdict', async () => {
   });
   button(root, 'Test connection')!.click();
   await flush();
-  assert.deepEqual(sent('hosts_test'), [{ id: 'h1', apiUrls: ['https://api.openai.com/v1'] }]);
+  // Only the host goes: the test tries no provider from the server.
+  assert.deepEqual(sent('hosts_test'), [{ id: 'h1' }]);
   assert.equal(button(root, 'Testing…')?.disabled, true);
   emit('host-test', { hostId: 'h1', step: step('address', 'passed') });
   emit('host-test', { hostId: 'other', step: step('disk', 'failed') });
