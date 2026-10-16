@@ -38,6 +38,7 @@ pub mod hosts_page;
 mod http;
 mod packs;
 pub mod provider_keys;
+pub mod release;
 mod remote;
 pub mod secrets;
 pub mod shadow;

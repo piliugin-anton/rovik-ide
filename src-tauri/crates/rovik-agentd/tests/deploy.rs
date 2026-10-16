@@ -12,7 +12,7 @@ mod common;
 use common::ssh::{Account, SshServer, PASSWORD, USER};
 use common::BINARY;
 use rovik_client::connection_test::{test_connection, Check, Outcome, TestOptions};
-use rovik_client::deploy::{self, Binary, DeployError, Layout};
+use rovik_client::deploy::{self, Binary, Builds, DeployError, Layout};
 use rovik_client::ssh::{SshAuth, SshConnector, SshTarget};
 use rovik_client::Identity;
 use rovik_protocol::{Secret, PROTOCOL};
@@ -204,7 +204,7 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     let password = Secret("the user's sudo password".into());
     let deployed = deploy::deploy(
         &connector,
-        &build,
+        &Builds::Own(build.clone()),
         "laptop",
         Some(&password),
         &host.layout(),
@@ -254,9 +254,10 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
 
     // The check each connection makes (D5).
     let ssh = connector.session().await.unwrap();
-    let checked = deploy::check_install(&ssh, &known, &user, &host.layout()).await;
+    let checked = deploy::check_install(&ssh, &known, None, &user, &host.layout()).await;
     assert_eq!(checked.unwrap().sha256, known[0]);
-    let changed = deploy::check_install(&ssh, &["00".repeat(32)], &user, &host.layout()).await;
+    let other = ["00".repeat(32)];
+    let changed = deploy::check_install(&ssh, &other, None, &user, &host.layout()).await;
     let Err(DeployError::Changed(now)) = changed else {
         panic!("a binary changed behind the app's back wasn't reported: {changed:?}");
     };
@@ -271,6 +272,7 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
         deployed: true,
         known: vec![trusted.to_string()],
         layout: host.layout(),
+        releases: None,
     };
     let steps = test_connection(&connector, &options(&"00".repeat(32)), &|_| {}).await;
     let last = steps.last().unwrap();
@@ -284,7 +286,7 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     assert_eq!(build.outcome, Outcome::Passed, "{}", build.message);
     // A connector that checks on each connection looks where the installer
     // puts Rovik, which has nothing here: refused, saying so.
-    let checked = host.connector().with_install_check(known.clone());
+    let checked = host.connector().with_install_check(known.clone(), None);
     let refused = checked.session().await.err().expect("refused");
     assert!(
         refused.to_string().contains("isn't on the server"),
@@ -355,7 +357,7 @@ async fn a_root_login_is_refused() {
     std::fs::write(&build, "#!/bin/sh\n").unwrap();
     let refused = deploy::deploy(
         &SshConnector::new(target),
-        &Binary::at(build).unwrap(),
+        &Builds::Own(Binary::at(build).unwrap()),
         "laptop",
         None,
         &Layout::default(),

@@ -49,7 +49,10 @@ export type StoreKind = { kind: 'keychain' } | { kind: 'file'; unlocked: boolean
 export interface HostsList {
   hosts: HostRow[];
   store: StoreKind;
-  /** The build a deploy uploads (`ROVIK_AGENTD_BINARY`), if there is one. */
+  /**
+   * What a deploy uploads: the build `ROVIK_AGENTD_BINARY` names, or this
+   * app's release; absent when there's neither.
+   */
   build?: string;
 }
 

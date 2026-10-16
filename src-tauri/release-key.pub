@@ -1,0 +1,11 @@
+# Rovik's release key: the public key `npx tauri signer generate` wrote to
+# its .pub file, pasted on one line below this comment. The app's updater
+# takes the same key (plugins.updater.pubkey in tauri.conf.json).
+#
+# Each release's daemon builds and their SHA256SUMS are signed with its
+# private half, which stays in the repository's secrets
+# (TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD).
+# The app checks a daemon it downloads against this key, and the daemon
+# checks an upgrade with it. Until a key is here, the app can't download
+# the daemon (ROVIK_AGENTD_BINARY names a build instead), and servers take
+# only builds of one's own, where agentd.toml allows unsigned builds.

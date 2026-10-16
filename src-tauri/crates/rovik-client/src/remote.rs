@@ -197,6 +197,11 @@ impl Remote {
     }
 
     /// Where uploads' and pushes' progress goes from now on.
+    /// The app's data folder.
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.core.paths.data_dir
+    }
+
     pub fn on_cloud(&self, sink: CloudSink) {
         *self.cloud.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }

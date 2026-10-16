@@ -27,6 +27,7 @@
 use crate::cli::VERSION;
 use crate::home::{self, Passwd};
 use crate::limits::{check_user_name, AdminFile, ADMIN_FILE};
+use rovik_protocol::release;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -385,15 +386,22 @@ pub fn admin(sys: &System, args: &[String]) -> Result<(), String> {
 /// `admin upgrade FILE`: the build beside the installed ones, the link
 /// moved to it, and the daemons that ran started again. Each one, stopped,
 /// pauses its runs at their next safe point and the new binary continues
-/// them (R02, 5.4). Releases are to be checked against the key compiled
-/// into this binary (B02); until they're signed, only a server whose
-/// `agentd.toml` allows unsigned builds takes one (B03).
+/// them (R02, 5.4). A release's build comes with its signature beside it,
+/// `FILE.sig`, checked with the key this binary was built with, so a new
+/// build can't vouch for itself (B02); a build of one's own goes in only
+/// where `agentd.toml` allows unsigned builds (B03).
 fn upgrade(sys: &System, file: &AdminFile, from: &Path, caller: &Passwd) -> Result<(), String> {
-    if !file.allow_unsigned {
-        return Err(format!(
-            "Upgrades take a signed release, and none is signed yet. To install a build of \
-             your own, set allow_unsigned = true in {ADMIN_FILE}."
-        ));
+    match signed(from) {
+        Ok(true) => {}
+        Ok(false) if file.allow_unsigned => {}
+        Ok(false) => {
+            return Err(format!(
+                "{} isn't signed with Rovik's release key. To install a build of your own, \
+                 set allow_unsigned = true in {ADMIN_FILE}.",
+                from.display()
+            ))
+        }
+        Err(why) => return Err(format!("{}: {why} It wasn't installed.", from.display())),
     }
     let version = version_of(sys, from, caller)?;
     install_binary(sys, from, &version)?;
@@ -597,6 +605,22 @@ fn version_of(sys: &System, from: &Path, caller: &Passwd) -> Result<String, Stri
         })
         .ok_or_else(|| format!("{} isn't a rovik-agentd build.", from.display()))?;
     Ok(version.to_string())
+}
+
+/// Whether `from` comes with a signature, `<from>.sig`, that this binary's
+/// release key checks; an error when it has one that doesn't. Without a
+/// key, nothing is taken as signed.
+fn signed(from: &Path) -> Result<bool, String> {
+    let mut signature = from.as_os_str().to_owned();
+    signature.push(release::SIGNATURE);
+    let Ok(signature) = std::fs::read_to_string(PathBuf::from(signature)) else {
+        return Ok(false);
+    };
+    let Some(key) = release::key() else {
+        return Ok(false);
+    };
+    let bytes = std::fs::read(from).map_err(|e| e.to_string())?;
+    release::verify(&key, &bytes, &signature).map(|()| true)
 }
 
 fn euid() -> u32 {

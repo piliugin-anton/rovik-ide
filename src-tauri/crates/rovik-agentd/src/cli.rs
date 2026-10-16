@@ -42,7 +42,9 @@ usage: rovik-agentd <command>
          uninstall] [--root DIR]
       Through sudo, for Rovik's administrators: the limits on each user's
       daemon (none takes one away), the administrators, an upgrade for
-      everyone, or Rovik's removal from the server.
+      everyone (a release's build, signed in FILE.sig, or a build of one's
+      own where agentd.toml allows unsigned ones), or Rovik's removal from
+      the server.
   --root DIR puts / at DIR and prints the commands that would change the
   system instead of running them.";
 

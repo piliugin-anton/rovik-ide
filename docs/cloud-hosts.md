@@ -174,10 +174,11 @@ you don't trust.
 
 `admin upgrade FILE` installs a new build beside the current one, moves
 the link and restarts the daemons that were running, which pause their
-runs first and continue them on the new build. Releases are to be
-signed, and the installed binary will check them with a key built into it.
-Until signed releases are published, it takes only a build you allow by
-setting `allow_unsigned = true` in `agentd.toml`.
+runs first and continue them on the new build. A release's build comes
+with its signature in `FILE.sig`, which the installed binary checks with
+the release key built into it, so a new build can't vouch for itself. The
+app uploads both. A build of your own has no signature: it goes in only
+once you allow that by setting `allow_unsigned = true` in `agentd.toml`.
 
 ## Removing Rovik
 

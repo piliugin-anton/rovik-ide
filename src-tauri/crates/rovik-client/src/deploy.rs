@@ -14,8 +14,10 @@
 //! without systemd the app starts it in a session of its own. Then the
 //! daemon must answer `/health`, and `Welcome` with the new token.
 //!
-//! The build is `ROVIK_AGENTD_BINARY` (B03). Release builds, downloaded
-//! for this app's version with their signatures checked, come with B02.
+//! The build is this app's release for the server's CPU, downloaded with
+//! its signature, which is checked first (`release`, B02), and uploaded
+//! beside it for `admin upgrade` to check again; or a build of one's own
+//! that `ROVIK_AGENTD_BINARY` names (B03), with no signature.
 //!
 //! `check_install` runs on each connection (D5): the installed binary
 //! must be a build this computer trusts, and the user's unit must run it as
@@ -32,6 +34,7 @@ use crate::client::{welcome, DaemonInfo, Identity};
 use crate::connection_test::probe::{Probe, Sudo};
 use crate::connection_test::probe_server;
 use crate::http;
+use crate::release::Releases;
 use crate::ssh::{Output, Ssh, SshConnector};
 use rovik_protocol::Secret;
 use serde::Serialize;
@@ -43,6 +46,8 @@ use zeroize::Zeroizing;
 
 /// Where the build waits in the user's home before it's installed.
 const UPLOAD: &str = ".rovik-agentd-upload";
+/// Says `yes` where the server has gzip.
+const HAS_GZIP: &str = "command -v gzip >/dev/null 2>&1 && echo yes; true";
 /// How long a daemon that's starting may take to answer.
 const START_WAIT: Duration = Duration::from_secs(30);
 
@@ -51,27 +56,72 @@ const START_WAIT: Duration = Duration::from_secs(30);
 pub struct Binary {
     pub path: PathBuf,
     pub sha256: String,
+    /// A release's signature for it, as its `.sig` file has it; none for a
+    /// build of one's own.
+    pub signature: Option<String>,
 }
 
 impl Binary {
-    /// The build `ROVIK_AGENTD_BINARY` names (B03).
-    pub fn from_env() -> Result<Binary, DeployError> {
-        let path = std::env::var_os("ROVIK_AGENTD_BINARY").ok_or_else(|| {
-            DeployError::Failed(
-                "There's no build to deploy: set ROVIK_AGENTD_BINARY to a rovik-agentd built \
-                 for the server."
-                    .into(),
-            )
-        })?;
-        Binary::at(PathBuf::from(path))
-    }
-
+    /// A build of one's own, at `path`.
     pub fn at(path: PathBuf) -> Result<Binary, DeployError> {
         let bytes = std::fs::read(&path)
             .map_err(|e| DeployError::Failed(format!("{}: {e}", path.display())))?;
         Ok(Binary {
             sha256: hex(&Sha256::digest(&bytes)),
             path,
+            signature: None,
+        })
+    }
+}
+
+/// Where a deploy's or an upgrade's build comes from.
+#[derive(Clone, Debug)]
+pub enum Builds {
+    /// A build of one's own (B03).
+    Own(Binary),
+    /// `version`'s release, for the server's CPU (B02).
+    Release { releases: Releases, version: String },
+}
+
+impl Builds {
+    /// The build `ROVIK_AGENTD_BINARY` names, else `version`'s release,
+    /// kept under `data_dir`.
+    pub fn new(data_dir: &std::path::Path, version: &str) -> Result<Builds, DeployError> {
+        match std::env::var_os("ROVIK_AGENTD_BINARY") {
+            Some(path) => Binary::at(PathBuf::from(path)).map(Builds::Own),
+            None => Ok(Builds::Release {
+                releases: Releases::new(data_dir),
+                version: version.to_string(),
+            }),
+        }
+    }
+
+    /// The build for a server whose `uname -m` is `machine`.
+    pub async fn for_machine(&self, machine: &str) -> Result<Binary, DeployError> {
+        let (releases, version) = match self {
+            Builds::Own(binary) => return Ok(binary.clone()),
+            Builds::Release { releases, version } => (releases, version),
+        };
+        let cpu = rovik_protocol::release::cpu(machine).ok_or_else(|| {
+            DeployError::Unsupported(format!("the daemon isn't built for {machine}."))
+        })?;
+        let file = releases.build(version, cpu).await;
+        let file = file.map_err(|why| {
+            let instead = match why == crate::release::NO_KEY {
+                true => "",
+                false => {
+                    " A build of your own can go instead: set ROVIK_AGENTD_BINARY to it \
+                     (scripts/build-agentd.sh makes one)."
+                }
+            };
+            DeployError::Failed(format!(
+                "Rovik {version}'s daemon for {cpu}: {why}{instead}"
+            ))
+        })?;
+        Ok(Binary {
+            sha256: hex(&Sha256::digest(&file.bytes)),
+            path: file.path,
+            signature: Some(file.signature),
         })
     }
 }
@@ -187,7 +237,7 @@ pub struct InstalledBuild {
 /// Deploys `binary` for this user on `connector`'s host, as `computer`.
 pub async fn deploy(
     connector: &SshConnector,
-    binary: &Binary,
+    builds: &Builds,
     computer: &str,
     sudo_password: Option<&Secret>,
     layout: &Layout,
@@ -195,7 +245,8 @@ pub async fn deploy(
     let ssh = session(connector).await?;
     let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     supported(&probe)?;
-    let upload = upload(&ssh, binary).await?;
+    let binary = builds.for_machine(&probe.arch).await?;
+    let upload = upload(&ssh, &binary).await?;
     let token = new_token();
     let done = install_and_start(
         &ssh,
@@ -209,7 +260,7 @@ pub async fn deploy(
     let done = done.await;
     // The build stays only for someone with root to run.
     if !matches!(done, Err(DeployError::NeedsRoot { .. })) {
-        let _ = ssh.exec(&format!("rm -f {}", quote(&upload))).await;
+        forget_upload(&ssh, &upload).await;
     }
     done?;
     let identity = Identity {
@@ -358,10 +409,13 @@ pub async fn confirm(
 
 /// On each connection (D5): the user's unit runs the installed binary as
 /// the installer wrote it, and that binary is a build this computer trusts
-/// (`known`, their SHA-256). Without systemd, only the binary is checked.
+/// (`known`, their SHA-256) or one of its version's release, as the
+/// release's signed `SHA256SUMS` lists them. Without systemd, only the
+/// binary is checked.
 pub async fn check_install(
     ssh: &Ssh,
     known: &[String],
+    releases: Option<&Releases>,
     user: &str,
     layout: &Layout,
 ) -> Result<InstalledBuild, DeployError> {
@@ -384,10 +438,16 @@ pub async fn check_install(
             )))
         }
     }
-    if !known.contains(&build.sha256) {
-        return Err(DeployError::Changed(build));
+    if known.contains(&build.sha256) {
+        return Ok(build);
     }
-    Ok(build)
+    if let (Some(releases), Some(version)) = (releases, &build.version) {
+        let listed = releases.sums(version).await;
+        if listed.is_ok_and(|sums| sums.contains(&build.sha256)) {
+            return Ok(build);
+        }
+    }
+    Err(DeployError::Changed(build))
 }
 
 /// The build the installed link points to, if there's one, and what
@@ -450,15 +510,16 @@ fn exec_starts(shown: &str) -> Vec<String> {
         .collect()
 }
 
-/// An upgrade for everyone, by an administrator (`admin upgrade`); anyone
+/// An upgrade for everyone, by an administrator (`admin upgrade`), which
+/// returns the build's SHA-256: what the server runs from then on. Anyone
 /// else is told whom to ask. The daemons that ran pause their runs and
 /// start again on it (R02). Without systemd only the administrator's own
 /// daemon is started again here; the others' take it at their next start.
 pub async fn upgrade(
     connector: &SshConnector,
-    binary: &Binary,
+    builds: &Builds,
     layout: &Layout,
-) -> Result<(), DeployError> {
+) -> Result<String, DeployError> {
     let ssh = session(connector).await?;
     let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
     let Some(install) = &probe.install else {
@@ -469,7 +530,8 @@ pub async fn upgrade(
     if !install.admins.contains(&probe.user) {
         return Err(DeployError::AskAdmins(install.admins.clone()));
     }
-    let upload = upload(&ssh, binary).await?;
+    let binary = builds.for_machine(&probe.arch).await?;
+    let upload = upload(&ssh, &binary).await?;
     let command = format!(
         "{} -n {} admin upgrade {}",
         layout.sudo,
@@ -477,12 +539,12 @@ pub async fn upgrade(
         quote(&upload)
     );
     let upgraded = run(&ssh, &command, b"").await;
-    let _ = ssh.exec(&format!("rm -f {}", quote(&upload))).await;
+    forget_upload(&ssh, &upload).await;
     upgraded?;
     if !probe.systemd {
         start(&ssh, &probe, layout).await?;
     }
-    Ok(())
+    Ok(binary.sha256)
 }
 
 /// The limits on each user's daemon, as `admin limits` shows them to an
@@ -637,14 +699,37 @@ fn tail(text: &str, max: usize) -> String {
 
 /// The build in the user's home on the server, its SHA-256 checked there.
 /// Returns its path there.
+/// Uploads `binary` to the user's home, and its signature beside it
+/// (`<upload>.sig`) when it has one, for `admin upgrade` to check: a build
+/// of one's own leaves no signature there, not even an older one.
 async fn upload(ssh: &Ssh, binary: &Binary) -> Result<String, DeployError> {
+    let signed = match &binary.signature {
+        Some(_) => format!(
+            "umask 077 && cat > \"$HOME/{UPLOAD}{}\"",
+            rovik_protocol::release::SIGNATURE
+        ),
+        None => format!(
+            "rm -f \"$HOME/{UPLOAD}{}\"",
+            rovik_protocol::release::SIGNATURE
+        ),
+    };
+    let signature = binary.signature.as_deref().unwrap_or_default();
+    run(ssh, &signed, signature.as_bytes()).await?;
     let bytes = std::fs::read(&binary.path)
         .map_err(|e| DeployError::Failed(format!("{}: {e}", binary.path.display())))?;
+    // A build is mostly tables: gzipped, a tenth of it goes, where the
+    // server has gzip to unpack it.
+    let gzip = exec(ssh, HAS_GZIP, b"").await;
+    let gzip = gzip.is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "yes");
+    let (write, sent) = match gzip {
+        true => ("gzip -dc", gzipped(&bytes)?),
+        false => ("cat", bytes),
+    };
     let command = format!(
-        "umask 077 && f=\"$HOME/{UPLOAD}\" && cat > \"$f.part\" && chmod 700 \"$f.part\" && \
+        "umask 077 && f=\"$HOME/{UPLOAD}\" && {write} > \"$f.part\" && chmod 700 \"$f.part\" && \
          mv -f \"$f.part\" \"$f\" && printf '%s\\n' \"$f\" && sha256sum \"$f\" | cut -d' ' -f1"
     );
-    let out = exec(ssh, &command, &bytes).await?;
+    let out = exec(ssh, &command, &sent).await?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut lines = text.lines();
     let (path, hash) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
@@ -654,6 +739,21 @@ async fn upload(ssh: &Ssh, binary: &Binary) -> Result<String, DeployError> {
         ));
     }
     Ok(path.to_string())
+}
+
+fn gzipped(bytes: &[u8]) -> Result<Vec<u8>, DeployError> {
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(bytes)
+        .and_then(|()| gz.finish())
+        .map_err(|e| DeployError::Failed(e.to_string()))
+}
+
+/// The upload and its signature, once they've done their work.
+async fn forget_upload(ssh: &Ssh, upload: &str) {
+    let signature = format!("{upload}{}", rovik_protocol::release::SIGNATURE);
+    let command = format!("rm -f {} {}", quote(upload), quote(&signature));
+    let _ = ssh.exec(&command).await;
 }
 
 async fn session(connector: &SshConnector) -> Result<std::sync::Arc<Ssh>, DeployError> {

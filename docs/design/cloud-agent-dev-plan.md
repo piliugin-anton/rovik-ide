@@ -2871,3 +2871,41 @@ Tasks add notes here when reality differs from the plan.
     the aarch64 one was checked with `file` alone, as nothing here runs
     it. Starting them on Alpine and Ubuntu, as the plan's test says, is
     still to do.
+- **B02 and B03, signed releases and builds of one's own.**
+  - The key is the one the app's updates are signed with: a minisign key,
+    as `tauri signer generate` makes it, and `tauri signer sign` signs
+    each file (base64 of minisign's text). `rovik_protocol::release`
+    checks with `minisign-verify`, which has no dependencies of its own,
+    against the key compiled in from `src-tauri/release-key.pub`. That
+    file has no key until one is made; a debug build takes
+    `ROVIK_RELEASE_KEY` instead, for the tests. The tests' fixture was
+    signed by the real `tauri signer`, with a key thrown away since.
+  - A release has `rovik-agentd-<version>-<cpu>.gz`, the build gzipped
+    (19 MB of 165), `rovik-agentd-<version>-<cpu>.sig`, the build's own
+    signature, and `SHA256SUMS` with its `.sig`.
+  - The app (`rovik_client::release::Releases`) downloads the build for
+    the server's CPU from its own version's release, unpacks it (1 GiB at
+    most), checks it, and keeps it under `releases/<version>/` in its
+    data folder, the current version's build alone. It's checked again
+    each time it's read. `ROVIK_AGENTD_BINARY` still names a build of
+    one's own, and `ROVIK_RELEASES_URL` another place to download from.
+    The page offers Deploy when there's either.
+  - A deploy or an upgrade uploads the build gzipped where the server has
+    gzip, unpacked there and checked by its SHA-256 as before, with its
+    signature beside it (`.rovik-agentd-upload.sig`); a build of one's own
+    removes an older one there.
+  - `admin upgrade FILE` takes a build whose `FILE.sig` the installed
+    binary's key checks, so a new build can't vouch for itself. A
+    signature that doesn't match is refused, and a build without one goes
+    in only where `allow_unsigned = true`, as before.
+  - The install check takes, besides the builds this computer trusts, any
+    build its version's release lists in `SHA256SUMS`, which is signed,
+    kept, and fetched with a short timeout while connecting. The version
+    is the installed build's name, `rovik-agentd-<version>`. An
+    administrator's upgrade to a release no longer asks to be trusted.
+  - Tests: the fixture through `verify`, and the list's parsing; a release
+    server in the client's tests, whose build is downloaded once and kept,
+    a changed copy downloaded again, older versions' builds removed, and
+    an unsigned or missing build refused; `admin upgrade` taking a signed
+    build where unsigned ones aren't allowed, and refusing the same
+    signature on another build.

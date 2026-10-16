@@ -1,8 +1,9 @@
 //! What the app and the agent daemon send each other
 //! (docs/design/cloud-agent-dev-plan.md, section 4): the frames of the
-//! WebSocket, the requests and their replies, and the events. Serde types
-//! only, so the app, the daemon and the core share one definition of every
-//! shape, and nothing heavier than serde comes with it.
+//! WebSocket, the requests and their replies, and the events. Serde types,
+//! so the app, the daemon and the core share one definition of every
+//! shape, and nothing heavier than serde comes with it; and how Rovik's
+//! releases are named and signed (`release`), which both sides check.
 //!
 //! The core's types that travel (a run's events, a start and its settings,
 //! what a run waits on) are defined in the public modules here. The core
@@ -19,6 +20,7 @@ pub mod host;
 pub mod packs;
 pub mod permissions;
 pub mod plan;
+pub mod release;
 mod request;
 pub mod subagents;
 pub mod sync;

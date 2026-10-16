@@ -769,8 +769,9 @@ function HostPage(props: {
                 when={props.build}
                 fallback={
                   <p class="settings-hint setting-explain warning">
-                    There’s no build to deploy: set ROVIK_AGENTD_BINARY to a rovik-agentd built for
-                    the server. Signed releases are to come.
+                    There’s no build to deploy: this build of Rovik has no release key to check a
+                    downloaded daemon with. Set ROVIK_AGENTD_BINARY to a rovik-agentd built for the
+                    server (scripts/build-agentd.sh makes one).
                   </p>
                 }
               >

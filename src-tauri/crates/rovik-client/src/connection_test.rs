@@ -17,6 +17,7 @@ pub mod probe;
 
 use crate::deploy::{self, DeployError, InstalledBuild, Layout};
 use crate::http;
+use crate::release::Releases;
 use crate::ssh::{Ssh, SshAuth, SshConnector, SshError, SshTarget};
 use probe::{Probe, PROBE};
 use rovik_protocol::host::{Doctor, Level};
@@ -124,6 +125,8 @@ pub struct TestOptions {
     pub known: Vec<String>,
     /// Where Rovik is installed there.
     pub layout: Layout,
+    /// The releases whose builds are Rovik's own besides `known`.
+    pub releases: Option<Releases>,
 }
 
 /// The steps so far, each told to `report` as it ends.
@@ -216,7 +219,8 @@ pub async fn test_connection(
 /// changed since it was trusted is for the user to compare and trust.
 async fn build(ssh: &Ssh, options: &TestOptions, user: &str) -> Step {
     let step = |outcome, message: String| Step::new(Check::Build, outcome, message);
-    match deploy::check_install(ssh, &options.known, user, &options.layout).await {
+    let releases = options.releases.as_ref();
+    match deploy::check_install(ssh, &options.known, releases, user, &options.layout).await {
         Ok(build) => step(
             Outcome::Passed,
             match &build.version {

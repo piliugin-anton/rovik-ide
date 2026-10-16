@@ -3,6 +3,7 @@
 //! that would change the system is printed instead of run. `nobody` plays
 //! the administrator, and another account a user who isn't one.
 
+use rovik_protocol::release::fixture;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -32,12 +33,19 @@ impl Server {
     /// `args` as root under the folder; through sudo for the user with
     /// `sudo_uid`.
     fn run(&self, args: &[&str], sudo_uid: Option<u32>) -> Output {
+        self.run_with_key(args, sudo_uid, None)
+    }
+
+    /// `run`, the binary checking releases with `key` (a debug build takes
+    /// `ROVIK_RELEASE_KEY`); with none, it has no key.
+    fn run_with_key(&self, args: &[&str], sudo_uid: Option<u32>, key: Option<&str>) -> Output {
         let mut command = Command::new(BINARY);
         command
             .args(args)
             .arg("--root")
             .arg(&self.root)
-            .env_remove("SUDO_UID");
+            .env_remove("SUDO_UID")
+            .env("ROVIK_RELEASE_KEY", key.unwrap_or(""));
         if let Some(uid) = sudo_uid {
             command.env("SUDO_UID", uid.to_string());
         }
@@ -217,7 +225,8 @@ fn user_commands_act_only_on_the_callers_daemon() {
 
 /// H07: `admin` commands are refused to a user who isn't an administrator;
 /// for one who is, they change the limits and the administrators, upgrade
-/// once unsigned builds are allowed, and take Rovik off the server.
+/// to a release's signed build (B02), or to an unsigned one once those are
+/// allowed, and take Rovik off the server.
 #[test]
 fn admin_commands_are_for_administrators() {
     let server = Server::installed();
@@ -255,6 +264,36 @@ fn admin_commands_are_for_administrators() {
         said(&last).contains("at least one administrator"),
         "{}",
         said(&last)
+    );
+
+    // A release's build, signed with the key the binary checks: in, without
+    // unsigned builds allowed. The same signature on another build: out.
+    let signed = server.dir.0.join("signed");
+    std::fs::write(&signed, fixture::BUILD).unwrap();
+    std::fs::set_permissions(&signed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(server.dir.0.join("signed.sig"), fixture::BUILD_SIG).unwrap();
+    let signed = signed.to_string_lossy().into_owned();
+    let key = Some(fixture::KEY);
+    let upgraded = server.run_with_key(&["admin", "upgrade", &signed], Some(NOBODY), key);
+    assert!(upgraded.status.success(), "{}", said(&upgraded));
+    let link = std::fs::read_link(server.file("/opt/rovik/bin/rovik-agentd")).unwrap();
+    assert_eq!(link, Path::new("rovik-agentd-9.9.8"));
+    let without_key = server.run(&["admin", "upgrade", &signed], Some(NOBODY));
+    assert!(
+        said(&without_key).contains("allow_unsigned"),
+        "{}",
+        said(&without_key)
+    );
+    let forged = server.dir.0.join("forged");
+    script(&forged, "9.9.7");
+    std::fs::write(server.dir.0.join("forged.sig"), fixture::BUILD_SIG).unwrap();
+    let forged = forged.to_string_lossy().into_owned();
+    let refused = server.run_with_key(&["admin", "upgrade", &forged], Some(NOBODY), key);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        said(&refused).contains("doesn't match"),
+        "{}",
+        said(&refused)
     );
 
     let newer = server.dir.0.join("newer");

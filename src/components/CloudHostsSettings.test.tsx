@@ -185,7 +185,8 @@ test('not tested: the host’s page offers a test and a deploy, and says nothing
 test('not deployed, and no build to deploy: says so instead of offering it', async () => {
   const { root } = await hostPage({ ...hostsList(), build: undefined });
   assert.equal(button(root, 'Deploy'), undefined);
-  assert.match(root.textContent!, /There’s no build to deploy: set ROVIK_AGENTD_BINARY/);
+  assert.match(root.textContent!, /There’s no build to deploy: this build of Rovik has no release/);
+  assert.match(root.textContent!, /Set ROVIK_AGENTD_BINARY/);
 });
 
 test('testing: each step shows as it ends, then the verdict', async () => {

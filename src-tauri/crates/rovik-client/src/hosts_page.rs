@@ -12,8 +12,9 @@
 
 use crate::client::{HostState, Identity};
 use crate::connection_test::{test_connection, Step, TestOptions};
-use crate::deploy::{self, Binary, DeployError, Layout, Removal, SetupRun};
+use crate::deploy::{self, Builds, DeployError, Layout, Removal, SetupRun};
 use crate::host_settings::{AuthKind, DeployState, Host, HostSettings};
+use crate::release::Releases;
 use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
@@ -49,7 +50,8 @@ pub struct HostsList {
     pub hosts: Vec<HostRow>,
     /// Where secrets are kept, for the page to say (design §6).
     pub store: StoreKind,
-    /// The build a deploy uploads (`ROVIK_AGENTD_BINARY`), if there is one.
+    /// What a deploy uploads: the build `ROVIK_AGENTD_BINARY` names, or
+    /// this app's release when there's a key to check it with.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
 }
@@ -267,7 +269,7 @@ impl HostsPage {
         }
         let mut connector = SshConnector::new(self.target(host)?);
         if let Some(sha256) = sha256 {
-            connector = connector.with_install_check(vec![sha256.clone()]);
+            connector = connector.with_install_check(vec![sha256.clone()], Some(self.releases()));
         }
         self.remote.connect(&host.id, connector, identity);
         Ok(())
@@ -378,11 +380,19 @@ impl HostsPage {
                 host,
             });
         }
-        let build = std::env::var_os("ROVIK_AGENTD_BINARY");
+        // What a deploy takes, without reading it: a build of one's own,
+        // or this app's release, when there's a key to check it with.
+        let build = match std::env::var_os("ROVIK_AGENTD_BINARY") {
+            Some(path) => Some(path.to_string_lossy().into_owned()),
+            None => self
+                .releases()
+                .has_key()
+                .then(|| format!("Rovik {}'s release", self.version)),
+        };
         Ok(HostsList {
             hosts,
             store: self.secrets.kind(),
-            build: build.map(|b| b.to_string_lossy().into_owned()),
+            build,
         })
     }
 
@@ -465,6 +475,7 @@ impl HostsPage {
             deployed: matches!(host.deploy, DeployState::Deployed { .. }),
             known,
             layout: Layout::default(),
+            releases: Some(self.releases()),
         };
         Ok(test_connection(&connector, &options, report).await)
     }
@@ -481,6 +492,11 @@ impl HostsPage {
         probe.pinned_fingerprint().map_err(|e| e.to_string())?;
         self.change_host(id, |host| host.host_key = Some(key.to_string()))?;
         Ok(())
+    }
+
+    /// This app's releases, kept in its data folder.
+    fn releases(&self) -> Releases {
+        Releases::new(self.remote.data_dir())
     }
 
     /// Trusts the build of Rovik the host runs now, once the user compared
@@ -519,12 +535,12 @@ impl HostsPage {
     ) -> Result<String, DeployFailure> {
         let host = self.host(id)?;
         let connector = SshConnector::new(self.target(&host)?);
-        let binary = Binary::from_env()?;
+        let builds = Builds::new(self.remote.data_dir(), &self.version)?;
         let computer = self.settings()?.computer;
         let layout = Layout::default();
         let deployed = deploy::deploy(
             &connector,
-            &binary,
+            &builds,
             &computer,
             sudo_password.as_ref(),
             &layout,
@@ -553,11 +569,11 @@ impl HostsPage {
     pub async fn upgrade(&self, id: &str) -> Result<(), DeployFailure> {
         let host = self.host(id)?;
         let connector = SshConnector::new(self.target(&host)?);
-        let binary = Binary::from_env()?;
-        deploy::upgrade(&connector, &binary, &Layout::default()).await?;
+        let builds = Builds::new(self.remote.data_dir(), &self.version)?;
+        let installed = deploy::upgrade(&connector, &builds, &Layout::default()).await?;
         let host = self.change_host(id, |host| {
             if let DeployState::Deployed { sha256, .. } = &mut host.deploy {
-                *sha256 = Some(binary.sha256.clone());
+                *sha256 = Some(installed);
             }
         })?;
         self.connect(&self.settings()?.computer, &host)?;

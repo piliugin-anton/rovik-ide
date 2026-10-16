@@ -507,8 +507,9 @@ pub struct SshConnector {
     attach: String,
     session: tokio::sync::Mutex<Option<Arc<Ssh>>>,
     /// The builds Rovik's binary on the host may be, by their SHA-256,
-    /// checked on each new connection.
+    /// checked on each new connection, besides its release's.
     known: Option<Vec<String>>,
+    releases: Option<crate::release::Releases>,
 }
 
 impl SshConnector {
@@ -520,6 +521,7 @@ impl SshConnector {
             attach: ATTACH.into(),
             session: tokio::sync::Mutex::new(None),
             known: None,
+            releases: None,
         }
     }
 
@@ -536,11 +538,17 @@ impl SshConnector {
     }
 
     /// Checks Rovik's install on each new connection (D5, H05): the
-    /// binary must be one of the builds `known` names by their SHA-256,
-    /// and the user's unit must run it as installed. A connection that
-    /// fails is refused, saying why, and not tried again.
-    pub fn with_install_check(mut self, known: Vec<String>) -> SshConnector {
+    /// binary must be one of the builds `known` names by their SHA-256, or
+    /// one its version's release lists in `releases`, and the user's unit
+    /// must run it as installed. A connection that fails is refused,
+    /// saying why, and not tried again.
+    pub fn with_install_check(
+        mut self,
+        known: Vec<String>,
+        releases: Option<crate::release::Releases>,
+    ) -> SshConnector {
         self.known = Some(known);
+        self.releases = releases;
         self
     }
 
@@ -570,7 +578,9 @@ impl SshConnector {
         let ssh = Arc::new(Ssh::connect(&self.target).await?);
         if let Some(known) = &self.known {
             let layout = crate::deploy::Layout::default();
-            let checked = crate::deploy::check_install(&ssh, known, &self.target.user, &layout);
+            let releases = self.releases.as_ref();
+            let user = &self.target.user;
+            let checked = crate::deploy::check_install(&ssh, known, releases, user, &layout);
             checked
                 .await
                 .map_err(|e| SshError::Install(e.to_string()))?;

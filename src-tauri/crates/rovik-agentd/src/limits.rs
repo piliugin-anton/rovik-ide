@@ -44,7 +44,9 @@ pub struct AdminFile {
     /// For all of Rovik, on `rovik.slice`.
     pub total_memory_max: Option<String>,
     pub total_cpu_quota: Option<String>,
-    /// `admin upgrade` takes a build that isn't signed (B03).
+    /// `admin upgrade` takes a build that isn't signed with the release
+    /// key: a build of one's own (B03). A release's signed build goes in
+    /// either way.
     #[serde(default)]
     pub allow_unsigned: bool,
 }
