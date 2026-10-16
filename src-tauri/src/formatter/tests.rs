@@ -20,12 +20,18 @@ impl Project {
     }
 
     /// An executable shell script. The formatter runs with the test's PATH,
-    /// which has only the fake tools, so the script brings its own.
+    /// which has only the fake tools, so the script brings its own. It's run
+    /// once before it's handed over (`runnable`), which `PROBE` makes it end
+    /// at once.
     #[cfg(unix)]
     fn tool(&self, rel: &str, script: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let p = self.file(rel, &format!("#!/bin/sh\nPATH=/usr/bin:/bin\n{script}\n"));
+        let p = self.file(
+            rel,
+            &format!("#!/bin/sh\n[ -n \"${PROBE}\" ] && exit 0\nPATH=/usr/bin:/bin\n{script}\n"),
+        );
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        runnable(&p);
         p
     }
 
@@ -38,6 +44,32 @@ impl Drop for Project {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// Set, it makes a test's script end at once (`Project::tool`).
+#[cfg(unix)]
+const PROBE: &str = "FORMATTER_TEST_PROBE";
+
+/// Runs a script just written, once, until it isn't busy. A test running
+/// alongside that starts a process while the script is being written can
+/// keep it open for writing for a moment, until that process's program
+/// replaces it, and Linux won't run a file open for writing ("Text file
+/// busy"). Once one run went through, nothing has it open for writing.
+#[cfg(unix)]
+fn runnable(script: &Path) {
+    for _ in 0..500 {
+        match Command::new(script).env(PROBE, "1").status() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(status) => {
+                assert!(status.success(), "{}: {status}", script.display());
+                return;
+            }
+            Err(e) => panic!("{}: {e}", script.display()),
+        }
+    }
+    panic!("{} stayed busy", script.display());
 }
 
 fn found(p: &Project, file: &Path, language: &str) -> Option<(String, bool, PathBuf)> {
