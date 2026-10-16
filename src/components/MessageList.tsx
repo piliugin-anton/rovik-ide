@@ -42,7 +42,7 @@ import ReviewRecord from './ReviewRecord';
 import { liveSubagent } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
 import type { ReviewMeta } from '../lib/changeReview';
-import { requestOpenFile } from '../lib/editorBridge';
+import { openPlan } from '../lib/plans';
 import { isSettled, parseTodo } from '../lib/todo';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 
@@ -1322,7 +1322,7 @@ export default function MessageList(props: {
                         type="button"
                         class="link-button"
                         title={`${file()}: edit it, then implement it from the editor or here`}
-                        onClick={() => requestOpenFile({ path: file() })}
+                        onClick={() => void openPlan(props.dialogId, file())}
                       >
                         {file().split(/[\\/]/).slice(-3).join('/')}
                       </button>

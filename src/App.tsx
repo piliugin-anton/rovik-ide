@@ -64,6 +64,7 @@ import { editorSettings } from './lib/editorSettings';
 import {
   onAddToChat,
   onCompareRequest,
+  requestCompare,
   onOpenFileRequest,
   setProjectFileResolver,
 } from './lib/editorBridge';
@@ -81,7 +82,8 @@ import {
 import { scheduleModelPrune, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { toAbsolutePath, toRelativePath } from './lib/fileTools';
-import { contextRealPath, isContextPath } from './lib/contextMode';
+import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
+import { isLiveContextPath } from './lib/contextDoc';
 import { chatStore } from './lib/chatStore';
 import { notify } from './lib/notifications';
 import {
@@ -90,7 +92,7 @@ import {
   clearVfsSettingsRequest,
 } from './lib/virtualFilesStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
-import { initCloud } from './lib/cloud';
+import { cloud, hostName, initCloud } from './lib/cloud';
 import AiSettingsModal from './components/AiSettingsModal';
 import {
   appSettingsPage,
@@ -579,6 +581,7 @@ export default function App() {
     if (!root && !isContextPath(path)) return;
     void (async () => {
       const abs = await resolveOpenPath(path, root);
+      if (!abs && (await openRemoteContext(path))) return;
       if (!abs) {
         notify({
           kind: 'warning',
@@ -605,6 +608,25 @@ export default function App() {
       else await openPathAtLine(abs, target);
     })();
   });
+  /**
+   * A remote chat's context file, read-only from its latest revision: the
+   * folder it's in is on the server (U04). False when `path` isn't that
+   * file, or the chat isn't remote.
+   */
+  async function openRemoteContext(path: string): Promise<boolean> {
+    const chat = chatStore.state.active;
+    if (!chat?.place || !isLiveContextPath(path)) return false;
+    const text = await remoteContextText(chat.id).catch(() => null);
+    if (text === null) return false;
+    requestCompare({
+      id: `context:${chat.id}`,
+      title: `LIVE_CONTEXT.md (on ${hostName(chat.place.host, cloud.hosts)})`,
+      fileName: 'LIVE_CONTEXT.md',
+      before: text,
+      after: text,
+    });
+    return true;
+  }
   /**
    * The file a path from the chat names: relative to the project, absolute,
    * or in the active chat's context folder (`@context/…`, on the virtual

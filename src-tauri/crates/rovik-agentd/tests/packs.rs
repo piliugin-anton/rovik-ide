@@ -347,7 +347,7 @@ async fn a_push_tells_its_progress_on_cloud_event() {
                 assert_eq!((dialog_id.as_str(), project.as_str()), (CHAT, PROJECT));
                 Some(*sent)
             }
-            CloudEvent::Host { .. } => None,
+            CloudEvent::Host { .. } | CloudEvent::CaughtUp { .. } => None,
             other => panic!("{other:?}"),
         })
         .collect();

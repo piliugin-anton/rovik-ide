@@ -2555,3 +2555,35 @@ Tasks add notes here when reality differs from the plan.
     when the host can't be reached; and "Moving…" during a move.
   - They sit on the row's date line, so the rows keep their fixed heights.
     The hosts and their connections come from U02's `cloud` store.
+- **U04, the frontend's guards for remote chats.**
+  - Opening a chat picks up its unanswered tool calls only when it's this
+    computer's (`remoteGuards.resumesHere`): a remote chat's daemon resumes
+    it (K07). A move's start does it after the move, so the panel doesn't.
+  - `CloudEvent::CaughtUp { host }` comes once the chats mirrored from a
+    host have pulled after it connected, unless a pull failed or the host
+    went away meanwhile. The `cloud` store keeps the hosts that caught up,
+    and forgets one when it goes. Draft recovery (`recoverDrafts`) judges a
+    remote chat's draft only then, and again each time a host catches up;
+    until then it neither clears it, nor marks the message failed, nor puts
+    it back in the input (K23). An e2e test checks that the mirror has what
+    the daemon stored while the app was away by the time `CaughtUp` comes.
+  - A remote edit approval (`ApprovalRequest.remote`) keeps the file's text
+    before and after the edit and opens a read-only compare tab of it; it
+    never reviews hunks on the local file's tab. The approval bar offers
+    "Show the change", Allow and Deny (K09).
+  - Plans are read with `chat_read_plan` (`plans.readPlan`), for
+    "Implement this plan" too. A remote chat's plan opens read-only from its
+    host; a local chat's opens in the editor as before.
+  - A remote chat's context file (`@context/LIVE_CONTEXT.md`) has no
+    `realPath`, so it opens read-only from its latest revision
+    (`clm_read_revision`).
+  - The `cloud` store keeps each chat's upload, and `UploadProgress` shows
+    it above the input while a remote send's files go up (6.11).
+  - `sendKeepingInput`: the input is cleared at once and kept in
+    localStorage until the message is answered, as before; a remote chat's
+    is also saved in `composer_drafts` until its start succeeded, as
+    localStorage can't hold megabytes of text files and its error is
+    swallowed. A send that fails puts the input back from memory, so it no
+    longer depends on the localStorage copy either (K49).
+  - A chat on an offline host, or one that needs a newer app, is
+    read-only, and its input says why (6.10).

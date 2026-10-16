@@ -10,8 +10,13 @@
 // rejected on its own. Once none is left pending, the approval resolves:
 // everything accepted → allow, everything rejected → deny, otherwise
 // a partial result with the merged content.
+//
+// A remote chat's edit is to the server's file, not this computer's (K09):
+// it shows in a read-only compare tab built from the file before and after,
+// never on the local file's tab, and is allowed or denied whole.
 import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
+import { requestCompare } from './editorBridge';
 import { applyHunks, diffLines, splitLines, type DiffHunk } from './lineDiff';
 
 export type HunkState = 'pending' | 'accepted' | 'rejected';
@@ -46,14 +51,25 @@ export interface PendingApproval {
   note?: string;
   /** write on an existing file: the reviewable diff. */
   edit?: EditReview;
+  /** A remote chat's write: the server's file before and after it. */
+  remoteEdit?: RemoteEdit;
   /** A subagent's request: its lead's chat and the `task` call there. */
   parentDialogId?: string;
   parentCallId?: string;
 }
 
+/** A remote chat's edit: its file is on the server. */
+export interface RemoteEdit {
+  relPath: string;
+  current: string;
+  proposed: string;
+}
+
 /** As a run asks: an edit comes with the file's text before and after it. */
-export interface ApprovalRequest extends Omit<PendingApproval, 'edit'> {
+export interface ApprovalRequest extends Omit<PendingApproval, 'edit' | 'remoteEdit'> {
   edit?: { absPath: string; relPath: string; current: string; proposed: string };
+  /** A remote chat's edit (K09): `edit` is the server's file. */
+  remote?: boolean;
 }
 
 /** The answer the run gets (agent_run::ApprovalDecision). */
@@ -111,7 +127,13 @@ export function buildEditReview(
 export function registerApproval(request: ApprovalRequest) {
   const key = keyOf(request.dialogId, request.toolCallId);
   if (state.pending[key]) return;
-  const { edit, ...rest } = request;
+  const { edit, remote, ...rest } = request;
+  if (edit && remote) {
+    const { relPath, current, proposed } = edit;
+    setState('pending', key, { ...rest, remoteEdit: { relPath, current, proposed } });
+    showRemoteEdit(request.dialogId, request.toolCallId);
+    return;
+  }
   const review = edit
     ? buildEditReview(edit.absPath, edit.relPath, edit.current, edit.proposed)
     : null;
@@ -269,6 +291,20 @@ export function revealEdit(dialogId: string, toolCallId: string) {
   if (!edit) return;
   setState('pending', key, 'edit', 'revealNonce', (n) => n + 1);
   for (const listener of revealListeners) listener(edit.absPath);
+}
+
+/** A remote chat's edit, in a read-only tab comparing the file before and after it. */
+export function showRemoteEdit(dialogId: string, toolCallId: string) {
+  const edit = state.pending[keyOf(dialogId, toolCallId)]?.remoteEdit;
+  if (!edit) return;
+  const name = edit.relPath.split(/[\\/]/).pop() || edit.relPath;
+  requestCompare({
+    id: `remote-edit:${dialogId}:${toolCallId}`,
+    title: `${name} (proposed on the server)`,
+    fileName: edit.relPath,
+    before: edit.current,
+    after: edit.proposed,
+  });
 }
 
 /** App opens the file in a tab. */

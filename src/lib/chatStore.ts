@@ -156,6 +156,12 @@ export function createChatStore() {
     );
   }
 
+  /** A chat's summary: the open one's, or the list's. */
+  function summaryOf(dialogId: string): DialogSummary | undefined {
+    if (state.active?.id === dialogId) return state.active;
+    return state.list.items.find((d) => d.id === dialogId);
+  }
+
   /** Where a chat is: on a host, moving, or here (absent). */
   function setPlace(dialogId: string, place: ChatPlace | undefined) {
     updateSummary(dialogId, (d) => {
@@ -595,6 +601,7 @@ export function createChatStore() {
     createDialog,
     renameDialog,
     deleteDialog,
+    summaryOf,
     setPlace,
     refreshPlace,
     addLocal,

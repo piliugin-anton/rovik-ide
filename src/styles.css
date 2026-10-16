@@ -8852,3 +8852,28 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 .chat-badge.offline::before {
   content: '☁ ';
 }
+
+/* A remote send's upload (UploadProgress.tsx) */
+
+.chat-upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.chat-upload-bar {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  background: var(--bg-control);
+  border-radius: 2px;
+}
+
+.chat-upload-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}

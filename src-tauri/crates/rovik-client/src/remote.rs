@@ -90,6 +90,9 @@ pub enum CloudEvent {
     /// A host's connection changed: the hosts page and its chats' badges
     /// show it.
     Host { host: String, state: HostState },
+    /// The chats mirrored from a host have pulled since it connected: only
+    /// now can a message sent before a restart be judged unanswered (K23).
+    CaughtUp { host: String },
 }
 
 /// Where `CloudEvent`s go.

@@ -1,13 +1,13 @@
 //! The mirror of a remote chat against the real daemon (M05, 6.3): pulled
 //! after the chat's events, on each connection and when a run ends, it
 //! ends as the daemon has the chat, its files included; the frontend hears
-//! of every row once it's here; and "Re-sync this chat" replaces it,
-//! keeping the input's draft.
+//! of every row once it's here; "Re-sync this chat" replaces it, keeping
+//! the input's draft; and a connection's first pulls end with `CaughtUp`.
 
 mod common;
 
 use common::{start_request, until, Daemon, COMPUTER};
-use rovik_client::{HostState, Identity, Remote, UnixConnector};
+use rovik_client::{CloudEvent, HostState, Identity, Remote, UnixConnector};
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::agent_run::StartKind;
 use rovik_core::chat_db::store::{self, MessageRow, NewDialog, NewMessage};
@@ -39,6 +39,8 @@ const PNG: [u8; 70] = [
 struct App {
     core: Core,
     events: Arc<Mutex<Vec<Value>>>,
+    /// What the frontend heard on `cloud-event` since the app last connected.
+    cloud: Arc<Mutex<Vec<CloudEvent>>>,
     remote: Option<Arc<Remote>>,
     database: PathBuf,
     _dir: TempDir,
@@ -98,6 +100,7 @@ impl App {
         let mut app = App {
             core,
             events,
+            cloud: Arc::default(),
             remote: None,
             database,
             _dir: dir,
@@ -115,6 +118,10 @@ impl App {
     async fn connect(&mut self, daemon: &Daemon) {
         let remote = Remote::new(self.core.clone());
         remote.load().await.unwrap();
+        let heard: Arc<Mutex<Vec<CloudEvent>>> = Arc::default();
+        let cloud = Arc::clone(&heard);
+        remote.on_cloud(Arc::new(move |event| cloud.lock().unwrap().push(event)));
+        self.cloud = heard;
         let identity = Identity {
             host: HOST.into(),
             computer: COMPUTER.into(),
@@ -263,6 +270,40 @@ async fn the_app_offline_during_a_run_catches_up_when_it_reconnects() {
         ("assistant".into(), "Done while you were away.".into()),
     ];
     assert_eq!(texts(&app.rows().await), expected);
+}
+
+/// K23: `CaughtUp` comes once the mirror has pulled what the daemon stored
+/// while the app was away: a message sent before is judged only then.
+#[tokio::test(flavor = "multi_thread")]
+async fn caught_up_comes_once_the_mirror_has_what_was_stored_meanwhile() {
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let mut app = App::new(&daemon).await;
+    let later = Reply::Slow(1500, Box::new(Reply::Text("Done while you were away.")));
+    let (url, _) = model(vec![later]).await;
+    let start = start_request(&url, &project, "Do it".into());
+    app.remote().start(start).await.unwrap();
+    app.disconnect().await;
+    until("the run's end there", || {
+        let rows = daemon.rows(CHAT);
+        rows.iter()
+            .any(|r| r.role == "assistant" && r.finalized)
+            .then_some(())
+    })
+    .await;
+
+    app.connect(&daemon).await;
+    until("CaughtUp", || {
+        let heard = app.cloud.lock().unwrap();
+        let caught_up = |e: &CloudEvent| matches!(e, CloudEvent::CaughtUp { host } if host == HOST);
+        heard.iter().any(caught_up).then_some(())
+    })
+    .await;
+    let expected = [
+        ("user".to_string(), "Do it".to_string()),
+        ("assistant".into(), "Done while you were away.".into()),
+    ];
+    assert_eq!(texts(&app.rows().await), expected, "pulled before it");
 }
 
 /// K22: rows that came without their events reach the frontend once

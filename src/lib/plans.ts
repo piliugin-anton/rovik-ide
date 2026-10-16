@@ -7,6 +7,16 @@
 // current text, so edits made to it count.
 //
 // Saving a submitted plan happens in the backend (src-tauri/src/agent_run/plan.rs).
+//
+// A remote chat's plan is in its worktree on its host: it's read through
+// `chat_read_plan`, which reads a local chat's file too, and opens
+// read-only (K09).
+
+import { chatApi } from './chatApi';
+import { chatStore } from './chatStore';
+import { cloud, hostName } from './cloud';
+import { requestCompare, requestOpenFile } from './editorBridge';
+import { notify } from './notifications';
 
 /** A path inside the project's plans folder. */
 export function isPlanFile(path: string): boolean {
@@ -18,6 +28,41 @@ export function relativePlanPath(path: string, root: string | null): string {
   if (!root) return path;
   const r = root.replace(/[\\/]+$/, '');
   return path.startsWith(r) ? path.slice(r.length + 1) : path;
+}
+
+/** The chat's plan as it is now: from its host, for a remote chat. */
+export function readPlan(dialogId: string, path: string): Promise<string> {
+  return chatApi.readPlan(dialogId, path);
+}
+
+/**
+ * Opens the chat's plan: a local chat's file in the editor, where it can be
+ * edited; a remote chat's read-only, from its host.
+ */
+export async function openPlan(dialogId: string | null, path: string): Promise<void> {
+  const place = dialogId ? chatStore.summaryOf(dialogId)?.place : undefined;
+  if (!dialogId || !place) {
+    requestOpenFile({ path });
+    return;
+  }
+  try {
+    const text = await readPlan(dialogId, path);
+    const name = path.split(/[\\/]/).pop() || path;
+    requestCompare({
+      id: `plan:${dialogId}:${path}`,
+      title: `${name} (on ${hostName(place.host, cloud.hosts)})`,
+      fileName: name,
+      before: text,
+      after: text,
+    });
+  } catch (err) {
+    notify({
+      kind: 'error',
+      title: 'The plan couldn’t be read',
+      message: String(err),
+      timeout: 8000,
+    });
+  }
 }
 
 /*

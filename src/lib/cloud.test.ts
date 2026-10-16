@@ -201,3 +201,33 @@ test('starting a move: read-only at once, where it went once it ends, or why not
   });
   assert.deepEqual(chatStore.state.active?.place, { kind: 'host', host: 'h1' }, 'still there');
 });
+
+test('a chat on an offline host is read-only, and its input says why (6.10)', () => {
+  // Its own hosts: the store took the ones above, and changed them.
+  const away: HostSummary[] = [{ id: 'h2', name: 'Spare', deployed: true, state: 'offline' }];
+  assert.equal(
+    readOnlyReason({ kind: 'host', host: 'h2' }, away),
+    'Spare is offline: this chat is read-only until it’s back.'
+  );
+  const old: HostSummary[] = [
+    { id: 'h1', name: 'Build', deployed: true, state: 'version-mismatch' },
+  ];
+  assert.match(readOnlyReason({ kind: 'host', host: 'h1' }, old)!, /newer versions of this app/);
+  const connecting: HostSummary[] = [
+    { id: 'h1', name: 'Build', deployed: true, state: 'connecting' },
+  ];
+  assert.equal(readOnlyReason({ kind: 'host', host: 'h1' }, connecting), null);
+});
+
+test('a host has caught up once it says so, and has to again after it was away (K23)', async () => {
+  await initCloud();
+  emit({ type: 'host', host: 'h1', state: 'ready' });
+  assert.equal(cloud.caughtUp.h1, undefined, 'connected isn’t caught up');
+  emit({ type: 'caughtUp', host: 'h1' });
+  assert.equal(cloud.caughtUp.h1, true);
+  emit({ type: 'host', host: 'h1', state: 'offline' });
+  assert.equal(cloud.caughtUp.h1, undefined);
+  emit({ type: 'host', host: 'h1', state: 'ready' });
+  emit({ type: 'caughtUp', host: 'h1' });
+  assert.equal(cloud.caughtUp.h1, true);
+});

@@ -5,13 +5,15 @@
 // move to a host or back, and a host's connection changing. And the moves'
 // commands (6.8).
 //
-// `cloud` keeps what the chats show of it (U02): the hosts' names and
-// connections, and each chat's move as it goes. `initCloud` starts it as
-// the app starts, and keeps the chats' places with it.
+// `cloud` keeps what the chats show of it: the hosts' names and
+// connections, and each chat's move as it goes (U02); which hosts have
+// caught up since they connected, and each chat's upload (U04).
+// `initCloud` starts it as the app starts, and keeps the chats' places
+// with it.
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { createStore } from 'solid-js/store';
+import { createStore, produce } from 'solid-js/store';
 import type { StartRequest } from './agentRuns';
 import { chatStore } from './chatStore';
 import type { HostState, Tone } from './hosts';
@@ -35,7 +37,9 @@ export type CloudEvent =
       step: string;
       message?: string;
     }
-  | { type: 'host'; host: string; state: HostState };
+  | { type: 'host'; host: string; state: HostState }
+  /** The chats mirrored from the host have pulled since it connected (K23). */
+  | { type: 'caughtUp'; host: string };
 
 /** What moving a chat to a host would do, and whether it can (`MovePreflight`). */
 export interface MovePreflight {
@@ -123,13 +127,32 @@ const ENDS = new Set(['moved', 'failed', 'cancelled']);
 /** Whether a move is over, or none was seen. */
 export const moveEnded = (move: MoveProgress | undefined) => !move || ENDS.has(move.step);
 
+/** A remote send's files going up before its message (6.11). */
+export interface UploadProgress {
+  messageId: string;
+  sent: number;
+  total: number;
+}
+
 interface CloudState {
   hosts: HostSummary[];
   /** Each chat's latest move this session: an ended one stays until the next. */
   moves: Record<string, MoveProgress>;
+  /**
+   * The hosts whose chats have pulled since they connected: only then is a
+   * remote chat's draft from before a restart judged (K23).
+   */
+  caughtUp: Record<string, true>;
+  /** Each chat's upload while its send's files go up. */
+  uploads: Record<string, UploadProgress>;
 }
 
-const [cloud, setCloud] = createStore<CloudState>({ hosts: [], moves: {} });
+const [cloud, setCloud] = createStore<CloudState>({
+  hosts: [],
+  moves: {},
+  caughtUp: {},
+  uploads: {},
+});
 
 /** The hosts the chats know of, and the chats' moves. */
 export { cloud };
@@ -158,6 +181,25 @@ function track(event: CloudEvent) {
   switch (event.type) {
     case 'host':
       setCloud('hosts', (h) => h.id === event.host, 'state', event.state);
+      // Away, it has to catch up again once it's back.
+      if (event.state !== 'ready') {
+        setCloud(
+          'caughtUp',
+          produce((hosts) => {
+            delete hosts[event.host];
+          })
+        );
+      }
+      return;
+    case 'caughtUp':
+      setCloud('caughtUp', event.host, true);
+      return;
+    case 'uploading':
+      if (event.sent >= event.total) clearUpload(event.dialogId);
+      else {
+        const { messageId, sent, total } = event;
+        setCloud('uploads', event.dialogId, { messageId, sent, total });
+      }
       return;
     case 'moving':
     case 'movingBack': {
@@ -183,6 +225,16 @@ function track(event: CloudEvent) {
       }
       return;
   }
+}
+
+/** A send's upload is over: it went up, or the send ended without it. */
+export function clearUpload(dialogId: string) {
+  setCloud(
+    'uploads',
+    produce((uploads) => {
+      delete uploads[dialogId];
+    })
+  );
 }
 
 /**
@@ -271,15 +323,29 @@ export function placeLabel(
   }
 }
 
-/** Why the chat can't change now, if it can't: a moving chat is read-only. */
+/**
+ * Why the chat can't change now, if it can't: a moving chat is read-only,
+ * as is one whose host can't be reached (6.10).
+ */
 export function readOnlyReason(place: ChatPlace | undefined, hosts: HostSummary[]): string | null {
-  if (place?.kind === 'moving') {
-    return `This chat is moving to ${hostName(place.host, hosts)}: it’s read-only until the move ends.`;
+  if (!place) return null;
+  const name = hostName(place.host, hosts);
+  switch (place.kind) {
+    case 'moving':
+      return `This chat is moving to ${name}: it’s read-only until the move ends.`;
+    case 'movingBack':
+      return `This chat is moving back from ${name}: it’s read-only until the move ends.`;
+    case 'host':
+      // 6.10: what it shows is the mirror's, until its host is back.
+      switch (hosts.find((h) => h.id === place.host)?.state) {
+        case 'offline':
+          return `${name} is offline: this chat is read-only until it’s back.`;
+        case 'version-mismatch':
+          return `${name} serves only newer versions of this app: update it to write in this chat.`;
+        default:
+          return null;
+      }
   }
-  if (place?.kind === 'movingBack') {
-    return `This chat is moving back from ${hostName(place.host, hosts)}: it’s read-only until the move ends.`;
-  }
-  return null;
 }
 
 const THERE_STEPS: Record<string, string> = {

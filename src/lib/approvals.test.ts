@@ -1,14 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  allow,
   clearApproval,
   decideRemaining,
+  onRevealEdit,
   pendingApproval,
   pendingApprovalsOfTask,
+  pendingEditFor,
   registerApproval,
   setHunkState,
+  showRemoteEdit,
   type ApprovalRequest,
 } from './approvals';
+import { onCompareRequest, type CompareRequest } from './editorBridge';
 import { childOf, noteSubagentStarted } from './subagents';
 
 /*
@@ -177,4 +182,38 @@ test('no_cross_chat_leak: two leads with the same call id see their own child’
   // Callers pass `childOf` in the same chat: another chat's child would match by its chat.
   assert.equal(pendingApprovalsOfTask('lead-b', 't1', 'kid-a').length, 1);
   clearApproval('kid-a', 'b1');
+});
+
+test('a remote edit approval doesn’t open the local file: it shows apart, allowed whole (K09)', () => {
+  const revealed: string[] = [];
+  const compared: CompareRequest[] = [];
+  const stopReveal = onRevealEdit((path) => revealed.push(path));
+  const stopCompare = onCompareRequest((request) => compared.push(request));
+  const absPath = '/srv/rovik/work/chat/src/a.ts';
+  registerApproval({
+    toolCallId: 'remote-1',
+    dialogId: 'remote-chat',
+    toolName: 'write',
+    summary: 'Edit src/a.ts',
+    edit: { absPath, relPath: 'src/a.ts', current: 'one\n', proposed: 'two\n' },
+    remote: true,
+  });
+  assert.deepEqual(revealed, [], 'the local file isn’t opened');
+  assert.equal(pendingEditFor(absPath), undefined, 'nor reviewed on its tab');
+  assert.equal(pendingApproval('remote-chat', 'remote-1')?.edit, undefined);
+  assert.equal(compared.length, 1);
+  const shown = compared[0];
+  assert.deepEqual(
+    { fileName: shown.fileName, before: shown.before, after: shown.after },
+    { fileName: 'src/a.ts', before: 'one\n', after: 'two\n' }
+  );
+  // "Show the change" shows it again.
+  showRemoteEdit('remote-chat', 'remote-1');
+  assert.equal(compared.length, 2);
+  assert.equal(compared[1].id, shown.id, 'in the same tab');
+  stopReveal();
+  stopCompare();
+  allow('remote-chat', 'remote-1');
+  assert.deepEqual(decision('remote-1').decision, { kind: 'allow' });
+  assert.equal(pendingApproval('remote-chat', 'remote-1'), undefined);
 });

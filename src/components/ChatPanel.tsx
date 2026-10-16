@@ -15,7 +15,6 @@ import {
 import type {
   ApiRoute,
   ChatMessage,
-  ChatToolCall,
   DialogSummary,
   FileSuggestion,
   ModelProfile,
@@ -65,8 +64,10 @@ import {
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import { overlayStatus } from '../lib/overlay';
-import { barChanged, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
+import { barChanged, clearUpload, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
+import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
 import ChatLocation from './ChatLocation';
+import UploadProgress from './UploadProgress';
 import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
 import {
@@ -75,7 +76,12 @@ import {
   refreshChecklist,
   settledChecklist,
 } from '../lib/checklist';
-import { onImplementPlanRequest, relativePlanPath, takeImplementPlanRequest } from '../lib/plans';
+import {
+  onImplementPlanRequest,
+  readPlan,
+  relativePlanPath,
+  takeImplementPlanRequest,
+} from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
 import {
   configureAgent,
@@ -121,7 +127,6 @@ import {
   resolveSubagentConfig,
   type SubagentSettings,
 } from '../lib/subagentSettings';
-import { readFileContent } from '../lib/commands';
 import { parseComposerImage, type ComposerImage } from '../lib/composerImages';
 import {
   ATTACH_ACCEPT,
@@ -795,6 +800,7 @@ export default function ChatPanel(props: ChatProps) {
       // Runs going on are known before drafts are judged unanswered.
       await initAgentRuns();
       await recoverDraftsAfterRestart();
+      setDraftsJudged(true);
       const active = activeDialogId();
       if (active) await restoreComposerDraft(active);
     } finally {
@@ -2355,8 +2361,10 @@ export default function ChatPanel(props: ChatProps) {
 
   function restoreDraftForDialog(dialogId: string) {
     const stored = listPendingDrafts().find((d) => d.dialogId === dialogId);
-    // A run is going on: its message may still be answered.
+    // A run is going on: its message may still be answered. A remote chat's
+    // is judged once its host has caught up (K23).
     if (!stored || store.isRunning(dialogId)) return;
+    if (draftWaits(store.summaryOf(dialogId)?.place, cloud.caughtUp)) return;
 
     const draft = takePendingDraft(dialogId);
     if (draft) queueMicrotask(() => restoreDraftToComposer(draft));
@@ -2428,29 +2436,40 @@ export default function ChatPanel(props: ChatProps) {
   async function recoverDraftsAfterRestart() {
     const drafts = listPendingDrafts();
     if (drafts.length === 0) return;
-
-    let answered = new Set<string>();
     try {
-      answered = new Set(await chatApi.messagesAnswered(drafts.map((d) => d.messageId)));
+      // A running chat's and a remote chat's wait (lib/remoteGuards.ts).
+      await recoverDrafts(drafts, {
+        isRunning: (id) => store.isRunning(id),
+        placeOf: async (id) => {
+          const known = store.summaryOf(id);
+          return known ? known.place : (await chatApi.getDialog(id).catch(() => null))?.place;
+        },
+        caughtUp: cloud.caughtUp,
+        answered: (ids) => chatApi.messagesAnswered(ids),
+        clear: clearPendingDraft,
+        markFailed: markMessageFailed,
+      });
     } catch (err) {
       console.error('Draft recovery check failed:', err);
       return;
     }
 
-    for (const draft of drafts) {
-      // Its run is still going (the page was reloaded): it may yet be answered.
-      if (store.isRunning(draft.dialogId)) continue;
-      if (answered.has(draft.messageId)) {
-        // The answer made it into the database before the draft was cleared.
-        clearPendingDraft(draft.dialogId, draft.messageId);
-      } else {
-        markMessageFailed(draft.dialogId, draft.messageId);
-      }
-    }
-
     const active = activeDialogId();
     if (active) restoreDraftForDialog(active);
   }
+
+  // Drafts are first judged once runs going on are known (onMount); a
+  // remote chat's again when its host has caught up (K23).
+  const [draftsJudged, setDraftsJudged] = createSignal(false);
+  createEffect(
+    on(
+      [draftsJudged, () => Object.keys(cloud.caughtUp).join(' ')],
+      ([judged, hosts]) => {
+        if (judged && hosts) void recoverDraftsAfterRestart();
+      },
+      { defer: true }
+    )
+  );
 
   function getTextOffset(root: Node, node: Node, nodeOffset: number): number {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -2625,9 +2644,9 @@ export default function ChatPanel(props: ChatProps) {
   ): Promise<boolean> {
     const profile = activeProfile();
     if (!profile) return false;
-    const moving = readOnlyReason(summaryOf(dialogId)?.place, cloud.hosts);
-    if (moving) {
-      notify({ title: 'This chat is moving', message: moving, timeout: 6000 });
+    const readOnly = readOnlyReason(store.summaryOf(dialogId)?.place, cloud.hosts);
+    if (readOnly) {
+      notify({ title: 'This chat can’t change now', message: readOnly, timeout: 6000 });
       return false;
     }
     listController?.followLatest();
@@ -2659,12 +2678,6 @@ export default function ChatPanel(props: ChatProps) {
     }
   }
 
-  /** A chat's summary: the open one's, or the list's. */
-  function summaryOf(dialogId: string) {
-    const active = store.state.active;
-    return active?.id === dialogId ? active : store.state.list.items.find((d) => d.id === dialogId);
-  }
-
   /** The chats an approval or a question waits in, for the list's badges (U03). */
   const waitingIds = createMemo(waitingChats);
 
@@ -2676,6 +2689,7 @@ export default function ChatPanel(props: ChatProps) {
    * stored: a move's run picks up with it, on its host or back here.
    */
   async function moveStart(dialogId: string): Promise<StartRequest | null> {
+    resumed.add(dialogId);
     await store.flush();
     const profile = activeProfile();
     if (!profile) return null;
@@ -2726,7 +2740,8 @@ export default function ChatPanel(props: ChatProps) {
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
     if (!last) return;
     const file = last.meta?.planFile;
-    const text = file ? await readFileContent(file).catch(() => null) : null;
+    // From its host, for a remote chat (K09).
+    const text = file ? await readPlan(dialogId, file).catch(() => null) : null;
     startImplementation(dialogId, text ?? last.content, text !== null ? file : undefined);
   }
 
@@ -2886,32 +2901,14 @@ export default function ChatPanel(props: ChatProps) {
    * allowed, and the agent continues.
    */
 
-  /** Tool calls of the chat's last agent step that have no result yet. */
-  function unansweredToolCalls(list: ChatMessage[]): ChatToolCall[] {
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (m.role === 'tool') continue;
-      if (m.role !== 'assistant' || !m.finalized || m.pending || m.error || !m.toolCalls?.length) {
-        return [];
-      }
-      const answered = new Set(
-        list
-          .slice(i + 1)
-          .filter((x) => x.role === 'tool')
-          .map((x) => x.tool_call_id)
-      );
-      return m.toolCalls.filter((tc) => !answered.has(tc.id));
-    }
-    return [];
-  }
-
   createEffect(() => {
     const dialogId = activeDialogId();
     const chat = activeChat();
     // Wait until the newest messages are loaded and nothing is running.
     if (!dialogId || !chat || chat.hasNewer || sending() || !activeProfile()) return;
     if (resumed.has(dialogId)) return;
-    if (unansweredToolCalls(chat.messages).length === 0) return;
+    // A remote chat's daemon picks its run up itself (K07).
+    if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place)) return;
     resumed.add(dialogId);
     untrack(() => void beginRun(dialogId, { kind: 'resume' }, lastUserWireContent(dialogId)));
   });
@@ -3096,32 +3093,49 @@ export default function ChatPanel(props: ChatProps) {
       ...(attachments.length > 0 ? { attachments } : {}),
     };
 
-    /*
-     * Save the composer before anything else: from here until the model
-     * answers, this is the only copy of what the user typed. The run clears
-     * it once the message is answered (lib/agentRuns.ts), or it comes back.
-     */
-    savePendingDraft({
-      dialogId: dialog.id,
-      messageId: message.id,
-      segments,
-      createdAt: new Date().toISOString(),
-    });
-
     // Sending always brings the conversation back into view.
     setFocusMessageId(null);
 
-    // Clear right away; the draft brings it back if the request fails.
+    // Clear right away; the input comes back if the request fails.
     clearChatInput();
-    clearComposerDraft(dialog.id);
     setFileSuggestionsOpen(false);
     setFileTriggerStart(null);
     setFileQuery('');
     setSelectedSuggestionIndex(0);
 
-    if (!(await sendMessage(dialog.id, message, wireContent))) {
-      if (activeDialogId() === dialog.id) restoreDraftForDialog(dialog.id);
-      else clearPendingDraft(dialog.id, message.id);
+    /*
+     * From here until the model answers, the input is kept: in localStorage,
+     * which the run clears once the message is answered (lib/agentRuns.ts),
+     * and for a remote chat in `composer_drafts` too, until its start
+     * succeeded, as its text files can be too big for localStorage (K49).
+     */
+    const back = await sendKeepingInput(
+      { dialogId: dialog.id, messageId: message.id, segments, remote: !!dialog.place },
+      () => sendMessage(dialog.id, message, wireContent),
+      {
+        savePending: savePendingDraft,
+        clearPending: clearPendingDraft,
+        saveDraft: async (id, saved) => {
+          scheduleComposerDraft(id, saved);
+          await flushComposerDraft(id);
+        },
+        clearDraft: clearComposerDraft,
+        started: (id) => {
+          // What was typed since stays; the sent input goes now.
+          if (activeDialogId() !== id) return clearComposerDraft(id);
+          scheduleComposerDraftSave();
+          void flushComposerDraft(id).catch(() => undefined);
+        },
+      }
+    );
+    clearUpload(dialog.id);
+    if (back && activeDialogId() === dialog.id) {
+      restoreDraftToComposer({
+        dialogId: dialog.id,
+        messageId: message.id,
+        segments: back,
+        createdAt: new Date().toISOString(),
+      });
     }
   }
 
@@ -3620,7 +3634,7 @@ export default function ChatPanel(props: ChatProps) {
               dialog={dialog}
               startFor={moveStart}
               onResynced={(id) => {
-                const open = summaryOf(id);
+                const open = store.summaryOf(id);
                 if (open && store.state.activeId === id)
                   void store.openChat(open, { reload: true });
               }}
@@ -3709,7 +3723,7 @@ export default function ChatPanel(props: ChatProps) {
       />
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
-        {(items) => <TodoPanel items={items()} plan={runPlanFile()} />}
+        {(items) => <TodoPanel items={items()} plan={runPlanFile()} dialogId={activeDialogId()} />}
       </Show>
       {/* Open checklist while nothing runs: interrupted, with Continue + dismiss. */}
       <Show when={!sending() && !waitingQuestion() && idleChecklist()}>
@@ -3717,6 +3731,7 @@ export default function ChatPanel(props: ChatProps) {
           <TodoPanel
             items={items()}
             plan={runPlanFile()}
+            dialogId={activeDialogId()}
             interrupted
             onContinue={continueRun}
             onDismiss={dismissIdleChecklist}
@@ -3753,6 +3768,8 @@ export default function ChatPanel(props: ChatProps) {
       <Show when={contextModeFor(activeDialogId()) !== 'clm' && contextUsage()}>
         {(usage) => <ContextMeter usage={usage()} />}
       </Show>
+      {/* A remote send's files going up before its message (6.11). */}
+      <UploadProgress dialogId={activeDialogId()} />
       <div class="chat-input-row">
         <div class="chat-input-container">
           <div

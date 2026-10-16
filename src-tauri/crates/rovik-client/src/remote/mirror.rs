@@ -18,7 +18,8 @@
 //! - "Re-sync this chat" pulls every row and replaces the mirror's, the
 //!   chat's own row aside, which the input's draft hangs from (K45).
 
-use super::{internal, Remote};
+use super::{internal, CloudEvent, Remote};
+use crate::client::HostState;
 use rovik_core::agent_run::events::{self, AgentEvent, OutMessage};
 use rovik_core::chat_db::store::{self, MessageRow};
 use rovik_core::chat_db::sync::{self, Applied};
@@ -31,13 +32,18 @@ use std::time::Duration;
 /// How long a pull waits after `ChatChanged`, for more changes to join it.
 pub(super) const DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// A chat's pulls: whether one is coming or going, and whether another is
-/// asked for once it's done.
+/// How often a connection's first pulls are looked at, to tell when they
+/// are all done.
+const CAUGHT_UP_POLL: Duration = Duration::from_millis(100);
+
+/// A chat's pulls: whether one is coming or going, whether another is
+/// asked for once it's done, and whether the last one failed.
 #[derive(Default)]
 pub(super) struct Pulls {
     coming: bool,
     going: bool,
     again: bool,
+    failed: bool,
 }
 
 impl Remote {
@@ -66,16 +72,48 @@ impl Remote {
         });
     }
 
-    /// Pulls the chats mirrored from `host`, as it connects.
+    /// Pulls the chats mirrored from `host`, as it connects, then tells the
+    /// frontend once they have all pulled (K23).
     pub(super) async fn pull_all(&self, host: &str) {
         let on = host.to_string();
-        let chats = self.core.db.read(move |c| mirror::mirrored(c, &on)).await;
-        match chats {
-            Ok(chats) => chats
-                .iter()
-                .for_each(|chat| self.pull_later(host, chat, Duration::ZERO)),
-            Err(e) => log::warn!("the chats mirrored from {host}: {e}"),
+        let chats = match self.core.db.read(move |c| mirror::mirrored(c, &on)).await {
+            Ok(chats) => chats,
+            Err(e) => {
+                log::warn!("the chats mirrored from {host}: {e}");
+                return;
+            }
+        };
+        for chat in &chats {
+            self.pull_later(host, chat, Duration::ZERO);
         }
+        self.tell_when_caught_up(host, chats);
+    }
+
+    /// `CaughtUp` once none of `chats` has a pull coming or going, unless one
+    /// failed or `host` went away meanwhile: then the next connection tells.
+    fn tell_when_caught_up(&self, host: &str, chats: Vec<String>) {
+        let (me, host) = (self.me.clone(), host.to_string());
+        rovik_core::rt::spawn(async move {
+            loop {
+                let Some(remote) = me.upgrade() else { return };
+                let (busy, failed) = {
+                    let state = remote.lock();
+                    let pulls = || chats.iter().filter_map(|chat| state.pulls.get(chat));
+                    let busy = pulls().any(|p| p.coming || p.going);
+                    (busy, pulls().any(|p| p.failed))
+                };
+                if !busy {
+                    let client = remote.client(&host);
+                    let ready = client.is_ok_and(|c| c.state() == HostState::Ready);
+                    if let (true, false, Some(cloud)) = (ready, failed, remote.cloud()) {
+                        cloud(CloudEvent::CaughtUp { host });
+                    }
+                    return;
+                }
+                drop(remote);
+                tokio::time::sleep(CAUGHT_UP_POLL).await;
+            }
+        });
     }
 
     /// `ChatChanged`: a pull, if the mirror is behind `rev`.
@@ -112,8 +150,12 @@ impl Remote {
     /// The chat's pull, once it's going, and those asked for meanwhile.
     async fn keep_pulling(&self, host: &str, chat: &str) {
         loop {
-            if let Err(e) = self.pull(host, chat).await {
+            let pulled = self.pull(host, chat).await;
+            if let Err(e) = &pulled {
                 log::warn!("{chat}'s mirror didn't pull from {host}: {e}");
+            }
+            if let Some(pulls) = self.lock().pulls.get_mut(chat) {
+                pulls.failed = pulled.is_err();
             }
             if !self.pull_again(chat) {
                 return;
