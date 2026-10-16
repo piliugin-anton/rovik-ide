@@ -1,0 +1,207 @@
+# End-to-end run of the built app on a platform: builds it as it ships
+# (its installers too), launches it and clicks and types through its main
+# scenarios against a scripted fake model (scripts/e2e/run.mjs). The
+# report, a screenshot per step and the logs are the run's artifact
+# (e2e-<platform>), and the report is the job's summary.
+#
+# One platform at a time, as each costs (macOS minutes count tenfold in a
+# private repository):
+# - from the Actions tab: Run workflow, with the platform;
+# - on a push: "[e2e windows]", "[e2e macos]" or "[e2e linux]" in the head
+#   commit's message. Without one, nothing runs.
+#
+# Windows and Linux are driven through WebDriver (tauri-driver, with
+# msedgedriver or WebKitWebDriver). WKWebView has none, so on macOS the
+# app is built a second time with an in-page bridge
+# (scripts/e2e/bridge.tauri.conf.json) and driven through that.
+name: E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform
+        type: choice
+        options: [windows, macos, linux]
+        default: windows
+  push:
+
+permissions:
+  contents: read
+
+env:
+  # A test build of the release: optimized, without the shipped build's
+  # slow whole-program optimization.
+  CARGO_PROFILE_RELEASE_LTO: 'false'
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  windows:
+    name: Windows
+    if: inputs.platform == 'windows' || contains(github.event.head_commit.message, '[e2e windows]')
+    # Per job: a push that runs nothing doesn't cancel a run under way.
+    concurrency:
+      group: e2e-windows-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the app and its installers
+        run: npx tauri build
+      - name: Install it (NSIS, silently)
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Get-ChildItem src-tauri/target/release/bundle/msi, src-tauri/target/release/bundle/nsis |
+            ForEach-Object { "{0,12:N0}  {1}" -f $_.Length, $_.Name }
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Rovik IDE\*.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1
+          if (-not $exe) {
+            "Not found where the installer puts it; testing the build's own binary."
+            $exe = Get-Item src-tauri/target/release/rovik-ide.exe
+          }
+          "Installed: $($exe.FullName)"
+          "APP=$($exe.FullName)" >> $env:GITHUB_ENV
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+      - name: Get msedgedriver for the WebView2 runtime
+        shell: pwsh
+        run: |
+          $client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $version = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$client",
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client",
+            "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$client"
+          ) | ForEach-Object { (Get-ItemProperty $_ -ErrorAction SilentlyContinue).pv } |
+            Where-Object { $_ } | Select-Object -First 1
+          "WebView2 runtime: $version"
+          $zip = "$env:RUNNER_TEMP\edgedriver.zip"
+          $driver = $null
+          foreach ($base in 'https://msedgedriver.microsoft.com', 'https://msedgedriver.azureedge.net') {
+            try {
+              Invoke-WebRequest "$base/$version/edgedriver_win64.zip" -OutFile $zip
+              Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\edgedriver" -Force
+              $driver = "$env:RUNNER_TEMP\edgedriver\msedgedriver.exe"
+              break
+            } catch {
+              "${base}: $($_.Exception.Message)"
+            }
+          }
+          if (-not $driver) {
+            "Using the image's msedgedriver (it may not match the runtime)."
+            $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
+          }
+          & $driver --version
+          "MSEDGEDRIVER=$driver" >> $env:GITHUB_ENV
+      - name: Run the scenarios
+        run: node scripts/e2e/run.mjs --app "$env:APP" --out e2e-out --native-driver "$env:MSEDGEDRIVER"
+      - name: Report
+        if: always()
+        shell: bash
+        run: cat e2e-out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-windows
+          path: e2e-out
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS
+    if: inputs.platform == 'macos' || contains(github.event.head_commit.message, '[e2e macos]')
+    # Per job: a push that runs nothing doesn't cancel a run under way.
+    concurrency:
+      group: e2e-macos-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the app and its disk image
+        run: |
+          npx tauri build --bundles app,dmg
+          ls -l src-tauri/target/release/bundle/dmg
+      - name: Build it again with the end-to-end bridge
+        run: |
+          npx tauri build --bundles app --config scripts/e2e/bridge.tauri.conf.json
+          app=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          exe=$(ls "$app/Contents/MacOS/" | head -1)
+          echo "APP=$app/Contents/MacOS/$exe" >> "$GITHUB_ENV"
+      - name: Run the scenarios
+        run: node scripts/e2e/run.mjs --app "$APP" --out e2e-out --driver bridge
+      - name: Report
+        if: always()
+        run: cat e2e-out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-macos
+          path: e2e-out
+          if-no-files-found: ignore
+
+  linux:
+    name: Linux
+    if: inputs.platform == 'linux' || contains(github.event.head_commit.message, '[e2e linux]')
+    # Per job: a push that runs nothing doesn't cancel a run under way.
+    concurrency:
+      group: e2e-linux-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the system's packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
+            librsvg2-dev libayatana-appindicator3-dev libssl-dev \
+            libsoup-3.0-dev libxdo-dev pkg-config \
+            webkit2gtk-driver xvfb xdotool imagemagick dbus-x11
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build the app and its packages
+        run: npx tauri build --bundles deb,rpm,appimage
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+      - name: Run the scenarios
+        run: |
+          xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- \
+            node scripts/e2e/run.mjs --app src-tauri/target/release/rovik-ide --out e2e-out
+      - name: Report
+        if: always()
+        run: cat e2e-out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-linux
+          path: e2e-out
+          if-no-files-found: ignore
