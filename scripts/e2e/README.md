@@ -34,6 +34,13 @@ node scripts/e2e/run.mjs --app src-tauri/target/release/rovik-ide.exe --out e2e-
   --native-driver path/to/msedgedriver.exe
 ```
 
+msedgedriver attaches through the debugging port it asks WebView2 for
+(`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`); `webview2-probe.ps1 -App <exe>`
+shows whether a build opens it, and what its WebView2 was started with.
+Where it doesn't, the bridge (below) drives a Windows build too. Chats are
+isolated only with WinFsp installed; without it the agent's run says so and
+works in the project itself, which the run notes.
+
 ## macOS
 
 WKWebView has no WebDriver, so the app is built with an in-page bridge

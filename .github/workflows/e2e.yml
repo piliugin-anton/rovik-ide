@@ -14,7 +14,9 @@
 # Windows and Linux are driven through WebDriver (tauri-driver, with
 # msedgedriver or WebKitWebDriver). WKWebView has none, so on macOS the
 # app is built a second time with an in-page bridge
-# (scripts/e2e/bridge.tauri.conf.json) and driven through that.
+# (scripts/e2e/bridge.tauri.conf.json) and driven through that; on Windows
+# too when WebDriver can't start the app (its WebView2 doesn't open the
+# debugging port msedgedriver asks for: scripts/e2e/webview2-probe.ps1).
 name: E2E
 
 on:
@@ -46,7 +48,7 @@ jobs:
       group: e2e-windows-${{ github.ref }}
       cancel-in-progress: true
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -109,35 +111,42 @@ jobs:
           }
           & $driver --version
           "MSEDGEDRIVER=$driver" >> $env:GITHUB_ENV
-      - name: Check the app starts and its WebView2 can be debugged
+      # Virtual files: what isolates an agent's chat from the project (and
+      # what the app offers to install when it's missing).
+      - name: Install WinFsp
+        continue-on-error: true
         shell: pwsh
         run: |
-          # What WebDriver needs: the app up, and DevTools on the port given.
-          $data = "$env:RUNNER_TEMP\wv2-probe"
-          New-Item -ItemType Directory -Force $data | Out-Null
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
-          $env:WEBVIEW2_USER_DATA_FOLDER = $data
-          $out = "$env:RUNNER_TEMP\probe.out"
-          $err = "$env:RUNNER_TEMP\probe.err"
-          $p = Start-Process $env:APP -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
-          $devtools = $null
-          for ($i = 1; $i -le 30 -and -not $devtools -and -not $p.HasExited; $i++) {
-            Start-Sleep 1
-            try { $devtools = Invoke-RestMethod http://127.0.0.1:9333/json/version -TimeoutSec 2 } catch {}
-          }
-          if ($p.HasExited) { "The app exited after ${i} s, code $($p.ExitCode)" } else { "The app runs ($i s)" }
-          if ($devtools) { "DevTools: $($devtools.Browser)" } else { 'No DevTools on port 9333' }
-          Get-ChildItem $data, "$env:LOCALAPPDATA\rovik-ide" -Recurse -Filter DevToolsActivePort -ErrorAction SilentlyContinue |
-            ForEach-Object { "DevToolsActivePort: $($_.FullName)" }
-          '--- its output'
-          Get-Content $out, $err -Tail 40 -ErrorAction SilentlyContinue
-          Get-Process rovik-ide -ErrorAction SilentlyContinue | Stop-Process -Force
+          choco install winfsp -y --no-progress
+          (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\WinFsp' -ErrorAction SilentlyContinue).InstallDir
+      # What WebDriver needs: the app up, and DevTools on the port asked for.
+      - name: Check the installed app's WebView2 can be debugged
+        id: probe
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/e2e/webview2-probe.ps1 -App $env:APP
+      # The same with DevTools on (the `devtools` feature; a release build
+      # has them off): if only that one can be debugged, WebDriver drives it.
+      - name: Build it with DevTools
+        if: steps.probe.outcome == 'failure'
+        run: npx tauri build --no-bundle --features tauri/devtools
+      - name: Check that build's WebView2 can be debugged
+        id: probe-devtools
+        if: steps.probe.outcome == 'failure'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = (Get-Item src-tauri/target/release/rovik-ide.exe).FullName
+          ./scripts/e2e/webview2-probe.ps1 -App $exe -Port 9334
+          if ($LASTEXITCODE -eq 0) { "WEBDRIVER_APP=$exe" >> $env:GITHUB_ENV }
+          exit $LASTEXITCODE
       - name: Run the scenarios through WebDriver
         id: webdriver
         continue-on-error: true
         shell: pwsh
         run: |
-          node scripts/e2e/run.mjs --app "$env:APP" --out e2e-out --native-driver "$env:MSEDGEDRIVER"
+          $app = if ($env:WEBDRIVER_APP) { $env:WEBDRIVER_APP } else { $env:APP }
+          node scripts/e2e/run.mjs --app "$app" --out e2e-out --native-driver "$env:MSEDGEDRIVER"
           # 2: the app couldn't be started; the bridge's turn.
           if ($LASTEXITCODE -eq 2) { 'launch_failed=true' >> $env:GITHUB_OUTPUT }
           exit $LASTEXITCODE

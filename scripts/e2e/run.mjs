@@ -217,20 +217,50 @@ async function startApp() {
   await installHooks();
 }
 
+// Collects the page's errors and alerts, and the notifications it showed.
+// Chromium's "ResizeObserver loop completed with undelivered notifications"
+// is left out: it says an observer resized something observed, by design
+// here (the chat's anchoring), and it came on nearly every step.
 const HOOK = `
 if (!window.__e2e) {
-  window.__e2e = { errors: [], alerts: [] };
+  window.__e2e = { errors: [], alerts: [], notifications: [] };
   const push = (kind, msg) => window.__e2e.errors.push({ kind, msg: String(msg).slice(0, 1500) });
-  window.addEventListener('error', (e) => push('error', (e.message || '') + ' ' + ((e.error && e.error.stack) || '')));
+  window.addEventListener('error', (e) => {
+    if (/^ResizeObserver loop/.test(e.message || '')) return;
+    push('error', (e.message || '') + ' ' + ((e.error && e.error.stack) || ''));
+  });
   window.addEventListener('unhandledrejection', (e) => push('rejection', (e.reason && (e.reason.stack || e.reason.message)) || e.reason));
   const ce = console.error.bind(console);
   console.error = (...a) => { push('console.error', a.map((x) => (x && x.stack) || (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' ')); ce(...a); };
   window.alert = (m) => { window.__e2e.alerts.push(String(m)); push('alert', m); };
+  const seen = new WeakSet();
+  new MutationObserver(() => {
+    for (const n of document.querySelectorAll('.notification')) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      window.__e2e.notifications.push(n.innerText.replace(/\\n+/g, ' | '));
+    }
+  }).observe(document.body, { childList: true, subtree: true });
 }
 return true;`;
 
 async function installHooks() {
   await d.exec(HOOK);
+}
+
+async function takeAlerts() {
+  try {
+    return await d.exec(
+      'const a = (window.__e2e && window.__e2e.alerts) || []; if (window.__e2e) window.__e2e.alerts = []; return a;'
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** The notifications shown since the app started, as text. */
+async function notifications() {
+  return d.exec('return (window.__e2e && window.__e2e.notifications) || [];').catch(() => []);
 }
 
 async function takeErrors() {
@@ -483,6 +513,9 @@ async function step(name, fn, { optional = false } = {}) {
   const entry = { name, ok: true };
   try {
     await fn();
+    // An alert is the app telling the user something went wrong.
+    const alerts = await takeAlerts();
+    if (alerts.length) throw new Error(`the app showed an alert: ${alerts.join(' | ')}`);
     entry.shot = await d.screenshot(slug(name)).catch(() => null);
   } catch (e) {
     entry.ok = false;
@@ -491,6 +524,8 @@ async function step(name, fn, { optional = false } = {}) {
     entry.shot = await d?.screenshot(`FAIL-${slug(name)}`).catch(() => null);
     entry.body = (await d?.bodyText().catch(() => '')).slice(0, 3000);
   }
+  // A failed step's alerts are its own: they're among its errors too.
+  if (d) await takeAlerts();
   entry.errors = d ? await takeErrors() : [];
   entry.ms = Date.now() - started;
   report.steps.push(entry);
@@ -1079,7 +1114,21 @@ async function run() {
       'Please create the file.\n@tool write {"path":"hello.txt","content":"Hi from agent\\n"}\n@text Wrote hello.txt.'
     );
     await waitFor(() => existsSync(join(DEMO, 'hello.txt')), 'hello.txt landed', 60_000);
-    await waitFor(async () => (await chatText()).includes('Landed'), 'the Landed bar', 30_000);
+    // Without the virtual-files driver (WinFsp, macFUSE) the chat works in
+    // the project itself, and says so: nothing to land or undo.
+    const notIsolated = async () =>
+      (await notifications()).find((n) => n.includes("This chat isn't isolated"));
+    await waitFor(
+      async () => (await chatText()).includes('Landed') || !!(await notIsolated()),
+      'the Landed bar',
+      30_000
+    );
+    const told = await notIsolated();
+    if (told) {
+      note(`the chat wasn't isolated: ${told}`);
+      rmSync(join(DEMO, 'hello.txt'));
+      return;
+    }
     const gap = () =>
       d.exec(
         'const el = document.querySelector(".chat-messages"); return el.scrollHeight - el.clientHeight - el.scrollTop'

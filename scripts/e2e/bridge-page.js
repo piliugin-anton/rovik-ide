@@ -207,6 +207,41 @@
     );
   }
 
+  /**
+   * Typing into an element edited through an EditContext (Monaco in
+   * Chromium, so WebView2): what the browser does for a key there. The
+   * context's text and caret change, then a textupdate says how (Enter: a
+   * beforeinput on the element). execCommand doesn't reach it, and without
+   * the caret moved each key replaced the one before (the editor brings
+   * the context up to date only when it next renders).
+   */
+  function typeIntoEditContext(target, context, name) {
+    if (name === 'Enter') {
+      target.dispatchEvent(
+        new InputEvent('beforeinput', {
+          inputType: 'insertParagraph',
+          bubbles: true,
+          cancelable: true,
+        })
+      );
+    } else if (name.length === 1) {
+      const start = Math.min(context.selectionStart, context.selectionEnd);
+      const end = Math.max(context.selectionStart, context.selectionEnd);
+      const caret = start + name.length;
+      context.updateText(start, end, name);
+      context.updateSelection(caret, caret);
+      context.dispatchEvent(
+        new TextUpdateEvent('textupdate', {
+          updateRangeStart: start,
+          updateRangeEnd: end,
+          text: name,
+          selectionStart: caret,
+          selectionEnd: caret,
+        })
+      );
+    }
+  }
+
   /** One key with modifiers held: keydown, the text it types, keyup. */
   function press(keys) {
     const mods = {};
@@ -221,7 +256,9 @@
     const init = { key: name, code, keyCode, ...mods };
     const allowed = fire(target, 'keydown', init);
     const plain = !mods.ctrlKey && !mods.metaKey && !mods.altKey;
-    if (allowed && plain && editable(target)) {
+    if (allowed && plain && target.editContext)
+      typeIntoEditContext(target, target.editContext, name);
+    else if (allowed && plain && editable(target)) {
       if (name === 'Enter') {
         if (target.tagName !== 'INPUT') document.execCommand('insertText', false, '\n');
       } else if (name === 'Backspace') document.execCommand('delete');
