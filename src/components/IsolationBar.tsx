@@ -20,7 +20,7 @@
 // copy (the bar stops asking until the next sync). A newer result held
 // back while the conflicts are resolved can be taken in their place.
 
-import { createEffect, createResource, createSignal, For, Show, untrack } from 'solid-js';
+import { createEffect, createResource, createSignal, For, Index, Show, untrack } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
 import { ConflictResolver, forgetConflictChoices, type ConflictSource } from './ConflictResolver';
 import type { GitOperation } from '../types';
@@ -626,33 +626,36 @@ export default function IsolationBar(props: Props) {
             </Show>
             <Show when={open() || !!s().pending?.conflicts.length}>
               <ul class="isolation-bar-files">
-                <For each={s().files}>
+                {/* By position: the status is read again every few seconds
+                    while the chat runs, all new objects, and new rows under
+                    a click on a file lost it. */}
+                <Index each={s().files}>
                   {(file) => (
                     <li>
                       <button
                         class="isolation-bar-file"
                         title={
-                          conflicted(file.path) && !disabled()
+                          conflicted(file().path) && !disabled()
                             ? 'Resolve this file’s conflicts'
                             : 'Compare with the project’s version'
                         }
                         onClick={() =>
-                          conflicted(file.path) && !disabled()
-                            ? setResolving(file.path)
-                            : void compare(file)
+                          conflicted(file().path) && !disabled()
+                            ? setResolving(file().path)
+                            : void compare(file())
                         }
                       >
-                        <span class={`isolation-bar-kind ${file.change}`}>
-                          {LABEL[file.change]}
+                        <span class={`isolation-bar-kind ${file().change}`}>
+                          {LABEL[file().change]}
                         </span>
-                        <span class="isolation-bar-path">{file.path}</span>
-                        <Show when={file.from}>
-                          <span class="isolation-bar-from">from {file.from}</span>
+                        <span class="isolation-bar-path">{file().path}</span>
+                        <Show when={file().from}>
+                          <span class="isolation-bar-from">from {file().from}</span>
                         </Show>
-                        <Show when={conflicted(file.path)}>
+                        <Show when={conflicted(file().path)}>
                           <span class="isolation-bar-conflict">conflict</span>
                         </Show>
-                        <Show when={!conflicted(file.path) && peerOf(file.path)}>
+                        <Show when={!conflicted(file().path) && peerOf(file().path)}>
                           {(peer) => (
                             <span
                               class="isolation-bar-conflict"
@@ -673,7 +676,7 @@ export default function IsolationBar(props: Props) {
                       </button>
                     </li>
                   )}
-                </For>
+                </Index>
               </ul>
             </Show>
           </div>

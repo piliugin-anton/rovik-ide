@@ -388,17 +388,24 @@ export default function Editor(props: EditorProps) {
       });
     });
 
+    // This file's pending edit and its text, compared: read as they are,
+    // any approval in any chat and any open file's change re-ran the
+    // effects below, which redrew the review's widgets (a click on Accept
+    // landing just then was lost).
+    const review = createMemo(() => pendingEditFor(props.currentFilePath));
+    const text = createMemo(() => props.content());
+
     /*
      * A pending agent edit of this file (lib/approvals.ts): drawn over the
      * file, redrawn whenever a change is accepted or rejected. Read-only
      * meanwhile, so the changes' line numbers stay valid.
      */
     createEffect(() => {
-      const approval = pendingEditFor(props.currentFilePath);
+      const approval = review();
       const ed = editor;
       if (!approval?.edit || !ed) return;
       // Re-checked when the content changes (e.g. the user saves or undoes).
-      props.content();
+      text();
       const model = ed.getModel();
       if (!model) return;
 
@@ -429,7 +436,7 @@ export default function Editor(props: EditorProps) {
 
     // Scroll to the next undecided change when the review asks for it.
     createEffect(() => {
-      const approval = pendingEditFor(props.currentFilePath);
+      const approval = review();
       const nonce = approval?.edit?.revealNonce;
       if (!approval?.edit || !nonce || !editor) return;
       // Only the nonce triggers a scroll, not each decision.
@@ -453,7 +460,7 @@ export default function Editor(props: EditorProps) {
     let drawnFor: AgentChange | undefined;
     createEffect(() => {
       const change = agentChangesFor(props.currentFilePath);
-      props.content(); // re-checked once the new content is in the editor
+      text(); // re-checked once the new content is in the editor
       const ed = editor;
       const model = ed?.getModel();
       if (!ed || !model) return;

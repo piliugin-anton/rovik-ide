@@ -13,7 +13,7 @@ import {
   type JSX,
 } from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
-import { createVirtualizer, Virtualizer } from '@tanstack/solid-virtual';
+import { createVirtualizer } from '@tanstack/solid-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import {
   GitFileStatusCode,
@@ -374,10 +374,6 @@ function flattenGitTree(root: GitDirNode, collapsed: Set<string>): GitTreeRow[] 
 export function GitPanel(props: GitPanelProps) {
   //let gitFilesScrollEl: HTMLDivElement | undefined;
   const [gitFilesScrollEl, setGitFilesScrollEl] = createSignal<HTMLDivElement | null>(null);
-  const [gitFilesVirtualizer, setGitFilesVirtualizer] = createSignal<Virtualizer<
-    HTMLDivElement,
-    Element
-  > | null>(null);
 
   const [phase, setPhase] = createSignal<GitPanelPhase>('uninitialized');
   const [status, setStatus] = createSignal<GitStatus | null>(null);
@@ -1305,24 +1301,19 @@ export function GitPanel(props: GitPanelProps) {
     void withBusy(refreshStatus);
   });
 
-  // Recreate virtualizer whenever count or scroll element changes
-  createEffect(() => {
-    const scrollEl = gitFilesScrollEl();
-
-    if (!scrollEl) {
-      setGitFilesVirtualizer(null);
-      return;
-    }
-
-    const count = treeRows().length;
-    const v = createVirtualizer({
-      count,
-      getScrollElement: () => scrollEl,
-      estimateSize: () => GIT_ROW_HEIGHT,
-      overscan: 12,
-    });
-
-    setGitFilesVirtualizer(v);
+  // One virtualizer per scroll element, its row count following the
+  // status. A new one per status refresh (any save, any agent write) or
+  // folder toggle scrolled the list back to its top and drew every row
+  // anew, so a click landing as it refreshed was lost.
+  // (The list's element comes and goes with its <Show>: the virtualizer
+  // reads it again whenever it changes.)
+  const gitFilesVirtualizer = createVirtualizer({
+    get count() {
+      return treeRows().length;
+    },
+    getScrollElement: () => gitFilesScrollEl(),
+    estimateSize: () => GIT_ROW_HEIGHT,
+    overscan: 12,
   });
 
   return (
@@ -2199,14 +2190,19 @@ export function GitPanel(props: GitPanelProps) {
         </Show>
 
         <Show when={filesCount() > 0}>
-          <div class="git-files file-tree" ref={setGitFilesScrollEl}>
+          <div
+            class="git-files file-tree"
+            // Once it's in the page: a ref comes as the element is made,
+            // and measured then it has no size (and no rows were drawn).
+            ref={(el) => queueMicrotask(() => setGitFilesScrollEl(el))}
+          >
             <div
               style={{
-                height: `${gitFilesVirtualizer()?.getTotalSize() ?? 0}px`,
+                height: `${gitFilesVirtualizer.getTotalSize()}px`,
                 position: 'relative',
               }}
             >
-              <For each={gitFilesVirtualizer()?.getVirtualItems() ?? []}>
+              <For each={gitFilesVirtualizer.getVirtualItems()}>
                 {(item) => {
                   const rowStyle = (depth: number): JSX.CSSProperties => ({
                     position: 'absolute',

@@ -7,6 +7,7 @@ import {
   on,
   onCleanup,
   Show,
+  untrack,
   type Accessor,
 } from 'solid-js';
 import type { TreeRow } from '../types';
@@ -428,7 +429,10 @@ export default function FileTree(props: FileTreeProps) {
                     >
                       <input
                         class="tree-row-input"
-                        value={currentRow().name}
+                        // Once, not kept in step with the row: a refresh of
+                        // the folder (any file written in it) brings a new
+                        // row, and put the old name back over what was typed.
+                        value={untrack(() => currentRow().name)}
                         ref={focusAndSelect}
                         onMouseDown={(e) => {
                           // Allow normal text editing/selection inside

@@ -4,7 +4,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  For,
+  Index,
   on,
   onCleanup,
   onMount,
@@ -3868,33 +3868,37 @@ export default function ChatPanel(props: ChatProps) {
 
           <Show when={fileSuggestionsOpen() && fileSuggestions().length > 0}>
             <div class="file-suggestions" role="listbox">
-              <For each={fileSuggestions()}>
+              {/* By position: the list is worked out again with new
+                  objects when the project's files are read (just after
+                  "@") or a folder changes, and new rows under a click lost
+                  it. */}
+              <Index each={fileSuggestions()}>
                 {(suggestion, index) => (
                   <button
                     type="button"
                     class="file-suggestion"
                     classList={{
-                      selected: index() === selectedSuggestionIndex(),
+                      selected: index === selectedSuggestionIndex(),
                     }}
                     role="option"
-                    aria-selected={index() === selectedSuggestionIndex()}
+                    aria-selected={index === selectedSuggestionIndex()}
                     // Never focusable: the input keeps focus and its caret.
                     tabIndex={-1}
                     onMouseDown={(e) => {
                       e.preventDefault();
                     }}
-                    onClick={() => acceptFileSuggestion(suggestion)}
+                    onClick={() => acceptFileSuggestion(suggestion())}
                   >
                     <span class="file-suggestion-head">
-                      <span class="file-suggestion-name">{referenceLabel(suggestion)}</span>
-                      <Show when={suggestion.lines}>
+                      <span class="file-suggestion-name">{referenceLabel(suggestion())}</span>
+                      <Show when={suggestion().lines}>
                         <span class="file-suggestion-tag">Selection</span>
                       </Show>
                     </span>
-                    <span class="file-suggestion-path">./{suggestion.relativePath}</span>
+                    <span class="file-suggestion-path">./{suggestion().relativePath}</span>
                   </button>
                 )}
-              </For>
+              </Index>
             </div>
           </Show>
 

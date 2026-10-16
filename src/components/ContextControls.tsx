@@ -149,7 +149,25 @@ export default function ContextControls(props: {
     const id = props.dialogId;
     if (!id) return;
     const list = await listContextRevisions(id).catch(() => null);
-    if (list && props.dialogId === id) setRevisions(list.slice().reverse());
+    if (!list || props.dialogId !== id) return;
+    // An unchanged revision keeps its object, and its row: the list is read
+    // again on any chat's request, and new rows under a click on View or
+    // Restore lost it.
+    const known = new Map(revisions().map((r) => [r.number, r]));
+    setRevisions(
+      list
+        .slice()
+        .reverse()
+        .map((r) => {
+          const was = known.get(r.number);
+          return was &&
+            was.kind === r.kind &&
+            was.createdAt === r.createdAt &&
+            was.tokens === r.tokens
+            ? was
+            : r;
+        })
+    );
   }
 
   async function choose(next: ContextMode) {
