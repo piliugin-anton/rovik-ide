@@ -187,14 +187,22 @@ pub fn brief(p: &BriefParts) -> String {
         } else {
             out.push_str(&format!("````diff\n{}\n````", e.changes.trim_end()));
         }
-        out.push_str(
+        // The reply's shape, one line for each earlier finding, with no
+        // verdict in it: a copied line gives none and is asked for again.
+        let lines = (1..=e.findings.len())
+            .map(|n| format!("- Earlier {n}: …"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&format!(
             "\n\n## This review\n\n\
-             First check each earlier finding against the revised plan and the code, and say under \"## Earlier findings\" whether it's resolved, one line each: \
-             \"- Earlier 1: resolved — …\" or \"- Earlier 1: not resolved — …\". \
+             First check each earlier finding against the revised plan and the code. \
              A finding the agent answered as not a problem is resolved unless the code shows the answer is wrong; then say what shows it. \
-             Then, under \"## Findings\", report only new findings: high ones anywhere in the plan, and others only about what the revision changed. \
-             Don't report an earlier finding again there.",
-        );
+             Then look for new findings: high ones anywhere in the plan, and others only about what the revision changed. \
+             An earlier finding isn't a new one: don't report it again under \"## Findings\".\n\n\
+             Start your report with your verdict on each earlier finding, one line each: \"resolved\" or \"not resolved\", then why.\n\n\
+             ## Earlier findings\n\n{lines}\n\n\
+             Then \"## Findings\", with the new findings in the format above, or \"None.\"."
+        ));
     }
     out
 }
@@ -542,7 +550,8 @@ pub fn unanswered_problem(held: usize, responses: &[Response]) -> Option<String>
  * ---------------------------------------------------------------------------
  */
 
-/// A follow-up review's word on an earlier finding.
+/// A follow-up review's word on an earlier finding; `finding` 0 is its
+/// word on all of them ("All earlier findings are resolved.").
 #[derive(Debug, Clone, PartialEq)]
 pub struct Verdict {
     pub finding: usize,
@@ -550,58 +559,296 @@ pub struct Verdict {
     pub reason: String,
 }
 
-/// "- Earlier 2: not resolved — step 3 still calls it", in bold, numbered
-/// or with a mark, with a note in brackets after the number, or "Earlier 2
-/// is resolved". "Earlier" may be left out under the "## Earlier findings"
-/// heading.
-static VERDICT: LazyLock<Regex> = LazyLock::new(|| {
+/// "Earlier 2", "Earlier finding #2", after what may open its line: a
+/// bullet, a list number, a mark, bold, a table's pipe.
+static DESIGNATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^[\s>]*(?:[-*+•✅✓✔❌✗✘]\s*)*\**\s*(earlier(?:\s+finding)?\s*)?#?\s*(\d+)\b\**(?:\s*[\[(][^\])\n]*[\])])?\s*\**\s*[:.)—–-]*\s*(?:(?:is|was|remains|stays)\s+)?\**\s*(not\s+resolved|unresolved|not\s+fixed|still\s+open|partly\s+resolved|partially\s+resolved|open|resolved|fixed|settled|addressed)\b\**\s*[.:;,—–-]*\s*(.*)$",
+        r"(?i)^[\s>|]*(?:(?:[-*+•]|\d+[.)])\s*)*[✅✓✔❌✗✘]?\s*[*_]*\s*earlier(?:\s+finding)?\s*#?\s*(\d+)\b",
     )
     .unwrap()
+});
+/// Under the "## Earlier findings" heading, a number alone names one:
+/// "2:", "2.", "| 2 |", "Finding 2 —", "**2** resolved".
+static NUMBER_ONLY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^[\s>|]*(?:[-*+•]\s*)*[✅✓✔❌✗✘]?\s*[*_]*\s*(?:finding\s*)?#?\s*(\d+)\b[*_]*\s*([.):|—–-]?)",
+    )
+    .unwrap()
+});
+/// A finding written out ("1. [high] Step 2 — …"): never a verdict.
+static FINDING_HEAD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(?:high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]",
+    )
+    .unwrap()
+});
+/// What a verdict says: group 1 not resolved, group 2 resolved. Of two
+/// starting at one place, "not resolved" and its kind come first.
+static VERDICT_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:(not(?:\s+yet)?\s+(?:resolved|fixed|addressed|settled|accepted)|unresolved|(?:is|was)n'?t\s+(?:resolved|fixed|addressed|settled)|(?:still|remains?|stays?)\s+(?:open|unresolved|missing|wrong|broken)|still\s+not|part(?:ly|ially)\s+(?:resolved|fixed|addressed))|(resolved|fixed|addressed|settled|accepted|withdrawn))\b",
+    )
+    .unwrap()
+});
+/// "open" opening a verdict ("Earlier 2: open — …"); elsewhere it's a word.
+static OPEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^open\b").unwrap());
+/// Words before a verdict that say nothing more ("it is", "this was").
+static FILLER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:(?:it|this|that)(?:'s|\s+is|\s+was)|is|was)\s+").unwrap()
+});
+/// "All earlier findings are resolved", "Both are fixed".
+static BLANKET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^[\s>*_-]*(?:all|both|every|each)\b").unwrap());
+/// "Why: …" on a line of its own, after a verdict that didn't say.
+static WHY_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[\s>|*_-]*(?:why|reason|because)\b[*_]*\s*[:—–-]?\s*(.+)$").unwrap()
 });
 /// A heading, or a bold line standing for one.
 static HEADING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(?:#{1,6}\s+(.*)|\*\*([^*]+)\*\*:?\s*)$").unwrap());
 
-/// B13: a follow-up review's verdicts on the earlier findings, by number:
-/// the lines under its "## Earlier findings" heading, and "Earlier N: …"
-/// lines anywhere else. The first verdict on a number counts.
+/// Without the separators that open what follows a name.
+fn lead_of(s: &str) -> &str {
+    s.trim_start_matches(|c: char| c.is_whitespace() || "*_:;,.—–-|)".contains(c))
+}
+
+/// Without the emphasis and pipes that close a reason.
+fn tail_of(s: &str) -> &str {
+    s.trim_end_matches(|c: char| c.is_whitespace() || "*_|".contains(c))
+}
+
+/// Past a note in brackets opening `s`: "(Step 2 — …): resolved".
+fn past_brackets(s: &str) -> &str {
+    let close = match s.chars().next() {
+        Some('(') => ')',
+        Some('[') => ']',
+        _ => return s,
+    };
+    s.find(close)
+        .map_or(s, |at| lead_of(&s[at + close.len_utf8()..]))
+}
+
+/// A verdict phrase opening `s`: resolved or not, and what follows it.
+fn verdict_opening(s: &str) -> Option<(bool, &str)> {
+    let s = lead_of(s);
+    let s = FILLER.find(s).map_or(s, |m| &s[m.end()..]);
+    if let Some(m) = OPEN.find(s) {
+        return Some((false, &s[m.end()..]));
+    }
+    let c = VERDICT_WORD.captures(s)?;
+    let m = c.get(0)?;
+    (m.start() == 0).then(|| (c.get(2).is_some(), &s[m.end()..]))
+}
+
+/// The verdict in `rest`, what follows an earlier finding's name: the
+/// phrase opening it, else opening what follows its first colon (a title
+/// before it: "— CLI not updated: resolved"); with `anywhere`, else the
+/// first phrase in it ("…, so it's resolved"), else a mark in `line` (✅,
+/// ❌). Why: what follows an opening phrase; the statement a phrase in it
+/// is part of.
+fn verdict_in(rest: &str, line: &str, anywhere: bool) -> Option<(bool, String)> {
+    let lead = past_brackets(lead_of(rest));
+    let opening = verdict_opening(lead).or_else(|| {
+        lead.split_once(':')
+            .and_then(|(_, after)| verdict_opening(after))
+    });
+    let (resolved, after, statement) = match opening {
+        Some((resolved, after)) => (resolved, after, false),
+        None if !anywhere => return None,
+        None => match VERDICT_WORD.captures(lead) {
+            Some(c) => (c.get(2).is_some(), &lead[c.get(0)?.end()..], true),
+            None if line.contains(['✅', '✓', '✔']) => (true, "", false),
+            None if line.contains(['❌', '✗', '✘']) => (false, "", false),
+            None => return None,
+        },
+    };
+    let reason = if statement {
+        tail_of(lead)
+    } else {
+        tail_of(lead_of(after))
+    };
+    Some((resolved, reason.to_string()))
+}
+
+/// The earlier finding a line names, and what follows its name.
+fn named(line: &str, under_earlier: bool) -> Option<(usize, &str)> {
+    if let Some(d) = DESIGNATION.captures(line) {
+        return Some((d[1].parse().ok()?, &line[d.get(0)?.end()..]));
+    }
+    if !under_earlier || FINDING_HEAD.is_match(line) {
+        return None;
+    }
+    let c = NUMBER_ONLY.captures(line)?;
+    let rest = &line[c.get(0)?.end()..];
+    // A number and a space ("2 of 3 are fixed") names one only when a
+    // verdict follows it at once ("**2** resolved").
+    if c[2].is_empty() && verdict_opening(rest).is_none() {
+        return None;
+    }
+    Some((c[1].parse().ok()?, rest))
+}
+
+/// B13: a follow-up review's verdicts on the earlier findings, by number,
+/// in the shapes reviewers write them: a line naming one ("- Earlier 2:
+/// not resolved — …", "1. Earlier 2 — its title: resolved", "| Earlier 2 |
+/// resolved | … |"), anywhere in the report; under the "## Earlier
+/// findings" heading, a number alone ("2: resolved"); a heading or a line
+/// naming one, with the verdict on the line after it; "All earlier
+/// findings are resolved" (finding 0); a "Why: …" line after a verdict
+/// that didn't say. The first verdict on a number counts.
 pub fn parse_verdicts(text: &str) -> Vec<Verdict> {
     let mut out: Vec<Verdict> = Vec::new();
     let mut under_earlier = false;
+    // A finding named without a verdict: it may come on the next line.
+    let mut pending: Option<usize> = None;
+    // The verdict just read, when it gave no reason.
+    let mut why_for: Option<usize> = None;
     for line in text.lines() {
-        if let Some(c) = VERDICT.captures(line) {
-            if c.get(1).is_none() && !under_earlier {
-                continue;
-            }
-            let Ok(finding) = c[2].parse::<usize>() else {
-                continue;
-            };
-            if out.iter().any(|v| v.finding == finding) {
-                continue;
-            }
-            let word = c[3].split_whitespace().collect::<Vec<_>>().join(" ");
-            out.push(Verdict {
-                finding,
-                resolved: matches!(
-                    word.to_lowercase().as_str(),
-                    "resolved" | "fixed" | "settled" | "addressed"
-                ),
-                reason: c[4].trim().trim_matches('*').trim().to_string(),
-            });
-        } else if let Some(c) = HEADING.captures(line) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let (Some(at), Some(c)) = (why_for.take(), WHY_LINE.captures(line)) {
+            out[at].reason = tail_of(c[1].trim()).to_string();
+            continue;
+        }
+        let mut found: Option<(usize, bool, String)> = None;
+        if let Some(c) = HEADING.captures(line) {
             let title = c.get(1).or(c.get(2)).map_or("", |m| m.as_str());
-            under_earlier = title.to_lowercase().contains("earlier");
+            pending = None;
+            match DESIGNATION.captures(title) {
+                Some(d) => {
+                    under_earlier = true;
+                    let n = d[1].parse().unwrap_or(0);
+                    let rest = &title[d.get(0).map_or(0, |m| m.end())..];
+                    match verdict_in(rest, title, false) {
+                        Some((resolved, reason)) => found = Some((n, resolved, reason)),
+                        None => pending = Some(n),
+                    }
+                }
+                None => under_earlier = title.to_lowercase().contains("earlier"),
+            }
+        } else if let Some((n, rest)) = named(line, under_earlier) {
+            pending = None;
+            match verdict_in(rest, line, true) {
+                Some((resolved, reason)) => found = Some((n, resolved, reason)),
+                None => pending = Some(n),
+            }
+        } else if let Some(n) = pending.take() {
+            found = verdict_in(line, line, true).map(|(resolved, reason)| (n, resolved, reason));
+        } else if BLANKET.is_match(line)
+            && (under_earlier || line.to_lowercase().contains("earlier"))
+        {
+            found = verdict_in(line, line, true).map(|(resolved, reason)| (0, resolved, reason));
+        }
+        if let Some((finding, resolved, reason)) = found {
+            if !out.iter().any(|v| v.finding == finding) {
+                if reason.is_empty() {
+                    why_for = Some(out.len());
+                }
+                out.push(Verdict {
+                    finding,
+                    resolved,
+                    reason,
+                });
+            }
         }
     }
     out
 }
 
-/// A verdict line that names its earlier finding ("Earlier 2: resolved —
-/// …"): never a finding, wherever a report puts it (change_review.rs).
+/// A line naming an earlier finding ("Earlier 2: resolved — …"): never a
+/// finding, wherever a report puts it (change_review.rs).
 pub(super) fn is_verdict(line: &str) -> bool {
-    VERDICT.captures(line).is_some_and(|c| c.get(1).is_some())
+    DESIGNATION.is_match(line)
+}
+
+/// B13: the earlier findings (numbered from 1) a follow-up review's report
+/// gives no verdict on, and doesn't report again either.
+pub fn missing_verdicts(text: &str, earlier: &[Finding]) -> Vec<usize> {
+    if earlier.is_empty() {
+        return Vec::new();
+    }
+    let verdicts = parse_verdicts(text);
+    if verdicts.iter().any(|v| v.finding == 0) {
+        return Vec::new();
+    }
+    let found = parse_findings(text).unwrap_or_default();
+    (1..=earlier.len())
+        .filter(|n| !verdicts.iter().any(|v| v.finding == *n))
+        .filter(|n| !found.iter().any(|f| same_finding(f, &earlier[n - 1])))
+        .collect()
+}
+
+/// B13: what a follow-up review's report turns (after its budget, or a
+/// format repair) ask of it besides its findings.
+pub fn verdicts_note(n: usize) -> String {
+    format!(
+        "Start it with \"## Earlier findings\": one line for each earlier finding ({}), \"- Earlier N: resolved — why\" or \"- Earlier N: not resolved — what's still wrong\".",
+        if n > 1 {
+            format!("Earlier 1 to Earlier {n}")
+        } else {
+            "Earlier 1".to_string()
+        }
+    )
+}
+
+/// B13: the turn asking a follow-up review for the verdicts its report
+/// left out.
+pub fn verdicts_request(missing: &[usize]) -> String {
+    let names: Vec<String> = missing.iter().map(|n| format!("Earlier {n}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    format!(
+        "Your report gives no verdict on {}. Don't call any tools. Reply with one line for each, and nothing else: \
+         \"- Earlier N: resolved — why\" when the revised plan or the agent's answer settles it, or \
+         \"- Earlier N: not resolved — what's still wrong\".",
+        plan::list_steps(&names)
+    )
+}
+
+/// `report` with verdicts from `given` on the findings in `missing`, as
+/// lines of its own put first.
+fn with_given(report: &str, given: &[Verdict], missing: &[usize]) -> String {
+    let lines: Vec<String> = missing
+        .iter()
+        .filter_map(|n| {
+            let v = given
+                .iter()
+                .find(|v| v.finding == *n)
+                .or_else(|| given.iter().find(|v| v.finding == 0))?;
+            let word = if v.resolved {
+                "resolved"
+            } else {
+                "not resolved"
+            };
+            Some(if v.reason.is_empty() {
+                format!("- Earlier {n}: {word}")
+            } else {
+                format!("- Earlier {n}: {word} — {}", v.reason)
+            })
+        })
+        .collect();
+    if lines.is_empty() {
+        return report.to_string();
+    }
+    format!(
+        "## Earlier findings\n\n{}\n\n{}",
+        lines.join("\n"),
+        report.trim_start()
+    )
+}
+
+/// B13: the report with the verdicts the turn asking for the `missing`
+/// ones gave (its answer read as if under "## Earlier findings").
+pub fn with_verdicts(report: &str, answer: &str, missing: &[usize]) -> String {
+    let given = parse_verdicts(&format!("## Earlier findings\n\n{answer}"));
+    with_given(report, &given, missing)
+}
+
+/// B13: a rewritten report (the format repair's) with the verdicts the
+/// first one gave and the rewrite left out.
+pub fn keep_verdicts(first: &str, again: &str, earlier: &[Finding]) -> String {
+    let missing = missing_verdicts(again, earlier);
+    with_given(again, &parse_verdicts(first), &missing)
 }
 
 /// The revision's steps the held plan doesn't have, by number: new ones
@@ -691,16 +938,15 @@ pub struct FollowUp {
 }
 
 const UNCHANGED_REASON: &str = "the plan was sent again unchanged, with no answer";
-const NOT_CHECKED_REASON: &str =
-    "the reviewer didn't say; taken as settled by the revision and the agent's answer";
+const NOT_CHECKED_REASON: &str = "the reviewer gave no verdict on it; taken as settled";
 
 /// B13: a follow-up review's findings, judged against the hold before it.
 /// An earlier finding stays open when the review says it isn't resolved
 /// or repeats it with new evidence, and when the plan came back unchanged
-/// with nothing said; one the review doesn't mention is settled (B04). A
-/// new finding counts when it's high, about the whole plan, or about a
-/// step the revision changed: below high, what the revision didn't touch
-/// isn't reopened.
+/// with nothing said; one the review gives no verdict on is settled (B04),
+/// and recorded as not checked. A new finding counts when it's high, about
+/// the whole plan, or about a step the revision changed: below high, what
+/// the revision didn't touch isn't reopened.
 pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
     let (kept, dropped) = drop_repeats(found, facts.earlier);
     // The repeats drop_repeats keeps have new evidence: they speak for the
@@ -719,7 +965,11 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
     };
     for (i, e) in facts.earlier.iter().enumerate() {
         let n = i + 1;
-        let verdict = facts.verdicts.iter().find(|v| v.finding == n);
+        let verdict = facts
+            .verdicts
+            .iter()
+            .find(|v| v.finding == n)
+            .or_else(|| facts.verdicts.iter().find(|v| v.finding == 0));
         // Resolved, why, and whether the review said it.
         let (resolved, reason, said) = if let Some((_, evidence)) =
             reopened.iter().find(|(k, _)| *k == n)
@@ -749,6 +999,8 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
             "title": e.title,
             "response": facts.responses.iter().find(|r| r.finding == n),
             "resolved": resolved,
+            // The reviewer's word, not the IDE's default.
+            "checked": said,
             "reason": reason,
         }));
     }
@@ -906,9 +1158,22 @@ impl Run {
             }),
         });
 
+        // B13: its verdicts are asked for when its report leaves some out;
+        // the plan sent back as it was, with nothing said, needs none.
+        let owed = if unchanged && silent {
+            Vec::new()
+        } else {
+            earlier.clone()
+        };
         let started = Instant::now();
         let outcome = self
-            .run_ide_subagent(Kind::PlanReviewer, call_id, "Review the plan", message)
+            .run_ide_subagent_on(
+                Kind::PlanReviewer,
+                call_id,
+                "Review the plan",
+                message,
+                owed,
+            )
             .await;
         let mut review = json!({
             "kind": "plan",
@@ -1135,9 +1400,15 @@ mod tests {
         assert!(later.contains(
             "## What the revision changed\n\n````diff\n@@ line 3 @@\n-1. x\n+1. y\n````"
         ));
+        // B13: the reply's shape, a line for each earlier finding, with no
+        // verdict in it.
         assert!(
-            later.contains("## This review\n\n") && later.contains("\"- Earlier 1: resolved — …\"")
+            later.contains(
+                "## Earlier findings\n\n- Earlier 1: …\n- Earlier 2: …\n\nThen \"## Findings\""
+            ),
+            "{later}"
         );
+        assert!(parse_verdicts(&later).is_empty(), "{later}");
         assert!(!later.contains("answers to the agent's questions"));
         // No answers with the plan: its replies stand in. Nothing changed: said so.
         let silent = brief(&BriefParts {
@@ -1320,6 +1591,134 @@ mod tests {
         );
     }
 
+    /// B13: the other shapes reviewers write their verdicts in.
+    #[test]
+    fn verdicts_in_the_shapes_reviewers_write() {
+        let read = |text: &str| -> Vec<(usize, bool, String)> {
+            parse_verdicts(text)
+                .into_iter()
+                .map(|v| (v.finding, v.resolved, v.reason))
+                .collect()
+        };
+        let v = |n: usize, resolved: bool, reason: &str| (n, resolved, reason.to_string());
+        // A list number before the name; a title or a note before the verdict.
+        assert_eq!(
+            read(
+                "## Earlier findings\n\n\
+                 1. Earlier 1 — CLI not updated: resolved. Step 3 updates it.\n\
+                 2. ✅ Earlier 2 (Step 1): Fixed — the index is in step 1."
+            ),
+            [
+                v(1, true, "Step 3 updates it."),
+                v(2, true, "the index is in step 1.")
+            ]
+        );
+        // A verdict ending a statement is the statement's; one opening the
+        // line is what follows it ("though … still not" doesn't undo it).
+        assert_eq!(
+            read(
+                "Earlier 1: The plan now updates the CLI in step 3, so it's resolved.\n\
+                 Earlier 2: Resolved — though it is still not tested."
+            ),
+            [
+                v(
+                    1,
+                    true,
+                    "The plan now updates the CLI in step 3, so it's resolved."
+                ),
+                v(2, true, "though it is still not tested.")
+            ]
+        );
+        // A table under the heading.
+        assert_eq!(
+            read(
+                "## Earlier findings\n\n| # | Verdict | Why |\n|---|---|---|\n\
+                 | 1 | Resolved | step 3 |\n| Earlier 2 | not resolved | no index |"
+            ),
+            [v(1, true, "step 3"), v(2, false, "no index")]
+        );
+        // A heading for each, the verdict on a line after it, and a why after that.
+        assert_eq!(
+            read(
+                "## Earlier findings\n\n### Earlier 1 — `list_users` is called from the CLI\n\
+                 **Status:** remains open\nWhy: step 3 updates one call site of two.\n\n\
+                 ### Earlier 2\nResolved: the index is added."
+            ),
+            [
+                v(1, false, "step 3 updates one call site of two."),
+                v(2, true, "the index is added.")
+            ]
+        );
+        // A mark alone; "open" opening a verdict.
+        assert_eq!(
+            read("- Earlier 1 ✅\n- Earlier 2: open — the CLI"),
+            [v(1, true, ""), v(2, false, "the CLI")]
+        );
+        // All of them at once.
+        assert_eq!(
+            read("## Earlier findings\n\nBoth are fixed in the revision."),
+            [v(0, true, "Both are fixed in the revision.")]
+        );
+        assert_eq!(
+            read("## Findings\n\nAll earlier findings are addressed; nothing new."),
+            [v(
+                0,
+                true,
+                "All earlier findings are addressed; nothing new."
+            )]
+        );
+        // Not verdicts: a number in prose, a claim about something else.
+        assert!(read("## Earlier findings\n\n2 of the 3 steps are fixed.").is_empty());
+        assert!(read("All tests are fixed.").is_empty());
+    }
+
+    /// B13: what a follow-up's report still owes, and the answers added to it.
+    #[test]
+    fn missing_verdicts_are_asked_for_and_added() {
+        let earlier = vec![
+            finding("high", "Step 2", "CLI not updated"),
+            finding("medium", "Step 1", "No index"),
+            finding("medium", "Step 4", "Wrong order"),
+        ];
+        // 1 has a verdict and 3 is reported again: 2 is owed.
+        let report = "## Earlier findings\n\n- Earlier 1: resolved — step 5.\n\n## Findings\n\n\
+            1. [medium] Step 4 — Wrong order\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: confirmed";
+        assert_eq!(missing_verdicts(report, &earlier), [2]);
+        assert!(missing_verdicts(
+            "## Findings\n\nAll earlier findings are resolved.",
+            &earlier
+        )
+        .is_empty());
+        assert_eq!(missing_verdicts("## Findings\n\nNone.", &earlier[..1]), [1]);
+        assert!(verdicts_request(&[2, 3]).starts_with(
+            "Your report gives no verdict on Earlier 2 and Earlier 3. Don't call any tools."
+        ));
+        assert!(verdicts_note(3).contains("(Earlier 1 to Earlier 3)"));
+        // The answer, in a shape of its own, goes first as the report's
+        // lines; a verdict it wasn't asked for doesn't.
+        let merged = with_verdicts(
+            report,
+            "2: not resolved — lookups by email scan the table.\nEarlier 1: not resolved — not asked.",
+            &[2],
+        );
+        assert!(
+            merged.starts_with(
+                "## Earlier findings\n\n- Earlier 2: not resolved — lookups by email scan the table.\n\n## Earlier findings\n\n- Earlier 1: resolved"
+            ),
+            "{merged}"
+        );
+        assert!(missing_verdicts(&merged, &earlier).is_empty());
+        assert_eq!(parse_findings(&merged).unwrap().len(), 1);
+        assert_eq!(with_verdicts(report, "Sorry, I can't tell.", &[2]), report);
+        // A rewrite (the format repair's) keeps the verdicts it dropped.
+        let first = "## Earlier findings\n\n- Earlier 2: resolved — the index is in step 1.";
+        let kept = keep_verdicts(first, "## Findings\n\nNone.", &earlier[..2]);
+        assert_eq!(
+            kept,
+            "## Earlier findings\n\n- Earlier 2: resolved — the index is in step 1.\n\n## Findings\n\nNone."
+        );
+    }
+
     /// B13: a step inserted before others doesn't make them changed.
     #[test]
     fn changed_steps_are_new_or_rewritten_not_moved() {
@@ -1444,9 +1843,11 @@ mod tests {
             (&e[2]["resolved"], &e[2]["response"], &e[2]["location"]),
             (&json!(false), &Value::Null, &json!("Step 4"))
         );
+        // Each was the review's word: a verdict, or a repeat with evidence.
+        assert!(e.iter().all(|e| e["checked"] == true), "{e:?}");
 
-        // Not mentioned: settled. The plan back unchanged with nothing said:
-        // everything stays open, whatever the review says.
+        // Not mentioned: settled, and not checked. The plan back unchanged
+        // with nothing said: everything stays open, whatever the review says.
         let quiet = follow_up(
             &Facts {
                 earlier: &earlier[..1],
@@ -1458,7 +1859,30 @@ mod tests {
             Vec::new(),
         );
         assert!(quiet.open.is_empty());
+        assert_eq!(
+            (&quiet.earlier[0]["resolved"], &quiet.earlier[0]["checked"]),
+            (&json!(true), &json!(false))
+        );
         assert_eq!(quiet.earlier[0]["reason"], NOT_CHECKED_REASON);
+        // One verdict on all of them.
+        let all = follow_up(
+            &Facts {
+                earlier: &earlier[..2],
+                responses: &[],
+                verdicts: &parse_verdicts("All earlier findings are resolved."),
+                unchanged_and_silent: false,
+                changed: &[],
+            },
+            Vec::new(),
+        );
+        assert!(all.open.is_empty());
+        assert!(
+            all.earlier.iter().all(
+                |e| e["checked"] == true && e["reason"] == "All earlier findings are resolved."
+            ),
+            "{:?}",
+            all.earlier
+        );
         let stuck = follow_up(
             &Facts {
                 earlier: &earlier[..2],
@@ -1478,6 +1902,7 @@ mod tests {
         );
         assert_eq!(stuck.open[0].new_evidence, None);
         assert_eq!(stuck.earlier[0]["reason"], UNCHANGED_REASON);
+        assert_eq!(stuck.earlier[0]["checked"], false);
         assert_eq!(titles(&stuck.not_held), ["Something new"]);
     }
 

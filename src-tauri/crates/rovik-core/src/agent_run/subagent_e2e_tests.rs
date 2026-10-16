@@ -2500,13 +2500,215 @@ async fn a_follow_up_holds_nothing_new_where_the_revision_changed_nothing() {
     assert_eq!(review["status"], "clean", "{review}");
     assert_eq!(review["notHeld"][0]["step"], 1, "{review}");
     assert!(review.get("open").is_none(), "{review}");
-    // Not mentioned by the follow-up: settled by the agent's fix.
-    assert_eq!(review["earlier"][0]["resolved"], true, "{review}");
+    // No verdict on it, even when asked: settled, and not checked.
+    assert_eq!(
+        (
+            &review["earlier"][0]["resolved"],
+            &review["earlier"][0]["checked"]
+        ),
+        (&json!(true), &json!(false)),
+        "{review}"
+    );
     let files = h.plan_files();
     assert!(
         !files[0].contains("## Open review findings"),
         "{}",
         files[0]
+    );
+}
+
+/// B13: a follow-up review whose report gives an earlier finding no
+/// verdict is asked once, in a turn without tools, for it; its answer, in
+/// a shape of its own, is the verdict. One that never gives it leaves the
+/// finding settled but not checked.
+#[tokio::test]
+async fn a_follow_up_without_verdicts_is_asked_for_them() {
+    for (answer, resolved, checked, reason) in [
+        (
+            "1: not resolved — `src/cli.rs` calls `list_users` twice.",
+            false,
+            true,
+            "`src/cli.rs` calls `list_users` twice.",
+        ),
+        (
+            "## Findings\n\nNone.",
+            true,
+            false,
+            "the reviewer gave no verdict on it; taken as settled",
+        ),
+    ] {
+        let h = plan_project().await;
+        let (url, seen) = model_routed(
+            vec![(
+                PLAN_REVIEW,
+                vec![
+                    Reply::Text(PLAN_FINDING),
+                    Reply::Text(NO_FINDINGS),
+                    Reply::Text(answer),
+                ],
+            )],
+            vec![
+                submit("p1", users_plan("Users", 0)),
+                submit_with("p2", users_plan("Users", 1), added_the_step()),
+                Reply::Text("Saved."),
+            ],
+        )
+        .await;
+        h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+            .await;
+        assert_eq!(h.run_end().await, "done");
+        assert_eq!(
+            requests_with(&seen, PLAN_REVIEW).len(),
+            3,
+            "the review, the follow-up and its ask"
+        );
+        let messages = h.messages().await;
+        let review = &result_of(&messages, "p2").meta.as_ref().unwrap()["review"];
+        let earlier = &review["earlier"][0];
+        assert_eq!(
+            (
+                &earlier["resolved"],
+                &earlier["checked"],
+                &earlier["reason"]
+            ),
+            (&json!(resolved), &json!(checked), &json!(reason)),
+            "{review}"
+        );
+        assert_eq!(
+            review["open"].as_u64(),
+            (!resolved).then_some(1),
+            "{review}"
+        );
+        // The ask is in the reviewer's chat, naming the finding by number.
+        let child = h.child_of("p2").await;
+        let work = h.messages_of(&child.id).await;
+        let asks: Vec<&MessageRow> = work
+            .iter()
+            .filter(|m| {
+                m.meta
+                    .as_ref()
+                    .is_some_and(|m| m["harness"] == "subagentFormat")
+            })
+            .collect();
+        assert_eq!(asks.len(), 1);
+        assert!(
+            asks[0]
+                .content
+                .contains("Your report gives no verdict on Earlier 1. Don't call any tools."),
+            "{}",
+            asks[0].content
+        );
+    }
+}
+
+/// B13: a follow-up review cut short by its budget is asked for its
+/// verdicts with its findings, and a format repair's rewrite keeps the
+/// verdicts its first report gave.
+#[tokio::test]
+async fn a_follow_ups_report_turns_keep_its_verdicts() {
+    // Out of budget: the note asks for the verdicts too.
+    let h = plan_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Text(PLAN_FINDING),
+                Reply::Calls(vec![("r1", "read", json!({ "path": "src/cli.rs" }))]),
+                Reply::Text(PLAN_RESOLVED),
+            ],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({ "maxToolCalls": 1 }))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let child = h.child_of("p2").await;
+    let work = h.messages_of(&child.id).await;
+    let budget = work
+        .iter()
+        .find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|m| m["harness"] == "subagentBudget")
+        })
+        .expect("asked for its report");
+    assert!(
+        budget.content.contains(
+            "Start it with \"## Earlier findings\": one line for each earlier finding (Earlier 1)"
+        ),
+        "{}",
+        budget.content
+    );
+    let messages = h.messages().await;
+    let review = &result_of(&messages, "p2").meta.as_ref().unwrap()["review"];
+    assert_eq!(
+        (
+            &review["earlier"][0]["checked"],
+            &review["earlier"][0]["reason"]
+        ),
+        (&json!(true), &json!("step 3 updates `src/cli.rs`.")),
+        "{review}"
+    );
+
+    // Out of format: the rewrite drops the verdict, which is kept.
+    let h = plan_project().await;
+    let unformatted = "## Earlier findings\n\n- Earlier 1: resolved — step 3 updates `src/cli.rs`.\n\n## Findings\n\n1. [high] Step 3 — No scenario";
+    let (url, seen) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Text(PLAN_FINDING),
+                Reply::Text(unformatted),
+                Reply::Text(NO_FINDINGS),
+            ],
+        )],
+        vec![
+            submit("p1", users_plan("Users", 0)),
+            submit_with("p2", users_plan("Users", 1), added_the_step()),
+            Reply::Text("Saved."),
+        ],
+    )
+    .await;
+    h.start(h.plan_request(&url, plan_reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    assert_eq!(
+        requests_with(&seen, PLAN_REVIEW).len(),
+        3,
+        "no ask: the verdict was kept"
+    );
+    let child = h.child_of("p2").await;
+    let work = h.messages_of(&child.id).await;
+    let repair = work
+        .iter()
+        .find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|m| m["harness"] == "subagentFormat")
+        })
+        .expect("the repair turn");
+    assert!(
+        repair
+            .content
+            .contains("Start it with \"## Earlier findings\""),
+        "{}",
+        repair.content
+    );
+    let messages = h.messages().await;
+    let review = &result_of(&messages, "p2").meta.as_ref().unwrap()["review"];
+    assert_eq!(review["status"], "clean", "{review}");
+    assert_eq!(
+        (
+            &review["earlier"][0]["checked"],
+            &review["earlier"][0]["reason"]
+        ),
+        (&json!(true), &json!("step 3 updates `src/cli.rs`.")),
+        "{review}"
     );
 }
 
@@ -10019,7 +10221,7 @@ async fn budget_used_record_shape() {
     let (url, seen) = model_routed(
         vec![(
             PLAN_REVIEW,
-            vec![Reply::Text(PLAN_FINDING), Reply::Text(NO_FINDINGS)],
+            vec![Reply::Text(PLAN_FINDING), Reply::Text(PLAN_RESOLVED)],
         )],
         vec![
             submit("p1", users_plan("Users", 0)),

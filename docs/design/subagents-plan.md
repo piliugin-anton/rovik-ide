@@ -2238,17 +2238,36 @@ step with the same title, and an inserted step renumbers the rest.
   - nothing else. Other new findings are recorded as `notHeld` and hold
     nothing.
 
-  An earlier finding the review doesn't mention is settled, as B04
-  settles repeats. The plan sent again unchanged, with nothing said,
-  keeps every earlier finding open. Verdict lines are never read as
-  findings, and a report of verdicts alone has none. The held findings
-  are replaced at each hold and cleared when a plan is saved, so a submit
-  after the last round owes no answers.
+  The plan sent again unchanged, with nothing said, keeps every earlier
+  finding open. Verdict lines are never read as findings, and a report of
+  verdicts alone has none. The held findings are replaced at each hold
+  and cleared when a plan is saved, so a submit after the last round owes
+  no answers.
+
+- **Getting the verdicts.** In use, a weaker reviewer often left them
+  out, and every earlier finding read as settled:
+  - The brief ends with the reply's shape: "## Earlier findings" and a
+    line for each earlier finding ("- Earlier 1: …"), with no verdict in
+    it, so a copied line gives none.
+  - The budget's report turn and the format repair's ask for the
+    verdicts too, and a rewrite that drops verdicts the first report gave
+    keeps them.
+  - A report that gives an earlier finding no verdict, and doesn't report
+    it again, is asked once, in a turn without tools, for the verdicts it
+    left out. They're added to the report.
+  - Verdicts are read in the shapes reviewers write them: a list number
+    or a title before the verdict, a verdict ending a statement, a table,
+    a heading for each finding with the verdict and a "Why:" on the lines
+    after it, a mark (✅, ❌), and "All earlier findings are resolved".
+  - A finding still without a verdict is settled, as B04 settles
+    repeats, but recorded as not checked (`checked: false`), never as
+    resolved.
 
 - **Record and UI.** A follow-up's `review` record has `earlier` (each
-  finding, the agent's response, resolved and why) and `notHeld`. The
-  review card lists the verdicts and keeps the not-held findings in an
-  expander; its Details count both.
+  finding, the agent's response, resolved, checked and why) and
+  `notHeld`. The review card lists the verdicts ("resolved", "still
+  open", "not checked") and keeps the not-held findings in an expander;
+  its Details count both.
 - **Tests:**
   - Unit: the hold's text, the answers and what's still owed, the
     verdicts, changed steps, and what a follow-up keeps open.
@@ -2259,5 +2278,8 @@ step with the same title, and an inserted step renumbers the rest.
       unchanged one;
     - unanswered submits sent back without a review;
     - identical resubmits nudged, then reviewed and kept open;
-    - a silent revision past the nudges.
+    - a silent revision past the nudges;
+    - a follow-up asked for the verdict it left out, and one that never
+      gives it;
+    - the budget's note and a format repair keeping the verdicts.
   - Component: the follow-up's card.

@@ -102,6 +102,10 @@ pub(super) struct SubCtx {
     /// A step worker outside a group: the plan's other steps' scopes,
     /// which extend_scope doesn't grant (P2.3).
     pub other_steps: Vec<(usize, WriteScope)>,
+    /// A follow-up plan review (B13): the findings of the hold before it.
+    /// Its report turns keep the "## Earlier findings" section, and a
+    /// report that gives some of them no verdict is asked once for those.
+    pub earlier_findings: Vec<super::change_review::Finding>,
 }
 
 impl SubCtx {
@@ -140,6 +144,7 @@ impl SubCtx {
             registered: None,
             kept_copy: false,
             other_steps: Vec::new(),
+            earlier_findings: Vec::new(),
         }
     }
 
@@ -818,10 +823,26 @@ impl Run {
         goal: &str,
         message: String,
     ) -> Result<(String, Option<SubResult>), String> {
+        self.run_ide_subagent_on(kind, call_id, goal, message, Vec::new())
+            .await
+    }
+
+    /// `run_ide_subagent`, for a follow-up plan review: `earlier`, the
+    /// findings of the hold before it, which its report gives a verdict on
+    /// (B13).
+    pub(super) async fn run_ide_subagent_on(
+        &mut self,
+        kind: Kind,
+        call_id: &str,
+        goal: &str,
+        message: String,
+        earlier: Vec<super::change_review::Finding>,
+    ) -> Result<(String, Option<SubResult>), String> {
         let config = self.config().subagents;
-        let sub = self
+        let mut sub = self
             .new_sub(kind, call_id, config.budget(kind), &config)
             .await?;
+        sub.earlier_findings = earlier;
         let child_id = uuid::Uuid::new_v4().to_string();
         self.store_child(&child_id, call_id, kind, goal, message)
             .await?;
@@ -1317,7 +1338,7 @@ impl Run {
     ) -> Result<(SubStatus, String, Option<String>), String> {
         let spec = self.sub().map(|s| s.kind.spec()).expect("a subagent");
         let Some(problem) = subagent::format_problem(spec, &text) else {
-            return Ok((status_of(&text, status), text, None));
+            return self.ask_verdicts(text, status).await;
         };
         let sections = spec
             .sections
@@ -1325,9 +1346,19 @@ impl Run {
             .map(|s| format!("\"## {s}\""))
             .collect::<Vec<_>>()
             .join(", ");
+        // B13: a follow-up plan review's rewrite keeps its verdicts.
+        let earlier = self
+            .sub()
+            .map(|s| s.earlier_findings.clone())
+            .unwrap_or_default();
+        let verdicts = if earlier.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", super::plan_review::verdicts_note(earlier.len()))
+        };
         self.add_harness(
             format!(
-                "{IDE_NOTE}Your report didn't follow the format: {problem}. Don't call any tools. Write the report again, with the headings {sections}."
+                "{IDE_NOTE}Your report didn't follow the format: {problem}. Don't call any tools. Write the report again, with the headings {sections}.{verdicts}"
             ),
             "subagentFormat",
         )
@@ -1337,10 +1368,47 @@ impl Run {
             return Ok((SubStatus::Stopped, again, None));
         }
         if subagent::format_problem(spec, &again).is_none() {
-            return Ok((status_of(&again, status), again, None));
+            let again = if earlier.is_empty() {
+                again
+            } else {
+                super::plan_review::keep_verdicts(&text, &again, &earlier)
+            };
+            return self.ask_verdicts(again, status).await;
         }
         let raw = if again.trim().is_empty() { text } else { again };
         Ok((SubStatus::Unformatted, raw, None))
+    }
+
+    /// B13: a follow-up plan review's report that gives some of the earlier
+    /// findings no verdict, and doesn't report them again: asked once, in a
+    /// turn without tools, for those verdicts, which are added to it.
+    async fn ask_verdicts(
+        &mut self,
+        text: String,
+        status: SubStatus,
+    ) -> Result<(SubStatus, String, Option<String>), String> {
+        let earlier = self
+            .sub()
+            .map(|s| s.earlier_findings.clone())
+            .unwrap_or_default();
+        let missing = super::plan_review::missing_verdicts(&text, &earlier);
+        if missing.is_empty() || subagent::is_blocked(&text) {
+            return Ok((status_of(&text, status), text, None));
+        }
+        self.add_harness(
+            format!(
+                "{IDE_NOTE}{}",
+                super::plan_review::verdicts_request(&missing)
+            ),
+            "subagentFormat",
+        )
+        .await?;
+        let answer = self.words_only_turn().await?;
+        if self.stopped() {
+            return Ok((SubStatus::Stopped, text, None));
+        }
+        let text = super::plan_review::with_verdicts(&text, &answer, &missing);
+        Ok((status_of(&text, status), text, None))
     }
 
     /// One turn without tools for the report, after the budget ran out or a
@@ -1356,7 +1424,14 @@ impl Run {
     ) -> Result<(SubStatus, String, Option<String>), String> {
         let note = self
             .sub()
-            .map(|s| s.kind.spec().partial_report_note())
+            .map(|s| {
+                let note = s.kind.spec().partial_report_note();
+                // B13: a follow-up plan review's verdicts first.
+                match s.earlier_findings.len() {
+                    0 => note,
+                    n => format!("{} {note}", super::plan_review::verdicts_note(n)),
+                }
+            })
             .expect("a subagent");
         self.add_harness(
             format!(

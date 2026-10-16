@@ -147,6 +147,19 @@ test('a follow-up plan review says what became of the earlier findings', () => {
   const facts = new Map(reviewFacts(open));
   assert.equal(facts.get('Earlier findings'), '1 resolved, 1 still open');
   assert.equal(facts.get('Not held'), '2, about what the revision didn’t change');
+
+  // No verdict from the reviewer: settled, but not called resolved.
+  const unchecked = { ...check(2, true), checked: false };
+  assert.equal(
+    reviewHeadline({ ...clean, earlier: [check(1, true), unchecked] }, false),
+    'The plan reviewer found nothing new to fix, but gave no verdict on 1 earlier finding: taken as settled.'
+  );
+  assert.equal(
+    new Map(reviewFacts({ ...open, earlier: [check(1, false), unchecked] })).get(
+      'Earlier findings'
+    ),
+    '0 resolved, 1 still open, 1 not checked'
+  );
 });
 
 test('a plan saved past the review budget says so', () => {
