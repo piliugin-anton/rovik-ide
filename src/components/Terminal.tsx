@@ -2,11 +2,21 @@ import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
-import { spawnTerminal, writeToTerminal, resizeTerminal, closeTerminal } from '../lib/terminal';
+import {
+  spawnRemoteTerminal,
+  spawnTerminal,
+  writeToTerminal,
+  resizeTerminal,
+  closeTerminal,
+  type TerminalEvent,
+  type TerminalHost,
+} from '../lib/terminal';
 import TerminalContextMenu from './TerminalContextMenu';
 
 interface TerminalProps {
   cwd: string | null;
+  /** The cloud host its shell runs on, for its whole life; none on this computer. */
+  host?: TerminalHost | null;
   /** Shown and focused; inactive terminals stay alive, hidden. */
   active: boolean;
   onSpawned?: (shell: string) => void;
@@ -43,6 +53,9 @@ export function controlCharFor(e: KeyboardEvent): string | null {
   if (letter) return String.fromCharCode(letter[1].charCodeAt(0) - 64);
   return CONTROL_PUNCTUATION[e.code] ?? null;
 }
+
+/** `text` without control characters, which the terminal would act on. */
+const printable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
 
 /** Copy text to the OS clipboard, with a fallback for webviews without the async API. */
 async function writeClipboard(text: string): Promise<boolean> {
@@ -248,17 +261,37 @@ export default function Terminal(props: TerminalProps) {
       if (terminalId && !exited) void resizeTerminal(terminalId, cols, rows).catch(() => {});
     });
 
-    spawnTerminal(props.cwd, term.cols, term.rows, (event) => {
+    // A host takes a moment to reach: said until its shell's first output.
+    const host = props.host;
+    let connecting = false;
+    if (host) {
+      connecting = true;
+      term.write(`\x1b[2mConnecting to ${printable(host.name)}…\x1b[0m`);
+    }
+    const connected = () => {
+      if (!connecting) return;
+      connecting = false;
+      term.write('\r\x1b[2K');
+    };
+
+    const onEvent = (event: TerminalEvent) => {
       if (disposed) return;
+      connected();
       if (event.type === 'output') {
         term.write(event.data);
       } else {
         exited = true;
         const code = event.code == null ? '' : ` with code ${event.code}`;
-        term.write(`\r\n\x1b[2m[process exited${code}]\x1b[0m\r\n`);
+        // A shell on a host that ends with no exit status lost its link.
+        const ended = host && event.code == null ? 'connection closed' : `process exited${code}`;
+        term.write(`\r\n\x1b[2m[${ended}]\x1b[0m\r\n`);
         props.onExit?.(event.code);
       }
-    })
+    };
+    const spawned = host
+      ? spawnRemoteTerminal(host.id, term.cols, term.rows, onEvent)
+      : spawnTerminal(props.cwd, term.cols, term.rows, onEvent);
+    spawned
       .then((info) => {
         if (disposed) {
           void closeTerminal(info.id);
@@ -276,7 +309,9 @@ export default function Terminal(props: TerminalProps) {
       .catch((err) => {
         if (disposed) return;
         exited = true;
-        term.write(`\x1b[31mCouldn't start a shell: ${String(err)}\x1b[0m\r\n`);
+        connected();
+        const what = host ? `open a shell on ${printable(host.name)}` : 'start a shell';
+        term.write(`\x1b[31mCouldn't ${what}: ${String(err)}\x1b[0m\r\n`);
       });
 
     // Refit whenever the container changes size: panel expand, sidebar

@@ -3,7 +3,8 @@
 //! events keep coming. And its SSH tunnel (H02, H03): each way of logging
 //! in, the host key checked before anything is sent, the WebSocket and an
 //! upload on channels of their own at once, and `attach --stdio` where the
-//! host refuses streamlocal forwarding. And the connection test (H04).
+//! host refuses streamlocal forwarding. And the connection test (H04), and
+//! a shell on the host for the terminal panel's remote terminals.
 
 mod common;
 
@@ -11,7 +12,8 @@ use common::ssh::{new_key, SshServer, PASSWORD, USER};
 use common::{start_request, until, Daemon, BINARY, COMPUTER};
 use rovik_client::connection_test::{test_connection, Check, Outcome, Step, TestOptions};
 use rovik_client::ssh::{
-    fingerprint, Answerer, Questions, Ssh, SshAuth, SshConnector, SshError, SshTarget,
+    fingerprint, Answerer, Questions, ShellEvent, ShellOutput, Ssh, SshAuth, SshConnector,
+    SshError, SshTarget,
 };
 use rovik_client::{Client, HostState, Identity, Incoming, UnixConnector};
 use rovik_core::agent_run::permissions::Permissions;
@@ -439,6 +441,72 @@ async fn a_host_refusing_streamlocal_is_reached_through_attach() {
         server.execs.load(ordering) >= 3,
         "the $HOME asked, the WebSocket, the upload"
     );
+}
+
+/// What a shell on the host printed until it printed `text`, and its end
+/// if it ended first.
+async fn printed_until(output: &mut ShellOutput, text: &str) -> (String, Option<Option<u32>>) {
+    let mut printed = Vec::new();
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(30), output.next()).await;
+        let event = next.unwrap_or_else(|_| {
+            let printed = String::from_utf8_lossy(&printed);
+            panic!("nothing more came after {printed:?}")
+        });
+        match event.expect("the shell's output ended before the shell") {
+            ShellEvent::Output(data) => printed.extend_from_slice(&data),
+            ShellEvent::Exit(code) => {
+                return (String::from_utf8_lossy(&printed).into_owned(), Some(code));
+            }
+        }
+        let shown = String::from_utf8_lossy(&printed).into_owned();
+        if shown.contains(text) {
+            return (shown, None);
+        }
+    }
+}
+
+/// The terminal panel's remote terminals: the user's login shell on the
+/// host, on a terminal of the type and size asked, which follows the
+/// view's. What's typed goes in, what it prints comes out, then how it
+/// ended. A terminal closed here hangs up: the host ends its shell, and
+/// the connection closes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_on_the_host_runs_on_a_terminal_of_the_size_asked() {
+    let server = SshServer::start().await;
+    let ssh = Ssh::connect(&target(&server, password(PASSWORD)))
+        .await
+        .unwrap();
+    let ssh = Arc::new(ssh);
+    let login = std::env::var("SHELL").unwrap_or_default();
+    let name = login.rsplit('/').next().filter(|name| !name.is_empty());
+    assert_eq!(ssh.login_shell().await.as_deref(), name, "from $SHELL");
+
+    let opened = Arc::clone(&ssh).shell("xterm-256color", 100, 30).await;
+    let (shell, mut output) = opened.unwrap();
+    shell.resize(120, 40).unwrap();
+    shell.write(b"echo hello from the host\n").unwrap();
+    let (printed, ended) = printed_until(&mut output, "hello from the host").await;
+    assert_eq!(ended, None, "{printed}");
+    assert_eq!(
+        *server.terminals.lock().unwrap(),
+        ["pty xterm-256color 100x30", "resize 120x40"]
+    );
+    shell.write(b"exit 3\n").unwrap();
+    let (printed, ended) = printed_until(&mut output, "not printed").await;
+    assert_eq!(ended, Some(Some(3)), "{printed}");
+    assert_eq!(output.next().await, None);
+    drop(shell);
+
+    // The connection closes once nothing else holds it: here, the last of
+    // it goes to this shell.
+    let (shell, mut output) = ssh.shell("xterm-256color", 80, 24).await.unwrap();
+    shell.write(b"echo still here\n").unwrap();
+    printed_until(&mut output, "still here").await;
+    shell.close();
+    let (printed, ended) = printed_until(&mut output, "not printed").await;
+    assert_eq!(ended, Some(None), "hung up on: {printed}");
+    assert!(shell.write(b"echo too late\n").is_err());
 }
 
 /// H04: the connection test, a step at a time. The first run stops at the

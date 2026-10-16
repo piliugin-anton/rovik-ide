@@ -2,7 +2,9 @@
 //! over it a `direct-streamlocal` channel to the daemon's socket for each
 //! stream a `Client` asks for (the WebSocket, each `POST /call`, each
 //! pack), and exec channels for setup (H04, H05). Keepalives every 15 s
-//! find a dead link; the next stream asked for connects again.
+//! find a dead link; the next stream asked for connects again. The
+//! terminal panel's remote terminals each have a connection of their own,
+//! with the user's login shell on a pseudo-terminal there (`Ssh::shell`).
 //!
 //! The socket is `~/.rovik/agentd.sock` there, its path from `$HOME`, asked
 //! once (H03). A host that refuses streamlocal forwarding gets each stream
@@ -26,7 +28,8 @@ use russh::client::{self, AuthResult, Handle, Handler, KeyboardInteractiveAuthRe
 use russh::keys::agent::client::AgentClient;
 use russh::keys::agent::AgentIdentity;
 use russh::keys::{Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
-use russh::ChannelMsg;
+use russh::{ChannelMsg, ChannelReadHalf};
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::io;
@@ -368,6 +371,195 @@ impl Ssh {
             }
         }
         Ok(output)
+    }
+
+    /// The name of the user's login shell on the host ("bash"), as its
+    /// `$SHELL` says; None when it says nothing.
+    pub async fn login_shell(&self) -> Option<String> {
+        let asked = self.exec_within("printf '%s' \"$SHELL\"", &[], CONNECT_WAIT);
+        let output = asked.await.ok()?;
+        let path = String::from_utf8_lossy(&output.stdout);
+        let name = path.trim().rsplit('/').next()?;
+        (output.status == Some(0) && !name.is_empty()).then(|| name.to_string())
+    }
+
+    /// The user's login shell on the host, on a pseudo-terminal there of
+    /// `cols` columns and `rows` rows that takes `term`'s escapes: what's
+    /// typed goes in through the `Shell`, what the shell prints comes out
+    /// of the `ShellOutput`. The `Shell` holds the connection: once it
+    /// hangs up, the connection closes, unless something else holds it.
+    pub async fn shell(
+        self: Arc<Self>,
+        term: &str,
+        cols: u32,
+        rows: u32,
+    ) -> Result<(Shell, ShellOutput), SshError> {
+        let failed = |e: russh::Error| SshError::Failed(format!("A shell on the host: {e}"));
+        let channel = self.handle.channel_open_session().await.map_err(failed)?;
+        // No reply asked for: a host that gives no terminal still runs the
+        // shell, a plain one, as ssh's does.
+        channel
+            .request_pty(false, term, cols, rows, 0, 0, &[])
+            .await
+            .map_err(failed)?;
+        channel.request_shell(true).await.map_err(failed)?;
+        let (mut read, write) = channel.split();
+        let early = match tokio::time::timeout(CONNECT_WAIT, started(&mut read)).await {
+            Ok(early) => early?,
+            Err(_) => {
+                return Err(SshError::Failed(
+                    "The host didn't start a shell in time.".into(),
+                ))
+            }
+        };
+        let (input, mut typed) = tokio::sync::mpsc::unbounded_channel();
+        let hang_up = Arc::new(tokio::sync::Notify::new());
+        let hung_up = Arc::clone(&hang_up);
+        rovik_core::rt::spawn(async move {
+            let sending = async {
+                while let Some(input) = typed.recv().await {
+                    let sent = match input {
+                        ShellInput::Typed(data) => write.data_bytes(data).await,
+                        ShellInput::Resized { cols, rows } => {
+                            write.window_change(cols, rows, 0, 0).await
+                        }
+                    };
+                    if sent.is_err() {
+                        break;
+                    }
+                }
+            };
+            // A hang-up doesn't wait for room to send a big paste to a
+            // shell that doesn't read it.
+            tokio::select! {
+                () = sending => {}
+                () = hung_up.notified() => {}
+            }
+            // Nothing more goes in; the host ends the shell, and the
+            // connection goes with this task.
+            drop(typed);
+            let _ = tokio::time::timeout(CONNECT_WAIT, write.close()).await;
+            drop(self);
+        });
+        let shell = Shell { input, hang_up };
+        let output = ShellOutput {
+            read,
+            early: early.into(),
+            status: None,
+            ended: false,
+        };
+        Ok((shell, output))
+    }
+}
+
+/// Waits for the host to say whether a shell started; what it printed
+/// first, on a host that doesn't wait to say, is kept.
+async fn started(read: &mut ChannelReadHalf) -> Result<Vec<Vec<u8>>, SshError> {
+    let mut early = Vec::new();
+    loop {
+        match read.wait().await {
+            Some(ChannelMsg::Success) => return Ok(early),
+            Some(ChannelMsg::Failure) => {
+                return Err(SshError::Failed(
+                    "The host refused to start a shell.".into(),
+                ))
+            }
+            Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
+                early.push(data.to_vec())
+            }
+            Some(ChannelMsg::Close) | None => {
+                return Err(SshError::Failed(
+                    "The host closed the shell as it started.".into(),
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+/// A shell on the host (`Ssh::shell`): what's typed goes to it, and the
+/// terminal's size, in the order they come. Dropped, it hangs up.
+pub struct Shell {
+    input: tokio::sync::mpsc::UnboundedSender<ShellInput>,
+    /// Tells the task that sends them, which holds the connection.
+    hang_up: Arc<tokio::sync::Notify>,
+}
+
+enum ShellInput {
+    Typed(Vec<u8>),
+    Resized { cols: u32, rows: u32 },
+}
+
+impl Shell {
+    /// Sends what was typed; an error once the shell is gone.
+    pub fn write(&self, data: &[u8]) -> Result<(), SshError> {
+        self.send(ShellInput::Typed(data.to_vec()))
+    }
+
+    /// Tells the host the terminal's new size.
+    pub fn resize(&self, cols: u32, rows: u32) -> Result<(), SshError> {
+        self.send(ShellInput::Resized { cols, rows })
+    }
+
+    /// Hangs up: the host ends the shell, and the connection closes.
+    pub fn close(&self) {
+        // Kept until the task waits for it, if it's busy sending.
+        self.hang_up.notify_one();
+    }
+
+    fn send(&self, input: ShellInput) -> Result<(), SshError> {
+        let gone = |_| SshError::Failed("The shell on the host has ended.".into());
+        self.input.send(input).map_err(gone)
+    }
+}
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+/// What a shell on the host does, as it does it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShellEvent {
+    /// What it printed, its errors with it, as the terminal shows them.
+    Output(Vec<u8>),
+    /// It ended: its exit status, when the host said one.
+    Exit(Option<u32>),
+}
+
+/// What a shell on the host prints, then its end (`Ssh::shell`).
+pub struct ShellOutput {
+    read: ChannelReadHalf,
+    /// What it printed before the host said it started.
+    early: VecDeque<Vec<u8>>,
+    status: Option<u32>,
+    ended: bool,
+}
+
+impl ShellOutput {
+    /// What the shell printed next; its end once the host closes its
+    /// channel, or the connection is gone (a hang-up, a dead link); None
+    /// after that.
+    pub async fn next(&mut self) -> Option<ShellEvent> {
+        if let Some(data) = self.early.pop_front() {
+            return Some(ShellEvent::Output(data));
+        }
+        if self.ended {
+            return None;
+        }
+        while let Some(message) = self.read.wait().await {
+            match message {
+                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                    return Some(ShellEvent::Output(data.to_vec()))
+                }
+                ChannelMsg::ExitStatus { exit_status } => self.status = Some(exit_status),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        self.ended = true;
+        Some(ShellEvent::Exit(self.status))
     }
 }
 

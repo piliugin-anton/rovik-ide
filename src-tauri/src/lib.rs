@@ -113,6 +113,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             terminal::spawn_terminal,
+            terminal::spawn_remote_terminal,
             terminal::write_to_terminal,
             terminal::resize_terminal,
             terminal::close_terminal,

@@ -34,7 +34,8 @@ Electron-based editors.
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
 - Project-wide text search powered by ripgrep's engine.
-- A built-in terminal that uses your own shell.
+- A built-in terminal that uses your own shell, on this computer or on a
+  connected [cloud host](#a-terminal-on-a-cloud-host).
 - A Git panel: commit, branches, stash, history, pull and push. Merge
   conflicts are resolved in a side-by-side conflict resolver.
 
@@ -289,6 +290,18 @@ PuTTYgen `.ppk` files, so an existing PuTTY key works as it is.
 On a server several people share, whoever deploys Rovik there first becomes
 its administrator, and that account needs `sudo`. Everyone else only needs
 their own account with their key in it.
+
+### A terminal on a cloud host
+
+Once a cloud host is connected, the **+** of the terminal panel asks where
+the new terminal runs: **Local**, on this computer, or **_name_ (remote)**,
+your login shell on that host, in your home folder there. `` Ctrl+Shift+` ``
+still opens a local one at once. While a host is connected, each tab says
+where it runs: `bash (local)`, `bash (Build server (remote))`.
+
+A remote terminal logs in as the host's settings say, on a connection of its
+own. On a host set to **My system ssh**, it runs your own `ssh` to the host,
+with your configuration.
 
 ---
 

@@ -1,4 +1,6 @@
-// Terminal backend: any number of shells, each on its own pseudo-terminal.
+// Terminal backend: any number of shells, each on its own pseudo-terminal:
+// the user's shell on this computer, or theirs on a cloud host (a remote
+// terminal).
 //
 // `portable-pty` wraps ConPTY on Windows and a real pty on macOS/Linux, so
 // the same code spawns a working interactive shell everywhere.
@@ -19,6 +21,12 @@
 //   - a waiter that blocks on the child, reaps it (no zombies), drops the
 //     pty (which on Windows is what lets the reader see EOF), and sends the
 //     exit code once the reader has drained the remaining output.
+//
+// A remote terminal reaches its host as the host's settings say
+// (`HostsPage::shell_access`). The user's own ssh runs on a pseudo-terminal
+// here, as a shell does. Rovik's SSH makes a connection of its own, with
+// the login shell on a pseudo-terminal there (rovik-client's `Ssh::shell`);
+// its reads are async, so a task pumps its output, and no thread waits.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
@@ -27,25 +35,89 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use rovik_client::hosts_page::{HostsPage, ShellAccess};
+use rovik_client::ssh::{Shell, ShellEvent, Ssh};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
-/// One terminal. Each part has its own lock, so a write that blocks on a
-/// full pty buffer (a big paste) never holds up other terminals or a resize.
+/// What the terminals take: xterm.js is xterm-compatible.
+const TERM: &str = "xterm-256color";
+
+/// A program on a pseudo-terminal here. Each part has its own lock, so a
+/// write that blocks on a full pty buffer (a big paste) never holds up
+/// other terminals or a resize.
 struct PtyInstance {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
 }
 
+/// One terminal: a program on a pseudo-terminal here (the user's shell, or
+/// their ssh to a host), or a shell on a host through Rovik's SSH.
+enum Session {
+    Pty(PtyInstance),
+    Ssh(Shell),
+}
+
+impl Session {
+    fn write(&self, data: &[u8]) -> Result<(), String> {
+        match self {
+            Session::Pty(pty) => {
+                let mut writer = pty
+                    .writer
+                    .lock()
+                    .map_err(|_| "terminal writer poisoned".to_string())?;
+                writer.write_all(data).map_err(|e| e.to_string())?;
+                writer.flush().map_err(|e| e.to_string())
+            }
+            Session::Ssh(shell) => shell.write(data).map_err(|e| e.to_string()),
+        }
+    }
+
+    fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        match self {
+            Session::Pty(pty) => {
+                let master = pty
+                    .master
+                    .lock()
+                    .map_err(|_| "terminal pty poisoned".to_string())?;
+                master
+                    .resize(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    })
+                    .map_err(|e| e.to_string())
+            }
+            Session::Ssh(shell) => shell
+                .resize(cols.into(), rows.into())
+                .map_err(|e| e.to_string()),
+        }
+    }
+
+    /// Ends it: the program here is killed, the shell on a host hung up on.
+    fn kill(&self) {
+        match self {
+            Session::Pty(pty) => {
+                if let Ok(mut killer) = pty.killer.lock() {
+                    let _ = killer.kill();
+                }
+            }
+            Session::Ssh(shell) => shell.close(),
+        }
+    }
+}
+
 /// Live terminals by id. The map lock is only held to look an entry up.
 #[derive(Default)]
-pub struct TerminalState(Mutex<HashMap<String, Arc<PtyInstance>>>);
+pub struct TerminalState(Mutex<HashMap<String, Arc<Session>>>);
 
 impl TerminalState {
-    fn get(&self, id: &str) -> Result<Arc<PtyInstance>, String> {
+    fn get(&self, id: &str) -> Result<Arc<Session>, String> {
         self.0
             .lock()
             .map_err(|_| "terminal state poisoned".to_string())?
@@ -54,15 +126,15 @@ impl TerminalState {
             .ok_or_else(|| format!("terminal {id} not found"))
     }
 
-    fn insert(&self, id: String, instance: PtyInstance) -> Result<(), String> {
+    fn insert(&self, id: String, session: Session) -> Result<(), String> {
         self.0
             .lock()
             .map_err(|_| "terminal state poisoned".to_string())?
-            .insert(id, Arc::new(instance));
+            .insert(id, Arc::new(session));
         Ok(())
     }
 
-    fn remove(&self, id: &str) -> Option<Arc<PtyInstance>> {
+    fn remove(&self, id: &str) -> Option<Arc<Session>> {
         self.0.lock().ok()?.remove(id)
     }
 }
@@ -118,8 +190,6 @@ fn shell_name(shell: &str) -> String {
 }
 
 /// Bytes at the end of `bytes` that start a UTF-8 sequence not yet complete.
-/// They're held back until the next read: decoding each read on its own
-/// turned a character split across two reads into two "�".
 fn incomplete_utf8_tail(bytes: &[u8]) -> usize {
     let n = bytes.len();
     for back in 1..=n.min(3) {
@@ -138,6 +208,55 @@ fn incomplete_utf8_tail(bytes: &[u8]) -> usize {
     0
 }
 
+/// A terminal's output as text. A character split across two reads is held
+/// back until the rest of it comes: decoding each read on its own turned it
+/// into two "�".
+#[derive(Default)]
+struct Utf8Stream {
+    pending: Vec<u8>,
+}
+
+impl Utf8Stream {
+    /// The text `bytes` complete; None while they complete none.
+    fn push(&mut self, bytes: &[u8]) -> Option<String> {
+        self.pending.extend_from_slice(bytes);
+        let ready = self.pending.len() - incomplete_utf8_tail(&self.pending);
+        if ready == 0 {
+            return None;
+        }
+        let data = String::from_utf8_lossy(&self.pending[..ready]).into_owned();
+        self.pending.drain(..ready);
+        Some(data)
+    }
+
+    /// What was held back, once the output has ended.
+    fn finish(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let data = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        Some(data)
+    }
+}
+
+/// The terminal's size, as the view asked; 80×24 when it couldn't say.
+fn size(cols: Option<u16>, rows: Option<u16>) -> PtySize {
+    PtySize {
+        rows: rows.unwrap_or(24).max(1),
+        cols: cols.unwrap_or(80).max(1),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+/// Starts `cmd` in the user's home folder.
+fn in_home(app: &AppHandle, cmd: &mut CommandBuilder) {
+    if let Ok(home) = app.path().home_dir() {
+        cmd.cwd(home);
+    }
+}
+
 #[tauri::command]
 pub fn spawn_terminal(
     app: AppHandle,
@@ -147,31 +266,110 @@ pub fn spawn_terminal(
     rows: Option<u16>,
     on_event: Channel<TerminalEvent>,
 ) -> Result<TerminalInfo, String> {
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: rows.unwrap_or(24).max(1),
-            cols: cols.unwrap_or(80).max(1),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())?;
-
     let (shell, args) = default_shell();
     let mut cmd = CommandBuilder::new(&shell);
     cmd.args(args);
-    // Launched from a desktop entry, the app may have no TERM at all, and
-    // shells then fall back to a dumb terminal. xterm.js is xterm-compatible.
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
     // A project folder that was moved or deleted shouldn't make spawning fail.
     match cwd.as_deref().filter(|dir| Path::new(dir).is_dir()) {
         Some(dir) => cmd.cwd(dir),
-        None => {
-            if let Some(home) = app.path().home_dir().ok() {
-                cmd.cwd(home);
+        None => in_home(&app, &mut cmd),
+    }
+    let id = spawn_pty(&app, &state, cmd, size(cols, rows), on_event, true)?;
+    Ok(TerminalInfo {
+        id,
+        shell: shell_name(&shell),
+    })
+}
+
+/// A shell on cloud host `host` (its id), reached as the host's settings
+/// say: the user's own ssh, run on a pseudo-terminal here, or Rovik's SSH,
+/// on a connection of its own.
+#[tauri::command]
+pub async fn spawn_remote_terminal(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    page: State<'_, Arc<HostsPage>>,
+    host: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    on_event: Channel<TerminalEvent>,
+) -> Result<TerminalInfo, String> {
+    let size = size(cols, rows);
+    let target = match page.shell_access(&host)? {
+        ShellAccess::Ssh(target) => target,
+        ShellAccess::System(ssh) => {
+            let mut cmd = CommandBuilder::new(&ssh.program);
+            cmd.args(ssh.terminal_args());
+            in_home(&app, &mut cmd);
+            // What runs in it runs on the host: nothing counts here.
+            let id = spawn_pty(&app, &state, cmd, size, on_event, false)?;
+            return Ok(TerminalInfo {
+                id,
+                shell: shell_name(&ssh.program.to_string_lossy()),
+            });
+        }
+    };
+    let ssh = Arc::new(Ssh::connect(&target).await.map_err(|e| e.to_string())?);
+    // Its name first: what the shell prints waits unread until its output
+    // is pumped, and enough of it would hold up the answer.
+    let name = ssh.login_shell().await;
+    let opened = ssh.shell(TERM, size.cols.into(), size.rows.into()).await;
+    let (shell, mut output) = opened.map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    state.insert(id.clone(), Session::Ssh(shell))?;
+    let exit_id = id.clone();
+    rovik_core::rt::spawn(async move {
+        let mut text = Utf8Stream::default();
+        while let Some(event) = output.next().await {
+            match event {
+                ShellEvent::Output(bytes) => {
+                    let Some(data) = text.push(&bytes) else {
+                        continue;
+                    };
+                    if on_event.send(TerminalEvent::Output { data }).is_err() {
+                        // The view is gone, and nothing else could end it.
+                        if let Some(session) = app.state::<TerminalState>().remove(&exit_id) {
+                            session.kill();
+                        }
+                        return;
+                    }
+                }
+                ShellEvent::Exit(code) => {
+                    // Hangs up, if the host hasn't.
+                    app.state::<TerminalState>().remove(&exit_id);
+                    if let Some(data) = text.finish() {
+                        let _ = on_event.send(TerminalEvent::Output { data });
+                    }
+                    let _ = on_event.send(TerminalEvent::Exit { code });
+                }
             }
         }
-    }
+    });
+    Ok(TerminalInfo {
+        id,
+        shell: name.unwrap_or_else(|| "shell".into()),
+    })
+}
+
+/// Runs `cmd` on a new pseudo-terminal of `size`, its output and its exit
+/// on `on_event`. `counted`: its commands run on this computer, and count
+/// in the queue for heavy work. Returns the terminal's id.
+fn spawn_pty(
+    app: &AppHandle,
+    state: &TerminalState,
+    mut cmd: CommandBuilder,
+    size: PtySize,
+    on_event: Channel<TerminalEvent>,
+    counted: bool,
+) -> Result<String, String> {
+    let pair = native_pty_system()
+        .openpty(size)
+        .map_err(|e| e.to_string())?;
+
+    // Launched from a desktop entry, the app may have no TERM at all, and
+    // shells then fall back to a dumb terminal.
+    cmd.env("TERM", TERM);
+    cmd.env("COLORTERM", "truecolor");
 
     let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     // Drop our copy of the slave end now that the child owns it, or the
@@ -185,11 +383,11 @@ pub fn spawn_terminal(
     let id = Uuid::new_v4().to_string();
     state.insert(
         id.clone(),
-        PtyInstance {
+        Session::Pty(PtyInstance {
             writer: Mutex::new(writer),
             master: Mutex::new(pair.master),
             killer: Mutex::new(killer),
-        },
+        }),
     )?;
 
     let (drained_tx, drained_rx) = mpsc::channel::<()>();
@@ -200,18 +398,14 @@ pub fn spawn_terminal(
         .name(format!("pty-read-{id}"))
         .spawn(move || {
             let mut buf = [0u8; 16 * 1024];
-            let mut pending: Vec<u8> = Vec::new();
+            let mut text = Utf8Stream::default();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        pending.extend_from_slice(&buf[..n]);
-                        let ready = pending.len() - incomplete_utf8_tail(&pending);
-                        if ready == 0 {
+                        let Some(data) = text.push(&buf[..n]) else {
                             continue;
-                        }
-                        let data = String::from_utf8_lossy(&pending[..ready]).into_owned();
-                        pending.drain(..ready);
+                        };
                         if output.send(TerminalEvent::Output { data }).is_err() {
                             break; // the view is gone
                         }
@@ -221,8 +415,7 @@ pub fn spawn_terminal(
                     Err(_) => break,
                 }
             }
-            if !pending.is_empty() {
-                let data = String::from_utf8_lossy(&pending).into_owned();
+            if let Some(data) = text.finish() {
                 let _ = output.send(TerminalEvent::Output { data });
             }
             let _ = drained_tx.send(());
@@ -232,13 +425,14 @@ pub fn spawn_terminal(
     // The shell's commands count in the queue for heavy work: a build run
     // here takes a CPU slot (chats wait, with a note naming it), but the
     // terminal itself never waits and is never slowed (src/workload).
-    let job = child.process_id().map(|pid| {
+    let job = child.process_id().filter(|_| counted).map(|pid| {
         let job = rovik_core::workload::begin(rovik_core::workload::JobKind::Terminal, "", None);
         job.spawned(pid);
         job
     });
 
     // Waiter: reap the child, release the pty, report the exit.
+    let app = app.clone();
     let exit_id = id.clone();
     std::thread::Builder::new()
         .name(format!("pty-wait-{id}"))
@@ -255,10 +449,7 @@ pub fn spawn_terminal(
         })
         .map_err(|e| e.to_string())?;
 
-    Ok(TerminalInfo {
-        id,
-        shell: shell_name(&shell),
-    })
+    Ok(id)
 }
 
 #[tauri::command]
@@ -267,15 +458,7 @@ pub fn write_to_terminal(
     id: String,
     data: String,
 ) -> Result<(), String> {
-    let instance = state.get(&id)?;
-    let mut writer = instance
-        .writer
-        .lock()
-        .map_err(|_| "terminal writer poisoned".to_string())?;
-    writer
-        .write_all(data.as_bytes())
-        .map_err(|e| e.to_string())?;
-    writer.flush().map_err(|e| e.to_string())
+    state.get(&id)?.write(data.as_bytes())
 }
 
 #[tauri::command]
@@ -285,29 +468,43 @@ pub fn resize_terminal(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let instance = state.get(&id)?;
-    let master = instance
-        .master
-        .lock()
-        .map_err(|_| "terminal pty poisoned".to_string())?;
-    master
-        .resize(PtySize {
-            rows: rows.max(1),
-            cols: cols.max(1),
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())
+    state.get(&id)?.resize(cols, rows)
 }
 
-/// Kills the shell. Its waiter thread then reaps it and cleans up; closing
-/// a terminal that already exited is a no-op.
+/// Kills the shell, or hangs up on the one on a host. Its waiter thread, or
+/// its output's task, then cleans up; closing a terminal that already
+/// exited is a no-op.
 #[tauri::command]
 pub fn close_terminal(state: State<'_, TerminalState>, id: String) -> Result<(), String> {
-    if let Some(instance) = state.remove(&id) {
-        if let Ok(mut killer) = instance.killer.lock() {
-            let _ = killer.kill();
-        }
+    if let Some(session) = state.remove(&id) {
+        session.kill();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_character_split_across_reads_comes_out_whole() {
+        let snowman = "☃".as_bytes();
+        let mut text = Utf8Stream::default();
+        assert_eq!(text.push(b"a"), Some("a".into()));
+        assert_eq!(text.push(&snowman[..1]), None);
+        assert_eq!(text.push(&snowman[1..2]), None);
+        assert_eq!(text.push(&snowman[2..]), Some("☃".into()));
+        assert_eq!(text.push(&[b'b', snowman[0]]), Some("b".into()));
+        // Cut short where the output ended: shown as it is.
+        assert_eq!(text.finish(), Some("\u{FFFD}".into()));
+        assert_eq!(text.finish(), None);
+    }
+
+    #[test]
+    fn a_terminal_is_as_big_as_its_view_says() {
+        let asked = size(Some(132), Some(43));
+        assert_eq!((asked.cols, asked.rows), (132, 43));
+        let unsaid = size(None, Some(0));
+        assert_eq!((unsaid.cols, unsaid.rows), (80, 1));
+    }
 }

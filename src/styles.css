@@ -3577,6 +3577,7 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-icon,
 .terminal-context-menu .context-menu-icon,
+.terminal-new-menu .context-menu-icon,
 .chat-input-context-menu .context-menu-icon {
   display: inline-flex;
   flex: 0 0 14px;
@@ -3585,16 +3586,28 @@ body.tree-dragging {
 
 .file-context-menu .context-menu-label,
 .terminal-context-menu .context-menu-label,
+.terminal-new-menu .context-menu-label,
 .chat-input-context-menu .context-menu-label {
   flex: 1;
 }
 
 .file-context-menu .context-menu-shortcut,
 .terminal-context-menu .context-menu-shortcut,
+.terminal-new-menu .context-menu-shortcut,
 .chat-input-context-menu .context-menu-shortcut {
   margin-left: 16px;
   color: var(--fg-dim);
   font-size: 11px;
+}
+
+/* The terminal panel's "+" menu (TerminalNewMenu.tsx) takes the keyboard:
+   its item in focus looks as the hovered one does. */
+.terminal-new-menu .context-menu-item:focus {
+  outline: none;
+}
+
+.terminal-new-menu .context-menu-item:focus-visible {
+  background: var(--hover-strong);
 }
 
 .file-context-menu .context-menu-item.danger,
