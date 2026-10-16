@@ -2301,6 +2301,12 @@ follow the format").
   the change) as a whole.
 - A location of several words is never a path. One that starts with
   `Step N` still names its steps.
+- A hyphen, en dash or colon inside a word doesn't end a location, in the
+  format's shapes too. "Steps 2–4 and Validation — …" is at steps 2 to 4;
+  it was cut to "Steps 2", with "4 and Validation — …" as its title. So
+  were "Cross-step …", "src/a.ts:42 and …" and "`Config::load` callers …".
+  The title's separator is an em dash, a spaced hyphen or en dash, or a
+  colon and a space ("Step 3:Title" no longer splits).
 - Two findings with no path and no step are the same only with the same
   title. Before, any two at `Plan` were one, so a follow-up's new finding
   about the whole plan was dropped as a repeat of an earlier one.

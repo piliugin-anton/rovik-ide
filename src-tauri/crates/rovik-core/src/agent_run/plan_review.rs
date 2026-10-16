@@ -1911,6 +1911,7 @@ mod tests {
         assert!(steps("src/a.rs").is_empty());
         // In the reviewer's own words; none is the plan as a whole.
         assert_eq!(steps("Step 2, Step 5"), [2, 5]);
+        assert_eq!(steps("Steps 2–4 and Validation"), [2, 3, 4]);
         assert!(steps("Validation section").is_empty());
         assert!(steps("").is_empty());
     }

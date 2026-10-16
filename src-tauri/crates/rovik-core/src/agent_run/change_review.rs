@@ -132,10 +132,13 @@ impl Finding {
 }
 
 // The severity and the location may be in bold or backticks; a note in
-// parentheses may follow the location; "Steps 2 and 4" is a location.
+// parentheses may follow the location; "Steps 2 and 4" is a location. The
+// title's separator is TITLE_SEPARATOR's: a hyphen, en dash or colon in a
+// word ("Steps 2–4 and …", "Cross-step …", "a.ts:42 and …") is no
+// separator, so such a line's location is one of several words.
 static HEADER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s*[-–]\s*)\d+)*|(?:(?:the|whole|overall|entire|general)\s+)?plan|[^\s`*]+)`?\**:?(?:\s*\([^)\n]*\))?\s*(?:[—–:-]+\s*(.*))?$",
+        r"(?i)^\s*\d+[.)]\s*\**[\[(]\s*(high|medium|low|critical|blocker|severe|major|minor|trivial|nit|info)\s*[\])]\**\s*\**`?(steps?\s+\d+(?:(?:\s*,\s*|\s+and\s+|\s*&\s*|\s*[-–]\s*)\d+)*|(?:(?:the|whole|overall|entire|general)\s+)?plan|[^\s`*]+)`?\**:?(?:\s*\([^)\n]*\))?(?:(?:\s*:)?(?:\s*—[—–-]*|\s+[-–]+\s|\s*:\s)\s*(.*)|\s*)$",
     )
     .unwrap()
 });
@@ -1589,10 +1592,43 @@ mod tests {
             (location.as_str(), title.as_str(), step, path),
             ("Step 2, Step 5", "Both call the old API", Some(2), None)
         );
-        // A range's dash doesn't end the location.
+        // A hyphen, en dash or colon in a word doesn't end the location: a
+        // range's, a compound's, a path's line. Before, the header was cut
+        // there ("Steps 2" — "4 and Validation — No test").
         assert_eq!(
             read("1. [high] Validation of steps 2–4 — No test"),
             words("Validation of steps 2–4", "No test")
+        );
+        let (location, title, step, path) = read("1. [high] Steps 2–4 and Validation — No test");
+        assert_eq!(
+            (location.as_str(), title.as_str(), step, path),
+            ("Steps 2–4 and Validation", "No test", Some(2), None)
+        );
+        for (header, location, title) in [
+            (
+                "1. [medium] Cross-step ordering — Step 3 runs first",
+                "Cross-step ordering",
+                "Step 3 runs first",
+            ),
+            ("1. [medium] Plan-wide — No test", "Plan-wide", "No test"),
+            (
+                "1. [high] src/a.ts:42 and src/b.ts:7 — Two parsers",
+                "src/a.ts:42 and src/b.ts:7",
+                "Two parsers",
+            ),
+            (
+                "1. [high] `Config::load` callers — Read the old path",
+                "`Config::load` callers",
+                "Read the old path",
+            ),
+        ] {
+            assert_eq!(read(header), words(location, title), "{header}");
+        }
+        // A spaced hyphen still ends a step, a number after it or not.
+        let (location, title, step, _) = read("1. [high] Step 2 - 3 callers aren't updated");
+        assert_eq!(
+            (location.as_str(), title.as_str(), step),
+            ("Step 2", "3 callers aren't updated", Some(2))
         );
         // The shapes the format has read as they did.
         let (location, title, _, path) = read("1. [high] src/a.ts:42: Off by one");
