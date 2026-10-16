@@ -19,10 +19,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, FopenFlags,
-    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags,
-    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
-    ReplyOpen, ReplyStatfs, ReplyWrite, ReplyXattr, Request, SessionACL, TimeOrNow, WriteFlags,
+    AccessFlags, BackgroundSession, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle,
+    FileType, FopenFlags, Generation, INodeNo, InitFlags, IoctlFlags, KernelConfig, LockOwner,
+    MountOption, OpenFlags, PollEvents, PollFlags, PollNotifier, RenameFlags, ReplyAttr,
+    ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyIoctl,
+    ReplyLseek, ReplyOpen, ReplyPoll, ReplyStatfs, ReplyWrite, ReplyXattr, Request, SessionACL,
+    TimeOrNow, WriteFlags,
 };
 
 use super::backend::Backend;
@@ -714,6 +716,73 @@ impl fuser::Filesystem for FuseFs {
             Ok(())
         });
         Self::empty(reply, result);
+    }
+
+    // fuser's defaults for the four below give programs the same answers,
+    // but each logs a "[Not Implemented]" warning in the app's log.
+
+    fn ioctl(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _flags: IoctlFlags,
+        _cmd: u32,
+        _in_data: &[u8],
+        _out_size: u32,
+        reply: ReplyIoctl,
+    ) {
+        // None here: "not a terminal", as on a disk (and what the kernel
+        // makes of ENOSYS). Most are isatty()'s, which Python asks of every
+        // file it opens; the kernel sends each one, whatever the answer.
+        reply.error(Errno::ENOTTY);
+    }
+
+    fn poll(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _ph: PollNotifier,
+        _events: PollEvents,
+        _flags: PollFlags,
+        reply: ReplyPoll,
+    ) {
+        // Files are always ready to read and write, as on a disk. ENOSYS
+        // makes the kernel answer that itself from then on.
+        reply.error(Errno::ENOSYS);
+    }
+
+    fn lseek(
+        &self,
+        _req: &Request,
+        _ino: INodeNo,
+        _fh: FileHandle,
+        _offset: i64,
+        _whence: i32,
+        reply: ReplyLseek,
+    ) {
+        // Only SEEK_DATA and SEEK_HOLE come here. Files have no holes, which
+        // the kernel assumes after ENOSYS, without asking again.
+        reply.error(Errno::ENOSYS);
+    }
+
+    fn copy_file_range(
+        &self,
+        _req: &Request,
+        _ino_in: INodeNo,
+        _fh_in: FileHandle,
+        _offset_in: u64,
+        _ino_out: INodeNo,
+        _fh_out: FileHandle,
+        _offset_out: u64,
+        _len: u64,
+        _flags: CopyFileRangeFlags,
+        reply: ReplyWrite,
+    ) {
+        // A copy within the volume (`cp`, std::fs::copy): after ENOSYS the
+        // kernel copies with reads and writes, without asking again.
+        reply.error(Errno::ENOSYS);
     }
 }
 
