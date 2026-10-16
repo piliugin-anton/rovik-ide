@@ -2855,3 +2855,19 @@ Tasks add notes here when reality differs from the plan.
     machine or CI was at hand: the tests there and the manual check on a
     Windows laptop (a checkout with `autocrlf`, the agent's pipe, a project
     on `C:\`) are still to do.
+- **B01, static builds.**
+  - `scripts/build-agentd.sh` makes them with cargo-zigbuild, which
+    `pip install cargo-zigbuild` installs with zig, for
+    `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, with
+    `--profile release-daemon --locked`, and copies each to
+    `src-tauri/target/agentd/rovik-agentd-<version>-<cpu>`, a release's
+    name for it.
+  - Every C library built with zig as it is: aws-lc-sys, so K20's
+    fallback to `ring` wasn't needed, libgit2, SQLite, zlib and the
+    tree-sitter grammars.
+  - Each build took 8 minutes here. Both are statically linked and about
+    165 MB stripped, mostly the grammars' tables: gzipped, 19 MB (xz:
+    12 MB). The x86_64 one runs `version` and `doctor` on this machine;
+    the aarch64 one was checked with `file` alone, as nothing here runs
+    it. Starting them on Alpine and Ubuntu, as the plan's test says, is
+    still to do.

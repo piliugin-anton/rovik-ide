@@ -319,6 +319,12 @@ stops it, answers its approvals and shows its progress.
 | `cd src-tauri && cargo test --lib`            | Backend tests                                                           |
 | `cd src-tauri && cargo test vfs -- --ignored` | Mounts a real virtual volume (Linux) and runs shell tools and Git on it |
 | `npm run format`                              | Format with Prettier (`format:check` to verify)                         |
+| `scripts/build-agentd.sh`                     | Static builds of the daemon for Linux servers (x86_64 and aarch64)      |
+
+`scripts/build-agentd.sh` needs zig and cargo-zigbuild:
+`pip install cargo-zigbuild` brings both. Each build is a single file that
+runs on any Linux, in `src-tauri/target/agentd/`. To deploy one, start the
+app with `ROVIK_AGENTD_BINARY` set to its path.
 
 To debug model requests, set `ROVIK_API_LOG=1`. Every request and response
 is then logged to `<temp dir>/rovik-api-log.jsonl`; set it to a file path
