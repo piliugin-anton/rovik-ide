@@ -4,7 +4,10 @@ import type {
   BrowsedPage,
   BrowserScreenshot,
   DirEntryInfo,
+  ImportSite,
   LoadedFiles,
+  LoadedTypings,
+  ProjectDefinitions,
   ToolDirEntry,
   ToolSearchResult,
   WebSearchHit,
@@ -32,14 +35,31 @@ export async function readImageFile(path: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>('read_image_file', { path });
 }
 
-/** The project's JS/TS sources, for IntelliSense (within limits). */
+/** The project's JS/TS sources and the dependencies they reach, for IntelliSense. */
+export async function loadProjectDefinitions(root: string): Promise<ProjectDefinitions> {
+  return invoke<ProjectDefinitions>('load_project_definitions', { root });
+}
+
+/** The project's JS/TS sources alone (within limits). */
 export async function loadProjectSources(root: string): Promise<LoadedFiles> {
   return invoke<LoadedFiles>('load_project_sources', { root });
 }
 
-/** The type declarations under the project's node_modules (within limits). */
-export async function loadProjectTypings(root: string): Promise<LoadedFiles> {
-  return invoke<LoadedFiles>('load_project_typings', { root });
+/** The dependencies the project's sources reach, read again (after an install). */
+export async function loadProjectTypings(root: string): Promise<LoadedTypings> {
+  return invoke<LoadedTypings>('load_project_typings', { root });
+}
+
+/**
+ * The packages these imports reach, less those under `exclude` (package
+ * folders the editor has): for an import of a package nothing imported before.
+ */
+export async function loadDependencyTypings(
+  root: string,
+  sites: ImportSite[],
+  exclude: string[]
+): Promise<LoadedTypings> {
+  return invoke<LoadedTypings>('load_dependency_typings', { root, sites, exclude });
 }
 
 /** Starts the error of a save refused because the file changed on disk. */

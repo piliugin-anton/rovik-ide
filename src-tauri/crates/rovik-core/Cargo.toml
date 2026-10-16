@@ -16,6 +16,7 @@ reqwest.workspace = true
 futures-util.workspace = true
 bytes = "1.12.1"
 ignore.workspace = true
+walkdir.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros", "net", "io-util"] }
 uuid.workspace = true
 git2.workspace = true

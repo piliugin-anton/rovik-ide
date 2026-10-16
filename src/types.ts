@@ -420,13 +420,34 @@ export interface FileWatchPayload {
   is_dir: boolean;
 }
 
-/** Files loaded for the editor's IntelliSense (src-tauri/src/typings). */
+/** Files loaded for the editor's IntelliSense (rovik_core::typings). */
 export interface LoadedFiles {
   files: { path: string; content: string }[];
   /** Links to folders: files are under the target, the path resolves to it. */
   links: { path: string; target: string }[];
   /** A limit was hit: some files weren't loaded. */
   truncated: boolean;
+}
+
+/** The dependencies the project reaches: their declarations and manifests. */
+export interface LoadedTypings extends LoadedFiles {
+  /** The packages loaded, each once: as imported, and its real folder. */
+  packages: { name: string; dir: string }[];
+  /** Imports no installed package was found for. */
+  missing: string[];
+}
+
+/** What a project opens with: its sources and the dependencies they reach. */
+export interface ProjectDefinitions {
+  sources: LoadedFiles;
+  typings: LoadedTypings;
+}
+
+/** The imports of one file, for loading the packages they reach. */
+export interface ImportSite {
+  /** The importing file's absolute path. */
+  from: string;
+  specifiers: string[];
 }
 
 export type FileSuggestion = {

@@ -37,6 +37,7 @@ mod system_one;
 /// feature): a scripted model, temporary folders, a `Core` on one.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod typings;
 pub mod vfs;
 pub mod workload;
 

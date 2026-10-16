@@ -8,12 +8,14 @@
 //   - the project's own JS/TS sources are loaded once per project
 //     (src-tauri/src/typings/sources.rs) and kept current from the file
 //     watcher, in batches (sourceChanges.ts);
-//   - its dependencies' typings are loaded with them, from every
-//     node_modules folder in the project, workspace members' included
-//     (src-tauri/src/typings/node_modules.rs), as files the worker may
-//     read but not files of its program (worker.ts): only what the code
-//     imports is parsed, so a large node_modules costs its text, not
-//     gigabytes of syntax trees;
+//   - its dependencies' typings are loaded with them, as the closure of
+//     what the code imports (rovik_core::typings): the packages the
+//     sources, configs and manifests name, from every node_modules folder
+//     in the project, workspace members' included, and what those
+//     packages' declarations import in turn, not every package installed.
+//     An import typed later is looked up and its package added
+//     (project.ts). They are files the worker may read but not files of
+//     its program (worker.ts): only what the code imports is parsed;
 //   - compiler options follow the project's tsconfig/jsconfig (baseUrl,
 //     paths, jsx), with extends and references followed (lib/tsconfig.ts),
 //     and JavaScript is understood too (allowJs); the global @types follow
