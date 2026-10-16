@@ -5,6 +5,7 @@
 // and its work on demand. Updates live while the reviewer reads the change.
 import { For, Show } from 'solid-js';
 import {
+  earlierVerdict,
   reviewDetails,
   reviewFacts,
   reviewHeadline,
@@ -56,9 +57,13 @@ function FindingItem(props: { finding: ReviewFinding; dropped?: boolean }) {
 /** A follow-up plan review's verdict on an earlier finding, with the agent's answer. */
 function EarlierItem(props: { check: EarlierCheck }) {
   const c = () => props.check;
+  const verdict = () => earlierVerdict(c());
   return (
-    <li class="review-earlier-item" classList={{ resolved: c().resolved }}>
-      <span class="review-earlier-verdict">{c().resolved ? 'resolved' : 'still open'}</span>
+    <li
+      class="review-earlier-item"
+      classList={{ resolved: verdict() === 'resolved', unchecked: verdict() === 'not checked' }}
+    >
+      <span class="review-earlier-verdict">{verdict()}</span>
       <span class="review-location">
         Earlier {c().finding} · {c().location}
       </span>

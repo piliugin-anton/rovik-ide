@@ -8452,6 +8452,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--success);
 }
 
+.review-earlier-item.unchecked .review-earlier-verdict {
+  color: var(--fg-dim);
+}
+
 /* The card's "Details" expander: the record's facts, and a skipped
    review's report as the reviewer wrote it. */
 .review-details {

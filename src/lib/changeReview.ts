@@ -34,8 +34,20 @@ export interface EarlierCheck {
   /** The agent's answer (submit_plan's `responses`), when it gave one. */
   response: { action: 'fixed' | 'not_a_problem'; note: string } | null;
   resolved: boolean;
-  /** The reviewer's reason, or why the IDE decided (it wasn't checked, nothing changed). */
+  /**
+   * The reviewer's word (a verdict, or the finding reported again), not the
+   * IDE's default: false when it gave no verdict even when asked (then
+   * resolved: taken as settled) or the plan came back unchanged.
+   */
+  checked?: boolean;
+  /** The reviewer's reason, or why the IDE decided. */
   reason: string;
+}
+
+/** A follow-up's word on an earlier finding, as its card says it. */
+export function earlierVerdict(check: EarlierCheck): 'resolved' | 'still open' | 'not checked' {
+  if (!check.resolved) return 'still open';
+  return check.checked === false ? 'not checked' : 'resolved';
 }
 
 export type ReviewStatus =
@@ -127,6 +139,9 @@ function planHeadline(meta: ReviewMeta): string {
       const notHeld = meta.notHeld?.length
         ? ` (${plural(meta.notHeld.length, 'finding')} about what the revision didn’t change, not held)`
         : '';
+      const unchecked = meta.earlier!.filter((e) => earlierVerdict(e) === 'not checked').length;
+      if (unchecked)
+        return `The plan reviewer found nothing new to fix${notHeld}, but gave no verdict on ${plural(unchecked, 'earlier finding')}: taken as settled.`;
       return `The plan reviewer found the earlier ${earlier === 1 ? 'finding' : 'findings'} resolved and nothing new to fix${notHeld}.`;
     }
     case 'findings': {
@@ -175,8 +190,14 @@ export function reviewFacts(meta: ReviewMeta): [string, string][] {
   if (meta.changedLines !== undefined) facts.push(['Changed lines', String(meta.changedLines)]);
   if (meta.findings?.length) facts.push(['Findings', String(meta.findings.length)]);
   if (meta.earlier?.length) {
-    const open = meta.earlier.filter((e) => !e.resolved).length;
-    facts.push(['Earlier findings', `${meta.earlier.length - open} resolved, ${open} still open`]);
+    const count = (verdict: ReturnType<typeof earlierVerdict>) =>
+      meta.earlier!.filter((e) => earlierVerdict(e) === verdict).length;
+    const unchecked = count('not checked');
+    facts.push([
+      'Earlier findings',
+      `${count('resolved')} resolved, ${count('still open')} still open` +
+        (unchecked ? `, ${unchecked} not checked` : ''),
+    ]);
   }
   if (meta.notHeld?.length)
     facts.push(['Not held', `${meta.notHeld.length}, about what the revision didn’t change`]);

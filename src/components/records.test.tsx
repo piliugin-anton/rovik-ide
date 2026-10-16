@@ -169,7 +169,18 @@ test('a follow-up plan review shows its verdicts and what it didn’t hold', () 
         title: 'No index',
         response: { action: 'not_a_problem', note: 'The table is tiny.' },
         resolved: true,
+        checked: true,
         reason: 'The answer holds.',
+      },
+      {
+        finding: 3,
+        severity: 'medium',
+        location: 'Step 4',
+        title: 'Wrong order',
+        response: { action: 'fixed', note: 'Moved step 4.' },
+        resolved: true,
+        checked: false,
+        reason: 'the reviewer gave no verdict on it; taken as settled',
       },
     ],
     notHeld: [finding('medium', 1, 'Untouched step')],
@@ -177,8 +188,11 @@ test('a follow-up plan review shows its verdicts and what it didn’t hold', () 
   const root = container();
   render(() => <ReviewRecord meta={meta} dialogId="d" recordId="m5" live={false} />, root);
   const items = [...root.querySelectorAll('.review-earlier-item')];
-  assert.equal(items.length, 2);
+  assert.equal(items.length, 3);
   assert.ok(!items[0].classList.contains('resolved') && items[1].classList.contains('resolved'));
+  // No verdict from the reviewer: not shown as resolved.
+  assert.ok(items[2].classList.contains('unchecked') && !items[2].classList.contains('resolved'));
+  assert.match(items[2].textContent ?? '', /^not checked.*Why: the reviewer gave no verdict/);
   assert.match(
     items[0].textContent ?? '',
     /still open.*Earlier 1 · Step 2.*Agent: fixed — Added step 3\..*Why: Still one call site\./
