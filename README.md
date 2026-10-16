@@ -10,6 +10,7 @@ Electron-based editors.
 - [Features](#features)
 - [Installing and running](#installing-and-running)
 - [Getting started](#getting-started)
+- [Cloud hosts](#cloud-hosts)
 - [For developers](#for-developers)
 - [How some parts work](#how-some-parts-work)
 
@@ -180,10 +181,114 @@ Other settings pages:
 | Project checks  | Fix the type-check / lint / test commands the IDE detected         |
 | Builds & checks | How many heavy builds may run at once, so the machine stays usable |
 | Virtual files   | Driver status, installation and troubleshooting                    |
+| Cloud hosts     | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))    |
 
 When the agent runs commands from the IDE, they get the same `PATH` as your
 login shell, so tools like `npm`, `cargo` and Homebrew packages are found
 even when you start the app from a desktop icon.
+
+---
+
+## Cloud hosts
+
+A cloud host is a Linux server that your chats can move to and run on. You
+add one in **Settings → Cloud hosts**, and Rovik logs in to it over SSH as
+your own account there. If you run a server that several people share, see
+[Rovik on a team server](docs/cloud-hosts.md).
+
+### An SSH key for a cloud host
+
+Make the key on the computer that runs Rovik, put its public half in your
+own account on the server, then point Rovik at the private half.
+
+1. **Make the key.** On macOS or Linux:
+
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/rovik_ed25519 -C "rovik on my-laptop"
+   ```
+
+   On Windows, in PowerShell (Windows 10 and 11 include the OpenSSH client):
+
+   ```powershell
+   ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\rovik_ed25519 -C "rovik on my-laptop"
+   ```
+
+   A passphrase is optional. If you set one, Rovik keeps it in the system
+   keychain. You get two files: `rovik_ed25519`, the private key, which never
+   leaves your computer, and `rovik_ed25519.pub`, the public key, which goes
+   on the server and is safe to share.
+
+2. **Put the public key in your account on the server.** Use a regular
+   account: Rovik's daemon never runs as root, so it won't deploy over a root
+   login, and on a shared server each person has their own account. If you
+   can already log in with a password, on macOS or Linux:
+
+   ```bash
+   ssh-copy-id -i ~/.ssh/rovik_ed25519.pub you@server
+   ```
+
+   Windows has no `ssh-copy-id`. In PowerShell:
+
+   ```powershell
+   type $env:USERPROFILE\.ssh\rovik_ed25519.pub | ssh you@server "umask 077; mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+   ```
+
+   If you can't log in yet, send the `.pub` file to the server's
+   administrator, who adds it to your account (here `ann`):
+
+   ```bash
+   sudo adduser ann   # only if the account doesn't exist yet
+   sudo mkdir -p /home/ann/.ssh
+   sudo tee -a /home/ann/.ssh/authorized_keys < rovik_ed25519.pub > /dev/null
+   sudo chown -R ann: /home/ann/.ssh
+   sudo chmod 700 /home/ann/.ssh && sudo chmod 600 /home/ann/.ssh/authorized_keys
+   ```
+
+   On a new cloud server, you can instead paste the contents of the `.pub`
+   file into the provider's SSH keys field when you create the server. If
+   the provider only sets up root, create a regular account as above first.
+
+3. **Check it from a terminal:**
+
+   ```bash
+   ssh -i ~/.ssh/rovik_ed25519 you@server
+   ```
+
+   It should log you in without asking for a password. It asks only for the
+   key's passphrase, if you set one.
+
+4. **Add the host in Rovik.** In **Settings → Cloud hosts**, click
+   **+ Add host** and fill in **Host**, **Port** and **User** (your account).
+   Set **Log in with** to **A key file**. In **Key file**, enter the full path
+   to the private key, not the `.pub` file: `/home/you/.ssh/rovik_ed25519` on
+   Linux, `/Users/you/.ssh/rovik_ed25519` on macOS, or
+   `C:\Users\you\.ssh\rovik_ed25519` on Windows. Enter the **Key passphrase**
+   only if the key has one. Click **Save**, then **Test connection**.
+
+5. **Trust the server's key.** The first test shows the server's key
+   fingerprint. Click **Trust this key** once it matches one of the lines
+   this prints on the server:
+
+   ```bash
+   for key in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$key"; done
+   ```
+
+Instead of a key file, you can load the key into your SSH agent
+(`ssh-add ~/.ssh/rovik_ed25519`) and choose **My SSH agent**. Rovik then
+never reads the key file. On Windows, Rovik uses the OpenSSH Authentication
+Agent service, which is off until you start it, or Pageant. To start the
+service, in PowerShell run as administrator:
+
+```powershell
+Get-Service ssh-agent | Set-Service -StartupType Automatic -PassThru | Start-Service
+```
+
+Ed25519 keys are the best choice. RSA and ECDSA keys work too, and so do
+PuTTYgen `.ppk` files, so an existing PuTTY key works as it is.
+
+On a server several people share, whoever deploys Rovik there first becomes
+its administrator, and that account needs `sudo`. Everyone else only needs
+their own account with their key in it.
 
 ---
 
