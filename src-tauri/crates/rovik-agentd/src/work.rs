@@ -334,11 +334,21 @@ async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) {
     }
 }
 
-/// At start-up: the worktrees of chats deleted while the daemon was away,
-/// and folders in `work/` that no chat has.
-pub async fn collect(daemon: &Daemon) {
-    let known = daemon.store.chats_with_worktrees();
-    for chat in &known {
+/// The worktrees, branches and refs of chats whose rows are gone (R01):
+/// chats deleted while the daemon was away, and chats taken back by their
+/// computer and forgotten (`ChatForget`), released before
+/// `released_before`. A chat taken back but not forgotten keeps them: its
+/// computer may still finish taking it back (K51). How many went.
+pub async fn collect_chats(daemon: &Daemon, released_before: i64) -> usize {
+    let mut removed = 0;
+    for chat in daemon.store.chats_with_worktrees() {
+        if daemon
+            .store
+            .released_at(&chat)
+            .is_some_and(|at| at >= released_before)
+        {
+            continue;
+        }
         let id = chat.clone();
         let row = daemon
             .core
@@ -346,10 +356,18 @@ pub async fn collect(daemon: &Daemon) {
             .read(move |c| store::get_dialog(c, &id))
             .await;
         if matches!(row, Ok(None)) {
-            log::info!("{chat} was deleted: its worktree goes");
-            remove(daemon, chat).await;
+            log::info!("{chat}'s rows are gone: its worktree goes");
+            remove(daemon, &chat).await;
+            removed += 1;
         }
     }
+    removed
+}
+
+/// At start-up: `collect_chats`, and folders in `work/` that no chat has.
+pub async fn collect(daemon: &Daemon, released_before: i64) {
+    collect_chats(daemon, released_before).await;
+    let known = daemon.store.chats_with_worktrees();
     let folders = fs::read_dir(&daemon.worktrees)
         .into_iter()
         .flatten()

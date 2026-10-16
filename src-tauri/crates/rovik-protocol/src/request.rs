@@ -244,6 +244,11 @@ pub enum Request {
     },
     /// What Rovik's folders take on the host. → `Storage`.
     Storage,
+    /// Collects now what Rovik's folders no longer need, as each day does
+    /// (R01): what's left of chats deleted or taken back, attachments no
+    /// message names, and the repositories' garbage. → `Storage`, what the
+    /// folders take after.
+    CleanUp,
 }
 
 /// The chat a request is about: by its id, or by one of its messages'.
@@ -319,7 +324,8 @@ impl Request {
             | Request::HostInfo
             | Request::KeysList
             | Request::KeysRemove { .. }
-            | Request::Storage => None,
+            | Request::Storage
+            | Request::CleanUp => None,
         }
     }
 }

@@ -128,6 +128,12 @@ impl Projects {
             .collect()
     }
 
+    /// The projects' repositories here.
+    pub fn repositories(&self) -> Vec<PathBuf> {
+        let ids = self.ids();
+        ids.iter().filter_map(|id| self.path(id).ok()).collect()
+    }
+
     /// The project's repository, when it has one.
     pub fn open(&self, project: &str) -> Result<Option<Repository>, Fail> {
         Ok(Repository::open_bare(self.path(project)?).ok())

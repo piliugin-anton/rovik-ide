@@ -7,7 +7,7 @@
 //   and trust the first time;
 // - Rovik deployed there, upgraded or removed;
 // - who approves while nobody is there (6.9);
-// - what Rovik's folders take on the server;
+// - what Rovik's folders take on the server, and "Clean up now";
 // - the providers whose key the server keeps, never the keys, with
 //   "Remove keys from this server";
 // - Rovik on the server, its version and administrators, and for an
@@ -33,6 +33,7 @@ import {
   AUTH_HINTS,
   AUTH_LABELS,
   CHECK_LABELS,
+  cleanUpHost,
   deployHost,
   emptyHost,
   hostDetails,
@@ -65,6 +66,7 @@ import {
   type HostsList,
   type SetupRun,
   type Step,
+  type Storage,
 } from '../lib/hosts';
 
 /** Lets the Settings dialog title the page and step back within it. */
@@ -608,6 +610,26 @@ function HostPage(props: {
   });
   createEffect(on(connection, () => void loadDetails()));
 
+  // "Clean up now": what the server no longer needs goes, as each day.
+  const [cleaning, setCleaning] = createSignal(false);
+  const [cleaned, setCleaned] = createSignal<string | null>(null);
+  async function cleanUp() {
+    const before = details()?.storage;
+    setCleaning(true);
+    setCleaned(null);
+    try {
+      const after = await cleanUpHost(id);
+      setDetails((d) => (d ? { ...d, storage: after } : d));
+      const total = (s: Storage) => s.projects + s.work + s.data + s.tmp;
+      const freed = before ? Math.max(0, total(before) - total(after)) : 0;
+      setCleaned(freed > 0 ? `${formatBytes(freed)} freed.` : 'Nothing more to clean up.');
+    } catch (err) {
+      setDetailsError(String(err));
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   async function forgetKeys() {
     const ok = await confirmDialog({
       title: 'Remove keys from this server?',
@@ -881,6 +903,20 @@ function HostPage(props: {
                       <li>Chats and attachments: {formatBytes(s().data)}</li>
                       <li>Temporary files: {formatBytes(s().tmp)}</li>
                     </ul>
+                    <p class="settings-hint">
+                      What deleted chats and chats moved back left there, and files no message uses,
+                      go each day.
+                    </p>
+                    <Show when={d().cleanUp}>
+                      <div class="host-actions">
+                        <button disabled={cleaning()} onClick={() => void cleanUp()}>
+                          {cleaning() ? 'Cleaning up…' : 'Clean up now'}
+                        </button>
+                        <Show when={cleaned()}>
+                          {(note) => <span class="settings-hint">{note()}</span>}
+                        </Show>
+                      </div>
+                    </Show>
                   </section>
                 )}
               </Show>

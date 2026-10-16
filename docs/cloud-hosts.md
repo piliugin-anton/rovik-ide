@@ -131,6 +131,16 @@ Each daemon has its own `/tmp` (`PrivateTmp=yes`), and the agent's
 commands keep their temporary files in `~/.local/share/rovik/tmp`, so
 nothing of one user's work lands in a shared `/tmp`.
 
+## Cleaning up
+
+Each daemon cleans up after its user once a day, and when they click
+"Clean up now" on the host's page in Settings → Cloud hosts. What their
+deleted chats left goes, and so do the working copies of chats moved
+back to their computer, a week after the move. So do attachments no
+message uses, an hour after they were uploaded. Where git is installed,
+`git gc --auto` runs in each project's repository. The host's page shows
+what Rovik's folders take.
+
 ## What can read what
 
 - The agent's commands run as the user and can read whatever the user can.

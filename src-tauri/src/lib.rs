@@ -163,6 +163,7 @@ pub fn run() {
             commands::hosts::hosts_remove_rovik,
             commands::hosts::hosts_details,
             commands::hosts::hosts_remove_keys,
+            commands::hosts::hosts_clean_up,
             commands::hosts::hosts_limits,
             commands::hosts::hosts_set_limits,
             commands::chat::chat_search,

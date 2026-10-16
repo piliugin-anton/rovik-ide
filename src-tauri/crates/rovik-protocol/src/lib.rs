@@ -61,6 +61,8 @@ pub mod features {
     /// The Host group beyond `HostInfo`, for the hosts page (U01):
     /// `KeysList`, `KeysRemove` and `Storage`.
     pub const HOST: &str = "host";
+    /// "Clean up now" on the hosts page (R01): `CleanUp`.
+    pub const CLEAN_UP: &str = "clean-up";
 }
 
 #[cfg(test)]

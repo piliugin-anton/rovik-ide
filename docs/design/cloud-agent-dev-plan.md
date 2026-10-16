@@ -2723,3 +2723,38 @@ Tasks add notes here when reality differs from the plan.
     is asked again after it. Core tests of the drain and of a run waiting
     on its user, a client test of the refusal for an administrator and for
     anyone else, and component tests of the dialog's upgrade.
+- **R01, storage and collection.**
+  - `Storage` was U01's. `CleanUp` is new, a feature of its own
+    (`clean-up`): the daemon collects then, as each day it does
+    (`gc.rs`), and answers with `Storage` measured after. The hosts page
+    shows "Clean up now" for a daemon that names the feature, and says
+    how much went.
+  - What goes: the worktree, branch, refs and `state.json` entry of a chat
+    whose rows are gone, deleted or forgotten (`ChatForget`). A forgotten
+    chat keeps them a week after its release (`KEEP_RELEASED_MS`); "Clean
+    up now" doesn't wait. A chat released but not forgotten keeps them:
+    its computer may still finish taking it back, from its last pull
+    (K51), so nothing deletes a released chat's rows but `ChatForget`.
+    Start-up's collection takes the same week now; before, it took a
+    forgotten chat's worktree at the next start.
+  - Folders in `work/` that no chat has go only at start-up: while the
+    daemon serves, one may be the worktree a sync is making. The daily
+    collection holds `imports`, so it doesn't meet a move bringing a chat.
+  - Attachments no message names go once their grace period is over, a
+    batch of 500 at a time (`collect_garbage`, as the desktop's). An
+    upload `BlobsMissing` renewed for a message on its way stays (K43).
+    `ChatForget` collects too, as the desktop does after a deletion, so a
+    forgotten chat's files go then if their hour is over, else the next
+    day.
+  - `git gc --auto` runs in each project's repository where git is
+    installed, with `gc.autoDetach=false` so it doesn't outlive the
+    collection. The chats' kept blobs have their refs (T08), and gc
+    prunes only what no ref reaches, and only after git's own grace.
+  - The daily task starts with the daemon and first runs a day later;
+    start-up has collected by then.
+  - Tests: daemon tests of a chat deleted behind the daemon's back, its
+    worktree, branch and refs gone and the sizes measured again; of an
+    upload past its grace and one renewed; of a forgotten chat's PDF; of
+    a forgotten chat's worktree kept through a restart, then taken a week
+    on, and taken at once when asked; a unit test of the repositories'
+    gc, and component tests of "Clean up now".

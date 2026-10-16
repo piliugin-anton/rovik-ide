@@ -8,6 +8,7 @@ use crate::cli::{Options, VERSION};
 use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::events::Events;
+use crate::gc;
 use crate::home::{self, Home};
 use crate::host;
 use crate::limits::{AdminFile, Caps, ADMIN_FILE};
@@ -20,6 +21,7 @@ use crate::store::Store;
 use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::agent_run::{self, recovery};
+use rovik_core::chat_db::store::now_ms;
 use rovik_core::{process, rt, workload, Core, EventSink, Paths};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -145,9 +147,11 @@ async fn run(
         caps: limits.caps,
     });
 
-    // 7. The runs the last process left going (5.4).
-    work::collect(&daemon).await;
+    // 7. What deleted and forgotten chats left (R01), and the runs the
+    //    last process left going (5.4). The cleanup comes again each day.
+    work::collect(&daemon, now_ms() - gc::KEEP_RELEASED_MS).await;
     restart::restart_interrupted(&daemon).await;
+    gc::daily(daemon.clone());
 
     // 8. The socket, then serving.
     let listener = server::bind(&socket)?;

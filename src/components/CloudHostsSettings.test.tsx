@@ -90,6 +90,7 @@ const DETAILS: HostDetails = {
   admin: false,
   upgrade: false,
   appVersion: '0.2.0',
+  cleanUp: true,
 };
 
 const step = (
@@ -306,6 +307,28 @@ test('deployed: its version, what it stores, and the providers whose keys it kee
   assert.ok(button(root, 'Remove keys from this server'));
   assert.equal(button(root, 'Upgrade for everyone'), undefined);
   assert.equal(root.querySelector('.host-limits'), null, 'limits are for administrators');
+});
+
+test('“Clean up now”: what the server no longer needs goes, and it’s measured again', async () => {
+  const after = { ...DETAILS.storage!, work: 128 * 1024 ** 2 };
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => DETAILS,
+    hosts_clean_up: () => after,
+  });
+  assert.match(root.textContent!, /and files no message uses, go each day/);
+  button(root, 'Clean up now')!.click();
+  await flush();
+  assert.deepEqual(sent('hosts_clean_up'), [{ id: 'h1' }]);
+  assert.match(root.textContent!, /Chats’ working copies: 128 MB/);
+  assert.match(root.textContent!, /384 MB freed\./);
+});
+
+test('a server whose Rovik can’t clean up when asked offers no “Clean up now”', async () => {
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => ({ ...DETAILS, cleanUp: false }),
+  });
+  assert.match(root.textContent!, /Projects: 3 GB/);
+  assert.equal(button(root, 'Clean up now'), undefined);
 });
 
 test('the key list never shows a key, whatever the server sends', async () => {

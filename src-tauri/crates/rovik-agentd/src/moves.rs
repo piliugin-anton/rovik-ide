@@ -20,7 +20,7 @@ use crate::daemon::Daemon;
 use crate::store::{Moved, Place, ProjectState};
 use crate::work;
 use rovik_core::chat_db::location::{self, Location};
-use rovik_core::chat_db::{api, projects, store, sync};
+use rovik_core::chat_db::{api, attachments, projects, store, sync};
 use rovik_protocol::sync::{ChatBundle, Imported};
 use rovik_protocol::{Fail, FailCode, Response};
 
@@ -178,13 +178,18 @@ pub async fn forget(daemon: &Daemon, dialog_id: &str) -> Result<Response, Fail> 
         .await
         .map_err(internal)?;
     let id = dialog_id.to_string();
+    let data_dir = daemon.core.db.data_dir().to_path_buf();
     daemon
         .core
         .db
         .write(move |c| {
             let tx = c.transaction().map_err(|e| e.to_string())?;
             store::delete_subtree(&tx, &id)?;
-            tx.commit().map_err(|e| e.to_string())
+            tx.commit().map_err(|e| e.to_string())?;
+            // Its files go too, past their grace (K43, R01); anything
+            // missed goes with the daily cleanup.
+            let _ = attachments::collect_garbage(c, &data_dir);
+            Ok(())
         })
         .await
         .map_err(internal)?;

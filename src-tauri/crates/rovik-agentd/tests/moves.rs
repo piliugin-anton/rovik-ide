@@ -1,17 +1,19 @@
 //! Chats moved to the real daemon (M04, M07, 6.8): the bundle a computer
 //! sends, imported once per move, with its worktree, owned by that
 //! computer; `ChatOwner`; `ChatRelease`, after which the chat is only read;
-//! and `ChatForget`, after which its rows are gone.
+//! and `ChatForget`, after which its rows are gone, with its files, and its
+//! worktree goes with the cleanup (R01).
 
 mod common;
 
 use common::project::{client_as, ended, message, writes, Setup, CHAT, PROJECT};
-use common::OTHER;
-use rovik_client::Client;
+use common::{until, OTHER};
+use rovik_client::{Client, HostState};
 use rovik_core::chat_db::store::{self, ChatModel, NewDialog, NewMessage};
 use rovik_core::chat_db::{attachments, sync};
 use rovik_core::testing::{model, Reply, TestCore};
-use rovik_protocol::packs::result_ref;
+use rovik_protocol::host::Storage;
+use rovik_protocol::packs::{result_ref, snapshot_ref};
 use rovik_protocol::sync::{ChangeSet, ChangesPage, ChatBundle, Imported, Ownership};
 use rovik_protocol::work::Project;
 use rovik_protocol::{Fail, FailCode, Request, Response};
@@ -313,6 +315,95 @@ async fn a_chat_is_forgotten_only_once_its_computer_took_it_back() {
     // Told again, or of a chat it never had, it's done all the same.
     assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
     assert_eq!(forget(&setup.client, "chat-never").await, Ok(false));
+}
+
+/// A one-page PDF.
+fn pdf() -> Vec<u8> {
+    b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+      2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+      3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 3 3]>>endobj\n\
+      trailer<</Root 1 0 R>>\n%%EOF"
+        .to_vec()
+}
+
+/// K43, R01: the files only a forgotten chat's rows named go with them,
+/// past their grace period, without waiting for the daily cleanup.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forgotten_chats_files_go_with_its_rows() {
+    let setup = Setup::new().await;
+    let file = pdf();
+    let id = attachments::id_of(&file);
+    setup.client.put_blob(&id, file, |_| {}).await.unwrap();
+    let mut asks = row("u1", "user", "Read it");
+    asks.attachments = vec![id.clone()];
+    let bundle = bundle(&setup, rows("With a file", vec![asks]).await).await;
+    import(&setup.client, "move-1", &bundle).await.unwrap();
+    let data = setup.daemon.data.join("data");
+    assert!(attachments::file_for(&data, &id).is_some());
+    assert_eq!(release(&setup.client, None).await, Ok(true));
+    // It went up two hours ago, with its message.
+    let aged = setup.db().execute(
+        "UPDATE attachments SET created_at = created_at - ?1",
+        [2 * 60 * 60 * 1000],
+    );
+    assert_eq!(aged.unwrap(), 1);
+
+    assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
+    assert!(ids(&setup).is_empty());
+    assert!(
+        attachments::file_for(&data, &id).is_none(),
+        "its PDF went too"
+    );
+}
+
+/// R01: a chat taken back and forgotten leaves its worktree for a week,
+/// a restart or two included, then the cleanup takes it with its refs;
+/// "Clean up now" doesn't wait. One taken back but not forgotten keeps it:
+/// its computer may still finish taking it back (K51).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forgotten_chats_worktree_goes_a_week_on_or_when_asked() {
+    let mut setup = Setup::new().await;
+    let bundle = bundle(&setup, rows("Moved", vec![row("u1", "user", "Go")]).await).await;
+    import(&setup.client, "move-1", &bundle).await.unwrap();
+    let worktree = worktree(&setup);
+    assert_eq!(release(&setup.client, None).await, Ok(true));
+    let cleaned = setup.client.request::<Storage>(Request::CleanUp).await;
+    cleaned.unwrap();
+    assert!(worktree.is_dir(), "not forgotten, it stays");
+
+    assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
+    setup.daemon.kill().await;
+    setup.daemon.restart().await;
+    assert!(worktree.is_dir(), "forgotten, it stays for its week");
+    // Released eight days ago: the next start takes it.
+    setup.daemon.kill().await;
+    let mut state = setup.daemon.state();
+    let released = state["chats"][CHAT]["released"].as_i64().unwrap();
+    state["chats"][CHAT]["released"] = json!(released - 8 * 24 * 60 * 60 * 1000);
+    std::fs::write(setup.daemon.data.join("state.json"), state.to_string()).unwrap();
+    setup.daemon.restart().await;
+    assert!(!worktree.exists());
+    assert!(setup.there().find_reference(&snapshot_ref(CHAT)).is_err());
+    until("the client is back", || {
+        (setup.client.state() == HostState::Ready).then_some(())
+    })
+    .await;
+    assert!(owner(&setup.client).await.is_none(), "nor whose it was");
+}
+
+/// R01: "Clean up now" takes a forgotten chat's worktree at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn clean_up_now_takes_a_forgotten_chats_worktree_at_once() {
+    let setup = Setup::new().await;
+    let bundle = bundle(&setup, rows("Moved", vec![row("u1", "user", "Go")]).await).await;
+    import(&setup.client, "move-1", &bundle).await.unwrap();
+    let worktree = worktree(&setup);
+    assert_eq!(release(&setup.client, None).await, Ok(true));
+    assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
+
+    let after: Storage = setup.client.request(Request::CleanUp).await.unwrap();
+    assert!(!worktree.exists());
+    assert!(after.projects > 0, "{after:?}");
 }
 
 /// K36: a chat its computer took back can move here again, and what its

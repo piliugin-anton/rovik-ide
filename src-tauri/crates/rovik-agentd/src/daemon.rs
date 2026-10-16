@@ -6,6 +6,7 @@
 use crate::auth::Tokens;
 use crate::changes;
 use crate::events::Events;
+use crate::gc;
 use crate::host;
 use crate::limits::Caps;
 use crate::moves;
@@ -90,6 +91,7 @@ impl Daemon {
                 .map(Response::Count)
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
             Request::Storage => Ok(Response::Storage(host::storage(self).await)),
+            Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
             Request::AgentStart(start) => self.start(computer, start).await,
             // Only this computer's configuration changes (D16).

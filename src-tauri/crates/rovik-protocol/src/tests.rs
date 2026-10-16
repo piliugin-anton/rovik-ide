@@ -582,6 +582,7 @@ fn every_request_round_trips() {
                 provider: Some("openai".into()),
             },
             Request::Storage,
+            Request::CleanUp,
         ],
     );
 }

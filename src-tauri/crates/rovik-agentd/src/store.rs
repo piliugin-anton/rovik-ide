@@ -507,9 +507,12 @@ impl Store {
 
     /// Whether the chat's computer took it back.
     pub fn is_released(&self, dialog_id: &str) -> bool {
-        let inner = self.lock();
-        let chat = inner.state.chats.get(dialog_id);
-        chat.is_some_and(|chat| chat.released.is_some())
+        self.released_at(dialog_id).is_some()
+    }
+
+    /// When the chat's computer took it back, if it did.
+    pub fn released_at(&self, dialog_id: &str) -> Option<i64> {
+        self.lock().state.chats.get(dialog_id)?.released
     }
 
     /// Why the chat's changes waited when it moved here, while no run has

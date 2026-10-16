@@ -125,6 +125,8 @@ export interface HostDetails {
   /** The daemon is older than this app. */
   upgrade: boolean;
   appVersion: string;
+  /** The daemon cleans up when asked ("Clean up now"). */
+  cleanUp: boolean;
 }
 
 /** Why a deploy, an upgrade or a removal didn't happen. */
@@ -186,6 +188,9 @@ export const hostDetails = (id: string) => invoke<HostDetails>('hosts_details', 
 
 /** "Remove keys from this server": resolves with how many went. */
 export const removeKeys = (id: string) => invoke<number>('hosts_remove_keys', { id });
+
+/** "Clean up now": resolves with what Rovik's folders take on the host after. */
+export const cleanUpHost = (id: string) => invoke<Storage>('hosts_clean_up', { id });
 
 export const hostLimits = (id: string) => invoke<[string, string][]>('hosts_limits', { id });
 

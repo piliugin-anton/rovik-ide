@@ -20,6 +20,7 @@
 //!   packs.rs    each project's repository and its packs (6.4)
 //!   work.rs     each chat's worktree (6.4)
 //!   changes.rs  a chat's changes there, for the isolation bar (6.1)
+//!   gc.rs       what the folders no longer need goes, each day (R01)
 //!   host.rs     `HostInfo`
 //!   limits.rs   /etc/rovik/agentd.toml: the administrators and the limits
 //!   installer.rs  `install`, `user` and `admin`: Rovik for everyone (5.3)
@@ -43,6 +44,8 @@ mod daemon;
 mod doctor;
 #[cfg(unix)]
 mod events;
+#[cfg(unix)]
+mod gc;
 #[cfg(unix)]
 mod home;
 #[cfg(unix)]

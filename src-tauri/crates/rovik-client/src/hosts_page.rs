@@ -95,6 +95,8 @@ pub struct HostDetails {
     /// The daemon is older than this app.
     pub upgrade: bool,
     pub app_version: String,
+    /// The daemon cleans up when asked ("Clean up now", R01).
+    pub clean_up: bool,
 }
 
 /// A host as the chats show it: its name, and its connection once it's
@@ -613,7 +615,14 @@ impl HostsPage {
             keys,
             storage,
             app_version: self.version.clone(),
+            clean_up: self.remote.serves(id, features::CLEAN_UP),
         })
+    }
+
+    /// "Clean up now" (R01): what the host's daemon no longer needs goes,
+    /// as each day it does. What Rovik's folders take there after.
+    pub async fn clean_up(&self, id: &str) -> Result<Storage, String> {
+        self.call(id, Request::CleanUp).await
     }
 
     /// Forgets every key the host keeps; the next start there that brings
