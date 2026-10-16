@@ -50,6 +50,10 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
 /// How long a pack may go without a byte moving before it's given up (4.4):
 /// a big one over a slow link takes minutes, but its bytes keep moving.
 const IDLE: Duration = Duration::from_secs(60);
+/// How long a body read whole (a call, a file) may take to arrive: bounded
+/// in size, on a link that may be slow; a client that stalls holds no task
+/// for good.
+const BODY_WAIT: Duration = Duration::from_secs(10 * 60);
 /// A pack's pieces on their way between the socket and the repository.
 const PIECES: usize = 16;
 
@@ -84,7 +88,11 @@ async fn call(
     if declared.is_some_and(|n| n > MAX_CALL) {
         return too_large();
     }
-    let Ok(body) = axum::body::to_bytes(request.into_body(), MAX_CALL).await else {
+    let body = tokio::time::timeout(
+        BODY_WAIT,
+        axum::body::to_bytes(request.into_body(), MAX_CALL),
+    );
+    let Ok(Ok(body)) = body.await else {
         return too_large();
     };
     let Ok(Frame::Call { id, req }) = serde_json::from_slice::<Frame>(&body) else {
@@ -257,7 +265,11 @@ async fn put_blob(
     if declared.is_some_and(|n| n > MAX_BLOB) {
         return too_large();
     }
-    let Ok(body) = axum::body::to_bytes(request.into_body(), MAX_BLOB).await else {
+    let body = tokio::time::timeout(
+        BODY_WAIT,
+        axum::body::to_bytes(request.into_body(), MAX_BLOB),
+    );
+    let Ok(Ok(body)) = body.await else {
         return too_large();
     };
     if attachments::id_of(&body) != id {
@@ -301,7 +313,7 @@ async fn pack_refs(
 /// complete. A pack cut short leaves no ref, and is sent again whole.
 async fn push_pack(
     State(daemon): State<Arc<Daemon>>,
-    _: Computer,
+    Computer(computer): Computer,
     Path(project): Path<String>,
     request: Request,
 ) -> Response {
@@ -311,6 +323,12 @@ async fn push_pack(
             "A push names a ref under refs/rovik/, and the commits it moves from and to.",
         ));
     };
+    // A chat's refs move only for the computer whose chat it is.
+    if let Some(chat) = chat_of_ref(&update.name) {
+        if let Err(fail) = daemon.store.check_owner(&computer, chat) {
+            return failed(fail);
+        }
+    }
     let (pieces, mut taken) = mpsc::channel::<Vec<u8>>(PIECES);
     let projects = daemon.projects.clone();
     let receiving = rt::spawn_blocking(move || {
@@ -329,6 +347,13 @@ async fn push_pack(
         Ok(Err(fail)) => failed(fail),
         Err(e) => failed(Fail::new(FailCode::Internal, e.to_string())),
     }
+}
+
+/// The chat whose refs these are: `refs/rovik/chats/<chat>/...`.
+fn chat_of_ref(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("refs/rovik/chats/")?;
+    let (chat, _) = rest.split_once('/')?;
+    (!chat.is_empty()).then_some(chat)
 }
 
 /// The pack of what a client wants from the project and lacks (6.4), sent

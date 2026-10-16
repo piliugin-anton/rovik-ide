@@ -92,6 +92,9 @@ async fn run(
     same_machine: bool,
     no_virtual_files: bool,
 ) -> Result<(), String> {
+    // Heard from here on: before, SIGTERM would end the process at once,
+    // in the middle of whatever start-up does.
+    let mut stop = Stop::listen();
     let store = Arc::new(Store::open(&home.root)?);
     let owners = store.clone();
     let events = Events::new(
@@ -147,10 +150,28 @@ async fn run(
         caps: limits.caps,
     });
 
-    // 7. What deleted and forgotten chats left (R01), and the runs the
+    // 7. What a killed process left: lock files on the repositories and
+    //    the result indexes, which would refuse every later write. Then
+    //    what deleted and forgotten chats left (R01), and the runs the
     //    last process left going (5.4). The cleanup comes again each day.
-    work::collect(&daemon, now_ms() - gc::KEEP_RELEASED_MS).await;
-    restart::restart_interrupted(&daemon).await;
+    //    A stop meanwhile (an upgrade, a reboot) ends start-up where it
+    //    is, and the runs started so far pause for the next start.
+    daemon.projects.clear_stale_locks();
+    daemon.results.clear_stale_locks();
+    let starting_up = async {
+        work::collect(&daemon, now_ms() - gc::KEEP_RELEASED_MS).await;
+        restart::restart_interrupted(&daemon).await;
+    };
+    tokio::select! {
+        () = starting_up => {}
+        () = stop.wait() => {
+            log::info!("stopping during start-up: the runs pause first, for up to {DRAIN_WAIT:?}");
+            let paused = agent_run::drain(&core, DRAIN_WAIT).await;
+            log::info!("{paused} paused for the next start");
+            core.shutdown().await;
+            return Ok(());
+        }
+    }
     gc::daily(daemon.clone());
 
     // 8. The socket, then serving.
@@ -168,7 +189,7 @@ async fn run(
     let draining = core.clone();
     let served = axum::serve(listener, server::router(daemon))
         .with_graceful_shutdown(async move {
-            stopped().await;
+            stop.wait().await;
             log::info!("stopping: the runs pause first, for up to {DRAIN_WAIT:?}");
             let paused = agent_run::drain(&draining, DRAIN_WAIT).await;
             let runs = if paused == 1 { "run" } else { "runs" };
@@ -225,18 +246,32 @@ async fn apply_slots(admin: AdminFile, user: Option<usize>) {
     }
 }
 
-/// When SIGTERM (systemd stopping the unit) or SIGINT comes.
-async fn stopped() {
-    use tokio::signal::unix::{signal, SignalKind};
-    let (Ok(mut term), Ok(mut int)) = (
-        signal(SignalKind::terminate()),
-        signal(SignalKind::interrupt()),
-    ) else {
-        return std::future::pending().await;
-    };
-    tokio::select! {
-        _ = term.recv() => {}
-        _ = int.recv() => {}
+/// SIGTERM (systemd stopping the unit) and SIGINT, heard from the moment
+/// it's made.
+struct Stop {
+    signals: Vec<tokio::signal::unix::Signal>,
+}
+
+impl Stop {
+    fn listen() -> Stop {
+        use tokio::signal::unix::{signal, SignalKind};
+        let signals = [SignalKind::terminate(), SignalKind::interrupt()]
+            .into_iter()
+            .filter_map(|kind| signal(kind).ok())
+            .collect();
+        Stop { signals }
+    }
+
+    /// When one of them comes; never, when none could be listened for.
+    async fn wait(&mut self) {
+        if self.signals.is_empty() {
+            return std::future::pending().await;
+        }
+        let waits = self
+            .signals
+            .iter_mut()
+            .map(|signal| Box::pin(signal.recv()));
+        futures_util::future::select_all(waits).await;
     }
 }
 

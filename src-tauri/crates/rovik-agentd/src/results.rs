@@ -66,6 +66,13 @@ impl Results {
         })
     }
 
+    /// At start-up: the lock files a killed process left on the chats'
+    /// result indexes, which libgit2 never removes and would refuse every
+    /// later result for. This process is the only one on them.
+    pub fn clear_stale_locks(&self) {
+        remove_locks(&self.dir, false);
+    }
+
     /// After the chat's run ended with `outcome`: its result, when it has a
     /// worktree.
     pub fn after_run(self: &Arc<Self>, dialog_id: &str, outcome: &str) {
@@ -134,14 +141,16 @@ impl Results {
         {
             let _base = self.base.lock().await;
             let (place, base) = self.worktree(dialog_id)?;
-            // What landed can't be taken back there any more.
-            self.forget_kept(dialog_id, Some(&paths)).await;
-            let chat = dialog_id.to_string();
+            let (chat, landed_paths) = (dialog_id.to_string(), paths.clone());
             let moved = rt::spawn_blocking(move || {
-                move_base(&place.worktree, &base, landed, &paths, &chat)
+                move_base(&place.worktree, &base, landed, &landed_paths, &chat)
             });
             let base = moved.await.map_err(|e| internal(e.to_string()))??;
             self.store.base_moved(dialog_id, &base.to_string());
+            // What landed can't be taken back there any more: forgotten
+            // once the base has moved, so a landing the server refuses
+            // keeps Undo the merge.
+            self.forget_kept(dialog_id, Some(&paths)).await;
         }
         // A newer result, on the old base, would bring back what landed:
         // it's committed again, on the new one.
@@ -470,6 +479,29 @@ pub fn set_base(
     let target = repo.find_object(commit, None).map_err(git)?;
     repo.reset(&target, ResetType::Mixed, None).map_err(git)?;
     Ok(commit)
+}
+
+/// Removes the `.lock` files in `dir`, and under it when `deep`: what a
+/// process killed in the middle of a write left, which the next write
+/// takes for one still going. Only for folders this process alone writes.
+pub fn remove_locks(dir: &Path, deep: bool) {
+    let entries = fs::read_dir(dir).into_iter().flatten().flatten();
+    for entry in entries {
+        let path = entry.path();
+        let Ok(meta) = entry.file_type() else {
+            continue;
+        };
+        if meta.is_dir() {
+            if deep {
+                remove_locks(&path, true);
+            }
+        } else if path.extension().is_some_and(|e| e == "lock") {
+            match fs::remove_file(&path) {
+                Ok(()) => log::warn!("{}: a stale lock, removed", path.display()),
+                Err(e) => log::warn!("{}: a stale lock stays: {e}", path.display()),
+            }
+        }
+    }
 }
 
 /// A file's mode in a tree: a blob or a link, never a folder or a

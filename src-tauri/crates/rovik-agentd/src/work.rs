@@ -72,6 +72,8 @@ pub async fn sync(
     })?;
     let base = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
     if let Some(root) = root(daemon, chat) {
+        // A run writes the worktree's files: a merge under it would race it.
+        idle(daemon, chat)?;
         let merged = merge_into(daemon, chat, project, base, excludes, mark).await?;
         return Ok(Response::Synced(Synced {
             root: text(&root),
@@ -115,6 +117,7 @@ pub async fn recheck(
     let root = root(daemon, chat)
         .ok_or_else(|| bad_request("This chat has no worktree on this server."))?;
     let snapshot = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
+    idle(daemon, chat)?;
     let merged = merge_into(daemon, chat, project, snapshot, excludes, false).await?;
     if merged.state == SyncState::Synced {
         if merged.files.is_empty() {
@@ -191,15 +194,7 @@ pub async fn new_worktree(
     changes: Option<Oid>,
     excludes: Vec<String>,
 ) -> Result<(PathBuf, PathBuf), Fail> {
-    let (caps, worktrees, name) = (
-        daemon.caps.clone(),
-        daemon.worktrees.clone(),
-        chat.to_string(),
-    );
-    let room = rt::spawn_blocking(move || caps.room_for_worktree(&worktrees, &name));
-    room.await
-        .map_err(joined)?
-        .map_err(|why| Fail::new(FailCode::Busy, why))?;
+    room_for_worktree(daemon, chat).await?;
     let worktree = daemon.worktrees.join(chat);
     let (projects, id, name, at) = (
         daemon.projects.clone(),
@@ -224,6 +219,30 @@ pub async fn new_worktree(
         saved.map_err(internal)?;
     }
     Ok((worktree, root))
+}
+
+/// Whether a new worktree for the chat fits the server's limits (5.5).
+pub async fn room_for_worktree(daemon: &Daemon, chat: &str) -> Result<(), Fail> {
+    let (caps, worktrees, name) = (
+        daemon.caps.clone(),
+        daemon.worktrees.clone(),
+        chat.to_string(),
+    );
+    let room = rt::spawn_blocking(move || caps.room_for_worktree(&worktrees, &name));
+    room.await
+        .map_err(joined)?
+        .map_err(|why| Fail::new(FailCode::Busy, why))
+}
+
+/// What changes the chat's files waits for its run to end.
+fn idle(daemon: &Daemon, chat: &str) -> Result<(), Fail> {
+    if daemon.core.agents.is_running(chat) {
+        return Err(Fail::new(
+            FailCode::Busy,
+            "This chat's run is still going: stop it first.",
+        ));
+    }
+    Ok(())
 }
 
 /// The project's repository, made with the client's ignore rules as
@@ -337,16 +356,17 @@ async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) {
 /// The worktrees, branches and refs of chats whose rows are gone (R01):
 /// chats deleted while the daemon was away, and chats taken back by their
 /// computer and forgotten (`ChatForget`), released before
-/// `released_before`. A chat taken back but not forgotten keeps them: its
-/// computer may still finish taking it back (K51). How many went.
+/// `released_before`. A chat taken back but not forgotten keeps them for
+/// its week: its computer may still finish taking it back (K51). Released
+/// longer ago than that, whatever `released_before` says, its worktree
+/// goes while its rows stay for that computer's last pull (6.8). How many
+/// went.
 pub async fn collect_chats(daemon: &Daemon, released_before: i64) -> usize {
     let mut removed = 0;
+    let week_over = store::now_ms() - crate::gc::KEEP_RELEASED_MS;
     for chat in daemon.store.chats_with_worktrees() {
-        if daemon
-            .store
-            .released_at(&chat)
-            .is_some_and(|at| at >= released_before)
-        {
+        let released = daemon.store.released_at(&chat);
+        if released.is_some_and(|at| at >= released_before) {
             continue;
         }
         let id = chat.clone();
@@ -358,6 +378,11 @@ pub async fn collect_chats(daemon: &Daemon, released_before: i64) -> usize {
         if matches!(row, Ok(None)) {
             log::info!("{chat}'s rows are gone: its worktree goes");
             remove(daemon, &chat).await;
+            removed += 1;
+        } else if released.is_some_and(|at| at < week_over) {
+            log::info!("{chat} went back to its computer a week ago: its worktree goes");
+            clear(daemon, &chat, None).await;
+            daemon.store.worktree_gone(&chat);
             removed += 1;
         }
     }

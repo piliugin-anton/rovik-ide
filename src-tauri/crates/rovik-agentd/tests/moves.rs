@@ -391,6 +391,37 @@ async fn a_forgotten_chats_worktree_goes_a_week_on_or_when_asked() {
     assert!(owner(&setup.client).await.is_none(), "nor whose it was");
 }
 
+/// R01: a chat taken back but never forgotten (its computer gone for good)
+/// keeps its worktree for its week, then the start's cleanup takes it,
+/// while its rows stay for that computer's last pull (6.8).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_released_chats_worktree_goes_after_its_week_even_unforgotten() {
+    let mut setup = Setup::new().await;
+    let bundle = bundle(&setup, rows("Moved", vec![row("u1", "user", "Go")]).await).await;
+    import(&setup.client, "move-1", &bundle).await.unwrap();
+    let worktree = worktree(&setup);
+    assert_eq!(release(&setup.client, None).await, Ok(true));
+    setup.daemon.kill().await;
+    let mut state = setup.daemon.state();
+    let released = state["chats"][CHAT]["released"].as_i64().unwrap();
+    state["chats"][CHAT]["released"] = json!(released - 8 * 24 * 60 * 60 * 1000);
+    std::fs::write(setup.daemon.data.join("state.json"), state.to_string()).unwrap();
+    setup.daemon.restart().await;
+    assert!(!worktree.exists(), "its week is over");
+    assert!(setup.there().find_reference(&snapshot_ref(CHAT)).is_err());
+    assert_eq!(ids(&setup), ["u1"], "its rows stay for the last pull");
+    until("the client is back", || {
+        (setup.client.state() == HostState::Ready).then_some(())
+    })
+    .await;
+    assert!(
+        owner(&setup.client).await.is_some_and(|o| o.released),
+        "still released, for the pull"
+    );
+    assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
+    assert!(ids(&setup).is_empty());
+}
+
 /// R01: "Clean up now" takes a forgotten chat's worktree at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn clean_up_now_takes_a_forgotten_chats_worktree_at_once() {

@@ -68,6 +68,13 @@ impl Config {
         let Some(tokens) = tokens.as_table_mut() else {
             return Err(format!("{}: tokens isn't a table", path.display()));
         };
+        // One token names one computer (`Tokens::new`).
+        let same = tokens
+            .iter()
+            .find(|(other, value)| *other != computer && value.as_str() == Some(hash));
+        if let Some((other, _)) = same {
+            return Err(format!("{other} already connects with this token"));
+        }
         tokens.insert(computer.into(), toml::Value::String(hash.into()));
         let text = toml::to_string(&table).map_err(|e| e.to_string())?;
         rovik_core::atomic_file::write_atomic_private(path, text.as_bytes())
@@ -105,13 +112,16 @@ mod tests {
     fn a_token_is_added_keeping_the_rest() {
         let dir = rovik_core::testing::temp_dir();
         let path = dir.0.join("config.toml");
-        let (one, two) = ("a".repeat(64), "b".repeat(64));
+        let (one, two, three) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
         std::fs::write(&path, "log_level = \"debug\"\nmax_slots = 2\n").unwrap();
         Config::add_token(&path, "laptop", &one).unwrap();
         Config::add_token(&path, "desk", &two).unwrap();
-        Config::add_token(&path, "laptop", &two).unwrap();
+        Config::add_token(&path, "laptop", &three).unwrap();
+        // One token names one computer.
+        let taken = Config::add_token(&path, "laptop", &two).unwrap_err();
+        assert!(taken.contains("desk"), "{taken}");
         let config = Config::read(&path).unwrap();
-        assert_eq!(config.tokens["laptop"], two, "replaced");
+        assert_eq!(config.tokens["laptop"], three, "replaced");
         assert_eq!(config.tokens["desk"], two);
         assert_eq!(config.level(), Ok(log::LevelFilter::Debug), "kept");
         assert_eq!(config.max_slots, Some(2));

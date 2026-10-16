@@ -74,6 +74,19 @@ impl Daemon {
             }
             changes = (access == Access::Write).then_some(lead);
         }
+        // Settings of a run in memory, named by its chat (no `target`, as
+        // they change no rows): another computer's chat is refused all the
+        // same (D16).
+        if let Request::AgentSetEffort {
+            dialog_id: Some(chat),
+            ..
+        }
+        | Request::WorkloadFocus {
+            dialog_id: Some(chat),
+        } = &request
+        {
+            self.store.check_owner(computer, chat)?;
+        }
         let reply = self.serve(computer, request).await;
         if let (Ok(_), Some(chat)) = (&reply, changes) {
             self.events.changed(&chat);

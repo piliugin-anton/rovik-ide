@@ -62,6 +62,17 @@ pub async fn import(
     let excludes = bundle.excludes.clone();
     let repository =
         work::repository_with(daemon, &project.id, excludes.clone(), base, changes).await?;
+    // What could still refuse the import, before anything of the chat's
+    // earlier stay goes: the room for its worktree, and rows another chat
+    // here has under the bundle's ids (its own earlier rows go with it).
+    work::room_for_worktree(daemon, &chat).await?;
+    let (lead, rows) = (chat.clone(), bundle.rows.clone());
+    daemon
+        .core
+        .db
+        .read(move |c| sync::check_import_free(c, &lead, &rows))
+        .await
+        .map_err(bad_request)?;
 
     // What an earlier stay left: files first, its rows with the import.
     work::clear_stay(daemon, &chat, &project.id).await;

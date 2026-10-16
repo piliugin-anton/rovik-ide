@@ -638,7 +638,33 @@ pub fn import_in(
     project_id: &str,
 ) -> DbResult<i64> {
     check_bundle(lead, rows)?;
+    check_rows_free(conn, rows, &[])?;
+    let new = NewChats {
+        project_id: Some(project_id.to_string()),
+        location: Location::Here,
+    };
+    apply_in(conn, rows, &new)?;
+    clock(conn)
+}
+
+/// Whether the bundle's rows can be written here once the chat's earlier
+/// stay, if any, is gone (6.8): no other chat here has a chat or a message
+/// under the bundle's ids. Read before an import takes anything of the
+/// earlier stay away, so an import it refuses leaves that stay whole.
+pub fn check_import_free(conn: &Connection, lead: &str, rows: &ChangeSet) -> DbResult<()> {
+    check_bundle(lead, rows)?;
+    let mut own = store::descendants(conn, lead)?;
+    own.push(lead.to_string());
+    check_rows_free(conn, rows, &own)
+}
+
+/// Rows another chat here has under the bundle's ids are refused, never
+/// overwritten; the chats in `own` are the bundle's own earlier rows.
+fn check_rows_free(conn: &Connection, rows: &ChangeSet, own: &[String]) -> DbResult<()> {
     for dialog in &rows.dialogs {
+        if own.contains(&dialog.id) {
+            continue;
+        }
         let here = conn
             .query_row(
                 "SELECT 1 FROM dialogs WHERE id = ?1",
@@ -660,19 +686,14 @@ pub fn import_in(
             )
             .optional()
             .map_err(err)?;
-        if let Some(chat) = here {
+        if let Some(chat) = here.filter(|chat| !own.contains(chat)) {
             return Err(format!(
                 "This server has a message {} in another chat, {chat}.",
                 message.id
             ));
         }
     }
-    let new = NewChats {
-        project_id: Some(project_id.to_string()),
-        location: Location::Here,
-    };
-    apply_in(conn, rows, &new)?;
-    clock(conn)
+    Ok(())
 }
 
 /// Writes `changes` as the owner has them, in the caller's transaction.

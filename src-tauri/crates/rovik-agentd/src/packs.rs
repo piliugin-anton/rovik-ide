@@ -101,8 +101,12 @@ impl Projects {
     /// ignore what the client ignores (K32) and the project's ID file.
     pub fn prepare(&self, project: &str, excludes: &[String]) -> Result<Repository, Fail> {
         let repo = self.repository(project)?;
+        // Written only when it isn't so: a write takes the config's lock,
+        // which two syncs of the project at once would fight over.
         let mut config = repo.config().map_err(internal)?;
-        config.set_bool("core.autocrlf", false).map_err(internal)?;
+        if config.get_bool("core.autocrlf").ok() != Some(false) {
+            config.set_bool("core.autocrlf", false).map_err(internal)?;
+        }
         let mut rules =
             String::from("# What the client ignores and the server doesn't know of (K32).\n");
         for pattern in excludes {
@@ -113,10 +117,33 @@ impl Projects {
             "# The project's ID file, which each worktree has.\n**/.rovik/project.json\n",
         );
         let file = repo.path().join("info/exclude");
-        std::fs::create_dir_all(repo.path().join("info"))
-            .and_then(|()| std::fs::write(file, rules))
-            .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(rules.as_str()) {
+            // Whole at once: a staging that reads it half-written would
+            // commit an ignored file into a result.
+            let temp = repo.path().join("info/.exclude.new");
+            std::fs::create_dir_all(repo.path().join("info"))
+                .and_then(|()| std::fs::write(&temp, rules))
+                .and_then(|()| std::fs::rename(&temp, &file))
+                .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
+        }
         Ok(repo)
+    }
+
+    /// At start-up: the lock files a killed process left in the
+    /// repositories (the config's, the refs', the worktrees' indexes),
+    /// which libgit2 never removes and would refuse every later sync for.
+    /// This process is the only one on them.
+    pub fn clear_stale_locks(&self) {
+        for id in self.ids() {
+            let repo = self.dir.join(format!("{id}.git"));
+            crate::results::remove_locks(&repo, false);
+            for inside in ["refs", "worktrees", "logs"] {
+                let dir = repo.join(inside);
+                if dir.is_dir() {
+                    crate::results::remove_locks(&dir, true);
+                }
+            }
+        }
     }
 
     /// The projects that have a repository here.
