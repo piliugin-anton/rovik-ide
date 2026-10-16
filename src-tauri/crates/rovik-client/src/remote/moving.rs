@@ -154,12 +154,13 @@ impl Remote {
         let client = self.ready(host)?;
         let (project, root) = self.movable(dialog_id).await?;
         // Before its row, which a connection's settling then leaves alone.
+        let name = self.host_name(host);
         {
             let mut state = self.lock();
             if !state.moving.insert(dialog_id.to_string()) {
                 return Err(Fail::new(
                     FailCode::BadRequest,
-                    format!("This chat is moving to {host} already."),
+                    format!("This chat is moving to {name} already."),
                 ));
             }
             state.cancels.remove(dialog_id);
@@ -554,10 +555,12 @@ impl Remote {
         match at.map_err(internal)? {
             Location::Here => {}
             Location::Moving(host) => {
-                return Err(refused(&format!("This chat is moving to {host} already.")))
+                let host = self.host_name(&host);
+                return Err(refused(&format!("This chat is moving to {host} already.")));
             }
             Location::Host(host) => {
-                return Err(refused(&format!("This chat is on {host} already.")))
+                let host = self.host_name(&host);
+                return Err(refused(&format!("This chat is on {host} already.")));
             }
             Location::Released => return Err(refused("This chat went back to its computer.")),
         }
@@ -631,7 +634,7 @@ impl Remote {
         if client.state() != HostState::Ready {
             return Err(Fail::new(
                 FailCode::Unreachable,
-                format!("{host} isn't connected."),
+                format!("{} isn't connected.", client.name()),
             ));
         }
         let takes = client.daemon().is_some_and(|d| {

@@ -162,8 +162,9 @@ impl Remote {
         self.let_go(dialog_id);
         if let Err(fail) = flipped {
             let message = format!(
-                "{} It finishes once {host} is connected again.",
-                fail.message
+                "{} It finishes once {} is connected again.",
+                fail.message,
+                self.host_name(host)
             );
             self.moving_back(dialog_id, "failed", Some(message.clone()));
             return Err(Fail::new(fail.code, message));
@@ -210,8 +211,9 @@ impl Remote {
         self.let_go(dialog_id);
         if !dropped {
             let message = format!(
-                "{} It finishes once {host} is connected again.",
-                fail.message
+                "{} It finishes once {} is connected again.",
+                fail.message,
+                self.host_name(host)
             );
             self.moving_back(dialog_id, "failed", Some(message.clone()));
             return Fail::new(fail.code, message);

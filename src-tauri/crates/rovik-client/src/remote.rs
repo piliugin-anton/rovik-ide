@@ -523,8 +523,9 @@ impl Remote {
             return Err(Fail::new(
                 FailCode::Version,
                 format!(
-                    "{host} runs a Rovik too old to take attached files. Upgrade it, or send \
-                     the message without them."
+                    "{} runs a Rovik too old to take attached files. Upgrade it, or send \
+                     the message without them.",
+                    self.host_name(host)
                 ),
             ));
         }
@@ -809,7 +810,9 @@ impl Remote {
                     log::warn!("the mirror of {child_dialog_id}: {e}");
                 }
             }
-            AgentEvent::Notice { title, .. } => *title = format!("{host}: {title}"),
+            AgentEvent::Notice { title, .. } => {
+                *title = format!("{}: {title}", self.host_name(host));
+            }
             AgentEvent::ApprovalRequested { request } => {
                 *request = mark_remote(request.clone());
             }

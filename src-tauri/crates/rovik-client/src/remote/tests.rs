@@ -494,6 +494,42 @@ fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
     );
 }
 
+/// A host of the settings has a UUID for its id: what the user reads names
+/// it as its settings do.
+#[tokio::test]
+async fn messages_name_a_host_as_its_settings_do() {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let remote = Remote::new(app.core.clone());
+    let id = "3f2a9c41-host";
+    remote.connect(id, Fake::default(), identity("Build server"));
+    for _ in 0..400 {
+        if remote
+            .hosts
+            .client(id)
+            .is_some_and(|c| c.state() == HostState::Ready)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let notice = AgentEvent::Notice {
+        dialog_id: None,
+        kind: "warning".into(),
+        title: "Stopped".into(),
+        message: "Why".into(),
+    };
+    remote.receive(id, event(notice)).await;
+    assert_eq!(app.sent()[0]["title"], "Build server: Stopped");
+    let preflight = remote.move_preflight("chat", id).await.unwrap();
+    assert_eq!(
+        preflight.blocked.as_deref(),
+        Some(
+            "Build server runs an older Rovik, which can't take chats: it needs an upgrade first."
+        )
+    );
+}
+
 /// R02, 4.5: a host whose Rovik is too old to take chats blocks the move.
 /// An administrator there is offered the upgrade for everyone; anyone
 /// else is told whom to ask.
