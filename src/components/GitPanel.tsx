@@ -760,13 +760,14 @@ export function GitPanel(props: GitPanelProps) {
     setBranchesLoading(true);
     try {
       const list = await invoke<GitBranch[]>('git_branches', { path: props.projectPath });
-      // Unchanged, the rows stay (a click on one as the list came in was lost).
-      setBranches((old) =>
-        old.length === list.length &&
-        old.every((b, i) => b.name === list[i].name && b.is_remote === list[i].is_remote)
-          ? old
-          : list
-      );
+      // The branches already listed keep their rows, whatever else came or
+      // went: a click on one as the list came in was lost.
+      setBranches((old) => {
+        const key = (b: GitBranch) => `${b.is_remote ? 'remote' : 'local'}:${b.name}`;
+        const listed = new Map(old.map((b) => [key(b), b]));
+        const next = list.map((b) => listed.get(key(b)) ?? b);
+        return next.length === old.length && next.every((b, i) => b === old[i]) ? old : next;
+      });
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1111,6 +1112,8 @@ export function GitPanel(props: GitPanelProps) {
       await invoke('git_create_branch', { path: props.projectPath, name, checkout, from });
       setNewBranchName('');
       closeMore();
+      // The branch menu lists it from the start, not a moment after opening.
+      await loadBranches();
       await refreshStatus();
       if (checkout) refreshHistoryIfOpen();
     });
@@ -1425,7 +1428,9 @@ export function GitPanel(props: GitPanelProps) {
 
           <Show when={branchOpen()}>
             <div class="git-branch-dropdown context-menu">
-              <Show when={branchesLoading()}>
+              {/* Only while there's nothing to list yet: over the rows, it
+                  moved them all down and back while they refreshed. */}
+              <Show when={branchesLoading() && branches().length === 0}>
                 <div class="context-menu-item context-menu-loading">
                   <IconSpinner /> <span>Loading branches...</span>
                 </div>
@@ -1636,7 +1641,9 @@ export function GitPanel(props: GitPanelProps) {
                   <IconBack />
                   <span>Delete branch</span>
                 </button>
-                <Show when={branchesLoading()}>
+                {/* As in the branch menu: over the rows it moved them, and a
+                    click on one's delete button could land on the next. */}
+                <Show when={branchesLoading() && branches().length === 0}>
                   <div class="context-menu-item context-menu-loading">
                     <IconSpinner /> <span>Loading branches...</span>
                   </div>
