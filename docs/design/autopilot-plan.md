@@ -1488,3 +1488,21 @@ T05 depends most on the environment it meets.
   and over SSH to the tests' russh server with the deploy key, a `gh`
   that keeps what it's asked standing in for the real one; a push to a
   remote that isn't there fails the delivery.
+
+### H05: Test delivery
+
+- **`DeliveryTest { remote }`** (served with `autonomy`): the daemon
+  makes a commit of the empty tree in a scratch repository, pushes it to
+  `rovik/test-<yyyymmdd-hhmmss>` on `remote` as a task's result would go
+  (the same `git push`, with this computer's deploy key), deletes the
+  branch, and reports (`DeliveryTested`): the branch, and why the push or
+  the delete didn't go, if they didn't. With pull requests asked for, it
+  also runs `gh auth status --hostname <host>` and says whether they'd
+  open. A computer that has the server keep its results is refused, and
+  told to choose the push first.
+- **The remote** is the open project's `origin` (`push_url`, no
+  credentials), from the computer: the hosts page names no project, and
+  the test is for where the next task's result would go. No project open
+  with an `origin`, or a daemon without the feature: the page says so.
+- **The button** shows under the push's settings once they're saved, and
+  the line under it what the test found.

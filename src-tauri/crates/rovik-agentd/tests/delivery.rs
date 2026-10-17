@@ -292,3 +292,147 @@ async fn a_push_that_fails_leaves_the_result_for_the_computer() {
     assert_eq!(result.branch, None);
     assert_eq!(result.outcome, "verified");
 }
+
+/*
+ * "Test delivery" (H05)
+ */
+
+/// A bare repository that keeps, in `pushed.log` beside it, each ref
+/// update it receives: "<old> <new> <ref>".
+fn watched_remote(dir: &Path) -> PathBuf {
+    let remote = dir.join("watched.git");
+    Repository::init_bare(&remote).unwrap();
+    let hook = remote.join("hooks/post-receive");
+    let log = dir.join("pushed.log");
+    std::fs::write(&hook, format!("#!/bin/sh\ncat >> '{}'\n", log.display())).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    remote
+}
+
+/// This computer has the server push its results, with `key`.
+async fn pushing(session: &mut common::Session<tokio::net::UnixStream>, key: &str, open_pr: bool) {
+    let push = AutonomyConfig {
+        delivery: Delivery::PushBranch {
+            deploy_key: key.into(),
+            open_pr,
+        },
+        notify_url: None,
+    };
+    let configured = session.call(Request::AutonomyConfigure(push)).await;
+    assert_eq!(configured, Ok(rovik_protocol::Response::Done));
+}
+
+async fn delivery_test(
+    session: &mut common::Session<tokio::net::UnixStream>,
+    remote: &str,
+) -> Result<rovik_protocol::autopilot::DeliveryTest, rovik_protocol::Fail> {
+    let tested = session
+        .call(Request::DeliveryTest {
+            remote: remote.into(),
+        })
+        .await?;
+    match tested {
+        rovik_protocol::Response::DeliveryTested(report) => Ok(report),
+        other => panic!("not a delivery test's report: {other:?}"),
+    }
+}
+
+/// H05: the test pushes an empty branch `rovik/test-<date>` as a task's
+/// result would go, then deletes it: the remote saw both, and has no
+/// branch left. Asked for pull requests, it says none open from a remote
+/// on the server itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delivery_test_pushes_an_empty_branch_and_deletes_it() {
+    let daemon = Daemon::start(&[]).await;
+    let mut session = daemon.session().await;
+    let remote = watched_remote(&daemon.dir.0);
+    pushing(&mut session, "~/.ssh/unused", true).await;
+    let url = format!("file://{}", remote.display());
+    let report = delivery_test(&mut session, &url).await.unwrap();
+    assert_eq!(report.problem, None, "{report:?}\n{}", daemon.output());
+    assert_eq!(report.remote, url);
+    let stamp = report
+        .branch
+        .strip_prefix("rovik/test-")
+        .expect("rovik/test-<date>");
+    assert_eq!(stamp.len(), "20261017-095301".len(), "{stamp}");
+    let seen = std::fs::read_to_string(daemon.dir.0.join("pushed.log")).unwrap();
+    let updates: Vec<Vec<&str>> = seen.lines().map(|l| l.split(' ').collect()).collect();
+    let zero = "0".repeat(40);
+    let branch = format!("refs/heads/{}", report.branch);
+    assert_eq!(updates.len(), 2, "{seen}");
+    assert_eq!(
+        (updates[0][0], updates[0][2]),
+        (zero.as_str(), branch.as_str()),
+        "pushed"
+    );
+    assert_eq!(
+        (updates[1][1], updates[1][2]),
+        (zero.as_str(), branch.as_str()),
+        "deleted"
+    );
+    let repo = Repository::open_bare(&remote).unwrap();
+    assert_eq!(repo.references().unwrap().count(), 0, "nothing left there");
+    assert_eq!(
+        report.pull_requests.as_deref(),
+        Some(
+            "Pull requests won't open: the remote is on this server, where no pull request opens."
+        )
+    );
+}
+
+/// H05: over SSH with the deploy key, and with `gh` logged in for the
+/// remote's host, the test says pull requests open.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delivery_test_over_ssh_checks_gh() {
+    let ssh = std::process::Command::new("ssh").arg("-V").output();
+    if ssh.is_err() {
+        eprintln!("ssh isn't installed: skipped");
+        return;
+    }
+    let server = SshServer::start().await;
+    let dir = rovik_core::testing::temp_dir();
+    let bin = fake_gh(&dir.0);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let daemon = Daemon::start_with(&[], &[("PATH", &path)]).await;
+    let mut session = daemon.session().await;
+    let remote = watched_remote(&daemon.dir.0);
+    let key = server.plain_key_file(&daemon.dir.0);
+    pushing(&mut session, &key.to_string_lossy(), true).await;
+    let url = format!("ssh://{USER}@127.0.0.1:{}{}", server.port, remote.display());
+    let report = delivery_test(&mut session, &url).await.unwrap();
+    assert_eq!(report.problem, None, "{report:?}\n{}", daemon.output());
+    assert_eq!(
+        report.pull_requests.as_deref(),
+        Some("`gh` is logged in to 127.0.0.1: pull requests open.")
+    );
+    let asked = std::fs::read_to_string(bin.join("gh.log")).unwrap();
+    assert_eq!(asked.trim(), "auth status --hostname 127.0.0.1");
+    let seen = std::fs::read_to_string(daemon.dir.0.join("pushed.log")).unwrap();
+    assert_eq!(seen.lines().count(), 2, "pushed and deleted: {seen}");
+}
+
+/// H05: a remote that isn't there fails the test with git's words; a
+/// computer that has the server keep its results is told to choose a
+/// push first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delivery_test_says_why_it_failed() {
+    let daemon = Daemon::start(&[]).await;
+    let mut session = daemon.session().await;
+    let gone = format!("file://{}", daemon.dir.0.join("gone.git").display());
+    let refused = delivery_test(&mut session, &gone).await.unwrap_err();
+    assert_eq!(refused.code, rovik_protocol::FailCode::BadRequest);
+    assert!(
+        refused.message.contains("choose “Push to a branch” first"),
+        "{refused:?}"
+    );
+    pushing(&mut session, "~/.ssh/unused", false).await;
+    let report = delivery_test(&mut session, &gone).await.unwrap();
+    let problem = report.problem.expect("it failed");
+    assert!(problem.starts_with("The push failed: "), "{problem}");
+    assert_eq!(report.pull_requests, None, "not asked for");
+}

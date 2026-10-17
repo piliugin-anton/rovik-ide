@@ -117,6 +117,15 @@ pub async fn hosts_set_autonomy(
     page.set_autonomy(&id, autonomy).await
 }
 
+/// "Test delivery" (autopilot-plan H05): what the host's push found.
+#[tauri::command]
+pub async fn hosts_test_delivery(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+) -> Result<rovik_protocol::autopilot::DeliveryTest, String> {
+    page.test_delivery(&id).await
+}
+
 /// Deploys Rovik for this user; `sudo_password` when sudo asked for one.
 /// Returns the daemon's version.
 #[tauri::command]

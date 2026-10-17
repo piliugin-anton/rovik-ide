@@ -95,6 +95,22 @@ impl AutonomyConfig {
     }
 }
 
+/// What "Test delivery" found (3.5, H05): the branch the server pushed to
+/// the remote and deleted again, or why it couldn't; and, when the
+/// computer asked for pull requests, whether `gh` can open them there.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DeliveryTest {
+    pub remote: String,
+    pub branch: String,
+    /// Why the push or the delete didn't go: none when both did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// Asked for pull requests: whether they'd open, in a line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pull_requests: Option<String>,
+}
+
 /// A URL as a log or a message shows it: its scheme and host, never its
 /// path or query, which may carry a token (3.5).
 pub fn url_for_logs(url: &str) -> String {

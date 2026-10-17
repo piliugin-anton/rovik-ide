@@ -414,6 +414,9 @@ fn every_request_round_trips() {
             },
             Request::AgentStatus,
             Request::AgentConfigure(config()),
+            Request::DeliveryTest {
+                remote: "git@github.com:acme/app.git".into(),
+            },
             Request::AutonomyConfigure(crate::autopilot::AutonomyConfig {
                 delivery: crate::autopilot::Delivery::PushBranch {
                     deploy_key: "~/.ssh/rovik_deploy".into(),
@@ -754,6 +757,13 @@ fn every_response_round_trips() {
                 data: 3,
                 tmp: 0,
             }),
+            Response::DeliveryTested(crate::autopilot::DeliveryTest {
+                remote: "git@github.com:acme/app.git".into(),
+                branch: "rovik/test-20261017-095301".into(),
+                problem: None,
+                pull_requests: Some("`gh` is logged in to github.com".into()),
+            }),
+            Response::DeliveryTested(crate::autopilot::DeliveryTest::default()),
         ],
     );
 }

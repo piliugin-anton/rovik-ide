@@ -754,3 +754,43 @@ test('works on its own: each change is saved, the deploy key only once it’s in
   assert.deepEqual(kept().autonomy!.delivery, { kind: 'keepOnHost' });
   assert.equal(field(block(), 'Deploy key on the server'), undefined);
 });
+
+test('works on its own: “Test delivery” says what the push found, or why it failed (H05)', async () => {
+  const push = {
+    delivery: { kind: 'pushBranch' as const, deployKey: '~/.ssh/rovik_deploy', openPr: true },
+  };
+  let answer: () => unknown = () => ({
+    remote: 'git@github.com:acme/app.git',
+    branch: 'rovik/test-20261017-095301',
+    pullRequests: '`gh` is logged in to github.com: pull requests open.',
+  });
+  const { root } = await keepingHostPage({ approvalPolicy: 'autonomous', autonomy: push });
+  backend.hosts_test_delivery = () => answer();
+  const run = () => button(root, 'Test delivery')!;
+  assert.ok(run(), 'offered once the push is set up');
+  run().click();
+  await flush();
+  assert.deepEqual(sent('hosts_test_delivery'), [{ id: 'h1' }]);
+  const shown = () => root.querySelector('.host-autonomy-tested')!;
+  assert.equal(
+    shown().textContent,
+    'Pushed rovik/test-20261017-095301 to git@github.com:acme/app.git and deleted it. `gh` is logged in to github.com: pull requests open.'
+  );
+  assert.ok(!shown().classList.contains('warning'));
+  answer = () => ({
+    remote: 'git@github.com:acme/app.git',
+    branch: 'rovik/test-20261017-095302',
+    problem: 'The push failed: Permission denied (publickey).',
+  });
+  run().click();
+  await flush();
+  assert.equal(shown().textContent, 'The push failed: Permission denied (publickey).');
+  assert.ok(shown().classList.contains('warning'));
+  answer = () => {
+    throw 'Open a project whose repository has an `origin` remote: the test pushes there.';
+  };
+  run().click();
+  await flush();
+  assert.equal(root.querySelector('.host-autonomy-tested'), null);
+  assert.match(root.querySelector('.host-autonomy [role="alert"]')!.textContent!, /Open a project/);
+});

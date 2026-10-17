@@ -210,6 +210,20 @@ export const setPolicy = (id: string, policy: ApprovalPolicy) =>
 export const setAutonomy = (id: string, autonomy: AutonomySettings) =>
   invoke<AutonomySettings>('hosts_set_autonomy', { id, autonomy });
 
+/**
+ * What "Test delivery" found (H05; rovik-protocol `DeliveryTest`): the
+ * branch the host pushed to the open project's remote and deleted, or why
+ * not; and whether pull requests would open there, when asked for.
+ */
+export interface DeliveryTest {
+  remote: string;
+  branch: string;
+  problem?: string;
+  pullRequests?: string;
+}
+
+export const testDelivery = (id: string) => invoke<DeliveryTest>('hosts_test_delivery', { id });
+
 /** Deploys Rovik; `sudoPassword` when sudo asked for one. Resolves with its version. */
 export const deployHost = (id: string, sudoPassword?: string) =>
   invoke<string>('hosts_deploy', { id, sudoPassword: sudoPassword ?? null });

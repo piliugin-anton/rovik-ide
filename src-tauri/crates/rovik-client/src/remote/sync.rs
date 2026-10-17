@@ -312,7 +312,7 @@ fn applied(state: SyncState) -> bool {
 }
 
 /// The URL of the `origin` remote of the repository `root` is in, if any.
-fn origin_of(root: &Path) -> Option<String> {
+pub(super) fn origin_of(root: &Path) -> Option<String> {
     let repo = git2::Repository::discover(root).ok()?;
     let origin = repo.find_remote("origin").ok()?;
     origin.url().ok().map(str::to_string)

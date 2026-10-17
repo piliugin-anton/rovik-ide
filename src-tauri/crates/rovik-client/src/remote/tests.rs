@@ -538,6 +538,43 @@ async fn a_host_that_pushes_is_told_the_projects_remote() {
     );
 }
 
+/// H05: "Test delivery" asks the host to push to the open project's
+/// remote, as the host would push a result there: an SSH address without
+/// the credentials its `origin` has. With no such project open, or a
+/// daemon too old for it, it says what's missing.
+#[tokio::test]
+async fn a_delivery_test_goes_to_the_open_projects_remote() {
+    let app = App::new();
+    let root = app.dir.0.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo = git2::Repository::init(&root).unwrap();
+    repo.remote("origin", "https://me:secret@github.com/acme/app.git")
+        .unwrap();
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::AUTONOMY.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    let none = remote.test_delivery(HOST).await.unwrap_err();
+    assert!(
+        none.starts_with("Open a project whose repository has an `origin`"),
+        "{none}"
+    );
+    remote.set_open_project(Some(("p1".into(), root.clone())));
+    let report = remote.test_delivery(HOST).await.unwrap();
+    assert_eq!(report.remote, "git@github.com:acme/app.git");
+    assert!(fake
+        .requests
+        .lock()
+        .unwrap()
+        .contains(&Request::DeliveryTest {
+            remote: "git@github.com:acme/app.git".into()
+        }));
+
+    let (old, _) = connected(&app).await;
+    old.set_open_project(Some(("p1".into(), root)));
+    let too_old = old.test_delivery(HOST).await.unwrap_err();
+    assert!(too_old.contains("too old"), "{too_old}");
+}
+
 /// K50: a Continue doesn't send the request's text again when it's the
 /// stored one, local paths or not; other text still goes.
 #[tokio::test]

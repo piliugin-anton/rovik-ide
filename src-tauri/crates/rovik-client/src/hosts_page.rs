@@ -19,7 +19,7 @@ use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
 use crate::system_ssh::{Local, SystemSsh, SystemSshConnector};
-use rovik_protocol::autopilot::AutonomySettings;
+use rovik_protocol::autopilot::{AutonomySettings, DeliveryTest};
 use rovik_protocol::host::{HostInfo, KeyInfo, Storage};
 use rovik_protocol::{features, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
@@ -623,6 +623,12 @@ impl HostsPage {
         self.remote.set_autonomy(id, autonomy.clone());
         self.remote.reconfigure(id).await;
         Ok(autonomy)
+    }
+
+    /// "Test delivery" (autopilot-plan H05): the host pushes an empty
+    /// branch to the open project's remote and deletes it.
+    pub async fn test_delivery(&self, id: &str) -> Result<DeliveryTest, String> {
+        self.remote.test_delivery(id).await
     }
 
     /// Deploys Rovik for this user (H05), then connects the host. Returns

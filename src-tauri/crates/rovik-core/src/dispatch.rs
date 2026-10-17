@@ -148,7 +148,8 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::KeysRemove { .. }
         | Request::Storage
         | Request::CleanUp
-        | Request::AutonomyConfigure(_) => {
+        | Request::AutonomyConfigure(_)
+        | Request::DeliveryTest { .. } => {
             return Err(Fail::new(
                 FailCode::BadRequest,
                 "Only a daemon answers this request.",

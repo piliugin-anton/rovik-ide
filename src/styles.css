@@ -8646,6 +8646,18 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin-left: 24px;
 }
 
+/* "Test delivery" (H05): its button, then what it found. */
+.host-autonomy-test {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.host-autonomy-tested.warning {
+  color: var(--warning);
+}
+
 /* Its text fields: the deploy key's path and the notify URL. */
 .host-autonomy-field {
   display: flex;

@@ -14,6 +14,7 @@
 
 use crate::results::Results;
 use rovik_core::agent_run::autopilot::{DeliverAsk, Deliverer, Delivering, Pushed};
+use rovik_protocol::autopilot::{Delivery, DeliveryTest};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -121,13 +122,16 @@ pub async fn push(
     branch: &str,
     key: &str,
 ) -> Result<(), String> {
+    let refspec = format!("{commit}:refs/heads/{branch}");
+    git_push(repo, remote, &refspec, key).await
+}
+
+/// `git push` of `refspec` to `remote`, from the repository at `repo`.
+async fn git_push(repo: &Path, remote: &str, refspec: &str, key: &str) -> Result<(), String> {
     let mut git = Command::new("git");
-    git.arg("-C").arg(repo).args([
-        "push",
-        "--porcelain",
-        remote,
-        &format!("{commit}:refs/heads/{branch}"),
-    ]);
+    git.arg("-C")
+        .arg(repo)
+        .args(["push", "--porcelain", remote, refspec]);
     git.env("GIT_TERMINAL_PROMPT", "0");
     if !is_local(remote) {
         let key = expand_home(key);
@@ -215,6 +219,88 @@ pub async fn open_pull_request(
         .find(|l| l.starts_with("https://") || l.starts_with("http://"));
     url.map(str::to_string)
         .ok_or_else(|| "`gh` opened no pull request it named".into())
+}
+
+/// "Test delivery" (3.5, H05): an empty branch `rovik/test-<date>`, of a
+/// commit with nothing in it, pushed to `remote` as a task's result would
+/// go, with the deploy key, then deleted. With pull requests asked for,
+/// whether `gh` is logged in for the remote's host. Err: this computer
+/// has this server keep its results.
+pub async fn test(delivery: &Delivery, remote: &str) -> Result<DeliveryTest, String> {
+    let Delivery::PushBranch {
+        deploy_key,
+        open_pr,
+    } = delivery
+    else {
+        return Err(
+            "This server keeps this computer's results: choose “Push to a branch” first.".into(),
+        );
+    };
+    let iso = rovik_core::agent_run::log::iso_now();
+    let stamp = format!(
+        "{}-{}",
+        iso[..10].replace('-', ""),
+        iso[11..19].replace(':', "")
+    );
+    let mut report = DeliveryTest {
+        remote: remote.to_string(),
+        branch: format!("rovik/test-{stamp}"),
+        ..DeliveryTest::default()
+    };
+    let scratch =
+        std::env::temp_dir().join(format!("rovik-delivery-test-{}", uuid::Uuid::new_v4()));
+    let made = {
+        let scratch = scratch.clone();
+        rovik_core::rt::spawn_blocking(move || empty_commit(&scratch)).await
+    };
+    let commit = made.map_err(|e| e.to_string()).and_then(|made| made);
+    report.problem = match commit {
+        Err(e) => Some(format!("Its commit couldn't be made: {e}")),
+        Ok(commit) => match push(&scratch, remote, &commit, &report.branch, deploy_key).await {
+            Err(e) => Some(format!("The push failed: {e}")),
+            Ok(()) => {
+                let delete = format!(":refs/heads/{}", report.branch);
+                git_push(&scratch, remote, &delete, deploy_key)
+                    .await
+                    .err()
+                    .map(|e| format!("Pushed, but the branch couldn't be deleted again: {e}"))
+            }
+        },
+    };
+    let _ = std::fs::remove_dir_all(&scratch);
+    if *open_pr {
+        report.pull_requests = Some(match gh_ready(remote).await {
+            Ok(host) => format!("`gh` is logged in to {host}: pull requests open."),
+            Err(e) => format!("Pull requests won't open: {e}."),
+        });
+    }
+    Ok(report)
+}
+
+/// A bare repository at `dir` with one commit, of the empty tree: its id.
+fn empty_commit(dir: &Path) -> Result<String, String> {
+    let git = |e: git2::Error| e.message().to_string();
+    let repo = git2::Repository::init_bare(dir).map_err(git)?;
+    let tree = repo
+        .treebuilder(None)
+        .and_then(|t| t.write())
+        .map_err(git)?;
+    let tree = repo.find_tree(tree).map_err(git)?;
+    let rovik = git2::Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
+    let commit = repo
+        .commit(None, &rovik, &rovik, "Rovik: a delivery test", &tree, &[])
+        .map_err(git)?;
+    Ok(commit.to_string())
+}
+
+/// The remote's host, when `gh` is logged in for it.
+async fn gh_ready(remote: &str) -> Result<String, String> {
+    let Some(repo) = forge_repo(remote) else {
+        return Err("the remote is on this server, where no pull request opens".into());
+    };
+    let host = repo.split('/').next().unwrap_or(&repo).to_string();
+    gh(&["auth", "status", "--hostname", &host], "").await?;
+    Ok(host)
 }
 
 /// `gh` with `args`, `input` on its standard input: what it printed.

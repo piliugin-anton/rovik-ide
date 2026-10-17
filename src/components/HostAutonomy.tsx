@@ -9,8 +9,10 @@ import { createSignal, Show } from 'solid-js';
 import {
   autonomyOf,
   setAutonomy,
+  testDelivery,
   type AutonomySettings,
   type Delivery,
+  type DeliveryTest,
   type Host,
 } from '../lib/hosts';
 import { numberFieldValue } from '../lib/subagentSettings';
@@ -26,6 +28,10 @@ export default function HostAutonomy(props: {
   const [saving, setSaving] = createSignal(false);
   // "Push to a branch" chosen, its key not in yet: nothing saved until it is.
   const [choosingPush, setChoosingPush] = createSignal(false);
+  // "Test delivery" (H05): going, then what it found or why it didn't run.
+  const [testing, setTesting] = createSignal(false);
+  const [tested, setTested] = createSignal<DeliveryTest | null>(null);
+  const [testError, setTestError] = createSignal<string | null>(null);
   const block = () => autonomyOf(props.host);
   const push = (): PushBranch | null => {
     const delivery = block().delivery;
@@ -56,6 +62,19 @@ export default function HostAutonomy(props: {
     const deployKey = text.trim();
     if (!deployKey && !push()) return;
     void save({ delivery: { kind: 'pushBranch', deployKey, openPr: push()?.openPr ?? false } });
+  }
+
+  async function runTest() {
+    setTesting(true);
+    setTested(null);
+    setTestError(null);
+    try {
+      setTested(await testDelivery(props.host.id));
+    } catch (err) {
+      setTestError(String(err));
+    } finally {
+      setTesting(false);
+    }
   }
 
   /** A limit left empty: as in this computer's settings. */
@@ -153,6 +172,37 @@ export default function HostAutonomy(props: {
               Open a pull request (needs <code>gh</code> logged in on the server)
             </span>
           </label>
+          <Show when={push()}>
+            <div class="host-autonomy-test">
+              <button type="button" disabled={testing()} onClick={() => void runTest()}>
+                {testing() ? 'Testing…' : 'Test delivery'}
+              </button>
+              <span class="settings-hint">
+                Pushes an empty branch to the open project’s remote, then deletes it.
+              </span>
+            </div>
+            <Show when={tested()}>
+              {(t) => (
+                <p
+                  class="settings-hint host-autonomy-note host-autonomy-tested"
+                  classList={{ warning: !!t().problem }}
+                  role="status"
+                >
+                  {t().problem ?? (
+                    <>
+                      Pushed <code>{t().branch}</code> to {t().remote} and deleted it.
+                    </>
+                  )}
+                  <Show when={t().pullRequests}>{(line) => <> {line()}</>}</Show>
+                </p>
+              )}
+            </Show>
+            <Show when={testError()}>
+              <p class="settings-hint setting-explain warning" role="alert">
+                {testError()}
+              </p>
+            </Show>
+          </Show>
         </div>
       </Show>
 

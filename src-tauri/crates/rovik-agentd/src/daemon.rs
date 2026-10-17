@@ -118,6 +118,14 @@ impl Daemon {
                 .set_autonomy(computer, config)
                 .map(|()| Response::Done)
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
+            // H05: with this computer's delivery settings.
+            Request::DeliveryTest { remote } => {
+                let delivery = self.store.computer_autonomy(computer).delivery;
+                crate::deliver::test(&delivery, &remote)
+                    .await
+                    .map(Response::DeliveryTested)
+                    .map_err(|e| Fail::new(FailCode::BadRequest, e))
+            }
             Request::ProjectEnsure {
                 project,
                 settings,

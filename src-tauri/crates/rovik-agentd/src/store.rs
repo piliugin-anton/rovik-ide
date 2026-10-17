@@ -310,6 +310,18 @@ impl Store {
         self.save(inner)
     }
 
+    /// What `computer` has this server keep (H02): the default when it has
+    /// nothing kept.
+    pub fn computer_autonomy(&self, computer: &str) -> AutonomyConfig {
+        let inner = self.lock();
+        inner
+            .state
+            .autonomy
+            .get(computer)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// What the chat's computer has this server keep (H02): the default
     /// when it has nothing kept, or the chat isn't known.
     pub fn autonomy_of(&self, dialog_id: &str) -> AutonomyConfig {

@@ -3,7 +3,7 @@
 //! own calls and the daemon's are one list of operations (D3).
 
 use crate::agent::{AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest};
-use crate::autopilot::AutonomyConfig;
+use crate::autopilot::{AutonomyConfig, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::{HostInfo, KeyInfo, Storage};
@@ -48,6 +48,12 @@ pub enum Request {
     /// of this computer's settings for runs that go on without it (H02).
     /// Served with `features::AUTONOMY`.
     AutonomyConfigure(AutonomyConfig),
+    /// "Test delivery" (H05): pushes an empty branch `rovik/test-<date>`
+    /// to `remote` as a task's result would go, with this computer's
+    /// deploy key, and deletes it. Served with `features::AUTONOMY`.
+    DeliveryTest {
+        remote: String,
+    },
     AgentSetEffort {
         profile_id: String,
         options: Option<OpenAIChatOptions>,
@@ -327,6 +333,7 @@ impl Request {
             Request::AgentStatus
             | Request::AgentConfigure(_)
             | Request::AutonomyConfigure(_)
+            | Request::DeliveryTest { .. }
             | Request::AgentSetEffort { .. }
             | Request::WorkloadFocus { .. }
             | Request::BlobsMissing { .. }
@@ -381,6 +388,8 @@ pub enum Response {
     /// `KeysList`.
     Keys(Vec<KeyInfo>),
     Storage(Storage),
+    /// `DeliveryTest`.
+    DeliveryTested(DeliveryTest),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -436,4 +445,5 @@ replies! {
     Ownership => Option<Ownership>,
     Keys => Vec<KeyInfo>,
     Storage => Storage,
+    DeliveryTested => DeliveryTest,
 }

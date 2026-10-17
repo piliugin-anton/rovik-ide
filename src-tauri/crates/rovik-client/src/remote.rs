@@ -18,7 +18,7 @@ use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
 use rovik_core::chat_db::{api, attachments, moves};
 use rovik_core::{project_profile, Core};
-use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings};
+use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings, DeliveryTest};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::{ChatResult, ChatSync};
@@ -327,6 +327,28 @@ impl Remote {
         let mut state = self.lock();
         state.autonomy.insert(host.to_string(), autonomy);
         state.ensured.retain(|(ensured, _)| ensured != host);
+    }
+
+    /// "Test delivery" (H05): the host pushes an empty branch to the open
+    /// project's remote, as a task's result would go, and deletes it.
+    pub async fn test_delivery(&self, host: &str) -> Result<DeliveryTest, String> {
+        let folder = self.lock().open.clone().map(|(_, folder)| folder);
+        let remote = folder
+            .as_deref()
+            .and_then(sync::origin_of)
+            .as_deref()
+            .and_then(rovik_protocol::autopilot::push_url)
+            .ok_or(
+                "Open a project whose repository has an `origin` remote: the test pushes there.",
+            )?;
+        if !self.serves(host, features::AUTONOMY) {
+            return Err("This server's Rovik is too old to push results: upgrade it first.".into());
+        }
+        let tested = self
+            .host_call(host, Request::DeliveryTest { remote })
+            .await
+            .map_err(|fail| fail.message)?;
+        DeliveryTest::try_from(tested).map_err(|fail| fail.message)
     }
 
     /// After the host's policy or block changed: what follows from them
