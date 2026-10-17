@@ -1966,6 +1966,45 @@ async fn past_the_budget_between_stages_no_stage_starts() {
     assert_eq!(started.len(), 1, "{started:?}");
 }
 
+/// U04, S08: the acceptance check is done inside the implementation's
+/// run, so the budget can't keep it from starting: a check that takes the
+/// task past its budget is recorded as it went, and a task whose work all
+/// went well is delivered as verified, not cut short as over its budget.
+#[tokio::test]
+async fn a_stage_done_inside_the_run_is_recorded_past_the_budget() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // The acceptance check costs more than the whole task may.
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (ACCEPTANCE, vec![costing(0.10, Reply::Text(SATISFIED))]),
+        ],
+        task_script(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.budget.max_cost = Some(0.05);
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let acceptance = records
+        .iter()
+        .find(|r| r.name == Stage::Acceptance)
+        .expect("the acceptance's record");
+    assert_eq!(acceptance.status, Status::Done, "{records:#?}");
+    assert_eq!(acceptance.summary.as_deref(), Some("The criterion is met"));
+    let deliver = records.last().unwrap();
+    assert_eq!(deliver.outcome.as_deref(), Some("verified"), "{records:#?}");
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("Delivered: the changes are in the project")
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
 /*
  * The verification floor (V)
  */

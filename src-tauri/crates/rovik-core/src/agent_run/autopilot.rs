@@ -1647,8 +1647,9 @@ async fn advance(
             Next::Running(_) | Next::Over => return Ok(()),
         };
         // Past the task's budget, no stage starts work: it delivers (U04).
-        // The stages done inside a run say what that run did; the pick
-        // takes what the candidates did (T06).
+        // The stages done inside a run (the reviews, the checks, the
+        // adversarial tester's and the acceptance's, S08, T04) say what
+        // that run did; the pick takes what the candidates did (T06).
         let spent = match records[0].record.candidate.is_some() {
             // T05: a candidate's chat counts its task's, all of it.
             true => task_spent(core, dialog_id).await?,
@@ -1660,7 +1661,13 @@ async fn advance(
         let budget = core.agents.config_for(dialog_id).autopilot.budget;
         let starts_work = !matches!(
             stage,
-            Stage::PlanReview | Stage::Review | Stage::Checks | Stage::Pick | Stage::Deliver
+            Stage::PlanReview
+                | Stage::Review
+                | Stage::Checks
+                | Stage::Break
+                | Stage::Acceptance
+                | Stage::Pick
+                | Stage::Deliver
         );
         if let Some(why) = budget::over(&budget, &spent).filter(|_| starts_work) {
             let mut record = StageRecord::ended(task, stage, round, effort, Status::Failed)
