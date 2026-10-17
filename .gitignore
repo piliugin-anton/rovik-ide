@@ -7,3 +7,4 @@ rovik-ide.zip*.tsbuildinfo
 eval-results
 dist-e2e
 e2e-out
+dist-ssr
