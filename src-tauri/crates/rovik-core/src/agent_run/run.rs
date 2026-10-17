@@ -1219,8 +1219,8 @@ impl Run {
             .await?;
             self.settle(true).await;
             // Past its Autopilot task's budget (U04): the run ends at this
-            // reply, its calls answered as not run.
-            if let Some(why) = self.over_task_budget() {
+            // reply, its calls answered as not run. A Stop goes first.
+            if let Some(why) = self.over_task_budget().filter(|_| !self.stopped()) {
                 return self.end_over_budget(&turn.tool_calls, &why).await;
             }
             // Stopped meanwhile: a reply with tool calls goes on to
