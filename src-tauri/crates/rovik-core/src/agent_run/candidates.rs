@@ -259,6 +259,9 @@ pub struct CandidateState {
     /// How it went, in a line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// D19: the installs its copy got before it started, in a line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared: Option<String>,
 }
 
 /// The task's candidates' records in the chat, oldest first, with their
@@ -558,6 +561,7 @@ async fn make(
                 status: "waiting".into(),
                 outcome: None,
                 summary: None,
+                prepared: None,
             })
             .collect(),
     };
@@ -813,6 +817,14 @@ impl Run {
             });
             row.candidates[i].status = "running".into();
             save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
+            // D19: its copy's dependencies before it starts: a server's
+            // worktree has none of the chat's installs, which git ignores.
+            if task_records(&core, &state.chat, &task).await?.is_empty() {
+                if let Some(line) = self.prepare_copy(&state.chat, &folder).await {
+                    row.candidates[i].prepared = Some(line);
+                    save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
+                }
+            }
             let settings = Settings {
                 root: Some(folder),
                 isolate: Some(false),

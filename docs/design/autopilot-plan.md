@@ -1756,8 +1756,13 @@ T05 depends most on the environment it meets.
   worktree goes. The daemon's start-up keeps a live candidate's worktree
   (`work::collect`), and the chat gets no result at the end of the run
   that waited for its candidates: its pick's has the change. What a lockfile installed in the chat's worktree,
-  which git ignores, isn't in a candidate's: its checks find it missing,
-  and V03's installs run there.
+  which git ignores, isn't in a candidate's: its checks found it missing,
+  and V03's installs ran there, one failed round later. Since the
+  robustness pass after T, the copy gets its installs before the
+  candidate starts (`prepare_copy`, as the Prepare stage's, by the task's
+  run, in the candidate's name, when Prepare is on), and the candidates'
+  record says so ("Installed: …"); a copy on this computer sees the
+  project's through its overlay, and needs none.
 - **One implementer** where no copy can be made: a chat that works in the
   project folder itself (the headless runner's among them), a server
   without the daemon's copies, a copy that fails. The implementation is the chat's own, as Balanced's; its

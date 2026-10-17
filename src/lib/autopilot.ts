@@ -626,6 +626,8 @@ export interface CandidateMeta {
   /** How its implementation's run ended. */
   outcome?: string;
   summary?: string;
+  /** D19: the installs its copy got before it started, in a line. */
+  prepared?: string;
 }
 
 /**

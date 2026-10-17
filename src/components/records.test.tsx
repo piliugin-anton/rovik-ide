@@ -1037,6 +1037,34 @@ test('the candidates’ record: each one’s line, its work on demand, one waiti
   assert.equal(record.className, 'chat-verify chat-candidates running');
   const lines = [...record.querySelectorAll('.chat-candidate')].map((li) => li.textContent);
   assert.deepEqual(lines, ['A: done · 1 check passed · Show its work', 'B: waiting']);
+  // D19: the installs a candidate's copy got before it started.
+  const prepared = container();
+  render(
+    () => (
+      <CandidatesRecord
+        meta={{
+          task: 't',
+          round: 1,
+          status: 'running',
+          candidates: [
+            {
+              letter: 'a',
+              chat: 'cand-a',
+              status: 'running',
+              prepared: 'Installed: `npm ci --no-audit --no-fund`',
+            },
+          ],
+        }}
+        dialogId="lead-k"
+        recordId="k3"
+        live={true}
+      />
+    ),
+    prepared
+  );
+  const line = prepared.querySelector('.chat-candidate-prepared')!;
+  assert.equal(line.textContent, 'Installed: npm ci --no-audit --no-fund');
+  assert.equal(line.querySelector('code')?.textContent, 'npm ci --no-audit --no-fund');
   // Interrupted: nothing runs it any more.
   const cut = container();
   render(

@@ -10,9 +10,9 @@
 //! candidates' worktrees go, with their branches and refs.
 //!
 //! What a lockfile installed in the chat's worktree (`node_modules`), which
-//! git ignores, isn't in a candidate's: its checks find it missing, and the
-//! installs run again there, as for any check that fails on its
-//! environment (V03).
+//! git ignores, isn't in a candidate's: the task's run installs it there
+//! before the candidate starts (`prepare_copy`, D19), as the Prepare stage
+//! did in the chat's.
 
 use crate::daemon::Daemon;
 use crate::{results, work};

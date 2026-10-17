@@ -13,6 +13,7 @@ import {
   type CandidatesMeta,
 } from '../lib/autopilot';
 import { liveLabel, liveSubagent } from '../lib/subagents';
+import { summaryParts } from './StageRecord';
 import { SubagentTranscript } from './ToolCallBlock';
 import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
@@ -40,6 +41,9 @@ function Candidate(props: {
       <Show when={props.candidate.status !== 'waiting' && props.candidate.status !== 'skipped'}>
         {' · '}
         <ShowWorkButton work={work} />
+      </Show>
+      <Show when={props.candidate.prepared}>
+        {(line) => <div class="chat-candidate-prepared">{summaryParts(line())}</div>}
       </Show>
       <Show when={work.shown()}>
         <SubagentTranscript childDialogId={props.candidate.chat} running={running()} />

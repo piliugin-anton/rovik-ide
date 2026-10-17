@@ -35,6 +35,43 @@ fn npm_project(setup: &Setup) {
     commit_all(&setup.project);
 }
 
+/// `npm_project` whose check needs a package its lockfile installs: a
+/// folder of its own (`file:dep`), so `npm ci` needs no registry. What it
+/// installs (`node_modules`) git ignores, as a project's are.
+fn npm_project_with_a_dependency(setup: &Setup) {
+    let lock = r#"{
+  "name": "t",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": { "name": "t", "version": "1.0.0", "dependencies": { "dep": "file:dep" } },
+    "dep": { "version": "1.0.0" },
+    "node_modules/dep": { "resolved": "dep", "link": true }
+  }
+}
+"#;
+    let files = [
+        (
+            "package.json",
+            r#"{ "name": "t", "version": "1.0.0", "scripts": { "test": "node check.js" }, "dependencies": { "dep": "file:dep" } }"#,
+        ),
+        ("package-lock.json", lock),
+        ("dep/package.json", r#"{ "name": "dep", "version": "1.0.0" }"#),
+        ("dep/index.js", "module.exports = 'ok';"),
+        (".gitignore", "node_modules\n"),
+        (
+            "check.js",
+            "const fs = require('fs'); const ok = require('dep'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== ok) { console.error('not ok'); process.exit(1); }",
+        ),
+        ("ok.txt", "no"),
+    ];
+    for (path, content) in files {
+        write(&setup.project.join(path), content);
+    }
+    commit_all(&setup.project);
+}
+
 /// A candidate's implementation: ok.txt says ok, and the files `more`
 /// names say what they say.
 fn implementation(more: &[(&'static str, &'static str)]) -> Vec<Reply> {
@@ -258,7 +295,12 @@ async fn thorough_model(implementations: Vec<Reply>) -> String {
 
 /// A chat with its worktree on the daemon: its root there.
 async fn worktree_chat(setup: &Setup) -> std::path::PathBuf {
-    npm_project(setup);
+    worktree_chat_of(setup, npm_project).await
+}
+
+/// `worktree_chat`, the project `project` writes.
+async fn worktree_chat_of(setup: &Setup, project: fn(&Setup)) -> std::path::PathBuf {
+    project(setup);
     let snapshot = setup.pushed(CHAT).await;
     let ensure = Request::ProjectEnsure {
         project: Project {
@@ -272,6 +314,71 @@ async fn worktree_chat(setup: &Setup) -> std::path::PathBuf {
     };
     setup.client.request::<()>(ensure).await.unwrap();
     std::path::PathBuf::from(setup.sync(CHAT, &snapshot).await.unwrap().root)
+}
+
+/// D19 in T05: a candidate's worktree has none of the chat's installs,
+/// which git ignores. Each candidate's copy gets them before it starts,
+/// as the chat's worktree got them at the Prepare stage, so its first
+/// check doesn't fail for want of a package, and the record says so.
+#[tokio::test]
+async fn each_candidates_worktree_gets_its_installs_before_it_starts() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let setup = Setup::new().await;
+    let root = worktree_chat_of(&setup, npm_project_with_a_dependency).await;
+    let mut implementations = implementation(&[]);
+    implementations.extend(implementation(&[("notes.txt", "Wrote ok.\n")]));
+    let url = thorough_model(implementations).await;
+    let mut start = task_start(&url, &setup.project);
+    start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    let started = setup
+        .client
+        .request::<Option<String>>(Request::AgentStart(start))
+        .await;
+    assert!(started.unwrap().is_some());
+    let found = until_delivered(&setup.daemon).await;
+    let stage = |name: &str| {
+        found
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, s)| s.clone())
+    };
+    let output = setup.daemon.output();
+    assert_eq!(stage("prepare").as_deref(), Some("done"), "{output}");
+    assert_eq!(stage("pick").as_deref(), Some("done"), "{output}");
+    assert_eq!(stage("deliver").as_deref(), Some("done"), "{output}");
+    assert!(
+        root.join("node_modules").exists(),
+        "the chat's own installs"
+    );
+
+    let rows = setup.daemon.rows(CHAT);
+    let candidates: &Value = rows
+        .iter()
+        .find_map(|r| r.meta.get("candidates"))
+        .expect("the candidates' record");
+    for c in candidates["candidates"].as_array().unwrap() {
+        assert_eq!(
+            c["prepared"], "Installed: `npm ci --no-audit --no-fund`",
+            "{candidates}"
+        );
+        assert_eq!(c["status"], "done", "{candidates}");
+        // No check of its failed for want of the package.
+        let chat = c["chat"].as_str().unwrap();
+        let rounds: Vec<Value> = setup
+            .daemon
+            .rows(chat)
+            .iter()
+            .filter_map(|r| r.meta.get("verification").cloned())
+            .collect();
+        assert!(!rounds.is_empty(), "{chat} was checked");
+        assert!(
+            rounds.iter().all(|v| v.get("environment").is_none()),
+            "{chat}: {rounds:?}"
+        );
+    }
 }
 
 /// T05 (A03): `kill -9` while the first candidate's reply streams, in its

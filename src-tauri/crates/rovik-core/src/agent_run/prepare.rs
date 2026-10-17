@@ -114,6 +114,31 @@ fn node_install(dir: &Path) -> &'static str {
     }
 }
 
+/// How installs went, in a line: what was installed, or which failed.
+pub(super) fn installs_line(done: &[InstallResult]) -> String {
+    let named = |d: &InstallResult| match d.folder.as_str() {
+        "" => format!("`{}`", d.command),
+        folder => format!("`{}` in {folder}", d.command),
+    };
+    let failed: Vec<&InstallResult> = done.iter().filter(|d| d.status == "failed").collect();
+    if failed.is_empty() {
+        return format!(
+            "Installed: {}",
+            done.iter().map(named).collect::<Vec<_>>().join(", ")
+        );
+    }
+    format!(
+        "{} of {} installs failed ({}): the checks will say what's missing",
+        failed.len(),
+        done.len(),
+        failed
+            .iter()
+            .map(|d| named(d))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 /// An install as its record shows it: like a check's result.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -234,29 +259,50 @@ impl Run {
         if self.stopped() {
             return Ok("stopped".into());
         }
-        let named = |d: &InstallResult| match d.folder.as_str() {
-            "" => format!("`{}`", d.command),
-            folder => format!("`{}` in {folder}", d.command),
-        };
-        let summary = if failed.is_empty() {
-            format!(
-                "Installed: {}",
-                done.iter().map(named).collect::<Vec<_>>().join(", ")
-            )
-        } else {
-            format!(
-                "{} of {} installs failed ({}): the checks will say what's missing",
-                failed.len(),
-                done.len(),
-                failed
-                    .iter()
-                    .map(|d| named(d))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        end(summary, Status::Done, Some(record_id)).await?;
+        end(installs_line(&done), Status::Done, Some(record_id)).await?;
         Ok("done".into())
+    }
+
+    /// D19 in a Thorough task's candidate's copy (T05), before its
+    /// implementation starts: the installs its lockfiles imply, where what
+    /// they install isn't there. A server's worktree has none of the chat's
+    /// installs, which git ignores; a copy on this computer sees the
+    /// project's through its overlay, and needs none. Run as the Prepare
+    /// stage's are, by this run (its Stop stops them), in `chat`'s name:
+    /// its environment, its saved output. The line says how they went;
+    /// None: nothing to install, or Prepare is off.
+    pub(super) async fn prepare_copy(&mut self, chat: &str, root: &str) -> Option<String> {
+        if !self.config().autopilot.prepare {
+            return None;
+        }
+        let installs = needed(Path::new(root));
+        if installs.is_empty() {
+            return None;
+        }
+        let mut done: Vec<InstallResult> = installs.iter().map(InstallResult::pending).collect();
+        for (i, install) in installs.iter().enumerate() {
+            if self.stopped() {
+                done[i].status = "skipped";
+                continue;
+            }
+            done[i] = self.install_in(chat, root, install, i, "prepare").await;
+        }
+        log::write(
+            &self.core,
+            json!({
+                "event": "prepare",
+                "dialogId": chat,
+                "reason": "candidate",
+                "installs": done.iter().map(|d| json!({
+                    "command": d.command,
+                    "folder": d.folder,
+                    "status": d.status,
+                    "exitCode": d.exit_code,
+                    "ms": d.duration_ms,
+                })).collect::<Vec<_>>(),
+            }),
+        );
+        Some(installs_line(&done))
     }
 
     /// V03 (D12): the round's checks failed on their environment
@@ -350,18 +396,32 @@ impl Run {
         index: usize,
         stem: &str,
     ) -> InstallResult {
+        let chat = self.dialog_id.clone();
+        self.install_in(&chat, root, install, index, stem).await
+    }
+
+    /// `install`, in `chat`'s name: its copy's environment and confinement,
+    /// its saved output; this run's Stop stops it.
+    async fn install_in(
+        &self,
+        chat: &str,
+        root: &str,
+        install: &Install,
+        index: usize,
+        stem: &str,
+    ) -> InstallResult {
         let mut r = InstallResult::pending(install);
         let dir = Path::new(root).join(&install.folder);
         let stop = self.stop.clone();
         let queued = crate::command_tool::Queued {
             kind: crate::workload::JobKind::Check {
-                owner: self.dialog_id.clone(),
+                owner: chat.to_string(),
             },
             note: Box::new(|_| {}),
-            env: crate::overlay::chats::get(&self.dialog_id)
+            env: crate::overlay::chats::get(chat)
                 .map(|o| o.command_env())
                 .unwrap_or_default(),
-            confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
+            confine: crate::overlay::chats::get(chat).and_then(|o| o.confine()),
             whole_output: false,
         };
         let outcome = crate::command_tool::run_command(
@@ -401,7 +461,7 @@ impl Run {
                         "" => format!("{}", index + 1),
                         folder => format!("{folder}-{}", index + 1),
                     };
-                    r.saved_output = check_output::save(&self.dialog_id, stem, &name, &combined);
+                    r.saved_output = check_output::save(chat, stem, &name, &combined);
                 }
             }
             Err(e) => {
