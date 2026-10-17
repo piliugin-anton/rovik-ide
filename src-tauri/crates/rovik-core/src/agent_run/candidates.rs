@@ -292,6 +292,17 @@ async fn row_by_id(
     dialog_id: &str,
     id: &str,
 ) -> Result<Option<CandidatesRecord>, String> {
+    record_in_row(core, dialog_id, id, "candidates").await
+}
+
+/// The IDE's record in row `id` of the chat (`meta.<key>`), if it holds one
+/// that reads.
+async fn record_in_row<T: serde::de::DeserializeOwned>(
+    core: &Core,
+    dialog_id: &str,
+    id: &str,
+    key: &'static str,
+) -> Result<Option<T>, String> {
     let ids = vec![id.to_string()];
     let rows = core
         .db
@@ -300,7 +311,7 @@ async fn row_by_id(
     Ok(rows
         .into_iter()
         .find(|m| m.dialog_id == dialog_id)
-        .and_then(|m| serde_json::from_value(m.meta?.get("candidates")?.clone()).ok()))
+        .and_then(|m| serde_json::from_value(m.meta?.get(key)?.clone()).ok()))
 }
 
 /// The record in row `id` changed to `value` (`meta.<key>`), and shown.
@@ -1162,19 +1173,11 @@ pub(super) async fn took_winner(
     dialog_id: &str,
     pick: &StageRecord,
 ) -> Result<bool, String> {
-    let Some(id) = pick.reference.clone() else {
+    let Some(id) = &pick.reference else {
         return Ok(false);
     };
-    let ids = vec![id];
-    let rows = core
-        .db
-        .read(move |c| store::messages_by_id(c, &ids))
-        .await?;
-    Ok(rows
-        .into_iter()
-        .find(|m| m.dialog_id == dialog_id)
-        .and_then(|m| serde_json::from_value::<PickRecord>(m.meta?.get("pick")?.clone()).ok())
-        .is_some_and(|row| row.adopted))
+    let row: Option<PickRecord> = record_in_row(core, dialog_id, id, "pick").await?;
+    Ok(row.is_some_and(|row| row.adopted))
 }
 
 /// The candidate the task's pick took: its letter, its chat, its records.
