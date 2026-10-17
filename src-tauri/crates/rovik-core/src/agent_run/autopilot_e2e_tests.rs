@@ -2241,6 +2241,74 @@ async fn a_tiny_budget_ends_the_task_at_the_next_reply() {
     assert_eq!(ends.last(), Some(&json!("budget")));
 }
 
+/// U04 (R03): a helper the IDE starts on its own checks the task's budget
+/// at each of its replies, as the lead does. The Tests stage's writer
+/// takes the task to 0.06 of its 0.05 at its second reply: it stops there,
+/// its stage ends over the task's budget, and the task delivers what it
+/// has.
+#[tokio::test]
+async fn a_helper_past_the_budget_stops_and_its_stage_ends_over_it() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let read = |id: &'static str| Reply::Call {
+        id,
+        name: "read",
+        args: json!({ "path": "check.js" }),
+    };
+    // The plan's replies cost 0.02 between them; the writer's 0.02 each.
+    let mut writer = vec![costing(0.02, read("tr1")), costing(0.02, read("tr2"))];
+    writer.extend(
+        tests_first_script(OK_TEST, OK_TEST_CODE)
+            .into_iter()
+            .map(|reply| costing(0.02, reply)),
+    );
+    let script: Vec<Reply> = task_script()
+        .into_iter()
+        .map(|reply| costing(0.01, reply))
+        .collect();
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TESTS_FIRST, writer),
+        ],
+        script,
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.budget = super::autopilot::Budget {
+        max_hours: None,
+        max_cost: Some(0.05),
+        max_tokens: None,
+    };
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let tests = records.iter().find(|r| r.name == Stage::Tests).unwrap();
+    assert_eq!(
+        (tests.status, tests.outcome.as_deref()),
+        (Status::Failed, Some("budget")),
+        "{records:#?}"
+    );
+    assert!(
+        tests
+            .summary
+            .as_deref()
+            .is_some_and(|s| s.starts_with("Over the task's budget")),
+        "{tests:?}"
+    );
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| route_of(r, &[TESTS_FIRST]).is_some())
+        .count();
+    assert_eq!(asked, 2, "the writer stopped at the reply past the budget");
+    assert!(h.file(OK_TEST).is_none(), "it wrote nothing");
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("budget"));
+}
+
 /// U04, by tokens: a provider that reports what each request used and no
 /// cost, and a task that may use 300 tokens. Its plan's two replies use
 /// 220, which its record keeps; the implementation's first reply brings it

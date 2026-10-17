@@ -1326,6 +1326,18 @@ impl Run {
                 "error".to_string()
             }
         };
+        // U04 (R03): one of its subagents found the task past its budget and
+        // stopped the run: it ends over the budget, as at one of its replies.
+        let outcome = match self.core.agents.budget_cut_of(&self.dialog_id) {
+            Some(why) if matches!(outcome.as_str(), "stopped" | "verify-stopped") => {
+                log::write(
+                    &self.core,
+                    json!({ "event": "budget", "dialogId": self.dialog_id, "reason": why }),
+                );
+                "budget".to_string()
+            }
+            _ => outcome,
+        };
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
         if self.sub().is_none() && outcome != "verify-needs-approval" {

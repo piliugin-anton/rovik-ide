@@ -1258,8 +1258,24 @@ impl Run {
         None
     }
 
+    /// U04 (R03): past its Autopilot task's budget, as its lead checks at
+    /// each of its own replies: the lead's run ends over the budget, and
+    /// this subagent stops with it. False: within it, or no task's.
+    fn cut_for_task_budget(&self) -> bool {
+        let Some(why) = self.core.agents.over_budget(&self.dialog_id) else {
+            return false;
+        };
+        self.core
+            .agents
+            .cut_for_budget(&self.core, &self.dialog_id, &why);
+        true
+    }
+
     /// The subagent's loop: how it ended, its report, and an error kind.
     async fn drive_sub(&mut self) -> Result<(SubStatus, String, Option<String>), String> {
+        if self.cut_for_task_budget() {
+            return Ok((SubStatus::Stopped, String::new(), None));
+        }
         // T08: a reviewer's view of the task's end: one turn without tools.
         if self.sub().is_some_and(|s| s.view_only) {
             let text = self.words_only_turn().await?;
@@ -1274,7 +1290,7 @@ impl Run {
         }
         let mut last_text = String::new();
         loop {
-            if self.stopped() {
+            if self.stopped() || self.cut_for_task_budget() {
                 return Ok((SubStatus::Stopped, last_text, None));
             }
             if let Some(why) = self.over_budget() {

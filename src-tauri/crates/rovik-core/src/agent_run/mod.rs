@@ -172,6 +172,9 @@ struct RunControl {
     started: std::time::Instant,
     spent: budget::Spent,
     spent_before: budget::Spent,
+    /// An Autopilot lead's (U04, R03): one of its subagents found the task
+    /// past its budget and stopped the run, which ends `budget`: why.
+    budget_cut: Option<String>,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -372,6 +375,27 @@ impl AgentState {
         budget::over(&budget, &before.plus(spent))
     }
 
+    /// U04 (R03): a subagent of the chat's Autopilot run found its task past
+    /// its budget at one of its replies: the lead's run stops, with its
+    /// subagents, and ends `budget` (`budget_cut_of`), as at one of its own.
+    pub(super) fn cut_for_budget(&self, core: &Core, dialog_id: &str, why: &str) {
+        let lead = {
+            let mut inner = self.lock();
+            let lead = Self::lead_of(&inner, dialog_id).to_string();
+            if let Some(run) = inner.runs.get_mut(&lead) {
+                run.budget_cut.get_or_insert_with(|| why.to_string());
+            }
+            lead
+        };
+        self.stop(core, &lead);
+    }
+
+    /// Why the chat's run was cut for its task's budget, if it was
+    /// (`cut_for_budget`).
+    pub(super) fn budget_cut_of(&self, dialog_id: &str) -> Option<String> {
+        self.lock().runs.get(dialog_id)?.budget_cut.clone()
+    }
+
     /// The effort of the Autopilot task the chat's run, or its lead's,
     /// carries out a stage of; None: it's no task's.
     pub(super) fn autopilot_of(&self, dialog_id: &str) -> Option<autopilot::Effort> {
@@ -523,6 +547,7 @@ impl AgentState {
                 started: std::time::Instant::now(),
                 spent: budget::Spent::default(),
                 spent_before: budget::Spent::default(),
+                budget_cut: None,
             },
         );
         Some(Controls {
