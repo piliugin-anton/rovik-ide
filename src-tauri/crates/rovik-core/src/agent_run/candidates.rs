@@ -334,6 +334,35 @@ pub async fn main_of(core: &Core, chat: &str) -> Result<Option<String>, String> 
         .map(|(d, _)| d.parent_id))
 }
 
+/// Why a chat doesn't move while its task's candidates are at work, or
+/// wait for their Pick (R03, as decided).
+pub const MOVE_AWAITS_PICK: &str = "This chat's task is being implemented by two candidates, whose working copies can't move with it: move it once the Pick has chosen between them.";
+
+/// Whether the chat's task has candidates at work, or waiting for their
+/// Pick: from their implementation, under way or done, until the Pick
+/// ends. Their working copies (a local overlay's, a server's worktrees)
+/// don't move with the chat, so a move waits until then (R03).
+pub async fn awaiting_pick(core: &Core, dialog_id: &str) -> Result<bool, String> {
+    let Some((_, records)) = autopilot::current_task(core, dialog_id).await? else {
+        return Ok(false);
+    };
+    if autopilot::next_after(&records) == Next::Over {
+        return Ok(false);
+    }
+    let by_candidates = |r: &&Recorded| {
+        r.record.name == Stage::Implement
+            && !r.record.candidates.is_empty()
+            && r.record.status != Status::Failed
+    };
+    let Some(at) = records.iter().rposition(|r| by_candidates(&r)) else {
+        return Ok(false);
+    };
+    let picked = records[at + 1..]
+        .iter()
+        .any(|r| r.record.name == Stage::Pick && r.record.status != Status::Running);
+    Ok(!picked)
+}
+
 /// Whether the task's latest implementation was its candidates'.
 pub fn ran(records: &[Recorded]) -> bool {
     records

@@ -577,6 +577,10 @@ impl Remote {
         if lead.map_err(internal)? != dialog_id {
             return Err(refused("A subagent's chat moves with its lead's."));
         }
+        let candidates = agent_run::candidates::awaiting_pick(&self.core, dialog_id).await;
+        if candidates.map_err(internal)? {
+            return Err(refused(agent_run::candidates::MOVE_AWAITS_PICK));
+        }
         let place = self.project_of(dialog_id).await.map_err(internal)?;
         let place = place.ok_or_else(|| {
             refused(

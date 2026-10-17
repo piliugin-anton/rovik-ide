@@ -438,6 +438,11 @@ impl Remote {
         if !matches!(at, Location::Host(_)) {
             return Err(refused("This chat isn't on a server."));
         }
+        // Its mirror holds the task's records as the server has them.
+        let candidates = agent_run::candidates::awaiting_pick(&self.core, dialog_id).await;
+        if candidates.map_err(internal)? {
+            return Err(refused(agent_run::candidates::MOVE_AWAITS_PICK));
+        }
         if project.is_none() {
             return Ok(None);
         }

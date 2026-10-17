@@ -892,6 +892,57 @@ async fn messages_name_a_host_as_its_settings_do() {
     );
 }
 
+/// R03, T05: a chat whose task's candidates implement it, or wait for
+/// their Pick, doesn't move: their working copies can't go with it.
+#[tokio::test]
+async fn a_chat_whose_candidates_await_their_pick_doesnt_move() {
+    use rovik_core::agent_run::autopilot::{add_stage, end_stage, Stage, StageRecord, Status};
+    use rovik_core::agent_run::candidates::MOVE_AWAITS_PICK;
+    use rovik_protocol::autopilot::Effort;
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    // A host that takes chats.
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::MIRROR.into()];
+    let (remote, _fake) = connected_to(&app, fake).await;
+    let core = &app.core;
+    let done = |name| StageRecord::ended("task", name, 1, Effort::Thorough, Status::Done);
+    for name in [Stage::Plan, Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        add_stage(core, "chat", &done(name)).await.unwrap();
+    }
+    let implementing = StageRecord {
+        candidates: vec!["a".into(), "b".into()],
+        ..StageRecord::running("task", Stage::Implement, 1, Effort::Thorough)
+    };
+    let implement = add_stage(core, "chat", &implementing).await.unwrap();
+    let blocked = || async { remote.move_preflight("chat", HOST).await.unwrap().blocked };
+    assert_eq!(blocked().await.as_deref(), Some(MOVE_AWAITS_PICK));
+    // Implemented, and their Pick under way: still.
+    end_stage(core, "chat", &implement, |r| r.status = Status::Done)
+        .await
+        .unwrap();
+    let picking = StageRecord::running("task", Stage::Pick, 1, Effort::Thorough);
+    let pick = add_stage(core, "chat", &picking).await.unwrap();
+    assert_eq!(blocked().await.as_deref(), Some(MOVE_AWAITS_PICK));
+    let moved = remote.move_chat("chat", HOST, None).await.unwrap_err();
+    assert_eq!(moved.message, MOVE_AWAITS_PICK);
+    // Picked: the copies are done with, and it moves as any chat would.
+    end_stage(core, "chat", &pick, |r| r.status = Status::Done)
+        .await
+        .unwrap();
+    assert_ne!(blocked().await.as_deref(), Some(MOVE_AWAITS_PICK));
+
+    // Nor back from a server, its mirror's task's candidates at work there.
+    app.chat("there", None, Vec::new()).await;
+    remote.place("there", HOST);
+    for name in [Stage::Plan, Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        add_stage(core, "there", &done(name)).await.unwrap();
+    }
+    add_stage(core, "there", &implementing).await.unwrap();
+    let back = remote.move_back("there", None).await.unwrap_err();
+    assert_eq!(back.message, MOVE_AWAITS_PICK);
+}
+
 /// R02, 4.5: a host whose Rovik is too old to take chats blocks the move.
 /// An administrator there is offered the upgrade for everyone; anyone
 /// else is told whom to ask.
