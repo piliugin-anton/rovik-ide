@@ -2,9 +2,9 @@
 //! the limit resets, with nobody to press Retry; the waits are kept in the
 //! stage's record, so a restart keeps them.
 
-use super::driver::{drive_lock, stopped_by, Settings};
+use super::driver::{drive_lock, stopped_by, try_drive_lock, Settings};
 use super::rows::{current_task, end_stage, record_in, task_spent};
-use super::stage::StageRun;
+use super::stage::{StageRun, Status};
 use crate::agent_run::budget;
 use crate::agent_run::StartKind;
 use crate::chat_db::store;
@@ -21,13 +21,18 @@ pub(super) const RATE_LIMIT_FIRST_WAIT: std::time::Duration = std::time::Duratio
 /// How long a stage waits for rate limits in all, at most.
 pub(super) const RATE_LIMIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// The least a stage waits for a limit that resets now or already has, the
+/// first time; doubled each time after, so a provider that keeps saying
+/// "again now" (`Retry-After: 0`) isn't asked every second for the hour.
+pub(super) const RATE_LIMIT_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// H07 (3.6): nobody is there to press Retry, on a server or on this
 /// computer (Autopilot never asks, D5): a stage's run that ended `error`
 /// because the provider rate limited it goes on once the limit resets: at
-/// the time its failure named, else after a minute, then two, four…,
-/// while the task is within its budget (U04) and the stage's waits add up
-/// to an hour at most (its record keeps them, so a restart does too).
-/// None: the stage ends as before.
+/// the time its failure named (a second at least, then two, four…), else
+/// after a minute, then two, four…, while the task is within its budget
+/// (U04) and the stage's waits add up to an hour at most (its record keeps
+/// them, so a restart does too). None: the stage ends as before.
 pub(super) async fn rate_limit_wait(
     core: &Core,
     dialog_id: &str,
@@ -59,9 +64,10 @@ pub(super) async fn rate_limit_wait(
     let reset = failure["resetAt"]
         .as_i64()
         .map(|at| (at - store::now_ms()).max(0) as u64);
+    let doubled = 2u32.saturating_pow(waits.min(10));
     let wait = match reset {
-        Some(ms) => std::time::Duration::from_millis(ms.max(1000)),
-        None => RATE_LIMIT_FIRST_WAIT * 2u32.saturating_pow(waits.min(10)),
+        Some(ms) => std::time::Duration::from_millis(ms).max(RATE_LIMIT_FLOOR * doubled),
+        None => RATE_LIMIT_FIRST_WAIT * doubled,
     };
     if waited + wait > RATE_LIMIT_PATIENCE {
         return Ok(None);
@@ -139,6 +145,40 @@ pub(super) fn retry_later(
         }
         drop(driving);
     });
+}
+
+/// A Stop with no run to stop (R03): the stage of the chat's task that
+/// waits out the provider's rate limit ends stopped, as its run would
+/// have, and its timer starts nothing once the wait is over. False: no
+/// stage waits (the driver between two stages, or about to start the
+/// stage's run, has its turn: nothing waits as far as a Stop goes).
+pub(in crate::agent_run) async fn stop_waiting(core: &Core, dialog_id: &str) -> bool {
+    let Some(_driving) = try_drive_lock(dialog_id) else {
+        return false;
+    };
+    let latest = match current_task(core, dialog_id).await {
+        Ok(Some((_, records))) => records.last().cloned(),
+        _ => None,
+    };
+    let Some(waiting) = latest.filter(|r| r.record.waits_until().is_some()) else {
+        return false;
+    };
+    let stopped = end_stage(core, dialog_id, &waiting.id, |r| {
+        r.status = Status::Failed;
+        r.outcome = Some("stopped".into());
+        r.summary = Some(super::outcome::failure_summary("stopped"));
+        if let Some(kept) = r.rate_limit.as_mut() {
+            kept.until = None;
+        }
+    })
+    .await;
+    match stopped {
+        Ok(_) => true,
+        Err(e) => {
+            stopped_by(core, dialog_id, &e);
+            false
+        }
+    }
 }
 
 /// The waits a timer of this process is armed for (`retry_later`), by

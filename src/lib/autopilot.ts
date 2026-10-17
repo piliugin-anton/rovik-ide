@@ -281,6 +281,15 @@ export function shownStatus(
 export const waitsOutRateLimit = (stage: Pick<StageMeta, 'status' | 'rateLimit'>): boolean =>
   stage.status === 'running' && stage.rateLimit?.until !== undefined;
 
+/**
+ * Whether a task waits out the provider's rate limit: its latest record
+ * does. No run goes meanwhile, but a Stop ends the wait, and the stage.
+ */
+export function taskWaits(rows: StageRow[] | null | undefined): boolean {
+  const last = rows?.[rows.length - 1];
+  return !!last && waitsOutRateLimit(last.stage);
+}
+
 /** One stage as the strip shows it. */
 export interface StripStage {
   name: StageName;

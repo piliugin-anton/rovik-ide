@@ -1427,6 +1427,81 @@ async fn a_rate_limited_stage_goes_on_once_the_limit_resets_on_this_computer() {
     a_rate_limited_stage_goes_on(false).await;
 }
 
+/// H07 (R03): a provider that answers its rate limit with a reset of now,
+/// again and again (`Retry-After: 0`), isn't asked every second for the
+/// hour: the waits double from a second, as they do from a minute when no
+/// reset is named.
+#[tokio::test]
+async fn a_limit_that_resets_now_again_and_again_waits_longer_each_time() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // The plan's run, twice: each of its request's attempts rate limited.
+    let mut script = Vec::new();
+    for _ in 0..2 * crate::chat_request::MAX_ATTEMPTS {
+        script.push(Reply::RateLimited(0));
+    }
+    script.extend(task_script());
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    let waits: Vec<Value> = log_lines(&h, "rateLimitWait")
+        .await
+        .iter()
+        .map(|w| w["waitMs"].clone())
+        .collect();
+    assert_eq!(waits, [json!(1000), json!(2000)]);
+    assert_eq!(
+        records[0].rate_limit,
+        Some(super::autopilot::RateLimitWait {
+            until: None,
+            waits: 2,
+            waited_ms: 3000
+        })
+    );
+}
+
+/// H07 (R03): a Stop while a stage waits out the provider's rate limit,
+/// with no run to stop, ends the stage stopped: the task is over, and the
+/// wait's timer starts nothing once the wait is.
+#[tokio::test]
+async fn a_stop_while_a_stage_waits_out_a_rate_limit_ends_it() {
+    let Some((h, _)) = rate_limited_task(false, 2).await else {
+        return;
+    };
+    stages_until(&h, "the wait", |records| {
+        records.first().is_some_and(|r| r.waits_until().is_some())
+    })
+    .await;
+    assert!(agent_stop(&h.core, h.dialog_id.clone()).await);
+    let records = stages(&h).await;
+    assert_eq!(names(&records), [(Stage::Plan, Status::Failed)]);
+    assert_eq!(
+        (records[0].outcome.as_deref(), records[0].waits_until()),
+        (Some("stopped"), None)
+    );
+    // Past the wait: the stage's run didn't go on.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(names(&stages(&h).await), [(Stage::Plan, Status::Failed)]);
+    let plan_runs = h
+        .events_of("runEnded")
+        .iter()
+        .filter(|e| e["stage"] == "plan")
+        .count();
+    assert_eq!(plan_runs, 1, "the run the limit ended, only");
+    assert!(
+        !agent_stop(&h.core, h.dialog_id.clone()).await,
+        "nothing to stop"
+    );
+}
+
 /// H07: a resume while a stage waits out the provider's rate limit (the
 /// app's, as the chat is opened) starts nothing: the wait goes on. One
 /// after a restart, which forgot the wait's timer, arms it again from the

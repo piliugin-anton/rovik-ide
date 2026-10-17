@@ -13,6 +13,7 @@ import {
   taskLine,
   taskOver,
   taskRecords,
+  taskWaits,
   acceptanceHeadline,
   plannerHeadline,
   judgeHeadline,
@@ -195,6 +196,13 @@ test('the strip: a stage that waits out the provider’s rate limit waits, nothi
     taskLine(stageRows([stage('t', 'plan', 'running', { rateLimit })]), true),
     'Autopilot: plan…'
   );
+  // A waiting task can be stopped, though no run goes.
+  assert.equal(taskWaits(stageRows([stage('t', 'plan', 'running', { rateLimit })])), true);
+  assert.equal(
+    taskWaits(stageRows([stage('t', 'plan', 'running', { rateLimit: { waits: 1, waitedMs: 1 } })])),
+    false
+  );
+  assert.equal(taskWaits(null), false);
 });
 
 test('the strip’s line: the stage at work, or how the task ended', () => {

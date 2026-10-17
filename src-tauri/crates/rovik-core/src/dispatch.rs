@@ -31,7 +31,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
             .await
             .map(Response::RunId),
         Request::AgentStop { dialog_id } => {
-            Ok(Response::Bool(agent_run::agent_stop(core, dialog_id)))
+            Ok(Response::Bool(agent_run::agent_stop(core, dialog_id).await))
         }
         Request::AgentPause { dialog_id, host } => agent_run::agent_pause(core, dialog_id, host)
             .await

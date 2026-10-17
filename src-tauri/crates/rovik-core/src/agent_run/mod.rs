@@ -1360,8 +1360,11 @@ pub async fn waits_for_results(core: &Core, dialog_id: &str) -> Result<bool, Str
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
 /// what it waits on is answered "no").
-pub fn agent_stop(core: &Core, dialog_id: String) -> bool {
-    core.agents.stop(core, &dialog_id)
+/// Stop: the chat's run ends as soon as it can. With no run to stop, the
+/// stage of its Autopilot task that waits out the provider's rate limit
+/// ends stopped (H07). Whether there was either.
+pub async fn agent_stop(core: &Core, dialog_id: String) -> bool {
+    core.agents.stop(core, &dialog_id) || autopilot::stop_waiting(core, &dialog_id).await
 }
 
 pub fn agent_resolve_approval(

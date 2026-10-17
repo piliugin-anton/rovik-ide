@@ -65,7 +65,7 @@ pub use outcome::finished;
 pub(super) use outcome::plural;
 #[cfg(test)]
 pub(super) use rate_limit::forget_rate_limit_wait;
-pub(super) use rate_limit::rate_limit_armed;
+pub(super) use rate_limit::{rate_limit_armed, stop_waiting};
 pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 pub(super) use rows::{
     add_record_row, append, history_window, keep_cut_spending, keep_spending, save_meta,

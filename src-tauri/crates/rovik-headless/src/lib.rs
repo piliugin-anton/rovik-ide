@@ -664,7 +664,7 @@ fn has_run_line(log: &Path, dialog_id: &str) -> bool {
 /// Stops the run and lets it end and store what it has: its `runEnded`,
 /// or ten seconds.
 async fn stop_and_wait(core: &Core, rx: &mut UnboundedReceiver<Value>, dialog_id: &str) {
-    agent_run::agent_stop(core, dialog_id.to_string());
+    agent_run::agent_stop(core, dialog_id.to_string()).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(e) = rx.recv().await {
             if e["type"] == "runEnded" && e["dialogId"] == dialog_id {

@@ -64,7 +64,7 @@ import {
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import AutopilotStrip from './AutopilotStrip';
-import { stageRows, taskRecords, type StageRow } from '../lib/autopilot';
+import { stageRows, taskRecords, taskWaits, type StageRow } from '../lib/autopilot';
 import { autopilotConfig } from '../lib/autopilotSettings';
 import { overlayStatus } from '../lib/overlay';
 import {
@@ -4017,8 +4017,9 @@ export default function ChatPanel(props: ChatProps) {
               hidden
               onChange={(e) => filesPicked(e.currentTarget)}
             />
+            {/* Stop while a run goes, or while the task waits out a rate limit (H07). */}
             <Show
-              when={sending() && !waitingQuestion()}
+              when={(sending() || taskWaits(taskStages())) && !waitingQuestion()}
               fallback={
                 <button
                   onClick={() => void handleSend()}
