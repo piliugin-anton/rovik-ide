@@ -670,6 +670,15 @@ impl Run {
         }
         let is_send = matches!(request.start, StartKind::Send { .. });
         let is_continue_run = matches!(request.start, StartKind::ContinueRun);
+        // A start that takes up a run where an earlier one ended: a Retry,
+        // a Continue, a resume after a crash.
+        let takes_up = matches!(
+            request.start,
+            StartKind::Retry
+                | StartKind::ContinueReply
+                | StartKind::ContinueRun
+                | StartKind::Resume
+        );
         // Plan-implementation first turn forces the `todo` tool (named
         // `tool_choice`): "Implement this plan" in Agent mode. Explicit
         // `meta.implementsPlan` wins; the `Implement the plan…` line is the
@@ -996,6 +1005,16 @@ impl Run {
             _ => Vec::new(),
         };
 
+        // D7: an Autopilot implementation taken up again (after a failure,
+        // a wait for the provider's rate limit, a crash, a move) inherits
+        // what its stage's earlier runs wrote, which this run doesn't know as
+        // its own: its end reviews and checks them, as theirs would have,
+        // so nothing lands or is delivered that no check ran on.
+        let inherits_changes = takes_up
+            && stage
+                .as_ref()
+                .is_some_and(|s| s.stage == super::autopilot::Stage::Implement && !s.candidates);
+
         let run = Run {
             plan_mode,
             autopilot,
@@ -1015,7 +1034,8 @@ impl Run {
             project_context,
             repo_map,
             repo_map_chars,
-            writes_since_verify: !changed_files.is_empty(),
+            writes_since_verify: !changed_files.is_empty() || inherits_changes,
+            writes_since_review: inherits_changes,
             changed_files,
             verify_rounds,
             force_todo_next,

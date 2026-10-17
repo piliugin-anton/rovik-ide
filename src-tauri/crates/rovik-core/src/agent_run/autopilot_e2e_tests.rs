@@ -1415,6 +1415,47 @@ async fn a_resume_while_a_stage_waits_out_a_rate_limit_starts_nothing() {
     assert_eq!(plan_runs, 2);
 }
 
+/// D7, H07: the implementation writes its change, then the provider rate
+/// limits it before its checks. Once the limit resets, the stage's run
+/// goes on, a new run whose model only says it's done: the change it
+/// takes up is checked all the same, never delivered as one with nothing
+/// to check.
+#[tokio::test]
+async fn an_implementation_taken_up_again_checks_what_it_inherits() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    // After its write (the fourth request), every attempt is rate limited.
+    for _ in 0..crate::chat_request::MAX_ATTEMPTS {
+        script.insert(4, Reply::RateLimited(0));
+    }
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(
+        implement.rate_limit.as_ref().map(|w| w.waits),
+        Some(1),
+        "{records:#?}"
+    );
+    assert_eq!(
+        implement.outcome.as_deref(),
+        Some("verified"),
+        "{records:#?}"
+    );
+    let checks = records.iter().find(|r| r.name == Stage::Checks).unwrap();
+    assert_eq!(checks.status, Status::Done, "{records:#?}");
+    assert_eq!(checks.summary.as_deref(), Some("1 check passed"));
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+}
+
 /// H07, A03: resumes all the while a task goes on (the app's, each time
 /// the chat is opened), across a wait for the provider's rate limit and
 /// its end. The driver starts each stage with its turn taken, so none of
