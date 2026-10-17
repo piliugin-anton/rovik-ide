@@ -788,3 +788,29 @@ T05 depends most on the environment it meets.
   skipped; a line under the radios says so while Thorough is chosen.
 - **A task keeps the effort it started with** (its records carry it): a
   change of the setting applies to the next task.
+
+### A07: the subagents a task uses
+
+- **The kinds turned on** are the ones D17 names that exist: the plan
+  reviewer, the change reviewer, the failure triage, the test writer and
+  the step workers (`autopilot::needed_kinds`). The acceptance checker
+  (S08) and Thorough's planner, judge and adversarial tester (T01, T02,
+  T04) join the list as they're built. The scout isn't in D17's list: the
+  user's switch governs it, and only while "Use subagents" is on.
+- **Where it applies.** A run that carries out a stage is marked when it
+  starts (`set_autopilot`, with its task's effort), and `config_for` gives
+  it and its subagents the configuration with those kinds on; an ordinary
+  chat's, and the Autopilot chat's between runs, is the user's. The
+  driver's records use the same, so a review that didn't run says "Not
+  reviewed", not that the reviewer is off.
+- **The models** are the rows': the app resolves every row's models
+  whether the row is on or not (its model and fallbacks, the default
+  model, the chat's), and a row it didn't send gets the chat's model. The
+  user's limits (per run, at once, the review's size, the workers' steps)
+  stand.
+- **The page.** With "Use subagents" off, a row Autopilot uses keeps its
+  model and effort to set (its switch, which is for ordinary chats,
+  doesn't), and so does the default model, which those rows fall back
+  to: otherwise "the rows there give the models" couldn't be done without
+  turning subagents on for every chat. Such a row's models from another
+  provider than the chat's say "In Autopilot, code will also be sent to …".

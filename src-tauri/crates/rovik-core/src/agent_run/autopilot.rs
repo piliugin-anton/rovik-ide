@@ -25,6 +25,7 @@
 
 use super::landing::pending_reason;
 use super::recovery::{self, Recovery};
+use super::subagent::{Kind, SubagentConfig};
 use super::{plan, StartKind, StartRequest, UserMessage};
 use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage};
@@ -38,6 +39,56 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
+
+/*
+ * ---------------------------------------------------------------------------
+ * The subagents a task uses (A07)
+ * ---------------------------------------------------------------------------
+ */
+
+/// The kinds an Autopilot task's stages need (D17), of those built: the
+/// plan reviewer (the plan's review), the change reviewer and the failure
+/// triage (the implementation's review and checks), the test writer and
+/// the step workers. The acceptance checker (S08) and Thorough's planner,
+/// judge and adversarial tester (T01, T02, T04) join them as they're built.
+pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
+    const BUILT: &[Kind] = &[
+        Kind::PlanReviewer,
+        Kind::Reviewer,
+        Kind::Triage,
+        Kind::TestWriter,
+        Kind::Worker,
+    ];
+    match effort {
+        Effort::Balanced | Effort::Thorough => BUILT,
+    }
+}
+
+/// The subagent settings an Autopilot task's runs follow (D17): the kinds
+/// its stages need are on, each with the models the user's row on the
+/// Subagents page gives (the app resolves them: the row's model and
+/// fallbacks, the default subagent model, the chat's), or the chat's model
+/// when the row sent none. The user's other kinds stay as they are when
+/// subagents are on, and are off when they're off: the user's switches
+/// still govern what isn't Autopilot's. An ordinary chat's are untouched
+/// (`config_for` calls this for Autopilot's runs only).
+pub fn subagent_config(user: &SubagentConfig, effort: Effort) -> SubagentConfig {
+    let mut config = user.clone();
+    if !user.enabled {
+        for kind in config.kinds.values_mut() {
+            kind.enabled = false;
+        }
+    }
+    config.enabled = true;
+    for kind in needed_kinds(effort) {
+        config
+            .kinds
+            .entry(kind.id().to_string())
+            .or_default()
+            .enabled = true;
+    }
+    config
+}
 
 /// The mode of a message sent in Autopilot (`meta.mode`, `StartRequest.mode`).
 pub const MODE: &str = "autopilot";
@@ -915,7 +966,9 @@ async fn done_in_run(
         .db
         .read(move |c| store::messages_with_meta(c, &id, kind, Some(since)))
         .await?;
-    let config = core.agents.config_for(dialog_id);
+    // The configuration the run had: the kinds the pipeline needs were on.
+    let mut config = core.agents.config_for(dialog_id);
+    config.subagents = subagent_config(&config.subagents, run.record.effort);
     let base = StageRecord::ended(
         &run.record.task,
         stage,
@@ -1635,5 +1688,115 @@ mod tests {
         );
         assert_eq!(failure_summary("stopped"), "Stopped");
         assert_eq!(failure_summary("something-new"), "The run didn't finish");
+    }
+    /// A07 (D17): an Autopilot run has every kind its stages need, with
+    /// the models the user's rows give; what isn't Autopilot's stays the
+    /// user's, and off when the user's subagents are.
+    #[test]
+    fn autopilots_runs_have_the_kinds_they_need_with_the_users_models() {
+        use super::super::subagent::{KindConfig, ModelChoice, SubagentSettings};
+        let profile = |id: &str| -> ModelProfile {
+            serde_json::from_value(json!({
+                "id": id, "label": id, "model": id, "baseUrl": "http://x",
+            }))
+            .unwrap()
+        };
+        let model = |id: &str| ModelChoice::Profile(profile(id));
+        let row = |enabled: bool, models: Vec<ModelChoice>| KindConfig {
+            enabled,
+            models,
+            ..KindConfig::default()
+        };
+        // Subagents off; a reviewer row with its model, a scout turned on
+        // from before, no row for the plan reviewer (an older app's).
+        let user = SubagentConfig {
+            enabled: false,
+            kinds: HashMap::from([
+                (
+                    "reviewer".to_string(),
+                    row(false, vec![model("review-model")]),
+                ),
+                ("scout".to_string(), row(true, vec![model("scout-model")])),
+                (
+                    "worker".to_string(),
+                    row(
+                        false,
+                        vec![model("work-model"), ModelChoice::Chat { chat: true }],
+                    ),
+                ),
+            ]),
+            review_min_lines: Some(40),
+            ..SubagentConfig::default()
+        };
+        for effort in [Effort::Balanced, Effort::Thorough] {
+            let config = subagent_config(&user, effort);
+            for kind in needed_kinds(effort) {
+                assert!(config.kind(*kind).is_some(), "{kind:?} is on in {effort:?}");
+            }
+            assert!(
+                config.kind(Kind::Scout).is_none(),
+                "the user's subagents are off"
+            );
+            let chat = profile("chat-model");
+            let ids = |kind: Kind| -> Vec<String> {
+                config
+                    .models(kind, &chat)
+                    .into_iter()
+                    .map(|p| p.id)
+                    .collect()
+            };
+            assert_eq!(ids(Kind::Reviewer), ["review-model"], "the row's model");
+            assert_eq!(ids(Kind::Worker), ["work-model", "chat-model"]);
+            assert_eq!(
+                ids(Kind::PlanReviewer),
+                ["chat-model"],
+                "no row: the chat's"
+            );
+            assert_eq!(config.review_min_lines(), 40, "the user's limits stand");
+        }
+        // The user's subagents on: their other kinds stay as they set them.
+        let on = SubagentConfig {
+            enabled: true,
+            ..user.clone()
+        };
+        assert!(subagent_config(&on, Effort::Balanced)
+            .kind(Kind::Scout)
+            .is_some());
+        let mut off_scout = on.clone();
+        off_scout.kinds.get_mut("scout").unwrap().enabled = false;
+        assert!(subagent_config(&off_scout, Effort::Balanced)
+            .kind(Kind::Scout)
+            .is_none());
+        // The user's own settings aren't changed.
+        assert!(!user.enabled);
+        assert!(!user.kinds["reviewer"].enabled);
+    }
+
+    /// A07: only a run that carries out an Autopilot stage (and its
+    /// subagents) gets that configuration; an ordinary chat's is the
+    /// user's, and so is the Autopilot chat's once its run is over.
+    #[test]
+    fn only_an_autopilot_run_and_its_subagents_get_autopilots_kinds() {
+        use super::super::subagent::SubagentSettings;
+        use super::super::{AgentConfig, AgentState};
+        let state = AgentState::default();
+        let user = AgentConfig::default();
+        state.set_config(user.clone());
+        let ordinary = state.register("ordinary", "m", None).unwrap();
+        let task = state.register("task", "m", None).unwrap();
+        state
+            .register_child("kid", "task", "t1", "m", None)
+            .unwrap();
+        state.set_autopilot("task", Effort::Balanced);
+
+        assert_eq!(state.config_for("ordinary"), user, "untouched");
+        for chat in ["task", "kid"] {
+            let config = state.config_for(chat);
+            assert!(config.subagents.kind(Kind::Reviewer).is_some(), "{chat}");
+            assert_eq!(config.permissions, user.permissions, "{chat}");
+        }
+        state.unregister("task", &task.run_id);
+        assert_eq!(state.config_for("task"), user, "the run is over");
+        state.unregister("ordinary", &ordinary.run_id);
     }
 }

@@ -10,6 +10,7 @@
 // that make them do something (U04, S03, U01); until then the backend's
 // defaults stand for them.
 import type { AutopilotEffort } from './autopilot';
+import type { SubagentKindId } from './subagentSettings';
 
 export interface AutopilotSettings {
   effort: AutopilotEffort;
@@ -29,6 +30,19 @@ export const AUTOPILOT_EFFORTS: { id: AutopilotEffort; label: string; hint: stri
     label: 'Thorough',
     hint: 'Several candidates, a second model for every judgment, an adversarial tester; takes longer and costs more.',
   },
+];
+
+/**
+ * The kinds Autopilot turns on for its own chats, with the models their
+ * rows give, whatever their switches and the master switch say (D17,
+ * agent_run/autopilot.rs `needed_kinds`).
+ */
+export const AUTOPILOT_KINDS: SubagentKindId[] = [
+  'planReviewer',
+  'reviewer',
+  'triage',
+  'testWriter',
+  'worker',
 ];
 
 /** Saved settings (or nothing, or garbage) as valid settings; defaults fill gaps. */

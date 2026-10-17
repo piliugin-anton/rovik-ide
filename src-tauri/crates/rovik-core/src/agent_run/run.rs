@@ -398,6 +398,12 @@ impl Run {
             }
             false => None,
         };
+        if autopilot {
+            // The kinds the pipeline needs are on for this run (D17), at
+            // the effort its task started with.
+            let effort = stage.as_ref().map_or(config.autopilot.effort, |s| s.effort);
+            core.agents.set_autopilot(&dialog_id, effort);
+        }
         let plan_mode = mode == "plan"
             || stage
                 .as_ref()

@@ -8481,10 +8481,34 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   white-space: pre-wrap;
 }
 
-.subagent-settings .settings-section.disabled .subagent-kind-row,
-.subagent-settings .settings-section.disabled .model-with-fallbacks,
+.subagent-settings .settings-section.disabled .subagent-kind-row:not(.autopilot-used),
+.subagent-settings
+  .settings-section.disabled
+  .subagent-kind-row:not(.autopilot-used)
+  .model-with-fallbacks,
 .subagent-settings .settings-section.disabled .subagent-limits {
   opacity: 0.55;
+}
+
+/* A kind Autopilot uses: its switch is greyed out, its model and effort stay. */
+.subagent-settings
+  .settings-section.disabled
+  .subagent-kind-row.autopilot-used
+  > .setting-checkbox {
+  opacity: 0.55;
+}
+
+/* "Used by Autopilot" on the kinds Autopilot turns on for its chats. */
+.autopilot-kind-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--fg-muted);
+  vertical-align: 1px;
 }
 
 .subagent-kind-row {

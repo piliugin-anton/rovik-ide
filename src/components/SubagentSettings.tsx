@@ -12,7 +12,7 @@ import type { ModelSelection, Provider } from '../types';
 import ModelWithFallbacks from './ModelWithFallbacks';
 import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
-import { AUTOPILOT_EFFORTS } from '../lib/autopilotSettings';
+import { AUTOPILOT_EFFORTS, AUTOPILOT_KINDS } from '../lib/autopilotSettings';
 import {
   LIMIT_FIELDS,
   LIMITS,
@@ -110,7 +110,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
         </label>
       </section>
 
-      <section class="settings-section" classList={{ disabled: off() }}>
+      {/* Never greyed out: Autopilot's kinds set to "Default" use it (D17). */}
+      <section class="settings-section">
         <div class="settings-section-title">Default model</div>
         <p class="settings-hint">Used by every kind set to “Default”.</p>
         <ModelWithFallbacks
@@ -119,7 +120,6 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           value={s().defaultModel}
           specials={[{ value: 'chat' as const, label: 'Same as the chat' }]}
           fallbacks={s().defaultFallbacks}
-          disabled={off()}
           onChange={(value) => patch({ defaultModel: value })}
           onFallbacksChange={(defaultFallbacks) => patch({ defaultFallbacks })}
         />
@@ -156,6 +156,10 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             and its record shows them as skipped.
           </p>
         </Show>
+        <p class="settings-hint">
+          Autopilot turns on the kinds marked “Used by Autopilot” for its own chats, with the models
+          set for them below, even when “Use subagents” is off.
+        </p>
       </section>
 
       <section class="settings-section" classList={{ disabled: off() }}>
@@ -164,8 +168,11 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           {(kind) => {
             const k = () => s().kinds[kind.id];
             const others = () => otherProviders(props.providers, s(), kind.id, props.chatModel);
+            const autopilot = AUTOPILOT_KINDS.includes(kind.id);
+            // Its switch is for ordinary chats; Autopilot's use its model either way.
+            const locked = () => off() && !autopilot;
             return (
-              <div class="subagent-kind-row">
+              <div class="subagent-kind-row" classList={{ 'autopilot-used': autopilot }}>
                 <label class="setting-checkbox">
                   <input
                     type="checkbox"
@@ -175,6 +182,9 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   />
                   <span>
                     {kind.label}
+                    <Show when={autopilot}>
+                      <span class="autopilot-kind-tag">Used by Autopilot</span>
+                    </Show>
                     <span class="setting-checkbox-sub">
                       {kind.hint} {kind.when}
                     </span>
@@ -190,7 +200,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                       { value: 'chat', label: 'Same as the chat' },
                     ]}
                     fallbacks={k().fallbacks}
-                    disabled={off()}
+                    disabled={locked()}
                     onChange={(model: KindModel) => patchKind(kind.id, { model })}
                     onFallbacksChange={(fallbacks) => patchKind(kind.id, { fallbacks })}
                   />
@@ -198,7 +208,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                     class="settings-select"
                     aria-label={`${kind.label} reasoning effort`}
                     value={k().effort}
-                    disabled={off()}
+                    disabled={locked()}
                     onChange={(e) =>
                       patchKind(kind.id, { effort: e.currentTarget.value as Effort })
                     }
@@ -211,9 +221,10 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                       )}
                     </For>
                   </select>
-                  <Show when={k().enabled && others().length > 0}>
+                  <Show when={(k().enabled || autopilot) && others().length > 0}>
                     <p class="settings-hint setting-explain warning">
-                      Code will also be sent to {others().join(', ')}.
+                      {k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent to{' '}
+                      {others().join(', ')}.
                     </p>
                   </Show>
                 </div>

@@ -384,6 +384,38 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
     assert_eq!(h.events_of("runStarted").len(), 2);
 }
 
+/// A07 (D17): the user's subagents are off, and the task's plan is
+/// reviewed all the same: Autopilot turns on the kinds its stages need for
+/// its own runs. Its change review, on for it too, says why it didn't run.
+#[tokio::test]
+async fn a_task_has_its_reviewer_with_the_users_subagents_off() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, seen) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        task_script(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().subagents = Default::default();
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(records[1].summary.as_deref(), Some("Clean"));
+    let reviewed = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r["messages"].to_string().contains(PLAN_REVIEW));
+    assert!(reviewed, "the plan reviewer ran");
+    assert_eq!(records[5].summary.as_deref(), Some("Not reviewed"));
+    // The user's own settings stay as they were.
+    assert!(!h.core.agents.config().subagents.enabled);
+}
+
 /// A06: a Thorough task has Thorough's stages: Break and Pick, after the
 /// checks, recorded skipped until T builds them; every record carries the
 /// effort the task started with, which a change of the setting meanwhile

@@ -6,6 +6,9 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { createSignal } from 'solid-js';
 import SubagentSettings from './SubagentSettings';
+import { AUTOPILOT_KINDS } from '../lib/autopilotSettings';
+import { SUBAGENT_KINDS } from '../lib/subagentSettings';
+import type { Provider } from '../types';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
   type SubagentSettings as Settings,
@@ -141,4 +144,81 @@ test('subagent settings: Autopilot’s effort, Balanced by default, whatever the
   assert.deepEqual(saved[0], { ...DEFAULT_SUBAGENT_SETTINGS, autopilot: { effort: 'thorough' } });
   assert.equal(effortRadio(root, 'Thorough').checked, true);
   assert.ok(notBuilt(), 'what Thorough does today, said');
+});
+
+test('subagent settings: the kinds Autopilot uses say so, and where their code goes (D17)', () => {
+  const providers = [
+    {
+      id: 'a',
+      name: 'Alpha',
+      baseUrl: 'http://a',
+      apiKey: '',
+      stream: true,
+      models: [{ id: 'm', enabled: true }],
+    },
+    {
+      id: 'b',
+      name: 'Beta',
+      baseUrl: 'http://b',
+      apiKey: '',
+      stream: true,
+      models: [{ id: 'other', enabled: true }],
+    },
+  ] as Provider[];
+  const onBeta = { model: { providerId: 'b', modelId: 'other' } };
+  const kinds = DEFAULT_SUBAGENT_SETTINGS.kinds;
+  const settings: Settings = {
+    ...DEFAULT_SUBAGENT_SETTINGS,
+    kinds: {
+      ...kinds,
+      reviewer: { ...kinds.reviewer, ...onBeta },
+      scout: { ...kinds.scout, ...onBeta },
+    },
+  };
+  const root = container();
+  render(
+    () => (
+      <SubagentSettings
+        settings={settings}
+        providers={providers}
+        chatModel={{ providerId: 'a', modelId: 'm' }}
+        onChange={() => {}}
+      />
+    ),
+    root
+  );
+  const rows = [...root.querySelectorAll('.subagent-kind-row')];
+  assert.equal(rows.length, SUBAGENT_KINDS.length);
+  assert.deepEqual(
+    rows.map((r) => r.querySelector('.autopilot-kind-tag')?.textContent ?? null),
+    SUBAGENT_KINDS.map((k) => (AUTOPILOT_KINDS.includes(k.id) ? 'Used by Autopilot' : null))
+  );
+  const warning = (id: string) =>
+    rows[SUBAGENT_KINDS.findIndex((k) => k.id === id)].querySelector('.warning')?.textContent;
+  // Off on the page, and subagents off: Autopilot's chats still send it there.
+  assert.equal(warning('reviewer'), 'In Autopilot, code will also be sent to Beta.');
+  assert.equal(warning('scout'), undefined, 'nothing uses an off scout');
+  // Subagents off: a kind Autopilot uses keeps its model and effort to set,
+  // its switch (ordinary chats') doesn't; the others are greyed out whole.
+  const effort = (label: string) =>
+    root.querySelector(`select[aria-label="${label} reasoning effort"]`) as HTMLSelectElement;
+  const toggle = (id: string) =>
+    rows[SUBAGENT_KINDS.findIndex((k) => k.id === id)].querySelector(
+      'input[type="checkbox"]'
+    ) as HTMLInputElement;
+  assert.equal(effort('Change reviewer').disabled, false);
+  assert.equal(toggle('reviewer').disabled, true);
+  assert.equal(effort('Scout').disabled, true);
+  assert.equal(toggle('scout').disabled, true);
+  // The default model, which they fall back to, too.
+  const defaults = [...root.querySelectorAll('.settings-section')].find((section) =>
+    section.textContent?.startsWith('Default model')
+  )!;
+  assert.equal(defaults.classList.contains('disabled'), false);
+  const controls = [...defaults.querySelectorAll('select, button')] as HTMLButtonElement[];
+  assert.ok(controls.length > 0, 'its picker is there');
+  assert.ok(
+    controls.every((c) => !c.disabled),
+    'and on'
+  );
 });

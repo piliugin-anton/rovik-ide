@@ -152,6 +152,10 @@ struct RunControl {
     effort: watch::Sender<EffortPick>,
     /// A subagent's: what its block shows, for a page reloaded mid-run (P1.5).
     child: Option<ChildInfo>,
+    /// A lead's that carries out an Autopilot task's stage, with the task's
+    /// effort: it and its subagents follow the configuration with the
+    /// kinds the pipeline needs on (D17, `autopilot::subagent_config`).
+    autopilot: Option<autopilot::Effort>,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -239,20 +243,35 @@ impl AgentState {
 
     /// The configuration the chat's runs follow: the resolver's for it,
     /// where one is set, else the one configuration. A subagent's chat
-    /// follows its lead's.
+    /// follows its lead's; an Autopilot task's run has the kinds its
+    /// pipeline needs on (D17).
     pub fn config_for(&self, dialog_id: &str) -> AgentConfig {
-        let (resolver, lead) = {
+        let (resolver, lead, effort) = {
             let inner = self.lock();
             let mut chat = dialog_id;
             while let Some(parent) = inner.runs.get(chat).and_then(|r| r.parent.as_deref()) {
                 chat = parent;
             }
-            (inner.resolver.clone(), chat.to_string())
+            let effort = inner.runs.get(chat).and_then(|r| r.autopilot);
+            (inner.resolver.clone(), chat.to_string(), effort)
         };
         // Asked without the lock: the resolver may take locks of its own.
-        resolver
+        let mut config = resolver
             .and_then(|resolve| resolve(&lead))
-            .unwrap_or_else(|| self.config())
+            .unwrap_or_else(|| self.config());
+        if let Some(effort) = effort {
+            config.subagents = autopilot::subagent_config(&config.subagents, effort);
+        }
+        config
+    }
+
+    /// The chat's run carries out a stage of an Autopilot task of this
+    /// effort: from now on it and its subagents follow `config_for`'s
+    /// Autopilot configuration.
+    pub(super) fn set_autopilot(&self, dialog_id: &str, effort: autopilot::Effort) {
+        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
+            run.autopilot = Some(effort);
+        }
     }
 
     /// Runs follow the resolver's configuration from now on (a daemon's).
@@ -384,6 +403,7 @@ impl AgentState {
                 pause: pause.clone(),
                 effort: effort_tx,
                 child: None,
+                autopilot: None,
             },
         );
         Some(Controls {
