@@ -217,7 +217,7 @@ async fn a_result_that_ended_while_away_comes_in_on_connecting() {
     ])
     .await;
     // The run starts and ends while the app isn't connected.
-    let started = Request::AgentStart(start(&setup, &url, unattended()));
+    let started = Request::AgentStart(Box::new(start(&setup, &url, unattended())));
     setup
         .client
         .request::<Option<String>>(started)

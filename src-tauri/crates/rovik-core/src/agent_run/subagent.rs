@@ -184,7 +184,8 @@ pub enum Skip {
 
 /// What an IDE-started subagent's outcome gives: its report, or not.
 pub enum SubOutcome {
-    Report(SubResult),
+    /// Boxed: a report is far bigger than the other outcomes.
+    Report(Box<SubResult>),
     /// The user stopped it.
     Stopped,
     Skipped(Skip),
@@ -237,7 +238,7 @@ pub fn outcome_of(
                 text: r.text.clone(),
             })
         }
-        SubStatus::Done | SubStatus::Partial => SubOutcome::Report(r),
+        SubStatus::Done | SubStatus::Partial => SubOutcome::Report(Box::new(r)),
     }
 }
 

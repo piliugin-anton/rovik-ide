@@ -32,8 +32,10 @@ fn model(id: &str, base_url: &str, key: &str) -> ModelProfile {
 /// A configuration whose reviewer and scout, each of a provider of its
 /// own, carry keys (or not, with "").
 fn config(reviewer_key: &str, scout_key: &str) -> AgentConfig {
-    let mut config = AgentConfig::default();
-    config.approval_profiles = vec![model("other::reviewer", OTHER, reviewer_key)];
+    let mut config = AgentConfig {
+        approval_profiles: vec![model("other::reviewer", OTHER, reviewer_key)],
+        ..AgentConfig::default()
+    };
     config.subagents.kinds.insert(
         "scout".into(),
         KindConfig {

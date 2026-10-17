@@ -61,7 +61,7 @@ async fn a_wrong_token_is_refused() {
     let daemon = Daemon::start(&[]).await;
     // At the upgrade, and on /call.
     let upgrade = websocket(daemon.stream().await, "not-the-token").await;
-    let err = upgrade.err().expect("refused").to_string();
+    let err = upgrade.expect_err("refused").to_string();
     assert!(err.contains("401"), "{err}");
     let body = serde_json::to_vec(&Frame::Call {
         id: 1,
@@ -217,7 +217,9 @@ async fn big_calls_and_replies_go_through_post_call() {
     ])
     .await;
     let start = start_request(&url, &project, "y".repeat(3 << 20));
-    let started = daemon.post_call(2, Request::AgentStart(start)).await;
+    let started = daemon
+        .post_call(2, Request::AgentStart(Box::new(start)))
+        .await;
     let Frame::Reply {
         id: 2,
         res: Ok(Response::RunId(Some(_))),
@@ -263,7 +265,10 @@ async fn a_start_needs_same_machine_until_projects_are_carried() {
     let project = daemon.dir.0.join("project");
     let start = start_request("http://127.0.0.1:9", &project, "Hi".into());
     let mut session = daemon.session().await;
-    let fail = session.call(Request::AgentStart(start)).await.unwrap_err();
+    let fail = session
+        .call(Request::AgentStart(Box::new(start)))
+        .await
+        .unwrap_err();
     assert_eq!(fail.code, FailCode::BadRequest);
     assert!(fail.message.contains("--same-machine"), "{}", fail.message);
 }
@@ -348,7 +353,10 @@ async fn a_commands_temporary_files_stay_out_of_tmp() {
         config.permissions.allow_any_command = true;
     }
     let mut session = daemon.session().await;
-    session.call(Request::AgentStart(start)).await.unwrap();
+    session
+        .call(Request::AgentStart(Box::new(start)))
+        .await
+        .unwrap();
     let made = project.join("made.txt");
     let mut path = String::new();
     for _ in 0..600 {

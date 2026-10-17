@@ -750,14 +750,13 @@ const SYNTAX_NOTE_ERRORS: usize = 10;
 /// known, or when it didn't parse before either: a grammar that misreads
 /// a file, or code broken already, says nothing new about this write.
 pub fn syntax_note(path: &str, before: &Before, after: &str) -> Option<String> {
-    match before {
-        None => {}
+    let broken_before = match before {
+        None => false,
         Some(None) => return None,
-        Some(Some(text)) => {
-            if !crate::outline::syntax_errors(path, text)?.is_empty() {
-                return None;
-            }
-        }
+        Some(Some(text)) => !crate::outline::syntax_errors(path, text)?.is_empty(),
+    };
+    if broken_before {
+        return None;
     }
     let errors = crate::outline::syntax_errors(path, after)?;
     if errors.is_empty() {

@@ -18,7 +18,9 @@ use serde_json::Value;
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Request {
     // Agent: runs, and what they wait on.
-    AgentStart(StartRequest),
+    /// Boxed: a start is far bigger than any other request, and every
+    /// request would take its size.
+    AgentStart(Box<StartRequest>),
     AgentStop {
         dialog_id: String,
     },

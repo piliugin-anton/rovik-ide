@@ -669,12 +669,16 @@ pub async fn resume(core: &Core, request: &StartRequest) -> Result<Option<Option
     go_on(core, request).await
 }
 
+/// `go_on`'s future, boxed.
+pub(in crate::agent_run) type GoingOn<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Option<String>>, String>> + Send + 'a>>;
+
 /// `go_on`, boxed: the task chat's run that runs its candidates calls it
 /// (candidates.rs), and a run can't name its own future's type.
 pub(in crate::agent_run) fn go_on_boxed<'a>(
     core: &'a Core,
     request: &'a StartRequest,
-) -> Pin<Box<dyn Future<Output = Result<Option<Option<String>>, String>> + Send + 'a>> {
+) -> GoingOn<'a> {
     Box::pin(go_on(core, request))
 }
 

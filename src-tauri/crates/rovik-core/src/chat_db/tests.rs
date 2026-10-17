@@ -465,7 +465,7 @@ fn attachments_are_listed_in_order_and_collected_when_unreferenced() {
     add(&mut conn, "d", vec![message("u1", "user", "look"), shot]);
 
     let page = get_messages(&conn, "d", None, 10).unwrap();
-    assert_eq!(page.messages[1].attachments, [a.clone()]);
+    assert_eq!(page.messages[1].attachments, std::slice::from_ref(&a));
 
     // b is unreferenced and past its grace period; a is in use.
     assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 1);

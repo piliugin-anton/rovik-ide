@@ -106,7 +106,7 @@ impl Daemon {
             Request::Storage => Ok(Response::Storage(host::storage(self).await)),
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
-            Request::AgentStart(start) => self.start(computer, start).await,
+            Request::AgentStart(start) => self.start(computer, *start).await,
             // Only this computer's configuration changes (D16).
             Request::AgentConfigure(config) => self
                 .store
@@ -346,7 +346,7 @@ impl Daemon {
         }
         self.keep_project_settings(&mut start)?;
         self.ensure_chat(&start.dialog_id, None).await?;
-        rovik_core::dispatch(&self.core, Request::AgentStart(start)).await
+        rovik_core::dispatch(&self.core, Request::AgentStart(Box::new(start))).await
     }
 
     /// The project's settings the start brought, kept for the folder its

@@ -41,7 +41,9 @@ type Stream<S> = SplitStream<WebSocketStream<S>>;
 
 /// What the writer sends.
 enum Out {
-    Frame(Frame),
+    /// Boxed: a frame is far bigger than an event's text, and the queue
+    /// holds mostly events.
+    Frame(Box<Frame>),
     /// An event, already a frame's text.
     Event(Arc<Published>),
     /// The connection fell behind: close it, so the client subscribes again.
@@ -86,14 +88,14 @@ where
             .await
         }
     };
-    let welcome = Frame::Welcome {
+    let welcome = Out::Frame(Box::new(Frame::Welcome {
         protocol: PROTOCOL,
         min_protocol: MIN_PROTOCOL,
         daemon: format!("rovik-agentd {VERSION}"),
         boot: daemon.events.boot.clone(),
         features: FEATURES.iter().map(|f| f.to_string()).collect(),
-    };
-    if send(&mut sink, &Out::Frame(welcome)).await.is_err() {
+    }));
+    if send(&mut sink, &welcome).await.is_err() {
         return;
     }
     if protocol < MIN_PROTOCOL {
@@ -140,7 +142,8 @@ where
                             "The request failed on the server; its log says why.",
                         ))
                     });
-                    let _ = tx.send(Out::Frame(Frame::Reply { id, res })).await;
+                    let reply = Frame::Reply { id, res };
+                    let _ = tx.send(Out::Frame(Box::new(reply))).await;
                 });
             }
             Incoming::Frame(Frame::Subscribe { since }) => {
@@ -150,7 +153,7 @@ where
                 forwarder = Some(subscribe(&daemon, &computer, since, tx.clone()).await);
             }
             Incoming::Frame(Frame::Ping) => {
-                let _ = tx.send(Out::Frame(Frame::Pong)).await;
+                let _ = tx.send(Out::Frame(Box::new(Frame::Pong))).await;
             }
             Incoming::Frame(Frame::Pong) => {}
             // A request this daemon doesn't know, from a newer client.
@@ -160,7 +163,7 @@ where
                     "This daemon doesn't know the request.",
                 );
                 let reply = Frame::Reply { id, res: Err(fail) };
-                let _ = tx.send(Out::Frame(reply)).await;
+                let _ = tx.send(Out::Frame(Box::new(reply))).await;
             }
             Incoming::Frame(_) | Incoming::Unknown { id: None } => {
                 log::debug!("{computer} sent a frame the daemon doesn't take: ignored");
@@ -188,7 +191,7 @@ async fn subscribe(
         replayed: subscription.replay.len() as u64,
         complete: subscription.complete,
     };
-    let _ = tx.send(Out::Frame(subscribed)).await;
+    let _ = tx.send(Out::Frame(Box::new(subscribed))).await;
     for published in subscription.replay.drain(..) {
         let _ = tx.send(Out::Event(published)).await;
     }
@@ -226,6 +229,9 @@ fn plain(client: &str) -> String {
     text
 }
 
+// Each is matched as soon as it's read, and nearly all are frames: boxing
+// them would cost an allocation each and save nothing.
+#[allow(clippy::large_enum_variant)]
 enum Incoming {
     Frame(Frame),
     /// Text that isn't a frame this daemon knows; a call's id if it has one.

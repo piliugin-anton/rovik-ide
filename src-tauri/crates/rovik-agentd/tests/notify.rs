@@ -34,7 +34,7 @@ async fn started(daemon: &Daemon, first: Reply) {
     let review = vec![Reply::Text("## Findings\n\nNone.")];
     let (url, _) = task_model(first, review, vec![nothing_to_test()]).await;
     let reply = daemon
-        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .post_call(1, Request::AgentStart(Box::new(task_start(&url, &project))))
         .await;
     assert!(format!("{reply:?}").contains("RunId(Some("), "{reply:?}");
 }

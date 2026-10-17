@@ -123,7 +123,7 @@ fn worktree(setup: &Setup) -> PathBuf {
 /// Starts a run of the chat with a later message, and waits for its end.
 async fn run(setup: &Setup, replies: Vec<Reply>) {
     let (url, _) = model(replies).await;
-    let start = Request::AgentStart(message(setup, &url, "later"));
+    let start = Request::AgentStart(Box::new(message(setup, &url, "later")));
     let started: Option<String> = setup.client.request(start).await.unwrap();
     assert!(started.is_some());
     ended(&setup.client).await;
@@ -208,7 +208,7 @@ async fn a_released_chat_is_only_read() {
 
     // Not while its run goes on.
     let (url, _) = model(vec![Reply::Hang(None)]).await;
-    let start = Request::AgentStart(message(&setup, &url, "later"));
+    let start = Request::AgentStart(Box::new(message(&setup, &url, "later")));
     setup.client.call(start).await.unwrap();
     let busy = release(&setup.client, Some("move-1")).await.unwrap_err();
     assert_eq!(busy.code, FailCode::Busy, "{busy}");
@@ -238,7 +238,7 @@ async fn a_released_chat_is_only_read() {
             dialog_id: CHAT.into(),
             title: "Changed".into(),
         },
-        Request::AgentStart(message(&setup, &url, "after")),
+        Request::AgentStart(Box::new(message(&setup, &url, "after"))),
         Request::WorkSync {
             dialog_id: CHAT.into(),
             project: PROJECT.into(),
@@ -548,7 +548,11 @@ async fn a_file_the_server_lacks_doesnt_stop_the_import() {
     let (url, seen) = model(vec![Reply::Text("Noted.")]).await;
     let mut start = message(&setup, &url, "later");
     start.profile.vision = true;
-    setup.client.call(Request::AgentStart(start)).await.unwrap();
+    setup
+        .client
+        .call(Request::AgentStart(Box::new(start)))
+        .await
+        .unwrap();
     ended(&setup.client).await;
     let sent = seen.lock().unwrap()[0].to_string();
     assert!(sent.contains("no longer shown"), "{sent}");

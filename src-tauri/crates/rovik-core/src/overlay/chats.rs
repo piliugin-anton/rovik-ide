@@ -353,7 +353,7 @@ pub fn is_chat_view(path: &Path) -> bool {
 pub fn open(
     dialog_id: &str,
     project: &Path,
-    on_warn: Box<dyn Fn(u64, u64) + Send + Sync>,
+    on_warn: super::fs::OnWarn,
 ) -> Result<Arc<ChatOverlay>, String> {
     // One spelling of the folder (symlinks, `/private` on macOS, case on
     // Windows): the watcher and later runs may use another.
@@ -1285,9 +1285,12 @@ pub struct PeerConflict {
 type PeerRows = HashMap<String, BTreeMap<String, (BTreeSet<String>, bool)>>;
 static PEERS: LazyLock<Mutex<PeerRows>> = LazyLock::new(Default::default);
 
+/// Each open chat's generation, by its id.
+type Generations = Vec<(String, u64)>;
+
 /// Per project, each open chat's generation when its chats were last
 /// compared.
-static LAST_COMPARED: LazyLock<Mutex<HashMap<PathBuf, Vec<(String, u64)>>>> =
+static LAST_COMPARED: LazyLock<Mutex<HashMap<PathBuf, Generations>>> =
     LazyLock::new(Default::default);
 
 /// Which (path, other chat) pairs a chat's model already heard about.
@@ -2264,13 +2267,16 @@ fn current_version(dialog_id: &str, path: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// A chat's conflicted files as the resolver showed them: the project's
+/// version of each, by path (None: not in the project then).
+type ShownFiles = HashMap<String, Option<Vec<u8>>>;
+
 /// The project's version of a conflicted file as the resolver last showed
 /// it, per chat and path (None: not in the project then). A resolution is
 /// made against it, so it's what the resolved file is merged against when
 /// landing: if the project changed the file again meanwhile, that change
 /// is merged in or reported as a new conflict, not dropped.
-static SHOWN: LazyLock<Mutex<HashMap<String, HashMap<String, Option<Vec<u8>>>>>> =
-    LazyLock::new(Default::default);
+static SHOWN: LazyLock<Mutex<HashMap<String, ShownFiles>>> = LazyLock::new(Default::default);
 
 fn note_shown(dialog_id: &str, path: &str, project: Option<&[u8]>) {
     SHOWN
@@ -2673,8 +2679,11 @@ fn note_written(dialog_id: &str, path: &str, bytes: &[u8]) {
     }
 }
 
+/// A file's two kept versions: the chat's, and its base (None: none).
+type KeptVersions = (Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// The kept version of `path`, if there is one: (the chat's, its base).
-fn kept_versions(dialog_id: &str, path: &str) -> Option<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+fn kept_versions(dialog_id: &str, path: &str) -> Option<KeptVersions> {
     let dir = pre_merge_dir(dialog_id)?;
     let entry = load_pre_merge(dialog_id).files.remove(path)?;
     let read = |name: Option<String>| name.and_then(|n| std::fs::read(dir.join(n)).ok());

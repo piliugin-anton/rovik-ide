@@ -1324,12 +1324,12 @@ impl Run {
                 .score_and_take(&records, &row, &mut pick, &pick_row)
                 .await?
             {
-                Taken::Stopped => {
+                PickWork::Stopped => {
                     pick.status = "stopped".into();
                     save_row(&core, &main, &pick_row, "pick", json!(pick)).await?;
                     return Ok("stopped".into());
                 }
-                Taken::Failed(why) => {
+                PickWork::Failed(why) => {
                     pick.status = "failed".into();
                     pick.reason = Some(why.clone());
                     save_row(&core, &main, &pick_row, "pick", json!(pick)).await?;
@@ -1338,7 +1338,7 @@ impl Run {
                         .await?;
                     return Ok("error".into());
                 }
-                Taken::Taken => {}
+                PickWork::Taken => {}
             }
         }
         // The losers' copies go; their diffs are in the record.
@@ -1407,7 +1407,7 @@ impl Run {
         row: &CandidatesRecord,
         pick: &mut PickRecord,
         pick_row: &str,
-    ) -> Result<Taken, String> {
+    ) -> Result<PickWork, String> {
         let (core, main) = (self.core.clone(), self.dialog_id.clone());
         let task = records[0].record.task.clone();
         let copies = copies_here(&core);
@@ -1417,7 +1417,7 @@ impl Run {
         let mut reviews = Vec::new();
         for c in &row.candidates {
             if self.stopped() {
-                return Ok(Taken::Stopped);
+                return Ok(PickWork::Stopped);
             }
             let started = !task_records(&core, &c.chat, &task).await?.is_empty();
             let folder = match started {
@@ -1433,7 +1433,7 @@ impl Run {
                 Some(_) => match copies.change(main.clone(), c.chat.clone()).await {
                     Ok(change) => change,
                     Err(why) => {
-                        return Ok(Taken::Failed(format!(
+                        return Ok(PickWork::Failed(format!(
                             "Candidate {}'s change couldn't be read: {why}",
                             c.letter
                         )))
@@ -1504,7 +1504,7 @@ impl Run {
                         .iter()
                         .position(|s| s.letter == letter)
                         .unwrap_or(tied[0]),
-                    Ok(None) => return Ok(Taken::Stopped),
+                    Ok(None) => return Ok(PickWork::Stopped),
                     Err(why) => {
                         pick.why = Some(format!("{why}; the first candidate is taken"));
                         tied[0]
@@ -1513,7 +1513,7 @@ impl Run {
             }
         };
         if self.stopped() {
-            return Ok(Taken::Stopped);
+            return Ok(PickWork::Stopped);
         }
         // The losers' diffs, kept.
         for (i, s) in pick.candidates.iter_mut().enumerate() {
@@ -1529,7 +1529,7 @@ impl Run {
         save_row(&core, &main, pick_row, "pick", json!(pick)).await?;
         if winner.score.changed {
             if let Err(why) = copies.adopt(main.clone(), winner.chat.clone()).await {
-                return Ok(Taken::Failed(format!(
+                return Ok(PickWork::Failed(format!(
                     "Candidate {}'s change couldn't be taken: {why}",
                     winner.letter
                 )));
@@ -1539,7 +1539,7 @@ impl Run {
         }
         pick.adopted = true;
         save_row(&core, &main, pick_row, "pick", json!(pick)).await?;
-        Ok(Taken::Taken)
+        Ok(PickWork::Taken)
     }
 
     /// Whether `file`'s tests pass alone in a candidate's copy (`root`),
@@ -1681,8 +1681,9 @@ impl Run {
     }
 }
 
-/// How the pick's work went.
-enum Taken {
+/// How the pick's work went: the winner's change taken, a Stop, or why
+/// it failed.
+enum PickWork {
     Taken,
     Stopped,
     Failed(String),

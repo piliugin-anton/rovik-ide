@@ -42,7 +42,7 @@ async fn status_lists_each_chat_with_its_task() {
     let review = vec![Reply::Text("## Findings\n\nNone.")];
     let (url, _) = task_model(look(), review, vec![nothing_to_test()]).await;
     let reply = daemon
-        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .post_call(1, Request::AgentStart(Box::new(task_start(&url, &project))))
         .await;
     assert!(format!("{reply:?}").contains("RunId(Some("), "{reply:?}");
     assert_eq!(until_delivered(&daemon).await, delivered_whole());

@@ -370,22 +370,22 @@ fn every_request_round_trips() {
     covers(
         "t",
         &[
-            Request::AgentStart(start()),
-            Request::AgentStart(StartRequest {
+            Request::AgentStart(Box::new(start())),
+            Request::AgentStart(Box::new(StartRequest {
                 start: StartKind::RunChecks {
                     record_id: "r".into(),
                 },
                 options: None,
                 config: None,
                 ..start()
-            }),
-            Request::AgentStart(StartRequest {
+            })),
+            Request::AgentStart(Box::new(StartRequest {
                 start: StartKind::CheckMerged {
                     files: vec!["src/main.rs".into()],
                     diffs: vec!["@@ -1 +1 @@\n-fn main() {}\n+fn main() { run() }".into()],
                 },
                 ..start()
-            }),
+            })),
             Request::AgentStop {
                 dialog_id: "d".into(),
             },
@@ -977,7 +977,7 @@ fn a_requests_fields_are_its_commands_arguments() {
         json,
         json!({ "dialogId": "d", "toolCallId": "c", "decision": { "kind": "allow" } })
     );
-    let start: Value = serde_json::to_value(Request::AgentStart(start())).unwrap();
+    let start: Value = serde_json::to_value(Request::AgentStart(Box::new(start()))).unwrap();
     assert_eq!(start["t"], "agentStart");
     assert_eq!(
         start["dialogId"], "d",

@@ -36,6 +36,9 @@ pub struct Notice {
     pub pr: Option<String>,
 }
 
+/// A task report's branch and pull request, where it went.
+type BranchAndPr = (Option<String>, Option<String>);
+
 pub struct Notifier {
     store: Arc<Store>,
     client: reqwest::Client,
@@ -43,7 +46,7 @@ pub struct Notifier {
     /// brings one again (its spend updated, a resume) tells nobody twice.
     told: Mutex<HashSet<String>>,
     /// Each chat's task report's branch and pull request, as it went by.
-    pushed: Mutex<HashMap<String, (Option<String>, Option<String>)>>,
+    pushed: Mutex<HashMap<String, BranchAndPr>>,
 }
 
 impl Notifier {

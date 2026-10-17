@@ -1263,7 +1263,7 @@ pub fn load_messages_in(
         .filter(|m| {
             !(m.role == "assistant"
                 && m.content.trim().is_empty()
-                && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
+                && m.tool_calls.as_ref().is_none_or(|t| t.is_empty()))
         })
         .map(|m| {
             // The stored content is what was typed (or its preview, for a

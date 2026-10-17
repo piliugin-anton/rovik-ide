@@ -230,7 +230,7 @@ fn backup_if_due(conn: &Connection, data_dir: &Path) -> Result<(), String> {
     let now = store::now_ms();
     if backups
         .first()
-        .map_or(true, |(stamp, _)| now - stamp >= BACKUP_EVERY_MS)
+        .is_none_or(|(stamp, _)| now - stamp >= BACKUP_EVERY_MS)
     {
         let target = dir.join(format!("chats-{now}.db"));
         conn.execute("VACUUM INTO ?1", [target.to_string_lossy().as_ref()])

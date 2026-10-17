@@ -1903,7 +1903,7 @@ impl Run {
                     self.log_tags(),
                     crate::agent::run_chat(
                         &self.core.db,
-                        &vfs,
+                        vfs,
                         params,
                         &mut cancel_rx,
                         &mut on_event,

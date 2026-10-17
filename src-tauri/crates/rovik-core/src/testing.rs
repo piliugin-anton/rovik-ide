@@ -232,8 +232,9 @@ pub async fn model_routed(
         replies.iter().map(|r| (r.pieces(), r.hangs())).collect()
     };
     let markers: Vec<&'static str> = routes.iter().map(|(m, _)| *m).collect();
-    let mut scripts: Vec<Vec<(Vec<(Duration, String)>, bool)>> =
-        routes.iter().map(|(_, r)| script(r)).collect();
+    // Each route's replies, each in its pieces, and whether it hangs.
+    type Script = Vec<(Vec<(Duration, String)>, bool)>;
+    let mut scripts: Vec<Script> = routes.iter().map(|(_, r)| script(r)).collect();
     scripts.push(script(&default));
     let next = Arc::new(Mutex::new(vec![0usize; scripts.len()]));
     let scripts = Arc::new(scripts);

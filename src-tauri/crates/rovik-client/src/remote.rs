@@ -565,7 +565,7 @@ impl Remote {
     /// out when the host has it already (K50).
     pub async fn start(&self, mut request: StartRequest) -> Result<Response, Fail> {
         let Some(host) = self.host_of(&request.dialog_id) else {
-            return rovik_core::dispatch(&self.core, Request::AgentStart(request)).await;
+            return rovik_core::dispatch(&self.core, Request::AgentStart(Box::new(request))).await;
         };
         if self.is_moving_back(&request.dialog_id) {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
@@ -606,7 +606,7 @@ impl Remote {
                     .await?;
             }
         }
-        client.call(Request::AgentStart(request)).await
+        client.call(Request::AgentStart(Box::new(request))).await
     }
 
     /// A start other than `Send` sends the request's text only when it

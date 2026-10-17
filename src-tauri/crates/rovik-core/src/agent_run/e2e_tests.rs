@@ -45,7 +45,7 @@ where
 }
 
 async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
-    through(core, Request::AgentStart(request)).await
+    through(core, Request::AgentStart(Box::new(request))).await
 }
 
 async fn agent_stop(core: &Core, dialog_id: String) -> bool {
@@ -655,7 +655,10 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
     assert_eq!(h.file("a.txt").as_deref(), Some("uno\ntwo\n"));
 }
 
+/// The workload queue is the process's: its lock keeps the tests that
+/// set it up apart, for the whole test.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
     let _serial = crate::workload::queue::test_support::SERIAL
         .lock()

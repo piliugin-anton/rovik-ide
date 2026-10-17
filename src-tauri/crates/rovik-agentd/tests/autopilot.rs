@@ -34,7 +34,9 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
     )
     .await;
     let start = task_start(&url, &project);
-    let reply = daemon.post_call(1, Request::AgentStart(start)).await;
+    let reply = daemon
+        .post_call(1, Request::AgentStart(Box::new(start)))
+        .await;
     assert!(
         matches!(
             reply,
@@ -91,7 +93,7 @@ async fn a_task_whose_client_goes_away_runs_to_its_delivery() {
     let (url, _) = task_model(look(), review, vec![nothing_to_test()]).await;
     let mut session = daemon.session().await;
     let started = session
-        .call(Request::AgentStart(task_start(&url, &project)))
+        .call(Request::AgentStart(Box::new(task_start(&url, &project))))
         .await;
     assert!(
         matches!(started, Ok(Response::RunId(Some(_)))),
@@ -150,7 +152,7 @@ async fn a_task_killed_while_its_plan_is_reviewed_goes_on() {
     let review = vec![Reply::Hang(None), Reply::Text("## Findings\n\nNone.")];
     let (url, seen) = task_model(look(), review, vec![nothing_to_test()]).await;
     let reply = daemon
-        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .post_call(1, Request::AgentStart(Box::new(task_start(&url, &project))))
         .await;
     assert!(
         matches!(
@@ -202,7 +204,7 @@ async fn what_a_run_spent_before_a_kill_stays_the_tasks() {
     );
     let (url, seen) = task_model(costing, review, vec![nothing_to_test()]).await;
     let reply = daemon
-        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .post_call(1, Request::AgentStart(Box::new(task_start(&url, &project))))
         .await;
     assert!(
         matches!(
@@ -258,7 +260,7 @@ async fn a_task_killed_between_two_stages_goes_on() {
     let tests = vec![Reply::Hang(None), nothing_to_test()];
     let (url, seen) = task_model(look(), review, tests).await;
     let reply = daemon
-        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .post_call(1, Request::AgentStart(Box::new(task_start(&url, &project))))
         .await;
     assert!(
         matches!(
@@ -318,7 +320,7 @@ async fn a_rate_limited_task_goes_on_once_the_limit_resets() {
     let review = vec![Reply::Text("## Findings\n\nNone.")];
     let (url, seen) = task_model_after(limited, look(), review, vec![nothing_to_test()]).await;
     let reply = daemon
-        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .post_call(1, Request::AgentStart(Box::new(task_start(&url, &project))))
         .await;
     assert!(format!("{reply:?}").contains("RunId(Some("), "{reply:?}");
     let found = until_delivered(&daemon).await;

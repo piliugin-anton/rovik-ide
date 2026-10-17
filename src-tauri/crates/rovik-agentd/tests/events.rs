@@ -30,7 +30,9 @@ async fn a_computers_clients_get_its_events_in_order_and_another_none() {
 
     // Started from elsewhere: a session waiting for a reply drops the rest.
     let start = start_request(&url, &project, "Hi".into());
-    let started = daemon.post_call(1, Request::AgentStart(start)).await;
+    let started = daemon
+        .post_call(1, Request::AgentStart(Box::new(start)))
+        .await;
     assert!(
         matches!(
             started,
@@ -88,7 +90,9 @@ async fn a_2_mb_row_and_a_2_mb_approval_each_send_resync() {
     let mut client = daemon.session().await;
     client.subscribe(None).await;
     let start = start_request(&url, &project, "y".repeat(2 << 20));
-    daemon.post_call(1, Request::AgentStart(start)).await;
+    daemon
+        .post_call(1, Request::AgentStart(Box::new(start)))
+        .await;
 
     // Up to the approval's place: a run that waits sends nothing after it.
     let mut frames = Vec::new();
@@ -162,7 +166,7 @@ async fn a_client_back_with_its_since_gets_the_gap() {
     client.subscribe(None).await;
     let start = start_request(&url, &project, "First".into());
     daemon
-        .post_call(1, Request::AgentStart(start.clone()))
+        .post_call(1, Request::AgentStart(Box::new(start.clone())))
         .await;
     let first = client.events_until(ended).await;
     let since = (client.boot(), first.last().unwrap().0);
@@ -179,7 +183,9 @@ async fn a_client_back_with_its_since_gets_the_gap() {
             attachments: Vec::new(),
         },
     };
-    away.call(Request::AgentStart(second)).await.unwrap();
+    away.call(Request::AgentStart(Box::new(second)))
+        .await
+        .unwrap();
     for _ in 0..400 {
         match away.call(Request::AgentStatus).await {
             Ok(Response::AgentStatus(s)) if s.runs.is_empty() => break,

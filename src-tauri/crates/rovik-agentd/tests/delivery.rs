@@ -105,7 +105,7 @@ async fn delivered(setup: &Setup) -> (Vec<(String, String)>, Value) {
     let start = task_start(&url, &setup.project);
     let started = setup
         .client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await;
     assert!(started.unwrap().is_some());
     let found = until_delivered(&setup.daemon).await;

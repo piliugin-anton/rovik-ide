@@ -145,7 +145,7 @@ async fn a_result_is_the_worktree_without_what_is_ignored() {
     assert_eq!(result.pending, pending_reason("unknown"));
 
     let results: Vec<ChatResult> = setup.client.request(Request::WorkResults).await.unwrap();
-    assert_eq!(results, [result.clone()]);
+    assert_eq!(results, std::slice::from_ref(&result));
     let again: ChatResult = (setup.client)
         .request(Request::WorkResult {
             dialog_id: CHAT.into(),
@@ -178,7 +178,7 @@ async fn a_runs_end_brings_its_result() {
     let first = start(&setup, &url, unattended());
     setup
         .client
-        .request::<Option<String>>(Request::AgentStart(first))
+        .request::<Option<String>>(Request::AgentStart(Box::new(first)))
         .await
         .unwrap();
     let (result, outcome) = next_result(&mut heard).await;
@@ -200,7 +200,7 @@ async fn a_runs_end_brings_its_result() {
     };
     setup
         .client
-        .request::<Option<String>>(Request::AgentStart(second))
+        .request::<Option<String>>(Request::AgentStart(Box::new(second)))
         .await
         .unwrap();
     let stop = Request::AgentStop {
@@ -286,7 +286,7 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
     request.mode = Some("autopilot".into());
     setup
         .client
-        .request::<Option<String>>(Request::AgentStart(request))
+        .request::<Option<String>>(Request::AgentStart(Box::new(request)))
         .await
         .unwrap();
     let (planned, outcome) = next_result(&mut heard).await;

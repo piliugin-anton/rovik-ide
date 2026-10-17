@@ -175,9 +175,9 @@ impl Run {
         // CLM mode: the agent's context folder.
         let vfs = &self.core.vfs;
         let clm =
-            self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(&vfs).is_ok();
+            self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(vfs).is_ok();
         let context_dir = if clm {
-            crate::clm::real_paths(&vfs, &self.dialog_id).map(|(_, dir)| dir)
+            crate::clm::real_paths(vfs, &self.dialog_id).map(|(_, dir)| dir)
         } else {
             None
         };
@@ -540,11 +540,8 @@ impl Run {
                 // The previous checklist is what was current before this
                 // call: the history up to the message holding it.
                 if clm && !items.is_empty() && !content.starts_with("Error") {
-                    let previous: Option<Vec<plan::TodoItem>> = self
-                        .recent()
-                        .await
-                        .ok()
-                        .map(|recent| {
+                    let previous: Option<Vec<plan::TodoItem>> =
+                        self.recent().await.ok().and_then(|recent| {
                             let cut = recent
                                 .iter()
                                 .position(|m| {
@@ -554,8 +551,7 @@ impl Run {
                                 })
                                 .unwrap_or(recent.len());
                             plan::current_checklist(&recent[..cut]).map(|c| c.items)
-                        })
-                        .flatten();
+                        });
                     if let Some(before) = previous {
                         let settled_before = |title: &str| {
                             before
@@ -909,7 +905,7 @@ impl Run {
             // is a context edit for the CLM pressure (run.rs).
             if clm {
                 let vfs = &self.core.vfs;
-                if let Some((file, _)) = crate::clm::real_paths(&vfs, &self.dialog_id) {
+                if let Some((file, _)) = crate::clm::real_paths(vfs, &self.dialog_id) {
                     let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
                     if (command.contains(&file) || command.contains("LIVE_CONTEXT.md"))
                         && permissions::command_modifies_files(&command)
@@ -979,7 +975,7 @@ impl Run {
             "read" => {
                 crate::clm::tool_read(
                     &db,
-                    &vfs,
+                    vfs,
                     &self.dialog_id,
                     path,
                     tools::line_arg(args.get("start_line")),
@@ -992,7 +988,7 @@ impl Run {
                     (None, _) => return "Error: \"old_text\" must be a string.".into(),
                     (_, None) => return "Error: \"content\" is required.".into(),
                     (Some(old), Some(new)) => crate::clm::tool_edit(
-                        &vfs,
+                        vfs,
                         &self.dialog_id,
                         path,
                         old,
@@ -1004,11 +1000,11 @@ impl Run {
             }
             "write" => match text("content") {
                 None => return "Error: \"content\" is required.".into(),
-                Some(content) => crate::clm::tool_write(&vfs, &self.dialog_id, path, content),
+                Some(content) => crate::clm::tool_write(vfs, &self.dialog_id, path, content),
             },
-            "list_dir" => crate::clm::tool_list(&db, &vfs, &self.dialog_id, path).await,
+            "list_dir" => crate::clm::tool_list(&db, vfs, &self.dialog_id, path).await,
             "restore_context" => {
-                crate::clm::tool_restore(&db, &vfs, &self.dialog_id, args.get("revision")).await
+                crate::clm::tool_restore(&db, vfs, &self.dialog_id, args.get("revision")).await
             }
             _ => return format!("Error: {name} can't be used on your context folder."),
         };
@@ -1359,27 +1355,20 @@ impl Run {
             .await;
         match self.merge_into_current(tc, again) {
             Ok(auth) => auth,
-            Err(auth) => {
-                let path = auth
-                    .reviewed
-                    .as_ref()
-                    .map_or("the file", |r| r.rel_path.as_str())
-                    .to_string();
-                refused(format!(
-                    "Error: {path} kept changing while this edit waited for approval, and the changes overlap; the file was not modified. Read it again and redo the edit."
-                ))
-            }
+            Err(path) => refused(format!(
+                "Error: {path} kept changing while this edit waited for approval, and the changes overlap; the file was not modified. Read it again and redo the edit."
+            )),
         }
     }
 
     /// `Ok`: the call can run as authorized (adjusted to the merge when the
-    /// file changed). `Err`: the approved changes overlap the file's new
-    /// changes; it needs another review.
+    /// file changed). `Err` (the file's path): the approved changes overlap
+    /// the file's new changes; it needs another review.
     fn merge_into_current(
         &self,
         tc: &ToolCall,
         mut auth: Authorized,
-    ) -> Result<Authorized, Authorized> {
+    ) -> Result<Authorized, String> {
         let Some(reviewed) = auth.reviewed.clone() else {
             return Ok(auth);
         };
@@ -1408,7 +1397,7 @@ impl Run {
         // made binary): nothing to merge into, and writing over it would
         // lose that change. Another review.
         let Ok(now) = String::from_utf8(now) else {
-            return Err(auth);
+            return Err(reviewed.rel_path);
         };
         if now == reviewed.current {
             self.seen.record(abs, now.as_bytes());
@@ -1429,7 +1418,7 @@ impl Run {
                 });
                 Ok(auth)
             }
-            Ok(crate::merge::Merged::Conflict(_)) | Err(_) => Err(auth),
+            Ok(crate::merge::Merged::Conflict(_)) | Err(_) => Err(reviewed.rel_path),
         }
     }
 

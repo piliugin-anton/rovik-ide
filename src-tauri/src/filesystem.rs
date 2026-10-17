@@ -24,7 +24,7 @@ fn file_identity(path: &Path) -> Option<String> {
     #[cfg(unix)]
     {
         let meta = fs::symlink_metadata(path).ok()?;
-        return Some(format!("u:{}:{}", meta.dev(), meta.ino()));
+        Some(format!("u:{}:{}", meta.dev(), meta.ino()))
     }
     #[cfg(windows)]
     {
@@ -463,18 +463,14 @@ pub fn start_file_watch(
 
     // One unreadable subdir (a database owned by another user, a FUSE mount
     // with restricted permissions) must not fail the whole project's watch.
-    match watch_recursive_lenient(&mut watcher, &root) {
-        Ok(skipped) => {
-            if !skipped.is_empty() {
-                eprintln!(
-                    "file watch: watching {:?} without {} unreadable dirs (e.g. {:?})",
-                    root,
-                    skipped.len(),
-                    skipped.first()
-                );
-            }
-        }
-        Err(e) => return Err(e),
+    let skipped = watch_recursive_lenient(&mut watcher, &root)?;
+    if !skipped.is_empty() {
+        eprintln!(
+            "file watch: watching {:?} without {} unreadable dirs (e.g. {:?})",
+            root,
+            skipped.len(),
+            skipped.first()
+        );
     }
 
     println!("Watching: {:?}", root);
@@ -1081,7 +1077,7 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
             }
             return fs::rename(from, to);
         }
-        return Err(err);
+        Err(err)
     }
     #[cfg(windows)]
     {
@@ -1588,8 +1584,8 @@ pub fn load_last_project(app: AppHandle) -> Result<String, String> {
             expanded_paths: None,
             terminal_collapsed: true,
         };
-        return Ok(serde_json::to_string(&defaults)
-            .map_err(|e| format!("Failed to serialize project data defaults: {e}"))?);
+        return serde_json::to_string(&defaults)
+            .map_err(|e| format!("Failed to serialize project data defaults: {e}"));
     }
     fs::read_to_string(&path).map_err(|e| format!("Failed to read last project: {e}"))
 }
@@ -1866,7 +1862,7 @@ mod rename_tests {
         assert!(is_at_or_under(root, root));
         assert!(!is_at_or_under(&root.join("other"), &root.join("sub")));
         // A sibling whose name merely shares a prefix is not a descendant.
-        assert!(!is_at_or_under(&Path::new("/proj2/x"), root));
+        assert!(!is_at_or_under(Path::new("/proj2/x"), root));
     }
 
     #[test]

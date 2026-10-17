@@ -131,7 +131,7 @@ async fn two_candidates_implement_in_worktrees_beside_the_chats() {
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
         .client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await;
     assert!(started.unwrap().is_some());
     let found = until_delivered(&setup.daemon).await;
@@ -335,7 +335,7 @@ async fn each_candidates_worktree_gets_its_installs_before_it_starts() {
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
         .client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await;
     assert!(started.unwrap().is_some());
     let found = until_delivered(&setup.daemon).await;
@@ -400,7 +400,7 @@ async fn a_candidate_cut_by_a_kill_goes_on_in_its_worktree() {
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
         .client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await;
     assert!(started.unwrap().is_some());
     // Killed once the first candidate's reply has a checkpoint stored.
@@ -477,7 +477,7 @@ async fn a_candidate_paused_by_the_servers_stop_goes_on_after_it_starts_again() 
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
     let started = setup
         .client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await;
     assert!(started.unwrap().is_some());
     // Stopped once the first candidate's command runs.
@@ -548,7 +548,9 @@ async fn a_chat_without_a_worktree_has_one_implementer_and_says_why() {
     let url = thorough_model(implementation(&[])).await;
     let mut start = task_start(&url, &folder);
     start.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
-    let reply = daemon.post_call(1, Request::AgentStart(start)).await;
+    let reply = daemon
+        .post_call(1, Request::AgentStart(Box::new(start)))
+        .await;
     assert!(
         matches!(
             reply,

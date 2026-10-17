@@ -111,7 +111,10 @@ async fn calls_and_events_go_through_the_real_daemon() {
 
     let (url, _) = model(vec![Reply::Text("Hello there.")]).await;
     let start = start_request(&url, &project, "Hi".into());
-    let run_id: Option<String> = client.request(Request::AgentStart(start)).await.unwrap();
+    let run_id: Option<String> = client
+        .request(Request::AgentStart(Box::new(start)))
+        .await
+        .unwrap();
     let events = heard.until(run_ended("chat-1")).await;
     let started = events.iter().filter_map(agent_event).any(
         |e| matches!(e, AgentEvent::RunStarted { run_id: id, .. } if Some(id) == run_id.as_ref()),
@@ -153,7 +156,7 @@ async fn a_daemon_started_again_under_the_client_is_reconnected_and_caught_up() 
         ..AgentConfig::default()
     });
     client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await
         .unwrap();
     until("the command ran", || {
@@ -218,7 +221,7 @@ async fn a_reply_too_big_for_a_frame_comes_through_post_call_while_events_keep_c
     heard.until(subscribed).await;
     let start = start_request(&url, &project, "Rewrite it".into());
     client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await
         .unwrap();
     // The edit waits for the user, with an approval too big for a frame.
@@ -247,7 +250,7 @@ async fn a_reply_too_big_for_a_frame_comes_through_post_call_while_events_keep_c
         },
     };
     client
-        .request::<Option<String>>(Request::AgentStart(other))
+        .request::<Option<String>>(Request::AgentStart(Box::new(other)))
         .await
         .unwrap();
     let status: AgentStatus = client.request(Request::AgentStatus).await.unwrap();

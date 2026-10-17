@@ -871,7 +871,7 @@ pub fn edit_file(
         crate::file_guard::update_for_chat(&target, seen, apply)?
     };
     Ok(EditOutcome {
-        summary: crate::edit_file::describe_edit(&path, &span),
+        summary: crate::edit_file::describe_edit(path, &span),
         content,
     })
 }
@@ -900,7 +900,7 @@ pub fn write_file(
         .ok()
         .map(|bytes| String::from_utf8(bytes).ok());
     if let Some(Some(current)) = &before {
-        if let Some(error) = empty_overwrite_error(&path, current, &content) {
+        if let Some(error) = empty_overwrite_error(path, current, content) {
             return Err(error);
         }
     }

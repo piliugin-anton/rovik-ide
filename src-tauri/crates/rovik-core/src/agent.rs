@@ -504,8 +504,10 @@ pub mod effort_value {
     use std::collections::HashMap;
     use std::sync::{LazyLock, Mutex};
 
-    static TAKEN: LazyLock<Mutex<HashMap<(String, String, String), String>>> =
-        LazyLock::new(Default::default);
+    /// The level taken in place of another, by (url, model, level asked).
+    type Taken = HashMap<(String, String, String), String>;
+
+    static TAKEN: LazyLock<Mutex<Taken>> = LazyLock::new(Default::default);
 
     /// The level to send for `level` to this model: one found to work in its
     /// place, or `level` itself.
@@ -1697,7 +1699,7 @@ pub mod reply_reserve {
                 learn(&key, 1_000);
             }
             let after = reserve(&key, Some(ReasoningEffort::High), 200_000, None);
-            assert!(after < 16_000 && after >= MIN_RESERVE, "{after}");
+            assert!((MIN_RESERVE..16_000).contains(&after), "{after}");
         }
     }
 }
@@ -1781,7 +1783,7 @@ pub async fn chat_context_estimate(
         .await?;
     let clm_tools = (clm_mode.as_deref() == Some(crate::clm::MODE_CLM)
         && !tools.is_empty()
-        && crate::clm::availability(&vfs).is_ok())
+        && crate::clm::availability(vfs).is_ok())
     .then(|| {
         let tools = offered(crate::agent_run::tools::tools_for(
             root.is_some(),
@@ -1826,7 +1828,7 @@ pub async fn chat_context_estimate(
     let token_budget = history_budget(window, fixed_chars, chars_per_token, reply);
     // As chat_request works it out: what is left with the CLM section in the prompt.
     let clm_budget = match clm_tools {
-        Some(clm_tool_chars) => crate::clm::system_section(&vfs, &dialog_id).map(|section| {
+        Some(clm_tool_chars) => crate::clm::system_section(vfs, &dialog_id).map(|section| {
             history_budget(
                 window,
                 prompt_chars + 2 + section.chars().count() + clm_tool_chars + CLM_NOTES_CHARS,

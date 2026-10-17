@@ -488,7 +488,7 @@ pub fn land_checked(
             let unseen: Vec<Conflict> = plan(project, changes, false)
                 .conflicts
                 .into_iter()
-                .filter(|c| !known.iter().any(|k| *k == c.path))
+                .filter(|c| !known.contains(&c.path))
                 .collect();
             if !unseen.is_empty() {
                 return Err(LandError::Conflicts(unseen));

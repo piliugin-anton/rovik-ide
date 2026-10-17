@@ -179,7 +179,7 @@ fn starts(fake: &Fake) -> Vec<StartRequest> {
     requests
         .iter()
         .filter_map(|r| match r {
-            Request::AgentStart(start) => Some(start.clone()),
+            Request::AgentStart(start) => Some((**start).clone()),
             _ => None,
         })
         .collect()
@@ -659,8 +659,10 @@ async fn the_open_project_follows_what_the_user_says_its_folder_is() {
 async fn a_configuration_goes_to_every_host_without_its_keys() {
     let app = App::new();
     let (remote, fake) = connected(&app).await;
-    let mut config = AgentConfig::default();
-    config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
+    let config = AgentConfig {
+        approval_profiles: vec![start("c", StartKind::Retry, None).profile],
+        ..AgentConfig::default()
+    };
     let reply = remote
         .everywhere(Request::AgentConfigure(config.clone()))
         .await;
@@ -689,8 +691,10 @@ async fn requests_once_caught_up(fake: &Fake) -> Vec<Request> {
 async fn a_host_connecting_after_the_settings_were_applied_gets_them() {
     let app = App::new();
     let remote = Remote::new(app.core.clone());
-    let mut config = AgentConfig::default();
-    config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
+    let config = AgentConfig {
+        approval_profiles: vec![start("c", StartKind::Retry, None).profile],
+        ..AgentConfig::default()
+    };
     // Applied with no host connected: nowhere to send it yet.
     let reply = remote
         .everywhere(Request::AgentConfigure(config.clone()))
@@ -970,7 +974,7 @@ async fn a_file_the_host_cant_send_leaves_its_row_without_it() {
     };
     remote.receive(HOST, event(added)).await;
     let rows = app.rows("chat").await;
-    assert_eq!(rows[0].attachments, [lost.clone()]);
+    assert_eq!(rows[0].attachments, std::slice::from_ref(&lost));
     let data = app.core.db.data_dir().to_path_buf();
     assert!(attachments::file_for(&data, &lost).is_none());
     assert_eq!(*app.witnessed.lock().unwrap(), [("t1".to_string(), true)]);

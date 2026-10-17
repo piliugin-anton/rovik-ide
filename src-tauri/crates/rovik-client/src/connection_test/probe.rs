@@ -120,10 +120,8 @@ impl Probe {
                     install.get_or_insert_with(Installed::default).admins = strings(value);
                 }
                 "socket" => probe.socket = yes,
-                "daemon" => {
-                    if !value.is_empty() && !probe.daemons.iter().any(|d| d == value) {
-                        probe.daemons.push(value.into());
-                    }
+                "daemon" if !value.is_empty() && !probe.daemons.iter().any(|d| d == value) => {
+                    probe.daemons.push(value.into());
                 }
                 _ => {}
             }
