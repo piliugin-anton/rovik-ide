@@ -1004,8 +1004,10 @@ impl Run {
         let config = self.config();
         let p = &config.permissions;
         let daemon_folder = self.names_daemon_folder(tc);
-        // What always waits for the user: nobody is there in Autopilot (D6).
-        if daemon_folder && self.in_autopilot() {
+        // Nobody is there in Autopilot (D6): what would wait for the user
+        // is the AI reviewer's to decide, or refused (U02).
+        let unattended = self.in_autopilot();
+        if daemon_folder && unattended {
             return rejected(super::autopilot::DAEMON_FOLDER_REFUSED);
         }
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
@@ -1015,11 +1017,13 @@ impl Run {
                 ))
             }
             // An interrupted call is always confirmed by the user, and so
-            // is a command that names a server's own folder.
+            // is a command that names a server's own folder. In Autopilot
+            // a resumed call goes by its rule, as a new one does.
             ToolVerdict::Permitted { approval } => match resume_note {
-                Some(_) => Approver::User,
-                None if daemon_folder => Approver::User,
-                None => match approval {
+                Some(_) if !unattended => Approver::User,
+                _ if daemon_folder => Approver::User,
+                _ => match approval {
+                    Some(_) if unattended => Approver::Ai,
                     Some(a) => a,
                     None => return Authorized::default(),
                 },
@@ -1061,6 +1065,10 @@ impl Run {
             current: p.current.clone(),
         });
 
+        // In Autopilot: why what the reviewer didn't approve isn't run,
+        // and whether the reviewer said so (it was unsure).
+        let mut unattended_why: Option<String> = None;
+        let mut reviewer_unsure = false;
         if approver == Approver::Ai {
             let models = &config.approval_profiles;
             let edit_path = if is_file_edit {
@@ -1078,15 +1086,27 @@ impl Run {
                     "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets always need your approval."
                         .into(),
                 );
+                unattended_why = Some(
+                    "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets need a person's approval, and nobody is there to give it in Autopilot."
+                        .into(),
+                );
             } else if edit_path
                 .as_deref()
                 .is_some_and(permissions::is_secret_path)
             {
                 manual_reason =
                     Some("Edits to credential or secret files always need your approval.".into());
+                unattended_why = Some(
+                    "Edits to credential or secret files need a person's approval, and nobody is there to give it in Autopilot."
+                        .into(),
+                );
             } else if models.is_empty() {
                 manual_reason =
                     Some("No AI reviewer model is set, so this needs your approval.".into());
+                unattended_why = Some(
+                    "It needs an approval, and no AI reviewer model is set to give it in Autopilot."
+                        .into(),
+                );
             } else {
                 self.tool_note(&tc.id, Some(format!("Reviewing with {}…", models[0].label)));
                 let input = ReviewInput {
@@ -1134,6 +1154,8 @@ impl Run {
                             Some(reason.clone()),
                             &checks,
                         );
+                        // Nobody to ask in Autopilot: another approach.
+                        let or_ask = if unattended { "" } else { " or ask the user" };
                         return if approved {
                             Authorized {
                                 approval: Some(approval),
@@ -1143,7 +1165,7 @@ impl Run {
                         } else {
                             Authorized {
                                 refusal: Some(format!(
-                                    "Error: rejected by the user's AI reviewer ({model}): {reason} Do not retry the same action; adjust the approach or ask the user."
+                                    "Error: rejected by the user's AI reviewer ({model}): {reason} Do not retry the same action; adjust the approach{or_ask}."
                                 )),
                                 approval: Some(approval),
                                 rejected: true,
@@ -1152,16 +1174,41 @@ impl Run {
                         };
                     }
                     ReviewResult::Unsure { reason } => {
-                        manual_reason = Some(format!("{reason} This needs your approval."))
+                        manual_reason = Some(format!("{reason} This needs your approval."));
+                        unattended_why =
+                            Some(format!("{reason} Nobody else can approve it in Autopilot."));
+                        reviewer_unsure = true;
                     }
                     ReviewResult::Failed { errors } => {
                         eprintln!("agent: AI approval gave no decision: {errors:?}");
                         manual_reason = Some(
                             "The AI reviewer couldn’t answer, so this needs your approval.".into(),
                         );
+                        unattended_why = Some(
+                            "The AI reviewer couldn't answer, and nobody else can approve it in Autopilot."
+                                .into(),
+                        );
                     }
                 }
             }
+        }
+
+        // Autopilot: what the reviewer didn't approve is refused, never
+        // left waiting (D6, U02).
+        if unattended {
+            let why = unattended_why.unwrap_or_else(|| {
+                "It needs an approval, and nobody is there to give it in Autopilot.".into()
+            });
+            return Authorized {
+                refusal: Some(format!(
+                    "Error: not run. {why} Do not retry it; do without it or take another approach."
+                )),
+                // The reviewer's verdict shows where it gave one.
+                approval: reviewer_unsure
+                    .then(|| approval_json(Approver::Ai, false, None, Some(why), &[])),
+                rejected: true,
+                ..Default::default()
+            };
         }
 
         // Manual: the request shows in the chat (and, for an edit of an

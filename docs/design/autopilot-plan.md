@@ -845,3 +845,25 @@ T05 depends most on the environment it meets.
   resolves its conflicts" is one switch for the app): with it off, an
   isolated Autopilot chat's conflicts wait for its delivery, which says
   so.
+
+### U02: approvals in Autopilot
+
+- **Who answers.** In a run of a task, or a subagent of one, a rule that
+  would ask the user asks the AI reviewer (`authorize`). Whatever would
+  then fall back to the user is refused, with why, as the tool's result:
+  the reviewer rejecting, being unsure, failing to answer, no reviewer
+  model set, and the shapes no reviewer approves on its own (commands
+  that push, delete, deploy, escalate or run inline scripts, edits to
+  secret files). The reviewer's verdict shows on the call only where it
+  gave one. A rejection doesn't tell the model to ask the user.
+- **A resumed call** after a crash goes by its own rule, as a new one
+  does: no approval when its kind needs none.
+- **The checks don't wait for approval.** With command approval on, the
+  gate's checks wait for the user's go (`verify-needs-approval`), and so
+  do a parallel group's checks mid-run and a merged result's checks
+  before landing. In Autopilot nobody gives it, so they run: they're the
+  IDE's commands, set up by the user, not the model's (D7). This is
+  V01's second half, taken here because without it a task with command
+  approval on would wait for ever.
+- **Tests** use a System One stand-in (`testing::system_one`) for an
+  unsure typed reviewer: a text reviewer approves, rejects or fails.

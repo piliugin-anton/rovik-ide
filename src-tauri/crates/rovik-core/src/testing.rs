@@ -276,6 +276,43 @@ pub async fn model_routed(
     (url, seen)
 }
 
+/// A System One endpoint (`system_one.rs`, the typed AI reviewer) that
+/// answers every question it's asked with the probability `noul`: 0.5
+/// leaves the reviewer unsure (review.rs `decide`). The requests it got
+/// are kept.
+pub async fn system_one(noul: f64) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let log = log.clone();
+            tokio::spawn(async move {
+                let (_, body) = read_request(&mut socket).await;
+                let answers: serde_json::Map<String, Value> = body["questions"]
+                    .as_object()
+                    .map(|asked| {
+                        asked
+                            .keys()
+                            .map(|key| (key.clone(), json!({ "noul": noul })))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                log.lock().unwrap().push(body);
+                let text = json!({ "answers": answers }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (url, seen)
+}
+
 /// A request's path and JSON body.
 async fn read_request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
     let mut buf = Vec::new();

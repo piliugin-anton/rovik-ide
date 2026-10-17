@@ -180,9 +180,10 @@ impl Run {
         }
         let p = self.config().permissions;
         let has_checks = checks_would_run(&p, &self.checks);
-        if plan.merged && has_checks && p.command_approval.required {
+        if plan.merged && has_checks && p.command_approval.required && !self.in_autopilot() {
             // The merged result's checks are commands too: not without the
-            // user's go. Land (in the bar) lands it as it is.
+            // user's go. Land (in the bar) lands it as it is. In Autopilot
+            // nobody gives it: they run (D7).
             chats::set_pending(
                 &dialog_id,
                 Some(&Pending {

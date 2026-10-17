@@ -915,3 +915,173 @@ async fn an_autopilot_run_on_a_server_refuses_the_daemons_folder() {
         Some("Delivered: the result waits on the server for its computer")
     );
 }
+
+/*
+ * Approvals in Autopilot (U02)
+ */
+
+/// U02: the user's commands need approval, by them. In Autopilot the AI
+/// reviewer is asked instead; it isn't sure, so the command is refused
+/// with its reason, and the run goes on. A command no reviewer may approve
+/// on its own (it deletes) is refused without asking. Nothing waits for
+/// the user, the project's checks included.
+#[tokio::test]
+async fn an_approval_nobody_can_give_is_refused_and_the_task_goes_on() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    let asked = [
+        Reply::Call {
+            id: "n1",
+            name: "bash",
+            args: json!({ "command": "node check.js" }),
+        },
+        Reply::Call {
+            id: "r1",
+            name: "bash",
+            args: json!({ "command": "rm -rf build" }),
+        },
+    ];
+    script.splice(3..3, asked);
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    let (jev, reviewed) = crate::testing::system_one(0.5).await;
+    let mut request = task_request(&h, &url);
+    let mut reviewer = request.profile.clone();
+    reviewer.base_url = jev;
+    reviewer.label = "Jev".into();
+    let config = request.config.as_mut().unwrap();
+    config.permissions.command_approval = permissions::ApprovalRule {
+        required: true,
+        by: permissions::Approver::User,
+    };
+    config.permissions.approval_typed_input = true;
+    config.approval_profiles = vec![reviewer];
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK, "the checks ran, unasked");
+    assert!(h.events_of("approvalRequested").is_empty());
+
+    let messages = h.messages().await;
+    let unsure = result_of(&messages, "n1");
+    assert!(
+        unsure.content.starts_with("Error: not run. Jev wasn"),
+        "{}",
+        unsure.content
+    );
+    assert!(
+        unsure
+            .content
+            .contains("Nobody else can approve it in Autopilot."),
+        "{}",
+        unsure.content
+    );
+    let approval = &unsure.meta.as_ref().unwrap()["approval"];
+    assert_eq!(approval["by"], "ai");
+    assert_eq!(approval["approved"], false);
+    let deletes = result_of(&messages, "r1");
+    assert!(
+        deletes
+            .content
+            .contains("need a person's approval, and nobody is there to give it in Autopilot"),
+        "{}",
+        deletes.content
+    );
+    // Not the reviewer's verdict: it wasn't asked.
+    assert!(deletes
+        .meta
+        .as_ref()
+        .is_none_or(|m| m.get("approval").is_none()));
+    // The reviewer was asked about the one it may decide, once.
+    assert_eq!(reviewed.lock().unwrap().len(), 1);
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
+/// U02: the implementation was cut by a crash while a tool call ran, so
+/// the call has no result. Resumed, the call runs again without asking,
+/// as any call of its kind runs, and the task goes on to its delivery.
+#[tokio::test]
+async fn a_call_cut_by_a_crash_runs_again_on_resume_without_asking() {
+    use super::autopilot::add_stage;
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let task = "u-task";
+    let record =
+        |name: Stage, status: Status| StageRecord::ended(task, name, 1, Effort::Balanced, status);
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    let asked = vec![store::NewMessage {
+        id: task.into(),
+        meta: Some(json!({ "mode": "autopilot" })),
+        ..run::new_message("user", "Make the test pass")
+    }];
+    db.write(move |c| store::append_messages(c, &id, &asked).map(|_| ()))
+        .await
+        .unwrap();
+    for name in [Stage::Plan, Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        add_stage(&h.core, &h.dialog_id, &record(name, Status::Done))
+            .await
+            .unwrap();
+    }
+    let implementing = StageRecord::running(task, Stage::Implement, 1, Effort::Balanced);
+    let implement = add_stage(&h.core, &h.dialog_id, &implementing)
+        .await
+        .unwrap();
+    // The IDE's message, and the reply whose call the crash cut.
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    let rows = vec![
+        store::NewMessage {
+            meta: Some(json!({
+                "harness": "autopilot",
+                "implementsPlan": true,
+                "autopilot": { "task": task, "stage": "implement", "record": implement },
+            })),
+            ..run::new_message("user", "Implement this plan.")
+        },
+        store::NewMessage {
+            tool_calls: Some(vec![store::ToolCall {
+                id: "w1".into(),
+                name: "write".into(),
+                arguments: json!({ "path": "ok.txt", "content": "ok" }).to_string(),
+                extra_content: None,
+            }]),
+            ..run::new_message("assistant", "")
+        },
+    ];
+    db.write(move |c| store::append_messages(c, &id, &rows).map(|_| ()))
+        .await
+        .unwrap();
+
+    let (url, _) = model(vec![Reply::Text("Done: ok.txt says ok.")]).await;
+    assert!(
+        h.start(resume_request(&h, &url)).await.is_some(),
+        "the implementation goes on"
+    );
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert!(
+        h.events_of("approvalRequested").is_empty(),
+        "nobody was asked"
+    );
+    let messages = h.messages().await;
+    let written = result_of(&messages, "w1");
+    assert!(
+        written.meta.as_ref().unwrap().get("approval").is_none(),
+        "{written:?}"
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    let last = names(&records);
+    assert_eq!(last[4], (Stage::Implement, Status::Done), "{last:?}");
+    assert_eq!(
+        last.last(),
+        Some(&(Stage::Deliver, Status::Done)),
+        "{last:?}"
+    );
+}

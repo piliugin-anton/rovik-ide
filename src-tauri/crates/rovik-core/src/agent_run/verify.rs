@@ -781,8 +781,10 @@ impl Run {
             return Ok("unverified".into());
         }
 
-        // Command approval is on: the gate's commands need the user's go too.
-        if p.command_approval.required && !approved {
+        // Command approval is on: the gate's commands need the user's go
+        // too. Not in Autopilot, where nobody gives it: they're the IDE's
+        // commands, which the user set up, not the model's (D7).
+        if p.command_approval.required && !approved && !self.in_autopilot() {
             let pending: Vec<CheckResult> = checks.iter().map(CheckResult::pending).collect();
             // P3.9: what each file was, by hash, kept with the record: after
             // a restart the checks rebuild what they can from it.
@@ -1219,7 +1221,8 @@ impl Run {
         if checks.is_empty() {
             return None;
         }
-        if p.command_approval.required {
+        // Autopilot's checks don't wait for an approval nobody gives (D7).
+        if p.command_approval.required && !self.in_autopilot() {
             return Some("The checks didn't run on the merged result yet: command approval is on, so they run when you finish.".into());
         }
         let changed = self.changed_files.clone();
