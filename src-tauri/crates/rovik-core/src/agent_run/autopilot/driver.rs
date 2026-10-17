@@ -12,7 +12,7 @@ use super::outcome::{
     failure_of, failure_summary, reopens, run_continues, task_outcome, undelivered,
 };
 use super::rate_limit::{rate_limit_wait, retry_later};
-use super::rows::{add_stage, current_task, end_stage, load, settle_spent, task_spent};
+use super::rows::{add_stage, current_task, end_stage, load, settle_spent, task_chat, task_spent};
 use super::stage::{
     next_after, next_round, total_spent, Carrier, Next, Recorded, Stage, StageRecord, StageRun,
     Status,
@@ -95,6 +95,19 @@ pub(super) fn starts_task(message: &UserMessage) -> bool {
 /// The record row a message the driver wrote is for (`meta.autopilot.record`).
 pub(super) fn record_named(meta: Option<&Value>) -> Option<&str> {
     meta?.pointer("/autopilot/record")?.as_str()
+}
+
+/// Whether a run of stage record `record` stored its message, the one that
+/// names the record (`meta.autopilot.record`), however far back it is.
+async fn run_started(core: &Core, dialog_id: &str, record: &Recorded) -> Result<bool, String> {
+    let (id, since) = (dialog_id.to_string(), record.seq);
+    let rows = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, "autopilot", Some(since)))
+        .await?;
+    Ok(rows
+        .iter()
+        .any(|m| record_named(m.meta.as_ref()) == Some(record.id.as_str())))
 }
 
 /// The stage a run starting now carries out, if it's one of the chat's
@@ -644,13 +657,21 @@ pub(super) async fn start_implement(
     if crashes(dialog_id, Crash::BeforeRun) {
         return Ok(true);
     }
+    // T05: a candidate's chat holds none of its task's artifacts: its
+    // implementation is built from the task chat's records, as the task's
+    // run first built it (candidates.rs).
+    let chat = task_chat(core, dialog_id).await?;
+    let theirs = match chat == dialog_id {
+        true => None,
+        false => current_task(core, &chat).await?.map(|(_, records)| records),
+    };
     let built = implementation_message(
         core,
-        dialog_id,
-        records,
+        &chat,
+        theirs.as_deref().unwrap_or(records),
         &record,
         settings.root.as_deref(),
-        None,
+        first.candidate.as_deref(),
     )
     .await?;
     let message = match built {
@@ -786,9 +807,7 @@ pub(in crate::agent_run) async fn go_on(
         // It paused for the user's Continue, as it would have without a crash.
         Recovery::Paused => return Ok(Some(None)),
         Recovery::Interrupted => {
-            let started = recent
-                .iter()
-                .any(|m| record_named(m.meta.as_ref()) == Some(last.id.as_str()));
+            let started = run_started(core, dialog_id, last).await?;
             // An implementation by candidates is the IDE's run, which a
             // Retry takes up, as the driver started it (T05).
             if stage == Stage::Implement && !started && last.record.candidates.is_empty() {
@@ -814,12 +833,16 @@ pub(in crate::agent_run) async fn go_on(
 }
 
 /// Tests: where the driver "crashes" in a chat, once: right after ending a
-/// run's stage, or after recording the implementation before its run.
+/// run's stage, or after recording the implementation (or a candidate's)
+/// before its run.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::agent_run) enum Crash {
     AfterEnd,
     BeforeRun,
+    /// After recording a candidate's implementation, before its run; set
+    /// on the task's chat (candidates.rs).
+    BeforeCandidate,
 }
 
 /// Tests: the crash each chat has coming (tests run side by side).
@@ -834,7 +857,7 @@ pub(in crate::agent_run) fn crash_at(dialog_id: &str, at: Crash) {
 }
 
 #[cfg(test)]
-pub(super) fn crashes(dialog_id: &str, at: Crash) -> bool {
+pub(in crate::agent_run) fn crashes(dialog_id: &str, at: Crash) -> bool {
     let mut crashes = CRASHES.lock().unwrap_or_else(|e| e.into_inner());
     let due = crashes.iter().position(|(d, c)| d == dialog_id && *c == at);
     due.map(|i| crashes.remove(i)).is_some()

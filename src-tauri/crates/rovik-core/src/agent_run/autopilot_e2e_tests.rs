@@ -1886,6 +1886,131 @@ async fn a_call_cut_by_a_crash_runs_again_on_resume_without_asking() {
     );
 }
 
+/// D5 (R03): an implementation cut between two steps after more than a
+/// page of messages. A resume finds its run's message all the same, far
+/// back as it is, and takes the stage up again: it never sends the
+/// implementation a second time.
+#[tokio::test]
+async fn a_long_implementation_cut_between_two_steps_is_taken_up_again() {
+    use super::autopilot::add_stage;
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let task = "u-task";
+    let record =
+        |name: Stage, status: Status| StageRecord::ended(task, name, 1, Effort::Balanced, status);
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    let asked = vec![store::NewMessage {
+        id: task.into(),
+        meta: Some(json!({ "mode": "autopilot" })),
+        ..run::new_message("user", "Make the test pass")
+    }];
+    db.write(move |c| store::append_messages(c, &id, &asked).map(|_| ()))
+        .await
+        .unwrap();
+    for name in [Stage::Plan, Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        add_stage(&h.core, &h.dialog_id, &record(name, Status::Done))
+            .await
+            .unwrap();
+    }
+    let implementing = StageRecord::running(task, Stage::Implement, 1, Effort::Balanced);
+    let implement = add_stage(&h.core, &h.dialog_id, &implementing)
+        .await
+        .unwrap();
+    // The IDE's message, then the run's steps, each call answered: more
+    // than the last page of messages holds.
+    let mut rows = vec![store::NewMessage {
+        meta: Some(json!({
+            "harness": "autopilot",
+            "implementsPlan": true,
+            "autopilot": { "task": task, "stage": "implement", "record": implement },
+        })),
+        ..run::new_message("user", "Implement this plan.")
+    }];
+    for i in 0..300 {
+        let call = format!("r{i}");
+        rows.push(store::NewMessage {
+            tool_calls: Some(vec![store::ToolCall {
+                id: call.clone(),
+                name: "read".into(),
+                arguments: json!({ "path": "check.js" }).to_string(),
+                extra_content: None,
+            }]),
+            ..run::new_message("assistant", "")
+        });
+        rows.push(store::NewMessage {
+            tool_call_id: Some(call),
+            ..run::new_message("tool", "It checks ok.txt.")
+        });
+    }
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    db.write(move |c| store::append_messages(c, &id, &rows).map(|_| ()))
+        .await
+        .unwrap();
+
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        Reply::Text("Done: ok.txt says ok."),
+    ])
+    .await;
+    assert!(
+        h.start(resume_request(&h, &url)).await.is_some(),
+        "the implementation goes on"
+    );
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let id = h.dialog_id.clone();
+    let sent = (h.core.db)
+        .read(move |c| store::messages_with_meta(c, &id, "implementsPlan", None))
+        .await
+        .unwrap();
+    assert_eq!(sent.len(), 1, "its message, once");
+    assert_eq!(
+        names(&records)[4],
+        (Stage::Implement, Status::Done),
+        "{records:#?}"
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
+/// D5, T05 (R03): a crash after a candidate's implementation was recorded,
+/// before its run started. Its task's run takes it up from its records,
+/// with the plan from the task's chat (the candidate's holds none), and
+/// the task is delivered.
+#[tokio::test]
+async fn a_candidate_cut_before_its_run_started_is_started_from_its_tasks_plan() {
+    let script = candidates_script(&[("ok.txt", "ok")], &[("ok.txt", "ok")]);
+    let Some((h, _, _, request)) = candidates_start(Vec::new(), script).await else {
+        return;
+    };
+    crash_at(&h.dialog_id, Crash::BeforeCandidate);
+    h.start(request).await;
+    let records = delivered_slowly(&h).await;
+    let messages = h.messages().await;
+    let row = candidates_row(&messages);
+    let statuses: Vec<&str> = row["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, ["done", "done"], "{row:#}");
+    let a = row["candidates"][0]["chat"].as_str().unwrap();
+    let theirs = theirs_records(&h, a).await;
+    let implement = theirs.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(implement.status, Status::Done, "{theirs:#?}");
+    assert_eq!(
+        records.last().unwrap().outcome.as_deref(),
+        Some("verified"),
+        "{records:#?}"
+    );
+}
+
 /*
  * Nothing waits (U03)
  */
@@ -5802,9 +5927,19 @@ fn candidates_script(
 /// every change reviewed (clean unless `routes` say otherwise), and its
 /// model's URL. None: this machine can't mount the copies, or has no npm.
 async fn candidates_task(
-    mut routes: Vec<(&'static str, Vec<Reply>)>,
+    routes: Vec<(&'static str, Vec<Reply>)>,
     script: Vec<Reply>,
 ) -> Option<(Harness, Arc<Mutex<Vec<Value>>>, String)> {
+    let (h, seen, url, request) = candidates_start(routes, script).await?;
+    h.start(request).await;
+    Some((h, seen, url))
+}
+
+/// `candidates_task`'s chat, model and start, not started yet.
+async fn candidates_start(
+    mut routes: Vec<(&'static str, Vec<Reply>)>,
+    script: Vec<Reply>,
+) -> Option<(Harness, Arc<Mutex<Vec<Value>>>, String, StartRequest)> {
     if !crate::vfs::mount_works() || !has_npm() {
         eprintln!("no mounts or no npm here: skipped");
         return None;
@@ -5828,8 +5963,7 @@ async fn candidates_task(
         "reviewMinLines": 1,
     }))
     .unwrap();
-    h.start(request).await;
-    Some((h, seen, url))
+    Some((h, seen, url, request))
 }
 
 /// The task's records once it's delivered: two implementations take a

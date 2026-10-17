@@ -59,7 +59,7 @@ pub(super) use driver::{
     after_run, drive_lock, driver_turn, go_on_boxed, not_started_why, try_drive_lock,
 };
 #[cfg(test)]
-pub(super) use driver::{crash_at, Crash};
+pub(super) use driver::{crash_at, crashes, Crash};
 pub use driver::{resume, stage_for, Settings, DRIVER_BUSY};
 pub use outcome::finished;
 pub(super) use outcome::plural;

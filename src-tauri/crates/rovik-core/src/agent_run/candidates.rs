@@ -600,6 +600,10 @@ async fn start_candidate(
         ..StageRecord::running(&first.task, Stage::Implement, 1, first.effort)
     };
     let id = add_stage(core, &state.chat, &record).await?;
+    #[cfg(test)]
+    if autopilot::crashes(main, autopilot::Crash::BeforeCandidate) {
+        return Ok(true);
+    }
     let built =
         autopilot::implementation_message(core, main, records, &id, project, Some(&state.letter))
             .await?;
