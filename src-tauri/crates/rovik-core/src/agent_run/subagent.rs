@@ -58,6 +58,9 @@ pub enum Kind {
     Worker,
     /// Writes tests from the request and the plan (test_writer.rs).
     TestWriter,
+    /// Judges a finished change by the plan's criteria (acceptance.rs,
+    /// Autopilot only).
+    Acceptance,
 }
 
 /// The repository map a kind gets (S18, K21): what it's about and its size.
@@ -76,9 +79,11 @@ impl Kind {
         match self {
             // A plan changes nothing yet: the whole project, ranked for it.
             Kind::Scout | Kind::PlanReviewer => MapScope::Lead,
-            Kind::Reviewer | Kind::Triage | Kind::TestWriter => MapScope::Changed {
-                fraction_percent: 50,
-            },
+            Kind::Reviewer | Kind::Triage | Kind::TestWriter | Kind::Acceptance => {
+                MapScope::Changed {
+                    fraction_percent: 50,
+                }
+            }
             // Around its step's files (and the run's changes so far).
             Kind::Worker => MapScope::Changed {
                 fraction_percent: 100,
@@ -93,6 +98,7 @@ impl Kind {
         Kind::PlanReviewer,
         Kind::Worker,
         Kind::TestWriter,
+        Kind::Acceptance,
     ];
 
     pub fn id(self) -> &'static str {
@@ -103,6 +109,7 @@ impl Kind {
             Kind::PlanReviewer => "planReviewer",
             Kind::Worker => "worker",
             Kind::TestWriter => "testWriter",
+            Kind::Acceptance => "acceptance",
         }
     }
 
@@ -133,6 +140,7 @@ impl Kind {
             Kind::PlanReviewer => &super::plan_review::PLAN_REVIEWER,
             Kind::Worker => &super::worker::WORKER,
             Kind::TestWriter => &super::test_writer::TEST_WRITER,
+            Kind::Acceptance => &super::acceptance::ACCEPTANCE,
         }
     }
 
@@ -223,6 +231,8 @@ pub enum Format {
     Sections,
     /// The reviewers' findings list (change_review.rs `parse_findings`).
     Findings,
+    /// The acceptance checker's verdicts (acceptance.rs `parse_verdicts`).
+    Verdicts,
 }
 
 /// What the harness fixes for a kind: the model can't widen any of it.
@@ -261,6 +271,9 @@ impl KindSpec {
         match self.format {
             Format::Findings => String::from(
                 "Report under \"## Findings\" only what you could substantiate; with nothing to report, reply \"## Findings\" and then \"None.\".",
+            ),
+            Format::Verdicts => String::from(
+                "Give a verdict under \"## Verdicts\" for every criterion, by its number: one you couldn't check is unsatisfied, saying so.",
             ),
             Format::Sections => {
                 let open = if self.sections.contains(&"Open questions") {
@@ -709,8 +722,12 @@ pub fn sections(text: &str) -> Sections {
 /// What's wrong with a report's format, for the repair turn (S13); None
 /// when it follows the format. A blocked report needs only its reason.
 pub fn format_problem(spec: &KindSpec, text: &str) -> Option<String> {
-    if let Format::Findings = spec.format {
-        return super::change_review::parse_findings(text).err();
+    match spec.format {
+        Format::Findings => return super::change_review::parse_findings(text).err(),
+        // A checker that says it's blocked gives no verdicts.
+        Format::Verdicts if is_blocked(text) => return None,
+        Format::Verdicts => return super::acceptance::parse_verdicts(text).err(),
+        Format::Sections => {}
     }
     let found = sections(text);
     // Round 2: "## Blocked\nNone." isn't a block, so the report still
@@ -1730,6 +1747,7 @@ mod tests {
                 "triage" => Kind::Triage,
                 "reviewer" => Kind::Reviewer,
                 "plan reviewer" => Kind::PlanReviewer,
+                "acceptance" => Kind::Acceptance,
                 other => panic!("the table names a kind there isn't: {other}"),
             };
             // The `Name` list the cell starts with: `;` ends the required

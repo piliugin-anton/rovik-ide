@@ -399,6 +399,82 @@ test('the tests written first show in the chat, with what passes already (S04)',
   }
 });
 
+test('an acceptance check shows each criterion with its verdict (S08)', () => {
+  const [chat] = createStore({
+    messages: [
+      { id: 'u1', role: 'user', content: 'Add a greeting', meta: { mode: 'autopilot' } },
+      {
+        id: 'c1',
+        role: 'assistant',
+        content: '',
+        meta: {
+          acceptance: {
+            status: 'unsatisfied',
+            round: 2,
+            maxRounds: 2,
+            unmet: true,
+            criteria: ['greet("Ann") returns "Hello, Ann".', 'An empty name throws.'],
+            verdicts: [
+              { criterion: 1, satisfied: true, note: 'src/greet.ts:3 returns it.' },
+              { criterion: 2, satisfied: false, note: 'nothing throws on "".' },
+            ],
+            childDialogId: 'k1',
+          },
+        },
+      },
+    ] as ChatMessage[],
+    hasOlder: false,
+    hasNewer: false,
+    loadingOlder: false,
+    lastUsed: 0,
+  });
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () => Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+  const root = container();
+  const noop = async () => 0;
+  let dispose = () => {};
+  try {
+    dispose = render(
+      () => (
+        <MessageList
+          dialogId="d-acceptance"
+          chat={chat}
+          sending={false}
+          focusMessageId={null}
+          onLoadOlder={noop}
+          onLoadNewer={noop}
+          onReloadLatest={async () => {}}
+          onRetry={() => {}}
+          onContinue={() => {}}
+          onContinueRun={() => {}}
+          onRunChecks={() => {}}
+          onOpenProjectChecks={() => {}}
+        />
+      ),
+      root
+    );
+    const card = root.querySelector('.chat-item[data-id="c1"] .chat-acceptance');
+    assert.equal(card?.className, 'chat-verify chat-acceptance unmet');
+    assert.equal(
+      card?.querySelector('.chat-verify-title')?.textContent,
+      '1 of 2 criteria still unmet after the last check: the task ends unmet.'
+    );
+    const rows = [...card!.querySelectorAll('.chat-acceptance-criteria li')].map((li) => [
+      li.className,
+      li.querySelector('.chat-acceptance-verdict')?.textContent,
+    ]);
+    assert.deepEqual(rows, [
+      ['met', 'Met: src/greet.ts:3 returns it.'],
+      ['unmet', 'Unmet: nothing throws on "".'],
+    ]);
+    assert.ok(card!.querySelector('.chat-verify-files button'), 'its work on demand');
+  } finally {
+    dispose();
+    api.getMessages = original;
+  }
+});
+
 test('a stage record spins only while its task’s run goes, not when another took over', () => {
   const plan = (id: string, task: string) => ({
     id,

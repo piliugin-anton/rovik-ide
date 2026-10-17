@@ -200,13 +200,21 @@ const TESTS_FIRST: &str = super::test_writer::FIRST_HEADING;
 /// The test writer's brief for a change made without tests starts so (S07).
 const TESTS_AFTER: &str = "# Write tests for this change";
 
+/// The acceptance checker's brief starts so (S08).
+const ACCEPTANCE: &str = "# Check this change against its criteria";
+
+/// What the acceptance checker answers unless a test gives it replies:
+/// blocked, so the stage is skipped and judges nothing.
+const NO_VERDICTS: &str = "## Blocked\n\nNothing to judge in this test.";
+
 /// What the Tests stage's writer answers unless a test gives it replies:
 /// blocked, so the stage is skipped and writes nothing.
 const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
 
 /// `testing::model_routed`, with the test writers of the Tests stage and of
-/// a change without tests answered apart (`NO_TESTS`) unless the test
-/// routes them: a task's other runs get the replies they're written for.
+/// a change without tests (`NO_TESTS`) and the acceptance checker
+/// (`NO_VERDICTS`) answered apart unless the test routes them: a task's
+/// other runs get the replies they're written for.
 async fn model_routed(
     mut routes: Vec<(&'static str, Vec<Reply>)>,
     default: Vec<Reply>,
@@ -215,6 +223,9 @@ async fn model_routed(
         if !routes.iter().any(|(marker, _)| *marker == writer) {
             routes.push((writer, vec![Reply::Text(NO_TESTS)]));
         }
+    }
+    if !routes.iter().any(|(marker, _)| *marker == ACCEPTANCE) {
+        routes.push((ACCEPTANCE, vec![Reply::Text(NO_VERDICTS)]));
     }
     crate::testing::model_routed(routes, default).await
 }
@@ -3111,4 +3122,137 @@ async fn a_change_without_tests_gets_the_test_writer_once_its_checks_pass() {
     assert_eq!(rounds.len(), 2, "{rounds:#?}");
     assert!(rounds.iter().all(|r| r["status"] == "passed"));
     assert!(h.project.join("src/util.test.js").exists());
+}
+
+/// S08: the acceptance checker's verdicts on TASK_PLAN's one criterion.
+const UNSATISFIED: &str = "## Verdicts\n\n1. unsatisfied — ok.txt ends with a stray space the request doesn't want.\n\n## Evidence\n\nRead ok.txt and check.js.\n\n## Unmet\n\n1: write ok.txt as exactly `ok`.";
+const SATISFIED: &str = "## Verdicts\n\n1. satisfied — `npm test` passes: check.js finds ok.txt saying ok.\n\n## Evidence\n\nRead ok.txt and check.js.\n\n## Unmet\n\nNone.";
+
+/// The acceptance records of a task's chat, in order.
+fn acceptances(messages: &[MessageRow]) -> Vec<&Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("acceptance"))
+        .collect()
+}
+
+/// S08 (4.10, D11): green, and a criterion unsatisfied: it goes back to
+/// the agent for one more round, the checks run again, and a second
+/// acceptance check finds it met.
+#[tokio::test]
+async fn an_unsatisfied_criterion_gets_one_more_round_and_a_second_check() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.extend([
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        Reply::Text("ok.txt says exactly ok now."),
+    ]);
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                ACCEPTANCE,
+                vec![Reply::Text(UNSATISFIED), Reply::Text(SATISFIED)],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let mut expected = BALANCED_OK.to_vec();
+    expected[7] = (Stage::Acceptance, Status::Done);
+    assert_eq!(names(&records), expected, "{records:#?}");
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    assert_eq!(records[7].summary.as_deref(), Some("The criterion is met"));
+    assert_eq!(records[7].round, 2);
+
+    let messages = h.messages().await;
+    let checks = acceptances(&messages);
+    assert_eq!(checks.len(), 2, "{checks:#?}");
+    assert_eq!(checks[0]["status"], "unsatisfied");
+    assert_eq!(checks[0]["verdicts"][0]["satisfied"], false);
+    assert_eq!(checks[1]["status"], "satisfied");
+    // The agent heard what's missing, and the checks ran again after it.
+    let note = messages
+        .iter()
+        .find(|m| m.content.contains("These criteria aren't met yet"))
+        .expect("the agent hears what's unmet");
+    assert!(
+        note.content.contains("1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n   - What's missing: ok.txt ends with a stray space"),
+        "{}",
+        note.content
+    );
+    assert!(note.content.contains("write ok.txt as exactly `ok`"));
+    assert_eq!(verifications(&messages).len(), 2);
+    // The second check knew of the first.
+    let requests = seen.lock().unwrap().clone();
+    let briefs: Vec<String> = requests
+        .iter()
+        .filter(|r| route_of(r, &[ACCEPTANCE]).is_some())
+        .map(|r| r["messages"].to_string())
+        .collect();
+    assert!(briefs.iter().any(|b| b.contains("## The earlier check")));
+    assert!(briefs[0].contains("## The checks"), "{}", briefs[0]);
+    assert_eq!(log_lines(&h, "acceptance").await.len(), 2);
+}
+
+/// S08: still unsatisfied at the second check: the task ends `unmet`,
+/// and its change isn't delivered as done.
+#[tokio::test]
+async fn a_criterion_still_unmet_at_the_last_check_ends_the_task_unmet() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.push(Reply::Text("I think it's fine as it is."));
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (ACCEPTANCE, vec![Reply::Text(UNSATISFIED)]),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let shown = names(&records);
+    assert_eq!(
+        &shown[4..],
+        [
+            (Stage::Implement, Status::Done),
+            (Stage::Review, Status::Skipped),
+            (Stage::Checks, Status::Done),
+            (Stage::Acceptance, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ],
+        "{records:#?}"
+    );
+    assert_eq!(records[4].outcome.as_deref(), Some("unmet"));
+    let acceptance = &records[7];
+    assert_eq!(acceptance.outcome.as_deref(), Some("unmet"));
+    assert_eq!(
+        acceptance.summary.as_deref(),
+        Some("1 of 1 criteria unmet after 2 checks")
+    );
+    let deliver = &records[8];
+    assert_eq!(deliver.outcome.as_deref(), Some("unmet"));
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("A criterion is still unmet after the last acceptance check; the changes are in the project as they are")
+    );
+    let messages = h.messages().await;
+    let checks = acceptances(&messages);
+    assert_eq!(checks.len(), 2);
+    assert_eq!(checks[1]["unmet"], true);
 }

@@ -60,6 +60,7 @@ pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
         Kind::Triage,
         Kind::TestWriter,
         Kind::Worker,
+        Kind::Acceptance,
     ];
     match effort {
         Effort::Balanced | Effort::Thorough => BUILT,
@@ -1003,6 +1004,13 @@ async fn end_run_stage(
             "Finished; its review held it back".into(),
             None,
         ),
+        // S08: the acceptance check found it short: its stage ends the task.
+        None if outcome == "unmet" => (
+            Status::Done,
+            outcome.to_string(),
+            "Finished; a criterion is unmet".into(),
+            None,
+        ),
         None => (Status::Done, outcome.to_string(), "Finished".into(), None),
     };
     end_stage(core, dialog_id, &run.record, |r| {
@@ -1168,6 +1176,7 @@ fn failure_summary(outcome: &str) -> String {
         "plan-failed" => "No plan was saved".into(),
         "plan-blocked" => "A high finding is still open after the plan's last review".into(),
         "review-open" => "A high finding is still open after the change's last review".into(),
+        "unmet" => "A criterion is still unmet after the last acceptance check".into(),
         "stopped" => "Stopped".into(),
         "unfinished-checklist" => "The checklist isn't finished".into(),
         "paused-loop" => "The run kept looping after it was told to change approach".into(),
@@ -1262,7 +1271,8 @@ async fn advance(
                 }
                 continue;
             }
-            Stage::Break | Stage::Pick | Stage::Acceptance => {
+            Stage::Acceptance => done_in_run(core, dialog_id, &records, stage).await?,
+            Stage::Break | Stage::Pick => {
                 StageRecord::ended(task, stage, round, effort, Status::Skipped)
                     .with_summary("Not available yet")
             }
@@ -1330,6 +1340,7 @@ async fn done_in_run(
         .ok_or_else(|| format!("the task has no {} stage", within.id()))?;
     let kind = match stage {
         Stage::Checks => "verification",
+        Stage::Acceptance => "acceptance",
         _ => "review",
     };
     let (id, since) = (dialog_id.to_string(), run.seq);
@@ -1348,8 +1359,65 @@ async fn done_in_run(
     );
     Ok(match stage {
         Stage::Checks => checks_record(base, run.record.outcome.as_deref(), rows.last(), &config),
+        Stage::Acceptance => acceptance_record(base, rows.last()),
         _ => review_record(base, &rows, &config),
     })
+}
+
+/// S08: the acceptance's record, from the implementing run's last check
+/// (`meta.acceptance`).
+fn acceptance_record(base: StageRecord, last: Option<&MessageRow>) -> StageRecord {
+    let Some((row, check)) = last.and_then(|m| Some((m, m.meta.as_ref()?.get("acceptance")?)))
+    else {
+        return base.with_summary("Not checked");
+    };
+    let round = check["round"].as_u64().unwrap_or(1) as u32;
+    let criteria = check["criteria"].as_array().map_or(0, Vec::len);
+    let unmet = check["verdicts"]
+        .as_array()
+        .map_or(0, |v| v.iter().filter(|v| v["satisfied"] == false).count());
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let (status, outcome, summary) = match check["status"].as_str().unwrap_or("") {
+        "satisfied" => (
+            Status::Done,
+            None,
+            match criteria {
+                1 => "The criterion is met".to_string(),
+                n => format!("All {n} criteria met"),
+            },
+        ),
+        "unsatisfied" if check["unmet"] == true => (
+            Status::Failed,
+            Some("unmet".to_string()),
+            format!(
+                "{unmet} of {criteria} criteria unmet after {round} check{}",
+                plural(round as usize)
+            ),
+        ),
+        "unsatisfied" => (
+            Status::Skipped,
+            None,
+            format!(
+                "{unmet} of {criteria} criteria unmet, and the run ended before the last check"
+            ),
+        ),
+        "skipped" => (
+            Status::Skipped,
+            None,
+            match check["reason"].as_str() {
+                Some(why) => format!("Skipped: {why}"),
+                None => "Skipped".into(),
+            },
+        ),
+        _ => (Status::Skipped, None, "It didn't finish".into()),
+    };
+    StageRecord {
+        status,
+        round,
+        outcome,
+        reference: Some(row.id.clone()),
+        ..base.with_summary(summary)
+    }
 }
 
 /// The checks' record, from how the implementing run ended (`outcome`)
@@ -1368,7 +1436,8 @@ fn checks_record(
         ..base.clone().with_summary(summary)
     };
     match outcome.unwrap_or("done") {
-        "verified" => ended(Status::Done, checks_passed(last)),
+        // S08: the checks passed; the acceptance check is what fell short.
+        "verified" | "unmet" => ended(Status::Done, checks_passed(last)),
         "unverified" | "verify-unverified" => {
             let why = field("reason")
                 .and_then(Value::as_str)

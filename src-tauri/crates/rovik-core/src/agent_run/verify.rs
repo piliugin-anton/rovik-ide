@@ -1153,6 +1153,16 @@ impl Run {
             self.take_checkpoint();
             return Ok("repaired".into());
         }
+        // S08: green: the acceptance check, by the plan's criteria. Its
+        // unsatisfied criteria get one more round, like any other.
+        if status == "passed" && self.accept_after_green().await? {
+            self.take_checkpoint();
+            return Ok("continue".into());
+        }
+        if self.acceptance_unmet {
+            self.checkpoint = None;
+            return Ok("unmet".into());
+        }
         if status != "failed" {
             self.checkpoint = None;
             return Ok(match status {

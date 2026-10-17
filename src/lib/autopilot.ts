@@ -343,3 +343,57 @@ export function stageHover(stage: StripStage, running: boolean): string {
   const title = stageTitle({ name: stage.name, round: stage.round ?? 1 });
   return stage.summary ? `${title}: ${status}. ${stage.summary}` : `${title}: ${status}`;
 }
+
+/** One criterion's verdict (agent_run/acceptance.rs `Verdict`). */
+export interface AcceptanceVerdict {
+  criterion: number;
+  satisfied: boolean;
+  /** The evidence, or what's missing. */
+  note: string;
+}
+
+/**
+ * `meta.acceptance`: an acceptance check of a task's change by its plan's
+ * criteria (S08, agent_run/acceptance.rs).
+ */
+export interface AcceptanceMeta {
+  status: 'running' | 'satisfied' | 'unsatisfied' | 'skipped' | 'stopped';
+  round: number;
+  maxRounds: number;
+  criteria: string[];
+  verdicts?: AcceptanceVerdict[];
+  evidence?: string;
+  /** The last check left a criterion unsatisfied: the task ends unmet. */
+  unmet?: boolean;
+  /** skipped: why. */
+  reason?: string;
+  childDialogId?: string;
+  model?: string;
+  toolCalls?: number;
+  ms?: number;
+  partial?: boolean;
+}
+
+/** The headline of an acceptance record; `interrupted`: saved as running, but nothing runs it. */
+export function acceptanceHeadline(meta: AcceptanceMeta, interrupted: boolean): string {
+  if (interrupted) return 'The acceptance check didn’t finish: the run ended meanwhile.';
+  const n = meta.criteria.length;
+  const unmet = meta.verdicts?.filter((v) => !v.satisfied).length ?? 0;
+  const criteria = (k: number) => `${k} criteri${k === 1 ? 'on' : 'a'}`;
+  switch (meta.status) {
+    case 'running':
+      return `Checking the change against the plan’s ${criteria(n)}…`;
+    case 'satisfied':
+      return n === 1
+        ? 'The change meets the plan’s criterion.'
+        : `The change meets all ${n} of the plan’s criteria.`;
+    case 'unsatisfied':
+      return meta.unmet
+        ? `${unmet} of ${criteria(n)} still unmet after the last check: the task ends unmet.`
+        : `${unmet} of ${criteria(n)} unmet: sent to the agent for one more round.`;
+    case 'stopped':
+      return 'The acceptance check was stopped.';
+    default:
+      return `Acceptance check skipped: ${meta.reason ?? 'it couldn’t judge'}. The checks decide.`;
+  }
+}

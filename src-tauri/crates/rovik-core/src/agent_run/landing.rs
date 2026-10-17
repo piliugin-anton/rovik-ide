@@ -70,6 +70,8 @@ pub fn pending_reason(outcome: &str) -> Option<String> {
         "budget" => "the task went over its budget",
         // Its change review's last round still found a high problem (S06).
         "review-open" => "the change review still finds a high problem in it",
+        // Its last acceptance check found a criterion unmet (S08).
+        "unmet" => "the acceptance check finds a criterion of the plan unmet",
         _ => "the run didn't finish",
     };
     Some(format!("Not landed: {reason}."))

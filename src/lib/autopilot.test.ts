@@ -13,6 +13,7 @@ import {
   taskLine,
   taskOver,
   taskRecords,
+  acceptanceHeadline,
   testsHeadline,
   unfinishedTask,
   type StageMeta,
@@ -303,5 +304,44 @@ test('the Tests record after a change that came with none (S07)', () => {
       false
     ),
     'The test writer was blocked: Nothing to test. The checks’ result stands.'
+  );
+});
+
+test('the acceptance record’s headline: judging, met, sent back, unmet, skipped (S08)', () => {
+  const base = { round: 1, maxRounds: 2, criteria: ['a', 'b'] };
+  const verdicts = [
+    { criterion: 1, satisfied: true, note: 'x' },
+    { criterion: 2, satisfied: false, note: 'y' },
+  ];
+  assert.equal(
+    acceptanceHeadline({ ...base, status: 'running' }, false),
+    'Checking the change against the plan’s 2 criteria…'
+  );
+  assert.equal(
+    acceptanceHeadline({ ...base, status: 'running' }, true),
+    'The acceptance check didn’t finish: the run ended meanwhile.'
+  );
+  assert.equal(
+    acceptanceHeadline({ ...base, status: 'satisfied' }, false),
+    'The change meets all 2 of the plan’s criteria.'
+  );
+  assert.equal(
+    acceptanceHeadline({ ...base, criteria: ['a'], status: 'satisfied' }, false),
+    'The change meets the plan’s criterion.'
+  );
+  assert.equal(
+    acceptanceHeadline({ ...base, status: 'unsatisfied', verdicts }, false),
+    '1 of 2 criteria unmet: sent to the agent for one more round.'
+  );
+  assert.equal(
+    acceptanceHeadline({ ...base, round: 2, status: 'unsatisfied', verdicts, unmet: true }, false),
+    '1 of 2 criteria still unmet after the last check: the task ends unmet.'
+  );
+  assert.equal(
+    acceptanceHeadline(
+      { ...base, status: 'skipped', reason: 'its verdicts couldn’t be read' },
+      false
+    ),
+    'Acceptance check skipped: its verdicts couldn’t be read. The checks decide.'
   );
 });

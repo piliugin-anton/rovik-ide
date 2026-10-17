@@ -5086,6 +5086,46 @@ body.is-resizing * {
   white-space: pre-wrap;
 }
 
+/* S08: an acceptance check's verdicts (AcceptanceRecord.tsx). */
+.chat-acceptance.satisfied {
+  border-left-color: var(--success);
+}
+
+.chat-acceptance.unsatisfied,
+.chat-acceptance.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-acceptance.unmet {
+  border-left-color: var(--error);
+}
+
+.chat-acceptance-criteria {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.chat-acceptance-criteria li {
+  margin: 2px 0;
+}
+
+.chat-acceptance-criterion {
+  color: var(--fg);
+}
+
+.chat-acceptance-verdict {
+  display: block;
+  color: var(--fg-dim);
+}
+
+.chat-acceptance-criteria li.met .chat-acceptance-verdict {
+  color: var(--success);
+}
+
+.chat-acceptance-criteria li.unmet .chat-acceptance-verdict {
+  color: var(--error);
+}
+
 /* P5.6: a record at work, and one the run left unfinished. */
 .chat-verify.running,
 .chat-review.running {

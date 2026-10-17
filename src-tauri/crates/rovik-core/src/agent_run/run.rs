@@ -311,6 +311,12 @@ pub struct Run {
     pub(super) review_blocked: bool,
     /// S07: the test writer ran for a change that had no test (once).
     pub(super) tests_after_change: bool,
+    /// S08: the acceptance checks this run had; the criteria the last
+    /// found unsatisfied, for the next; and whether the last check left
+    /// one unmet: the run ends `unmet`.
+    pub(super) acceptance_checks: u32,
+    pub(super) acceptance_unsatisfied: Vec<super::acceptance::Verdict>,
+    pub(super) acceptance_unmet: bool,
     /// What the last failure triage found, for the next one (triage.rs).
     pub(super) last_triage: Option<super::triage::Triage>,
     /// The running parallel group's extend_scope grants.
@@ -1007,6 +1013,9 @@ impl Run {
             review_answer_nudges: 0,
             review_blocked: false,
             tests_after_change: false,
+            acceptance_checks: 0,
+            acceptance_unsatisfied: Vec::new(),
+            acceptance_unmet: false,
             last_triage: None,
             cleaned_this_run: false,
             group_grants: Default::default(),

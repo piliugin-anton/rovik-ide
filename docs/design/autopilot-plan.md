@@ -1263,3 +1263,34 @@ T05 depends most on the environment it meets.
   fails goes to the agent, with the test rule for the writer's tests.
 - **Nothing written** (blocked, failed, no file): recorded, and the
   green round stands.
+
+### S08: acceptance
+
+- **The checker** (`Kind::Acceptance`, `acceptance.rs`) is read-only,
+  with the reviewer's tools. Its report has "Verdicts" (required),
+  "Evidence" and "Unmet", in a format of its own (`Format::Verdicts`):
+  one line per criterion, numbered in order, "satisfied" or
+  "unsatisfied" and what shows it, parsed strictly (`parse_verdicts`). A
+  reply that doesn't read as verdicts gets the repair turn and is then
+  recorded skipped, as is one with a verdict count that isn't the
+  criteria's, or a checker that says it's blocked: never satisfied.
+- **Its brief**: the request, the task's plan's criteria, the run's diff,
+  each check and how it ended, the test writer's report (S04's or
+  S07's), and on the second check what the first found unsatisfied.
+- **The hook** (`accept_after_green`): as the implement run's checks pass
+  in Autopilot, after S06's and S07's. Unsatisfied criteria go to the
+  agent in a note (`harness: acceptance`, with the checker's advice) for
+  one more round, which ends with the checks and a second check whatever
+  it changed. Still unsatisfied then (`MAX_ACCEPTANCE_CHECKS`, 2), the
+  run ends `unmet`. Thorough's "until two rounds without progress" is
+  T's.
+- **The stages**: met, the acceptance is done ("The criterion is met",
+  "All 3 criteria met"); `unmet`, the implement and checks stages are
+  done and the acceptance fails ("1 of 1 criteria unmet after 2
+  checks"), and the delivery doesn't land it ("the acceptance check finds
+  a criterion of the plan unmet"): S09's report delivers it as partial.
+  A plan without criteria, or a checker that couldn't judge: skipped,
+  and the checks decide.
+- **The settings**: "Acceptance checker" joins the kinds' rows, used by
+  Autopilot (`needed_kinds`); ordinary chats never run it. The subagents
+  doc's report table has its row.

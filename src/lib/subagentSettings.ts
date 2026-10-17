@@ -20,7 +20,7 @@ import {
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
 export type SubagentKindId =
-  'scout' | 'reviewer' | 'triage' | 'planReviewer' | 'worker' | 'testWriter';
+  'scout' | 'reviewer' | 'triage' | 'planReviewer' | 'worker' | 'testWriter' | 'acceptance';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -79,6 +79,14 @@ export const SUBAGENT_KINDS: {
     when: 'The agent can call it after implementing a change; its tests run with the project’s checks.',
     toolCalls: 40,
     minutes: 10,
+  },
+  {
+    id: 'acceptance',
+    label: 'Acceptance checker',
+    hint: 'Judges a finished change by its plan’s criteria, one verdict each, with evidence. Read-only.',
+    when: 'Runs in Autopilot once a task’s checks pass; ordinary chats don’t use it.',
+    toolCalls: 30,
+    minutes: 5,
   },
 ];
 
@@ -168,6 +176,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     planReviewer: { ...DEFAULT_KIND },
     worker: { ...DEFAULT_KIND },
     testWriter: { ...DEFAULT_KIND },
+    acceptance: { ...DEFAULT_KIND },
   },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,

@@ -21,6 +21,7 @@
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
 
+pub mod acceptance;
 pub mod autopilot;
 pub mod budget;
 pub mod causes;

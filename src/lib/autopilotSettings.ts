@@ -104,6 +104,7 @@ export const AUTOPILOT_KINDS: SubagentKindId[] = [
   'triage',
   'testWriter',
   'worker',
+  'acceptance',
 ];
 
 /** Saved settings (or nothing, or garbage) as valid settings; defaults fill gaps. */
