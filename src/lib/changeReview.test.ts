@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  reviewAnswersSummary,
   reviewDetails,
   reviewFacts,
   reviewHeadline,
@@ -205,4 +206,48 @@ test('after_green_headline_counts_high_only', () => {
     reviewHeadline(meta, false),
     'The reviewer found 2 findings, none serious enough to send to the agent.'
   );
+});
+
+test('Autopilot’s blocking change review: sent and followed up, settled, blocked (S06)', () => {
+  const found = { ...base, status: 'findings' as const, blocking: true };
+  assert.equal(
+    reviewHeadline({ ...found, findings: [finding('high'), finding('low')] }, false),
+    'The reviewer found 2 findings: 1 sent to the agent to fix or answer, and a follow-up review checks them.'
+  );
+  assert.equal(
+    reviewHeadline(
+      { ...found, round: 3, blocked: true, open: 1, findings: [finding('high')] },
+      false
+    ),
+    'The reviewer still finds 1 high problem after the run’s last review: the change goes no further, and the task ends here.'
+  );
+  const settled = {
+    finding: 1,
+    severity: 'high' as const,
+    location: 'a.ts:1',
+    title: 't',
+    response: { action: 'fixed' as const, note: 'n' },
+    resolved: true,
+    checked: true,
+    reason: 'it does now',
+  };
+  assert.equal(
+    reviewHeadline({ ...base, status: 'clean', blocking: true, earlier: [settled] }, false),
+    'The reviewer found the earlier finding resolved and nothing new to fix.'
+  );
+});
+
+test('answer_review’s answers in a line (S06)', () => {
+  assert.equal(
+    reviewAnswersSummary({
+      responses: [
+        { finding: 1, status: 'fixed', note: 'x' },
+        { finding: '2', status: 'not-a-problem', note: 'y' },
+        { finding: 3, status: 'maybe' },
+      ],
+    }),
+    '1 fixed, 2 not a problem'
+  );
+  assert.equal(reviewAnswersSummary({}), undefined);
+  assert.equal(reviewAnswersSummary({ responses: 'fixed' }), undefined);
 });

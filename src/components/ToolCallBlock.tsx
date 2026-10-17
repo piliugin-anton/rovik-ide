@@ -40,6 +40,7 @@ import {
   type CallStatus,
 } from '../lib/toolArgs';
 import { editCounts } from '../lib/toolGroups';
+import { reviewAnswersSummary } from '../lib/changeReview';
 import LineCounts from './LineCounts';
 import {
   allow,
@@ -262,6 +263,12 @@ function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta)
 
     case 'todo':
       return { title: 'Checklist', meta: todoSummary(args) };
+
+    case 'answer_review':
+      return {
+        title: active ? 'Answering the review' : 'Answered the review',
+        meta: reviewAnswersSummary(args),
+      };
 
     case 'write': {
       const content = str(args.content);

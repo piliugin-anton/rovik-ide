@@ -1142,6 +1142,11 @@ impl Run {
             self.take_checkpoint();
             return Ok("continue".into());
         }
+        // S06: that review left a high finding open, and it was the last.
+        if self.review_blocked {
+            self.checkpoint = None;
+            return Ok("review-open".into());
+        }
         if status != "failed" {
             self.checkpoint = None;
             return Ok(match status {

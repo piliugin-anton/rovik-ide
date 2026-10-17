@@ -509,6 +509,13 @@ impl Run {
             "submit_plan" => {
                 return self.submit_plan(tc, &args).await;
             }
+            // S06: the answers to the change review's findings (Autopilot).
+            "answer_review" if self.autopilot && self.sub().is_none() => {
+                let content = self.answer_review(&args);
+                return self
+                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .await;
+            }
             // The checklist: shown in the panel, never asks, isn't work the
             // loop checks or the pause limit count.
             "todo" => {

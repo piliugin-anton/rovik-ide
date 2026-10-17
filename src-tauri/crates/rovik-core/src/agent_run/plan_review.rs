@@ -382,13 +382,13 @@ pub enum Action {
 
 impl Response {
     /// An answer a hold takes: "not a problem" says why.
-    fn usable(&self) -> bool {
+    pub(super) fn usable(&self) -> bool {
         self.action == Action::Fixed || !self.note.is_empty()
     }
 
     /// "fixed — what changed", on one line, as a follow-up review's brief
     /// shows it.
-    fn describe(&self) -> String {
+    pub(super) fn describe(&self) -> String {
         let action = match self.action {
             Action::Fixed => "fixed",
             Action::NotAProblem => "not a problem",

@@ -1220,3 +1220,28 @@ T05 depends most on the environment it meets.
   errors a file at most, a command's output cut to 2,000 characters), and
   under that step in the later steps' briefs ("## Steps done so far").
   The step stays done: what to do about it is the lead's call.
+
+### S06: the change review blocks
+
+- **The answers**: Autopilot's implement run has `answer_review`
+  (`{ "responses": [ { "finding": 1, "status": "fixed" | "not-a-problem", "note": "…" } ] }`,
+  read as tolerantly as `submit_plan`'s `responses`), the only way to
+  answer the findings sent: its replies aren't read. Finishing with one
+  unanswered is asked about, twice at most (`MAX_ANSWER_NUDGES`); then the
+  follow-up checks what was answered.
+- **The follow-up**: the next review follows the findings up whatever
+  changed (no write needed, no minimum size, and "two reviews in a row"
+  doesn't hold it back): it gets each finding with its answer and gives a
+  verdict on each, by B13's rules and repair turns
+  (`plan_review::follow_up`). A finding stays open until a follow-up finds
+  it resolved; a review that couldn't report (failed, stopped) leaves
+  them as they were.
+- **`review-open`**: a high finding still open after the run's last
+  review (`MAX_CHANGE_REVIEWS_PER_RUN`, in both efforts until T07) ends
+  the run `review-open`, before the checks or, after a repair, in place
+  of R08's green. The implement stage is done ("Finished; its review held
+  it back"), the change review fails ("Blocked after 3 reviews: 1 high
+  finding open"), and the delivery doesn't land it ("the change review
+  still finds a high problem in it"). Medium findings at the last review
+  go to the agent with no review to follow: the checks decide.
+- Agent mode's review stays advice, as it was (D20).

@@ -996,6 +996,13 @@ async fn end_run_stage(
                 ),
             },
         },
+        // S06: its review held it back: the review's stage ends the task.
+        None if outcome == "review-open" => (
+            Status::Done,
+            outcome.to_string(),
+            "Finished; its review held it back".into(),
+            None,
+        ),
         None => (Status::Done, outcome.to_string(), "Finished".into(), None),
     };
     end_stage(core, dialog_id, &run.record, |r| {
@@ -1160,6 +1167,7 @@ fn failure_summary(outcome: &str) -> String {
     match outcome {
         "plan-failed" => "No plan was saved".into(),
         "plan-blocked" => "A high finding is still open after the plan's last review".into(),
+        "review-open" => "A high finding is still open after the change's last review".into(),
         "stopped" => "Stopped".into(),
         "unfinished-checklist" => "The checklist isn't finished".into(),
         "paused-loop" => "The run kept looping after it was told to change approach".into(),
@@ -1404,17 +1412,22 @@ fn review_record(
         };
         return base.with_summary(why);
     };
-    // S02: blocked at the last round, with a high finding open.
+    // S02, S06: blocked at the last round, with a high finding open: the
+    // plan isn't saved, or the change goes no further.
     if review["blocked"] == true {
         let round = review["round"].as_u64().unwrap_or(1) as u32;
         let high = review["findings"]
             .as_array()
             .map_or(0, |f| f.iter().filter(|f| f["severity"] == "high").count());
+        let outcome = match wanted {
+            "plan" => "plan-blocked",
+            _ => "review-open",
+        };
         return StageRecord {
             status: Status::Failed,
             round,
             reference: Some(row.id.clone()),
-            outcome: Some("plan-blocked".into()),
+            outcome: Some(outcome.into()),
             ..base.with_summary(format!(
                 "Blocked after {round} reviews: {high} high finding{} open",
                 if high == 1 { "" } else { "s" }

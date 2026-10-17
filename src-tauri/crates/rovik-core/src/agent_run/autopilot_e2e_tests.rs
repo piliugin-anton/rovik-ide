@@ -2811,3 +2811,187 @@ async fn a_step_that_breaks_a_files_syntax_is_reported_to_the_lead_and_the_next_
         Some("module.exports = 'ok';\n")
     );
 }
+
+/// A task's start that has every change reviewed, however small (S06).
+fn reviewed_task_request(h: &Harness, url: &str) -> StartRequest {
+    let mut request = task_request(h, url);
+    request.config.as_mut().unwrap().subagents = serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "planReviewer": { "enabled": true } },
+        "reviewMinLines": 1,
+    }))
+    .unwrap();
+    request
+}
+
+/// The change reviewer's high finding about ok.txt.
+const HIGH_FINDING: &str = "## Findings\n\n1. [high] ok.txt:1 — The text is the wrong word\n   - Scenario: the test reads ok.txt and expects another word.\n   - Fix: write the word the test expects.\n   - Confidence: confirmed";
+
+/// The agent's answer to finding 1.
+fn answer(id: &'static str, status: &str, note: &str) -> Reply {
+    Reply::Call {
+        id,
+        name: "answer_review",
+        args: json!({ "responses": [{ "finding": 1, "status": status, "note": note }] }),
+    }
+}
+
+/// S06 (4.6, D10): a high finding answered "not-a-problem" stays open while
+/// the follow-up reviews don't agree; after the run's last review the task
+/// ends `review-open`, unchecked and not delivered.
+#[tokio::test]
+async fn a_high_finding_the_follow_ups_dont_settle_ends_the_task_review_open() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.extend([
+        answer("a1", "not-a-problem", "ok.txt is meant to say ok"),
+        Reply::Text("Answered the review."),
+        answer("a2", "not-a-problem", "the test reads ok, so ok is right"),
+        Reply::Text("Answered again."),
+    ]);
+    let not_resolved = "## Earlier findings\n\n- Earlier 1: not resolved — the word is still wrong\n\n## Findings\n\nNone.";
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                CHANGE_REVIEW,
+                vec![Reply::Text(HIGH_FINDING), Reply::Text(not_resolved)],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(reviewed_task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let shown: Vec<(Stage, Status)> = names(&records);
+    assert_eq!(
+        &shown[4..],
+        [
+            (Stage::Implement, Status::Done),
+            (Stage::Review, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ],
+        "{records:#?}"
+    );
+    assert_eq!(records[4].outcome.as_deref(), Some("review-open"));
+    assert_eq!(
+        records[4].summary.as_deref(),
+        Some("Finished; its review held it back")
+    );
+    let review = &records[5];
+    assert_eq!(review.outcome.as_deref(), Some("review-open"));
+    assert_eq!(
+        review.summary.as_deref(),
+        Some("Blocked after 3 reviews: 1 high finding open")
+    );
+    let deliver = &records[6];
+    assert_eq!(deliver.outcome.as_deref(), Some("review-open"));
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("A high finding is still open after the change's last review; the changes are in the project as they are")
+    );
+    // Its checks never counted: none ran.
+    let messages = h.messages().await;
+    assert!(verifications(&messages).is_empty());
+
+    // The answers went to the follow-ups, which gave their verdicts.
+    let requests = seen.lock().unwrap().clone();
+    let briefs: Vec<String> = requests
+        .iter()
+        .filter(|r| route_of(r, &[CHANGE_REVIEW]).is_some())
+        .map(|r| r["messages"][1]["content"].to_string())
+        .collect();
+    let follow = briefs
+        .iter()
+        .find(|b| b.contains("This is a follow-up review"))
+        .expect("a follow-up review");
+    assert!(
+        follow.contains("The agent's answer: not a problem — ok.txt is meant to say ok"),
+        "{follow}"
+    );
+    let reviews: Vec<&Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("review"))
+        .filter(|r| r["kind"] == "change")
+        .collect();
+    assert_eq!(reviews.len(), 3, "{reviews:#?}");
+    assert_eq!(reviews[1]["earlier"][0]["resolved"], false);
+    assert_eq!(
+        reviews[1]["earlier"][0]["response"]["action"],
+        "not_a_problem"
+    );
+    assert_eq!(reviews[2]["blocked"], true);
+    // Only Autopilot's lead gets the tool.
+    let implementing = requests
+        .iter()
+        .find(|r| r["messages"].to_string().contains("Implement this plan"))
+        .unwrap();
+    assert!(tool_names(implementing)
+        .iter()
+        .any(|t| t == "answer_review"));
+}
+
+/// S06: a finding answered "fixed", which the follow-up review confirms,
+/// lets the checks run; an answer is asked for before the follow-up when
+/// the agent finishes without one.
+#[tokio::test]
+async fn a_fixed_finding_the_follow_up_confirms_lets_the_checks_run() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.extend([
+        // Finished without an answer: asked for one.
+        Reply::Text("Done, I think."),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        answer("a1", "fixed", "ok.txt says ok, which the test expects"),
+        Reply::Text("Fixed and answered."),
+    ]);
+    let resolved = "## Earlier findings\n\n- Earlier 1: resolved — ok.txt says ok, as the test expects\n\n## Findings\n\nNone.";
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                CHANGE_REVIEW,
+                vec![Reply::Text(HIGH_FINDING), Reply::Text(resolved)],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(reviewed_task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let mut expected = BALANCED_OK.to_vec();
+    expected[5] = (Stage::Review, Status::Done);
+    assert_eq!(names(&records), expected, "{records:#?}");
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    assert_eq!(records[5].summary.as_deref(), Some("Clean"));
+    let messages = h.messages().await;
+    let asked = messages
+        .iter()
+        .filter(|m| {
+            m.content
+                .contains("Answer the review's findings before you finish")
+        })
+        .count();
+    assert_eq!(asked, 1, "asked once for the answer");
+    let reviews: Vec<&Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("review"))
+        .filter(|r| r["kind"] == "change")
+        .collect();
+    assert_eq!(reviews.len(), 2);
+    assert_eq!(reviews[1]["earlier"][0]["resolved"], true);
+    assert_eq!(reviews[1]["status"], "clean");
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}

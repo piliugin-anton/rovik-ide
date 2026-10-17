@@ -24,14 +24,17 @@ export interface ReviewFinding {
   newEvidence?: string;
 }
 
-/** A follow-up plan review's word on one earlier finding (plan_review.rs, B13). */
+/**
+ * A follow-up review's word on one earlier finding: a plan review's
+ * (plan_review.rs, B13), or in Autopilot a change review's (S06).
+ */
 export interface EarlierCheck {
   /** Its number, as the agent got it. */
   finding: number;
   severity: FindingSeverity;
   location: string;
   title: string;
-  /** The agent's answer (submit_plan's `responses`), when it gave one. */
+  /** The agent's answer (submit_plan's `responses`, answer_review's), when it gave one. */
   response: { action: 'fixed' | 'not_a_problem'; note: string } | null;
   resolved: boolean;
   /**
@@ -86,10 +89,20 @@ export interface ReviewMeta {
   partial?: boolean;
   /** plan: its findings kept the plan from being saved, for the agent to fix. */
   held?: boolean;
-  /** plan: findings still open after the last round, saved at the end of the plan. */
+  /**
+   * plan: findings still open after the last round, saved at the end of the
+   * plan; a blocked change review: the high ones still open.
+   */
   open?: number;
-  /** plan, a follow-up review: each earlier finding, the agent's answer and the verdict. */
+  /** A follow-up review: each earlier finding, the agent's answer and the verdict. */
   earlier?: EarlierCheck[];
+  /** change, Autopilot (S06): it blocks: its findings are answered and followed up. */
+  blocking?: boolean;
+  /**
+   * The last review left a high finding open: an Autopilot plan isn't
+   * saved (S02), an Autopilot change goes no further (S06).
+   */
+  blocked?: boolean;
   /** plan, a follow-up review: new findings below high about steps the revision didn't change; shown, not held. */
   notHeld?: ReviewFinding[];
   /** change: R08's review once the checks pass after a repair: only high findings go back. */
@@ -107,9 +120,11 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
     case 'running':
       return `Reviewing the change (${what})…`;
     case 'clean':
-      return meta.reason
-        ? `The reviewer reported nothing to fix: ${meta.reason}.`
-        : 'The reviewer found nothing to fix.';
+      if (meta.reason) return `The reviewer reported nothing to fix: ${meta.reason}.`;
+      // S06: a follow-up that found what it checked settled.
+      if (meta.earlier?.length)
+        return `The reviewer found the earlier ${meta.earlier.length === 1 ? 'finding' : 'findings'} resolved and nothing new to fix.`;
+      return 'The reviewer found nothing to fix.';
     case 'findings': {
       const all = meta.findings ?? [];
       // P5.5: after green, only high findings go back to the agent.
@@ -117,6 +132,12 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
         meta.afterGreen ? f.severity === 'high' : f.severity !== 'low'
       ).length;
       const count = plural(all.length, 'finding');
+      if (meta.blocked) {
+        const high = meta.open ?? all.filter((f) => f.severity === 'high').length;
+        return `The reviewer still finds ${plural(high, 'high problem')} after the run’s last review: the change goes no further, and the task ends here.`;
+      }
+      if (meta.blocking && serious)
+        return `The reviewer found ${count}: ${serious} sent to the agent to fix or answer, and a follow-up review checks them.`;
       return serious
         ? `The reviewer found ${count}: ${serious} sent to the agent to fix or answer.`
         : `The reviewer found ${count}, none serious enough to send to the agent.`;
@@ -225,4 +246,20 @@ export function reviewDetails(meta: ReviewMeta): string {
   }
   if (meta.partial) parts.push('out of budget');
   return parts.join(' · ');
+}
+
+/** answer_review's answers in a line (S06): "1 fixed, 2 not a problem". */
+export function reviewAnswersSummary(args: Record<string, unknown>): string | undefined {
+  const list = Array.isArray(args.responses) ? args.responses : [];
+  const parts = list.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const r = item as Record<string, unknown>;
+    const n = typeof r.finding === 'number' ? r.finding : Number(r.finding);
+    const status = String(r.status ?? r.action ?? '')
+      .toLowerCase()
+      .replace(/[^a-z]/g, '');
+    const word = status === 'fixed' ? 'fixed' : status.startsWith('not') ? 'not a problem' : '';
+    return Number.isFinite(n) && word ? [`${n} ${word}`] : [];
+  });
+  return parts.length ? parts.join(', ') : undefined;
 }

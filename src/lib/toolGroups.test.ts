@@ -171,6 +171,17 @@ describe('describeGroup', () => {
     );
     assert.equal(todo.verb, 'Updated the checklist');
     assert.equal(todo.items[0].text, '1 of 2 done · Two');
+    // S06: the answers to the change review, in a line.
+    const answered = describeGroup(
+      'answer_review',
+      [{ responses: [{ finding: 1, status: 'fixed', note: 'n' }] }],
+      false
+    );
+    assert.equal(answered.verb, 'Answered the review');
+    assert.deepEqual(
+      answered.items.map((i) => i.text),
+      ['1 fixed']
+    );
     const plan = describeGroup('submit_plan', [{ plan: '# Add caching\n\nSteps' }], true);
     assert.deepEqual([plan.verb, plan.items[0].text], ['Saving the plan', 'Add caching']);
     const context = describeGroup(

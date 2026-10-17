@@ -299,6 +299,16 @@ pub struct Run {
     /// latest (its answers follow it).
     pub(super) review_findings: Vec<super::change_review::Finding>,
     pub(super) review_note_id: Option<String>,
+    /// S06, Autopilot's blocking review: the findings the last review sent,
+    /// numbered as the agent got them, which the next review follows up;
+    /// the agent's answers to them (`answer_review`), and the times it was
+    /// asked for missing ones.
+    pub(super) review_held: Vec<super::change_review::Finding>,
+    pub(super) review_answers: Vec<super::plan_review::Response>,
+    pub(super) review_answer_nudges: u32,
+    /// A high finding still open after the run's last review: the run ends
+    /// `review-open`.
+    pub(super) review_blocked: bool,
     /// What the last failure triage found, for the next one (triage.rs).
     pub(super) last_triage: Option<super::triage::Triage>,
     /// The running parallel group's extend_scope grants.
@@ -990,6 +1000,10 @@ impl Run {
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,
+            review_held: Vec::new(),
+            review_answers: Vec::new(),
+            review_answer_nudges: 0,
+            review_blocked: false,
             last_triage: None,
             cleaned_this_run: false,
             group_grants: Default::default(),
@@ -1342,6 +1356,10 @@ impl Run {
                 if self.review_change().await? {
                     continue;
                 }
+                // S06: a high finding still open after the last review.
+                if self.review_blocked {
+                    return Ok("review-open".into());
+                }
                 if self.stopped() {
                     return Ok("stopped".into());
                 }
@@ -1537,6 +1555,10 @@ impl Run {
         );
         if self.autopilot {
             super::autopilot::without_questions(&mut tools);
+            // S06: the answers to the change review's findings.
+            if !self.plan_mode && self.sub().is_none() && self.root.is_some() && !context_only {
+                tools.push(super::change_review::answer_review_schema());
+            }
         }
         // A subagent gets its kind's tools only; a lead with subagents on,
         // the `task` tool (not on a turn restricted to context tools).
