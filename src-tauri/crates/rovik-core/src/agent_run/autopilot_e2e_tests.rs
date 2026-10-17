@@ -197,19 +197,24 @@ const PLAN_REVIEW: &str = "# Review this plan";
 /// The Tests stage's test writer's brief starts so (S04).
 const TESTS_FIRST: &str = super::test_writer::FIRST_HEADING;
 
+/// The test writer's brief for a change made without tests starts so (S07).
+const TESTS_AFTER: &str = "# Write tests for this change";
+
 /// What the Tests stage's writer answers unless a test gives it replies:
 /// blocked, so the stage is skipped and writes nothing.
 const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
 
-/// `testing::model_routed`, with the Tests stage's test writer answered
-/// apart (`NO_TESTS`) unless the test routes it: a task's other runs get
-/// the replies they're written for.
+/// `testing::model_routed`, with the test writers of the Tests stage and of
+/// a change without tests answered apart (`NO_TESTS`) unless the test
+/// routes them: a task's other runs get the replies they're written for.
 async fn model_routed(
     mut routes: Vec<(&'static str, Vec<Reply>)>,
     default: Vec<Reply>,
 ) -> (String, Arc<Mutex<Vec<Value>>>) {
-    if !routes.iter().any(|(marker, _)| *marker == TESTS_FIRST) {
-        routes.push((TESTS_FIRST, vec![Reply::Text(NO_TESTS)]));
+    for writer in [TESTS_FIRST, TESTS_AFTER] {
+        if !routes.iter().any(|(marker, _)| *marker == writer) {
+            routes.push((writer, vec![Reply::Text(NO_TESTS)]));
+        }
     }
     crate::testing::model_routed(routes, default).await
 }
@@ -2994,4 +2999,116 @@ async fn a_fixed_finding_the_follow_up_confirms_lets_the_checks_run() {
     assert_eq!(reviews[1]["earlier"][0]["resolved"], true);
     assert_eq!(reviews[1]["status"], "clean");
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
+/// S07: a one-step plan that changes code.
+const UTIL_PLAN: &str = "# Make util say ok\n\nThe test passes once util.js exports ok.\n\n## Criteria\n\n1. `npm test` passes: `check.js` finds `src/util.js` exporting ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+    1. **Write util**\n   - Files: `src/util.js`\n   - Change `src/util.js` to export the string `ok` with `module.exports`.\n\
+    2. **Check**\n   - Files: `check.js` (read)\n   - Read `check.js` to confirm it checks what `src/util.js` exports; it keeps its code.\n\n\
+    ## Validation\n- `npm test`\n";
+
+/// S07 (the test-exists rule): the implementation changed code and wrote
+/// no test, and none was written before it: once its checks pass, the
+/// test writer writes the change's tests, and the checks run again with
+/// them.
+#[tokio::test]
+async fn a_change_without_tests_gets_the_test_writer_once_its_checks_pass() {
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        (
+            "check.js",
+            "if (require('./src/util.js') !== 'ok') { console.error('src/util.js:1: error: not ok'); process.exit(1); }",
+        ),
+        ("src/util.js", "module.exports = 'no';\n"),
+    ])
+    .await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let lead = vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": UTIL_PLAN }),
+        },
+        Reply::Text("Saved the plan."),
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Write util", "status": "in_progress" },
+                { "title": "Check", "status": "pending" },
+            ] }),
+        },
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "src/util.js", "content": "module.exports = 'ok';\n" }),
+        },
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Write util", "status": "done" },
+                { "title": "Check", "status": "done" },
+            ] }),
+        },
+        Reply::Text("Done: util.js exports ok."),
+    ];
+    let report = "## Summary\n\nChecks util.js exports ok (criterion 1).\n\n## Test files\n\n- `src/util.test.js`: the export\n\n## Assumptions\n\nNone.";
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                TESTS_AFTER,
+                vec![
+                    Reply::Call {
+                        id: "tw1",
+                        name: "write",
+                        args: json!({ "path": "src/util.test.js", "content": "require('assert').strictEqual(require('./util.js'), 'ok');\n" }),
+                    },
+                    Reply::Text(report),
+                ],
+            ),
+        ],
+        lead,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+
+    // Once: its brief has the request, the plan and the change's files
+    // as outlines only.
+    let requests = seen.lock().unwrap().clone();
+    let briefs: Vec<String> = requests
+        .iter()
+        .filter(|r| route_of(r, &[TESTS_AFTER]).is_some())
+        .map(|r| r["messages"].to_string())
+        .collect();
+    assert!(!briefs.is_empty());
+    assert!(briefs[0].contains("came with no tests"), "{}", briefs[0]);
+    assert!(
+        briefs[0].contains("### `src/util.js`"),
+        "hidden: {}",
+        briefs[0]
+    );
+    assert_eq!(log_lines(&h, "testsAfter").await.len(), 1);
+
+    // Its record, and the checks again with its test.
+    let messages = h.messages().await;
+    // The Tests stage's writer was blocked; this is the second one's.
+    let record = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("tests"))
+        .find(|t| t["after"] == true)
+        .expect("the test writer's record");
+    assert_eq!(record["status"], "done");
+    assert_eq!(record["files"], json!(["src/util.test.js"]));
+    let rounds = verifications(&messages);
+    assert_eq!(rounds.len(), 2, "{rounds:#?}");
+    assert!(rounds.iter().all(|r| r["status"] == "passed"));
+    assert!(h.project.join("src/util.test.js").exists());
 }

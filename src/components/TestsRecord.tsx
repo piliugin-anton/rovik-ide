@@ -3,7 +3,8 @@
 // An Autopilot task's Tests stage in the chat (S04,
 // agent_run/test_writer.rs): the test writer at work, then the tests it
 // wrote before the code, those that pass already flagged, its report, and
-// its work on demand. Updates live while it runs.
+// its work on demand. Updates live while it runs. Also the tests written
+// after a change that came with none (S07, `after`).
 import { For, Show } from 'solid-js';
 import { testsHeadline, type TestsMeta } from '../lib/autopilot';
 import { liveLabel, liveSubagent } from '../lib/subagents';
@@ -69,6 +70,7 @@ export default function TestsRecord(props: {
       <Show when={props.meta.summary}>
         {(text) => <div class="chat-tests-summary">{text()}</div>}
       </Show>
+      <Show when={props.meta.red}>{(note) => <div class="chat-tests-note">{note()}</div>}</Show>
       <Show when={props.meta.status !== 'running'}>
         <div class="chat-verify-files">
           {facts(props.meta)}

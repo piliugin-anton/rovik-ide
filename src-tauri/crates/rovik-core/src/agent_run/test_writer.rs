@@ -172,6 +172,9 @@ pub struct BriefParts<'a> {
 /// The brief's heading when the tests come before the change (S04).
 pub const FIRST_HEADING: &str = "# Write the tests before the change";
 
+/// S07: what the test writer is told when the change came without tests.
+const AFTER_NOTE: &str = "The change is made, and the project's checks pass on it, but it came with no tests. Write the tests that check it does what the request and the plan say: they run with the project's checks next.";
+
 /// E02: the test writer's brief, written by the harness.
 pub fn brief(p: &BriefParts) -> String {
     let mut out = match p.first {
@@ -629,6 +632,152 @@ impl super::run::Run {
         };
         end(status, summary, files, Some(record_id)).await?;
         Ok("done".into())
+    }
+
+    /// S07, the test-exists rule (no model): in Autopilot, a passing
+    /// round whose change has code and no test file
+    /// (`project::is_test_path`), with none written before the code
+    /// either (S04), gets the test writer once: it writes the change's
+    /// tests from the request and the plan, the change's files hidden
+    /// (E02), and E04's red check looks at them. True: it wrote some,
+    /// which are the test writer's to the run (E03), and the checks run
+    /// them now. Its record row is `meta.tests` with `after`.
+    pub(super) async fn tests_for_an_untested_change(&mut self) -> Result<bool, String> {
+        use super::subagent::{Kind, SubOutcome, SubStatus, SubagentSettings};
+        use serde_json::json;
+        if !self.in_autopilot()
+            || self.sub().is_some()
+            || self.plan_mode
+            || self.tests_after_change
+            || !self.test_writer_files.is_empty()
+            || self.stopped()
+        {
+            return Ok(false);
+        }
+        let changed: Vec<String> = self.touched_keys().into_iter().collect();
+        let code = changed
+            .iter()
+            .any(|f| !project::is_test_path(f) && !project::test_paths_for(f).is_empty());
+        let tested = changed.iter().any(|f| project::is_test_path(f));
+        if !code || tested || self.config().subagents.kind(Kind::TestWriter).is_none() {
+            return Ok(false);
+        }
+        self.tests_after_change = true;
+        let Some(root) = self.root.clone() else {
+            return Ok(false);
+        };
+        let plan = self.implementing_plan().await;
+        let hidden = self.test_writer_hidden().await;
+        let outlines: Vec<(String, Option<String>)> = hidden
+            .iter()
+            .map(|k| {
+                let exists =
+                    std::path::Path::new(&super::tools::to_absolute_path(k, &root)).is_file();
+                let outline = exists
+                    .then(|| crate::agent_tools::tool_outline(root.clone(), k.clone()).ok())
+                    .flatten();
+                (k.clone(), outline)
+            })
+            .collect();
+        let request = self.latest_user_request().await;
+        let test_check = self
+            .checks
+            .iter()
+            .find(|c| c.kind == "test" && c.enabled)
+            .map(|c| c.command.clone());
+        let message = brief(&BriefParts {
+            request: &request,
+            plan: plan.as_ref().map(|(p, t)| (p.as_str(), t.as_str())),
+            outlines: &outlines,
+            note: Some(AFTER_NOTE),
+            test_check: test_check.as_deref(),
+            first: None,
+        });
+        let mut row = super::run::new_message("assistant", "");
+        let mut tests = json!({ "status": "running", "after": true });
+        row.meta = Some(json!({ "tests": tests }));
+        let record_id = row.id.clone();
+        self.append(vec![row]).await?;
+        let started = std::time::Instant::now();
+        let outcome = self
+            .run_ide_subagent_with(
+                Kind::TestWriter,
+                &record_id,
+                "Write tests for the change",
+                message,
+                |sub| {
+                    sub.tests_only = true;
+                    sub.hidden = hidden;
+                    sub.light_bash = true;
+                },
+            )
+            .await;
+        tests["ms"] = json!(started.elapsed().as_millis() as u64);
+        let result = match &outcome {
+            Ok((_, Some(r))) => Some(r.clone()),
+            _ => None,
+        };
+        let mut files: Vec<String> = Vec::new();
+        for w in result.iter().flat_map(|r| r.writes.iter()) {
+            if project::is_test_path(&w.path) && !files.contains(&w.path) {
+                files.push(w.path.clone());
+            }
+        }
+        match super::subagent::outcome_of(&mut tests, outcome) {
+            SubOutcome::Stopped => {
+                tests["status"] = json!("stopped");
+            }
+            SubOutcome::Skipped(skip) => {
+                let blocked = matches!(skip, super::subagent::Skip::Blocked(_));
+                tests["status"] = json!(if blocked { "blocked" } else { "skipped" });
+                tests["reason"] = json!(skip_reason(&skip));
+            }
+            SubOutcome::Report(r) => {
+                let parts = super::subagent::sections(&r.text);
+                for (key, section) in [("summary", "Summary"), ("assumptions", "Assumptions")] {
+                    if let Some(text) = parts.get(section).filter(|t| !t.trim().is_empty()) {
+                        tests[key] = json!(text.trim());
+                    }
+                }
+                tests["report"] = json!(r.text.chars().take(6_000).collect::<String>());
+                if r.status == SubStatus::Partial {
+                    tests["partial"] = json!(true);
+                }
+                tests["status"] = json!("done");
+            }
+        }
+        if tests["status"] == "done" && files.is_empty() {
+            tests["status"] = json!("skipped");
+            tests["reason"] = json!("The test writer wrote no test file");
+        }
+        // E04: the new ones that pass on the code before the change.
+        if let Some(r) = result
+            .as_ref()
+            .filter(|_| !files.is_empty() && !self.stopped())
+        {
+            if let Some(note) = self.red_check(r).await {
+                tests["red"] = json!(note);
+            }
+        }
+        tests["files"] = json!(files);
+        self.update_meta(&record_id, json!({ "tests": tests }))
+            .await?;
+        super::log::write(
+            &self.core,
+            json!({
+                "event": "testsAfter",
+                "dialogId": self.dialog_id,
+                "status": tests["status"],
+                "files": files.len(),
+                "ms": tests["ms"],
+            }),
+        );
+        if files.is_empty() || self.stopped() {
+            return Ok(false);
+        }
+        self.test_writer_files.extend(files);
+        self.writes_since_verify = true;
+        Ok(true)
     }
 
     /// S04's red check: the test files of `files` that pass on the code as

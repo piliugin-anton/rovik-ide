@@ -1147,6 +1147,12 @@ impl Run {
             self.checkpoint = None;
             return Ok("review-open".into());
         }
+        // S07: green on a change with code and no test: the test writer
+        // writes its tests, and the checks run them now.
+        if status == "passed" && self.tests_for_an_untested_change().await? {
+            self.take_checkpoint();
+            return Ok("repaired".into());
+        }
         if status != "failed" {
             self.checkpoint = None;
             return Ok(match status {

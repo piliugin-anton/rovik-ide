@@ -1245,3 +1245,21 @@ T05 depends most on the environment it meets.
   still finds a high problem in it"). Medium findings at the last review
   go to the agent with no review to follow: the checks decide.
 - Agent mode's review stays advice, as it was (D20).
+
+### S07: the test-exists rule
+
+- **When**: in Autopilot, as a round of the implement run's checks
+  passes, on a change with a code file (one `project::test_paths_for`
+  has a test place for: a README isn't code) and no test file
+  (`project::is_test_path`), when the Tests stage wrote none either
+  (S04). Once a run, which is once a task: the implement run is the
+  task's run that checks. It comes after R08's review and before the run
+  ends, so before acceptance (S08).
+- **What**: the test writer with E02's brief and limits, told the change
+  is made and came with no tests, its files hidden; E04's red check on
+  what it wrote (in an isolated chat); its record is `meta.tests` with
+  `after`. What it wrote is the test writer's to the run (E03), and the
+  checks run again at once ("repaired"), a round like any other: one that
+  fails goes to the agent, with the test rule for the writer's tests.
+- **Nothing written** (blocked, failed, no file): recorded, and the
+  green round stands.

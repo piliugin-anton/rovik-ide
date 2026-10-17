@@ -286,3 +286,22 @@ test('the Tests record’s headline: at work, what it wrote, what passes already
     'Stopped while the tests were written.'
   );
 });
+
+test('the Tests record after a change that came with none (S07)', () => {
+  const after = { after: true, files: ['src/util.test.js'] };
+  assert.equal(
+    testsHeadline({ ...after, status: 'running' }, false),
+    'The change came with no tests: writing them…'
+  );
+  assert.equal(
+    testsHeadline({ ...after, status: 'done' }, false),
+    'The change came with no tests: wrote 1 test file, and the checks run it next.'
+  );
+  assert.equal(
+    testsHeadline(
+      { after: true, status: 'blocked', reason: 'The test writer was blocked: Nothing to test' },
+      false
+    ),
+    'The test writer was blocked: Nothing to test. The checks’ result stands.'
+  );
+});

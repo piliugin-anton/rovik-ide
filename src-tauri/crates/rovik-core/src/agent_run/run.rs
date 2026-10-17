@@ -309,6 +309,8 @@ pub struct Run {
     /// A high finding still open after the run's last review: the run ends
     /// `review-open`.
     pub(super) review_blocked: bool,
+    /// S07: the test writer ran for a change that had no test (once).
+    pub(super) tests_after_change: bool,
     /// What the last failure triage found, for the next one (triage.rs).
     pub(super) last_triage: Option<super::triage::Triage>,
     /// The running parallel group's extend_scope grants.
@@ -1004,6 +1006,7 @@ impl Run {
             review_answers: Vec::new(),
             review_answer_nudges: 0,
             review_blocked: false,
+            tests_after_change: false,
             last_triage: None,
             cleaned_this_run: false,
             group_grants: Default::default(),

@@ -1795,7 +1795,7 @@ impl Run {
 
     /// The files the test writer may not read (E02): those the plan names
     /// and those this run changed, test files aside.
-    async fn test_writer_hidden(&self) -> Vec<String> {
+    pub(super) async fn test_writer_hidden(&self) -> Vec<String> {
         let plan = self.implementing_plan().await;
         let root = self.root.clone().unwrap_or_default();
         let mut touched: Vec<String> = Vec::new();

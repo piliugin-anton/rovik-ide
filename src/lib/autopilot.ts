@@ -73,6 +73,12 @@ export interface TestsMeta {
   model?: string;
   toolCalls?: number;
   ms?: number;
+  /**
+   * S07: written after the change, which came with no test (the
+   * test-exists rule); `red`: the red check's note on them.
+   */
+  after?: boolean;
+  red?: string;
 }
 
 /** The headline of a Tests record; `interrupted`: saved as running, but nothing runs it. */
@@ -81,6 +87,18 @@ export function testsHeadline(meta: TestsMeta, interrupted: boolean): string {
   const wrote = `${n} test file${n === 1 ? '' : 's'}`;
   const passing = meta.passing?.length ?? 0;
   if (interrupted) return 'Writing the tests didn’t finish: the run ended meanwhile.';
+  if (meta.after) {
+    switch (meta.status) {
+      case 'running':
+        return 'The change came with no tests: writing them…';
+      case 'done':
+        return `The change came with no tests: wrote ${wrote}, and the checks run ${n === 1 ? 'it' : 'them'} next.`;
+      case 'stopped':
+        return 'Stopped while tests for the change were written.';
+      default:
+        return `${meta.reason ?? 'No tests were written'}. The checks’ result stands.`;
+    }
+  }
   switch (meta.status) {
     case 'running':
       return 'Writing the tests before the code, from the plan’s criteria…';
