@@ -20,6 +20,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
+  # Debug info is most of what the workspace's 40-odd test binaries weigh:
+  # without it they fit on the runner's disk. A failing assertion still
+  # names its file and line.
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
 
 jobs:
   rust:
@@ -27,6 +32,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      # The runner's own toolchains this build doesn't use: room for the
+      # test binaries.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
       # The whole history: the evaluation's tasks on this repository start
       # from its earlier commits.
       - uses: actions/checkout@v4
