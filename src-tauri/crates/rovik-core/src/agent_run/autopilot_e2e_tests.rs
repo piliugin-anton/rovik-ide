@@ -3477,7 +3477,10 @@ async fn a_last_review_that_cant_report_leaves_its_high_finding_open() {
         records.last().unwrap().outcome.as_deref(),
         Some("review-open")
     );
-    assert!(verifications(&h.messages().await).is_empty(), "never checked");
+    assert!(
+        verifications(&h.messages().await).is_empty(),
+        "never checked"
+    );
 }
 
 /// S06 (4.6, D10): a high finding answered "not-a-problem" stays open while
@@ -5859,6 +5862,19 @@ async fn two_candidates_implement_the_plan_each_in_a_copy_and_the_better_lands()
     let requests = seen.lock().unwrap().clone();
     assert!(briefs_of(&requests, JUDGING_CANDIDATES).is_empty());
     assert_eq!(log_lines(&h, "pick").await[0]["winner"], "a");
+    // D8: each candidate's reviewer and acceptance checker judge by the
+    // task's request, though a candidate's chat holds none of its own.
+    for marker in [CHANGE_REVIEW, ACCEPTANCE] {
+        // One a candidate (and the reviewer's view, in its chat, T08).
+        let briefs = briefs_of(&requests, marker);
+        assert!(briefs.len() >= 2, "{marker}: {}", briefs.len());
+        for brief in &briefs {
+            assert!(
+                brief.contains("## The user's request\n\nMake the test pass"),
+                "{marker}: {brief}"
+            );
+        }
+    }
 }
 
 /// T06 (D14): two candidates whose scores tie go to the judge, whose

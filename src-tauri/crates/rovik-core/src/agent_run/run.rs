@@ -2729,12 +2729,34 @@ impl Run {
             return sub.parent_request.clone();
         }
         let recent = self.recent().await.unwrap_or_default();
-        recent
+        let own = recent
             .iter()
             .rev()
             .find(|m| m.role == "user" && !m.failed && !plan::is_harness(m))
-            .map(|m| sent_content(m).unwrap_or_else(|| m.content.clone()))
-            .unwrap_or_default()
+            .map(|m| sent_content(m).unwrap_or_else(|| m.content.clone()));
+        if let Some(request) = own {
+            return request;
+        }
+        // D8, T05: a candidate's chat holds no request of its own: its
+        // task's is the message that started the task, in the task's chat.
+        let Some(task) = self.stage.as_ref().map(|s| s.task.clone()) else {
+            return String::new();
+        };
+        let ids = vec![task.clone()];
+        let rows = (self.core.db)
+            .read(move |c| store::messages_by_id(c, &ids))
+            .await
+            .unwrap_or_default();
+        let Some(started) = rows.first() else {
+            return String::new();
+        };
+        match sent_content(started) {
+            Some(sent) => sent,
+            None => (self.core.db)
+                .read(move |c| store::get_message_body(c, &task))
+                .await
+                .unwrap_or_else(|_| started.content.clone()),
+        }
     }
 }
 
