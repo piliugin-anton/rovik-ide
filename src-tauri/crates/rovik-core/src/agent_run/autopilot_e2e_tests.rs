@@ -1554,6 +1554,93 @@ async fn resumes_while_a_task_goes_on_start_none_of_its_stages() {
     assert_eq!(plan_runs, 2);
 }
 
+/// A03 (R03): a start that comes while the chat's driver is between two
+/// stages waits for the driver's turn, so the two never interleave (here
+/// the user's task, which starts once the turn is over). Past a moment,
+/// it's refused.
+#[tokio::test]
+async fn a_start_waits_for_the_drivers_turn() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        task_script(),
+    )
+    .await;
+    // The driver between two stages: its turn is taken.
+    let driving = super::autopilot::drive_lock(&h.dialog_id).await;
+    let (core, request) = (h.core.clone(), task_request(&h, &url));
+    let start = crate::rt::spawn(async move { agent_start(&core, request).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        stages(&h).await.is_empty(),
+        "nothing starts in the driver's turn"
+    );
+    drop(driving);
+    start.await.unwrap().unwrap();
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+
+    let _driving = super::autopilot::drive_lock(&h.dialog_id).await;
+    let busy = super::autopilot::driver_turn(&h.dialog_id, Duration::from_millis(50)).await;
+    assert_eq!(busy.err().as_deref(), Some(super::autopilot::DRIVER_BUSY));
+}
+
+/// R03: the daemon's checks of a merge into the chat (6.6) are its
+/// result's, never a stage's: after a task whose implementation failed,
+/// they open none of its stages again, as only the user's Retry or
+/// Continue does.
+#[tokio::test]
+async fn a_merge_check_opens_no_stage_again() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            Reply::Text("Saved the plan."),
+            // The implementation's provider refuses it.
+            Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}"),
+            // The merge check's fix round.
+            Reply::Text("Nothing to fix here."),
+        ],
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let before = stages_until(&h, "the delivery", delivered).await;
+    let implement = before.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(
+        (implement.status, implement.outcome.as_deref()),
+        (Status::Failed, Some("error")),
+        "{before:#?}"
+    );
+
+    let merged = StartKind::CheckMerged {
+        files: vec!["ok.txt".into()],
+        diffs: Vec::new(),
+    };
+    let mut check = h.request(&url, merged, Permissions::default());
+    check.mode = Some("autopilot".into());
+    h.start(check).await;
+    let after = stages(&h).await;
+    assert_eq!(names(&after), names(&before), "{after:#?}");
+    h.wait_for("the merge check's end", |e| {
+        e["type"] == "runEnded" && e["dialogId"] == h.dialog_id.as_str() && e["stage"].is_null()
+    })
+    .await;
+    assert_eq!(names(&stages(&h).await), names(&before));
+}
+
 /*
  * Approvals in Autopilot (U02)
  */

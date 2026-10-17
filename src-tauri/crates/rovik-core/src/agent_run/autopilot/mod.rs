@@ -55,10 +55,12 @@ pub use delivery::{
     plan_title, report_facts, CheckLine, DeliverAsk, Deliverer, Delivering, Delivery, Pushed,
     ReportFacts,
 };
-pub(super) use driver::{after_run, drive_lock, go_on_boxed, not_started_why, try_drive_lock};
+pub(super) use driver::{
+    after_run, drive_lock, driver_turn, go_on_boxed, not_started_why, try_drive_lock,
+};
 #[cfg(test)]
 pub(super) use driver::{crash_at, Crash};
-pub use driver::{resume, stage_for, Settings};
+pub use driver::{resume, stage_for, Settings, DRIVER_BUSY};
 pub use outcome::finished;
 pub(super) use outcome::plural;
 #[cfg(test)]

@@ -1081,6 +1081,10 @@ pub fn stored_message(message: &UserMessage) -> NewMessage {
     }
 }
 
+/// How long a start waits for the chat's Autopilot driver between two
+/// stages: a moment, but for a delivery that pushes the task's result.
+const DRIVER_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Starts a run in the chat. Returns its id, or None when there was nothing
 /// to do (a Resume with nothing left to run). A Resume of a chat whose
 /// Autopilot task was cut goes on with the task (autopilot/).
@@ -1093,10 +1097,15 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         if core.agents.draining() {
             return Err(RESTARTING.into());
         }
+        // It takes the driver's turn itself, or finds it taken.
         if let Some(started) = autopilot::resume(core, &request).await? {
             return Ok(started);
         }
     }
+    // A03: the chat's driver may be between two of its task's stages; the
+    // start waits for its turn, so the two never interleave. The stage the
+    // driver started is running then, and the start finds it.
+    let _driving = autopilot::driver_turn(&request.dialog_id, DRIVER_WAIT).await?;
     start_run(core, request).await
 }
 

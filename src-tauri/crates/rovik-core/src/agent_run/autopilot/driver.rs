@@ -101,8 +101,10 @@ pub(super) fn record_named(meta: Option<&Value>) -> Option<&str> {
 /// task: the plan of a task its message starts (recorded here, before the
 /// run), the stage the driver started it for, or the one a Retry, a
 /// Continue or a Resume picks up. A run stage that ended in a failure is
-/// opened again, as its next round, by a Retry or a Continue (never by a
-/// Resume, which nobody asked for). None: the run is no stage's.
+/// opened again, as its next round, by the user's Retry or Continue only
+/// (never by a Resume, which nobody asked for). The daemon's checks of a
+/// merge (6.6) are the result's, never a stage's. None: the run is no
+/// stage's.
 pub async fn stage_for(
     core: &Core,
     dialog_id: &str,
@@ -123,6 +125,9 @@ pub async fn stage_for(
             .find(|r| r.id == record && r.record.status == Status::Running)
             .map(StageRun::of));
     }
+    if matches!(start, StartKind::CheckMerged { .. }) {
+        return Ok(None);
+    }
     let Some((_, records)) = current_task(core, dialog_id).await? else {
         return Ok(None);
     };
@@ -130,7 +135,11 @@ pub async fn stage_for(
     if last.record.status == Status::Running {
         return Ok(last.record.name.has_run().then(|| StageRun::of(last)));
     }
-    if matches!(start, StartKind::Resume) {
+    let asked = matches!(
+        start,
+        StartKind::Retry | StartKind::ContinueReply | StartKind::ContinueRun
+    );
+    if !asked {
         return Ok(None);
     }
     // The latest run stage, when it failed and only the delivery came after.
@@ -270,6 +279,24 @@ pub(in crate::agent_run) async fn drive_lock(dialog_id: &str) -> DriveGuard {
 
 pub(in crate::agent_run) fn try_drive_lock(dialog_id: &str) -> Option<DriveGuard> {
     lock_of(dialog_id).try_lock_owned().ok()
+}
+
+/// Why a start of the chat's run was refused: its driver is between two
+/// of its task's stages, which takes longer than a moment only while it
+/// delivers the task.
+pub const DRIVER_BUSY: &str =
+    "Autopilot is between two stages of this chat's task. Try again in a moment.";
+
+/// The chat's driver's turn, for a start of its run that isn't the
+/// driver's (the user's, the daemon's): once a driver between two stages
+/// is done with it, so the two never interleave; `wait` at most.
+pub(in crate::agent_run) async fn driver_turn(
+    dialog_id: &str,
+    wait: std::time::Duration,
+) -> Result<DriveGuard, String> {
+    tokio::time::timeout(wait, drive_lock(dialog_id))
+        .await
+        .map_err(|_| DRIVER_BUSY.to_string())
 }
 
 /// Ends the stage a run carried out. A plan's is done once a plan was
