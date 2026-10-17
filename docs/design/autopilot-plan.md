@@ -58,9 +58,9 @@ Contents:
 | D11 | **An acceptance check after green.** A read-only subagent gets the criteria, the diff, the checks' results and the test writer's report, and gives a verdict per criterion with evidence. Unsatisfied criteria go back to the implementer once (Balanced) or until no progress (Thorough). Still unsatisfied ends the task with `unmet`, delivered as partial.                                                                                                                  | Passing checks never meant the request was met. This is the one stage whose only job is that question, and it's independent of the implementer.                                                                                                            |
 | D12 | **Repair rounds are bounded by progress and budget, not by three.** In Autopilot `MAX_VERIFY_ROUNDS` doesn't apply: a round that uncovers failures the last one hid (a type check that passed shows the tests) isn't counted, and the loop ends after two rounds without progress or at the budget. An environment failure (exit 127, "command not found", "Cannot find module", "No module named") is a prepare failure, not a code failure: it reruns the prepare stage once. | Three rounds absorb cascades and setup problems before the real failure is seen (review findings 6 and 7). The no-progress rule exists (`repair::Judgement`); the budget is new (D16).                                                                     |
 | D13 | **Thorough buys independence, not repetition.** Three plan candidates and a judge; two criteria writers; two implementers in two working copies where a second copy is possible; an adversarial tester; a second model for every judging role by default. Never "ask the model if it's sure" twice.                                                                                                                                                                             | Redundant _independent_ work decorrelates errors; repeated self-assessment doesn't.                                                                                                                                                                        |
-| D14 | **Candidates are scored mechanically, the judge breaks ties.** Score: criteria tests passed, then project checks passed, then high and medium review findings (fewer is better), then diff size (smaller is better). The judge model picks only when two candidates tie.                                                                                                                                                                                                        | A judge is a model too. Tests first keeps its influence to the cases where nothing else can decide.                                                                                                                                                        |
+| D14 | **Candidates are scored mechanically, the judge breaks ties.** Score: criteria tests passed, then project checks passed, then high and medium review findings (fewer is better), then diff size (smaller is better). The judge model picks only when two candidates tie. Since R03, a run that ended clean (a result Autopilot lands) comes before the counts.                                                                                                                  | A judge is a model too. Tests first keeps its influence to the cases where nothing else can decide.                                                                                                                                                        |
 | D15 | **Delivery on a server is a push.** After a landable outcome the daemon pushes the result commit to a branch `rovik/<slug>` on the project's remote, with a deploy key the user put on the server, and opens a pull request when `gh` is installed and logged in there. The result ref and the `ResultReady` event stay as they are, so the laptop still gets the result.                                                                                                       | Results never leave a server today without a client (dev plan 6.5). A branch is what every forge, CI and reviewer can take. The agent's own `git push` stays refused: the daemon pushes, once, what the pipeline delivered.                                |
-| D16 | **A budget per task**: wall time and cost, from the Autopilot settings, overridden by the host's block. The pipeline checks it between stages, and the run checks it per reply from the usage providers report. Past it, the task ends with `budget`, delivered as partial with a report.                                                                                                                                                                                       | The lead has no bound today (`the_lead_has_no_wall`). Unattended, the only stop would be a provider error or the user. Thorough's "no progress" loops need a hard stop.                                                                                    |
+| D16 | **A budget per task**: wall time and cost, from the Autopilot settings, overridden by the host's block. The pipeline checks it between stages, and the run checks it per reply from the usage providers report, as each of its subagents does at its own (R03). Past it, the task ends with `budget`, delivered as partial with a report.                                                                                                                                       | The lead has no bound today (`the_lead_has_no_wall`). Unattended, the only stop would be a provider error or the user. Thorough's "no progress" loops need a hard stop.                                                                                    |
 | D17 | **Autopilot enables the kinds it needs for its own runs**: plan reviewer, change reviewer, triage, test writer, step workers, acceptance checker; in Thorough also planner, judge and adversarial tester. The user's switches on the Subagents page still govern ordinary chats; the rows there give the models.                                                                                                                                                                | A pipeline whose stages can be switched off isn't a pipeline. Showing the rows as "Used by Autopilot" keeps the models in one place.                                                                                                                       |
 | D18 | **A notice when a task ends or is blocked**: a URL on the host's block, called by the daemon with the chat, the stage, the outcome and the report's summary. Nothing else: no email, no push service in v1.                                                                                                                                                                                                                                                                     | One HTTP call reaches everything (Slack, ntfy, a GitHub Action, a mailer). The daemon knows the moment; the laptop may be off.                                                                                                                             |
 | D19 | **Prepare before the first check**: in a working copy whose dependencies aren't installed, the pipeline runs the install the lockfile implies (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`, `cargo fetch`, `pip install -r requirements.txt`, `uv sync`, `go mod download`), as heavy work, once, and records the output.                                                                                                                            | A fresh server worktree has no `node_modules`; "vitest: not found" would otherwise eat the repair rounds, and the model can't run installs under the default allowlist.                                                                                    |
@@ -905,6 +905,12 @@ T05 depends most on the environment it meets.
 
 ### U04: the budget
 
+- **Checked at every reply, the helpers' too** (R03): the lead's run
+  after each of its replies, and each subagent of a task's run (the
+  IDE's own: Thorough's planners, criteria writers and judges, the Tests
+  stage's writer) before each of its turns. Past it, a subagent stops its
+  lead's run with every subagent of it (`cut_for_budget`), and the run
+  ends `budget`, not `stopped`: its stage ends over the task's budget.
 - **What counts** (`agent_run/budget.rs`, `Spent`): the time a task's
   runs ran and the cost their providers reported. Each lead run of a task
   adds its replies' cost, its subagents' too, and its time since it
@@ -1326,7 +1332,9 @@ T05 depends most on the environment it meets.
   checks"), and the delivery doesn't land it ("the acceptance check finds
   a criterion of the plan unmet"): S09's report delivers it as partial.
   A plan without criteria, or a checker that couldn't judge: skipped,
-  and the checks decide.
+  and the checks decide, but after a check that found criteria unmet
+  (R03): nothing confirmed their fix, so they stand, the checks end, and
+  the run ends `unmet` (the record: `unmet`, `earlierUnmet`).
 - **The settings**: "Acceptance checker" joins the kinds' rows, used by
   Autopilot (`needed_kinds`); ordinary chats never run it. The subagents
   doc's report table has its row.
@@ -1581,8 +1589,11 @@ T05 depends most on the environment it meets.
   watched than one on a server (D5), and Thorough's planners, at once, are
   the likeliest to meet a limit.
 - **The wait**: until the reset the failure named (`resetAt`, from the
-  provider's `Retry-After`), at least a second; without one, a minute,
-  then two, four…. The stage's waits add up to an hour at most, and none
+  provider's `Retry-After`), at least a second, then two, four… (R03: a
+  provider that keeps answering "now" isn't asked every second for the
+  hour); without one, a minute, then two, four…. A Stop meanwhile, with
+  no run to stop, ends the stage stopped and its timer starts nothing;
+  the composer shows Stop while the task waits. The stage's waits add up to an hour at most, and none
   starts past the task's budget (U04: what it spent, the run's with it);
   past either, the stage ends as before. The record keeps them
   (`rateLimit`: when its run goes on, how many waits, how long in all), so
@@ -1791,11 +1802,14 @@ T05 depends most on the environment it meets.
   Acceptance, a failed one ending them), so the chat is running and its
   Stop stops them; it spends nothing itself. A restart picks the
   candidate under way up where it was, as its own Resume would (twice at
-  most, then it ends failed). A move or the server's stop pauses the
-  candidate first, then this run, and the task's next start goes on with
-  both. A move to a host takes the candidates' chats along, not their
-  copies: the candidate under way goes on in a new copy there, without
-  what it wrote before the move.
+  most, then it ends failed). The server's stop pauses the candidate
+  first, then this run, and the next start goes on with both. A chat
+  whose candidates are at work, or await their Pick, doesn't move, to a
+  host or back (R03, `MOVE_AWAITS_PICK`): their copies can't go with it.
+- **Copies done with go** (R03): a round a Stop ended, or whose run
+  couldn't start, is never picked, and its copies go; a new round clears
+  every earlier round's of the chat first, so none takes the room the new
+  ones share, and copies reopened after a restart share it as they did.
 - **What the task's chat shows**: `meta.candidates` (`CandidatesRecord`:
   each candidate's line, its work on demand, its events as a subagent's
   so its transcript follows it live, on a server too); the Implement
@@ -1814,7 +1828,9 @@ T05 depends most on the environment it meets.
   its copy (`candidates::Score`): before D14's order, a change to take
   and a run that finished (no error, Stop or budget cut it), which D14
   doesn't name, so an empty or cut candidate can't win over one that
-  finished; then D14's: the tests written first (S04) that pass in its
+  finished, then (R03) one that ended clean, with a result Autopilot
+  lands, over one that ended with a caveat (unmet, a flagged check, an
+  open finding, nothing checked); then D14's: the tests written first (S04) that pass in its
   copy, run alone as T04's speculative tests are (one with no way to run
   alone counts as its last checks went), the checks its last round
   passed, the high and medium findings its last change review left open,
@@ -1835,7 +1851,10 @@ T05 depends most on the environment it meets.
   outcome, so the change lands at its end as the winner's own run's
   would have (`landing.rs`: the one harness stage that lands). A pick
   cut by a restart goes on in its record, past the winner's change once
-  it's taken.
+  it's taken; one cut after it decided takes the winner it chose, never
+  scoring again, and its change only while its copy is still there
+  (R03, `Copies::kept`). A started candidate's copy that can't be opened
+  fails the pick, its copies kept.
 - **After it, the winner's**: the Acceptance record (S08 runs inside
   each candidate's run, before the pick, where 4.10 puts it after: its
   repair rounds need the implementation's run), the report's facts (its
@@ -2081,71 +2100,43 @@ the code and the fixed ones reproduced by a test first.
   dispatch in run.rs, the strip's labels) are exhaustive, so the compiler
   lists them.
 
-### R03: found, not fixed
+### R03: the rest, fixed
 
-Confirmed by tracing the code unless marked plausible. Two are design
-calls the plan made on purpose (marked), for a decision rather than a
-patch.
+What R02's pass found and left: fixed in a second pass, each reproduced
+by a test first, with four design calls the user made (marked).
 
 - **Driver**
-  - A user's Send, Retry or Continue arriving between two stages isn't
-    serialized with the driver: it can interleave two tasks' records
-    (`latest_task` takes the last record's task) or reopen a stage while
-    the driver starts the next. A timing window of milliseconds. Fix:
-    user starts in an Autopilot chat wait for the driver's turn.
-  - `stage_for` treats every start but Send and Resume as the user's
-    Retry or Continue, the daemon's CheckMerged included (plausible).
-    Fix: take up or reopen a stage only for Retry, ContinueReply and
-    ContinueRun.
-  - A reset at or before now is a one-second wait each time, so a
-    provider answering 429 with `Retry-After: 0` is retried up to about
-    3,600 times in the hour's patience. Fix: a doubling floor.
-  - A stage waiting out a rate limit has no run: Stop does nothing, and
-    the wait's run starts anyway. Fix: Stop with no run ends a waiting
-    stage as stopped.
-  - After a crash, `go_on` looks for the implementation's message in the
-    last 500 messages only, and a candidate's `implementation_message`
-    looks for the plan in the candidate's own records, which have none.
+  - A start that isn't the driver's (the user's, the daemon's) waits for
+    the driver's turn between two stages, ten seconds at most, then is
+    refused (`DRIVER_BUSY`): the two never interleave.
+  - Only Retry, ContinueReply and ContinueRun open a failed stage again;
+    the daemon's check of a merge carries out no stage.
+  - A rate limit's reset of now waits a second, then two, four…; a Stop
+    while a stage waits ends it stopped (H07).
+  - After a crash, the implementation's message is found however far
+    back it is, and a candidate's implementation is built from its task
+    chat's plan.
 - **Stages**
-  - (Design call, S08) An acceptance check that can't judge after one
-    that found a criterion unmet is skipped and the checks' word stands:
-    the task lands as verified while its report shows the unmet verdict.
-  - The budget is checked per lead reply and between stages, not during
-    work done only by IDE-started subagents (Thorough's planners, criteria
-    writers and judges, the Tests stage), which can go far past it.
-  - The red check counts a Rust test file in a new module as passing
-    before the change: `cargo test path::tests` runs none and exits 0.
-    Fix: require that tests ran.
-  - `tests_line` tells the implementer that test files the Tests stage
-    changed (not made) "fail now on purpose", unrun; the acceptance
-    brief's `tests_report` reads S04's rows from its own chat, which a
-    candidate's isn't.
+  - (Decided) A check that can't judge after one that found a criterion
+    unmet leaves it unmet: the task ends `unmet` (S08).
+  - (Decided) Every subagent of a task checks its budget at each of its
+    replies; past it, its stage ends over the budget (U04).
+  - The red check counts a run that ran no test as neither passing nor
+    failing (`project::ran_no_tests`); the implementation is told a test
+    fails on purpose only when the red check saw it fail; a candidate's
+    acceptance brief has its task's tests.
 - **Thorough's candidates**
-  - (Design call, D14) The score's `finished` counts `unmet`,
-    `verify-flagged`, `review-open` and `verify-gave-up` as finished, and
-    the acceptance verdicts aren't in it: a candidate whose acceptance
-    found a criterion unmet can win on diff size over one that met all.
-    Fix: a `sound` key after `finished` (no failed stage).
-  - A task moved to a host while a candidate implements: the paused
-    candidate never continues there (`go_on` sees the move's pause), and
-    the other's copy, a local child overlay, is made again empty on the
-    host and can win the pick. Fix: continue a paused candidate with
-    ContinueRun; at the pick, a started candidate's missing copy is lost,
-    not empty.
-  - A pick resumed after a crash between taking the winner's change and
-    saving `adopted` scores copies that are gone (a narrow window).
-  - A round that never reaches the Pick (a Stop, a failed start) leaves
-    its copies and registrations, and later copies get 1 MB of room; after
-    a restart a reopened copy takes all of it. A copy that fails to open
-    at the pick is scored empty and discarded. A candidate's spend can be
-    lost in a crash between two saves.
+  - (Decided) A candidate that ended clean beats one that ended with a
+    caveat, before D14's counts (T06).
+  - (Decided) A chat whose candidates are at work, or await their Pick,
+    doesn't move (T05).
+  - A pick a crash cut after it decided takes the winner it chose; a copy
+    that can't be opened fails the pick; a round never picked leaves no
+    copies; reopened copies share their room; the stage's spend is added
+    up again at its end.
 - **App and daemon**
-  - Opening a local chat resumes its task only when the loaded page (50
-    messages) holds a stage record: a long implementation cut by a closed
-    app isn't resumed. Fix: resume when the stored task isn't over.
-  - After the strip jumps to a running stage whose record wasn't loaded,
-    the record reads "didn't finish" while the strip spins.
-  - A delivery resumed after its pull request opened loses the PR (`gh`
-    says it exists; the stored one is overwritten), and the notifier's
-    bookkeeping grows for the daemon's life (plausible: an earlier task's
-    branch in a later notice).
+  - Opening a chat resumes its task from its stored records, not only
+    from the page held; a running stage's record reads live on any page.
+  - A delivery done again takes the pull request open for its branch; the
+    notifier keeps one report a chat, by its task, taken at that task's
+    delivery, told or not.
