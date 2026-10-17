@@ -332,6 +332,7 @@ impl super::run::Run {
                 note: Box::new(|_| {}),
                 env: scratch.command_env(),
                 confine: scratch.confine(),
+                whole_output: false,
             };
             let out = crate::command_tool::run_command(
                 view.clone(),

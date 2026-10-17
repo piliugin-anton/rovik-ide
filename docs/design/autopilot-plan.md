@@ -1056,3 +1056,15 @@ T05 depends most on the environment it meets.
   round's tests aren't compared with another round's (repair.rs
   `blind`), and the scoped run's test count isn't kept, so "fewer tests"
   (P3.7) doesn't flag it. The agent's report lists it under "Too slow".
+
+### V07: a check's whole output for its failure keys
+
+- **What's kept**: a command's output keeps its first 16 KB and last
+  48 KB a stream to show (`command_tool.rs`). A check of an Autopilot
+  task keeps, besides, up to 8 MB a stream (its start, then its last
+  1 MB past that) in `CommandOutput::whole`, never sent to the frontend,
+  and the gate's `failure_keys` read that: the errors in the middle of a
+  long run count when rounds are compared. Outside Autopilot it isn't
+  kept (D20): the keys come from what's shown, as before.
+- **Unchanged**: what the record and the agent see, and the saved
+  `@checks/` file, which is still the output as shown.

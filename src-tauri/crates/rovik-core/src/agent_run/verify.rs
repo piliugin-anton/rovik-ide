@@ -1548,6 +1548,8 @@ impl Run {
                         .map(|o| o.command_env())
                         .unwrap_or_default(),
                     confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
+                    // V07: in Autopilot, kept whole for the failure keys.
+                    whole_output: self.in_autopilot(),
                 };
                 let run = crate::command_tool::run_command(
                     root.into(),
@@ -1599,9 +1601,18 @@ impl Run {
                             if self.in_autopilot() && !out.timed_out {
                                 r.environment = environment_failure(out.exit_code, &combined);
                             }
-                            // From the whole output, not the focused part: every
-                            // failure counts when rounds are compared.
-                            r.failures = Some(failure_keys(&r.kind, &combined, out.timed_out));
+                            // From the whole output, not the focused part nor
+                            // the start and end kept to show: every failure
+                            // counts when rounds are compared (V07).
+                            let whole = out.whole.as_ref().map(|(stdout, stderr)| {
+                                [stderr.trim(), stdout.trim()]
+                                    .into_iter()
+                                    .filter(|s| !s.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            });
+                            let keyed = whole.as_deref().unwrap_or(&combined);
+                            r.failures = Some(failure_keys(&r.kind, keyed, out.timed_out));
                             let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
                             let output = if focused.is_empty() {
                                 "(no output)".to_string()

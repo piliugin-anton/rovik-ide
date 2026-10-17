@@ -919,6 +919,7 @@ async fn run(
                     .map(|o| o.command_env())
                     .unwrap_or_default(),
                 confine: crate::overlay::chats::get(&ctx.owner).and_then(|o| o.confine()),
+                whole_output: false,
             };
             let out = crate::command_tool::run_command(
                 root_owned,
@@ -1667,6 +1668,7 @@ mod tests {
             truncated: false,
             duration_ms: 1234,
             waited: None,
+            whole: None,
         };
         let text = format_command_output("cargo test", &out);
         assert_eq!(
@@ -1683,6 +1685,7 @@ mod tests {
         };
         let out = CommandOutput {
             waited: Some(waited),
+            whole: None,
             ..out
         };
         let text = format_command_output("cargo test", &out);
@@ -2030,6 +2033,7 @@ a.rs (3 matches)
             truncated: false,
             duration_ms: 120_000,
             waited: None,
+            whole: None,
         };
         let text = format_command_output("sleep 999", &out);
         assert_eq!(
@@ -2047,6 +2051,7 @@ a.rs (3 matches)
             truncated: true,
             duration_ms: 1,
             waited: None,
+            whole: None,
         };
         assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
         assert_eq!(

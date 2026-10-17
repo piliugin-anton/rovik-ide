@@ -345,6 +345,7 @@ impl Run {
                     .map(|o| o.command_env())
                     .unwrap_or_default(),
                 confine: chats::get(&self.dialog_id).and_then(|o| o.confine()),
+                whole_output: false,
             };
             let out = crate::command_tool::run_command(
                 view.to_string_lossy().into_owned(),
