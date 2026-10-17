@@ -313,6 +313,10 @@ pub struct Run {
     pub(super) tests_after_change: bool,
     /// T04: the adversarial tester ran in this run (once a run).
     pub(super) breaker_ran: bool,
+    /// T07: a Thorough task's loops, by their progress so far.
+    pub(super) plan_review_progress: super::loops::Progress,
+    pub(super) change_review_progress: super::loops::Progress,
+    pub(super) acceptance_progress: super::loops::Progress,
     /// T04: its tests, until the gate's round that runs them is judged.
     pub(super) breaker_round: Option<super::breaker::BreakerRound>,
     /// S08: the acceptance checks this run had; the criteria the last
@@ -1019,6 +1023,9 @@ impl Run {
             review_blocked: false,
             tests_after_change: false,
             breaker_ran: false,
+            plan_review_progress: Default::default(),
+            change_review_progress: Default::default(),
+            acceptance_progress: Default::default(),
             breaker_round: None,
             acceptance_checks: 0,
             acceptance_unsatisfied: Vec::new(),

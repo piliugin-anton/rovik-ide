@@ -1688,3 +1688,27 @@ T05 depends most on the environment it meets.
   stays, as a finding. One there's no way to run alone stays, listed
   `unjudged`. Unmarked files stay: a test is kept unless it's known to
   have found nothing.
+
+### T07: Thorough's loops
+
+- **One rule for three loops** (`loops::Progress`): in a Thorough task,
+  the plan review, the change review and the acceptance check go on
+  while each round leaves less open than any round before it (the high
+  and medium findings sent back; the criteria unsatisfied), and end
+  after two rounds in a row that don't, or when nothing is left open.
+  Progress is against the best round so far, not the one before, so a
+  loop that goes back and forth ends. Where Balanced's last round blocks
+  (a high finding still open; a criterion still unmet), the round that
+  ends a Thorough loop does the same.
+- **The budget ends a loop first when it's smaller**: the task's budget
+  (U04) ends the run at its next reply, and with it whatever loop it's
+  in. A backstop of `loops::MAX_ROUNDS` (10) bounds a loop with no budget
+  set; it isn't D12's rule, only a guard against a reviewer that keeps
+  finding a new problem as each is fixed.
+- **The repair loop** was bounded this way already, in both efforts
+  (V03's failing keys and `stalled_rounds`); its test now runs in both.
+- **What the agent and the records say**: the notes and the submit's
+  result name the round and the rule ("the reviews go on while they find
+  fewer problems"), and warn once a round made no progress; the review
+  and acceptance records carry `byProgress`, and the chat shows "Review
+  4" without a count.

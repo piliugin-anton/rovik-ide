@@ -360,6 +360,8 @@ export interface AcceptanceMeta {
   status: 'running' | 'satisfied' | 'unsatisfied' | 'skipped' | 'stopped';
   round: number;
   maxRounds: number;
+  /** Thorough (T07): the checks go on while they find fewer criteria unmet. */
+  byProgress?: boolean;
   criteria: string[];
   verdicts?: AcceptanceVerdict[];
   evidence?: string;

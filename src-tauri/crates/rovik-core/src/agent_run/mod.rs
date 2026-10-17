@@ -40,6 +40,7 @@ pub mod guard;
 pub mod judge;
 mod landing;
 pub mod log;
+pub mod loops;
 mod parallel;
 pub mod paths;
 pub mod permissions;

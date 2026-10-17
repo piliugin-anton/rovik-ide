@@ -2354,6 +2354,17 @@ async fn autopilots_rounds_go_on_while_they_make_progress() {
 /// record saying so: round 4 here, after round 2's progress.
 #[tokio::test]
 async fn two_rounds_without_progress_end_autopilots_checks() {
+    checks_end_after_two_rounds_without_progress(Effort::Balanced).await;
+}
+
+/// T07 (3.2): a Thorough task's repair rounds are bounded the same way:
+/// by progress (its failing keys), not by a count.
+#[tokio::test]
+async fn thorough_checks_end_after_two_rounds_without_progress_too() {
+    checks_end_after_two_rounds_without_progress(Effort::Thorough).await;
+}
+
+async fn checks_end_after_two_rounds_without_progress(effort: Effort) {
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;
@@ -2375,7 +2386,9 @@ async fn two_rounds_without_progress_end_autopilots_checks() {
         script,
     )
     .await;
-    h.start(task_request(&h, &url)).await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = effort;
+    h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(records[4].outcome.as_deref(), Some("verify-gave-up"));
     let messages = h.messages().await;
@@ -4605,4 +4618,337 @@ async fn the_adversarial_testers_failing_test_leads_to_a_repair_round() {
         Some("1 test file found a fault; a repair round followed; 1 speculative test that passed removed")
     );
     assert_eq!(log_lines(&h, "breaker").await.len(), 1, "once a task");
+}
+
+/*
+ * T07: Thorough's loops, bounded by progress
+ */
+
+/// The plan reviewer's first review in the T07 tests: `n` high findings,
+/// one a step of `TASK_PLAN`.
+fn high_findings(n: usize) -> &'static str {
+    let findings: Vec<String> = (1..=n)
+        .map(|i| {
+            format!(
+                "{i}. [high] Step 1 — Problem {i} with ok.txt\n   - Scenario: the test still fails ({i}).\n   - Fix: fix problem {i}.\n   - Confidence: confirmed"
+            )
+        })
+        .collect();
+    String::leak(format!("## Findings\n\n{}", findings.join("\n\n")))
+}
+
+/// A follow-up review's verdicts on `earlier` held findings: the first
+/// `resolved` of them resolved, the rest not; nothing new.
+fn follow_up(earlier: usize, resolved: usize) -> &'static str {
+    let lines: Vec<String> = (1..=earlier)
+        .map(|i| match i <= resolved {
+            true => format!("- Earlier {i}: resolved — fixed in the revision."),
+            false => format!("- Earlier {i}: not resolved — still wrong in the code."),
+        })
+        .collect();
+    String::leak(format!(
+        "## Earlier findings\n\n{}\n\n## Findings\n\nNone.",
+        lines.join("\n")
+    ))
+}
+
+/// A `submit_plan` of `TASK_PLAN` answering held findings 1..=`n`.
+fn resubmit(id: &'static str, n: usize) -> Reply {
+    let responses: Vec<Value> = (1..=n)
+        .map(|i| json!({ "finding": i, "action": "not_a_problem", "note": "the code says otherwise" }))
+        .collect();
+    Reply::Call {
+        id,
+        name: "submit_plan",
+        args: json!({ "plan": TASK_PLAN, "responses": responses }),
+    }
+}
+
+/// A Thorough task's start (its planners blocked: its run's model plans).
+fn thorough_request(h: &Harness, url: &str) -> StartRequest {
+    let mut request = task_request(h, url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    request
+}
+
+/// T07 (3.2): a Thorough task's plan reviews go on while they make
+/// progress, past Balanced's three, and end after two rounds in a row
+/// without: two findings, one, one, one. The high one still open then
+/// blocks the plan.
+#[tokio::test]
+async fn thorough_plan_reviews_go_on_by_progress_and_end_after_two_without() {
+    let h = task_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![
+                Reply::Text(high_findings(2)),
+                Reply::Text(follow_up(2, 1)),
+                Reply::Text(follow_up(1, 0)),
+                Reply::Text(follow_up(1, 0)),
+            ],
+        )],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            resubmit("p2", 2),
+            resubmit("p3", 1),
+            resubmit("p4", 1),
+            Reply::Text("The plan is blocked: its review still finds a problem."),
+        ],
+    )
+    .await;
+    h.start(thorough_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let review = &records[1];
+    assert_eq!(
+        (review.name, review.status, review.outcome.as_deref()),
+        (Stage::PlanReview, Status::Failed, Some("plan-blocked")),
+        "{records:#?}"
+    );
+    assert_eq!(review.round, 4, "past Balanced's three");
+    assert_eq!(
+        review.summary.as_deref(),
+        Some("Blocked after 4 reviews: 1 high finding open")
+    );
+    let messages = h.messages().await;
+    let result = |id: &str| result_of(&messages, id).content.clone();
+    assert!(
+        result("p1").contains("(review 1; the reviews go on while they find fewer problems)"),
+        "{}",
+        result("p1")
+    );
+    assert!(result("p2").contains("Reviews go on while each leaves fewer"));
+    assert!(
+        result("p3").contains("if your next submit's review doesn't either"),
+        "{}",
+        result("p3")
+    );
+    assert!(result("p4").contains("after 4 reviews the reviewer still finds a high problem"));
+    let reviews: Vec<&Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("review"))
+        .filter(|r| r["kind"] == "plan")
+        .collect();
+    assert!(reviews.iter().all(|r| r["byProgress"] == true));
+    assert_eq!(h.file("ok.txt").as_deref(), Some("no"), "never implemented");
+}
+
+/// T07: the task's budget ends a Thorough loop first when it's smaller:
+/// each plan review makes progress, but the run's model's third submit
+/// is past the budget, so the run ends there, its plan unsaved.
+#[tokio::test]
+async fn the_budget_ends_a_thorough_loop_before_its_progress_does() {
+    let h = task_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(high_findings(3)), Reply::Text(follow_up(3, 1))],
+        )],
+        vec![
+            costing(
+                0.02,
+                Reply::Call {
+                    id: "p1",
+                    name: "submit_plan",
+                    args: json!({ "plan": TASK_PLAN }),
+                },
+            ),
+            costing(0.02, resubmit("p2", 3)),
+            costing(0.02, resubmit("p3", 2)),
+            costing(0.02, Reply::Text("Out of budget.")),
+        ],
+    )
+    .await;
+    let mut request = thorough_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.budget = super::autopilot::Budget {
+        max_hours: None,
+        max_cost: Some(0.05),
+    };
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        records[0].outcome.as_deref(),
+        Some("budget"),
+        "{records:#?}"
+    );
+    let messages = h.messages().await;
+    let reviews = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("review"))
+        .filter(|r| r["kind"] == "plan")
+        .count();
+    assert_eq!(reviews, 2, "the second still made progress");
+    assert!(result_of(&messages, "p3")
+        .content
+        .starts_with("Error: not run: the task went over its budget"));
+    assert!(!messages
+        .iter()
+        .any(|m| m.meta.as_ref().is_some_and(|x| x.get("planFile").is_some())));
+}
+
+/// T07: a Thorough task's change reviews go on while they make progress
+/// (two high findings, then one) and end after two without; the high one
+/// still open then ends the task `review-open`, after four reviews where
+/// Balanced has three.
+#[tokio::test]
+async fn thorough_change_reviews_end_after_two_rounds_without_progress() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let both = Reply::Call {
+        id: "a1",
+        name: "answer_review",
+        args: json!({ "responses": [
+            { "finding": 1, "status": "fixed", "note": "changed the word" },
+            { "finding": 2, "status": "not-a-problem", "note": "ok is right" },
+        ] }),
+    };
+    let mut script = task_script();
+    script.extend([
+        both,
+        Reply::Text("Answered the review."),
+        answer("a2", "not-a-problem", "ok is right"),
+        Reply::Text("Answered again."),
+        answer("a3", "not-a-problem", "ok is still right"),
+        Reply::Text("Answered once more."),
+    ]);
+    let two_high = "## Findings\n\n1. [high] ok.txt:1 — The text is the wrong word\n   - Scenario: the test expects another word.\n   - Fix: write the word the test expects.\n   - Confidence: confirmed\n\n2. [high] ok.txt:1 — The text has the wrong case\n   - Scenario: the test compares it as written.\n   - Fix: match the case.\n   - Confidence: confirmed";
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                CHANGE_REVIEW,
+                vec![
+                    Reply::Text(two_high),
+                    Reply::Text(follow_up(2, 1)),
+                    Reply::Text(follow_up(1, 0)),
+                    Reply::Text(follow_up(1, 0)),
+                ],
+            ),
+        ],
+        script,
+    )
+    .await;
+    let mut request = reviewed_task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let review = records.iter().find(|r| r.name == Stage::Review).unwrap();
+    assert_eq!(
+        (review.status, review.outcome.as_deref()),
+        (Status::Failed, Some("review-open")),
+        "{records:#?}"
+    );
+    assert_eq!(
+        review.summary.as_deref(),
+        Some("Blocked after 4 reviews: 1 high finding open")
+    );
+    let messages = h.messages().await;
+    let notes: Vec<&str> = messages
+        .iter()
+        .filter(|m| {
+            m.content
+                .contains("A reviewer read your change with fresh eyes")
+        })
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(notes.len(), 3, "three sent back; the fourth blocked");
+    assert!(notes[0].contains("(review 1)") && !notes[0].contains("at most"));
+    assert!(
+        notes[2].contains("if the next doesn't either"),
+        "{}",
+        notes[2]
+    );
+}
+
+/// TASK_PLAN with a second criterion, for the acceptance loop.
+const TWO_CRITERIA_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Criteria\n\n1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n2. `ok.txt` holds one line.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+    1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `check.js` checks.\n\
+    2. **Check**\n   - Files: `check.js` (read)\n   - Read `check.js` to confirm it checks `ok.txt`; it keeps its code.\n\n\
+    ## Validation\n- `npm test`\n";
+
+/// The acceptance checker's verdicts on TWO_CRITERIA_PLAN: `unmet` of its
+/// two criteria unsatisfied, the last ones.
+fn verdicts(unmet: usize) -> &'static str {
+    let line = |i: usize| match i > 2 - unmet {
+        true => format!("{i}. unsatisfied — not yet."),
+        false => format!("{i}. satisfied — it does."),
+    };
+    String::leak(format!(
+        "## Verdicts\n\n{}\n{}\n\n## Evidence\n\nRead ok.txt.\n\n## Unmet\n\nMake it so.",
+        line(1),
+        line(2)
+    ))
+}
+
+/// T07: a Thorough task's acceptance checks go on while they find fewer
+/// criteria unmet (two, then one) and end after two without; the task
+/// then ends `unmet`, after four checks where Balanced has two.
+#[tokio::test]
+async fn thorough_acceptance_checks_go_on_by_progress() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = script_with_plan(TWO_CRITERIA_PLAN);
+    script.push(Reply::Text("I think it's fine as it is."));
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                ACCEPTANCE,
+                vec![
+                    Reply::Text(verdicts(2)),
+                    Reply::Text(verdicts(1)),
+                    Reply::Text(verdicts(1)),
+                    Reply::Text(verdicts(1)),
+                ],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(thorough_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let acceptance = records
+        .iter()
+        .find(|r| r.name == Stage::Acceptance)
+        .unwrap();
+    assert_eq!(
+        (acceptance.status, acceptance.outcome.as_deref()),
+        (Status::Failed, Some("unmet")),
+        "{records:#?}"
+    );
+    assert_eq!(acceptance.round, 4, "past Balanced's two");
+    let messages = h.messages().await;
+    let checks = acceptances(&messages);
+    let unsatisfied: Vec<usize> = checks
+        .iter()
+        .map(|c| {
+            c["verdicts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|v| v["satisfied"] == false)
+                .count()
+        })
+        .collect();
+    assert_eq!(unsatisfied, [2, 1, 1, 1]);
+    assert!(checks.iter().all(|c| c["byProgress"] == true));
+    assert_eq!(checks[3]["unmet"], true);
+    let notes: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.content.contains("These criteria aren't met yet"))
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(notes.len(), 3);
+    assert!(notes[0].contains("checks go on while each finds fewer criteria unmet"));
+    assert!(notes[2].contains("if the next doesn't either"));
 }

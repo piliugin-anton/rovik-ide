@@ -1315,17 +1315,15 @@ impl Run {
         if config.kind(super::subagent::Kind::Reviewer).is_none() || self.plan_mode {
             return Ok(false);
         }
-        if self.reviews_total >= super::change_review::MAX_CHANGE_REVIEWS_PER_RUN {
+        let cap = self.change_review_cap();
+        if self.reviews_total >= cap {
             self.update_meta(
                 record_id,
                 with(
                     meta.clone(),
                     json!({ "reviewAfterGreen": {
                         "status": "skipped",
-                        "reason": format!(
-                            "the run's {} change reviews are used up",
-                            super::change_review::MAX_CHANGE_REVIEWS_PER_RUN
-                        ),
+                        "reason": format!("the run's {cap} change reviews are used up"),
                     } }),
                 ),
             )

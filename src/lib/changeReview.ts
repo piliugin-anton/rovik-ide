@@ -71,6 +71,8 @@ export interface ReviewMeta {
   /** Absent when no review ran because the run's reviews were used. */
   round?: number;
   maxRounds: number;
+  /** Thorough (T07): the reviews go on while they leave fewer findings open, not for a count. */
+  byProgress?: boolean;
   files?: string[];
   changedLines?: number;
   findings?: ReviewFinding[];
@@ -195,7 +197,9 @@ export function reviewFacts(meta: ReviewMeta): [string, string][] {
     'Round',
     meta.round === undefined
       ? `none: all ${meta.maxRounds} used`
-      : `${meta.round} of at most ${meta.maxRounds}`,
+      : meta.byProgress
+        ? `${meta.round}, going on while the findings get fewer`
+        : `${meta.round} of at most ${meta.maxRounds}`,
   ]);
   if (meta.model) facts.push(['Model', modelLabel(meta.model, meta.modelsTried)]);
   if (meta.toolCalls !== undefined) facts.push(['Tool calls', String(meta.toolCalls)]);
@@ -235,7 +239,9 @@ export function reviewDetails(meta: ReviewMeta): string {
   const parts = [
     meta.round === undefined
       ? `No review: all ${meta.maxRounds} used`
-      : `Review ${meta.round} of at most ${meta.maxRounds}`,
+      : meta.byProgress
+        ? `Review ${meta.round}`
+        : `Review ${meta.round} of at most ${meta.maxRounds}`,
   ];
   if (meta.toolCalls !== undefined) parts.push(`${meta.toolCalls} tool calls`);
   if (meta.ms !== undefined) parts.push(`${Math.round(meta.ms / 1000)} s`);

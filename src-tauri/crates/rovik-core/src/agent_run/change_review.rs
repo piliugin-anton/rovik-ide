@@ -591,10 +591,30 @@ pub fn findings_note(findings: &[Finding], round: u32) -> String {
     )
 }
 
+/// How a change review's note counts its rounds: Autopilot's, or a
+/// Thorough task's, by progress (T07), with its reviews in a row so far
+/// that left no fewer findings open than an earlier one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rounds {
+    Count,
+    ByProgress { stalled: u32 },
+}
+
 /// The note that sends findings to the agent, in Autopilot (S06): answered
 /// with `answer_review`, then checked by a follow-up review. `last`: the
 /// run's last review, which no review follows.
 pub fn findings_note_for(findings: &[Finding], round: u32, autopilot: bool, last: bool) -> String {
+    findings_note_in(findings, round, autopilot, last, Rounds::Count)
+}
+
+/// `findings_note_for`, its rounds counted as `rounds` says.
+pub fn findings_note_in(
+    findings: &[Finding],
+    round: u32,
+    autopilot: bool,
+    last: bool,
+    rounds: Rounds,
+) -> String {
     if !autopilot {
         return findings_note(findings, round);
     }
@@ -604,6 +624,13 @@ pub fn findings_note_for(findings: &[Finding], round: u32, autopilot: bool, last
         .map(|(i, f)| describe(f, i + 1))
         .collect::<Vec<_>>()
         .join("\n\n");
+    let ends = match rounds {
+        Rounds::Count => format!(
+            "a high finding still open after review {MAX_CHANGE_REVIEWS_PER_RUN} ends the task."
+        ),
+        Rounds::ByProgress { stalled: 0 } => "the reviews go on while each leaves fewer high and medium findings open than any before: two in a row that don't end them, and a high finding still open then ends the task.".to_string(),
+        Rounds::ByProgress { .. } => "this review left no fewer findings open than an earlier one: if the next doesn't either, the reviews end, and a high finding still open then ends the task.".to_string(),
+    };
     let next = if last {
         "This was the run's last review: fix what needs fixing, then finish, and the project's checks run."
             .to_string()
@@ -611,12 +638,15 @@ pub fn findings_note_for(findings: &[Finding], round: u32, autopilot: bool, last
         format!(
             "Answer each finding with the answer_review tool, by its number: \"fixed\" once you've fixed it (say what you changed), \
              or \"not-a-problem\" (say why, from the code). Your replies aren't read as answers. Then finish: a follow-up review \
-             checks the answers and the fixes before the project's checks run, and a high finding still open after review \
-             {MAX_CHANGE_REVIEWS_PER_RUN} ends the task."
+             checks the answers and the fixes before the project's checks run, and {ends}"
         )
     };
+    let which = match rounds {
+        Rounds::Count => format!("review {round} of at most {MAX_CHANGE_REVIEWS_PER_RUN}"),
+        Rounds::ByProgress { .. } => format!("review {round}"),
+    };
     format!(
-        "{IDE_NOTE}A reviewer read your change with fresh eyes (review {round} of at most {MAX_CHANGE_REVIEWS_PER_RUN}): it saw the request, the plan and the diff, not this conversation. \
+        "{IDE_NOTE}A reviewer read your change with fresh eyes ({which}): it saw the request, the plan and the diff, not this conversation. \
          Its findings are another model's opinion: check each against the code before you act on it. \
          A finding with \"New evidence\" was answered before, and the reviewer says why it's still open.\n\n{list}\n\n{next}"
     )
@@ -963,7 +993,10 @@ impl Run {
         }
         let blocking = self.in_autopilot();
         let follow_up = blocking && !self.review_held.is_empty();
-        if follow_up && self.reviews_total < MAX_CHANGE_REVIEWS_PER_RUN {
+        // T07: a Thorough task's reviews go on by progress, to a backstop.
+        let thorough = self.thorough();
+        let cap = self.change_review_cap();
+        if follow_up && self.reviews_total < cap {
             if let Some(problem) = self.unanswered_review() {
                 self.add_harness(format!("{IDE_NOTE}{problem}"), "review")
                     .await?;
@@ -971,7 +1004,7 @@ impl Run {
             }
         }
         if !(self.writes_since_review || follow_up)
-            || self.reviews_total >= MAX_CHANGE_REVIEWS_PER_RUN
+            || self.reviews_total >= cap
             || (self.reviews_in_row >= MAX_REVIEWS_IN_ROW && !follow_up)
         {
             return Ok(false);
@@ -1001,7 +1034,8 @@ impl Run {
         self.reviews_total += 1;
         self.reviews_in_row += 1;
         let round = self.reviews_total;
-        let last = round >= MAX_CHANGE_REVIEWS_PER_RUN;
+        // A Thorough review's: once its findings are in.
+        let mut last = !thorough && round >= MAX_CHANGE_REVIEWS_PER_RUN;
 
         let mut record = new_message("assistant", "");
         let record_id = record.id.clone();
@@ -1009,13 +1043,16 @@ impl Run {
             "kind": "change",
             "status": "running",
             "round": round,
-            "maxRounds": MAX_CHANGE_REVIEWS_PER_RUN,
+            "maxRounds": cap,
             "files": rendered.files,
             "changedLines": rendered.changed_lines,
             "afterGreen": after_green,
         });
         if blocking {
             review["blocking"] = json!(true);
+        }
+        if thorough {
+            review["byProgress"] = json!(true);
         }
         record.meta = Some(json!({ "review": review }));
         self.append(vec![record]).await?;
@@ -1120,6 +1157,11 @@ impl Run {
             },
         }
         let reported = matches!(review["status"].as_str(), Some("clean" | "findings"));
+        if thorough {
+            last = !self
+                .change_review_progress
+                .another_round(serious.len(), round);
+        }
         // S06: what's still open is what the next review checks, by the
         // numbers the agent answers to. A review that couldn't report
         // leaves them as they were.
@@ -1164,12 +1206,31 @@ impl Run {
             // review follows; the checks decide.
             self.review_held.clear();
         }
-        let mut note = new_message("user", &findings_note_for(&serious, round, blocking, last));
+        let rounds = match thorough {
+            true => Rounds::ByProgress {
+                stalled: self.change_review_progress.stalled(),
+            },
+            false => Rounds::Count,
+        };
+        let mut note = new_message(
+            "user",
+            &findings_note_in(&serious, round, blocking, last, rounds),
+        );
         note.meta = Some(json!({ "harness": "review" }));
         self.review_note_id = Some(note.id.clone());
         self.review_findings.extend(serious);
         self.append(vec![note]).await?;
         Ok(true)
+    }
+
+    /// The change reviews a run has: MAX_CHANGE_REVIEWS_PER_RUN, or in a
+    /// Thorough task as many as make progress (T07), to a backstop.
+    pub(super) fn change_review_cap(&self) -> u32 {
+        if self.thorough() {
+            super::loops::MAX_ROUNDS
+        } else {
+            MAX_CHANGE_REVIEWS_PER_RUN
+        }
     }
 
     /// S06: before a follow-up, the findings sent that have no answer it

@@ -202,11 +202,14 @@ pub fn brief(p: &BriefParts) -> String {
 }
 
 /// The note that sends the unsatisfied criteria back to the agent.
+/// `thorough`: the checks go on by progress (T07), not for a count; its
+/// rounds without progress so far.
 pub fn unmet_note(
     criteria: &[String],
     unmet: &[Verdict],
     advice: Option<&str>,
     check: u32,
+    thorough: Option<u32>,
 ) -> String {
     let list = unmet
         .iter()
@@ -225,10 +228,26 @@ pub fn unmet_note(
         .filter(|a| !a.is_empty() && !a.trim_end_matches('.').eq_ignore_ascii_case("none"))
         .map(|a| format!("\n\nWhat it says the change still needs:\n\n{a}"))
         .unwrap_or_default();
+    let (which, next) = match thorough {
+        None => (
+            format!("check {check} of at most {MAX_ACCEPTANCE_CHECKS}"),
+            "Make the change meet them, then finish: the checks run again, then a last acceptance check. A criterion still unmet then ends the task unmet.".to_string(),
+        ),
+        Some(stalled) => (
+            format!("check {check}; checks go on while each finds fewer criteria unmet than any before"),
+            format!(
+                "Make the change meet them, then finish: the checks run again, then another acceptance check. {}",
+                if stalled > 0 {
+                    "This check found no fewer unmet than an earlier one: if the next doesn't either, a criterion still unmet then ends the task unmet."
+                } else {
+                    "Two checks in a row that find no fewer unmet end the checks, and a criterion still unmet then ends the task unmet."
+                }
+            ),
+        ),
+    };
     format!(
-        "{IDE_NOTE}An acceptance checker judged your change by the plan's criteria (check {check} of at most {MAX_ACCEPTANCE_CHECKS}): it saw the request, the criteria, the diff and the checks' results, not this conversation. \
-         Its verdicts are another model's: check each against the code. These criteria aren't met yet:\n\n{list}{advice}\n\n\
-         Make the change meet them, then finish: the checks run again, then a last acceptance check. A criterion still unmet then ends the task unmet."
+        "{IDE_NOTE}An acceptance checker judged your change by the plan's criteria ({which}): it saw the request, the criteria, the diff and the checks' results, not this conversation. \
+         Its verdicts are another model's: check each against the code. These criteria aren't met yet:\n\n{list}{advice}\n\n{next}"
     )
 }
 
@@ -243,7 +262,14 @@ impl Run {
         if !self.in_autopilot() || self.sub().is_some() || self.plan_mode || self.stopped() {
             return Ok(false);
         }
-        if self.acceptance_checks >= MAX_ACCEPTANCE_CHECKS || self.root.is_none() {
+        // T07: a Thorough task's checks go on by progress, to a backstop.
+        let thorough = self.thorough();
+        let cap = if thorough {
+            super::loops::MAX_ROUNDS
+        } else {
+            MAX_ACCEPTANCE_CHECKS
+        };
+        if self.acceptance_checks >= cap || self.root.is_none() {
             return Ok(false);
         }
         let config = self.config().subagents;
@@ -264,9 +290,12 @@ impl Run {
         let mut record = json!({
             "status": "running",
             "round": check,
-            "maxRounds": MAX_ACCEPTANCE_CHECKS,
+            "maxRounds": cap,
             "criteria": criteria,
         });
+        if thorough {
+            record["byProgress"] = json!(true);
+        }
         let mut row = new_message("assistant", "");
         let record_id = row.id.clone();
         row.meta = Some(json!({ "acceptance": record }));
@@ -346,7 +375,11 @@ impl Run {
                 }
             },
         }
-        let last = check >= MAX_ACCEPTANCE_CHECKS;
+        let last = if thorough {
+            !self.acceptance_progress.another_round(unmet.len(), check)
+        } else {
+            check >= MAX_ACCEPTANCE_CHECKS
+        };
         if !unmet.is_empty() && last && !self.stopped() {
             record["unmet"] = json!(true);
             self.acceptance_unmet = true;
@@ -370,7 +403,13 @@ impl Run {
         }
         let mut note = new_message(
             "user",
-            &unmet_note(&criteria, &unmet, advice.as_deref(), check),
+            &unmet_note(
+                &criteria,
+                &unmet,
+                advice.as_deref(),
+                check,
+                thorough.then(|| self.acceptance_progress.stalled()),
+            ),
         );
         note.meta = Some(json!({ "harness": "acceptance" }));
         self.acceptance_unsatisfied = unmet;
@@ -501,13 +540,28 @@ mod tests {
         assert!(text.contains("## The test writer's report"));
         assert!(text.contains("2. unsatisfied — nothing throws"));
         assert!(text.contains("\"## Verdicts\" has 2 lines"));
-        let note = unmet_note(&criteria, &earlier, Some("Throw an error on \"\"."), 1);
+        let note = unmet_note(
+            &criteria,
+            &earlier,
+            Some("Throw an error on \"\"."),
+            1,
+            None,
+        );
         assert!(
             note.contains("2. An empty name throws.\n   - What's missing: nothing throws"),
             "{note}"
         );
         assert!(note.contains("check 1 of at most 2"));
         assert!(note.contains("Throw an error on"));
-        assert!(!unmet_note(&criteria, &earlier, Some("None."), 1).contains("still needs"));
+        assert!(!unmet_note(&criteria, &earlier, Some("None."), 1, None).contains("still needs"));
+        // T07: Thorough's checks go on by progress, and the note says so.
+        let thorough = unmet_note(&criteria, &earlier, None, 3, Some(0));
+        assert!(thorough.contains(
+            "(check 3; checks go on while each finds fewer criteria unmet than any before)"
+        ));
+        assert!(thorough.contains("Two checks in a row that find no fewer unmet end the checks"));
+        assert!(!thorough.contains("at most"));
+        let stalled = unmet_note(&criteria, &earlier, None, 3, Some(1));
+        assert!(stalled.contains("if the next doesn't either"), "{stalled}");
     }
 }

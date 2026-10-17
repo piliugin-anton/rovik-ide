@@ -88,6 +88,14 @@ test('the review record’s details', () => {
     reviewDetails({ ...usage(1, 1), modelsTried: undefined, partial: true }),
     'Review 1 of at most 3 · P/strong · 2 tokens · out of budget'
   );
+  // T07: a Thorough task's reviews go on by progress: no count to show.
+  assert.equal(reviewDetails({ ...base, round: 4, maxRounds: 10, byProgress: true }), 'Review 4');
+  assert.deepEqual(
+    reviewFacts({ ...base, round: 4, maxRounds: 10, byProgress: true }).find(
+      ([k]) => k === 'Round'
+    ),
+    ['Round', '4, going on while the findings get fewer']
+  );
 });
 
 test('a plan review’s headline says what happened to the plan', () => {
