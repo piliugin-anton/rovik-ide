@@ -1255,7 +1255,7 @@ impl Run {
             // Autopilot's deadline (U03): nobody answered.
             ApprovalDecision::Deny if unanswered => Authorized {
                 refusal: Some(
-                    "Error: not run: nobody answered its approval, and nobody is there to in Autopilot. Do not retry it; do without it or take another approach."
+                    "Error: not run: nobody answered its approval in time, and nobody is there to answer it in Autopilot. Do not retry it; do without it or take another approach."
                         .into(),
                 ),
                 approval: Some(approval_json(
