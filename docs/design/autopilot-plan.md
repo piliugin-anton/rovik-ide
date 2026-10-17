@@ -1068,3 +1068,11 @@ T05 depends most on the environment it meets.
   kept (D20): the keys come from what's shown, as before.
 - **Unchanged**: what the record and the agent see, and the saved
   `@checks/` file, which is still the output as shown.
+
+### V08: Go's test count
+
+- **For every chat** (D20): `command_output::tests_ran` counts the tests
+  `go test -v` ran, its `--- PASS:` and `--- FAIL:` lines, subtests
+  included and skipped ones not, so the "fewer tests" flag (P3.7) works
+  for Go. Without `-v`, go prints only the failures, which aren't a
+  count: the output says none then (no `=== RUN` line), as before.

@@ -482,7 +482,8 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
 }
 
 /// How many tests a run ran, from its summary lines (cargo, vitest, jest,
-/// pytest); None when it doesn't say.
+/// pytest) or, for `go test -v`, its result lines; None when it doesn't
+/// say.
 pub fn tests_ran(output: &str) -> Option<u32> {
     static CARGO: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"test result: \w+\. (\d+) passed; (\d+) failed").unwrap());
@@ -517,7 +518,21 @@ pub fn tests_ran(output: &str) -> Option<u32> {
             .sum();
         return Some(sum);
     }
-    None
+    go_tests_ran(&clean)
+}
+
+/// V08: `go test -v` prints no total, but a line per test and subtest it
+/// ran (`--- PASS: TestAdd (0.00s)`, `    --- FAIL: TestX/case (0.00s)`):
+/// those count, skipped ones not. Only verbose output says what ran: without
+/// `-v`, go prints just the failures, which aren't the count.
+fn go_tests_ran(clean: &str) -> Option<u32> {
+    static RUN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^=== RUN\s+\S").unwrap());
+    static RESULT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*--- (?:PASS|FAIL): \S+ \(").unwrap());
+    if !RUN.is_match(clean) {
+        return None;
+    }
+    Some(RESULT.find_iter(clean).count() as u32)
 }
 
 /*
@@ -964,6 +979,30 @@ mod tests {
             Some(3)
         );
         assert_eq!(tests_ran("nothing to see"), None);
+    }
+
+    /// V08: `go test -v` counts its tests and subtests that ran; a skipped
+    /// one doesn't count, and output without `-v` says no count.
+    #[test]
+    fn go_test_verbose_output_says_how_many_ran() {
+        let verbose = "=== RUN   TestAdd\n--- PASS: TestAdd (0.00s)\n=== RUN   TestTable\n=== RUN   TestTable/zero\n\
+            === RUN   TestTable/one\n    table_test.go:12: got 2, want 1\n--- FAIL: TestTable (0.00s)\n\
+            \x20   --- PASS: TestTable/zero (0.00s)\n    --- FAIL: TestTable/one (0.00s)\n\
+            === RUN   TestSlow\n    slow_test.go:5: skipping in short mode\n--- SKIP: TestSlow (0.00s)\n\
+            FAIL\nFAIL\texample.com/m\t0.004s\n=== RUN   TestOther\n--- PASS: TestOther (0.00s)\nPASS\nok  \texample.com/m/other\t0.002s\n";
+        assert_eq!(tests_ran(verbose), Some(5));
+        // A package with no tests.
+        assert_eq!(
+            tests_ran("=== RUN   TestNothing\n--- SKIP: TestNothing (0.00s)\nok  \tm\t0.001s"),
+            Some(0)
+        );
+        // Without -v: the failures alone, no count.
+        let quiet = "--- FAIL: TestTable (0.00s)\n    --- FAIL: TestTable/one (0.00s)\nFAIL\nFAIL\tm\t0.004s";
+        assert_eq!(tests_ran(quiet), None);
+        assert_eq!(tests_ran("ok  \texample.com/m\t0.002s"), None);
+        // Garbage, and a line that only looks like one.
+        assert_eq!(tests_ran("=== RUNNING nothing\n--- PASS: \n"), None);
+        assert_eq!(tests_ran("\u{0}\u{1} --- PASS"), None);
     }
 
     #[test]
