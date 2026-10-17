@@ -239,6 +239,10 @@ pub fn outcome_of(
 pub enum Format {
     /// `## ` sections, the first `required` of them needed.
     Sections,
+    /// One of the `## ` sections, whichever the brief asks for: a Thorough
+    /// planner's plan or its criteria, a judge's choice or merged criteria
+    /// (T03). What it gave is read strictly where it's used.
+    OneOf,
     /// The reviewers' findings list (change_review.rs `parse_findings`).
     Findings,
     /// The acceptance checker's verdicts (acceptance.rs `parse_verdicts`).
@@ -273,6 +277,26 @@ impl KindSpec {
             .replace("{minutes}", &budget.minutes_label())
     }
 
+    /// Its sections as headings, `"## A"`, joined by `sep`.
+    fn headings(&self, sep: &str) -> String {
+        self.sections
+            .iter()
+            .map(|s| format!("\"## {s}\""))
+            .collect::<Vec<_>>()
+            .join(sep)
+    }
+
+    /// How the turn that asks for a report again names its headings.
+    pub fn headings_note(&self) -> String {
+        match self.format {
+            Format::OneOf => format!(
+                "under the heading your brief asks for: {}",
+                self.headings(" or ")
+            ),
+            _ => format!("with the headings {}", self.headings(", ")),
+        }
+    }
+
     /// What the budget note asks of the report it cuts a subagent short
     /// for: where what it didn't get to goes. A reviewer has no section
     /// for it (its report is only its findings), and a scout's or worker's
@@ -284,6 +308,10 @@ impl KindSpec {
             ),
             Format::Verdicts => String::from(
                 "Give a verdict under \"## Verdicts\" for every criterion, by its number: one you couldn't check is unsatisfied, saying so.",
+            ),
+            Format::OneOf => format!(
+                "Write it under the heading your brief asks for ({}), and say in it what you didn't get to.",
+                self.headings(" or ")
             ),
             Format::Sections => {
                 let open = if self.sections.contains(&"Open questions") {
@@ -737,6 +765,15 @@ pub fn format_problem(spec: &KindSpec, text: &str) -> Option<String> {
         // A checker that says it's blocked gives no verdicts.
         Format::Verdicts if is_blocked(text) => return None,
         Format::Verdicts => return super::acceptance::parse_verdicts(text).err(),
+        Format::OneOf => {
+            let found = sections(text);
+            let given = spec
+                .sections
+                .iter()
+                .any(|s| found.get(s).is_some_and(|b| !b.is_empty()));
+            return (!given && !is_blocked(text))
+                .then(|| format!("it has no {} section", spec.headings(" or ")));
+        }
         Format::Sections => {}
     }
     let found = sections(text);
@@ -1785,12 +1822,17 @@ mod tests {
             }
             let spec = kind.spec();
             assert_eq!(names, spec.sections, "{}: sections", kind.id());
-            assert_eq!(
-                required.unwrap_or(names.len()),
-                spec.required,
-                "{}: required",
-                kind.id()
-            );
+            if matches!(spec.format, Format::OneOf) {
+                // T03: whichever its brief asks for.
+                assert!(cells[1].contains("one of them"), "{}: one of", kind.id());
+            } else {
+                assert_eq!(
+                    required.unwrap_or(names.len()),
+                    spec.required,
+                    "{}: required",
+                    kind.id()
+                );
+            }
             assert_eq!(
                 cells[1].contains("list"),
                 matches!(spec.format, Format::Findings),

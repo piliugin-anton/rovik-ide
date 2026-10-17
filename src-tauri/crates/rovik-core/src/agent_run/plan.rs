@@ -155,7 +155,7 @@ fn says_none(text: &str) -> bool {
 
 /// The plan's criteria section: the first `## ` heading with "criteria" in
 /// it (`## Criteria`, `## Acceptance criteria`), without its heading.
-fn criteria_section(markdown: &str) -> Option<String> {
+pub fn criteria_section(markdown: &str) -> Option<String> {
     let markdown = markdown.replace("\r\n", "\n");
     for (at, line, fenced) in lines_with_fences(&markdown) {
         if fenced || !NEXT_HEADING.is_match(line) {
@@ -248,6 +248,37 @@ pub fn criteria(markdown: &str) -> Option<Criteria> {
         }
     }
     Some(out)
+}
+
+/// T03: `markdown` with `body` as its "## Criteria": the criteria section
+/// replaced where it has one, else put before its first `## ` section
+/// (after the title and the summary), else at its end.
+pub fn with_criteria(markdown: &str, body: &str) -> String {
+    let markdown = markdown.replace("\r\n", "\n");
+    let section = format!("## Criteria\n\n{}\n\n", body.trim());
+    let headings: Vec<(usize, &str)> = lines_with_fences(&markdown)
+        .into_iter()
+        .filter(|(_, line, fenced)| !fenced && NEXT_HEADING.is_match(line))
+        .map(|(at, line, _)| (at, line))
+        .collect();
+    let at = headings
+        .iter()
+        .position(|(_, line)| line.to_lowercase().contains("criteri"));
+    let out = match (at, headings.first()) {
+        (Some(i), _) => {
+            let end = headings.get(i + 1).map_or(markdown.len(), |(at, _)| *at);
+            format!(
+                "{}{section}{}",
+                &markdown[..headings[i].0],
+                &markdown[end..]
+            )
+        }
+        (None, Some((first, _))) => {
+            format!("{}{section}{}", &markdown[..*first], &markdown[*first..])
+        }
+        (None, None) => format!("{}\n\n{section}", markdown.trim_end()),
+    };
+    format!("{}\n", out.trim_end())
 }
 
 /// S01: what an Autopilot plan's criteria lack (empty: they're there).
@@ -2152,6 +2183,37 @@ mod tests {
 
     /// S01: what's missing, said so; garbage reads as no criteria, never as
     /// some.
+    #[test]
+    fn a_plans_criteria_are_replaced_or_put_in_place() {
+        let body = "1. It greets.\n\n**Out of scope**: None.\n\n**Assumptions**: English.";
+        // Replaced where the plan has them, the rest as it was.
+        let plan = "# Greet\n\nSay hi.\n\n## Criteria\n\n1. Old.\n\n## Steps\n\n1. **Greet**\n   - Files: `a.rs`\n";
+        assert_eq!(
+            with_criteria(plan, body),
+            format!("# Greet\n\nSay hi.\n\n## Criteria\n\n{body}\n\n## Steps\n\n1. **Greet**\n   - Files: `a.rs`\n")
+        );
+        // Its last section.
+        assert_eq!(
+            with_criteria("# Greet\n\n## Acceptance criteria\n\n1. Old.\n", body),
+            format!("# Greet\n\n## Criteria\n\n{body}\n")
+        );
+        // None: before the first section, after the title and summary.
+        assert_eq!(
+            with_criteria("# Greet\n\nSay hi.\n\n## Steps\n\n1. **Greet**\n", body),
+            format!("# Greet\n\nSay hi.\n\n## Criteria\n\n{body}\n\n## Steps\n\n1. **Greet**\n")
+        );
+        assert_eq!(
+            with_criteria("# Greet", body),
+            format!("# Greet\n\n## Criteria\n\n{body}\n")
+        );
+        // A heading in a fence is the plan's text, not a section.
+        let fenced = "# Greet\n\n```\n## Criteria\n```\n\n## Steps\n\n1. **Greet**\n";
+        assert!(with_criteria(fenced, body)
+            .starts_with("# Greet\n\n```\n## Criteria\n```\n\n## Criteria\n\n1. It greets."));
+        let replaced = with_criteria(plan, body);
+        assert_eq!(criteria(&replaced).unwrap().assumptions, ["English."]);
+    }
+
     #[test]
     fn criteria_missing_or_partial_say_what_to_add() {
         assert_eq!(criteria("# T\n\n## Steps\n\n1. x"), None);

@@ -403,9 +403,9 @@ export function acceptanceHeadline(meta: AcceptanceMeta, interrupted: boolean): 
  * agent_run/planning.rs): at work, then the plan it gave, or why none.
  */
 export interface PlannerMeta {
-  /** What it planned: the task's plan. */
-  role: 'plan';
-  /** Its name among the task's planners: a, b, c. */
+  /** What it wrote: the task's plan, or its criteria before it (T03). */
+  role: 'plan' | 'criteria';
+  /** Its name among the task's planners: a, b, c (criteria: a, b). */
   candidate: string;
   status: 'running' | 'done' | 'skipped' | 'stopped';
   /** done: its plan's title and steps, and the plan (cut when long). */
@@ -416,6 +416,10 @@ export interface PlannerMeta {
   problems?: string[];
   /** Its plan is the one the task took. */
   chosen?: boolean;
+  /** Criteria, done: the numbered ones, what's out of scope, what it assumed. */
+  criteria?: string[];
+  outOfScope?: string[];
+  assumptions?: string[];
   /** skipped: why. */
   reason?: string;
   partial?: boolean;
@@ -425,18 +429,27 @@ export interface PlannerMeta {
   ms?: number;
 }
 
+/** "1 criterion", "3 criteria". */
+const criteriaCount = (n: number) => `${n} criteri${n === 1 ? 'on' : 'a'}`;
+
 /** The headline of a planner's record; `interrupted`: saved as running, but nothing runs it. */
 export function plannerHeadline(meta: PlannerMeta, interrupted: boolean): string {
-  const who = `Planner ${meta.candidate.toUpperCase()}`;
+  const writes = meta.role === 'criteria';
+  const who = `${writes ? 'Criteria writer' : 'Planner'} ${meta.candidate.toUpperCase()}`;
   if (interrupted) return `${who} didn’t finish: the run ended meanwhile.`;
   switch (meta.status) {
     case 'running':
-      return `${who} is planning the task on its own…`;
+      return writes
+        ? `${who} is writing what done means, on its own…`
+        : `${who} is planning the task on its own…`;
     case 'stopped':
       return `${who} was stopped.`;
     case 'skipped':
-      return `${who} gave no plan: ${meta.reason ?? 'it couldn’t plan'}.`;
+      return writes
+        ? `${who} gave no criteria: ${meta.reason ?? 'it couldn’t write them'}.`
+        : `${who} gave no plan: ${meta.reason ?? 'it couldn’t plan'}.`;
     default: {
+      if (writes) return `${who} wrote ${criteriaCount(meta.criteria?.length ?? 0)}.`;
       const steps = meta.steps ?? 0;
       const planned = `${who} planned “${meta.title || 'Untitled'}” in ${steps} step${steps === 1 ? '' : 's'}`;
       if (meta.chosen) return `${planned}: the task takes this plan.`;
@@ -451,8 +464,8 @@ export function plannerHeadline(meta: PlannerMeta, interrupted: boolean): string
  * agent_run/judge.rs): at work, then the plan it took, or why none.
  */
 export interface JudgeMeta {
-  /** What it judged: the planners' plans. */
-  role: 'plans';
+  /** What it judged: the planners' plans, or the criteria sets it merged (T03). */
+  role: 'plans' | 'criteria';
   status: 'running' | 'done' | 'skipped' | 'stopped';
   /** The planners whose plans it was given. */
   offered?: string[];
@@ -464,7 +477,11 @@ export interface JudgeMeta {
   title?: string;
   steps?: number;
   why?: string;
-  /** skipped: why, and the planner whose plan the task took instead. */
+  /** Criteria, done: the merged set; its assumptions say where the sets disagreed. */
+  criteria?: string[];
+  outOfScope?: string[];
+  assumptions?: string[];
+  /** skipped: why, and the planner whose plan (or criteria) the task took instead. */
   reason?: string;
   fallback?: string;
   partial?: boolean;
@@ -477,6 +494,23 @@ export interface JudgeMeta {
 /** The headline of a judge's record; `interrupted`: saved as running, but nothing runs it. */
 export function judgeHeadline(meta: JudgeMeta, interrupted: boolean): string {
   if (interrupted) return 'The judge didn’t finish: the run ended meanwhile.';
+  if (meta.role === 'criteria') {
+    const sets = meta.offered?.length ?? 2;
+    switch (meta.status) {
+      case 'running':
+        return `The judge is merging the ${sets} sets of criteria…`;
+      case 'stopped':
+        return 'The judge was stopped.';
+      case 'skipped': {
+        const instead = meta.fallback
+          ? `The task takes writer ${meta.fallback.toUpperCase()}’s criteria.`
+          : '';
+        return `The judge couldn’t merge the criteria: ${meta.reason ?? 'it couldn’t judge'}. ${instead}`.trim();
+      }
+      default:
+        return `The judge merged the ${sets} sets into ${criteriaCount(meta.criteria?.length ?? 0)}.`;
+    }
+  }
   const planner = (letter: string) => `planner ${letter.toUpperCase()}`;
   const steps = meta.steps ?? 0;
   const plan = `“${meta.title || 'Untitled'}”, ${steps} step${steps === 1 ? '' : 's'}`;

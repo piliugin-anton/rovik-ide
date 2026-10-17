@@ -910,3 +910,59 @@ test('a judge record: what it chose and why, its merged plan on demand (T02)', (
   );
   assert.equal(records[1].querySelector('details'), null, 'no plan of its own');
 });
+
+test('criteria records: the set written, the merge with what it assumed (T03)', () => {
+  const root = container();
+  render(
+    () => (
+      <>
+        <PlannerRecord
+          meta={{
+            role: 'criteria',
+            candidate: 'b',
+            status: 'done',
+            criteria: ['It greets.', 'It waves.'],
+            outOfScope: ['The CLI.'],
+            assumptions: [],
+          }}
+          dialogId="lead-c"
+          recordId="cb"
+          live={false}
+        />
+        <JudgeRecord
+          meta={{
+            role: 'criteria',
+            status: 'done',
+            offered: ['a', 'b'],
+            criteria: ['It greets.'],
+            outOfScope: [],
+            assumptions: ['The sets disagreed on waving: none, the narrower reading.'],
+          }}
+          dialogId="lead-c"
+          recordId="cj"
+          live={false}
+        />
+      </>
+    ),
+    root
+  );
+  const [writer, judge] = [...root.querySelectorAll('.chat-verify')];
+  assert.equal(
+    writer.querySelector('.chat-verify-title')?.textContent,
+    'Criteria writer B wrote 2 criteria.'
+  );
+  assert.deepEqual(
+    [...writer.querySelectorAll('.chat-planner-criteria li')].map((li) => li.textContent),
+    ['It greets.', 'It waves.']
+  );
+  assert.equal(writer.querySelector('.chat-planner-part')?.textContent, 'Out of scope: The CLI. ');
+  assert.equal(writer.querySelector('.chat-planner-assumptions'), null);
+  assert.equal(
+    judge.querySelector('.chat-verify-title')?.textContent,
+    'The judge merged the 2 sets into 1 criterion.'
+  );
+  assert.equal(
+    judge.querySelector('.chat-planner-assumptions li')?.textContent,
+    'The sets disagreed on waving: none, the narrower reading.'
+  );
+});

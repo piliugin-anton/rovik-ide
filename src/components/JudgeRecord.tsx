@@ -4,12 +4,14 @@
 // agent_run/judge.rs): at work on the planners' plans, then what it chose
 // (a plan as it is, revised, or the plans merged) and why, or why it gave
 // no choice and what the task took instead, and its work on demand.
-// Updates live while it runs.
+// Updates live while it runs. Also its merge of the criteria sets (T03):
+// the merged set, where the sets disagreed under what it assumed.
 import { Show } from 'solid-js';
 import { judgeHeadline, type JudgeMeta } from '../lib/autopilot';
 import { liveLabel, liveSubagent } from '../lib/subagents';
 import { SubagentTranscript } from './ToolCallBlock';
 import { createSubagentWork, ShowWorkButton } from './SubagentWork';
+import { CriteriaParts } from './PlannerRecord';
 
 /** "the model · 12 tool calls · 40 s", what's known of it. */
 function facts(meta: JudgeMeta): string {
@@ -52,6 +54,7 @@ export default function JudgeRecord(props: {
         {(p) => <div class="chat-verify-progress">{liveLabel(p())}</div>}
       </Show>
       <Show when={props.meta.why}>{(why) => <div class="chat-judge-why">{why()}</div>}</Show>
+      <CriteriaParts meta={props.meta} />
       <Show when={props.meta.status !== 'running'}>
         <div class="chat-verify-files">
           {facts(props.meta)}

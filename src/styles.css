@@ -5129,6 +5129,18 @@ body.is-resizing * {
   border-left-color: var(--warning);
 }
 
+/* T03: criteria in a writer's or the judge's record (PlannerRecord.tsx). */
+.chat-planner-criteria,
+.chat-planner-assumptions {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg);
+}
+
+.chat-planner-part {
+  color: var(--fg-dim);
+}
+
 /* T02: the judge of a Thorough task's plans (JudgeRecord.tsx). */
 .chat-judge.done {
   border-left-color: var(--success);

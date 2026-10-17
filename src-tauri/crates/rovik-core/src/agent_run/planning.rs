@@ -25,7 +25,9 @@ use super::subagent::{self, Budget, Format, Kind, KindSpec, SubOutcome};
 use super::subagent_run::IdeJob;
 use super::{judge, plan};
 use crate::chat_db::store::{char_prefix, ToolCall};
+use regex::Regex;
 use serde_json::{json, Map, Value};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 /// A planner's brief starts so (the tests' scripted model routes by it).
@@ -37,7 +39,7 @@ pub const CANDIDATES: [&str; PLANNERS] = ["a", "b", "c"];
 /// What a planner's record keeps of its plan.
 const MAX_RECORDED_PLAN_CHARS: usize = 60_000;
 
-const PLANNER_PROMPT: &str = r###"You are a planner: a read-only helper of Rovik's Autopilot, which carries out the user's request with nobody there. Several planners plan the same task, each on their own; the best plan is then taken, or the plans merged, and a reviewer checks it against the code before it's implemented. Investigate the project with your tools and write one complete plan. Only your final reply is read.
+const PLANNER_PROMPT: &str = r###"You are a planner: a read-only helper of Rovik's Autopilot, which carries out the user's request with nobody there. Several planners do the same work on their own, as your brief says: write the task's criteria, or plan it; the best is then taken, or the results merged, and a reviewer checks the plan against the code before it's implemented. Investigate the project with your tools and write what your brief asks for, whole. Only your final reply is read.
 
 ## Rules
 
@@ -49,7 +51,7 @@ const PLANNER_PROMPT: &str = r###"You are a planner: a read-only helper of Rovik
 
 ## Report
 
-Reply with the heading "## Plan" and, under it, the whole plan in the form the brief gives, and nothing before that heading. If the task can't be planned, reply "## Blocked" and the reason instead."###;
+Reply in the form your brief gives, and nothing before it: for a plan, the heading "## Plan" and the whole plan under it; for criteria, "## Criteria" and the criteria alone. If it can't be done, reply "## Blocked" and the reason instead."###;
 
 pub static PLANNER: KindSpec = KindSpec {
     label: "Planner",
@@ -68,23 +70,79 @@ pub static PLANNER: KindSpec = KindSpec {
         tool_calls: 40,
         wall: Duration::from_secs(480),
     },
-    sections: &["Plan"],
+    sections: &["Plan", "Criteria"],
     required: 1,
-    format: Format::Sections,
+    format: Format::OneOf,
     prompt: PLANNER_PROMPT,
 };
 
-/// A planner's brief: the request and the plan's form, never anything of
-/// the chat but the request.
-pub fn planner_brief(request: &str) -> String {
+/// A planner's brief: the request, the task's criteria when they were
+/// written first (T03), and the plan's form; never anything of the chat
+/// but the request.
+pub fn planner_brief(request: &str, criteria: Option<&str>) -> String {
+    let criteria = criteria.map_or(String::new(), |c| {
+        format!(
+            "## The criteria\n\nThe task's criteria, written and merged before you: the plan's \"## Criteria\" is these, as they are, and its steps and its validation meet each one.\n\n<criteria>\n{}\n</criteria>\n\n",
+            c.trim()
+        )
+    });
     format!(
         "{PLAN_HEADING}\n\nAutopilot carries out the request below with nobody there. You are one of {PLANNERS} planners, each planning it on your own; the best plan is taken, or the plans merged, then a reviewer checks it against the code before it's implemented.\n\n\
-         ## The user's request\n\n{}\n\n\
+         ## The user's request\n\n{}\n\n{criteria}\
          ## The plan's form\n\n{}\n\n\
          ## Your report\n\n\"## Plan\", then the whole plan in this form.",
         request.trim(),
         plan::plan_form()
     )
+}
+
+/// A criteria writer's brief starts so (4.1a, T03).
+pub const CRITERIA_HEADING: &str = "# Write the criteria for this task";
+/// How many write a Thorough task's criteria, each on their own.
+pub const CRITERIA_WRITERS: usize = 2;
+
+/// A criteria writer's brief: the request, and the criteria's form (a
+/// plan's "## Criteria").
+pub fn criteria_brief(request: &str) -> String {
+    format!(
+        "{CRITERIA_HEADING}\n\nAutopilot carries out the request below with nobody there. Before it's planned, {CRITERIA_WRITERS} writers each write, on their own, what done means for it: the criteria its tests are written from and its result is judged by. A judge then merges the sets. Write criteria, not a plan: read the code as far as the criteria need it (the names they use, what it does now).\n\n\
+         ## The user's request\n\n{}\n\n\
+         ## Your report\n\n\"## Criteria\", and under it:\n\n\
+         - numbered statements (`1.`, `2.`) of what done means, each one a test or a reading of the result can check, together covering the whole request and nothing beyond it;\n\
+         - **Out of scope**: what the task leaves alone, or \"None.\";\n\
+         - **Assumptions**: what you decided that the request doesn't say, with why, or \"None.\".\n\n\
+         Nothing else: no plan, no steps.",
+        request.trim()
+    )
+}
+
+/// A criteria part written as a section of its own: `## Out of scope`.
+static PART_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^##\s+(out[ -]of[ -]scope|non[- ]goals|assumptions?)\s*:?\s*$").unwrap()
+});
+
+/// The criteria in a writer's report, or the judge's merge: the "##
+/// Criteria" section's text, its parts (**Out of scope**, **Assumptions**)
+/// in it even when written as sections of their own, and as S01 reads a
+/// plan's. None: no such section, or no numbered criteria in it.
+pub fn criteria_of(report: &str) -> Option<(String, plan::Criteria)> {
+    let mut fence = false;
+    let folded: Vec<String> = report
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("```") {
+                fence = !fence;
+            }
+            match PART_HEADING.captures(line.trim()) {
+                Some(c) if !fence => format!("**{}**:", c[1].trim()),
+                _ => line.to_string(),
+            }
+        })
+        .collect();
+    let folded = folded.join("\n");
+    let parsed = plan::criteria(&folded)?;
+    let text = plan::criteria_section(&folded)?;
+    (!parsed.items.is_empty()).then_some((text, parsed))
 }
 
 /// The plan in a planner's report: everything after its "## Plan" line
@@ -219,6 +277,15 @@ fn skip_reason(skip: &subagent::Skip) -> String {
     }
 }
 
+/// A criteria record's fields: the criteria, what's out of scope and what
+/// was assumed, and the section as written.
+fn record_criteria(record: &mut Value, text: &str, parsed: &plan::Criteria) {
+    record["criteria"] = json!(parsed.items);
+    record["outOfScope"] = json!(parsed.out_of_scope);
+    record["assumptions"] = json!(parsed.assumptions);
+    record["text"] = json!(char_prefix(text, MAX_RECORDED_PLAN_CHARS));
+}
+
 /// A plan's first line as its record names it: its title.
 fn title_of(plan: &str) -> String {
     let line = plan.lines().map(str::trim).find(|l| !l.is_empty());
@@ -262,7 +329,11 @@ impl Run {
     /// model plans.
     pub(super) async fn thorough_planning(&mut self) -> Result<(), String> {
         let request = self.latest_user_request().await;
-        let candidates = self.run_planners(&request).await?;
+        let criteria = self.thorough_criteria(&request).await?;
+        if self.stopped() {
+            return Ok(());
+        }
+        let candidates = self.run_planners(&request, criteria.as_deref()).await?;
         if self.stopped() {
             return Ok(());
         }
@@ -273,6 +344,11 @@ impl Run {
             match self.judge_plans(&request, &given).await? {
                 Judgment::Stopped => return Ok(()),
                 Judgment::Taken { plan, how } => {
+                    // The task's criteria stay its plan's, whatever it merged.
+                    let plan = match &criteria {
+                        Some(c) => plan::with_criteria(&plan, c),
+                        None => plan,
+                    };
                     let note = format!(
                         "{IDE_NOTE}{n} planners planned this task, each on their own, and a judge that checked their plans against the code {how}. {SUBMITTED_FOR_YOU}"
                     );
@@ -295,10 +371,16 @@ impl Run {
                 Some((why, _, _)) => format!(", and the judge gave no choice ({why})"),
                 None => String::new(),
             };
+            let criteria = criteria.as_ref().map_or(String::new(), |c| {
+                format!(
+                    " Its criteria were written first: make them the plan's \"## Criteria\", as they are.\n\n<criteria>\n{}\n</criteria>",
+                    c.trim()
+                )
+            });
             let mut note = new_message(
                 "user",
                 &format!(
-                    "{IDE_NOTE}The {n} planners gave no plan that passes the plan's checks{judge}: plan the task yourself, as the instructions say."
+                    "{IDE_NOTE}The {n} planners gave no plan that passes the plan's checks{judge}: plan the task yourself, as the instructions say.{criteria}"
                 ),
             );
             note.meta = Some(json!({ "harness": "thoroughPlan" }));
@@ -429,11 +511,162 @@ impl Run {
         Ok(judgment)
     }
 
+    /// T03 (4.1a): the task's criteria, written twice, each writer on its
+    /// own and, when the planners' settings give two models, on a model of
+    /// its own, then merged by the judge; one set alone is taken as it is.
+    /// None: no writer gave criteria, and the planners write their own.
+    async fn thorough_criteria(&mut self, request: &str) -> Result<Option<String>, String> {
+        self.stop_cut_planners().await?;
+        let message = criteria_brief(request);
+        let letters = &CANDIDATES[..CRITERIA_WRITERS];
+        let mut rows = Vec::new();
+        let mut jobs = Vec::new();
+        for (i, letter) in letters.iter().enumerate() {
+            let mut row = new_message("assistant", "");
+            let record = json!({ "role": "criteria", "candidate": letter, "status": "running" });
+            row.meta = Some(json!({ "planner": record }));
+            jobs.push(IdeJob {
+                call_id: row.id.clone(),
+                goal: format!("Write the task's criteria (writer {letter})"),
+                message: message.clone(),
+                models_from: i,
+            });
+            rows.push(row);
+        }
+        let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        self.append(rows).await?;
+        let started = Instant::now();
+        let outcomes = self.run_ide_subagents(Kind::Planner, jobs).await;
+        let ms = started.elapsed().as_millis() as u64;
+        let mut sets: Vec<(&str, String)> = Vec::new();
+        for ((letter, id), outcome) in letters.iter().zip(&ids).zip(outcomes) {
+            let mut record = json!({ "role": "criteria", "candidate": letter, "ms": ms });
+            match subagent::outcome_of(&mut record, outcome) {
+                SubOutcome::Stopped => record["status"] = json!("stopped"),
+                SubOutcome::Skipped(skip) => {
+                    record["status"] = json!("skipped");
+                    record["reason"] = json!(skip_reason(&skip));
+                }
+                SubOutcome::Report(r) => match criteria_of(&r.text) {
+                    None => {
+                        record["status"] = json!("skipped");
+                        record["reason"] =
+                            json!("its report has no numbered criteria under \"## Criteria\"");
+                    }
+                    Some((text, parsed)) => {
+                        record["status"] = json!("done");
+                        record_criteria(&mut record, &text, &parsed);
+                        if r.status == subagent::SubStatus::Partial {
+                            record["partial"] = json!(true);
+                        }
+                        sets.push((letter, text));
+                    }
+                },
+            }
+            self.update_meta(id, json!({ "planner": record.clone() }))
+                .await?;
+            super::log::write(
+                &self.core,
+                json!({
+                    "event": "planner",
+                    "dialogId": self.dialog_id,
+                    "role": "criteria",
+                    "candidate": letter,
+                    "status": record["status"],
+                    "ms": ms,
+                }),
+            );
+        }
+        if self.stopped() || sets.is_empty() {
+            return Ok(None);
+        }
+        if sets.len() == 1 {
+            return Ok(sets.pop().map(|(_, text)| text));
+        }
+        self.merge_criteria(request, &sets).await.map(Some)
+    }
+
+    /// T03: the judge merges the criteria sets, the narrower reading where
+    /// they disagree and each disagreement under **Assumptions**, in a
+    /// record of its own (`meta.judge`, role "criteria"). A judge that
+    /// gives no merge: the first set, its record saying so.
+    async fn merge_criteria(
+        &mut self,
+        request: &str,
+        sets: &[(&str, String)],
+    ) -> Result<String, String> {
+        let letters: Vec<&str> = sets.iter().map(|(l, _)| *l).collect();
+        let message = judge::criteria_brief(request, sets);
+        let mut row = new_message("assistant", "");
+        let mut record = json!({ "role": "criteria", "status": "running", "offered": letters });
+        row.meta = Some(json!({ "judge": record.clone() }));
+        let row_id = row.id.clone();
+        self.append(vec![row]).await?;
+        let started = Instant::now();
+        let outcome = self
+            .run_ide_subagent(Kind::Judge, &row_id, "Merge the task's criteria", message)
+            .await;
+        record["ms"] = json!(started.elapsed().as_millis() as u64);
+        let (first, first_text) = (&sets[0].0, &sets[0].1);
+        let merged = match subagent::outcome_of(&mut record, outcome) {
+            SubOutcome::Stopped => {
+                record["status"] = json!("stopped");
+                None
+            }
+            SubOutcome::Skipped(skip) => {
+                record["status"] = json!("skipped");
+                record["reason"] = json!(judge_skip_reason(&skip));
+                None
+            }
+            SubOutcome::Report(r) => match criteria_of(&r.text) {
+                Some((text, parsed)) if parsed.has_assumptions => {
+                    record["status"] = json!("done");
+                    record_criteria(&mut record, &text, &parsed);
+                    if r.status == subagent::SubStatus::Partial {
+                        record["partial"] = json!(true);
+                    }
+                    Some(text)
+                }
+                Some(_) => {
+                    record["status"] = json!("skipped");
+                    record["reason"] = json!("its merged criteria have no **Assumptions**");
+                    None
+                }
+                None => {
+                    record["status"] = json!("skipped");
+                    record["reason"] =
+                        json!("its report has no numbered criteria under \"## Criteria\"");
+                    None
+                }
+            },
+        };
+        if merged.is_none() && record["status"] == "skipped" {
+            record["fallback"] = json!(first);
+        }
+        self.update_meta(&row_id, json!({ "judge": record.clone() }))
+            .await?;
+        super::log::write(
+            &self.core,
+            json!({
+                "event": "judge",
+                "dialogId": self.dialog_id,
+                "role": "criteria",
+                "status": record["status"],
+                "offered": sets.len(),
+                "ms": record["ms"],
+            }),
+        );
+        Ok(merged.unwrap_or_else(|| first_text.clone()))
+    }
+
     /// The planners, at the same time, each with a record of its own: what
     /// each one gave, its plan checked as `submit_plan` checks one.
-    async fn run_planners(&mut self, request: &str) -> Result<Vec<Candidate>, String> {
-        self.stop_cut_planners().await?;
-        let message = planner_brief(request);
+    async fn run_planners(
+        &mut self,
+        request: &str,
+        criteria: Option<&str>,
+    ) -> Result<Vec<Candidate>, String> {
+        let message = planner_brief(request, criteria);
         let mut rows = Vec::new();
         let mut jobs = Vec::new();
         for (i, letter) in CANDIDATES.iter().enumerate() {
@@ -476,6 +709,11 @@ impl Run {
                     }
                     Some(text) => {
                         let (text, _) = plan::without_findings(&text);
+                        // T03: the task's criteria, as they were merged.
+                        let text = match criteria {
+                            Some(c) => plan::with_criteria(&text, c),
+                            None => text,
+                        };
                         let problems = plan::plan_problems_for(
                             &text,
                             self.root.as_deref().map(std::path::Path::new),
@@ -596,8 +834,47 @@ mod tests {
     }
 
     #[test]
+    fn criteria_are_read_from_their_section_whatever_their_parts_headings() {
+        let (text, c) = criteria_of(
+            "## Criteria\n\n1. It greets.\n2. It waves.\n\n**Out of scope**: None.\n\n**Assumptions**: English only.",
+        )
+        .unwrap();
+        assert_eq!(c.items, ["It greets.", "It waves."]);
+        assert!(c.has_out_of_scope && c.out_of_scope.is_empty());
+        assert_eq!(c.assumptions, ["English only."]);
+        assert!(text.starts_with("1. It greets.") && text.ends_with("English only."));
+        // The parts as sections of their own, as 4.1a names them.
+        let (text, c) = criteria_of(
+            "## Criteria\n\n1. It greets.\n\n## Out of scope\n\nThe CLI.\n\n## Assumptions\n\nNone.",
+        )
+        .unwrap();
+        assert_eq!(c.out_of_scope, ["The CLI."]);
+        assert!(c.has_assumptions && c.assumptions.is_empty());
+        assert!(text.contains("**Out of scope**:\n\nThe CLI."), "{text}");
+        assert!(
+            criteria_of("## Criteria\n\nIt greets.").is_none(),
+            "nothing numbered"
+        );
+        assert!(criteria_of("## Plan\n\n# Greet").is_none());
+    }
+
+    #[test]
+    fn a_planners_brief_has_the_criteria_written_first() {
+        let brief = planner_brief("Greet", Some("1. It greets.\n\n**Assumptions**: None."));
+        assert!(
+            brief.contains("## The criteria\n\nThe task's criteria, written and merged before you")
+        );
+        assert!(brief.contains("<criteria>\n1. It greets.\n\n**Assumptions**: None.\n</criteria>"));
+        assert!(!planner_brief("Greet", None).contains("<criteria>"));
+        let brief = criteria_brief(" Greet ");
+        assert!(brief.starts_with(CRITERIA_HEADING));
+        assert!(brief.contains("## The user's request\n\nGreet\n"));
+        assert!(brief.contains("no plan, no steps"));
+    }
+
+    #[test]
     fn a_planners_brief_has_the_request_and_the_plans_form() {
-        let brief = planner_brief("  Make the test pass  ");
+        let brief = planner_brief("  Make the test pass  ", None);
         assert!(brief.starts_with(PLAN_HEADING));
         assert!(brief.contains("## The user's request\n\nMake the test pass\n"));
         assert!(

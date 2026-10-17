@@ -1631,3 +1631,32 @@ T05 depends most on the environment it meets.
   choice, why, and its own plan when it merged or revised. A run cut while
   it worked leaves it running; the stage's next run stops it with the
   planners' records and plans again.
+
+### T03: the criteria, twice
+
+- **Before the planners**, two criteria writers (`thorough_criteria`):
+  planner subagents with a criteria brief, at once, each on its own, the
+  second starting from the planner row's second model when there is one.
+  Their report is a plan's "## Criteria" (numbered statements, then
+  **Out of scope** and **Assumptions**), read by S01's own parser; parts
+  written as sections of their own, as 4.1a names them, are read as the
+  same parts (`criteria_of`). Each is a record (`meta.planner`, role
+  "criteria").
+- **The judge merges them** (`merge_criteria`, its brief
+  `judge::criteria_brief`): the narrower reading where the sets disagree,
+  each disagreement a line under **Assumptions**, which a merge must have.
+  One set alone is taken as it is; a merge that can't be read: the first
+  writer's set, its record (`fallback`) saying so. No set: the planners
+  write the criteria as in T01.
+- **The criteria are the plan's**: the planners' brief has them, and
+  every plan the stage weighs or takes gets them as its "## Criteria"
+  (`plan::with_criteria`), the judge's merged plan included, so what the
+  tests are written from and the result judged by is the merged set,
+  whatever a planner wrote there. When the run's model plans itself, its
+  note has them.
+- **One prompt, two briefs.** The planner and the judge each have one
+  kind (one row of settings) and a report form for each brief:
+  `Format::OneOf` takes whichever of its sections the brief asked for,
+  and the consumer reads it strictly (a plans judgment without its
+  choice is still no judgment). The repair turn and the budget's note
+  name the sections that way.

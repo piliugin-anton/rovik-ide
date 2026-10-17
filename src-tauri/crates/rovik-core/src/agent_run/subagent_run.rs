@@ -1429,12 +1429,7 @@ impl Run {
         let Some(problem) = subagent::format_problem(spec, &text) else {
             return self.ask_verdicts(text, status).await;
         };
-        let sections = spec
-            .sections
-            .iter()
-            .map(|s| format!("\"## {s}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let headings = spec.headings_note();
         // B13: a follow-up plan review's rewrite keeps its verdicts.
         let earlier = self
             .sub()
@@ -1447,7 +1442,7 @@ impl Run {
         };
         self.add_harness(
             format!(
-                "{IDE_NOTE}Your report didn't follow the format: {problem}. Don't call any tools. Write the report again, with the headings {sections}.{verdicts}"
+                "{IDE_NOTE}Your report didn't follow the format: {problem}. Don't call any tools. Write the report again, {headings}.{verdicts}"
             ),
             "subagentFormat",
         )

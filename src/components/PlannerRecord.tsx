@@ -3,7 +3,8 @@
 // One of a Thorough Autopilot task's planners in the chat (T01,
 // agent_run/planning.rs): at work, then the plan it gave (whether the
 // task took it, what the plan's checks found in it), or why it gave none,
-// and its work on demand. Updates live while it runs.
+// and its work on demand. Updates live while it runs. A criteria writer
+// (T03) is a planner too: its record shows the criteria it wrote.
 import { For, Show } from 'solid-js';
 import { plannerHeadline, type PlannerMeta } from '../lib/autopilot';
 import { liveLabel, liveSubagent } from '../lib/subagents';
@@ -20,6 +21,33 @@ function facts(meta: PlannerMeta): string {
   return [meta.model, calls, seconds, meta.partial ? 'cut short by its budget' : '']
     .filter(Boolean)
     .join(' · ');
+}
+
+/**
+ * Criteria a record holds (a writer's, or the judge's merge, T03): the
+ * numbered ones, then what's out of scope and what was assumed.
+ */
+export function CriteriaParts(props: {
+  meta: { criteria?: string[]; outOfScope?: string[]; assumptions?: string[] };
+}) {
+  return (
+    <Show when={props.meta.criteria?.length}>
+      <ol class="chat-planner-criteria">
+        <For each={props.meta.criteria}>{(c) => <li>{c}</li>}</For>
+      </ol>
+      <Show when={props.meta.outOfScope?.length}>
+        <div class="chat-planner-part">
+          Out of scope: <For each={props.meta.outOfScope}>{(o) => <span>{o} </span>}</For>
+        </div>
+      </Show>
+      <Show when={props.meta.assumptions?.length}>
+        <div class="chat-planner-part">Assumed:</div>
+        <ul class="chat-planner-assumptions">
+          <For each={props.meta.assumptions}>{(a) => <li>{a}</li>}</For>
+        </ul>
+      </Show>
+    </Show>
+  );
 }
 
 export default function PlannerRecord(props: {
@@ -61,6 +89,7 @@ export default function PlannerRecord(props: {
           <For each={props.meta.problems}>{(p) => <li>{p}</li>}</For>
         </ul>
       </Show>
+      <CriteriaParts meta={props.meta} />
       <Show when={props.meta.status !== 'running'}>
         <div class="chat-verify-files">
           {facts(props.meta)}

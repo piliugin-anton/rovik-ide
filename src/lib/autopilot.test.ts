@@ -415,6 +415,38 @@ test('a judge record’s headline: weighing, picked, revised, merged, no choice 
   assert.equal(judgeHeadline({ ...base, status: 'stopped' }, false), 'The judge was stopped.');
 });
 
+test('criteria records’ headlines: a writer’s set, the judge’s merge (T03)', () => {
+  const writer = { role: 'criteria' as const, candidate: 'a' };
+  assert.equal(
+    plannerHeadline({ ...writer, status: 'running' }, false),
+    'Criteria writer A is writing what done means, on its own…'
+  );
+  assert.equal(
+    plannerHeadline({ ...writer, status: 'done', criteria: ['x', 'y'] }, false),
+    'Criteria writer A wrote 2 criteria.'
+  );
+  assert.equal(
+    plannerHeadline({ ...writer, status: 'skipped', reason: 'its model failed' }, false),
+    'Criteria writer A gave no criteria: its model failed.'
+  );
+  const merge = { role: 'criteria' as const, offered: ['a', 'b'] };
+  assert.equal(
+    judgeHeadline({ ...merge, status: 'running' }, false),
+    'The judge is merging the 2 sets of criteria…'
+  );
+  assert.equal(
+    judgeHeadline({ ...merge, status: 'done', criteria: ['x'] }, false),
+    'The judge merged the 2 sets into 1 criterion.'
+  );
+  assert.equal(
+    judgeHeadline(
+      { ...merge, status: 'skipped', reason: 'its report couldn’t be read', fallback: 'a' },
+      false
+    ),
+    'The judge couldn’t merge the criteria: its report couldn’t be read. The task takes writer A’s criteria.'
+  );
+});
+
 test('the report card’s lines: how it ended, what it spent (S09)', () => {
   const meta = {
     outcome: 'verified',

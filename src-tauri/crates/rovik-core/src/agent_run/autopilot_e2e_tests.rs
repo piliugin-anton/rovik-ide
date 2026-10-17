@@ -220,6 +220,16 @@ const NO_PLAN: &str = "## Blocked\n\nNo plan in this test.";
 /// The judge's brief for the planners' plans starts so (T02).
 const JUDGING: &str = super::judge::JUDGE_PLANS_HEADING;
 
+/// The criteria writers' brief starts so (T03).
+const CRITERIA: &str = super::planning::CRITERIA_HEADING;
+
+/// The judge's brief for the criteria sets starts so (T03).
+const MERGING: &str = super::judge::JUDGE_CRITERIA_HEADING;
+
+/// What the criteria writers and their judge answer unless a test gives
+/// them replies: blocked, so the planners write the criteria themselves.
+const NO_CRITERIA: &str = "## Blocked\n\nNo criteria in this test.";
+
 /// What the judge answers unless a test gives it replies: blocked, so the
 /// task takes the first planner's plan that passes the checks.
 const NO_JUDGMENT: &str = "## Blocked\n\nNo judgment in this test.";
@@ -233,7 +243,8 @@ const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
 
 /// `testing::model_routed`, with the test writers of the Tests stage and of
 /// a change without tests (`NO_TESTS`), the acceptance checker
-/// (`NO_VERDICTS`), Thorough's planners (`NO_PLAN`) and its judge
+/// (`NO_VERDICTS`), Thorough's criteria writers and their merge
+/// (`NO_CRITERIA`), its planners (`NO_PLAN`) and its judge
 /// (`NO_JUDGMENT`) answered apart unless the test routes them: a task's
 /// other runs get the replies they're written for.
 async fn model_routed(
@@ -250,6 +261,11 @@ async fn model_routed(
     }
     if !routes.iter().any(|(marker, _)| *marker == JUDGING) {
         routes.push((JUDGING, vec![Reply::Text(NO_JUDGMENT)]));
+    }
+    for marker in [CRITERIA, MERGING] {
+        if !routes.iter().any(|(m, _)| *m == marker) {
+            routes.push((marker, vec![Reply::Text(NO_CRITERIA)]));
+        }
     }
     if !routes.iter().any(|(marker, _)| *marker == ACCEPTANCE) {
         routes.push((ACCEPTANCE, vec![Reply::Text(NO_VERDICTS)]));
@@ -3662,12 +3678,18 @@ fn planners_report(title: &str) -> &'static str {
     String::leak(format!("## Plan\n\n{plan}"))
 }
 
-/// The chat's planner records, oldest first.
-fn planner_records(messages: &[MessageRow]) -> Vec<&Value> {
+/// The chat's planner records of `role` ("plan", "criteria"), oldest first.
+fn records_of_role<'a>(messages: &'a [MessageRow], key: &str, role: &str) -> Vec<&'a Value> {
     messages
         .iter()
-        .filter_map(|m| m.meta.as_ref()?.get("planner"))
+        .filter_map(|m| m.meta.as_ref()?.get(key))
+        .filter(|r| r["role"] == role)
         .collect()
+}
+
+/// The chat's planners' records, oldest first.
+fn planner_records(messages: &[MessageRow]) -> Vec<&Value> {
+    records_of_role(messages, "planner", "plan")
 }
 
 /// T01 (4.1): a Thorough task's plan stage starts with three planners, at
@@ -3830,7 +3852,7 @@ async fn three_planners_plan_a_thorough_task_each_in_a_record_of_its_own() {
         .to_string()
         .contains("planner a's plan"));
     let logged = log_lines(&h, "planner").await;
-    assert_eq!(logged.len(), 3);
+    assert_eq!(logged.iter().filter(|l| l["role"] == "plan").count(), 3);
 }
 
 /// T01: planners that give no plan the checks pass: the plan run's model
@@ -3975,6 +3997,7 @@ async fn a_plan_stage_cut_among_its_planners_plans_again_once_resumed() {
     let planners: Vec<(&str, &Value)> = messages
         .iter()
         .filter_map(|m| Some((m.id.as_str(), m.meta.as_ref()?.get("planner")?)))
+        .filter(|(_, r)| r["role"] == "plan")
         .collect();
     assert_eq!(planners.len(), 6, "the cut three, then three anew");
     for (id, record) in &planners {
@@ -3987,12 +4010,9 @@ async fn a_plan_stage_cut_among_its_planners_plans_again_once_resumed() {
     }
 }
 
-/// The chat's judge records, oldest first.
+/// The chat's records of the judge of the plans, oldest first.
 fn judge_records(messages: &[MessageRow]) -> Vec<&Value> {
-    messages
-        .iter()
-        .filter_map(|m| m.meta.as_ref()?.get("judge"))
-        .collect()
+    records_of_role(messages, "judge", "plans")
 }
 
 /// The plan the task saved, as its file holds it.
@@ -4248,4 +4268,178 @@ async fn a_judge_that_fails_falls_back_to_the_first_planners_plan() {
     );
     let title = first["title"].as_str().unwrap();
     assert!(saved_plan(&messages).starts_with(&format!("# {title}")));
+}
+
+/// The criteria writers' two sets for the T03 tests: they agree on the
+/// test, and disagree on the case of "ok" and on `check.js`; b writes its
+/// parts as sections of their own.
+const CRITERIA_A: &str = "## Criteria\n\n1. `npm test` passes.\n2. `ok.txt` says ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.";
+const CRITERIA_B: &str = "## Criteria\n\n1. `npm test` passes.\n2. `ok.txt` says OK, in capitals.\n\n## Out of scope\n\n`check.js`.\n\n## Assumptions\n\nNone.";
+
+/// The judge's merge of the two, the disagreement under **Assumptions**.
+const MERGED_CRITERIA: &str = "## Criteria\n\n1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n\n**Out of scope**: `check.js`.\n\n**Assumptions**: The sets disagreed on the case of ok: lowercase \"ok\", the narrower reading, because `check.js` compares it as written.";
+
+/// The task's requests' first messages after the system prompt, of the
+/// run `marker` routes.
+fn briefs_of(requests: &[Value], marker: &str) -> Vec<String> {
+    requests
+        .iter()
+        .filter(|r| route_of(r, &[marker]).is_some())
+        .filter_map(|r| {
+            r["messages"]
+                .as_array()?
+                .iter()
+                .find(|m| m["role"] == "user")?["content"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// T03 (4.1a): two writers write the task's criteria, each on its own;
+/// their sets differ, and the judge merges them, the disagreement under
+/// **Assumptions**. The planners plan to the merged set, and it is the
+/// saved plan's "## Criteria", whatever criteria their plans had.
+#[tokio::test]
+async fn two_criteria_sets_are_merged_with_their_disagreement_under_assumptions() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, seen) = model_routed(
+        vec![
+            (
+                CRITERIA,
+                vec![Reply::Text(CRITERIA_A), Reply::Text(CRITERIA_B)],
+            ),
+            (MERGING, vec![Reply::Text(MERGED_CRITERIA)]),
+            planners_route(&["Make the test pass", "Write ok", "Find ok"]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script().into_iter().skip(1).collect(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+
+    // Two sets, a and b, each in its record, b's parts read as a's are.
+    let messages = h.messages().await;
+    let writers = records_of_role(&messages, "planner", "criteria");
+    assert_eq!(
+        writers
+            .iter()
+            .map(|w| w["candidate"].clone())
+            .collect::<Vec<_>>(),
+        [json!("a"), json!("b")]
+    );
+    assert!(writers.iter().all(|w| w["status"] == "done"), "{writers:?}");
+    let mut scopes: Vec<Value> = writers.iter().map(|w| w["outOfScope"].clone()).collect();
+    scopes.sort_by_key(|v| v.to_string());
+    assert_eq!(scopes, [json!(["`check.js`."]), json!([])]);
+    // The judge's merge, from both sets whole.
+    let merges = records_of_role(&messages, "judge", "criteria");
+    assert_eq!(merges.len(), 1);
+    let merge = merges[0];
+    assert_eq!(merge["status"], "done", "{merge}");
+    assert_eq!(
+        merge["criteria"],
+        json!(["`npm test` passes: `check.js` finds `ok.txt` saying ok."])
+    );
+    let disagreement = merge["assumptions"][0].as_str().unwrap();
+    assert!(disagreement.starts_with("The sets disagreed on the case of ok"));
+    let requests = seen.lock().unwrap().clone();
+    let merge_brief = &briefs_of(&requests, MERGING)[0];
+    assert!(
+        merge_brief.contains("<criteria name=\"a\">")
+            && merge_brief.contains("<criteria name=\"b\">")
+    );
+    assert!(
+        merge_brief.contains("says OK, in capitals")
+            && merge_brief.contains("2. `ok.txt` says ok.")
+    );
+    // The planners plan to it, and the plan saved has it as its criteria.
+    let planner_briefs = briefs_of(&requests, PLANNING);
+    assert_eq!(planner_briefs.len(), 3);
+    assert!(planner_briefs
+        .iter()
+        .all(|b| b.contains("<criteria>") && b.contains(disagreement)));
+    let saved = plan::criteria(&saved_plan(&messages)).expect("its criteria");
+    assert_eq!(
+        saved.items,
+        ["`npm test` passes: `check.js` finds `ok.txt` saying ok."]
+    );
+    assert_eq!(saved.out_of_scope, ["`check.js`."]);
+    assert_eq!(saved.assumptions, [disagreement]);
+    assert!(planner_records(&messages)
+        .iter()
+        .all(|p| p["plan"].as_str().unwrap().contains(disagreement)));
+}
+
+/// T03: a judge whose merge can't be read: the task's criteria are the
+/// first writer's set, as it wrote it, and the judge's record says so; a
+/// lone set (the other writer blocked) is taken as it is, with no merge.
+#[tokio::test]
+async fn criteria_without_a_merge_are_the_first_writers() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![
+            (
+                CRITERIA,
+                vec![Reply::Text(CRITERIA_A), Reply::Text(CRITERIA_B)],
+            ),
+            (MERGING, vec![Reply::Text("Both sets are fine.")]),
+            planners_route(&["Make the test pass", "Write ok", "Find ok"]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script().into_iter().skip(1).collect(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    stages_until(&h, "the delivery", delivered).await;
+    let messages = h.messages().await;
+    let merge = records_of_role(&messages, "judge", "criteria")[0];
+    assert_eq!(merge["status"], "skipped", "{merge}");
+    assert_eq!(merge["fallback"], "a");
+    let first = records_of_role(&messages, "planner", "criteria")[0];
+    assert_eq!(first["candidate"], "a");
+    let saved = plan::criteria(&saved_plan(&messages)).expect("its criteria");
+    assert_eq!(json!(saved.items), first["criteria"]);
+    assert_eq!(json!(saved.out_of_scope), first["outOfScope"]);
+
+    // One writer blocked: the other's set alone, no merge.
+    let h = task_project().await;
+    let (url, _) = model_routed(
+        vec![
+            (
+                CRITERIA,
+                vec![Reply::Text(NO_CRITERIA), Reply::Text(CRITERIA_B)],
+            ),
+            planners_route(&["Make the test pass", "Write ok", "Find ok"]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script().into_iter().skip(1).collect(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    stages_until(&h, "the delivery", delivered).await;
+    let messages = h.messages().await;
+    assert!(records_of_role(&messages, "judge", "criteria").is_empty());
+    let saved = plan::criteria(&saved_plan(&messages)).expect("its criteria");
+    assert_eq!(
+        saved.items,
+        ["`npm test` passes.", "`ok.txt` says OK, in capitals."]
+    );
 }
