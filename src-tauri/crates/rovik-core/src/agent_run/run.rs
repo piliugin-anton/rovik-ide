@@ -1388,6 +1388,9 @@ impl Run {
             clm,
             context_only,
         );
+        if self.autopilot {
+            super::autopilot::without_questions(&mut tools);
+        }
         // A subagent gets its kind's tools only; a lead with subagents on,
         // the `task` tool (not on a turn restricted to context tools).
         let kinds = self.subagent_kinds();
@@ -1422,10 +1425,11 @@ impl Run {
             )
         };
         let group_rules = subagent::plan_group_rules(self.parallel_on());
+        let plan_instructions = plan::plan_mode_instructions(self.autopilot);
         let project_context = if self.plan_mode {
             [
                 self.project_context.as_str(),
-                plan::PLAN_MODE_INSTRUCTIONS,
+                plan_instructions.as_str(),
                 group_rules,
                 self.plan_context.as_str(),
             ]
@@ -1441,6 +1445,14 @@ impl Run {
             Some(section) => format!("{project_context}\n\n{section}"),
             None => project_context,
         };
+        // D5: Autopilot's lead decides what it would otherwise ask.
+        if self.autopilot && system_prompt.is_none() {
+            system_prompt = Some(crate::agent::lead_system_prompt(
+                !tools.is_empty(),
+                Some(&project_context),
+                true,
+            ));
+        }
         let continue_reply = std::mem::take(&mut self.continue_reply);
         let no_tool_calls = std::mem::take(&mut self.words_only);
         // Forced `todo` (plan-implementation first turn, second checklist

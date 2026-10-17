@@ -42,6 +42,14 @@ pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 /// The mode of a message sent in Autopilot (`meta.mode`, `StartRequest.mode`).
 pub const MODE: &str = "autopilot";
 
+/// What `ask_user` answers in Autopilot (D5): nobody is there.
+pub const NO_QUESTIONS: &str = "Error: nobody answers questions in Autopilot. Decide yourself and say what you assumed, under \"## Decisions\" in the plan.";
+
+/// An Autopilot run's tools: never `ask_user` (D5).
+pub fn without_questions(tools: &mut Vec<Value>) {
+    tools.retain(|t| t.pointer("/function/name").and_then(Value::as_str) != Some("ask_user"));
+}
+
 /*
  * ---------------------------------------------------------------------------
  * Stage records

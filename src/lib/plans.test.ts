@@ -2,7 +2,7 @@
 // and opens read-only; a local chat's opens in the editor (K09).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { openPlan, readPlan } from './plans';
+import { implementationMessage, openPlan, readPlan } from './plans';
 import { chatStore } from './chatStore';
 import {
   onCompareRequest,
@@ -51,8 +51,23 @@ test('a remote plan opens from the owner, read-only', async () => {
   stopCompare();
 });
 
-test('a plan to implement is read through chat_read_plan, for a chat of either kind', async () => {
+test('a plan is read through chat_read_plan, for a chat of either kind', async () => {
   calls.length = 0;
   assert.equal(await readPlan('chat-7', '/p/.rovik/plans/a.md'), PLAN);
   assert.deepEqual(reads(), [{ dialogId: 'chat-7', path: '/p/.rovik/plans/a.md' }]);
+});
+
+test('implementing a plan sends its path; the backend writes what the model gets (A04)', () => {
+  calls.length = 0;
+  const message = implementationMessage('/p/.rovik/plans/a.md', '/p');
+  assert.deepEqual(message, {
+    content: 'Implement the plan in `.rovik/plans/a.md`.',
+    meta: { mode: 'agent', implementsPlan: true, planPath: '/p/.rovik/plans/a.md' },
+  });
+  assert.equal(reads().length, 0, 'not read here');
+  assert.equal(
+    implementationMessage('/srv/w/.rovik/plans/a.md', '/p').content,
+    'Implement the plan in `/srv/w/.rovik/plans/a.md`.',
+    'a path outside the project, as it is'
+  );
 });

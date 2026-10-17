@@ -3,8 +3,10 @@
 // Plans as files. A Plan-mode run's plan is saved as Markdown in
 // `.rovik/plans/` in the project, where it can be read, edited and kept. A
 // revised plan in the same chat updates the same file. Implementing a plan
-// (from the chat, or from the editor bar on a plan file) uses the file's
-// current text, so edits made to it count.
+// (from the chat, or from the editor bar on a plan file, which saves it
+// first) sends its path: the backend reads the file as it is then, so edits
+// made to it count, and writes the request the model gets
+// (src-tauri/crates/rovik-core/src/agent_run/plan.rs, `expand_implementation`).
 //
 // Saving a submitted plan happens in the backend (src-tauri/src/agent_run/plan.rs).
 //
@@ -12,6 +14,7 @@
 // `chat_read_plan`, which reads a local chat's file too, and opens
 // read-only (K09).
 
+import type { ChatMessage } from '../types';
 import { chatApi } from './chatApi';
 import { chatStore } from './chatStore';
 import { cloud, hostName } from './cloud';
@@ -28,6 +31,21 @@ export function relativePlanPath(path: string, root: string | null): string {
   if (!root) return path;
   const r = root.replace(/[\\/]+$/, '');
   return path.startsWith(r) ? path.slice(r.length + 1) : path;
+}
+
+/**
+ * The message that implements a saved plan, in Agent mode: a short line for
+ * the chat, and the plan's path, from which the backend sends the model the
+ * plan in full.
+ */
+export function implementationMessage(
+  file: string,
+  root: string | null
+): { content: string; meta: NonNullable<ChatMessage['meta']> } {
+  return {
+    content: `Implement the plan in \`${relativePlanPath(file, root)}\`.`,
+    meta: { mode: 'agent', implementsPlan: true, planPath: file },
+  };
 }
 
 /** The chat's plan as it is now: from its host, for a remote chat. */
@@ -71,10 +89,8 @@ export async function openPlan(dialogId: string | null, path: string): Promise<v
  */
 
 export interface ImplementPlanRequest {
-  /** The plan file (absolute). */
+  /** The plan file (absolute), saved. */
   path: string;
-  /** Its text as it is now, unsaved edits included. */
-  content: string;
 }
 
 const pending: ImplementPlanRequest[] = [];

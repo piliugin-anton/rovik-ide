@@ -1171,15 +1171,15 @@ export default function App() {
   }
 
   /**
-   * "Implement this plan" over a plan file: saves it, then hands its text to
-   * the chat, which starts the run in Agent mode (lib/plans.ts).
+   * "Implement this plan" over a plan file: saves it, then hands it to the
+   * chat, which starts the run in Agent mode (lib/plans.ts).
    */
   async function implementOpenPlan() {
     const file = activeFile();
     if (!file || !isPlanFile(file.path)) return;
     if (file.dirty) await saveActiveFile();
     setSidebarTab('chat');
-    requestImplementPlan({ path: file.path, content: file.content });
+    requestImplementPlan({ path: file.path });
   }
 
   /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */

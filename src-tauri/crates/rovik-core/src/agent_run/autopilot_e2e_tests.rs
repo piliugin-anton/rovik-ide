@@ -536,6 +536,167 @@ async fn a_new_message_takes_over_from_an_unfinished_task() {
     assert_eq!(h.events_of("runStarted").len(), 2);
 }
 
+/*
+ * The plan and implement stages (A04)
+ */
+
+/// The text of a request's last user-role message: the current request.
+fn last_user_text(request: &Value) -> String {
+    let message = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .unwrap();
+    match &message["content"] {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// A04: the plan stage asks nobody: `ask_user` isn't offered, a call to it
+/// anyway is refused with the reason, nothing waits for an answer, and the
+/// plan goes in with its assumptions under "## Decisions". What the model
+/// is told says so, in Plan mode's place.
+#[tokio::test]
+async fn a_plan_that_asks_is_refused_and_submits_with_assumptions() {
+    let h = harness(&[("src/a.rs", "fn main() {}\n")]).await;
+    let plan = "# Flag\n\nAdd a flag.\n\n## Steps\n\n\
+        1. **Flag**\n   - Files: `src/a.rs`\n   - Add a `verbose` flag that `main` reads and prints with.\n\
+        2. **Use it**\n   - Files: `src/a.rs`\n   - Print each step when the `verbose` flag is set.\n\n\
+        ## Decisions\n- Assumed the flag is `--verbose`: nobody was there to ask.\n\n\
+        ## Validation\n- `cargo test`\n";
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "q1",
+            name: "ask_user",
+            args: json!({ "questions": [{ "question": "Which flag?", "options": [{ "label": "--verbose" }] }] }),
+        },
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": plan }),
+        },
+        Reply::Text("Saved the plan."),
+    ])
+    .await;
+    h.start(h.request(&url, autopilot_send("Add a flag"), quiet_permissions()))
+        .await;
+    let records = stages_until(&h, "the plan's end", |r| {
+        r.first().is_some_and(|p| p.status != Status::Running)
+    })
+    .await;
+    assert_eq!(records[0].status, Status::Done, "{records:?}");
+    assert!(h.events_of("questionsAsked").is_empty());
+    let messages = h.messages().await;
+    assert_eq!(
+        result_of(&messages, "q1").content,
+        super::autopilot::NO_QUESTIONS
+    );
+    let saved = result_of(&messages, "p1");
+    assert!(
+        saved.content.starts_with("Saved the plan to"),
+        "{}",
+        saved.content
+    );
+
+    let first = seen.lock().unwrap()[0].clone();
+    let tools = tool_names(&first);
+    assert!(!tools.iter().any(|t| t == "ask_user"), "{tools:?}");
+    assert!(tools.iter().any(|t| t == "submit_plan"), "{tools:?}");
+    let system = first["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.contains("Nobody is there to answer questions"),
+        "{system}"
+    );
+    assert!(!system.contains("Only ask the user a clarifying question"));
+    assert!(system.contains("Nobody answers questions in Autopilot"));
+    assert!(!system.contains("ask_user"), "{system}");
+    stages_until(&h, "the delivery", delivered).await;
+}
+
+/// A04: the implementation starts without a message of the user's, and the
+/// model gets the text "Implement this plan" sends for the same plan file:
+/// the button sends the plan's path, and the core writes the text for both.
+#[tokio::test]
+async fn the_button_and_the_driver_send_the_same_implementation_request() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, seen) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        task_script(),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let messages = h.messages().await;
+    let users_before = messages.iter().filter(|m| m.role == "user").count();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.role == "user" && !plan::is_harness(m))
+            .count(),
+        1,
+        "the task's message alone is the user's"
+    );
+    let plan_reply = messages
+        .iter()
+        .find(|m| Some(&m.id) == records[0].reference.as_ref())
+        .unwrap();
+    let file = plan_reply.meta.as_ref().unwrap()["planFile"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let by_driver = {
+        let requests = seen.lock().unwrap();
+        let first = requests
+            .iter()
+            .find(|r| last_user_text(r).starts_with("Implement this plan."))
+            .expect("the implementation's first request");
+        last_user_text(first)
+    };
+
+    // "Implement this plan" on the same file, as the app sends it now.
+    let shown = plan::relative_plan_path(&file, Some(&h.project.to_string_lossy()));
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: format!("Implement the plan in `{shown}`."),
+        meta: Some(json!({ "mode": "agent", "implementsPlan": true, "planPath": file })),
+        attachments: Vec::new(),
+    };
+    let asked = seen.lock().unwrap().len();
+    h.start(h.request(&url, StartKind::Send { message }, Permissions::default()))
+        .await;
+    for _ in 0..400 {
+        if h.events_of("runEnded").len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // The same text, kept with the message for its later turns and a
+    // Retry. The button's message starts its request, so the repository
+    // map goes before it; the IDE's doesn't (the task's message has it).
+    let messages = h.messages().await;
+    let sent = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .nth(users_before)
+        .unwrap();
+    assert_eq!(
+        sent.meta.as_ref().unwrap()["sentContent"],
+        by_driver.as_str()
+    );
+    let by_button = last_user_text(&seen.lock().unwrap()[asked]);
+    assert!(by_button.ends_with(&by_driver), "{by_button}");
+    assert!(by_button.starts_with("## Repository map"), "{by_button}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(by_driver, plan::implementation_request(&text, Some(&shown)));
+}
+
 /// A01: an Agent-mode run's log line says nothing of Autopilot.
 #[tokio::test]
 async fn an_agent_mode_run_is_not_autopilots() {

@@ -720,3 +720,25 @@ T05 depends most on the environment it meets.
 - **IDE-started subagents as stages** (S04's test writer, S08's
   acceptance) need a lead run: `run_ide_subagent` is a method of one. No
   stage of milestone A needs it.
+
+### A04: the plan and implement stages
+
+- **No questions.** Autopilot's runs aren't offered `ask_user`, and one
+  called anyway is refused with "nobody answers questions in Autopilot"
+  and where to put the assumption, rather than with Agent mode's text,
+  which says the tool is for Plan mode (the plan stage is Plan mode). The
+  system prompt's line on clarifying questions, and Plan mode's lines on
+  asking and on the user's choice of mode, have Autopilot's in their
+  place (`agent::lead_system_prompt`, `plan::plan_mode_instructions`).
+- **"Implement this plan" sends the plan's path** (`meta.planPath`, with
+  `meta.implementsPlan`): the core reads the file, writes the request
+  (`plan::expand_implementation`) and stores it as the message's
+  `meta.sentContent`, as the frontend did. A remote chat's plan is read
+  on its host, which also shows its path from the worktree's root. The
+  editor saves a plan before it hands it over, so the file is what it
+  shows.
+- **The same text, with the map elsewhere.** The driver's run and the
+  button's get the same request text. The repository map goes on the
+  message that starts the request: the button's own, or in Autopilot the
+  task's message, since the IDE's message starts none (it's a harness
+  message, never taken for the user's request).

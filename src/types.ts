@@ -295,6 +295,8 @@ export interface ToolMeta {
   pdfs?: import('./lib/composerAttachments').ComposerPdf[];
   /** Agent message implementing a saved plan: the first turn forces the `todo` tool. */
   implementsPlan?: boolean;
+  /** Its plan's file: the backend sends the model the plan from it (lib/plans.ts). */
+  planPath?: string;
   /** The change reviewer's record (lib/changeReview.ts). */
   review?: import('./lib/changeReview').ReviewMeta;
   /** The plan checker's problems with a plan Agent mode was asked to implement (B07b). */

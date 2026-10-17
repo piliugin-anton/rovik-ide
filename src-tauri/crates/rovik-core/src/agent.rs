@@ -669,6 +669,33 @@ const CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are a coding agent operating ins
 - All file paths are relative to the project root and confined to it — you cannot and should not attempt to access anything outside the opened project folder.
 - Don't create or modify config/dependency files unless the task calls for it."#;
 
+/// The coding agent's line on clarifying questions, and Autopilot's in its
+/// place: there, nobody is there to answer (D5).
+const CLARIFYING_QUESTIONS: &str = "- Only ask the user a clarifying question when the task is genuinely ambiguous in a way that changes the approach. Otherwise, make a reasonable assumption, state it briefly, and proceed.";
+const AUTOPILOT_DECIDES: &str = "- Nobody is there to answer questions: when the task is ambiguous in a way that changes the approach, decide, state the assumption, and proceed.";
+
+/// A lead's system prompt: the coding agent's (without its tool rules when
+/// it's offered no tools), then the project's section. In Autopilot it
+/// decides what it would otherwise ask.
+pub fn lead_system_prompt(
+    has_tools: bool,
+    project_context: Option<&str>,
+    autopilot: bool,
+) -> String {
+    let mut base = if has_tools {
+        CODING_AGENT_SYSTEM_PROMPT.to_string()
+    } else {
+        without_tool_rules(CODING_AGENT_SYSTEM_PROMPT)
+    };
+    if autopilot {
+        base = base.replace(CLARIFYING_QUESTIONS, AUTOPILOT_DECIDES);
+    }
+    match project_context.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(context) => format!("{base}\n\n{context}"),
+        None => base,
+    }
+}
+
 /// The system prompt a request is sent with: the one with the CLM section
 /// only when CLM built its history. A request that fell back to trimming
 /// mustn't tell the model its context is a file it manages.
@@ -824,21 +851,8 @@ pub async fn run_chat(
     let chars_per_token = calibration::chars_per_token(&calibration_key);
 
     let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
-    let system_prompt = system_prompt.unwrap_or_else(|| {
-        let base = if has_tools {
-            CODING_AGENT_SYSTEM_PROMPT.to_string()
-        } else {
-            without_tool_rules(CODING_AGENT_SYSTEM_PROMPT)
-        };
-        match project_context
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-        {
-            Some(context) => format!("{base}\n\n{context}"),
-            None => base,
-        }
-    });
+    let system_prompt = system_prompt
+        .unwrap_or_else(|| lead_system_prompt(has_tools, project_context.as_deref(), false));
     let reasoning_effort = options.as_ref().and_then(|o| o.reasoning_effort);
     // Room kept for the reply (its reasoning included): learned per model
     // and effort from what providers report, see `reply_reserve`.
@@ -1724,12 +1738,17 @@ pub async fn chat_context_estimate(
     let (db, vfs) = (&core.db, &core.vfs);
     let permissions = core.agents.config_for(&dialog_id).permissions;
     let root = root.filter(|r| !r.trim().is_empty());
-    // An Autopilot message starts a task with its plan: a Plan-mode request.
-    let plan_mode = matches!(
-        mode.as_deref(),
-        Some("plan") | Some(crate::agent_run::autopilot::MODE)
-    );
-    let tools = crate::agent_run::tools::tools_for(
+    // An Autopilot message starts a task with its plan: a Plan-mode request,
+    // without questions (D5).
+    let autopilot = mode.as_deref() == Some(crate::agent_run::autopilot::MODE);
+    let plan_mode = autopilot || mode.as_deref() == Some("plan");
+    let offered = |mut tools: Vec<serde_json::Value>| {
+        if autopilot {
+            crate::agent_run::autopilot::without_questions(&mut tools);
+        }
+        tools
+    };
+    let tools = offered(crate::agent_run::tools::tools_for(
         root.is_some(),
         vision,
         no_tools.unwrap_or(false),
@@ -1738,7 +1757,7 @@ pub async fn chat_context_estimate(
         // The estimate is shown for Trimming only.
         false,
         false,
-    );
+    ));
     // As sent: with the tools opencode.ai requires (opencode.rs).
     let sent_chars = |tools: Vec<serde_json::Value>| {
         let (sent, _) = crate::opencode::with_required_tools(&base_url, Some(tools), false);
@@ -1756,7 +1775,7 @@ pub async fn chat_context_estimate(
         && !tools.is_empty()
         && crate::clm::availability(&vfs).is_ok())
     .then(|| {
-        let tools = crate::agent_run::tools::tools_for(
+        let tools = offered(crate::agent_run::tools::tools_for(
             root.is_some(),
             vision,
             no_tools.unwrap_or(false),
@@ -1764,7 +1783,7 @@ pub async fn chat_context_estimate(
             plan_mode,
             true,
             false,
-        );
+        ));
         sent_chars(tools)
     });
     let project_chars = match root {
@@ -2720,6 +2739,24 @@ mod reasoning_tests {
 #[cfg(test)]
 mod context_mode_tests {
     use super::request_system_prompt;
+
+    /// A04: Autopilot's lead decides instead of asking; the line it
+    /// replaces is the coding agent's still, or it would replace nothing.
+    #[test]
+    fn autopilots_system_prompt_decides_instead_of_asking() {
+        use super::{lead_system_prompt, AUTOPILOT_DECIDES, CLARIFYING_QUESTIONS};
+        let plain = lead_system_prompt(true, Some("## Project"), false);
+        assert!(plain.contains(CLARIFYING_QUESTIONS));
+        assert!(plain.ends_with("\n\n## Project"));
+        let autopilot = lead_system_prompt(true, Some("## Project"), true);
+        assert!(autopilot.contains(AUTOPILOT_DECIDES) && !autopilot.contains(CLARIFYING_QUESTIONS));
+        assert_eq!(
+            autopilot.replace(AUTOPILOT_DECIDES, CLARIFYING_QUESTIONS),
+            plain,
+            "only that line"
+        );
+        assert!(!lead_system_prompt(false, None, false).contains("## Tool use rules"));
+    }
 
     #[test]
     fn the_clm_prompt_only_goes_with_a_clm_history() {

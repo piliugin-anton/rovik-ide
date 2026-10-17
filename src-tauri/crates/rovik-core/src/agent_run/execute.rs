@@ -1455,6 +1455,18 @@ impl Run {
                 }),
             );
         };
+        // D5: in Autopilot nobody answers; the plan says what it assumed.
+        if self.autopilot {
+            log_question(self, 0, vec!["autopilot".into()]);
+            return self
+                .add_tool_result(
+                    &tc.id,
+                    super::autopilot::NO_QUESTIONS.into(),
+                    None,
+                    Vec::new(),
+                )
+                .await;
+        }
         if !self.plan_mode {
             let content =
                 "Error: asking the user is only available in Plan mode. Decide yourself and say what you assumed.";

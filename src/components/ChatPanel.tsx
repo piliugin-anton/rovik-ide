@@ -45,7 +45,7 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { estimateContext } from '../lib/aiChat';
 import { DEFAULT_CONTEXT_TOKENS } from '../lib/contextBudget';
 import ContextMeter, { type ContextUsage } from './ContextMeter';
-import { chatMode, implementationRequest, setChatMode, type ChatMode } from '../lib/chatMode';
+import { chatMode, setChatMode, type ChatMode } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
 import { formatBytes, plural } from '../lib/textUtils';
@@ -77,9 +77,8 @@ import {
   settledChecklist,
 } from '../lib/checklist';
 import {
+  implementationMessage,
   onImplementPlanRequest,
-  readPlan,
-  relativePlanPath,
   takeImplementPlanRequest,
 } from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
@@ -2761,40 +2760,26 @@ export default function ChatPanel(props: ChatProps) {
     return chatMode();
   }
 
-  /**
-   * "Implement this plan" under the plan in the chat: the plan file's current
-   * text (edits included), or the reply itself if it has no file.
-   */
-  async function implementPlan() {
+  /** "Implement this plan" under the plan in the chat: its file. */
+  function implementPlan() {
     const dialogId = activeDialogId();
     if (!dialogId) return;
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
-    if (!last) return;
-    const file = last.meta?.planFile;
-    // From its host, for a remote chat (K09).
-    const text = file ? await readPlan(dialogId, file).catch(() => null) : null;
-    startImplementation(dialogId, text ?? last.content, text !== null ? file : undefined);
+    const file = last?.meta?.planFile;
+    if (file) startImplementation(dialogId, file);
   }
 
   /**
-   * Agent mode, carrying out a plan. The plan goes in full with the request,
-   * which keeps it in view for the whole run (the current request is never
-   * dropped from the context); the chat shows a short line.
+   * Agent mode, carrying out a plan. The backend reads the plan's file as it
+   * is now (a remote chat's on its host, K09) and sends it in full with the
+   * request, which keeps it in view for the whole run (the current request
+   * is never dropped from the context); the chat shows a short line.
    */
-  function startImplementation(dialogId: string, plan: string, file?: string) {
+  function startImplementation(dialogId: string, file: string) {
     if (!activeProfile() || isRunning(dialogId)) return;
     setChatMode('agent');
-    const rel = file ? relativePlanPath(file, props.rootPath()) : undefined;
-    const wire = implementationRequest(plan, rel);
-    void sendMessage(
-      dialogId,
-      {
-        id: crypto.randomUUID(),
-        content: rel ? `Implement the plan in \`${rel}\`.` : 'Implement the plan above.',
-        meta: { mode: 'agent', sentContent: wire, implementsPlan: true },
-      },
-      wire
-    );
+    const { content, meta } = implementationMessage(file, props.rootPath());
+    void sendMessage(dialogId, { id: crypto.randomUUID(), content, meta }, undefined);
   }
 
   /**
@@ -2824,7 +2809,7 @@ export default function ChatPanel(props: ChatProps) {
     const dialogId = activeDialogId();
     if (!dialogId || sending() || loadingHistory()) return;
     const request = takeImplementPlanRequest();
-    if (request) startImplementation(dialogId, request.content, request.path);
+    if (request) startImplementation(dialogId, request.path);
   }
   const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
   onCleanup(stopPlanRequests);

@@ -57,6 +57,26 @@ A question (why something happens, how the code works, what an error means) gets
    submit_plan checks the plan, and a reviewer may check it against the code; either sends it back with what to fix. Fix it and submit the complete plan again; when a reviewer held it back, answer each of its findings in `responses`. The plan goes in submit_plan, never in your reply; after submitting, reply in a few sentences.
 4. When a plan exists (shown below), the user's message is about it: revise the plan with the new information, keeping what still holds, and submit it complete; don't replace it with a summary of what they said. A question about it is answered without submitting."###;
 
+/// Plan mode's lines that Autopilot's plan stage says otherwise: the user
+/// isn't there, so nothing is asked (D5) and the plan isn't theirs to edit
+/// before it's built.
+const PLAN_MODE_CHOSEN: &str =
+    "The user chose Plan mode: investigate and write a plan; don't carry it out.";
+const AUTOPILOT_PLAN_STAGE: &str = "This is the plan stage of an Autopilot task: investigate and write a plan; don't carry it out. Once it's reviewed, another run implements it, with nobody there.";
+const PLAN_MODE_QUESTIONS: &str = "2. Ask only what the code can't tell you and what really changes the design, behavior or scope: with the ask_user tool, early, all questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything the repository decides: decide it and say so in the plan. Never ask in plain text and stop.";
+const AUTOPILOT_QUESTIONS: &str = "2. Nobody answers questions in Autopilot: decide what the code and the request can't tell you, and write each assumption under \"## Decisions\" with why. Never ask, with a tool or in plain text.";
+
+/// What Plan mode tells the model: `PLAN_MODE_INSTRUCTIONS`, or in
+/// Autopilot's plan stage the same with its own lines.
+pub fn plan_mode_instructions(autopilot: bool) -> String {
+    if !autopilot {
+        return PLAN_MODE_INSTRUCTIONS.to_string();
+    }
+    PLAN_MODE_INSTRUCTIONS
+        .replace(PLAN_MODE_CHOSEN, AUTOPILOT_PLAN_STAGE)
+        .replace(PLAN_MODE_QUESTIONS, AUTOPILOT_QUESTIONS)
+}
+
 /*
  * ---------------------------------------------------------------------------
  * Plans
@@ -461,6 +481,41 @@ pub fn implementation_request(plan: &str, file: Option<&str>) -> String {
         .into(),
     ]
     .join("\n")
+}
+
+/// "Implement this plan" as the app sends it: `meta.implementsPlan` with
+/// the plan's path (`meta.planPath`). The text the model gets, the plan as
+/// its file is now, goes in `meta.sentContent` before the message is
+/// stored, so every turn and Retry sends it the same. A message that has
+/// its text already, or isn't one, is left as it is. Err: the file can't
+/// be read.
+pub fn expand_implementation(
+    message: &mut super::UserMessage,
+    root: Option<&str>,
+) -> Result<(), String> {
+    let Some(meta) = message.meta.as_mut().and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let implements = meta.get("implementsPlan").and_then(Value::as_bool) == Some(true);
+    let path = meta
+        .get("planPath")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let (Some(path), true, false) = (path, implements, meta.contains_key("sentContent")) else {
+        return Ok(());
+    };
+    let file = match root {
+        Some(root) if !Path::new(&path).is_absolute() => join(root, &path),
+        _ => path,
+    };
+    let text = std::fs::read_to_string(&file)
+        .map_err(|e| format!("The plan in {file} can't be read: {e}"))?;
+    let shown = relative_plan_path(&file, root);
+    meta.insert(
+        "sentContent".into(),
+        Value::String(implementation_request(&text, Some(&shown))),
+    );
+    Ok(())
 }
 
 /// Plan mode: the current plan (as the file is now), for the model to revise.
@@ -1643,6 +1698,64 @@ pub fn checklist_note(items: &[TodoItem], carried: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A04: Autopilot's plan stage has its own lines for Plan mode's on
+    /// asking and on the user's choice; the rest is Plan mode's. The lines
+    /// it replaces are Plan mode's still, or it would replace nothing.
+    #[test]
+    fn autopilots_plan_stage_asks_nothing() {
+        for line in [PLAN_MODE_CHOSEN, PLAN_MODE_QUESTIONS] {
+            assert!(PLAN_MODE_INSTRUCTIONS.contains(line), "{line}");
+        }
+        assert_eq!(plan_mode_instructions(false), PLAN_MODE_INSTRUCTIONS);
+        let autopilot = plan_mode_instructions(true);
+        assert!(
+            autopilot.contains(AUTOPILOT_QUESTIONS) && autopilot.contains(AUTOPILOT_PLAN_STAGE)
+        );
+        assert!(!autopilot.contains("ask_user") && !autopilot.contains("The user chose"));
+        assert!(autopilot.contains("submit_plan") && autopilot.contains("## Decisions"));
+    }
+
+    /// A04: "Implement this plan" sent with the plan's path gets the text
+    /// the model is sent from the file as it is; other messages, and one
+    /// with its text already, are left as they are.
+    #[test]
+    fn an_implementation_request_is_written_from_the_plans_file() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.to_string_lossy().into_owned();
+        let file = dir.0.join(".rovik/plans/p.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "# P\n\nThe plan.\n").unwrap();
+        let message = |meta: Value| super::super::UserMessage {
+            id: "u".into(),
+            content: "Implement the plan in `.rovik/plans/p.md`.".into(),
+            meta: Some(meta),
+            attachments: Vec::new(),
+        };
+        let expected = implementation_request("# P\n\nThe plan.\n", Some(".rovik/plans/p.md"));
+        for path in [
+            file.to_string_lossy().into_owned(),
+            ".rovik/plans/p.md".into(),
+        ] {
+            let mut m =
+                message(json!({ "mode": "agent", "implementsPlan": true, "planPath": path }));
+            expand_implementation(&mut m, Some(&root)).unwrap();
+            assert_eq!(m.meta.as_ref().unwrap()["sentContent"], expected, "{path}");
+            assert_eq!(m.meta.as_ref().unwrap()["implementsPlan"], true);
+        }
+        for meta in [
+            json!({ "mode": "agent" }),
+            json!({ "implementsPlan": true }),
+            json!({ "implementsPlan": true, "planPath": "x.md", "sentContent": "as sent" }),
+        ] {
+            let mut m = message(meta.clone());
+            expand_implementation(&mut m, Some(&root)).unwrap();
+            assert_eq!(m.meta, Some(meta));
+        }
+        let mut gone = message(json!({ "implementsPlan": true, "planPath": "missing.md" }));
+        let err = expand_implementation(&mut gone, Some(&root)).unwrap_err();
+        assert!(err.contains("can't be read"), "{err}");
+    }
     use serde_json::json;
 
     const GOOD_PLAN: &str = "# Add users\n\nSummary.\n\n## Steps\n\

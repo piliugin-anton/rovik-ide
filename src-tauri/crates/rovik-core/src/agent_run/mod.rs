@@ -861,6 +861,8 @@ pub(super) async fn start_run(
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
         check_attachments(db, message).await?;
+        // "Implement this plan": the plan's text, from its file (A04).
+        plan::expand_implementation(message, request.root.as_deref())?;
     }
     if state.draining() {
         return Err(RESTARTING.into());
