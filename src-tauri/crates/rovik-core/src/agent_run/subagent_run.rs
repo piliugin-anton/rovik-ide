@@ -838,11 +838,27 @@ impl Run {
         message: String,
         earlier: Vec<super::change_review::Finding>,
     ) -> Result<(String, Option<SubResult>), String> {
+        self.run_ide_subagent_with(kind, call_id, goal, message, |sub| {
+            sub.earlier_findings = earlier
+        })
+        .await
+    }
+
+    /// `run_ide_subagent`, its context set up by `setup` before it starts
+    /// (S04: the test writer's limits, as `limit_test_writer` sets them).
+    pub(super) async fn run_ide_subagent_with(
+        &mut self,
+        kind: Kind,
+        call_id: &str,
+        goal: &str,
+        message: String,
+        setup: impl FnOnce(&mut SubCtx),
+    ) -> Result<(String, Option<SubResult>), String> {
         let config = self.config().subagents;
         let mut sub = self
             .new_sub(kind, call_id, config.budget(kind), &config)
             .await?;
-        sub.earlier_findings = earlier;
+        setup(&mut sub);
         let child_id = uuid::Uuid::new_v4().to_string();
         self.store_child(&child_id, call_id, kind, goal, message)
             .await?;
@@ -1696,6 +1712,7 @@ impl Run {
             outlines: &outlines,
             note: Some(note.as_str()).filter(|n| !n.is_empty()),
             test_check: test_check.as_deref(),
+            first: None,
         });
         let budget = brief.budget(config.budget(Kind::TestWriter));
         let mut sub = self

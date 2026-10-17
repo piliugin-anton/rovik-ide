@@ -194,6 +194,31 @@ const TASK_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt say
 /// The plan reviewer's brief starts so (plan_review.rs).
 const PLAN_REVIEW: &str = "# Review this plan";
 
+/// The Tests stage's test writer's brief starts so (S04).
+const TESTS_FIRST: &str = super::test_writer::FIRST_HEADING;
+
+/// What the Tests stage's writer answers unless a test gives it replies:
+/// blocked, so the stage is skipped and writes nothing.
+const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
+
+/// `testing::model_routed`, with the Tests stage's test writer answered
+/// apart (`NO_TESTS`) unless the test routes it: a task's other runs get
+/// the replies they're written for.
+async fn model_routed(
+    mut routes: Vec<(&'static str, Vec<Reply>)>,
+    default: Vec<Reply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    if !routes.iter().any(|(marker, _)| *marker == TESTS_FIRST) {
+        routes.push((TESTS_FIRST, vec![Reply::Text(NO_TESTS)]));
+    }
+    crate::testing::model_routed(routes, default).await
+}
+
+/// `testing::model`, the Tests stage's writer answered apart.
+async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    model_routed(Vec::new(), replies).await
+}
+
 /// The task's runs, in order: the plan (reviewed clean), then its
 /// implementation, which makes the test pass.
 fn task_script() -> Vec<Reply> {
@@ -389,16 +414,16 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
     );
     let tools = tool_names(implementing);
     assert!(tools.iter().any(|t| t == "write"), "Agent mode: {tools:?}");
-    // Three runs, each marked with its stage: the plan's, the Prepare
-    // stage's (the IDE's own, no model turn: S03), the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 3);
+    // Four runs, each marked with its stage: the plan's, the Prepare and
+    // Tests stages' (the IDE's own: S03, S04), the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 4);
     let runs = log_lines(&h, "run").await;
     let stage_of: Vec<&str> = runs.iter().filter_map(|r| r["stage"].as_str()).collect();
-    assert_eq!(stage_of, ["plan", "prepare", "implement"]);
+    assert_eq!(stage_of, ["plan", "prepare", "tests", "implement"]);
 
     // Over: a Resume starts nothing.
     assert!(h.start(resume_request(&h, &url)).await.is_none());
-    assert_eq!(h.events_of("runStarted").len(), 3);
+    assert_eq!(h.events_of("runStarted").len(), 4);
 }
 
 /// A07 (D17): the user's subagents are off, and the task's plan is
@@ -514,8 +539,8 @@ async fn a_task_cut_between_two_stages_goes_on_once_resumed() {
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
-    // The plan's, the Prepare stage's, the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 3);
+    // The plan's, the Prepare and Tests stages', the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 4);
 }
 
 /// A03: the driver dies after it recorded the implementation, before its
@@ -548,8 +573,8 @@ async fn a_stage_cut_before_its_run_started_is_started_once_resumed() {
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
-    // The plan's, the Prepare stage's, the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 3);
+    // The plan's, the Prepare and Tests stages', the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 4);
 }
 
 /// A03: a Resume that comes as a stage's run ends (the app hears the end
@@ -576,8 +601,8 @@ async fn a_resume_as_a_stage_ends_starts_nothing_more() {
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
-    // The plan's, the Prepare stage's, the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 3);
+    // The plan's, the Prepare and Tests stages', the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 4);
 }
 
 /// A03: a plan run that saves no plan fails the task, which delivers
@@ -1334,12 +1359,12 @@ async fn a_loop_goes_on_once_told_and_ends_the_stage_the_second_time() {
         })
         .collect();
     assert_eq!(paused.len(), 1, "paused once: the second time");
-    // The plan's run and the implementation's (the Prepare stage's run is
-    // the IDE's own: S03).
+    // The plan's run and the implementation's (the Prepare and Tests
+    // stages' runs are the IDE's own: S03, S04).
     let outcomes: Vec<Value> = h
         .events_of("runEnded")
         .iter()
-        .filter(|e| e["stage"] != "prepare")
+        .filter(|e| e["stage"] != "prepare" && e["stage"] != "tests")
         .map(|e| e["outcome"].clone())
         .collect();
     assert_eq!(outcomes.len(), 2, "{outcomes:?}");
@@ -2431,4 +2456,212 @@ async fn an_isolated_tasks_unchecked_change_waits_with_why() {
         pending.reason,
         "Not landed: no check ran on it, and Autopilot lands only what's checked."
     );
+}
+
+/// The Tests stage's test writer's replies: it writes `path`, then reports.
+fn tests_first_script(path: &'static str, content: &'static str) -> Vec<Reply> {
+    let report = format!(
+        "## Summary\n\nChecks that ok.txt says ok (criterion 1).\n\n## Test files\n\n- `{path}`: ok.txt says ok\n\n## Assumptions\n\nNone."
+    );
+    vec![
+        Reply::Call {
+            id: "tw1",
+            name: "write",
+            args: json!({ "path": path, "content": content }),
+        },
+        Reply::Text(Box::leak(report.into_boxed_str())),
+    ]
+}
+
+/// The test the test writer writes: ok.txt says ok.
+const OK_TEST: &str = "test/ok.test.js";
+const OK_TEST_CODE: &str = "// Criterion 1: ok.txt says ok.\nconst fs = require('fs');\nif (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') process.exit(1);\n";
+
+/// S04 (4.4): the test writer writes the tests before the code, from the
+/// plan and its criteria, the plan's files hidden; the implementation's
+/// request names them, and they're the test writer's to it (E03: changing
+/// one is said in its final message).
+#[tokio::test]
+async fn the_tests_come_first_and_the_implementation_is_told_to_make_them_pass() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // The implementation touches the test too (a comment), keeping it whole.
+    let mut script = task_script();
+    let touched = "// Criterion 1: ok.txt says ok (it does now).\nconst fs = require('fs');\nif (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') process.exit(1);\n";
+    script.splice(
+        4..4,
+        [Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": OK_TEST, "content": touched }),
+        }],
+    );
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TESTS_FIRST, tests_first_script(OK_TEST, OK_TEST_CODE)),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let mut expected = BALANCED_OK.to_vec();
+    expected[3] = (Stage::Tests, Status::Done);
+    assert_eq!(names(&records), expected, "{records:#?}");
+    let tests = &records[3];
+    assert_eq!(tests.files, [OK_TEST]);
+    assert_eq!(tests.summary.as_deref(), Some("Wrote `test/ok.test.js`"));
+
+    // Its brief: the request, the plan and its criteria; the change not made.
+    let requests = seen.lock().unwrap().clone();
+    let brief = requests
+        .iter()
+        .find(|r| route_of(r, &[TESTS_FIRST]).is_some())
+        .expect("the test writer's request")["messages"]
+        .to_string();
+    assert!(brief.contains("## The criteria"), "{brief}");
+    assert!(brief.contains("1. `npm test` passes"), "{brief}");
+    assert!(brief.contains("Make the test pass"), "the request: {brief}");
+
+    // The implementation came after it, told to make it pass.
+    let runs = log_lines(&h, "run").await;
+    let stage_of: Vec<&str> = runs.iter().filter_map(|r| r["stage"].as_str()).collect();
+    assert_eq!(stage_of, ["plan", "prepare", "tests", "implement"]);
+    let messages = h.messages().await;
+    let started = implement_messages(&messages);
+    assert_eq!(started.len(), 1);
+    assert!(
+        started[0]
+            .content
+            .ends_with("\n\nTests that must pass: `test/ok.test.js`; it fails now on purpose."),
+        "{}",
+        started[0].content
+    );
+
+    // Its record: what it wrote, how the red check found it, its report.
+    let row = messages
+        .iter()
+        .find(|m| Some(&m.id) == tests.reference.as_ref())
+        .expect("the test writer's record");
+    let meta = &row.meta.as_ref().unwrap()["tests"];
+    assert_eq!(meta["status"], "done");
+    assert_eq!(meta["files"], json!([OK_TEST]));
+    assert_eq!(meta["passing"], json!([]), "it fails before the change");
+    assert!(meta["childDialogId"].is_string());
+    assert!(
+        meta["summary"].as_str().unwrap().contains("criterion 1"),
+        "{meta}"
+    );
+    assert_eq!(log_lines(&h, "testsFirst").await.len(), 1);
+
+    // E03: a change to the test writer's test is said, for the user.
+    let last = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant" && m.content.starts_with("Done"))
+        .expect("the implementation's last reply");
+    assert!(
+        last.content
+            .contains("Tests written by the test writer that I changed: `test/ok.test.js`"),
+        "{}",
+        last.content
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
+/// S04: a test that passes before the change (here, the project's whole
+/// test check does) is flagged in the stage's record and in the
+/// implementation's request.
+#[tokio::test]
+async fn a_test_that_passes_before_the_change_is_flagged() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#,
+        ),
+        ("check.js", "process.exit(0);"),
+        ("ok.txt", "no"),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TESTS_FIRST, tests_first_script(OK_TEST, OK_TEST_CODE)),
+        ],
+        task_script(),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let tests = &records[3];
+    assert_eq!((tests.name, tests.status), (Stage::Tests, Status::Done));
+    assert_eq!(
+        tests.summary.as_deref(),
+        Some("Wrote `test/ok.test.js`; it passes already, before the change")
+    );
+    let messages = h.messages().await;
+    let row = messages
+        .iter()
+        .find(|m| Some(&m.id) == tests.reference.as_ref())
+        .unwrap();
+    assert_eq!(
+        row.meta.as_ref().unwrap()["tests"]["passing"],
+        json!([OK_TEST])
+    );
+    let started = implement_messages(&messages);
+    assert!(
+        started[0].content.ends_with(
+            "\n\nTests that must pass: `test/ok.test.js`, which passes already, before the change: check that it tests what the change does."
+        ),
+        "{}",
+        started[0].content
+    );
+}
+
+/// S04: a blocked test writer is recorded, and the task goes on without
+/// tests written first.
+#[tokio::test]
+async fn a_blocked_test_writer_is_recorded_and_the_task_goes_on() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // Unrouted, the test writer answers `NO_TESTS`: blocked.
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        task_script(),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    let tests = &records[3];
+    assert_eq!(
+        tests.summary.as_deref(),
+        Some("The test writer was blocked: The request gives nothing to test.")
+    );
+    assert!(tests.files.is_empty());
+    let messages = h.messages().await;
+    let row = messages
+        .iter()
+        .find(|m| Some(&m.id) == tests.reference.as_ref())
+        .expect("its record");
+    let meta = &row.meta.as_ref().unwrap()["tests"];
+    assert_eq!(meta["status"], "blocked");
+    assert_eq!(
+        meta["reason"],
+        "The test writer was blocked: The request gives nothing to test."
+    );
+    let started = implement_messages(&messages);
+    assert!(!started[0].content.contains("Tests that must pass"));
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }

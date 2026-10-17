@@ -63,6 +63,9 @@ fn stages(rows: &[Row]) -> Vec<(String, String)> {
 /// The plan reviewer's brief starts so (plan_review.rs).
 const PLAN_REVIEW: &str = "# Review this plan";
 
+/// The Tests stage's test writer's brief starts so (test_writer.rs, S04).
+const TESTS_FIRST: &str = "# Write the tests before the change";
+
 /// A03: the daemon is killed while the task's plan streams; started again,
 /// it picks the plan's run up where it was cut, and the task goes on by
 /// itself: the plan's review (A07: on for Autopilot, though the computer's
@@ -76,8 +79,10 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
     let mut daemon = Daemon::start(&["--same-machine"]).await;
     let project = project(&daemon);
     let review = vec![Reply::Text("## Findings\n\nNone.")];
+    // The Tests stage's writer finds nothing to test: it's skipped.
+    let blocked = vec![Reply::Text("## Blocked\n\nNothing to test here.")];
     let (url, _) = model_routed(
-        vec![(PLAN_REVIEW, review)],
+        vec![(PLAN_REVIEW, review), (TESTS_FIRST, blocked)],
         vec![
             Reply::Hang(Some("Looking at the project")),
             Reply::Call {

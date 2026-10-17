@@ -1170,3 +1170,35 @@ T05 depends most on the environment it meets.
 - **The setting** "Prepare dependencies before the first check", on by
   default (`AutopilotConfig.prepare`): off, no stage and no install
   after an environment failure.
+
+### S04: tests first
+
+- **The stage** is a run the IDE does itself, as Prepare is: the test
+  writer runs as an IDE-started subagent (`run_ide_subagent_with`, with
+  E02's limits: test files only, the plan's files hidden, light
+  commands), from the request, the task's plan (its plan run's, not the
+  chat's latest) and the plan's criteria, listed in its brief ("# Write
+  the tests before the change", "## The criteria": a test for each one a
+  test can check). Its record row is `meta.tests` (`TestsRecord.tsx`):
+  the files, its report's parts, its chat on demand.
+- **The red check before the change**: E04 runs the new tests on the
+  project as it was in a scratch copy, which needs an isolated chat.
+  Before the change nothing is changed yet, so they run where they are,
+  in any chat (one file at a time when the stack can, else the project's
+  test check once). One that passes is flagged in the record, the
+  stage's line and the request.
+- **The implementation** is told: its request ends with "Tests that must
+  pass: `a`, `b`; they fail now on purpose." (one that passes already is
+  named apart: "check that it tests what the change does"). The stage
+  record's `files` (additive) holds them, and the implement run takes
+  them as the test writer's (`test_writer_files`): E03's line lists a
+  change to one in its final message, and the repair's test rule applies.
+- **A writer that's blocked**, fails, writes nothing or is stopped alone
+  skips the stage, with why, and the task goes on; tests it wrote before
+  it was blocked stay the task's (the stage is done, and says why). Stop
+  on the chat stops the task, as for any stage.
+- **The suites' scripted model** answers the stage's writer apart
+  (blocked) unless a test gives it replies, so a task's other runs keep
+  the replies written for them; the daemon's tests route it too.
+- **Stage lines** show their `code` spans as code (S03's commands, S04's
+  files).

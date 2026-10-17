@@ -234,7 +234,14 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
         2. **Check**\n   - Files: `src/main.rs` (read)\n   - Read `src/main.rs` to confirm `main` prints `hello`; it keeps its signature.\n\n\
         ## Validation\n- Run it by hand: it prints hello.\n";
     let (url, _) = model_routed(
-        vec![("# Review this plan", vec![Reply::Text("## Findings\n\nNone.")])],
+        vec![
+            ("# Review this plan", vec![Reply::Text("## Findings\n\nNone.")]),
+            // The Tests stage's writer (S04) finds nothing to test.
+            (
+                "# Write the tests before the change",
+                vec![Reply::Text("## Blocked\n\nNothing to test here.")],
+            ),
+        ],
         vec![
             Reply::Call {
                 id: "p1",
@@ -285,8 +292,8 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
     let (planned, outcome) = next_result(&mut heard).await;
     assert_eq!(outcome.as_deref(), Some("done"), "the plan's run");
     assert_eq!(planned.pending, None);
-    // The Prepare stage's run between them is the IDE's own: it brings no
-    // result (S03), so the next is the implementation's.
+    // The Prepare and Tests stages' runs between them are the IDE's own:
+    // they bring no result (S03, S04), so the next is the implementation's.
     let (implemented, outcome) = next_result(&mut heard).await;
     assert_eq!(outcome.as_deref(), Some("unverified"));
     assert_eq!(

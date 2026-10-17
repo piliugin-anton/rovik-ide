@@ -279,6 +279,10 @@ pub struct StageRecord {
     /// (U04), which the task's budget adds up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spent: Option<Spent>,
+    /// The files the stage wrote: the Tests stage's test files (S04),
+    /// which the implementation is told to make pass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 fn first_round() -> u32 {
@@ -299,6 +303,7 @@ impl StageRecord {
             reference: None,
             summary: None,
             spent: None,
+            files: Vec::new(),
         }
     }
 
@@ -1022,6 +1027,116 @@ async fn saved_plan(
     }))
 }
 
+/// S04: the file of the plan the current task's plan run saved, which
+/// the Tests stage writes the tests from.
+pub async fn task_plan_file(core: &Core, dialog_id: &str) -> Result<Option<String>, String> {
+    let Some((_, records)) = current_task(core, dialog_id).await? else {
+        return Ok(None);
+    };
+    let Some(plan_run) = records.iter().rev().find(|r| r.record.name == Stage::Plan) else {
+        return Ok(None);
+    };
+    Ok(saved_plan(core, dialog_id, plan_run.seq)
+        .await?
+        .map(|(_, file)| file))
+}
+
+/// S04: what a task's Tests stage wrote, from its latest record: the test
+/// files, and those of them that passed before the change (the red check).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TaskTests {
+    pub files: Vec<String>,
+    pub passing: Vec<String>,
+}
+
+/// `TaskTests` of the current task.
+pub async fn task_tests(core: &Core, dialog_id: &str) -> Result<TaskTests, String> {
+    match current_task(core, dialog_id).await? {
+        Some((_, records)) => tests_of(core, dialog_id, &records).await,
+        None => Ok(TaskTests::default()),
+    }
+}
+
+/// `TaskTests` of a task's records; the red check's from the stage's
+/// record row (`meta.tests.passing`).
+async fn tests_of(core: &Core, dialog_id: &str, records: &[Recorded]) -> Result<TaskTests, String> {
+    let Some(stage) = records.iter().rev().find(|r| r.record.name == Stage::Tests) else {
+        return Ok(TaskTests::default());
+    };
+    let files = stage.record.files.clone();
+    let passing = match (&stage.record.reference, files.is_empty()) {
+        (Some(row), false) => {
+            let (id, since) = (dialog_id.to_string(), stage.seq);
+            let rows = core
+                .db
+                .read(move |c| store::messages_with_meta(c, &id, "tests", Some(since)))
+                .await?;
+            rows.iter()
+                .find(|m| &m.id == row)
+                .and_then(|m| {
+                    m.meta
+                        .as_ref()?
+                        .pointer("/tests/passing")?
+                        .as_array()
+                        .cloned()
+                })
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|p| p.as_str().map(str::to_string))
+                .filter(|p| files.contains(p))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    Ok(TaskTests { files, passing })
+}
+
+/// S04 (4.4): the line of the implementation's request that names the
+/// tests written first. None: none were.
+pub fn tests_line(tests: &TaskTests) -> Option<String> {
+    let named = |files: &[&String]| {
+        files
+            .iter()
+            .map(|f| format!("`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (passing, failing): (Vec<&String>, Vec<&String>) =
+        tests.files.iter().partition(|f| tests.passing.contains(f));
+    let already = |files: &[&String]| {
+        let one = files.len() == 1;
+        format!(
+            "{}, which {} already, before the change: check that {} what the change does.",
+            named(files),
+            if one { "passes" } else { "pass" },
+            if one { "it tests" } else { "they test" },
+        )
+    };
+    match (failing.is_empty(), passing.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(format!(
+            "Tests that must pass: {}; {} now on purpose.",
+            named(&failing),
+            if failing.len() == 1 {
+                "it fails"
+            } else {
+                "they fail"
+            },
+        )),
+        (false, false) => Some(format!(
+            "Tests that must pass: {}; {} now on purpose. Also {}",
+            named(&failing),
+            if failing.len() == 1 {
+                "it fails"
+            } else {
+                "they fail"
+            },
+            already(&passing),
+        )),
+        (true, false) => Some(format!("Tests that must pass: {}", already(&passing))),
+    }
+}
+
 /// S02: the review row that blocked the plan the run after row `since`
 /// wrote, if one did (`meta.review.blocked`).
 async fn blocked_review(
@@ -1130,7 +1245,8 @@ async fn advance(
                 StageRecord::ended(task, stage, round, effort, Status::Skipped)
                     .with_summary("Off in the settings")
             }
-            Stage::Prepare => {
+            // S03, S04: the installs, and the tests written first.
+            Stage::Prepare | Stage::Tests => {
                 if start_harness_stage(core, dialog_id, task, stage, round, effort, settings)
                     .await?
                 {
@@ -1138,7 +1254,7 @@ async fn advance(
                 }
                 continue;
             }
-            Stage::Tests | Stage::Break | Stage::Pick | Stage::Acceptance => {
+            Stage::Break | Stage::Pick | Stage::Acceptance => {
                 StageRecord::ended(task, stage, round, effort, Status::Skipped)
                     .with_summary("Not available yet")
             }
@@ -1406,9 +1522,15 @@ async fn start_implement(
         return not_started(core, dialog_id, &record, &why).await;
     };
     let shown = plan::relative_plan_path(&file, settings.root.as_deref());
+    let mut content = plan::implementation_request(&text, Some(&shown));
+    // S04: the tests written first, which it makes pass.
+    if let Some(line) = tests_line(&tests_of(core, dialog_id, records).await?) {
+        content.push_str("\n\n");
+        content.push_str(&line);
+    }
     let message = UserMessage {
         id: uuid::Uuid::new_v4().to_string(),
-        content: plan::implementation_request(&text, Some(&shown)),
+        content,
         meta: Some(json!({
             "harness": MODE,
             "implementsPlan": true,
@@ -1737,6 +1859,42 @@ mod tests {
             let stage: Stage = serde_json::from_value(json!(id)).unwrap();
             assert_eq!(stage.id(), id);
         }
+
+        // S04: the Tests stage's files, written only when it has some.
+        let tests = json!({
+            "task": "t", "name": "tests", "status": "done", "round": 1, "effort": "balanced",
+            "files": ["src/a.test.ts"],
+        });
+        let record: StageRecord = serde_json::from_value(tests.clone()).unwrap();
+        assert_eq!(record.files, ["src/a.test.ts"]);
+        assert_eq!(serde_json::to_value(&record).unwrap(), tests);
+    }
+
+    /// S04: the implementation's request names the tests written first,
+    /// and those that pass already apart.
+    #[test]
+    fn the_implementation_is_told_which_tests_to_make_pass() {
+        let tests = |files: &[&str], passing: &[&str]| TaskTests {
+            files: files.iter().map(|f| f.to_string()).collect(),
+            passing: passing.iter().map(|f| f.to_string()).collect(),
+        };
+        assert_eq!(tests_line(&tests(&[], &[])), None);
+        assert_eq!(
+            tests_line(&tests(&["a.test.ts", "b.test.ts"], &[])).as_deref(),
+            Some("Tests that must pass: `a.test.ts`, `b.test.ts`; they fail now on purpose.")
+        );
+        assert_eq!(
+            tests_line(&tests(&["a.test.ts"], &[])).as_deref(),
+            Some("Tests that must pass: `a.test.ts`; it fails now on purpose.")
+        );
+        assert_eq!(
+            tests_line(&tests(&["a.test.ts", "b.test.ts"], &["b.test.ts"])).as_deref(),
+            Some("Tests that must pass: `a.test.ts`; it fails now on purpose. Also `b.test.ts`, which passes already, before the change: check that it tests what the change does.")
+        );
+        assert_eq!(
+            tests_line(&tests(&["a.test.ts", "b.test.ts"], &["a.test.ts", "b.test.ts"])).as_deref(),
+            Some("Tests that must pass: `a.test.ts`, `b.test.ts`, which pass already, before the change: check that they test what the change does.")
+        );
     }
 
     #[test]

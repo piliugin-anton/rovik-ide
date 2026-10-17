@@ -5057,6 +5057,35 @@ body.is-resizing * {
   color: var(--fg-dim);
 }
 
+/* S04: an Autopilot task's tests written before the code (TestsRecord.tsx). */
+.chat-tests.done {
+  border-left-color: var(--success);
+}
+
+.chat-tests.blocked,
+.chat-tests.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-tests-files {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.chat-tests-note,
+.chat-tests-assumptions {
+  color: var(--fg-dim);
+}
+
+.chat-tests-summary {
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+
+.chat-tests-assumptions {
+  white-space: pre-wrap;
+}
+
 /* P5.6: a record at work, and one the run left unfinished. */
 .chat-verify.running,
 .chat-review.running {
@@ -5275,6 +5304,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .chat-stage-summary::before {
   content: '· ';
+}
+
+.chat-stage-summary code {
+  font-size: 11px;
 }
 
 .chat-stage.done {

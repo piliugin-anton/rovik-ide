@@ -13,6 +13,7 @@ import {
   taskLine,
   taskOver,
   taskRecords,
+  testsHeadline,
   unfinishedTask,
   type StageMeta,
   type StageRow,
@@ -240,5 +241,48 @@ test('the strip: opened around a search hit, the stored task is the chat’s, no
   assert.deepEqual(
     taskRecords(stored, old)?.map((r) => r.stage.task),
     ['a']
+  );
+});
+
+test('the Tests record’s headline: at work, what it wrote, what passes already (S04)', () => {
+  const files = ['test/a.test.js', 'test/b.test.js'];
+  assert.equal(
+    testsHeadline({ status: 'running' }, false),
+    'Writing the tests before the code, from the plan’s criteria…'
+  );
+  assert.equal(
+    testsHeadline({ status: 'running' }, true),
+    'Writing the tests didn’t finish: the run ended meanwhile.'
+  );
+  assert.equal(
+    testsHeadline({ status: 'done', files, passing: [] }, false),
+    'Wrote 2 test files before the code: the change is made to pass them.'
+  );
+  assert.equal(
+    testsHeadline({ status: 'done', files, passing: ['test/b.test.js'] }, false),
+    'Wrote 2 test files before the code; 1 of them already passes, so it may not test the change.'
+  );
+  assert.equal(
+    testsHeadline({ status: 'done', files: files.slice(0, 1), passing: files.slice(0, 1) }, false),
+    'Wrote 1 test file before the code; it passes already, so it may not test the change.'
+  );
+  assert.equal(
+    testsHeadline(
+      { status: 'blocked', reason: 'The test writer was blocked: No interface to test' },
+      false
+    ),
+    'The test writer was blocked: No interface to test. The task goes on without tests written first.'
+  );
+  // Blocked once it wrote some: they stay the task's.
+  assert.equal(
+    testsHeadline(
+      { status: 'blocked', reason: 'The test writer was blocked: Out of ideas', files },
+      false
+    ),
+    'The test writer was blocked: Out of ideas, after it wrote 2 test files: the change is made to pass them.'
+  );
+  assert.equal(
+    testsHeadline({ status: 'stopped' }, false),
+    'Stopped while the tests were written.'
   );
 });

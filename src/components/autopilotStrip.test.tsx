@@ -118,6 +118,16 @@ test('a stage’s record in the chat: at work, cut, ended with its summary', () 
       el().querySelector('.chat-stage-summary')?.textContent,
       'The run ended without a plan'
     );
+    // Files and commands in backticks show as code.
+    setStage({ ...stage(), summary: 'Wrote `a.test.ts`, `b.test.ts`' });
+    const codes = [...el().querySelectorAll('.chat-stage-summary code')].map((c) => c.textContent);
+    assert.deepEqual(codes, ['a.test.ts', 'b.test.ts']);
+    assert.equal(
+      el().querySelector('.chat-stage-summary')?.textContent,
+      'Wrote a.test.ts, b.test.ts'
+    );
+    setStage({ ...stage(), summary: 'One ` alone' });
+    assert.equal(el().querySelector('.chat-stage-summary')?.textContent, 'One ` alone');
   } finally {
     dispose();
   }
@@ -292,6 +302,97 @@ test('the Prepare stage’s installs show in the chat, live and as they ended (S
       'Installing the dependencies didn’t finish: the run ended meanwhile.'
     );
     assert.equal(root.querySelector('.chat-item[data-id="p1"] .chat-message'), null, 'no bubble');
+  } finally {
+    dispose();
+    api.getMessages = original;
+  }
+});
+
+test('the tests written first show in the chat, with what passes already (S04)', () => {
+  const [chat, setChat] = createStore({
+    messages: [
+      { id: 'u1', role: 'user', content: 'Make the test pass', meta: { mode: 'autopilot' } },
+      {
+        id: 's3',
+        role: 'assistant',
+        content: '',
+        meta: { stage: record('s3', 'tests', 'running').stage },
+      },
+      { id: 't1', role: 'assistant', content: '', meta: { tests: { status: 'running' } } },
+    ] as ChatMessage[],
+    hasOlder: false,
+    hasNewer: false,
+    loadingOlder: false,
+    lastUsed: 0,
+  });
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () => Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+  const root = container();
+  const noop = async () => 0;
+  let dispose = () => {};
+  try {
+    dispose = render(
+      () => (
+        <MessageList
+          dialogId="d-tests"
+          chat={chat}
+          sending={true}
+          focusMessageId={null}
+          onLoadOlder={noop}
+          onLoadNewer={noop}
+          onReloadLatest={async () => {}}
+          onRetry={() => {}}
+          onContinue={() => {}}
+          onContinueRun={() => {}}
+          onRunChecks={() => {}}
+          onOpenProjectChecks={() => {}}
+        />
+      ),
+      root
+    );
+    const card = () => root.querySelector('.chat-item[data-id="t1"] .chat-tests');
+    const title = () => card()?.querySelector('.chat-verify-title')?.textContent;
+    assert.equal(card()?.className, 'chat-verify chat-tests running');
+    assert.equal(title(), 'Writing the tests before the code, from the plan’s criteria…');
+    setChat('messages', 2, 'meta', {
+      tests: {
+        status: 'done',
+        files: ['test/a.test.js', 'test/b.test.js'],
+        passing: ['test/b.test.js'],
+        summary: 'Checks the greeting (criterion 1) and an empty name (criterion 2).',
+        assumptions: 'None.',
+        report: '## Summary\n\nChecks the greeting.',
+        childDialogId: 'c1',
+        model: 'Test/m',
+        toolCalls: 3,
+        ms: 4200,
+      },
+    });
+    assert.equal(card()?.className, 'chat-verify chat-tests done');
+    assert.equal(
+      title(),
+      'Wrote 2 test files before the code; 1 of them already passes, so it may not test the change.'
+    );
+    const files = [...card()!.querySelectorAll('.chat-tests-files li')].map((li) => li.textContent);
+    assert.deepEqual(files, ['test/a.test.js', 'test/b.test.js · passes already']);
+    assert.match(card()!.querySelector('.chat-tests-summary')!.textContent!, /criterion 2/);
+    assert.equal(
+      card()!.querySelector('.chat-verify-files')?.textContent,
+      'Test/m · 3 tool calls · 4 s · Show its work'
+    );
+    assert.ok(card()!.querySelector('details.review-details pre.review-report'));
+    // Blocked, nothing written: why, and the task goes on.
+    setChat('messages', 2, 'meta', {
+      tests: { status: 'blocked', reason: 'The test writer was blocked: Nothing to test' },
+    });
+    assert.equal(card()?.className, 'chat-verify chat-tests blocked');
+    assert.equal(
+      title(),
+      'The test writer was blocked: Nothing to test. The task goes on without tests written first.'
+    );
+    assert.equal(card()!.querySelector('.chat-tests-files'), null);
+    assert.equal(root.querySelector('.chat-item[data-id="t1"] .chat-message'), null, 'no bubble');
   } finally {
     dispose();
     api.getMessages = original;

@@ -47,6 +47,57 @@ export interface StageMeta {
   summary?: string;
   /** What its runs spent (U04): ms they ran, the cost providers reported. */
   spent?: { ms: number; cost: number; uncosted: number };
+  /** The files it wrote: the Tests stage's tests (S04). */
+  files?: string[];
+}
+
+/**
+ * `meta.tests`: the Tests stage's test writer at work, then what it wrote
+ * before the code (S04, agent_run/test_writer.rs `tests_stage`).
+ */
+export interface TestsMeta {
+  status: 'running' | 'done' | 'blocked' | 'skipped' | 'stopped';
+  /** The test files it wrote. */
+  files?: string[];
+  /** Those of them that pass already, before the change (the red check). */
+  passing?: string[];
+  /** Its report's parts, and the report as written. */
+  summary?: string;
+  assumptions?: string;
+  report?: string;
+  /** Out of budget: its report is from what it did. */
+  partial?: boolean;
+  /** blocked or skipped: why. */
+  reason?: string;
+  childDialogId?: string;
+  model?: string;
+  toolCalls?: number;
+  ms?: number;
+}
+
+/** The headline of a Tests record; `interrupted`: saved as running, but nothing runs it. */
+export function testsHeadline(meta: TestsMeta, interrupted: boolean): string {
+  const n = meta.files?.length ?? 0;
+  const wrote = `${n} test file${n === 1 ? '' : 's'}`;
+  const passing = meta.passing?.length ?? 0;
+  if (interrupted) return 'Writing the tests didn’t finish: the run ended meanwhile.';
+  switch (meta.status) {
+    case 'running':
+      return 'Writing the tests before the code, from the plan’s criteria…';
+    case 'stopped':
+      return 'Stopped while the tests were written.';
+    case 'done':
+      if (!passing) return `Wrote ${wrote} before the code: the change is made to pass them.`;
+      if (passing === n)
+        return `Wrote ${wrote} before the code; ${n === 1 ? 'it passes' : 'they pass'} already, so ${n === 1 ? 'it' : 'they'} may not test the change.`;
+      return `Wrote ${wrote} before the code; ${passing} of them already pass${passing === 1 ? 'es' : ''}, so ${passing === 1 ? 'it' : 'they'} may not test the change.`;
+    default: {
+      const why = meta.reason ?? 'No tests were written';
+      return n
+        ? `${why}, after it wrote ${wrote}: the change is made to pass them.`
+        : `${why}. The task goes on without tests written first.`;
+    }
+  }
 }
 
 /** A stage record and the message that holds it. */

@@ -408,6 +408,7 @@ impl Run {
     async fn harness_stage_work(&mut self) -> Result<String, String> {
         match self.stage.as_ref().map(|s| s.stage) {
             Some(super::autopilot::Stage::Prepare) => self.prepare_stage().await,
+            Some(super::autopilot::Stage::Tests) => self.tests_stage().await,
             _ => Ok("done".into()),
         }
     }
@@ -843,10 +844,20 @@ impl Run {
                 _ => implements_plan && plan::current_checklist(&recent).is_none(),
             };
 
+        // S04: the tests the task's Tests stage wrote are the
+        // implementation's to make pass, as the test writer's are (E03).
+        let test_writer_files = match &stage {
+            Some(s) if s.stage == super::autopilot::Stage::Implement => {
+                super::autopilot::task_tests(core, &dialog_id).await?.files
+            }
+            _ => Vec::new(),
+        };
+
         let run = Run {
             plan_mode,
             autopilot,
             stage,
+            test_writer_files,
             context_mode: request
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),

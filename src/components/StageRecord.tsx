@@ -63,6 +63,14 @@ export function StageIcon(props: { status: StageShown }) {
   );
 }
 
+/** A summary's `code` spans shown as code (commands and files: S03, S04). */
+function summaryParts(text: string) {
+  const parts = text.split('`');
+  // An unmatched backtick: as written.
+  if (parts.length % 2 === 0) return text;
+  return parts.map((part, i) => (i % 2 ? <code>{part}</code> : part));
+}
+
 export default function StageRecord(props: {
   stage: StageMeta;
   /** A run of the chat's is going on: a stage recorded running is at work. */
@@ -75,7 +83,7 @@ export default function StageRecord(props: {
       <span class="chat-stage-name">Autopilot · {stageTitle(props.stage)}</span>
       <span class="chat-stage-status">{statusWord(status())}</span>
       <Show when={props.stage.summary}>
-        {(summary) => <span class="chat-stage-summary">{summary()}</span>}
+        {(summary) => <span class="chat-stage-summary">{summaryParts(summary())}</span>}
       </Show>
     </div>
   );
