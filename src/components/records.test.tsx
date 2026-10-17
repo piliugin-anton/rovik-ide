@@ -304,6 +304,88 @@ test('checks taken from the plan say so (V02)', () => {
   assert.equal(note(own), undefined, "the project's own: nothing to say");
 });
 
+test('Autopilot’s rounds: no count, an environment round, two without progress (V03)', () => {
+  const base = {
+    round: 2,
+    maxRounds: 10,
+    byProgress: true,
+    checks: [{ kind: 'test' as const, command: 'npm test', status: 'failed' as const }],
+    changedFiles: ['ok.txt'],
+  };
+  const props = {
+    dialogId: 'd',
+    recordId: 'v1',
+    latest: false,
+    live: false,
+    onRunChecks: () => {},
+    onOpenProjectChecks: () => {},
+  };
+  const title = (meta: VerificationMeta) => {
+    const root = container();
+    render(() => <VerificationRecord meta={meta} {...props} />, root);
+    return { root, text: root.querySelector('.chat-verify-title')?.textContent };
+  };
+  // A failed round: its attempt, no count to tell.
+  assert.equal(
+    title({ ...base, status: 'failed' }).text,
+    'Checks failed: sent to the agent to fix (attempt 2).'
+  );
+  assert.equal(
+    title({ ...base, byProgress: undefined, maxRounds: 3, status: 'failed' }).text,
+    'Checks failed: sent to the agent to fix (attempt 2 of 3).',
+    'outside Autopilot, as before'
+  );
+  // Two rounds without progress ended it.
+  assert.equal(
+    title({ ...base, round: 4, status: 'gave-up', noProgress: true }).text,
+    'Checks still fail after 4 attempts, the last two without progress. The agent stopped here.'
+  );
+  // The environment, not the change: installed and checked again.
+  const installed = title({
+    ...base,
+    round: 1,
+    status: 'failed',
+    environment: {
+      failure: 'sh: 1: vitest: not found',
+      command: 'npm test',
+      installs: [
+        { command: 'npm ci', folder: '', status: 'passed', durationMs: 300 },
+        {
+          command: 'pnpm install --frozen-lockfile',
+          folder: 'web',
+          status: 'failed',
+          exitCode: 1,
+          output: 'ERR_PNPM_OUTDATED_LOCKFILE',
+        },
+      ],
+    },
+  });
+  assert.equal(
+    installed.text,
+    'Checks failed on the environment, not on the change (sh: 1: vitest: not found): ran npm ci, pnpm install --frozen-lockfile in web (1 failed) and checked again. This attempt isn’t counted.'
+  );
+  const rows = [...installed.root.querySelectorAll('.chat-verify-check')].map((li) => li.className);
+  assert.deepEqual(rows, [
+    'chat-verify-check failed',
+    'chat-verify-check passed',
+    'chat-verify-check failed',
+  ]);
+  assert.ok(
+    installed.root.querySelector('details pre')?.textContent?.includes('OUTDATED'),
+    'a failed install’s output'
+  );
+  // Nothing to install: it went to the agent.
+  assert.equal(
+    title({
+      ...base,
+      round: 1,
+      status: 'failed',
+      environment: { failure: 'sh: 1: vitest: not found', command: 'npm test', installs: [] },
+    }).text,
+    'Checks failed on the environment, not on the change (sh: 1: vitest: not found): nothing to install was found, so it went to the agent. This attempt isn’t counted.'
+  );
+});
+
 const button = (root: Element, text: string) =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === text);
 

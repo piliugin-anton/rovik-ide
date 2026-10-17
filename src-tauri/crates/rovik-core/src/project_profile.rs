@@ -14,7 +14,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
-mod workspaces;
+pub(crate) mod workspaces;
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

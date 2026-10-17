@@ -42,6 +42,7 @@ pub mod paths;
 pub mod permissions;
 pub mod plan;
 pub mod plan_review;
+pub mod prepare;
 pub mod project;
 pub mod recovery;
 pub mod repair;

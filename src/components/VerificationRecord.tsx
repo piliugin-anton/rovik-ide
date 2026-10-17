@@ -8,8 +8,10 @@ import { CHECK_LABEL } from '../lib/projectProfile';
 import { plural } from '../lib/textUtils';
 import { liveLabel, liveSubagent } from '../lib/subagents';
 import {
+  attemptText,
   causeLine,
   describeFailure,
+  environmentHeadline,
   progressLine,
   repairHeadline,
   reviewAfterGreenLine,
@@ -41,17 +43,22 @@ function headline(meta: VerificationMeta, interrupted: boolean): string {
     case 'passed':
       return 'Checks passed.';
     case 'failed':
+      if (meta.environment) return environmentHeadline(meta.environment);
       if (meta.repair?.status === 'recheck')
-        return `Checks failed (attempt ${meta.round} of ${meta.maxRounds}): the workers that own the failures fixed them.`;
+        return `Checks failed (${attemptText(meta)}): the workers that own the failures fixed them.`;
       if (meta.repair?.status === 'fixing')
-        return `Checks failed (attempt ${meta.round} of ${meta.maxRounds}): the workers that own the failures are fixing them.`;
-      return `Checks failed: sent to the agent to fix (attempt ${meta.round} of ${meta.maxRounds}).`;
-    case 'gave-up':
+        return `Checks failed (${attemptText(meta)}): the workers that own the failures are fixing them.`;
+      return `Checks failed: sent to the agent to fix (${attemptText(meta)}).`;
+    case 'gave-up': {
+      const after = meta.noProgress
+        ? `after ${meta.round} attempts, the last two without progress`
+        : `after ${meta.round} attempts`;
       return meta.rolledBack
-        ? `The last fix broke something that passed before, so it was rolled back. Checks still fail after ${meta.round} attempts: the agent stopped here.`
-        : `Checks still fail after ${meta.round} attempts. The agent stopped here.`;
+        ? `The last fix broke something that passed before, so it was rolled back. Checks still fail ${after}: the agent stopped here.`
+        : `Checks still fail ${after}. The agent stopped here.`;
+    }
     case 'rolled-back':
-      return `The fix broke something that passed before, so it was rolled back (attempt ${meta.round} of ${meta.maxRounds}).`;
+      return `The fix broke something that passed before, so it was rolled back (${attemptText(meta)}).`;
     case 'flagged':
       return 'Checks pass, but the change weakens tests or what the checks run: review it before relying on it.';
     case 'unresolved':
@@ -290,6 +297,51 @@ export default function VerificationRecord(props: {
             )}
           </For>
         </ul>
+      </Show>
+
+      <Show when={props.meta.environment?.installs.length ? props.meta.environment : undefined}>
+        {(env) => (
+          <ul class="chat-verify-checks">
+            <For each={env().installs}>
+              {(install) => (
+                <li class={`chat-verify-check ${install.status}`}>
+                  <Show
+                    when={install.status === 'failed' && install.output}
+                    fallback={
+                      <div class="chat-verify-row">
+                        <StatusIcon status={install.status} />
+                        <span class="chat-verify-kind">Install</span>
+                        <code class="chat-verify-command">{install.command}</code>
+                        <span class="chat-verify-note">
+                          {[install.folder && `in ${install.folder}`, seconds(install.durationMs)]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </span>
+                      </div>
+                    }
+                  >
+                    <details>
+                      <summary class="chat-verify-row">
+                        <StatusIcon status={install.status} />
+                        <span class="chat-verify-kind">Install</span>
+                        <code class="chat-verify-command">{install.command}</code>
+                        <span class="chat-verify-note">
+                          {install.timedOut
+                            ? 'timed out'
+                            : install.exitCode != null
+                              ? `exit ${install.exitCode}`
+                              : ''}
+                          {install.folder ? ` · in ${install.folder}` : ''}
+                        </span>
+                      </summary>
+                      <pre class="chat-verify-output">{install.output}</pre>
+                    </details>
+                  </Show>
+                </li>
+              )}
+            </For>
+          </ul>
+        )}
       </Show>
 
       <Show when={props.meta.status !== 'running' && progressLine(props.meta)}>

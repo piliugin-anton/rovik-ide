@@ -32,6 +32,34 @@ export interface CheckResult {
   testsRan?: number;
   /** failed, with more output than `output`: where the whole is saved (`@checks/…`). */
   savedOutput?: string;
+  /** Autopilot, failed: the line saying the environment, not the code, failed
+   * (a program or a module that isn't installed, V03). */
+  environment?: string;
+}
+
+/** An install Autopilot ran after a check failed on the environment (V03). */
+export interface InstallResult {
+  command: string;
+  /** Where it ran, from the project's folder; '' for the folder itself. */
+  folder: string;
+  status: 'passed' | 'failed' | 'skipped';
+  exitCode?: number | null;
+  timedOut?: boolean;
+  durationMs?: number;
+  /** failed: the end of its output. */
+  output?: string;
+  /** Where the whole of it is saved (`@checks/…`). */
+  savedOutput?: string;
+}
+
+/** A round that failed on the environment, not the code: not counted (V03). */
+export interface EnvironmentMeta {
+  /** The line that says so (`sh: 1: vitest: not found`). */
+  failure: string;
+  /** The check it came from. */
+  command: string;
+  /** The installs it ran; none: nothing to install was found. */
+  installs: InstallResult[];
 }
 
 /** What a failure triage found (src-tauri/src/agent_run/triage.rs). */
@@ -187,6 +215,30 @@ export interface VerificationMeta {
   /** Autopilot: the checks are the plan's validation commands, the project
    * having none set up (V02). */
   fromPlan?: boolean;
+  /** Autopilot: the rounds end after two in a row without progress, not at
+   * `maxRounds` (V03). */
+  byProgress?: boolean;
+  /** gave-up: the last two rounds made no progress (V03). */
+  noProgress?: boolean;
+  /** failed: on the environment, not the code; the round isn't counted (V03). */
+  environment?: EnvironmentMeta;
+}
+
+/** A failed round's attempt: "attempt 2 of 3", or in Autopilot "attempt 2". */
+export function attemptText(meta: Pick<VerificationMeta, 'round' | 'maxRounds' | 'byProgress'>) {
+  return meta.byProgress ? `attempt ${meta.round}` : `attempt ${meta.round} of ${meta.maxRounds}`;
+}
+
+/** The headline of a round that failed on the environment (V03). */
+export function environmentHeadline(env: EnvironmentMeta): string {
+  const what = `Checks failed on the environment, not on the change (${env.failure})`;
+  if (!env.installs.length)
+    return `${what}: nothing to install was found, so it went to the agent. This attempt isn’t counted.`;
+  const commands = env.installs.map((i) => (i.folder ? `${i.command} in ${i.folder}` : i.command));
+  const failed = env.installs.filter((i) => i.status === 'failed').length;
+  return `${what}: ran ${commands.join(', ')}${
+    failed ? ` (${failed === env.installs.length ? 'it failed' : `${failed} failed`})` : ''
+  } and checked again. This attempt isn’t counted.`;
 }
 
 /** The repair round's one-line summary. */

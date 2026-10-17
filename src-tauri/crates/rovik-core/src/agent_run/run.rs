@@ -168,6 +168,12 @@ pub struct Run {
     pub(super) verify_rounds: u32,
     /// The last round failed and was sent back to the agent.
     pub(super) last_verify_failed: bool,
+    /// Autopilot's rounds in a row that made no progress: two end them
+    /// (V03, D12).
+    pub(super) stalled_rounds: u32,
+    /// A check failed on its environment and Prepare ran again: once a
+    /// run (V03).
+    pub(super) prepared_again: bool,
     /// Unfinished checklist steps were pointed out; at most MAX_CHECKLIST_NUDGES.
     pub(super) checklist_nudges: u32,
     /// Force the `todo` tool on the next model turn (plan implementation
@@ -884,6 +890,8 @@ impl Run {
             changed_files: Vec::new(),
             verify_rounds: 0,
             last_verify_failed: false,
+            stalled_rounds: 0,
+            prepared_again: false,
             checklist_nudges: 0,
             force_todo_next: false,
             checklist_gate_refused: false,

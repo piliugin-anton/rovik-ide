@@ -957,3 +957,46 @@ T05 depends most on the environment it meets.
 - **Recorded as such**: the verification record has `fromPlan`, and the
   record says "No checks are set up for this project: these are the
   commands the plan's Validation section names."
+
+### V03: the environment's failures, and rounds bounded by progress
+
+- **The classifier** (`command_output::environment_failure`): a failed
+  check's output says its environment failed when a shell didn't find a
+  program (exit code 127, "command not found", `sh: 1: X: not found`,
+  cmd's "is not recognized"; a bare "X: not found" only with 127 or a
+  shell's name first), make's "Error 127", Node's or TypeScript's "Cannot
+  find module/package" of a package's name (not `./util`, not
+  `node:fs`), Python's "No module named", or cargo's "could not find
+  `Cargo.toml`". The record keeps the line that says so. A typo in an
+  import of the project's own Python package reads as the environment
+  too; it costs one uncounted round at most. Only Autopilot's checks are
+  classified.
+- **Prepare doesn't exist yet** (S03), so V03 builds the part of it it
+  needs: `agent_run/prepare.rs` finds the installs the lockfiles at the
+  root and one folder down imply (4.3), where what they install isn't
+  there (`node_modules` or `.pnp.cjs`, `.venv`, a virtual environment,
+  `target` for Cargo, `vendor` for Go), and runs them as heavy work with
+  the checks' timeout, their output saved as `@checks/prepare-…`.
+  `npm ci` runs with `--no-audit --no-fund`: the audit is a request to
+  the registry nobody reads there. The stage before the first check, its
+  stage record and its switch on the page stay S03's; the backend's
+  `prepare` setting (on by default) already decides whether they run.
+- **The round** that fails on the environment, the first in a run,
+  isn't counted: its record says so (`counted: false`, `environment`:
+  the line, the check, each install with its result), the installs run,
+  and the checks run again at once on the same code, as round N again.
+  With nothing to install, the agent hears what's missing and that the
+  round isn't counted (in Autopilot it may run the install itself). A
+  later one counts as any failure, and the agent hears it's the
+  environment, the dependencies installed once already. "Once" is once a
+  run: S03's record will make it once a task.
+- **Rounds end on progress**: in Autopilot a run's checks give up after
+  two rounds in a row without progress (`repair::judge`'s no-progress
+  or a rolled-back regression), not after three; a round of progress
+  starts the count again. A round that shows failures the last one hid
+  (the type check passes and the tests run) is progress: what hid them
+  was fixed. The budget ends them as it ends the run (U04). For a task
+  with no budget, `AUTOPILOT_MAX_ROUNDS` (10) is a last stop, for rounds
+  that keep changing what fails. The agent's report and the record say
+  "attempt N", with no count (`byProgress`); a record that gave up so
+  says the last two made no progress (`noProgress`).

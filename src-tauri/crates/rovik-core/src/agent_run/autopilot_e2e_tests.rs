@@ -1653,6 +1653,310 @@ async fn a_plans_validation_command_the_denylist_names_is_skipped() {
     );
 }
 
+/*
+ * The rounds of an unattended run (V03)
+ */
+
+/// A Node project whose test runs `vitest`, a package of its own folder
+/// (`vendor/vitest`, so `npm ci` needs no network) that isn't installed:
+/// `npm test` can't find it. Installed, it passes once ok.txt says ok.
+async fn uninstalled_project() -> Harness {
+    harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "version": "1.0.0", "private": true, "scripts": { "test": "vitest" }, "devDependencies": { "vitest": "file:vendor/vitest" } }"#,
+        ),
+        (
+            "package-lock.json",
+            r#"{ "name": "t", "version": "1.0.0", "lockfileVersion": 3, "requires": true, "packages": { "": { "name": "t", "version": "1.0.0", "devDependencies": { "vitest": "file:vendor/vitest" } }, "node_modules/vitest": { "resolved": "vendor/vitest", "link": true }, "vendor/vitest": { "version": "0.0.1", "dev": true, "bin": { "vitest": "bin.js" } } } }"#,
+        ),
+        (
+            "vendor/vitest/package.json",
+            r#"{ "name": "vitest", "version": "0.0.1", "bin": { "vitest": "bin.js" } }"#,
+        ),
+        (
+            "vendor/vitest/bin.js",
+            "#!/usr/bin/env node\nconst fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); } console.log(' Tests  1 passed (1)');\n",
+        ),
+        ("ok.txt", "no"),
+    ])
+    .await
+}
+
+/// `TASK_PLAN` with `file` for the file it reads (`check.js`).
+fn plan_reading(file: &str) -> &'static str {
+    let plan = TASK_PLAN.replace("check.js", file);
+    Box::leak(plan.into_boxed_str())
+}
+
+/// V03 (D12): the check fails on its environment ("vitest: not found"),
+/// not on the change: the dependencies the lockfile names are installed,
+/// the checks run again at once, and the round isn't counted. The task is
+/// verified on round 1.
+#[tokio::test]
+async fn a_check_that_finds_no_program_prepares_and_runs_again() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = uninstalled_project().await;
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script_with_plan(plan_reading("vendor/vitest/bin.js")),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    assert_eq!(rounds.len(), 2, "{rounds:#?}");
+    let (environment, checked) = (rounds[0], rounds[1]);
+    assert_eq!(environment["status"], "failed");
+    assert_eq!(environment["counted"], false);
+    assert_eq!(environment["round"], 1);
+    let failure = environment["environment"]["failure"].as_str().unwrap();
+    assert!(
+        failure.contains("vitest") && failure.contains("not found"),
+        "{failure}"
+    );
+    assert_eq!(environment["environment"]["command"], "npm test");
+    let installs = environment["environment"]["installs"].as_array().unwrap();
+    assert_eq!(installs.len(), 1, "{installs:#?}");
+    assert_eq!(installs[0]["command"], "npm ci --no-audit --no-fund");
+    assert_eq!(installs[0]["folder"], "");
+    assert_eq!(installs[0]["status"], "passed");
+    assert_eq!(checked["status"], "passed");
+    assert_eq!(checked["round"], 1, "not counted: the same round again");
+    assert_eq!(checked["byProgress"], true);
+    assert!(h.project.join("node_modules/.bin/vitest").exists());
+    // The agent never heard of it: nothing was its to fix.
+    assert!(
+        !messages.iter().any(|m| m.content.contains("attempt 1")),
+        "no failure report"
+    );
+}
+
+/// V03: nothing to install for it (no lockfile): the agent hears what's
+/// missing, and the round still isn't counted. Its fix (its own runner)
+/// passes on round 1.
+#[tokio::test]
+async fn with_nothing_to_install_the_agent_hears_whats_missing() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "vitest" } }"#,
+        ),
+        ("ok.txt", "no"),
+    ])
+    .await;
+    let mut script = script_with_plan(plan_reading("package.json"));
+    script.extend([
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "mkdir -p node_modules/.bin && printf '#!/bin/sh\\nexit 0\\n' > node_modules/.bin/vitest && chmod +x node_modules/.bin/vitest" }),
+        },
+        Reply::Text("Installed a vitest of the project's own."),
+    ]);
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    assert_eq!(rounds[0]["counted"], false);
+    assert_eq!(rounds[0]["environment"]["installs"], json!([]));
+    let last = rounds[rounds.len() - 1];
+    assert_eq!(
+        (last["status"].clone(), last["round"].clone()),
+        (json!("passed"), json!(1))
+    );
+    let report = messages
+        .iter()
+        .find(|m| m.content.contains("This attempt isn't counted"))
+        .expect("the agent hears it");
+    assert!(
+        report.content.contains("found nothing to install"),
+        "{}",
+        report.content
+    );
+}
+
+/// The change reviewer's and the triage's briefs start so.
+const CHANGE_REVIEW: &str = "# Review this change";
+const TRIAGE: &str = "# Triage this failure";
+
+/// Two checks: a type check (`tc.js`, a.txt must say "typed") and tests
+/// (`test.js`, b.txt and c.txt must say "ok"); the tests don't run while
+/// the type check fails.
+async fn layered_project() -> Harness {
+    harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "typecheck": "node tc.js", "test": "node test.js" } }"#,
+        ),
+        (
+            "tc.js",
+            "const fs = require('fs'); if (fs.readFileSync('a.txt', 'utf8').trim() !== 'typed') { console.error('a.txt:1: error: not typed'); process.exit(1); }",
+        ),
+        (
+            "test.js",
+            "const fs = require('fs'); let bad = 0; for (const f of ['b.txt', 'c.txt']) { if (fs.readFileSync(f, 'utf8').trim() !== 'ok') { console.error(f + ':1: error: not ok'); bad++; } } process.exit(bad ? 1 : 0);",
+        ),
+        ("a.txt", "no"),
+        ("b.txt", "no"),
+        ("c.txt", "no"),
+        // What the plan names.
+        ("ok.txt", "no"),
+    ])
+    .await
+}
+
+/// The task's script with `plan` (reading `test.js`), whose implementation
+/// writes `writes` in turn, one round each: the first in the run, each
+/// next one after a failure report.
+fn script_writing(writes: &[(&'static str, &'static str)]) -> Vec<Reply> {
+    let mut script = script_with_plan(plan_reading("test.js"));
+    let (path, content) = writes[0];
+    script[3] = Reply::Call {
+        id: "w0",
+        name: "write",
+        args: json!({ "path": path, "content": content }),
+    };
+    let ids = ["w1", "w2", "w3", "w4", "w5", "w6"];
+    for (i, (path, content)) in writes[1..].iter().enumerate() {
+        script.push(Reply::Call {
+            id: ids[i],
+            name: "write",
+            args: json!({ "path": path, "content": content }),
+        });
+        script.push(Reply::Text("Fixed that."));
+    }
+    script
+}
+
+/// V03 (D12): the type check fails, its fix shows the tests that it hid,
+/// and the fixes go on making progress: past the three rounds an Agent
+/// chat has, to verified on round 4.
+#[tokio::test]
+async fn autopilots_rounds_go_on_while_they_make_progress() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = layered_project().await;
+    let script = script_writing(&[
+        ("a.txt", "nope"),
+        ("a.txt", "typed"),
+        ("b.txt", "ok"),
+        ("c.txt", "ok"),
+    ]);
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TRIAGE, vec![Reply::Text("Not in the format.")]),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    let messages = h.messages().await;
+    let rounds: Vec<(Value, Value)> = verifications(&messages)
+        .iter()
+        .map(|v| (v["round"].clone(), v["status"].clone()))
+        .collect();
+    assert_eq!(
+        rounds,
+        [
+            (json!(1), json!("failed")),
+            (json!(2), json!("failed")),
+            (json!(3), json!("failed")),
+            (json!(4), json!("passed")),
+        ]
+    );
+    // Round 2 showed the tests round 1 hid: progress, by the type check.
+    let second = verifications(&messages)[1];
+    assert_eq!(second["progress"]["verdict"], "progress");
+    // The agent isn't told of a count: there's none.
+    let report = messages
+        .iter()
+        .find(|m| m.content.contains("Your changes are not done yet"))
+        .unwrap();
+    assert!(
+        report
+            .content
+            .contains("(attempt 1; the checks stop after 2 attempts in a row without progress)"),
+        "{}",
+        report.content
+    );
+}
+
+/// V03 (D12): two rounds in a row without progress end the checks, the
+/// record saying so: round 4 here, after round 2's progress.
+#[tokio::test]
+async fn two_rounds_without_progress_end_autopilots_checks() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = layered_project().await;
+    std::fs::write(h.project.join("a.txt"), "typed").unwrap();
+    let script = script_writing(&[
+        ("a.txt", "typed"),
+        ("b.txt", "ok"),
+        ("c.txt", "nope"),
+        ("c.txt", "still no"),
+    ]);
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TRIAGE, vec![Reply::Text("Not in the format.")]),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[4].outcome.as_deref(), Some("verify-gave-up"));
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    let shown: Vec<(Value, Value)> = rounds
+        .iter()
+        .map(|v| (v["round"].clone(), v["status"].clone()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (json!(1), json!("failed")),
+            (json!(2), json!("failed")),
+            (json!(3), json!("failed")),
+            (json!(4), json!("gave-up")),
+        ]
+    );
+    let last = rounds[3];
+    assert_eq!(last["noProgress"], true);
+    assert_eq!(last["byProgress"], true);
+    assert_eq!(rounds[1]["progress"]["verdict"], "progress");
+    assert_eq!(rounds[2]["progress"]["verdict"], "no-progress");
+}
+
 /// V02, isolated: the unchecked change stays in the chat, with why.
 #[tokio::test]
 async fn an_isolated_tasks_unchecked_change_waits_with_why() {

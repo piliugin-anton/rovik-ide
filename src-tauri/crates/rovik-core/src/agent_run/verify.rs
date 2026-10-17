@@ -9,7 +9,7 @@
 //! reads the same after a restart.
 
 use super::command_output::{
-    error_locations, failure_keys, focus_failures, split_by_changed, tests_ran,
+    environment_failure, error_locations, failure_keys, focus_failures, split_by_changed, tests_ran,
 };
 use super::log;
 use super::permissions::{check_command, denied_entry, Permissions, Verdict};
@@ -23,6 +23,12 @@ use std::sync::{Arc, Mutex};
 
 /// Fix-and-recheck rounds before the gate gives up and reports.
 pub const MAX_VERIFY_ROUNDS: u32 = 3;
+/// Autopilot's rounds end after this many in a row without progress, not
+/// at MAX_VERIFY_ROUNDS (V03, D12).
+pub const STALLED_ROUNDS: u32 = 2;
+/// The most rounds an Autopilot run has, progress or not: a stop for a
+/// task with no budget whose rounds go on changing what fails.
+pub const AUTOPILOT_MAX_ROUNDS: u32 = 10;
 /// Per check. Test suites can be slow; this is the bash maximum.
 const CHECK_TIMEOUT_MS: u64 = 600_000;
 
@@ -31,7 +37,7 @@ const CHECK_TIMEOUT_MS: u64 = 600_000;
 pub(super) static CHECK_TIMEOUTS: std::sync::Mutex<std::collections::BTreeMap<String, u64>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-fn check_timeout_ms(_dialog_id: &str) -> u64 {
+pub(super) fn check_timeout_ms(_dialog_id: &str) -> u64 {
     #[cfg(test)]
     if let Some(ms) = CHECK_TIMEOUTS
         .lock()
@@ -90,6 +96,10 @@ pub struct CheckResult {
     /// it is saved, `@checks/…` (check_output.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saved_output: Option<String>,
+    /// Autopilot, failed: the line saying its environment failed, not the
+    /// code (`command_output::environment_failure`, V03).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 impl CheckResult {
@@ -108,6 +118,7 @@ impl CheckResult {
             failures: None,
             tests_ran: None,
             saved_output: None,
+            environment: None,
         }
     }
 
@@ -295,7 +306,7 @@ fn hex_hash(bytes: &[u8]) -> String {
 }
 
 /// The record's meta: `{ verification: … }`.
-fn record(
+pub(super) fn record(
     status: &str,
     round: u32,
     checks: &[CheckResult],
@@ -420,11 +431,13 @@ fn describe_error_files(files: &ErrorFiles) -> Option<String> {
 }
 
 /// The message the agent gets when checks fail (sent as a user-role message).
+/// `limit`: the rounds there are; None in Autopilot, whose rounds end after
+/// two without progress (V03).
 pub fn failure_report(
     results: &[CheckResult],
     changed_files: &[String],
     round: u32,
-    max_rounds: u32,
+    limit: Option<u32>,
     notes: &[String],
 ) -> String {
     let failed: Vec<&CheckResult> = results.iter().filter(|r| r.status == "failed").collect();
@@ -434,9 +447,15 @@ pub fn failure_report(
     } else {
         format!("{} checks fail", failed.len())
     };
+    let attempt = match limit {
+        Some(max) => format!("attempt {round} of {max}"),
+        None => format!(
+            "attempt {round}; the checks stop after {STALLED_ROUNDS} attempts in a row without progress"
+        ),
+    };
     let mut lines = vec![
         "[Automatic check by the IDE, not written by the user]".to_string(),
-        format!("Your changes are not done yet: {fail} (attempt {round} of {max_rounds})."),
+        format!("Your changes are not done yet: {fail} ({attempt})."),
     ];
     for note in notes {
         lines.push(String::new());
@@ -694,14 +713,29 @@ impl Run {
             if self.checks_from_plan {
                 v.insert("fromPlan".into(), json!(true));
             }
+            // V03: the rounds end on progress, not at the count.
+            if self.in_autopilot() {
+                v.insert("byProgress".into(), json!(true));
+            }
         }
         meta
     }
 
     /// The round limit: MAX_VERIFY_ROUNDS, and one more for each review
-    /// after green whose findings went back (R08).
+    /// after green whose findings went back (R08). In Autopilot, whose
+    /// rounds end after two without progress, AUTOPILOT_MAX_ROUNDS.
     fn max_rounds(&self) -> u32 {
-        MAX_VERIFY_ROUNDS + self.bonus_rounds
+        let base = if self.in_autopilot() {
+            AUTOPILOT_MAX_ROUNDS
+        } else {
+            MAX_VERIFY_ROUNDS
+        };
+        base + self.bonus_rounds
+    }
+
+    /// The limit the agent is told of: none in Autopilot (V03).
+    fn round_limit(&self) -> Option<u32> {
+        (!self.in_autopilot()).then(|| self.max_rounds())
     }
 
     /// One round of the gate; "repaired": the workers fixed this round's
@@ -853,6 +887,22 @@ impl Run {
         let ran = results
             .iter()
             .any(|r| r.status == "passed" || r.status == "failed");
+        // V03 (D12): a check that failed on its environment, not the code (a
+        // program or a package that isn't installed): in Autopilot, once a
+        // run, the round isn't counted and Prepare runs again first.
+        let autopilot = self.in_autopilot();
+        if failed && autopilot && !self.prepared_again && !self.stopped() {
+            if let Some(check) = results.iter().find(|r| r.environment.is_some()) {
+                let failure = check.environment.clone().unwrap_or_default();
+                let command = check.command.clone();
+                self.prepared_again = true;
+                return self
+                    .environment_round(
+                        &root, &record_id, round, &results, &changed, failure, command,
+                    )
+                    .await;
+            }
+        }
         // R01: how this round compares with the earlier ones.
         let mut now = round_failures(&results);
         now.own_tests = Some(self.own_test_count());
@@ -877,6 +927,19 @@ impl Run {
             let project = self.project_root.clone().unwrap_or_default();
             judgement = judgement.keeping_slips_in(&written, &[root.as_str(), project.as_str()]);
         }
+        // V03 (D12): Autopilot's rounds end after STALLED_ROUNDS in a row
+        // without progress (a rolled-back regression is none), or at the
+        // budget, not at a count. A round that only shows failures the last
+        // one hid is progress: what hid them was fixed.
+        if autopilot {
+            match judgement.verdict {
+                _ if !failed => self.stalled_rounds = 0,
+                Progress::Progress => self.stalled_rounds = 0,
+                Progress::NoProgress | Progress::Regression => self.stalled_rounds += 1,
+                Progress::First => {}
+            }
+        }
+        let stalled = autopilot && self.stalled_rounds >= STALLED_ROUNDS;
         // R05: what weakens the checks, and fewer tests than last round.
         let mut flags = if ran {
             self.integrity_flags()
@@ -918,7 +981,7 @@ impl Run {
         if failed && judgement.verdict == Progress::Regression && !self.stopped() {
             if let Some(rb) = self.roll_back(judgement.broke.clone()).await {
                 self.rolled_back_attempts.push(rb.clone());
-                let status = if round >= max_rounds {
+                let status = if round >= max_rounds || stalled {
                     "gave-up"
                 } else {
                     "rolled-back"
@@ -936,6 +999,9 @@ impl Run {
                         .map(|r| r.keys.iter().cloned().collect())
                         .unwrap_or_default();
                     meta = with(meta, self.gave_up_facts(&left));
+                    if stalled {
+                        meta = with(meta, json!({ "noProgress": true }));
+                    }
                 }
                 self.update_meta(&record_id, meta).await?;
                 self.log_round(round, status, &results, &judgement, &flags);
@@ -954,7 +1020,7 @@ impl Run {
                     &earlier,
                     &changed,
                     round,
-                    self.max_rounds(),
+                    self.round_limit(),
                     &[rollback_note(&rb)],
                 );
                 self.add_harness(report, "verification").await?;
@@ -976,7 +1042,7 @@ impl Run {
             "flagged"
         } else if !failed {
             "passed"
-        } else if round >= max_rounds {
+        } else if round >= max_rounds || stalled {
             "gave-up"
         } else {
             "failed"
@@ -990,6 +1056,9 @@ impl Run {
             // R06: what's left, and what was tried and undone.
             let left: Vec<String> = now.keys.iter().cloned().collect();
             meta = with(meta, self.gave_up_facts(&left));
+            if stalled {
+                meta = with(meta, json!({ "noProgress": true }));
+            }
         }
         // A regression that wasn't rolled back above: why not.
         let not_rolled_back = (failed && judgement.verdict == Progress::Regression).then_some(
@@ -1065,6 +1134,17 @@ impl Run {
         if !flags.is_empty() {
             notes.push(repair::integrity_note(&flags, false));
         }
+        // V03: still the environment, the dependencies installed once: the
+        // agent may need a package the project doesn't have.
+        if let Some(line) = results.iter().find_map(|r| r.environment.as_deref()) {
+            if self.prepared_again {
+                notes.push(format!(
+                    "A check still fails on the environment (`{line}`), and the IDE already installed the project's dependencies. \
+                     If your change needs a package the project doesn't have, add it to the project's manifest and lockfile; \
+                     otherwise it's the environment, not your change: don't change unrelated code for it."
+                ));
+            }
+        }
         // C03: a large or repeated failure goes to triage first; the agent
         // gets its diagnosis in place of that check's output.
         let base = meta.clone();
@@ -1112,7 +1192,7 @@ impl Run {
         if self.stopped() {
             return Ok("verify-stopped".into());
         }
-        let mut report = failure_report(&sent, &changed, round, self.max_rounds(), &notes);
+        let mut report = failure_report(&sent, &changed, round, self.round_limit(), &notes);
         if let Some(files) = &self.merged_from_project {
             let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
             let diffs: String = files
@@ -1468,6 +1548,10 @@ impl Run {
                         r.status = "passed";
                     } else {
                         r.status = "failed";
+                        // V03: in Autopilot, whether its environment failed.
+                        if self.in_autopilot() && !out.timed_out {
+                            r.environment = environment_failure(out.exit_code, &combined);
+                        }
                         // From the whole output, not the focused part: every
                         // failure counts when rounds are compared.
                         r.failures = Some(failure_keys(&r.kind, &combined, out.timed_out));
@@ -1595,7 +1679,7 @@ mod tests {
             &results,
             &["src/a.ts".into()],
             1,
-            3,
+            Some(3),
             &["No progress: x".into()],
         );
         assert!(text.contains("(attempt 1 of 3).\n\nNo progress: x\n\nFiles you changed"));
@@ -1603,6 +1687,11 @@ mod tests {
         assert!(text.contains("Passed: Lint (`eslint .`)"));
         assert!(text.contains("## Type check failed: `tsc` (exit code 2)\nErrors point at files you changed: src/a.ts."));
         assert!(text.contains("Not run: `npm test` (the type check failed)"));
+        // V03: Autopilot's rounds have no count to tell.
+        let autopilot = failure_report(&results, &[], 2, None, &[]);
+        assert!(autopilot.contains(
+            "a check fails (attempt 2; the checks stop after 2 attempts in a row without progress)."
+        ));
 
         let meta = record("running", 1, &results[..1], &[], None);
         assert_eq!(
