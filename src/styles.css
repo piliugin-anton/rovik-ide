@@ -516,6 +516,7 @@ body.tree-dragging {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
 }
 
 .tabs {
@@ -3979,10 +3980,19 @@ body.tree-dragging {
 
 .resizable-inner {
   box-sizing: border-box;
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  /* A length on both sides (a dragged px width, then 100vw), so expanding
+     and collapsing animate instead of jumping. */
+  transition: width 333ms ease;
+}
+
+/* Dragging the divider stays instant. */
+.resizable-inner.resizing {
+  transition: none;
 }
 
 .resizable-handle {
@@ -4006,6 +4016,73 @@ body.is-resizing * {
   -webkit-user-select: none !important;
   user-select: none !important;
   cursor: col-resize !important;
+}
+
+.sidebar-expanded .chat-panel {
+  border: 1px solid var(--border);
+}
+
+/* Expanded panel (the floating toggle): the panel is the window, so the
+   right pane — open-file tabs, editor, terminal — and the divider go away.
+   The chat tab's content becomes a centered column of at most 768px; Files
+   and Git keep the full width. */
+.app.sidebar-expanded .app-main {
+  display: none;
+}
+
+.app.sidebar-expanded .resizable-handle {
+  display: none;
+}
+
+.app.sidebar-expanded .chat-panel {
+  width: 100%;
+  max-width: 768px;
+  margin-inline: auto;
+}
+
+/* The full-window toggle: floating over the panel's content at its right
+   edge, faint until it is hovered or focused. */
+.sidebar-expand-button {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-control);
+  color: var(--fg-dim);
+  opacity: 0.55;
+  cursor: pointer;
+  transition:
+    opacity 0.15s,
+    color 0.15s,
+    background 0.15s;
+}
+
+.sidebar-expand-button:hover,
+.sidebar-expand-button:focus-visible,
+.sidebar-expand-button.expanded {
+  opacity: 1;
+  color: var(--fg);
+  background: var(--bg-control-hover);
+}
+
+.sidebar-expand-button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resizable-inner {
+    transition: none;
+  }
 }
 
 /* git-panel.css

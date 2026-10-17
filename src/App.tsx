@@ -163,6 +163,10 @@ export default function App() {
   const [searchActive, setSearchActive] = createSignal(false);
   const [revealRequest, setRevealRequest] = createSignal<RevealRequest | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
+  // The panel's full-window mode: the floating toggle in Resizable sets it,
+  // and the `sidebar-expanded` class on `.app` hides the right pane.
+  const [sidebarExpanded, setSidebarExpanded] = createSignal(false);
+
   // App-wide Settings (the gear next to the project selector): a virtual
   // files notification's "Show steps" opens its page directly.
   createEffect(() => {
@@ -1938,8 +1942,20 @@ export default function App() {
   });
 
   return (
-    <div class="app" onContextMenu={handleContextMenu}>
-      <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
+    <div
+      class="app"
+      classList={{ 'sidebar-expanded': sidebarExpanded() }}
+      onContextMenu={handleContextMenu}
+    >
+      <Resizable
+        class="sidebar"
+        initialWidth={380}
+        minWidth={320}
+        maxWidth={480}
+        expanded={sidebarExpanded()}
+        onExpandedChange={setSidebarExpanded}
+        showFloatingButton={sidebarTab() === 'chat'}
+      >
         <div class="sidebar-topbar">
           <ProjectSwitcher
             onOpenFolder={() => void handlePickFolder()}
@@ -1957,7 +1973,7 @@ export default function App() {
             ⚙
           </button>
         </div>
-        <div class="sidebar-tabs">
+        <Show when={!sidebarExpanded()}><div class="sidebar-tabs">
           <button
             classList={{ active: sidebarTab() === 'files' }}
             onClick={() => setSidebarTab('files')}
@@ -1995,7 +2011,7 @@ export default function App() {
           >
             Git
           </button>
-        </div>
+        </div></Show>
 
         <Show when={sidebarTab() === 'files'}>
           <Show
