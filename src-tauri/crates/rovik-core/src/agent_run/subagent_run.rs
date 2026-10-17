@@ -112,6 +112,9 @@ pub(super) struct SubCtx {
     /// Its report turns keep the "## Earlier findings" section, and a
     /// report that gives some of them no verdict is asked once for those.
     pub earlier_findings: Vec<super::change_review::Finding>,
+    /// T08: one turn without tools in its chat as it was, its words the
+    /// result, in no format (a change reviewer's view of the task's end).
+    pub view_only: bool,
 }
 
 impl SubCtx {
@@ -151,6 +154,7 @@ impl SubCtx {
             kept_copy: false,
             other_steps: Vec::new(),
             earlier_findings: Vec::new(),
+            view_only: false,
         }
     }
 
@@ -1254,6 +1258,18 @@ impl Run {
 
     /// The subagent's loop: how it ended, its report, and an error kind.
     async fn drive_sub(&mut self) -> Result<(SubStatus, String, Option<String>), String> {
+        // T08: a reviewer's view of the task's end: one turn without tools.
+        if self.sub().is_some_and(|s| s.view_only) {
+            let text = self.words_only_turn().await?;
+            let status = if self.stopped() {
+                SubStatus::Stopped
+            } else if text.trim().is_empty() {
+                SubStatus::Failed
+            } else {
+                SubStatus::Done
+            };
+            return Ok((status, text, None));
+        }
         let mut last_text = String::new();
         loop {
             if self.stopped() {

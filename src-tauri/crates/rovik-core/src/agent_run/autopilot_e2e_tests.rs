@@ -237,6 +237,10 @@ const BREAKING: &str = super::breaker::BREAK_HEADING;
 /// blocked, so it writes nothing.
 const NO_BREAK: &str = "## Blocked\n\nNothing to break in this test.";
 
+/// The change reviewer's view of a Thorough task's end, by its brief at
+/// the end of the reviewer's chat (T08).
+const VIEWING: &str = "last:# Write your view of the result";
+
 /// What the judge answers unless a test gives it replies: blocked, so the
 /// task takes the first planner's plan that passes the checks.
 const NO_JUDGMENT: &str = "## Blocked\n\nNo judgment in this test.";
@@ -276,6 +280,11 @@ async fn model_routed(
     }
     if !routes.iter().any(|(marker, _)| *marker == BREAKING) {
         routes.push((BREAKING, vec![Reply::Text(NO_BREAK)]));
+    }
+    // First: the view's turn is in the change reviewer's chat, whose first
+    // message is the review's brief. An empty view adds nothing.
+    if !routes.iter().any(|(marker, _)| *marker == VIEWING) {
+        routes.insert(0, (VIEWING, vec![Reply::Text("")]));
     }
     if !routes.iter().any(|(marker, _)| *marker == ACCEPTANCE) {
         routes.push((ACCEPTANCE, vec![Reply::Text(NO_VERDICTS)]));
@@ -4951,4 +4960,97 @@ async fn thorough_acceptance_checks_go_on_by_progress() {
     assert_eq!(notes.len(), 3);
     assert!(notes[0].contains("checks go on while each finds fewer criteria unmet"));
     assert!(notes[2].contains("if the next doesn't either"));
+}
+
+/*
+ * T08: the reviewer's report
+ */
+
+/// T08 (3.2): a Thorough task's report has two parts: the implementer's,
+/// and under it the change reviewer's view, written in the reviewer's own
+/// chat (its brief the review's, its last message the view's brief, with
+/// the IDE's facts).
+#[tokio::test]
+async fn a_thorough_report_has_the_reviewers_view_under_it() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let view = "The change does what the request asked: ok.txt says ok, and check.js reads it. I'd still check that nothing else reads ok.txt with a newline at its end.";
+    let (url, seen) = model_routed(
+        vec![
+            (VIEWING, vec![Reply::Text(view)]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script(),
+    )
+    .await;
+    let mut request = reviewed_task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+    let messages = h.messages().await;
+    let report = report_of(&messages);
+    assert!(report.content.starts_with(A_REPORT), "{}", report.content);
+    assert!(
+        report
+            .content
+            .ends_with(&format!("\n\n## The reviewer's view\n\n{view}")),
+        "{}",
+        report.content
+    );
+    assert_eq!(
+        report.meta.as_ref().unwrap()["report"]["reviewerView"],
+        true
+    );
+    // In the reviewer's chat: what it reviewed, then the view's brief.
+    let requests = seen.lock().unwrap().clone();
+    let viewed = requests
+        .iter()
+        .find(|r| route_of(r, &[VIEWING]).is_some())
+        .expect("the view's turn");
+    let all = viewed["messages"].as_array().unwrap();
+    let first = all.iter().find(|m| m["role"] == "user").unwrap()["content"].to_string();
+    assert!(first.contains(CHANGE_REVIEW), "{first}");
+    let last = all.last().unwrap()["content"].to_string();
+    assert!(last.contains("- How it ended: Its checks pass"), "{last}");
+    assert!(
+        viewed.get("tools").is_none_or(
+            |t| t.as_array().is_none_or(Vec::is_empty) || viewed["tool_choice"] == "none"
+        ),
+        "no tools: {viewed}"
+    );
+    assert_eq!(log_lines(&h, "reviewerView").await[0]["written"], true);
+}
+
+/// T08: a Balanced task's report is the implementer's alone.
+#[tokio::test]
+async fn a_balanced_report_has_no_reviewers_view() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, seen) = model_routed(
+        vec![
+            (VIEWING, vec![Reply::Text("A view nobody asked for.")]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script(),
+    )
+    .await;
+    h.start(reviewed_task_request(&h, &url)).await;
+    stages_until(&h, "the delivery", delivered).await;
+    let messages = h.messages().await;
+    let report = report_of(&messages);
+    assert_eq!(report.content, A_REPORT);
+    assert!(report.meta.as_ref().unwrap()["report"]
+        .get("reviewerView")
+        .is_none());
+    let requests = seen.lock().unwrap().clone();
+    assert!(!requests.iter().any(|r| route_of(r, &[VIEWING]).is_some()));
 }

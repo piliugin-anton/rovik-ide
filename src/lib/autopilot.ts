@@ -598,6 +598,8 @@ export interface ReportMeta {
   /** On a server that pushes its results (H04): where it went. */
   branch?: string;
   pr?: string;
+  /** Thorough (T08): the change reviewer's view is under the report, as "The reviewer's view". */
+  reviewerView?: boolean;
   assumptions: string[];
   criteria: string[];
   verdicts: AcceptanceVerdict[];

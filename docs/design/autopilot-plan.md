@@ -1712,3 +1712,18 @@ T05 depends most on the environment it meets.
   fewer problems"), and warn once a round made no progress; the review
   and acceptance records carry `byProgress`, and the chat shows "Review
   4" without a count.
+
+### T08: the reviewer's view
+
+- **In the reviewer's own chat**: once the implementer wrote a Thorough
+  task's report (S09's turn), the chat of the task's last change review
+  that reported goes on, after an IDE brief with the same facts the
+  report had (`report::view_brief`), for one turn without tools
+  (`SubCtx::view_only`, its words the result, in no format). So the
+  view is the reviewer's, from what it read of the change, not from the
+  implementer's conversation.
+- **Under the report**, as "## The reviewer's view", in the saved report
+  and in a pushed result's pull request; `meta.report.reviewerView` says
+  whether it's there. No change review reported (none ran, or none could
+  be read), or its turn gave nothing: the report is the implementer's
+  alone, as in Balanced.

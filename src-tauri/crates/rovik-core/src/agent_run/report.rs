@@ -12,6 +12,13 @@ use serde_json::json;
 /// The report brief's first line: what the IDE asks for (S09).
 pub const REPORT_HEADING: &str = "# Write the task's report";
 
+/// The change reviewer's brief for its view of the result starts so
+/// (T08), after the IDE's note.
+pub const VIEW_HEADING: &str = "# Write your view of the result";
+
+/// The heading the reviewer's view goes under, after the report (T08).
+pub const VIEW_SECTION: &str = "## The reviewer's view";
+
 /// "1 h 5 min", "3 min", "40 s".
 pub fn duration(ms: u64) -> String {
     let s = ms / 1000;
@@ -120,6 +127,20 @@ pub fn report_brief(f: &ReportFacts) -> String {
     )
 }
 
+/// T08: what the change reviewer is asked, in its own chat, as a Thorough
+/// task ends: its view of the result, for the user, from what it read of
+/// the change and the IDE's facts.
+pub fn view_brief(f: &ReportFacts) -> String {
+    format!(
+        "{IDE_NOTE}{VIEW_HEADING}\n\nThe task you reviewed is over, and its implementer is writing its report for the user, who wasn't here. \
+         Your view goes under that report, as the reviewer's. From what you read of the change and the facts below, write for the user, \
+         in a few short paragraphs without headings: whether the result does what the request asked, what you'd still check yourself \
+         and why, and anything the implementer's report may make sound surer than it is. Don't call any tools.\n\n\
+         The facts, from the IDE's records:\n\n{}",
+        facts_text(f)
+    )
+}
+
 /// A pushed result's pull request's description (D15, H04) until the
 /// report is written: the IDE's facts.
 pub fn pull_request_body(f: &ReportFacts) -> String {
@@ -152,6 +173,61 @@ pub fn fallback_report(f: &ReportFacts) -> String {
 }
 
 impl Run {
+    /// T08: the change reviewer's view of the task's end: one turn without
+    /// tools in the chat of the task's last change review that reported,
+    /// after the IDE's brief. None: no review reported, or the turn gave
+    /// nothing.
+    async fn reviewers_view(&mut self, facts: &ReportFacts) -> Option<String> {
+        use super::subagent::{Kind, SubStatus, SubagentSettings};
+        let config = self.config().subagents;
+        config.kind(Kind::Reviewer)?;
+        let recent = self.recent().await.ok()?;
+        let start = recent.iter().position(|m| m.id == facts.task)?;
+        let (record_id, child_id) = recent[start..].iter().rev().find_map(|m| {
+            let review = m.meta.as_ref()?.get("review")?;
+            let reported = matches!(review["status"].as_str(), Some("clean" | "findings"));
+            let child = review["childDialogId"].as_str()?;
+            (review["kind"] == "change" && reported).then(|| (m.id.clone(), child.to_string()))
+        })?;
+        let mut brief = super::run::new_message("user", &view_brief(facts));
+        brief.meta = Some(json!({ "harness": "reviewerView" }));
+        let id = child_id.clone();
+        self.core
+            .db
+            .write(move |c| crate::chat_db::store::append_messages(c, &id, &[brief]))
+            .await
+            .ok()?;
+        // Its own call id: the review's record isn't running again.
+        let call_id = format!("view-{record_id}");
+        let mut sub = self
+            .new_sub(
+                Kind::Reviewer,
+                &call_id,
+                config.budget(Kind::Reviewer),
+                &config,
+            )
+            .await
+            .ok()?;
+        sub.view_only = true;
+        let child = self
+            .launch_child(child_id, &call_id, "The reviewer's view of the result", sub)
+            .ok()?;
+        let result = super::subagent_run::run_child(child).await?;
+        self.note_models_of(&result);
+        let text = result.text.trim();
+        let ok = result.status == SubStatus::Done && !text.is_empty();
+        super::log::write(
+            &self.core,
+            json!({
+                "event": "reviewerView",
+                "dialogId": self.dialog_id,
+                "written": ok,
+                "ms": result.ms,
+            }),
+        );
+        ok.then(|| text.to_string())
+    }
+
     /// S09: the Deliver stage's run: the delivery's record, and the report
     /// in one turn without tools, saved with its facts (`meta.report`);
     /// when the turn fails, the IDE's own. Always "done": a delivery is
@@ -182,10 +258,24 @@ impl Run {
             } else {
                 (written, false)
             };
+            // T08: a Thorough task's report has the change reviewer's view
+            // under it, written in the reviewer's own chat.
+            let thorough = self.thorough();
+            let view = match thorough && !self.stopped() {
+                true => self.reviewers_view(&facts).await,
+                false => None,
+            };
+            let content = match &view {
+                Some(view) => format!("{}\n\n{VIEW_SECTION}\n\n{view}", content.trim_end()),
+                None => content,
+            };
             let mut meta = reasoning_meta(turn.reasoning).unwrap_or_else(|| json!({}));
             meta["report"] = json!(facts);
             if by_ide {
                 meta["report"]["byIde"] = json!(true);
+            }
+            if thorough {
+                meta["report"]["reviewerView"] = json!(view.is_some());
             }
             // The pull request's description: the report, once written.
             let described = facts.pr.clone().zip(self.core.agents.deliverer());
@@ -276,6 +366,16 @@ mod tests {
         assert!(text.contains("2 min, 0.42 in the providers' currency"));
         assert!(text.contains("starting with why the result wasn't delivered whole"));
         assert!(text.contains("Delivered as partial, not landed"));
+    }
+
+    #[test]
+    fn the_reviewers_brief_asks_for_its_view_from_the_facts() {
+        let text = view_brief(&facts());
+        assert!(text.contains(VIEW_HEADING));
+        assert!(text.contains("Your view goes under that report, as the reviewer's"));
+        assert!(text.contains("what you'd still check yourself"));
+        assert!(text.contains("2. An empty name throws. — unmet: nothing throws"));
+        assert!(text.contains("Don't call any tools."));
     }
 
     #[test]
