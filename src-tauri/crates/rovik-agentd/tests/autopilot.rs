@@ -247,6 +247,36 @@ async fn a_task_killed_between_two_stages_goes_on() {
     );
 }
 
+/// H07: the provider rate limits the task's plan through every attempt of
+/// its requests; nobody is there to press Retry, so the daemon runs the
+/// stage again once the limit resets, and the task completes, its plan's
+/// stage the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rate_limited_task_goes_on_once_the_limit_resets() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let limited = (0..4).map(|_| Reply::RateLimited(0)).collect();
+    let review = vec![Reply::Text("## Findings\n\nNone.")];
+    let (url, seen) = task_model_after(limited, look(), review, vec![nothing_to_test()]).await;
+    let reply = daemon
+        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .await;
+    assert!(format!("{reply:?}").contains("RunId(Some("), "{reply:?}");
+    let found = until_delivered(&daemon).await;
+    assert_eq!(found, delivered_whole(), "{}", daemon.output());
+    let plan_requests = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|b| !b.to_string().contains(PLAN_REVIEW) && !b.to_string().contains(TESTS_FIRST))
+        .count();
+    assert!(plan_requests > 4, "the four limited, then the rest");
+}
+
 /// H02: what this computer has the server keep for its runs that go on
 /// without it (where results go, whom to tell) is kept per computer and
 /// read back after a restart: a later change of the state keeps it.

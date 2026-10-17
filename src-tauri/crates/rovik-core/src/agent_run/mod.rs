@@ -211,6 +211,9 @@ struct Inner {
     on_server: bool,
     /// What the server does with a task's result it delivers (D15, H04).
     deliverer: Option<Arc<dyn autopilot::Deliverer>>,
+    /// Each stage's waits for the provider's rate limit (H07), by its
+    /// record: how many, and how long in all.
+    rate_waits: HashMap<String, (u32, std::time::Duration)>,
     runs: HashMap<String, RunControl>,
     /// Keyed by chat and tool call: providers number calls per reply
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
@@ -386,6 +389,23 @@ impl AgentState {
 
     pub fn deliverer(&self) -> Option<Arc<dyn autopilot::Deliverer>> {
         self.lock().deliverer.clone()
+    }
+
+    /// The stage's waits for rate limits so far (H07): how many, how long.
+    pub(super) fn rate_limit_waits(&self, record: &str) -> (u32, std::time::Duration) {
+        self.lock()
+            .rate_waits
+            .get(record)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// The stage waits `wait` for a rate limit (H07).
+    pub(super) fn rate_limit_waited(&self, record: &str, wait: std::time::Duration) {
+        let mut inner = self.lock();
+        let kept = inner.rate_waits.entry(record.to_string()).or_default();
+        kept.0 += 1;
+        kept.1 += wait;
     }
 
     /// Keeps a run's fix-round state until the user starts its checks

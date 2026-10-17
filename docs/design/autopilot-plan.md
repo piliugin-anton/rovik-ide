@@ -1530,3 +1530,22 @@ T05 depends most on the environment it meets.
   scheme and host), and the error without its URL
   (`reqwest::Error::without_url`): the URL may carry a token. It never
   waits in the task's way: each notice is a task of its own.
+
+### H07: rate limits on the server
+
+- **In the driver, not the daemon**: the stage's end is the core's
+  (`after_run`), so a run that ended `error` with its last failure
+  `rate_limited` (`meta.failure.kind`, after the request's own four
+  attempts) doesn't end its stage on a server (`on_server`): the stage
+  stays running, its line says when it goes on ("Rate limited by the
+  provider: again in …"), and its run starts again as a Retry after the
+  wait, when the stage is still the task's latest and running and no run
+  of the chat goes. On a computer, the user is there: the stage ends as
+  before.
+- **The wait**: until the reset the failure named (`resetAt`, from the
+  provider's `Retry-After`), at least a second; without one, a minute,
+  then two, four…. The stage's waits add up to an hour at most, and none
+  starts past the task's budget (U04: what it spent, the run's with it);
+  past either, the stage ends as before. The waits are counted in memory
+  by stage record: a daemon that restarts meanwhile resumes the task at
+  once (A03), and counts again.

@@ -76,41 +76,50 @@ pub async fn task_model(
     review: Vec<Reply>,
     tests: Vec<Reply>,
 ) -> (String, Arc<Mutex<Vec<Value>>>) {
-    model_routed(
-        vec![(PLAN_REVIEW, review), (TESTS_FIRST, tests)],
-        vec![
-            first,
-            Reply::Call {
-                id: "p1",
-                name: "submit_plan",
-                args: json!({ "plan": PLAN }),
-            },
-            Reply::Text("Saved the plan."),
-            Reply::Call {
-                id: "t1",
-                name: "todo",
-                args: json!({ "items": [
+    task_model_after(Vec::new(), first, review, tests).await
+}
+
+/// `task_model`, the plan's run answered `before` first (each an answer to
+/// a request of its own: rate limits, say).
+pub async fn task_model_after(
+    before: Vec<Reply>,
+    first: Reply,
+    review: Vec<Reply>,
+    tests: Vec<Reply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let mut script = before;
+    script.extend([
+        first,
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": PLAN }),
+        },
+        Reply::Text("Saved the plan."),
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [
                 { "title": "Write ok", "status": "in_progress" },
                 { "title": "Check", "status": "pending" },
             ] }),
-            },
-            Reply::Call {
-                id: "w1",
-                name: "write",
-                args: json!({ "path": "ok.txt", "content": "ok" }),
-            },
-            Reply::Call {
-                id: "t2",
-                name: "todo",
-                args: json!({ "items": [
+        },
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [
                 { "title": "Write ok", "status": "done" },
                 { "title": "Check", "status": "done" },
             ] }),
-            },
-            Reply::Text("Done: ok.txt says ok."),
-        ],
-    )
-    .await
+        },
+        Reply::Text("Done: ok.txt says ok."),
+    ]);
+    model_routed(vec![(PLAN_REVIEW, review), (TESTS_FIRST, tests)], script).await
 }
 
 /// The plan's first step when nothing cuts it: a look at the check.

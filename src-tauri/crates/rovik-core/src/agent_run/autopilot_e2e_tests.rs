@@ -1150,6 +1150,67 @@ async fn an_autopilot_run_on_a_server_refuses_the_daemons_folder() {
     );
 }
 
+/// H07: a task whose plan's run the provider rate limits, through all the
+/// request's attempts, run on a server or on this computer.
+async fn rate_limited_task(on_server: bool) -> Option<(Harness, Vec<StageRecord>)> {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return None;
+    }
+    if on_server {
+        h.core.agents.set_on_server();
+    }
+    let mut script = task_script();
+    for _ in 0..crate::chat_request::MAX_ATTEMPTS {
+        script.insert(0, Reply::RateLimited(0));
+    }
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    Some((h, records))
+}
+
+/// H07: on a server nobody presses Retry: a stage's run the provider's
+/// rate limit ended goes on once the limit resets, in the same stage, and
+/// the task completes.
+#[tokio::test]
+async fn a_rate_limited_stage_goes_on_once_the_limit_resets_on_a_server() {
+    let Some((h, records)) = rate_limited_task(true).await else {
+        return;
+    };
+    assert_eq!(names(&records), BALANCED_OK);
+    let waits = log_lines(&h, "rateLimitWait").await;
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    // Its reset was now: a second's wait, the least.
+    assert_eq!(waits[0]["waitMs"], 1000);
+}
+
+/// H07: on this computer the user is there to retry: the stage ends as
+/// before, and the task with it.
+#[tokio::test]
+async fn a_rate_limited_stage_fails_on_this_computer() {
+    let Some((h, records)) = rate_limited_task(false).await else {
+        return;
+    };
+    assert_eq!(
+        (
+            records[0].name,
+            records[0].status,
+            records[0].outcome.as_deref()
+        ),
+        (Stage::Plan, Status::Failed, Some("error"))
+    );
+    // Its stages are in the log: a wait would be by now.
+    log_lines(&h, "stage").await;
+    let log = std::fs::read_to_string(h.core.paths.log_dir.join("agent-log.jsonl")).unwrap();
+    assert!(!log.contains("rateLimitWait"), "{log}");
+}
+
 /*
  * Approvals in Autopilot (U02)
  */

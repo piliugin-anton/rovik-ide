@@ -848,6 +848,24 @@ pub(super) fn after_run(
                 .await?;
                 return Ok(());
             }
+            // H07: on a server, the provider's rate limit holds the stage up
+            // until it resets, then its run goes on.
+            if let Some(wait) = rate_limit_wait(&core, &dialog_id, &run, &outcome, spent).await? {
+                let again = super::failure::format_duration(wait.as_millis() as i64);
+                end_stage(&core, &dialog_id, &run.record, |r| {
+                    r.spent = Some(r.spent.unwrap_or_default().plus(spent));
+                    r.summary = Some(format!("Rate limited by the provider: again in {again}"));
+                })
+                .await?;
+                retry_later(
+                    core.clone(),
+                    dialog_id.clone(),
+                    run.record.clone(),
+                    settings,
+                    wait,
+                );
+                return Ok(());
+            }
             end_run_stage(&core, &dialog_id, &run, &outcome, spent, &settings).await?;
             #[cfg(test)]
             if crashes(&dialog_id, Crash::AfterEnd) {
@@ -860,6 +878,99 @@ pub(super) fn after_run(
             stopped_by(&core, &dialog_id, &e);
         }
     })
+}
+
+/// H07: how long a stage waits for the provider's rate limit before
+/// going on, the first time it waits without being told; doubled each
+/// time after.
+const RATE_LIMIT_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long a stage waits for rate limits in all, at most.
+const RATE_LIMIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// H07 (3.6): on a server, nobody is there to press Retry: a stage's run
+/// that ended `error` because the provider rate limited it goes on once
+/// the limit resets: at the time its failure named, else after a minute,
+/// then two, four…, while the task is within its budget (U04) and the
+/// stage's waits add up to an hour at most. None: the stage ends as
+/// before.
+async fn rate_limit_wait(
+    core: &Core,
+    dialog_id: &str,
+    run: &StageRun,
+    outcome: &str,
+    spent: Spent,
+) -> Result<Option<std::time::Duration>, String> {
+    if outcome != "error" || !core.agents.on_server() {
+        return Ok(None);
+    }
+    let recent = super::run::recent_messages(&core.db, dialog_id).await?;
+    let failure = recent
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .and_then(|m| m.meta.as_ref()?.get("failure").cloned());
+    let Some(failure) = failure.filter(|f| f["kind"] == "rate_limited") else {
+        return Ok(None);
+    };
+    let task = task_spent(core, dialog_id).await?.plus(spent);
+    let budget = core.agents.config_for(dialog_id).autopilot.budget;
+    if budget::over(&budget, &task).is_some() {
+        return Ok(None);
+    }
+    let (waits, waited) = core.agents.rate_limit_waits(&run.record);
+    let reset = failure["resetAt"]
+        .as_i64()
+        .map(|at| (at - store::now_ms()).max(0) as u64);
+    let wait = match reset {
+        Some(ms) => std::time::Duration::from_millis(ms.max(1000)),
+        None => RATE_LIMIT_FIRST_WAIT * 2u32.saturating_pow(waits.min(10)),
+    };
+    if waited + wait > RATE_LIMIT_PATIENCE {
+        return Ok(None);
+    }
+    core.agents.rate_limit_waited(&run.record, wait);
+    super::log::write(
+        core,
+        json!({
+            "event": "rateLimitWait",
+            "dialogId": dialog_id,
+            "record": run.record,
+            "waitMs": wait.as_millis() as u64,
+        }),
+    );
+    Ok(Some(wait))
+}
+
+/// The stage's run again after `wait`, as a Retry, when the stage is still
+/// the task's latest and running, and no run of the chat goes: a Stop, a
+/// new message or a resume meanwhile leaves it be.
+fn retry_later(
+    core: Core,
+    dialog_id: String,
+    record: String,
+    settings: Settings,
+    wait: std::time::Duration,
+) {
+    crate::rt::spawn(async move {
+        tokio::time::sleep(wait).await;
+        let driving = drive_lock(&dialog_id).await;
+        if core.agents.is_running(&dialog_id) {
+            return;
+        }
+        let latest = match current_task(&core, &dialog_id).await {
+            Ok(Some((_, records))) => records.last().cloned(),
+            _ => None,
+        };
+        let still = latest.is_some_and(|r| r.id == record && r.record.status == Status::Running);
+        if !still {
+            return;
+        }
+        drop(driving);
+        let request = settings.request(&dialog_id, StartKind::Retry);
+        if let Err(e) = super::start_run(&core, request).await {
+            stopped_by(&core, &dialog_id, &e);
+        }
+    });
 }
 
 /// The driver couldn't go on (the database failed it): said in the log and
