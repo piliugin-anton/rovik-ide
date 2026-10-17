@@ -96,6 +96,13 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ data: [{ id: 'fake-model' }] }));
       return;
     }
+    // A provider without the Responses API, which the app tries first: it
+    // goes on to chat completions (chat_request/responses.rs `wrong_route`).
+    if (req.url.endsWith('/responses')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: `Invalid URL (POST ${req.url})` } }));
+      return;
+    }
     const r = reply(body);
     if (body.stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
