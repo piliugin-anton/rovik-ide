@@ -1866,6 +1866,52 @@ async fn a_token_limit_ends_the_task_where_the_provider_reports_no_cost() {
     assert_eq!(records[5].outcome.as_deref(), Some("budget"));
 }
 
+/// U04: a run keeps what it spent so far in its stage's record as it goes,
+/// after each of its replies, so that a crash would keep it; at its end
+/// the record's `spent` has all of it, and nothing is kept apart.
+#[tokio::test]
+async fn a_run_keeps_its_spend_in_its_record_as_it_goes() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // Every reply of the lead's costs 0.02; the implementation's third,
+    // after its checklist and its write, takes a while.
+    let mut script: Vec<Reply> = task_script()
+        .into_iter()
+        .map(|reply| costing(0.02, reply))
+        .collect();
+    let third = script.remove(4);
+    script.insert(4, Reply::Slow(2_000, Box::new(third)));
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let under_way = stages_until(&h, "the implementation's spend so far", |records| {
+        records
+            .iter()
+            .any(|r| r.name == Stage::Implement && r.spending.is_some_and(|s| near(s.cost, 0.04)))
+    })
+    .await;
+    let implement = under_way
+        .iter()
+        .find(|r| r.name == Stage::Implement)
+        .unwrap();
+    assert_eq!(implement.status, Status::Running);
+    assert_eq!(implement.spent, None, "no run of it ended yet");
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(implement.spending, None);
+    let spent = implement.spent.expect("the implementation's spend");
+    assert!(near(spent.cost, 0.08), "its four replies: {spent:?}");
+    assert!(records.iter().all(|r| r.spending.is_none()), "{records:#?}");
+}
+
 /// U04: the task's records say it spent more than its budget allows by
 /// the time its next stage would start (here, cut between two stages, then
 /// resumed): that stage doesn't start, and the task delivers.

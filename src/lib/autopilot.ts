@@ -53,6 +53,8 @@ export interface StageMeta {
   candidates?: string[];
   /** H07: the provider's rate limit holds it up; `until`: when its run goes on (ms). */
   rateLimit?: { until?: number; waits: number; waitedMs: number };
+  /** U04: what the run under way spent so far, kept as it goes. */
+  spending?: { ms: number; cost: number; uncosted: number; tokens?: number };
 }
 
 /**

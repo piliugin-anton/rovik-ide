@@ -6,7 +6,8 @@
 //! - A task's lead run adds up what its replies, its subagents' included,
 //!   cost as it goes (`AgentState::note_reply`), and the time since it
 //!   started; each stage record keeps what its run spent (`spent`), so the
-//!   task's total survives a restart (a run a crash cut loses its part).
+//!   task's total survives a restart. A run keeps what it spent so far in
+//!   its record as it goes (`spending`), so a crash keeps that too.
 //! - The run checks the total after every reply, and the driver before
 //!   each stage; past a limit, the task ends with the outcome `budget`, and
 //!   delivers what it has.

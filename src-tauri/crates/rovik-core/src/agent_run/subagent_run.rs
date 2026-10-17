@@ -888,6 +888,7 @@ impl Run {
             self.absorb_child_writes(&r.writes);
             self.note_models(r);
         }
+        self.keep_spending().await;
         Ok((child_id, result))
     }
 
@@ -945,6 +946,7 @@ impl Run {
                 self.note_models(r);
             }
         }
+        self.keep_spending().await;
         results
     }
 

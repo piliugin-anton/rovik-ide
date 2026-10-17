@@ -387,7 +387,7 @@ async fn spent_by(core: &Core, row: &CandidatesRecord) -> Result<Spent, String> 
         let theirs = task_records(core, &c.chat, &row.task).await?;
         total = theirs
             .iter()
-            .filter_map(|r| r.record.spent)
+            .filter_map(|r| r.record.spent_so_far())
             .fold(total, Spent::plus);
     }
     Ok(total)

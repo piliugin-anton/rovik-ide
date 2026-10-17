@@ -910,7 +910,15 @@ T05 depends most on the environment it meets.
   adds its replies' cost, its subagents' too, and its time since it
   started; each stage record keeps what its runs spent (`spent`), so the
   task's total is its records' and survives a restart. A run a crash cut
-  loses its part; one a move or an upgrade paused keeps it. Time between
+  loses its part; one a move or an upgrade paused keeps it. Since the
+  robustness pass after T, a run keeps what it spent so far in its
+  record as it goes (`spending`: after each of its replies, and each
+  batch of the IDE's subagents), so a crash loses only what the request
+  or the subagent it cut had used. The run's end puts all it spent in
+  `spent` instead; after a crash, the stage's next run adds what was kept
+  to `spent` before it keeps its own. Every total counts both
+  (`spent_so_far`), H08's status included, which so shows a run's spend
+  while it goes. Time between
   runs (a closed laptop) doesn't count.
 - **The cost** is what a provider says a request cost (OpenRouter does),
   in its currency. The app has no prices, so with a provider that reports

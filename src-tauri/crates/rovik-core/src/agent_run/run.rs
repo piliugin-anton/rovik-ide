@@ -468,6 +468,32 @@ impl Run {
         self.core.agents.over_budget(&self.dialog_id)
     }
 
+    /// U04: what the run spent so far, kept in its stage's record as it
+    /// goes (`spending`), after each of its replies and each batch of the
+    /// IDE's subagents: a crash then keeps all of it but what the request
+    /// or the subagent it cut had used. Its end puts all it spent in the
+    /// record's `spent` instead. A failed write costs only what it would
+    /// have kept.
+    pub(super) async fn keep_spending(&self) {
+        if self.sub().is_some() {
+            return;
+        }
+        let Some(stage) = &self.stage else {
+            return;
+        };
+        let Some(so_far) = self.core.agents.run_spent(&self.dialog_id) else {
+            return;
+        };
+        let kept =
+            super::autopilot::keep_spending(&self.core, &self.dialog_id, &stage.record, so_far);
+        if let Err(e) = kept.await {
+            eprintln!(
+                "agent: chat {}: its spend so far wasn't kept: {e}",
+                self.dialog_id
+            );
+        }
+    }
+
     /// Ends the run over its task's budget: the reply's calls get a result
     /// each, so the chat's history is whole, and the log says why.
     async fn end_over_budget(&mut self, calls: &[ToolCall], why: &str) -> Result<String, String> {
@@ -514,6 +540,11 @@ impl Run {
             true if stage.as_ref().is_some_and(|s| s.candidates) => config,
             true => {
                 let effort = stage.as_ref().map_or(config.autopilot.effort, |s| s.effort);
+                // What a run a crash cut kept of its spend is its stage's
+                // (U04), before this run keeps its own.
+                if let Some(s) = &stage {
+                    super::autopilot::keep_cut_spending(core, &dialog_id, &s.record).await?;
+                }
                 // What its task spent before it counts against the budget (U04).
                 let before = super::autopilot::task_spent(core, &dialog_id).await?;
                 core.agents.set_autopilot(&dialog_id, effort, before);
@@ -1374,6 +1405,7 @@ impl Run {
             )
             .await?;
             self.settle(true).await;
+            self.keep_spending().await;
             // Past its Autopilot task's budget (U04): the run ends at this
             // reply, its calls answered as not run. A Stop goes first.
             if let Some(why) = self.over_task_budget().filter(|_| !self.stopped()) {

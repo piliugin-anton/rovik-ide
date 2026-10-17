@@ -11,7 +11,7 @@ use common::{until, Daemon, Row};
 use rovik_core::agent_run::AgentConfig;
 use rovik_core::testing::Reply;
 use rovik_protocol::{Frame, Request, Response};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Mutex;
 
 /// A03: the daemon is killed while the task's plan streams; started again,
@@ -181,6 +181,61 @@ async fn a_task_killed_while_its_plan_is_reviewed_goes_on() {
         std::fs::read_to_string(project.join("ok.txt")).unwrap(),
         "ok"
     );
+}
+
+/// U04: `kill -9` in the middle of a stage's run, its plan written and
+/// its review under way: what the run had spent (its first reply's cost
+/// and tokens) was kept in the stage's record as it went, and stays the
+/// task's once the daemon starts again, where it used to be lost.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_run_spent_before_a_kill_stays_the_tasks() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let review = vec![Reply::Hang(None), Reply::Text("## Findings\n\nNone.")];
+    let costing = Reply::UsageAs(
+        json!({ "prompt_tokens": 100, "completion_tokens": 10, "cost": 0.02 }),
+        Box::new(look()),
+    );
+    let (url, seen) = task_model(costing, review, vec![nothing_to_test()]).await;
+    let reply = daemon
+        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .await;
+    assert!(
+        matches!(
+            reply,
+            Frame::Reply {
+                res: Ok(Response::RunId(Some(_))),
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    until("the plan's review asked for", || {
+        (asked(&seen, PLAN_REVIEW) > 0).then_some(())
+    })
+    .await;
+    let plan = |daemon: &Daemon| -> Value {
+        daemon
+            .rows(CHAT)
+            .iter()
+            .find_map(|r| r.meta.get("stage").filter(|s| s["name"] == "plan").cloned())
+            .expect("the plan's record")
+    };
+    let kept = plan(&daemon);
+    assert_eq!(kept["spending"]["cost"], 0.02, "{kept}");
+    daemon.kill().await;
+    daemon.restart().await;
+
+    let found = until_delivered(&daemon).await;
+    assert_eq!(found, delivered_whole(), "{}", daemon.output());
+    let ended = plan(&daemon);
+    assert_eq!(ended["spent"]["cost"], 0.02, "{ended}");
+    assert_eq!(ended["spent"]["tokens"], 110, "{ended}");
+    assert!(ended.get("spending").is_none(), "{ended}");
 }
 
 /// H03: `kill -9` between two stages: the plan's stage and its review

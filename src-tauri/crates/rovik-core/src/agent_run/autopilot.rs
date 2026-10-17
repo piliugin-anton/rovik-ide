@@ -306,6 +306,11 @@ pub struct StageRecord {
     /// when the wait is over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimitWait>,
+    /// U04: what the run under way spent so far, kept as it goes, so that a
+    /// crash keeps it. Its end puts all it spent in `spent` instead; the
+    /// stage's next run, after a crash, adds what was kept to `spent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spending: Option<Spent>,
 }
 
 /// H07: a stage's waits for the provider's rate limit, kept in its record
@@ -323,6 +328,15 @@ pub struct RateLimitWait {
 }
 
 impl StageRecord {
+    /// What the stage's runs spent (U04): the ended runs' (`spent`), and
+    /// what the one under way, or one a crash cut, kept as it went.
+    pub fn spent_so_far(&self) -> Option<Spent> {
+        match (self.spent, self.spending) {
+            (None, None) => None,
+            (spent, spending) => Some(spent.unwrap_or_default().plus(spending.unwrap_or_default())),
+        }
+    }
+
     /// When the stage's run goes on after a wait for the provider's rate
     /// limit, while it waits for one (H07).
     pub fn waits_until(&self) -> Option<i64> {
@@ -355,6 +369,7 @@ impl StageRecord {
             files: Vec::new(),
             candidates: Vec::new(),
             rate_limit: None,
+            spending: None,
         }
     }
 
@@ -428,7 +443,7 @@ pub fn task_state(rows: &[MessageRow]) -> Option<rovik_protocol::autopilot::Task
     let last = &records.last()?.record;
     let spent = records
         .iter()
-        .filter_map(|r| r.record.spent)
+        .filter_map(|r| r.record.spent_so_far())
         .fold(Spent::default(), Spent::plus);
     let status = serde_json::to_value(last.status).ok()?;
     Some(rovik_protocol::autopilot::TaskState {
@@ -575,6 +590,30 @@ pub async fn end_stage(
     id: &str,
     change: impl FnOnce(&mut StageRecord),
 ) -> Result<StageRecord, String> {
+    let record = patch_stage(core, dialog_id, id, change).await?;
+    super::log::write(
+        core,
+        json!({
+            "event": "stage",
+            "dialogId": dialog_id,
+            "task": record.task,
+            "stage": record.name.id(),
+            "status": record.status,
+            "round": record.round,
+            "outcome": record.outcome,
+        }),
+    );
+    Ok(record)
+}
+
+/// `end_stage` without its line in the log: for what changes as a stage
+/// goes (U04's spend so far).
+async fn patch_stage(
+    core: &Core,
+    dialog_id: &str,
+    id: &str,
+    change: impl FnOnce(&mut StageRecord),
+) -> Result<StageRecord, String> {
     let (row, mut record) = record_row(core, dialog_id, id).await?;
     change(&mut record);
     let mut meta = row
@@ -601,19 +640,54 @@ pub async fn end_stage(
             ..Default::default()
         },
     });
-    super::log::write(
-        core,
-        json!({
-            "event": "stage",
-            "dialogId": dialog_id,
-            "task": record.task,
-            "stage": record.name.id(),
-            "status": record.status,
-            "round": record.round,
-            "outcome": record.outcome,
-        }),
-    );
     Ok(record)
+}
+
+/// U04: what a stage's run spent so far, kept in its record as it goes,
+/// so that a crash keeps it.
+pub(super) async fn keep_spending(
+    core: &Core,
+    dialog_id: &str,
+    record: &str,
+    so_far: Spent,
+) -> Result<(), String> {
+    patch_stage(core, dialog_id, record, |r| r.spending = Some(so_far))
+        .await
+        .map(drop)
+}
+
+/// U04: a run's spend is its stage record's from its end, all of it
+/// (`total`), in place of what the run kept of it as it went.
+async fn settle_spent(
+    core: &Core,
+    dialog_id: &str,
+    record: &str,
+    total: Spent,
+) -> Result<(), String> {
+    patch_stage(core, dialog_id, record, |r| {
+        r.spent = Some(r.spent.unwrap_or_default().plus(total));
+        r.spending = None;
+    })
+    .await
+    .map(drop)
+}
+
+/// U04: what a run a crash cut kept of its spend as it went is its stage
+/// record's from here, before the stage's next run keeps its own.
+pub(super) async fn keep_cut_spending(
+    core: &Core,
+    dialog_id: &str,
+    record: &str,
+) -> Result<(), String> {
+    if record_in(core, dialog_id, record).await?.spending.is_none() {
+        return Ok(());
+    }
+    patch_stage(core, dialog_id, record, |r| {
+        let cut = r.spending.take().unwrap_or_default();
+        r.spent = Some(r.spent.unwrap_or_default().plus(cut));
+    })
+    .await
+    .map(drop)
 }
 
 /// The stage record in row `id` of the chat, with its row.
@@ -712,14 +786,14 @@ pub async fn task_spent(core: &Core, dialog_id: &str) -> Result<Spent, String> {
     };
     let mut spent = records
         .iter()
-        .filter_map(|r| r.record.spent)
+        .filter_map(|r| r.record.spent_so_far())
         .fold(Spent::default(), Spent::plus);
     if chat != dialog_id {
         let all = load(core, dialog_id).await?;
         let own = records_of(&all, &task);
         spent = own
             .iter()
-            .filter_map(|r| r.record.spent)
+            .filter_map(|r| r.record.spent_so_far())
             .fold(spent, Spent::plus);
     }
     Ok(spent)
@@ -1029,21 +1103,18 @@ pub(super) fn after_run(
     Box::pin(async move {
         let _driving = driving;
         let result = async {
+            // U04: what the run spent is its record's from here, all of it.
+            settle_spent(&core, &dialog_id, &run.record, spent).await?;
             if run_continues(&outcome) {
                 // Under way still: what it spent so far is kept with it.
-                end_stage(&core, &dialog_id, &run.record, |r| {
-                    r.spent = Some(r.spent.unwrap_or_default().plus(spent));
-                })
-                .await?;
                 return Ok(());
             }
             // H07: the provider's rate limit holds the stage up until it
             // resets, then its run goes on.
-            if let Some(wait) = rate_limit_wait(&core, &dialog_id, &run, &outcome, spent).await? {
+            if let Some(wait) = rate_limit_wait(&core, &dialog_id, &run, &outcome).await? {
                 let again = super::failure::format_duration(wait.as_millis() as i64);
                 let until = store::now_ms() + wait.as_millis() as i64;
                 end_stage(&core, &dialog_id, &run.record, |r| {
-                    r.spent = Some(r.spent.unwrap_or_default().plus(spent));
                     r.summary = Some(format!("Rate limited by the provider: again in {again}"));
                     let kept = r.rate_limit.get_or_insert_with(Default::default);
                     kept.until = Some(until);
@@ -1060,7 +1131,7 @@ pub(super) fn after_run(
                 );
                 return Ok(());
             }
-            end_run_stage(&core, &dialog_id, &run, &outcome, spent, &settings).await?;
+            end_run_stage(&core, &dialog_id, &run, &outcome, &settings).await?;
             #[cfg(test)]
             if crashes(&dialog_id, Crash::AfterEnd) {
                 return Ok(());
@@ -1093,7 +1164,6 @@ async fn rate_limit_wait(
     dialog_id: &str,
     run: &StageRun,
     outcome: &str,
-    spent: Spent,
 ) -> Result<Option<std::time::Duration>, String> {
     if outcome != "error" {
         return Ok(None);
@@ -1107,7 +1177,7 @@ async fn rate_limit_wait(
     let Some(failure) = failure.filter(|f| f["kind"] == "rate_limited") else {
         return Ok(None);
     };
-    let task = task_spent(core, dialog_id).await?.plus(spent);
+    let task = task_spent(core, dialog_id).await?;
     let budget = core.agents.config_for(dialog_id).autopilot.budget;
     if budget::over(&budget, &task).is_some() {
         return Ok(None);
@@ -1258,7 +1328,6 @@ async fn end_run_stage(
     dialog_id: &str,
     run: &StageRun,
     outcome: &str,
-    spent: Spent,
     settings: &Settings,
 ) -> Result<(), String> {
     let all = load(core, dialog_id).await?;
@@ -1274,8 +1343,8 @@ async fn end_run_stage(
             let task = all
                 .iter()
                 .filter(|r| r.record.task == run.task)
-                .filter_map(|r| r.record.spent)
-                .fold(spent, Spent::plus);
+                .filter_map(|r| r.record.spent_so_far())
+                .fold(Spent::default(), Spent::plus);
             let budget = core.agents.config_for(dialog_id).autopilot.budget;
             budget::over(&budget, &task).map_or(String::new(), |why| format!(": {why}"))
         };
@@ -1295,7 +1364,6 @@ async fn end_run_stage(
             if let Some(summary) = summary {
                 r.summary = Some(summary);
             }
-            r.spent = Some(r.spent.unwrap_or_default().plus(spent));
         })
         .await?;
         return Ok(());
@@ -1306,8 +1374,8 @@ async fn end_run_stage(
             let task = all
                 .iter()
                 .filter(|r| r.record.task == run.task)
-                .filter_map(|r| r.record.spent)
-                .fold(spent, Spent::plus);
+                .filter_map(|r| r.record.spent_so_far())
+                .fold(Spent::default(), Spent::plus);
             let budget = core.agents.config_for(dialog_id).autopilot.budget;
             let why = budget::over(&budget, &task).map_or(String::new(), |why| format!(": {why}"));
             (
@@ -1371,7 +1439,6 @@ async fn end_run_stage(
         r.outcome = Some(outcome);
         r.summary = Some(summary);
         r.reference = reference;
-        r.spent = Some(r.spent.unwrap_or_default().plus(spent));
     })
     .await?;
     Ok(())
@@ -1587,7 +1654,7 @@ async fn advance(
             true => task_spent(core, dialog_id).await?,
             false => list
                 .iter()
-                .filter_map(|r| r.spent)
+                .filter_map(|r| r.spent_so_far())
                 .fold(Spent::default(), Spent::plus),
         };
         let budget = core.agents.config_for(dialog_id).autopilot.budget;
@@ -2562,7 +2629,7 @@ pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportF
         .and_then(|r| r.record.summary.clone());
     let spent = records
         .iter()
-        .filter_map(|r| r.record.spent)
+        .filter_map(|r| r.record.spent_so_far())
         .fold(Spent::default(), Spent::plus);
     Ok(Some(ReportFacts {
         task,
@@ -2917,6 +2984,36 @@ mod tests {
             ..mine(Stage::Implement, Status::Failed)
         }];
         assert_eq!(next(&stopped), Next::Over);
+    }
+
+    /// U04: what a stage spent so far is its ended runs' and what the run
+    /// under way (or one a crash cut) kept as it went.
+    #[test]
+    fn a_stage_spent_what_its_runs_ended_with_and_what_one_kept() {
+        let spent = |cost: f64, ms: u64| Spent {
+            ms,
+            cost,
+            ..Spent::default()
+        };
+        let plain = rec(Stage::Implement, Status::Running);
+        assert_eq!(plain.spent_so_far(), None);
+        let going = StageRecord {
+            spending: Some(spent(0.04, 2_000)),
+            ..plain.clone()
+        };
+        assert_eq!(going.spent_so_far(), Some(spent(0.04, 2_000)));
+        let both = StageRecord {
+            spent: Some(spent(0.10, 5_000)),
+            ..going.clone()
+        };
+        assert_eq!(both.spent_so_far(), Some(spent(0.14, 7_000)));
+        let saved = serde_json::to_value(&both).unwrap();
+        assert_eq!(saved["spending"]["cost"], 0.04);
+        assert_eq!(serde_json::from_value::<StageRecord>(saved).unwrap(), both);
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("spending")
+            .is_none());
     }
 
     /// H07: a record keeps its waits for the provider's rate limit, and
