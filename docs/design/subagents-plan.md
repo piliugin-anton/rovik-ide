@@ -745,10 +745,20 @@ switch; the reviewer's own model and fallback), unit tests in
   names ("Implement the plan in `…`"), else the chat's plan file.
   - **Brief:** written by the harness, with the plan's title and summary,
     its Decisions, the step, one line on each step a worker finished in
-    this run, the diff of the step's files since the run began, and the
-    scope. The lead's own `goal`/`context`, if it gave any, go under
-    "From the lead".
-  - **Report:** Summary (required), Changed files, Open questions.
+    this run with the decisions its worker made, the diff of the step's
+    files since the run began, and the scope. The lead's own
+    `goal`/`context`, if it gave any, go under "From the lead".
+  - **Report:** Summary (required), Changed files, Decisions, Open
+    questions.
+  - **Decisions** (added after the research evaluation of the harness):
+    what the worker decided that the plan didn't, a name, a signature, a
+    format, an edge case, one a line. A worker sees only its step, so a
+    choice one step makes and doesn't pass on is made again by the next,
+    differently: Cognition's "actions carry implicit decisions". Each
+    finished step keeps up to 8 of them (`step_decisions`), listed under
+    it as "Decided: …" in every later step's brief, whose rules say to
+    follow them as the plan's. The section is optional: a report without
+    it is still one, with no decisions.
 - **D04.** After a worker:
   - The files it really changed (the S03b writes) are compared with its
     report's "Changed files", and a difference is a note to the lead.

@@ -2031,6 +2031,7 @@ impl Run {
             number: n,
             title: step.title.clone(),
             summary: crate::chat_db::store::char_prefix(&summary, 300).to_string(),
+            decisions: worker::step_decisions(&result.text),
             light,
         });
         self.worker_steps.sort_by_key(|d| d.number);
