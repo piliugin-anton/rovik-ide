@@ -15,6 +15,7 @@
 //!   store.rs    state.json: each chat's computer and settings (D16)
 //!   restart.rs  the runs a crash or an upgrade cut, at start-up (5.4)
 //!   results.rs  each chat's result: its worktree committed (6.5)
+//!   deliver.rs  an Autopilot task's result pushed to its branch (D15)
 //!   sync.rs     a chat's worktree merged with a new snapshot (6.7)
 //!   keys.rs     keys.json: the providers' keys (D11)
 //!   packs.rs    each project's repository and its packs (6.4)
@@ -40,6 +41,8 @@ mod cli;
 mod config;
 #[cfg(unix)]
 mod daemon;
+#[cfg(unix)]
+mod deliver;
 #[cfg(unix)]
 mod doctor;
 #[cfg(unix)]

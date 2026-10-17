@@ -313,13 +313,20 @@ impl Remote {
         self.lock().caught_up.contains(host)
     }
 
+    /// The host's policy. Its projects go again with the next sync, whose
+    /// `ProjectEnsure` tells a host that pushes its results where (H04).
     pub fn set_policy(&self, host: &str, policy: ApprovalPolicy) {
-        self.lock().policies.insert(host.to_string(), policy);
+        let mut state = self.lock();
+        state.policies.insert(host.to_string(), policy);
+        state.ensured.retain(|(ensured, _)| ensured != host);
     }
 
-    /// The host's block for when it works on its own (H01).
+    /// The host's block for when it works on its own (H01), its projects
+    /// going again as for `set_policy`.
     pub fn set_autonomy(&self, host: &str, autonomy: AutonomySettings) {
-        self.lock().autonomy.insert(host.to_string(), autonomy);
+        let mut state = self.lock();
+        state.autonomy.insert(host.to_string(), autonomy);
+        state.ensured.retain(|(ensured, _)| ensured != host);
     }
 
     /// After the host's policy or block changed: what follows from them
@@ -383,7 +390,7 @@ impl Remote {
     /// What the host keeps for its runs that go on with this computer away
     /// (H02): its block's delivery and notify URL when it works on its own;
     /// else the default, which forgets what it had.
-    fn autonomy_config(&self, host: &str) -> AutonomyConfig {
+    pub(super) fn autonomy_config(&self, host: &str) -> AutonomyConfig {
         let state = self.lock();
         match state.policies.get(host) {
             Some(ApprovalPolicy::Autonomous) => state

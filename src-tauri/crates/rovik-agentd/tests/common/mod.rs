@@ -8,6 +8,7 @@
 pub mod app;
 pub mod project;
 pub mod ssh;
+pub mod task;
 
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
@@ -40,6 +41,8 @@ pub struct Daemon {
     child: Child,
     /// What `serve` was given after its own arguments.
     args: Vec<String>,
+    /// What its environment has besides the test's.
+    env: Vec<(String, String)>,
     pub socket: PathBuf,
     /// The daemon's folder (`--data`).
     pub data: PathBuf,
@@ -65,6 +68,11 @@ pub struct Row {
 impl Daemon {
     /// A daemon serving `COMPUTER`, with `args` after its own.
     pub async fn start(args: &[&str]) -> Daemon {
+        Daemon::start_with(args, &[]).await
+    }
+
+    /// `start`, with `env` in the daemon's environment.
+    pub async fn start_with(args: &[&str], env: &[(&str, &str)]) -> Daemon {
         let dir = temp_dir();
         let data = dir.0.join("rovik");
         std::fs::create_dir_all(&data).unwrap();
@@ -84,10 +92,15 @@ impl Daemon {
         .unwrap();
         let socket = dir.0.join("agentd.sock");
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let child = spawn(&dir, &data, &socket, &args);
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let child = spawn(&dir, &data, &socket, &args, &env);
         let mut daemon = Daemon {
             child,
             args,
+            env,
             socket,
             data,
             token,
@@ -121,7 +134,7 @@ impl Daemon {
 
     /// The daemon again, on the same folder, socket and arguments.
     pub async fn restart(&mut self) {
-        self.child = spawn(&self.dir, &self.data, &self.socket, &self.args);
+        self.child = spawn(&self.dir, &self.data, &self.socket, &self.args, &self.env);
         self.wait_until_it_answers().await;
     }
 
@@ -223,7 +236,13 @@ impl Daemon {
 }
 
 /// `serve` on `data` and `socket`, its stderr added to the folder's.
-fn spawn(dir: &TempDir, data: &Path, socket: &Path, args: &[String]) -> Child {
+fn spawn(
+    dir: &TempDir,
+    data: &Path,
+    socket: &Path,
+    args: &[String],
+    env: &[(String, String)],
+) -> Child {
     let stderr = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -240,6 +259,7 @@ fn spawn(dir: &TempDir, data: &Path, socket: &Path, args: &[String]) -> Child {
         // A login shell that answers at once, and no real home.
         .env("SHELL", "/bin/sh")
         .env("HOME", &dir.0)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr)

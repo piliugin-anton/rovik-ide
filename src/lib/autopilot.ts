@@ -411,6 +411,9 @@ export interface ReportMeta {
   partial: boolean;
   /** What became of the result. */
   delivery: string;
+  /** On a server that pushes its results (H04): where it went. */
+  branch?: string;
+  pr?: string;
   assumptions: string[];
   criteria: string[];
   verdicts: AcceptanceVerdict[];

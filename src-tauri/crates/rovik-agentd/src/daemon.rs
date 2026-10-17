@@ -122,7 +122,8 @@ impl Daemon {
                 project,
                 settings,
                 excludes,
-            } => work::ensure_project(self, project, settings, excludes).await,
+                remote,
+            } => work::ensure_project(self, project, settings, excludes, remote).await,
             Request::WorkSync {
                 dialog_id,
                 project,

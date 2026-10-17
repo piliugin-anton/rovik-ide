@@ -350,6 +350,8 @@ fn results_are_numbered_and_the_same_one_keeps_its_number() {
         pending: None,
         marked: Vec::new(),
         unchecked: false,
+        branch: None,
+        pr: None,
     };
 
     assert_eq!(store.result_made("chat", result("c1", "done")).seq, 1);

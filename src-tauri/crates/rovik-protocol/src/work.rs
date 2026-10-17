@@ -17,7 +17,7 @@ pub struct Project {
 
 /// A chat's newest result on its daemon (6.5): its worktree committed on
 /// the landing base, after a run that ended with `outcome`.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatResult {
     pub dialog_id: String,
@@ -44,6 +44,13 @@ pub struct ChatResult {
     /// as a local chat's does, without going back to be checked (6.6).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unchecked: bool,
+    /// The branch a server that pushes its results (autopilot-plan D15,
+    /// H04) pushed it to, on the project's remote, and the pull request it
+    /// opened for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
 }
 
 /// What a sync did (6.7).

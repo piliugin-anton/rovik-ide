@@ -1805,7 +1805,19 @@ async fn deliver(
             add_stage(core, dialog_id, &record).await?
         }
     };
-    let d = delivery_of(core, dialog_id, records).await?;
+    let d = match report_facts(core, dialog_id).await? {
+        Some(mut facts) => {
+            push_result(core, dialog_id, &mut facts).await;
+            Delivery {
+                status: facts.status,
+                outcome: facts.outcome,
+                delivered: facts.delivered,
+                partial: facts.partial,
+                summary: facts.delivery,
+            }
+        }
+        None => delivery_of(core, dialog_id, records).await?,
+    };
     end_stage(core, dialog_id, &id, |r| {
         r.status = d.status;
         r.outcome = Some(d.outcome);
@@ -1813,6 +1825,118 @@ async fn deliver(
     })
     .await?;
     Ok(())
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Delivery on a server (D15, H04)
+ * ---------------------------------------------------------------------------
+ */
+
+/// What the IDE asks of a server that pushes its results: the chat's
+/// result, named as its task is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeliverAsk {
+    pub dialog_id: String,
+    /// The task: the id of the message that started it.
+    pub task: String,
+    /// The task's name: the branch's and the pull request's title.
+    pub title: String,
+    /// The pull request's description until the report is written.
+    pub body: String,
+}
+
+/// What became of a push: the branch it went to, the pull request it
+/// opened, and why it didn't go (no branch) or only partly (no pull
+/// request).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pushed {
+    pub branch: Option<String>,
+    pub pr: Option<String>,
+    pub problem: Option<String>,
+}
+
+pub type Delivering<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// A server's delivery of its tasks' results (the daemon's `Results`),
+/// set with `AgentState::set_deliverer`.
+pub trait Deliverer: Send + Sync {
+    /// Pushes the chat's result, and opens its pull request when asked.
+    /// None: the server keeps its results for their computer.
+    fn push(&self, ask: DeliverAsk) -> Delivering<Option<Pushed>>;
+    /// The pull request's description, once the report is written.
+    fn describe(&self, dialog_id: String, pr: String, report: String) -> Delivering<()>;
+}
+
+/// The first `# ` heading of a plan: its title.
+pub fn plan_title(plan: &str) -> Option<String> {
+    let line = plan.lines().map(str::trim).find(|l| l.starts_with("# "))?;
+    let title = line.trim_start_matches('#').trim();
+    (!title.is_empty()).then(|| shortened(title, 72))
+}
+
+/// `text` cut to `max` characters, with "…" when it was cut.
+fn shortened(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
+        None => text.to_string(),
+    }
+}
+
+/// D15: on a server that pushes its results, a landable one goes to its
+/// branch, and its pull request opens, before the report is written: the
+/// delivery's line says where, or why it didn't go. A push that fails
+/// leaves the result waiting on the server for its computer, as before,
+/// and the delivery failed.
+pub(super) async fn push_result(core: &Core, dialog_id: &str, facts: &mut ReportFacts) {
+    let Some(deliverer) = core.agents.deliverer() else {
+        return;
+    };
+    if !facts.delivered || facts.partial {
+        return;
+    }
+    let ask = DeliverAsk {
+        dialog_id: dialog_id.to_string(),
+        task: facts.task.clone(),
+        title: facts.title.clone(),
+        body: super::report::pull_request_body(facts),
+    };
+    let Some(pushed) = deliverer.push(ask).await else {
+        return;
+    };
+    super::log::write(
+        core,
+        json!({
+            "event": "delivery",
+            "dialogId": dialog_id,
+            "branch": pushed.branch,
+            "pr": pushed.pr,
+            "problem": pushed.problem,
+        }),
+    );
+    match (&pushed.branch, &pushed.problem) {
+        (Some(branch), problem) => {
+            let mut line = format!("Delivered: pushed to `{branch}`");
+            if let Some(pr) = &pushed.pr {
+                line.push_str(&format!(", pull request {pr}"));
+            }
+            if let Some(problem) = problem {
+                line.push_str(&format!("; {}", lower_first(problem.trim_end_matches('.'))));
+            }
+            facts.delivery = line;
+        }
+        (None, Some(problem)) => {
+            facts.delivered = false;
+            facts.status = Status::Failed;
+            facts.delivery = format!(
+                "Not delivered: {}; the result waits on the server for its computer",
+                lower_first(problem.trim_end_matches('.'))
+            );
+        }
+        (None, None) => {}
+    }
+    facts.branch = pushed.branch;
+    facts.pr = pushed.pr;
 }
 
 /// One check of the task's last round, for its report.
@@ -1829,6 +1953,12 @@ pub struct CheckLine {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportFacts {
+    /// The task: the id of the message that started it.
+    #[serde(skip)]
+    pub task: String,
+    /// The task's name: its plan's title, else its message's first line.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
     pub outcome: String,
     /// How it ended, in a line: "Its checks pass", or why not.
     pub ending: String,
@@ -1836,6 +1966,12 @@ pub struct ReportFacts {
     pub partial: bool,
     /// What became of the result: the delivery's line.
     pub delivery: String,
+    /// On a server that pushes its results (D15, H04): the branch it went
+    /// to on the project's remote, and its pull request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
     pub assumptions: Vec<String>,
     pub criteria: Vec<String>,
     pub verdicts: Vec<super::acceptance::Verdict>,
@@ -1870,6 +2006,20 @@ pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportF
         None => None,
     };
     let criteria = plan.as_deref().and_then(plan::criteria);
+    let task = records[0].record.task.clone();
+    let title = match plan.as_deref().and_then(plan_title) {
+        Some(title) => title,
+        None => {
+            let id = task.clone();
+            let body = core.db.read(move |c| store::get_message_body(c, &id)).await;
+            let body = body.unwrap_or_default();
+            body.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(|l| shortened(l, 72))
+                .unwrap_or_default()
+        }
+    };
     let verdicts: Vec<super::acceptance::Verdict> = rows("acceptance")
         .await?
         .iter()
@@ -1935,11 +2085,15 @@ pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportF
         .filter_map(|r| r.record.spent)
         .fold(Spent::default(), Spent::plus);
     Ok(Some(ReportFacts {
+        task,
+        title,
         outcome: d.outcome,
         ending,
         delivered: d.delivered,
         partial: d.partial,
         delivery: d.summary,
+        branch: None,
+        pr: None,
         assumptions: criteria
             .as_ref()
             .map(|c| c.assumptions.clone())

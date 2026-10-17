@@ -154,6 +154,11 @@ pub enum Request {
         settings: Option<Value>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         excludes: Vec<String>,
+        /// Where a server that pushes its results pushes them (D15, H04):
+        /// the project's `origin` as an SSH address, without credentials
+        /// (`autopilot::push_url`). Sent to such a server only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote: Option<String>,
     },
     /// Brings the chat's worktree to a snapshot pushed before it (6.7). A
     /// chat without one gets it there, on its own branch (6.4), with

@@ -120,6 +120,15 @@ pub fn report_brief(f: &ReportFacts) -> String {
     )
 }
 
+/// A pushed result's pull request's description (D15, H04) until the
+/// report is written: the IDE's facts.
+pub fn pull_request_body(f: &ReportFacts) -> String {
+    format!(
+        "{}\n\n*Rovik's Autopilot wrote this from its records; the task's report replaces it once it's written.*",
+        facts_text(f)
+    )
+}
+
 /// The report the IDE writes itself, when the model's turn failed.
 pub fn fallback_report(f: &ReportFacts) -> String {
     format!(
@@ -151,9 +160,15 @@ impl Run {
         let Some(stage) = self.stage.clone() else {
             return Ok("done".into());
         };
-        let Some(facts) = super::autopilot::report_facts(&self.core, &self.dialog_id).await? else {
+        let Some(mut facts) = super::autopilot::report_facts(&self.core, &self.dialog_id).await?
+        else {
             return Ok("done".into());
         };
+        // D15: a server that pushes its results pushes this one first, so
+        // the report can say where it went.
+        if !self.stopped() {
+            super::autopilot::push_result(&self.core, &self.dialog_id, &mut facts).await;
+        }
         let mut reference = None;
         if !self.stopped() {
             self.add_harness(report_brief(&facts), "report").await?;
@@ -171,6 +186,13 @@ impl Run {
             meta["report"] = json!(facts);
             if by_ide {
                 meta["report"]["byIde"] = json!(true);
+            }
+            // The pull request's description: the report, once written.
+            let described = facts.pr.clone().zip(self.core.agents.deliverer());
+            if let Some((pr, deliverer)) = described {
+                deliverer
+                    .describe(self.dialog_id.clone(), pr, content.clone())
+                    .await;
             }
             self.finalize(&turn.message_id, content, Vec::new(), Some(meta), None)
                 .await?;
@@ -209,6 +231,10 @@ mod tests {
 
     fn facts() -> ReportFacts {
         ReportFacts {
+            task: "u1".into(),
+            title: "Greet".into(),
+            branch: None,
+            pr: None,
             outcome: "unmet".into(),
             ending: "A criterion is still unmet after the last acceptance check".into(),
             delivered: false,

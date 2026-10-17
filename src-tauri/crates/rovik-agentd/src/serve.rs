@@ -125,6 +125,10 @@ async fn run(
     core.agents
         .set_markers_resolver(Arc::new(move |chat| results::marked_left(&marks, chat)));
     core.agents.set_on_server();
+    // A delivered task's result goes to its branch when its computer asked
+    // (D15, H04).
+    core.agents
+        .set_deliverer(Arc::new(crate::deliver::Pushing(results.clone())));
     // The heavy-work slots, again whenever other users' daemons start or
     // stop.
     tokio::spawn(apply_slots(limits.admin, limits.user_slots));

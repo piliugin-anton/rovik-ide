@@ -18,6 +18,7 @@ use git2::Oid;
 use rovik_core::chat_db::projects;
 use rovik_core::overlay::chats;
 use rovik_core::{project_profile, rt};
+use rovik_protocol::autopilot::{push_url, Delivery};
 use rovik_protocol::work::{ChatSync, Project, SyncState, Synced};
 use rovik_protocol::Request;
 use serde::Serialize;
@@ -282,6 +283,12 @@ impl Remote {
         let summary = self.core.db.read(move |c| projects::summary(c, &id));
         let name = summary.await?.map(|s| s.name).unwrap_or_default();
         let settings = settings(&self.core.paths.config_dir, &snapshot.root);
+        // A host that pushes its results (D15, H04) is told where: the
+        // project's `origin`, as an SSH address without credentials.
+        let remote = match self.autonomy_config(host).delivery {
+            Delivery::PushBranch { .. } => origin_of(&snapshot.root).as_deref().and_then(push_url),
+            Delivery::KeepOnHost => None,
+        };
         let ensure = Request::ProjectEnsure {
             project: Project {
                 id: snapshot.project.clone(),
@@ -290,6 +297,7 @@ impl Remote {
             },
             settings,
             excludes: snapshot.excludes.clone(),
+            remote,
         };
         client.request::<()>(ensure).await.map_err(|f| f.message)?;
         self.lock().ensured.insert(key);
@@ -301,6 +309,13 @@ impl Remote {
 /// left the chat with the older copy.
 fn applied(state: SyncState) -> bool {
     matches!(state, SyncState::Synced | SyncState::Marked)
+}
+
+/// The URL of the `origin` remote of the repository `root` is in, if any.
+fn origin_of(root: &Path) -> Option<String> {
+    let repo = git2::Repository::discover(root).ok()?;
+    let origin = repo.find_remote("origin").ok()?;
+    origin.url().ok().map(str::to_string)
 }
 
 /// The project's settings here, when it has any.

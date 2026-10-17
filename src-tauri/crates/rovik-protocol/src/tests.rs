@@ -103,6 +103,8 @@ fn result(pending: Option<&str>) -> ChatResult {
         pending: pending.map(String::from),
         marked: Vec::new(),
         unchecked: false,
+        branch: None,
+        pr: None,
     }
 }
 
@@ -520,6 +522,7 @@ fn every_request_round_trips() {
                 },
                 settings: Some(json!({ "checks": ["npm test"] })),
                 excludes: vec!["*.local".into()],
+                remote: Some("git@github.com:acme/app.git".into()),
             },
             Request::ProjectEnsure {
                 project: Project {
@@ -529,6 +532,7 @@ fn every_request_round_trips() {
                 },
                 settings: None,
                 excludes: Vec::new(),
+                remote: None,
             },
             Request::WorkSync {
                 dialog_id: "d".into(),

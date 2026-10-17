@@ -64,7 +64,7 @@ export function StageIcon(props: { status: StageShown }) {
 }
 
 /** A summary's `code` spans shown as code (commands and files: S03, S04). */
-function summaryParts(text: string) {
+export function summaryParts(text: string) {
   const parts = text.split('`');
   // An unmatched backtick: as written.
   if (parts.length % 2 === 0) return text;

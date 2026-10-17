@@ -209,6 +209,8 @@ struct Inner {
     markers: Option<MarkersResolver>,
     /// The runs work in a server's worktrees (D8, server.rs).
     on_server: bool,
+    /// What the server does with a task's result it delivers (D15, H04).
+    deliverer: Option<Arc<dyn autopilot::Deliverer>>,
     runs: HashMap<String, RunControl>,
     /// Keyed by chat and tool call: providers number calls per reply
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
@@ -374,6 +376,16 @@ impl AgentState {
 
     pub fn on_server(&self) -> bool {
         self.lock().on_server
+    }
+
+    /// A delivered task's result goes through `deliverer` from now on (D15,
+    /// H04): a daemon's, which pushes it when its computer asked.
+    pub fn set_deliverer(&self, deliverer: Arc<dyn autopilot::Deliverer>) {
+        self.lock().deliverer = Some(deliverer);
+    }
+
+    pub fn deliverer(&self) -> Option<Arc<dyn autopilot::Deliverer>> {
+        self.lock().deliverer.clone()
     }
 
     /// Keeps a run's fix-round state until the user starts its checks

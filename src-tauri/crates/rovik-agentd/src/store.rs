@@ -51,6 +51,10 @@ pub struct ProjectState {
     /// Its settings (K03), for each worktree of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<Value>,
+    /// Where its tasks' results are pushed, when its computer has this
+    /// server push them (D15, H04): its `origin`, as an SSH address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -308,8 +312,6 @@ impl Store {
 
     /// What the chat's computer has this server keep (H02): the default
     /// when it has nothing kept, or the chat isn't known.
-    // Read by the delivery (H04) and the notice (H06).
-    #[allow(dead_code)]
     pub fn autonomy_of(&self, dialog_id: &str) -> AutonomyConfig {
         let inner = self.lock();
         let computer = inner.state.chats.get(dialog_id).map(|c| &c.computer);
@@ -353,13 +355,22 @@ impl Store {
     }
 
     /// The project as its computer last described it (6.4).
-    pub fn ensure_project(&self, project: &Project, settings: Option<Value>) -> Result<(), String> {
+    /// A `ProjectEnsure`'s project. A remote it doesn't name stays as it was:
+    /// only a computer that has this server push its results names one.
+    pub fn ensure_project(
+        &self,
+        project: &Project,
+        settings: Option<Value>,
+        remote: Option<String>,
+    ) -> Result<(), String> {
         let _writing = self.writing();
         let mut inner = self.lock();
+        let known = inner.state.projects.get(&project.id);
         let state = ProjectState {
             name: project.name.clone(),
             subpath: project.subpath.clone(),
             settings,
+            remote: remote.or_else(|| known.and_then(|p| p.remote.clone())),
         };
         if inner.state.projects.get(&project.id) == Some(&state) {
             return Ok(());
@@ -435,18 +446,45 @@ impl Store {
     /// same result again keeps its number.
     pub fn result_made(&self, dialog_id: &str, mut result: ChatResult) -> ChatResult {
         self.change(dialog_id, |chat| {
+            // Where it was pushed (H04) is the same result's still.
             let unnumbered = |r: &ChatResult| ChatResult {
                 seq: 0,
+                branch: None,
+                pr: None,
                 ..r.clone()
             };
             result.seq = match &chat.result {
-                Some(last) if unnumbered(last) == unnumbered(&result) => last.seq,
+                Some(last) if unnumbered(last) == unnumbered(&result) => {
+                    result.branch = last.branch.clone();
+                    result.pr = last.pr.clone();
+                    last.seq
+                }
                 Some(last) => last.seq + 1,
                 None => 1,
             };
             chat.result = Some(result.clone());
         });
         result
+    }
+
+    /// The chat's newest result went to `branch` on its project's remote,
+    /// with its pull request `pr` (H04): the same result, numbered as it
+    /// was. None: the chat has no result.
+    pub fn result_delivered(
+        &self,
+        dialog_id: &str,
+        branch: &str,
+        pr: Option<&str>,
+    ) -> Option<ChatResult> {
+        let mut delivered = None;
+        self.change(dialog_id, |chat| {
+            if let Some(result) = &mut chat.result {
+                result.branch = Some(branch.to_string());
+                result.pr = pr.map(str::to_string);
+                delivered = Some(result.clone());
+            }
+        });
+        delivered
     }
 
     /// Conflict markers went into `files` for the chat to settle: they're
@@ -488,6 +526,18 @@ impl Store {
 
     /// The project's folder in the chat's worktree, from its root: "" when
     /// the project is its repository's root folder (K31).
+    /// Where the chat's project's results are pushed (H04), if known.
+    pub fn remote_of(&self, dialog_id: &str) -> Option<String> {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id)?;
+        inner
+            .state
+            .projects
+            .get(chat.project.as_ref()?)?
+            .remote
+            .clone()
+    }
+
     pub fn subpath_of(&self, dialog_id: &str) -> String {
         let inner = self.lock();
         let chat = inner.state.chats.get(dialog_id);

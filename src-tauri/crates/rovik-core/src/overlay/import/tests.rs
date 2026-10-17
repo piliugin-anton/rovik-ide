@@ -102,6 +102,8 @@ fn told(commit: Oid, marked: &[&str]) -> ChatResult {
         pending: None,
         marked: marked.iter().map(|m| m.to_string()).collect(),
         unchecked: false,
+        branch: None,
+        pr: None,
     }
 }
 

@@ -458,6 +458,86 @@ async fn a_project_chats_start_names_no_local_folder() {
     assert_eq!(starts(&fake)[0].root.as_deref(), Some("/home/me/project"));
 }
 
+/// H04: a host that pushes its results is told the project's remote with
+/// the project, as an SSH address without the credentials its `origin`
+/// has; once it keeps them for the computer, the next sync tells it no
+/// remote.
+#[tokio::test]
+async fn a_host_that_pushes_is_told_the_projects_remote() {
+    use rovik_protocol::autopilot::Delivery;
+    let app = App::new();
+    let root = app.dir.0.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo = git2::Repository::init(&root).unwrap();
+    repo.remote("origin", "https://me:secret@github.com/acme/app.git")
+        .unwrap();
+    std::fs::write(root.join("a.txt"), "a\n").unwrap();
+    let at = root.clone();
+    app.core
+        .db
+        .write(move |c| rovik_core::chat_db::projects::ensure(c, "p1", "project", &at))
+        .await
+        .unwrap();
+    app.chat("chat", Some("p1"), Vec::new()).await;
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::PROJECTS.into(), features::AUTONOMY.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    remote.set_policy(HOST, ApprovalPolicy::Autonomous);
+    remote.set_autonomy(
+        HOST,
+        AutonomySettings {
+            delivery: Delivery::PushBranch {
+                deploy_key: "~/.ssh/rovik_deploy".into(),
+                open_pr: false,
+            },
+            ..Default::default()
+        },
+    );
+    let ensured = |fake: &Fake| -> Vec<Option<String>> {
+        let requests = fake.requests.lock().unwrap();
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::ProjectEnsure { remote, .. } => Some(remote.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let send = |id: &str| {
+        let mut request = start(
+            "chat",
+            StartKind::Send {
+                message: UserMessage {
+                    id: id.into(),
+                    content: "Go".into(),
+                    meta: None,
+                    attachments: Vec::new(),
+                },
+            },
+            None,
+        );
+        request.root = Some(root.to_string_lossy().into_owned());
+        request
+    };
+    remote.start(send("u1")).await.unwrap();
+    assert_eq!(
+        ensured(&fake),
+        [Some("git@github.com:acme/app.git".to_string())]
+    );
+    let shown = format!("{:?}", fake.requests.lock().unwrap());
+    assert!(!shown.contains("secret"), "no credentials go: {shown}");
+
+    remote.set_policy(HOST, ApprovalPolicy::AiReviewerThenMe);
+    std::fs::write(root.join("a.txt"), "b\n").unwrap();
+    remote.start(send("u2")).await.unwrap();
+    assert_eq!(
+        ensured(&fake),
+        [Some("git@github.com:acme/app.git".to_string()), None],
+        "the project again, with no remote"
+    );
+}
+
 /// K50: a Continue doesn't send the request's text again when it's the
 /// stored one, local paths or not; other text still goes.
 #[tokio::test]

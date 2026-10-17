@@ -30,6 +30,7 @@ pub async fn ensure_project(
     project: Project,
     settings: Option<Value>,
     excludes: Vec<String>,
+    remote: Option<String>,
 ) -> Result<Response, Fail> {
     let (projects, id) = (daemon.projects.clone(), project.id.clone());
     let prepared = rt::spawn_blocking(move || {
@@ -45,7 +46,7 @@ pub async fn ensure_project(
     row.await.map_err(internal)?;
     daemon
         .store
-        .ensure_project(&project, settings)
+        .ensure_project(&project, settings, remote)
         .map_err(internal)?;
     Ok(Response::Done)
 }

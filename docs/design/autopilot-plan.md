@@ -1431,3 +1431,60 @@ T05 depends most on the environment it meets.
   run when the daemon starts again: `recovery::after_crash` can't tell a
   run that ended from one cut between steps, so the stage is done again.
   Work is redone, nothing is lost.
+
+### H04: delivery by a push
+
+- **When**: at the task's delivery, not after each implementation run: a
+  task may implement several rounds (acceptance, S08), each committed as
+  the chat's result, and only the last is the task's. The core's
+  Deliver stage asks the server's `Deliverer` (set by the daemon, like
+  its config resolver) before the report is written, for a landable
+  result only (`done`, `verified`; not a partial one); the records-only
+  delivery (a resume after a crash at it) asks too. The server waits for
+  the last run's commit, commits the worktree again (the same result,
+  numbered as it was, when nothing changed), pushes it, opens the pull
+  request, and records the branch and the PR on the chat's result,
+  which goes out again in a `ResultReady` (same number: a client passes
+  over it, and lands nothing twice). The report's facts (`meta.report`)
+  have the branch and the PR, the delivery's line says where it went,
+  and the report's brief has that line; the PR's description is the
+  IDE's facts until the report is written, then the report
+  (`gh pr edit`).
+- **The remote comes with `ProjectEnsure`**, not `StartRequest`
+  (`deliver_to`): it's the project's, the daemon keeps it with the
+  project (`ProjectState.remote`), and the start request has 31 struct
+  literals a field would touch. The client sends it only to a host that
+  pushes, and the next sync after a change of the host's policy or block
+  ensures the project again. It's the `origin` of the project's
+  repository as an SSH address (`push_url`): `https://` becomes
+  `git@host:path`, credentials and port left behind; a `file://` URL or
+  a path stays (a remote on the server itself).
+- **The system `git` pushes**, never forced, nothing prompting
+  (`GIT_TERMINAL_PROMPT=0`); for an SSH remote, `GIT_SSH_COMMAND` runs
+  `ssh -i <key>` with `IdentitiesOnly`, `BatchMode` and
+  `StrictHostKeyChecking=accept-new`. git2 over SSH would need libssh2
+  and OpenSSL in the daemon's static musl build. The host's key is
+  trusted on first use (`accept-new`), in the daemon user's
+  `known_hosts`. The key's path is kept, never its contents; `~/` is the
+  daemon's home.
+- **The branch** is `rovik/` + the task's title (its plan's, else its
+  message's first line) in lowercase words joined by dashes, at most 40
+  characters, + the first six characters of the task's id: two tasks of
+  the same name don't meet.
+- **The pull request**: `gh pr create --repo <repo> --head <branch>`,
+  into the repository's default branch, `<repo>` being the remote's
+  host and the last two folders of its path. `gh` missing, not logged
+  in, or failing: the branch is still delivered, and the delivery's line
+  adds why there's no pull request.
+- **A push that fails** is a failed delivery: its record says "Not
+  delivered: the push to … failed: …; the result waits on the server for
+  its computer", with the remote and git's own words, the task's outcome
+  stays, and the result reaches the computer as before.
+- **The branch goes on from the project's history** when the snapshot
+  did (the shadow's parent is the project's `HEAD`, 6.4); a project sent
+  without its history gives a branch that shares none with the remote,
+  and a pull request the forge can't merge.
+- **Tests**: the daemon pushes to a local bare remote over a file URL,
+  and over SSH to the tests' russh server with the deploy key, a `gh`
+  that keeps what it's asked standing in for the real one; a push to a
+  remote that isn't there fails the delivery.

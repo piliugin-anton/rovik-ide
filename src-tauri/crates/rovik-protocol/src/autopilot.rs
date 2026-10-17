@@ -110,6 +110,48 @@ pub fn url_for_logs(url: &str) -> String {
     }
 }
 
+/// Where a server pushes a task's result (D15, H04), from the project's
+/// `origin`: an SSH address, which the deploy key opens. An `https://`
+/// (or `http://`, `git://`) remote becomes `git@<host>:<path>`, as the
+/// forges take it, its credentials and port left behind; an SSH address
+/// keeps its user and loses a password; a `file://` URL or a path, a
+/// remote on the server itself, stays. None: nothing to push to.
+pub fn push_url(origin: &str) -> Option<String> {
+    let origin = origin.trim();
+    if origin.is_empty() || origin.contains(char::is_whitespace) {
+        return None;
+    }
+    if origin.starts_with("file://") || origin.starts_with('/') {
+        return Some(origin.to_string());
+    }
+    if let Some(rest) = origin.strip_prefix("ssh://") {
+        let (authority, path) = rest.split_once('/')?;
+        let user = authority.rsplit_once('@').map(|(user, _)| user);
+        let host = authority.rsplit('@').next()?;
+        let user = user.map(|u| u.split(':').next().unwrap_or(u));
+        return Some(match user {
+            Some(user) if !user.is_empty() => format!("ssh://{user}@{host}/{path}"),
+            _ => format!("ssh://{host}/{path}"),
+        });
+    }
+    for scheme in ["https://", "http://", "git://"] {
+        if let Some(rest) = origin.strip_prefix(scheme) {
+            let (authority, path) = rest.split_once('/')?;
+            let host = authority.rsplit('@').next()?;
+            let host = host.split(':').next()?;
+            let path = path.trim_end_matches('/');
+            if host.is_empty() || path.is_empty() {
+                return None;
+            }
+            return Some(format!("git@{host}:{path}"));
+        }
+    }
+    // `user@host:path`, as scp writes it.
+    let (authority, path) = origin.split_once(':')?;
+    let fine = !authority.is_empty() && !path.is_empty() && !authority.contains('/');
+    fine.then(|| origin.to_string())
+}
+
 /// The notify URL as `Debug` shows it: with `url_for_logs`.
 struct LoggedUrl<'a>(&'a Option<String>);
 
@@ -317,6 +359,46 @@ mod autonomy_tests {
             "https://example.com/…"
         );
         assert_eq!(url_for_logs("example.com/token"), "(a URL)");
+    }
+
+    /// H04: what a server pushes to, from the project's `origin`: an SSH
+    /// address, no credentials.
+    #[test]
+    fn the_push_url_is_the_origin_as_ssh_without_credentials() {
+        let cases = [
+            (
+                "git@github.com:acme/app.git",
+                Some("git@github.com:acme/app.git"),
+            ),
+            (
+                "https://github.com/acme/app.git",
+                Some("git@github.com:acme/app.git"),
+            ),
+            (
+                "https://me:tok@github.com/acme/app",
+                Some("git@github.com:acme/app"),
+            ),
+            (
+                "https://gitlab.example.com:8443/team/app.git/",
+                Some("git@gitlab.example.com:team/app.git"),
+            ),
+            (
+                "ssh://git@host:2222/srv/app.git",
+                Some("ssh://git@host:2222/srv/app.git"),
+            ),
+            (
+                "ssh://me:pw@host/srv/app.git",
+                Some("ssh://me@host/srv/app.git"),
+            ),
+            ("file:///srv/git/app.git", Some("file:///srv/git/app.git")),
+            ("/srv/git/app.git", Some("/srv/git/app.git")),
+            ("", None),
+            ("https://github.com", None),
+            ("not a url", None),
+        ];
+        for (origin, expected) in cases {
+            assert_eq!(push_url(origin).as_deref(), expected, "{origin}");
+        }
     }
 
     #[test]

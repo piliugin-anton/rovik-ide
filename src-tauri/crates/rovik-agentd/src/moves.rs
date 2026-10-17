@@ -83,10 +83,11 @@ pub async fn import(
         name: project.name.clone(),
         subpath: project.subpath.clone(),
         settings: bundle.settings.clone(),
+        remote: None,
     };
     daemon
         .store
-        .ensure_project(&project, bundle.settings.clone())
+        .ensure_project(&project, bundle.settings.clone(), None)
         .map_err(internal)?;
     let at = (project.id.as_str(), &state);
     let (worktree, root) = work::new_worktree(daemon, &chat, at, base, changes, excludes).await?;

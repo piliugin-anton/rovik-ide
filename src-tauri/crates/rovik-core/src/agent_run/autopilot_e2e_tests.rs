@@ -3388,6 +3388,136 @@ async fn a_task_ends_with_its_report_from_the_ides_facts() {
     assert_eq!(log_lines(&h, "report").await.len(), 1);
 }
 
+/// A server's delivery in these tests (H04): what it was asked, what it
+/// answers, and the descriptions it was given.
+struct FakeDelivery {
+    answer: super::autopilot::Pushed,
+    asked: std::sync::Mutex<Vec<super::autopilot::DeliverAsk>>,
+    described: std::sync::Mutex<Vec<(String, String, String)>>,
+}
+
+impl super::autopilot::Deliverer for FakeDelivery {
+    fn push(
+        &self,
+        ask: super::autopilot::DeliverAsk,
+    ) -> super::autopilot::Delivering<Option<super::autopilot::Pushed>> {
+        self.asked.lock().unwrap().push(ask);
+        let answer = self.answer.clone();
+        Box::pin(async move { Some(answer) })
+    }
+
+    fn describe(
+        &self,
+        dialog_id: String,
+        pr: String,
+        report: String,
+    ) -> super::autopilot::Delivering<()> {
+        self.described.lock().unwrap().push((dialog_id, pr, report));
+        Box::pin(async {})
+    }
+}
+
+/// A verified task on a server whose delivery answers `answer`: the
+/// delivery's record, the report's facts, and the delivery.
+async fn delivered_on_a_server(
+    answer: super::autopilot::Pushed,
+) -> Option<(StageRecord, Value, std::sync::Arc<FakeDelivery>)> {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return None;
+    }
+    h.core.agents.set_on_server();
+    let delivery = std::sync::Arc::new(FakeDelivery {
+        answer,
+        asked: Default::default(),
+        described: Default::default(),
+    });
+    h.core.agents.set_deliverer(delivery.clone());
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TESTS_FIRST, tests_first_script(OK_TEST, OK_TEST_CODE)),
+            (ACCEPTANCE, vec![Reply::Text(SATISFIED)]),
+            (REPORT, vec![Reply::Text(THE_REPORT)]),
+        ],
+        script_with_plan(assuming_plan()),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let deliver = records.last().unwrap().clone();
+    assert_eq!(deliver.name, Stage::Deliver);
+    let messages = h.messages().await;
+    let facts = report_of(&messages).meta.as_ref().unwrap()["report"].clone();
+    Some((deliver, facts, delivery))
+}
+
+/// H04 (D15): on a server that pushes its results, the delivery pushes a
+/// landable result before the report is written: its record and the
+/// report's facts say where it went, the report's brief too, and the pull
+/// request gets the report as its description.
+#[tokio::test]
+async fn a_server_that_pushes_its_results_delivers_to_a_branch() {
+    let pr = "https://github.com/acme/app/pull/7";
+    let answer = super::autopilot::Pushed {
+        branch: Some("rovik/make-the-test-pass-a1b2c3".into()),
+        pr: Some(pr.into()),
+        problem: None,
+    };
+    let Some((deliver, facts, delivery)) = delivered_on_a_server(answer).await else {
+        return;
+    };
+    assert_eq!(deliver.status, Status::Done);
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("Delivered: pushed to `rovik/make-the-test-pass-a1b2c3`, pull request https://github.com/acme/app/pull/7")
+    );
+    assert_eq!(facts["branch"], "rovik/make-the-test-pass-a1b2c3");
+    assert_eq!(facts["pr"], pr);
+    assert_eq!(facts["title"], "Make the test pass");
+    assert_eq!(facts["delivered"], true);
+    let asked = delivery.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].title, "Make the test pass");
+    assert!(!asked[0].task.is_empty(), "the task's message");
+    assert!(
+        asked[0].body.contains("- How it ended: Its checks pass"),
+        "{}",
+        asked[0].body
+    );
+    let described = delivery.described.lock().unwrap().clone();
+    assert_eq!(described.len(), 1);
+    assert_eq!(described[0].1, pr);
+    assert_eq!(described[0].2, THE_REPORT);
+}
+
+/// H04: a push that fails is a failed delivery: its record says why, and
+/// the result waits on the server for its computer, as without a push.
+#[tokio::test]
+async fn a_push_that_fails_is_a_failed_delivery() {
+    let answer = super::autopilot::Pushed {
+        problem: Some("The push to git@github.com:… failed: Permission denied (publickey).".into()),
+        ..Default::default()
+    };
+    let Some((deliver, facts, delivery)) = delivered_on_a_server(answer).await else {
+        return;
+    };
+    assert_eq!(deliver.status, Status::Failed);
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("Not delivered: the push to git@github.com:… failed: Permission denied (publickey); the result waits on the server for its computer")
+    );
+    assert_eq!(
+        deliver.outcome.as_deref(),
+        Some("verified"),
+        "the task's outcome stays"
+    );
+    assert_eq!(facts["delivered"], false);
+    assert!(facts.get("branch").is_none());
+    assert!(delivery.described.lock().unwrap().is_empty());
+}
+
 /// S09 (D7): `unmet` is delivered as partial: in an isolated chat it isn't
 /// landed, it waits there with why, and the report starts with that.
 #[tokio::test]

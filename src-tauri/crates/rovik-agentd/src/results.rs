@@ -19,6 +19,7 @@
 //! merge puts back (6.1), is kept in `state.json` and held by the chat's
 //! `kept` ref, a commit of those blobs, so that no `git gc` prunes them.
 
+use crate::deliver;
 use crate::events::Events;
 use crate::store::{Kept, Place, Store};
 use git2::build::TreeUpdateBuilder;
@@ -26,10 +27,12 @@ use git2::{
     Delta, DiffFile, DiffFindOptions, FileMode, Index, ObjectType, Oid, Repository, ResetType,
     Signature,
 };
+use rovik_core::agent_run::autopilot::{DeliverAsk, Pushed};
 use rovik_core::agent_run::{self, pending_reason_in, project, AgentConfig};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
+use rovik_protocol::autopilot::Delivery;
 use rovik_protocol::packs::{kept_ref, result_ref};
 use rovik_protocol::work::{Change, ChatResult, WorkChange};
 use rovik_protocol::{Event, Fail, FailCode};
@@ -48,6 +51,10 @@ pub struct Results {
     /// One commit or move of a landing base at a time (a result, a landing,
     /// a sync): a result is always committed on the base as it is.
     base: tokio::sync::Mutex<()>,
+    /// The commits after a run's end not made yet, by chat, and when one
+    /// is: a delivery waits for its task's last (H04).
+    committing: std::sync::Mutex<std::collections::HashMap<String, usize>>,
+    committed: tokio::sync::Notify,
 }
 
 impl Results {
@@ -63,6 +70,8 @@ impl Results {
             store,
             events,
             base: tokio::sync::Mutex::new(()),
+            committing: Default::default(),
+            committed: tokio::sync::Notify::new(),
         })
     }
 
@@ -81,11 +90,117 @@ impl Results {
             return;
         }
         let (results, chat, outcome) = (self.clone(), dialog_id.to_string(), outcome.to_string());
+        self.counted(&chat, 1);
         rt::spawn(async move {
             if let Err(fail) = results.commit_after(&chat, &outcome, autopilot).await {
                 log::warn!("{chat}'s result wasn't committed: {fail}");
             }
+            results.counted(&chat, -1);
         });
+    }
+
+    /// One more (or one fewer) commit after a run's end of the chat to make.
+    fn counted(&self, dialog_id: &str, by: isize) {
+        let mut committing = self.committing.lock().unwrap_or_else(|e| e.into_inner());
+        let left = committing.get(dialog_id).copied().unwrap_or(0) as isize + by;
+        match left > 0 {
+            true => committing.insert(dialog_id.to_string(), left as usize),
+            false => committing.remove(dialog_id),
+        };
+        if by < 0 {
+            self.committed.notify_waiters();
+        }
+    }
+
+    /// Once the chat's runs' results are committed: none left to make.
+    async fn all_committed(&self, dialog_id: &str) {
+        loop {
+            let committed = self.committed.notified();
+            tokio::pin!(committed);
+            committed.as_mut().enable();
+            let left = {
+                let committing = self.committing.lock().unwrap_or_else(|e| e.into_inner());
+                committing.get(dialog_id).copied().unwrap_or(0)
+            };
+            if left == 0 {
+                return;
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(60), committed).await;
+        }
+    }
+
+    /// D15, H04: the chat's task delivered a landable result, which goes to
+    /// its branch on its project's remote when its computer has this server
+    /// push its results, and its pull request opens when it asked. None:
+    /// the computer keeps its results here. The result is the worktree as
+    /// it is now, committed (the same result when nothing changed since its
+    /// run's end); it reaches its computer as ever, with where it went.
+    pub async fn deliver(self: &Arc<Self>, ask: DeliverAsk) -> Option<Pushed> {
+        let chat = ask.dialog_id.as_str();
+        let Delivery::PushBranch {
+            deploy_key,
+            open_pr,
+        } = self.store.autonomy_of(chat).delivery
+        else {
+            return None;
+        };
+        let failed = |problem: String| {
+            Some(Pushed {
+                problem: Some(problem),
+                ..Pushed::default()
+            })
+        };
+        self.all_committed(chat).await;
+        let Some(last) = self.store.result_of(chat) else {
+            return failed(
+                "There's no result to push: this chat has no worktree on the server".into(),
+            );
+        };
+        let result = match self.commit_after(chat, &last.outcome, true).await {
+            Ok(result) => result,
+            Err(fail) => {
+                return failed(format!(
+                    "Its result couldn't be committed: {}",
+                    fail.message
+                ))
+            }
+        };
+        let Some(remote) = self.store.remote_of(chat) else {
+            return failed(
+                "The project has no remote to push to: its `origin` wasn't set on the computer it came from"
+                    .into(),
+            );
+        };
+        let worktree = match self.worktree(chat) {
+            Ok((place, _)) => place.worktree,
+            Err(fail) => return failed(fail.message),
+        };
+        let branch = deliver::branch_name(&ask.title, &ask.task);
+        let pushed = deliver::push(&worktree, &remote, &result.commit, &branch, &deploy_key).await;
+        if let Err(e) = pushed {
+            log::warn!("chat {chat}: the push of {branch} to {remote} failed: {e}");
+            return failed(format!("The push to {remote} failed: {e}"));
+        }
+        log::info!("chat {chat}: its result went to {branch} on {remote}");
+        let (pr, problem) = match open_pr {
+            false => (None, None),
+            true => match deliver::open_pull_request(&remote, &branch, &ask.title, &ask.body).await
+            {
+                Ok(url) => (Some(url), None),
+                Err(e) => {
+                    log::warn!("chat {chat}: no pull request for {branch}: {e}");
+                    (None, Some(format!("No pull request: {e}")))
+                }
+            },
+        };
+        if let Some(result) = self.store.result_delivered(chat, &branch, pr.as_deref()) {
+            self.events.chat(chat, Event::ResultReady(result));
+        }
+        Some(Pushed {
+            branch: Some(branch),
+            pr,
+            problem,
+        })
     }
 
     /// Commits the chat's worktree as its result, after a run that ended
@@ -133,6 +248,8 @@ impl Results {
                 .or_else(|| pending_reason_in(outcome, autopilot)),
             marked,
             unchecked: !checks,
+            branch: None,
+            pr: None,
         };
         let result = self.store.result_made(dialog_id, made);
         self.events
