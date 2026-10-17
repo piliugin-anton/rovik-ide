@@ -1123,6 +1123,57 @@ async fn a_plan_without_criteria_goes_back_and_its_review_checks_them() {
     );
 }
 
+/// S02 (D10): the plan review's high finding, then follow-ups that can't
+/// report (their model fails). Nothing found the finding resolved, so no
+/// plan is saved past it: after the last review the plan is blocked,
+/// never implemented.
+#[tokio::test]
+async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
+    let h = task_project().await;
+    let high = "## Findings\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`\n   \
+        - Scenario: the test still fails after the change.\n   \
+        - Fix: read `check.js` and change the file it reads.\n   \
+        - Confidence: confirmed";
+    let answer =
+        json!([{ "finding": 1, "action": "not_a_problem", "note": "check.js reads ok.txt" }]);
+    let submit = |id: &'static str| Reply::Call {
+        id,
+        name: "submit_plan",
+        args: json!({ "plan": TASK_PLAN, "responses": answer }),
+    };
+    let failed = Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}");
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(high), failed])],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            submit("p2"),
+            submit("p3"),
+            Reply::Text("The plan is blocked."),
+        ],
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ],
+        "{records:#?}"
+    );
+    assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
+    assert_eq!(
+        records[1].summary.as_deref(),
+        Some("Blocked after 3 reviews: 1 high finding open")
+    );
+}
+
 /// S02 (4.2): the plan review's high finding the planner never fixes: an
 /// Autopilot task's three reviews, then the plan is blocked: never saved,
 /// never implemented, the task ending `plan-blocked`. A submit after that
@@ -3377,6 +3428,56 @@ fn answer(id: &'static str, status: &str, note: &str) -> Reply {
         name: "answer_review",
         args: json!({ "responses": [{ "finding": 1, "status": status, "note": note }] }),
     }
+}
+
+/// S06 (D10): a high finding the follow-up holds open, then the run's last
+/// review can't report (its model fails). Nothing found the finding
+/// resolved, so it's open still: the task ends `review-open`, never checked
+/// and delivered as if the review had found nothing.
+#[tokio::test]
+async fn a_last_review_that_cant_report_leaves_its_high_finding_open() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.extend([
+        answer("a1", "not-a-problem", "ok.txt is meant to say ok"),
+        Reply::Text("Answered the review."),
+        answer("a2", "not-a-problem", "the test reads ok, so ok is right"),
+        Reply::Text("Answered again."),
+    ]);
+    let not_resolved = "## Earlier findings\n\n- Earlier 1: not resolved — the word is still wrong\n\n## Findings\n\nNone.";
+    let failed = Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}");
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                CHANGE_REVIEW,
+                vec![Reply::Text(HIGH_FINDING), Reply::Text(not_resolved), failed],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(reviewed_task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let review = records.iter().find(|r| r.name == Stage::Review).unwrap();
+    assert_eq!(
+        (review.status, review.outcome.as_deref()),
+        (Status::Failed, Some("review-open")),
+        "{records:#?}"
+    );
+    assert_eq!(
+        review.summary.as_deref(),
+        Some("Blocked after 3 reviews: 1 high finding open")
+    );
+    assert_eq!(
+        records.last().unwrap().outcome.as_deref(),
+        Some("review-open")
+    );
+    assert!(verifications(&h.messages().await).is_empty(), "never checked");
 }
 
 /// S06 (4.6, D10): a high finding answered "not-a-problem" stays open while

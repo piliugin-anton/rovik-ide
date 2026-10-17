@@ -1349,8 +1349,18 @@ impl Run {
                 "ms": review["ms"],
             }),
         );
+        // D10, S02: in Autopilot, a follow-up that couldn't report found
+        // none of the findings it was to check resolved: they're open still,
+        // and no plan is saved past a high one.
+        let unchecked = self.in_autopilot()
+            && review["status"] == "skipped"
+            && earlier.iter().any(|f| f.severity == "high");
+        if unchecked {
+            serious = earlier.iter().filter(|f| f.serious()).cloned().collect();
+            review["findings"] = json!(serious);
+        }
         let status = review["status"].as_str().unwrap_or("").to_string();
-        let decision = if status == "skipped" {
+        let decision = if status == "skipped" && !unchecked {
             Decision::Save {
                 plan: plan.to_string(),
                 note: Some(format!(

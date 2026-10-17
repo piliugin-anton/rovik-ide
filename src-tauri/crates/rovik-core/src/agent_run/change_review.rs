@@ -1158,9 +1158,14 @@ impl Run {
         }
         let reported = matches!(review["status"].as_str(), Some("clean" | "findings"));
         if thorough {
-            last = !self
-                .change_review_progress
-                .another_round(serious.len(), round);
+            // T07: a review that couldn't report is no round of progress;
+            // the backstop's is the last all the same.
+            last = match reported {
+                true => !self
+                    .change_review_progress
+                    .another_round(serious.len(), round),
+                false => round >= cap,
+            };
         }
         // S06: what's still open is what the next review checks, by the
         // numbers the agent answers to. A review that couldn't report
@@ -1170,8 +1175,20 @@ impl Run {
             self.review_answers.clear();
             self.review_answer_nudges = 0;
         }
-        let high_open = serious.iter().filter(|f| f.severity == "high").count();
+        // D10: a last review that couldn't report found none of the high
+        // findings it was to check resolved: they're open still.
+        let unchecked: Vec<Finding> = match blocking && !reported {
+            true => (self.review_held.iter())
+                .filter(|f| f.severity == "high")
+                .cloned()
+                .collect(),
+            false => Vec::new(),
+        };
+        let high_open = serious.iter().filter(|f| f.severity == "high").count() + unchecked.len();
         if blocking && last && high_open > 0 && !self.stopped() {
+            if !unchecked.is_empty() {
+                review["findings"] = json!(unchecked);
+            }
             review["blocked"] = json!(true);
             review["open"] = json!(high_open);
             self.review_blocked = true;
