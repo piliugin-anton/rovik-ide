@@ -5915,6 +5915,76 @@ async fn a_retry_after_a_stop_implements_by_new_candidates() {
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }
 
+/// T06: the pick takes a's change (b changed nothing), but a's own run
+/// ended with an error, so the Pick fails with it. Its copies are used up
+/// then: a Retry does the work again, by new candidates, not a pick of
+/// copies that are gone; their round is delivered.
+#[tokio::test]
+async fn a_retry_after_a_pick_its_winner_failed_implements_again() {
+    let mut script = vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": TASK_PLAN }),
+        },
+        Reply::Text("Saved the plan."),
+    ];
+    // a writes ok.txt, then its provider refuses it.
+    script.extend(candidate_script(&[("ok.txt", "ok")]).into_iter().take(2));
+    script.push(Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}"));
+    // b changes nothing.
+    script.extend(candidate_script(&[]));
+    // The Retry's round: both write.
+    script.extend(candidate_script(&[("ok.txt", "ok"), ("notes.txt", "a\n")]));
+    script.extend(candidate_script(&[("ok.txt", "ok"), ("notes.txt", "b\n")]));
+    let Some((h, _, url)) = candidates_task(Vec::new(), script).await else {
+        return;
+    };
+    let records = delivered_slowly(&h).await;
+    let pick = records.iter().find(|r| r.name == Stage::Pick).unwrap();
+    assert_eq!(
+        (pick.status, pick.outcome.as_deref()),
+        (Status::Failed, Some("error")),
+        "{records:#?}"
+    );
+
+    let mut retry = h.request(&url, StartKind::Retry, Permissions::default());
+    retry.mode = Some("autopilot".into());
+    retry.isolate = Some(true);
+    retry.config = None;
+    h.start(retry).await;
+    let records = stages_until(&h, "the second delivery", |records| {
+        records
+            .iter()
+            .filter(|r| r.name == Stage::Deliver && r.status != Status::Running)
+            .count()
+            == 2
+    })
+    .await;
+    let rounds = |stage: Stage| -> Vec<(Status, u32)> {
+        records
+            .iter()
+            .filter(|r| r.name == stage)
+            .map(|r| (r.status, r.round))
+            .collect()
+    };
+    assert_eq!(
+        rounds(Stage::Implement),
+        [(Status::Done, 1), (Status::Done, 2)],
+        "{records:#?}"
+    );
+    assert_eq!(
+        rounds(Stage::Pick),
+        [(Status::Failed, 1), (Status::Done, 2)]
+    );
+    assert_eq!(
+        records.last().unwrap().outcome.as_deref(),
+        Some("verified"),
+        "{records:#?}"
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
 /// H07: a chat that moves to a host while its stage waits out the
 /// provider's rate limit goes on there: the wait's timer here starts
 /// nothing once it's over.

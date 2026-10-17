@@ -1236,11 +1236,24 @@ pub async fn stage_for(
     if !reopened {
         return Ok(None);
     }
-    let round = next_round(records.iter().map(|r| &r.record), failed.name);
+    // T06: a Pick that took its winner's change failed with that winner's
+    // work, and its copies are gone: the work is done again, not the pick.
+    let again = match failed.name {
+        Stage::Pick if super::candidates::took_winner(core, dialog_id, failed).await? => {
+            Stage::Implement
+        }
+        name => name,
+    };
+    let round = next_round(records.iter().map(|r| &r.record), again);
     // T05: an implementation by candidates is done by candidates again.
+    let candidates = records
+        .iter()
+        .rev()
+        .find(|r| r.record.name == again)
+        .map_or_else(Vec::new, |r| r.record.candidates.clone());
     let record = StageRecord {
-        candidates: failed.candidates.clone(),
-        ..StageRecord::running(&failed.task, failed.name, round, failed.effort)
+        candidates,
+        ..StageRecord::running(&failed.task, again, round, failed.effort)
     };
     record_run(core, dialog_id, &record).await.map(Some)
 }

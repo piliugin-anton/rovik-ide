@@ -1153,6 +1153,30 @@ async fn pick_of(
     }))
 }
 
+/// T06: whether the pick a Pick stage's record names (`reference`) is done
+/// with its candidates' copies: it took its winner's change, or found none
+/// to take, and the copies are gone. Its failure then was its winner's
+/// work's (`pick_stage`), which a Retry does again, not the pick.
+pub(super) async fn took_winner(
+    core: &Core,
+    dialog_id: &str,
+    pick: &StageRecord,
+) -> Result<bool, String> {
+    let Some(id) = pick.reference.clone() else {
+        return Ok(false);
+    };
+    let ids = vec![id];
+    let rows = core
+        .db
+        .read(move |c| store::messages_by_id(c, &ids))
+        .await?;
+    Ok(rows
+        .into_iter()
+        .find(|m| m.dialog_id == dialog_id)
+        .and_then(|m| serde_json::from_value::<PickRecord>(m.meta?.get("pick")?.clone()).ok())
+        .is_some_and(|row| row.adopted))
+}
+
 /// The candidate the task's pick took: its letter, its chat, its records.
 pub struct Winner {
     pub letter: String,
