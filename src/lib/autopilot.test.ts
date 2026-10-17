@@ -680,6 +680,10 @@ test('the pick’s headline and score lines: by score, by the judge, failed (T06
     'its run didn’t finish · 1 test written first passes · 0 checks pass · 1 finding open · 1 line changed'
   );
   assert.equal(scoreLine({ ...score, changed: false }), 'no change');
+  assert.equal(
+    scoreLine({ ...score, clean: false }),
+    'its run ended with a caveat · 2 tests written first pass · 1 check passes · no findings open · 12 lines changed'
+  );
 });
 
 test('the judge’s headline on tied candidates (T06)', () => {

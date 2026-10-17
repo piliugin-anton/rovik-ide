@@ -61,8 +61,8 @@ pub(super) use driver::{
 #[cfg(test)]
 pub(super) use driver::{crash_at, crashes, Crash};
 pub use driver::{resume, stage_for, Settings, DRIVER_BUSY};
-pub use outcome::finished;
 pub(super) use outcome::plural;
+pub use outcome::{clean, finished};
 #[cfg(test)]
 pub(super) use rate_limit::forget_rate_limit_wait;
 pub(super) use rate_limit::{rate_limit_armed, stop_waiting};

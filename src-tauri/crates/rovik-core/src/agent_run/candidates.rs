@@ -1057,6 +1057,11 @@ pub struct Score {
     pub changed: bool,
     /// Its run finished: no error, no Stop, no budget cut it.
     pub finished: bool,
+    /// Its run ended clean (R03): with a result Autopilot lands, checked,
+    /// its criteria met, no high finding open; not with a caveat (unmet,
+    /// a flagged or failing check, an open finding, nothing checked).
+    #[serde(default)]
+    pub clean: bool,
     /// The tests written first (S04) that pass in its copy.
     pub tests_passed: usize,
     /// The project's checks that passed in its last round.
@@ -1068,13 +1073,24 @@ pub struct Score {
 }
 
 impl Score {
-    /// Better is greater: something to take, a run that finished, then
-    /// D14's order: the tests written first that pass, the checks that
-    /// pass, fewer open findings, a smaller change.
-    fn key(&self) -> (bool, bool, usize, usize, Reverse<usize>, Reverse<usize>) {
+    /// Better is greater: something to take, a run that finished, one that
+    /// ended clean, then D14's order: the tests written first that pass,
+    /// the checks that pass, fewer open findings, a smaller change.
+    fn key(
+        &self,
+    ) -> (
+        bool,
+        bool,
+        bool,
+        usize,
+        usize,
+        Reverse<usize>,
+        Reverse<usize>,
+    ) {
         (
             self.changed,
             self.finished,
+            self.clean,
             self.tests_passed,
             self.checks_passed,
             Reverse(self.open_findings),
@@ -1463,6 +1479,7 @@ impl Run {
             let score = Score {
                 changed: !change.is_empty(),
                 finished,
+                clean: c.outcome.as_deref().is_some_and(autopilot::clean),
                 tests_passed,
                 checks_passed,
                 open_findings,
@@ -1706,8 +1723,13 @@ pub fn pick_summary(pick: &PickRecord) -> String {
         .iter()
         .map(|c| {
             let s = &c.score;
+            // How a run that didn't end clean ended, which outranks the counts.
+            let ended = match (s.clean, &c.outcome) {
+                (false, Some(outcome)) => format!(" ({outcome})"),
+                _ => String::new(),
+            };
             format!(
-                "{}: {} test{} pass, {} check{} pass, {} finding{} open, {} line{}",
+                "{}{ended}: {} test{} pass, {} check{} pass, {} finding{} open, {} line{}",
                 c.letter,
                 s.tests_passed,
                 autopilot::plural(s.tests_passed),
@@ -1732,6 +1754,7 @@ mod tests {
         Score {
             changed: true,
             finished: true,
+            clean: true,
             tests_passed: tests,
             checks_passed: checks,
             open_findings: findings,
@@ -1766,6 +1789,14 @@ mod tests {
             ..score(3, 3, 0, 1)
         };
         assert_eq!(winner(cut, score(0, 0, 0, 80)), Some(1));
+        // R03: of finished runs, one that ended clean beats one that ended
+        // with a caveat (a criterion unmet), more tests or a smaller change
+        // notwithstanding.
+        let caveat = Score {
+            clean: false,
+            ..score(2, 3, 0, 5)
+        };
+        assert_eq!(winner(caveat, score(1, 1, 0, 50)), Some(1));
         // The order, best first; equal ones keep theirs.
         assert_eq!(
             ranked(&[score(0, 1, 0, 5), score(2, 0, 0, 5), score(0, 1, 0, 5)]),
@@ -1797,6 +1828,14 @@ mod tests {
         assert_eq!(
             pick_summary(&pick),
             "Candidate b, by score (a: 1 test pass, 2 checks pass, 1 finding open, 30 lines; b: 1 test pass, 2 checks pass, 0 findings open, 1 line)"
+        );
+        // A run that didn't end clean says how it ended.
+        pick.candidates[0].score.clean = false;
+        pick.candidates[0].outcome = Some("unmet".into());
+        assert!(
+            pick_summary(&pick).contains("(a (unmet): 1 test pass,"),
+            "{}",
+            pick_summary(&pick)
         );
         pick.judged = true;
         assert!(pick_summary(&pick).starts_with("Candidate b, tied; the judge's pick ("));

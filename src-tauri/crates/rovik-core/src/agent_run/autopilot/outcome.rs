@@ -37,6 +37,14 @@ pub fn finished(outcome: &str) -> bool {
     failure_of(outcome).is_none()
 }
 
+/// Whether a run that ended with `outcome` ended clean: with a result
+/// Autopilot lands on its own, checked, its criteria met and no high
+/// finding left open (D7). What T06 ranks a finished candidate by next
+/// (R03).
+pub fn clean(outcome: &str) -> bool {
+    pending_reason_in(outcome, true).is_none()
+}
+
 /// Whether a stage its run failed with the task's `outcome` opens again on
 /// a Retry or a Continue: the user is there, and asks for another try (or
 /// for the checklist to be finished, or for a paused run to go on).

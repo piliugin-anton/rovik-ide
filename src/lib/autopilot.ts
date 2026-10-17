@@ -734,6 +734,8 @@ export function candidateLine(c: CandidateMeta): string {
 export interface CandidateScore {
   changed: boolean;
   finished: boolean;
+  /** Its run ended clean: a result Autopilot lands, no caveat (unmet, a flagged check…). */
+  clean?: boolean;
   testsPassed: number;
   checksPassed: number;
   openFindings: number;
@@ -800,6 +802,7 @@ export function scoreLine(s: CandidateScore): string {
     n(s.diffLines, 'line changed', 'lines changed'),
   ];
   if (!s.finished) parts.unshift('its run didn’t finish');
+  else if (s.clean === false) parts.unshift('its run ended with a caveat');
   return parts.join(' · ');
 }
 
