@@ -7,6 +7,8 @@ and chat with an AI agent that can read, change and test your code. It
 runs on Linux, macOS and Windows and uses much less memory than
 Electron-based editors.
 
+Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
+
 - [Features](#features)
 - [Installing and running](#installing-and-running)
 - [Getting started](#getting-started)
@@ -429,6 +431,8 @@ src-tauri/               backend (Rust), a Cargo workspace
 
 docs/design/             design documents (chat isolation)
 scripts/test.mjs         frontend test runner
+website/                 the site at rovik-ide.dev, and the icon's drawing
+                         (website/README.md)
 ```
 
 ---

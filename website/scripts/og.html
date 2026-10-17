@@ -1,0 +1,130 @@
+<!doctype html>
+<!--
+  The link preview (public/og.png), 1200×630. To redraw it after a change,
+  from website/, with the dev server running (npm run dev):
+
+    npx playwright screenshot --viewport-size=1200,630 --wait-for-timeout=1000 \
+      http://localhost:5173/scripts/og.html public/og.png
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Rovik IDE link preview</title>
+    <style>
+      @font-face {
+        font-family: 'Inter Variable';
+        font-weight: 100 900;
+        src: url(../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2)
+          format('woff2');
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+      }
+
+      body {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 72px 80px 64px;
+        background: #08090d;
+        color: #eceef3;
+        font-family: 'Inter Variable', sans-serif;
+      }
+
+      body::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(ellipse 60% 70% at 85% 0%, rgba(78, 116, 255, 0.3), transparent 70%),
+          linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px) 0 0 / 56px 56px,
+          linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px) 0 0 / 56px 56px;
+        -webkit-mask-image: radial-gradient(ellipse 80% 90% at 80% 0%, #000 20%, transparent 80%);
+        mask-image: radial-gradient(ellipse 80% 90% at 80% 0%, #000 20%, transparent 80%);
+      }
+
+      .brand,
+      h1,
+      .foot {
+        position: relative;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        font-size: 40px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+
+      .brand img {
+        width: 84px;
+        height: 84px;
+      }
+
+      h1 {
+        max-width: 980px;
+        margin: 0;
+        font-size: 66px;
+        line-height: 1.06;
+        font-weight: 680;
+        letter-spacing: -0.04em;
+      }
+
+      h1 span {
+        background: linear-gradient(100deg, #b4c9ff 5%, #6f9bff 50%, #4374ff 95%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #a2a9b9;
+        font-size: 25px;
+      }
+
+      .foot b {
+        color: #eceef3;
+        font-weight: 600;
+      }
+
+      .live {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 14px;
+        border-radius: 50%;
+        background: #4ec9b0;
+        box-shadow: 0 0 0 6px rgba(78, 201, 176, 0.18);
+        vertical-align: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="brand">
+      <img src="../src/assets/icon.svg" alt="" />
+      Rovik IDE
+    </div>
+    <h1>The lightweight IDE with an AI agent that <span>checks its own work</span></h1>
+    <div class="foot">
+      <span
+        ><i class="live"></i>In active development · <b>JavaScript, TypeScript and Rust</b></span
+      >
+      <span>rovik-ide.dev</span>
+    </div>
+  </body>
+</html>

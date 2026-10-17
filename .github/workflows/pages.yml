@@ -1,0 +1,76 @@
+# The site at rovik-ide.dev (website/), on GitHub Pages: built on each pull
+# request that changes it, built and published from master (or by hand
+# from the Actions tab).
+#
+# A release needs no rebuild: the page asks GitHub's API for the latest
+# release in the visitor's browser (website/src/lib/release.ts), so its
+# download buttons follow a release as soon as it's published.
+#
+# Once, in the repository's Settings → Pages: Source "GitHub Actions", and
+# the custom domain rovik-ide.dev (website/README.md has the DNS records).
+name: Website
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A pull request's newer push replaces its build; a publish runs to its end.
+concurrency:
+  group: website-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # Where Pages serves the site: the root of the custom domain, or
+      # /<repository>/ without one.
+      - id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Build
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}/
+        run: npm run build
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/dist
+
+  publish:
+    name: Publish
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
