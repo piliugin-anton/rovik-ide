@@ -1518,10 +1518,16 @@ impl Run {
                     self.update_meta(record_id, progress(&results)).await?;
                     break 'check;
                 }
+                // V09: in Autopilot, only the type check of the tests' own
+                // folder (`cd web && …`): another stack's errors aren't theirs.
+                let folder = super::project::folder_of(&results[i].command);
                 if results[i].kind == "test"
-                    && results
-                        .iter()
-                        .any(|r| r.kind == "typecheck" && r.status == "failed")
+                    && results.iter().any(|r| {
+                        r.kind == "typecheck"
+                            && r.status == "failed"
+                            && (!self.in_autopilot()
+                                || super::project::folder_of(&r.command) == folder)
+                    })
                 {
                     results[i].skip("the type check failed");
                     self.update_meta(record_id, progress(&results)).await?;

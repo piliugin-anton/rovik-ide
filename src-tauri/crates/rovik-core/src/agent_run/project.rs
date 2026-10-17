@@ -153,14 +153,71 @@ pub fn load(
     settings_root: &str,
     verify_on: bool,
 ) -> (Vec<ProjectCheck>, String) {
+    load_for(config_dir, root, settings_root, verify_on, false)
+}
+
+/// `load`, and with `below` (an Autopilot task's run, V09) the stacks one
+/// folder down too, each check run in its folder, unless the user saved
+/// the project's checks: theirs stand.
+pub fn load_for(
+    config_dir: &Path,
+    root: &str,
+    settings_root: &str,
+    verify_on: bool,
+    below: bool,
+) -> (Vec<ProjectCheck>, String) {
     if !Path::new(root).is_dir() {
         return (Vec::new(), String::new());
     }
-    let profile = project_profile::detect(Path::new(root));
+    let mut profile = project_profile::detect(Path::new(root));
     let settings = project_profile::load_project_settings(config_dir, settings_root);
-    let checks = effective_checks(&profile, &settings);
+    let mut checks = effective_checks(&profile, &settings);
+    if below && saved_checks(&settings).is_none() {
+        for (folder, found) in project_profile::detect_below(Path::new(root), &profile) {
+            for stack in &found.stack {
+                let named = format!("{stack} ({folder}/)");
+                if !profile.stack.contains(&named) {
+                    profile.stack.push(named);
+                }
+            }
+            checks.extend(found.checks.iter().map(|c| ProjectCheck {
+                kind: c.kind.clone(),
+                command: in_folder(&folder, &c.command),
+                enabled: c.default_enabled,
+            }));
+        }
+    }
     let context = project_context(&profile, &checks, verify_on);
     (checks, context)
+}
+
+/// V09: `command` run in `folder` of the project: `cd api && go test ./...`.
+pub fn in_folder(folder: &str, command: &str) -> String {
+    let folder = if folder
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
+    {
+        folder.to_string()
+    } else {
+        format!("'{}'", folder.replace('\'', "'\\''"))
+    };
+    format!("cd {folder} && {command}")
+}
+
+/// V09: the folder a check runs in, as `in_folder` writes it: `api` for
+/// `cd api && go test ./...`; "" for the project's own.
+pub fn folder_of(command: &str) -> String {
+    let Some(rest) = command.trim_start().strip_prefix("cd ") else {
+        return String::new();
+    };
+    let Some((folder, _)) = rest.split_once(" && ") else {
+        return String::new();
+    };
+    let folder = folder.trim();
+    match folder.strip_prefix('\'').and_then(|f| f.strip_suffix('\'')) {
+        Some(quoted) => quoted.replace("'\\''", "'"),
+        None => folder.to_string(),
+    }
 }
 
 /// The project section for estimates (the context meter), re-detected at
@@ -689,5 +746,67 @@ mod tests {
                 "{cmd}"
             );
         }
+    }
+
+    /// V09: an Autopilot task's checks include the stacks one folder
+    /// down, each in its folder, and the prompt says so; anything else's,
+    /// and a project whose checks the user saved, stay as they were.
+    #[test]
+    fn an_autopilot_task_checks_the_stacks_one_folder_down() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.join("project");
+        let config = dir.0.join("config");
+        for (path, content) in [
+            ("api/go.mod", "module example.com/api\n"),
+            ("web/package.json", r#"{"scripts":{"test":"vitest run"}}"#),
+        ] {
+            let p = root.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        }
+        let r = root.to_string_lossy().into_owned();
+        let (checks, context) = load_for(&config, &r, &r, true, true);
+        let commands: Vec<&str> = checks.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(
+            commands,
+            [
+                "cd api && go build ./...",
+                "cd api && go vet ./...",
+                "cd api && go test ./...",
+                "cd web && npm test",
+            ]
+        );
+        assert!(
+            context.contains("Go (api/)") && context.contains("JavaScript (web/)"),
+            "{context}"
+        );
+        assert!(
+            context.contains("- Tests: `cd web && npm test`"),
+            "{context}"
+        );
+        // Not an Autopilot task: as before.
+        assert!(load_for(&config, &r, &r, true, false).0.is_empty());
+        assert!(load(&config, &r, &r, true).0.is_empty());
+        // The user's own checks win.
+        std::fs::create_dir_all(&config).unwrap();
+        project_profile::save_project_settings(
+            &config,
+            r.clone(),
+            serde_json::json!({ "checks": [{ "kind": "test", "command": "make test", "enabled": true }] }),
+        )
+        .unwrap();
+        let (saved, _) = load_for(&config, &r, &r, true, true);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].command, "make test");
+    }
+
+    #[test]
+    fn a_checks_folder_is_read_back() {
+        assert_eq!(in_folder("api", "go test ./..."), "cd api && go test ./...");
+        assert_eq!(folder_of("cd api && go test ./..."), "api");
+        assert_eq!(folder_of(&in_folder("my app", "npm test")), "my app");
+        assert_eq!(in_folder("my app", "npm test"), "cd 'my app' && npm test");
+        assert_eq!(folder_of("npm test"), "");
+        assert_eq!(folder_of("cd api"), "");
     }
 }

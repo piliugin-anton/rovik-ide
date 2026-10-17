@@ -26,19 +26,7 @@ pub struct Install {
     pub command: String,
 }
 
-/// Folders one level down that hold no package of the project's own:
-/// installed, built, vendored or cached files.
-const NOT_PACKAGES: &[&str] = &[
-    "node_modules",
-    "target",
-    "vendor",
-    "dist",
-    "build",
-    "out",
-    "coverage",
-    "venv",
-    "__pycache__",
-];
+use crate::project_profile::NOT_PACKAGES;
 
 /// Node's lockfiles, any of which says how its packages install.
 const NODE_LOCKFILES: &[&str] = &[

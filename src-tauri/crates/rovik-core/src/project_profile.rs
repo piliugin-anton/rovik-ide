@@ -94,6 +94,52 @@ pub fn detect(root: &Path) -> ProjectProfile {
     profile
 }
 
+/// Folders one level down that are never a package of the project's own:
+/// installed, built, vendored or cached files.
+pub(crate) const NOT_PACKAGES: &[&str] = &[
+    "node_modules",
+    "target",
+    "vendor",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    "venv",
+    "__pycache__",
+];
+
+/// V09 (autopilot-plan): the stacks one folder down, a monorepo's `api/`
+/// and `web/`, each detected as a project is, with the checks it has. Left
+/// out: folders the project's own workspace covers (`profile.workspaces`,
+/// whose checks are the project's), hidden ones, and installed, built or
+/// vendored ones. By name.
+pub fn detect_below(root: &Path, profile: &ProjectProfile) -> Vec<(String, ProjectProfile)> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let covered = |name: &str| {
+        profile
+            .workspaces
+            .iter()
+            .any(|w| w.path == name || w.path.starts_with(&format!("{name}/")))
+    };
+    let mut folders: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| !name.starts_with('.') && !NOT_PACKAGES.contains(&name.as_str()))
+        .filter(|name| !covered(name))
+        .collect();
+    folders.sort();
+    folders
+        .into_iter()
+        .filter_map(|folder| {
+            let found = detect(&root.join(&folder));
+            (!found.checks.is_empty()).then_some((folder, found))
+        })
+        .collect()
+}
+
 fn push_check(profile: &mut ProjectProfile, kind: &str, command: String, source: String) {
     if profile.checks.iter().any(|c| c.command == command) {
         return;
@@ -1100,6 +1146,83 @@ mod tests {
             fs::read_to_string(dir.join("agent-log.jsonl")).unwrap(),
             "{\"n\":1}\n{\"n\":2}\n"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// V09: a monorepo's stacks one folder down, each with its checks; the
+    /// root's own workspace members, hidden folders and installed ones
+    /// aren't stacks of their own.
+    #[test]
+    fn stacks_one_folder_down_are_found() {
+        let dir = project(&[
+            ("api/go.mod", "module example.com/api\n\ngo 1.22\n"),
+            (
+                "web/package.json",
+                r#"{"scripts":{"test":"vitest run","lint":"eslint ."}}"#,
+            ),
+            ("docs/README.md", "# Docs"),
+            (".github/package.json", r#"{"scripts":{"test":"x"}}"#),
+            ("node_modules/x/package.json", r#"{"scripts":{"test":"x"}}"#),
+        ]);
+        let root = detect(&dir);
+        assert!(root.checks.is_empty(), "nothing at the root");
+        let below: Vec<(String, Vec<String>)> = detect_below(&dir, &root)
+            .iter()
+            .map(|(folder, p)| (folder.clone(), commands(p)))
+            .collect();
+        assert_eq!(
+            below,
+            [
+                (
+                    "api".to_string(),
+                    vec![
+                        "typecheck: go build ./...".to_string(),
+                        "lint: go vet ./...".to_string(),
+                        "test: go test ./...".to_string(),
+                    ]
+                ),
+                (
+                    "web".to_string(),
+                    vec![
+                        "lint: npm run lint".to_string(),
+                        "test: npm test".to_string()
+                    ]
+                ),
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// V09: a workspace's members are the root's (its workspace-wide
+    /// checks), not stacks of their own; a folder with nothing is none.
+    #[test]
+    fn a_workspaces_members_arent_stacks_below() {
+        let dir = project(&[
+            (
+                "package.json",
+                r#"{"private":true,"workspaces":["packages/*","app"],"scripts":{"test":"npm test --workspaces"}}"#,
+            ),
+            (
+                "packages/ui/package.json",
+                r#"{"name":"ui","scripts":{"test":"vitest"}}"#,
+            ),
+            (
+                "app/package.json",
+                r#"{"name":"app","scripts":{"test":"jest"}}"#,
+            ),
+            (
+                "tools/package.json",
+                r#"{"name":"tools","scripts":{"test":"node t.js"}}"#,
+            ),
+            ("empty/notes.txt", "nothing"),
+        ]);
+        let root = detect(&dir);
+        let below: Vec<String> = detect_below(&dir, &root)
+            .into_iter()
+            .map(|(f, _)| f)
+            .collect();
+        assert_eq!(below, ["tools"]);
+        assert!(detect_below(&dir.join("missing"), &root).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -2050,6 +2050,98 @@ async fn a_suite_that_times_out_runs_the_changed_files_tests_instead() {
     assert_eq!(rounds[0]["status"], "passed");
 }
 
+/// V09: a monorepo of two packages, `api/` and `web/`, nothing at its
+/// root: each package's test passes once its ok.txt says ok.
+async fn two_package_project() -> Harness {
+    let check = "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }";
+    harness(&[
+        (
+            "api/package.json",
+            r#"{ "name": "api", "scripts": { "test": "node check.js" } }"#,
+        ),
+        ("api/check.js", check),
+        ("api/ok.txt", "no"),
+        (
+            "web/package.json",
+            r#"{ "name": "web", "scripts": { "test": "node check.js" } }"#,
+        ),
+        ("web/check.js", check),
+        ("web/ok.txt", "no"),
+        // What the plan names.
+        ("ok.txt", "no"),
+    ])
+    .await
+}
+
+/// V09: in Autopilot, the stacks one folder down are the checks, each run
+/// in its folder, all of them every round: web's failure goes back while
+/// api's pass stands, and the fix verifies the task.
+#[tokio::test]
+async fn a_monorepos_packages_are_each_checked() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = two_package_project().await;
+    let mut script = script_with_plan(plan_reading("api/check.js"));
+    script[3] = Reply::Call {
+        id: "w1",
+        name: "write",
+        args: json!({ "path": "api/ok.txt", "content": "ok" }),
+    };
+    script.extend([
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "web/ok.txt", "content": "ok" }),
+        },
+        Reply::Text("Fixed web's too."),
+    ]);
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    assert_eq!(
+        records[4].outcome.as_deref(),
+        Some("verified"),
+        "{rounds:#?}"
+    );
+    let first = messages
+        .iter()
+        .find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|x| x.get("verification").is_some())
+        })
+        .unwrap();
+    assert_eq!(
+        checks_of(first),
+        [
+            ("cd api && npm test".into(), "passed".into(), None),
+            ("cd web && npm test".into(), "failed".into(), None),
+        ]
+    );
+    assert_eq!(rounds[rounds.len() - 1]["status"], "passed");
+    // The agent heard which package failed.
+    let report = messages
+        .iter()
+        .find(|m| m.content.contains("Your changes are not done yet"))
+        .unwrap();
+    assert!(
+        report.content.contains("`cd web && npm test`"),
+        "{}",
+        report.content
+    );
+}
+
 /// V02, isolated: the unchecked change stays in the chat, with why.
 #[tokio::test]
 async fn an_isolated_tasks_unchecked_change_waits_with_why() {

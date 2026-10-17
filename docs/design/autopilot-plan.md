@@ -1076,3 +1076,21 @@ T05 depends most on the environment it meets.
   included and skipped ones not, so the "fewer tests" flag (P3.7) works
   for Go. Without `-v`, go prints only the failures, which aren't a
   count: the output says none then (no `=== RUN` line), as before.
+
+### V09: stacks one folder down
+
+- **In Autopilot** (D20: outside it, detection is as before, on the
+  Settings page and in an Agent chat), a run's checks are the project's
+  and those of the stacks one folder down
+  (`project_profile::detect_below`): each folder that isn't hidden,
+  installed, built or vendored, nor one of the root's own workspace
+  members (their checks are the root's workspace-wide ones), detected as
+  a project is. Each check runs in its folder (`cd api && go test ./...`,
+  `project::in_folder`), every folder's every round, and the prompt names
+  each stack with its folder ("Go (api/)"). The checks the user saved for
+  the project stand instead.
+- **One folder's type check** that fails skips that folder's tests only
+  (`project::folder_of`): another stack's errors aren't theirs.
+- **Not yet per folder**: V06's scoped rerun finds the test runner in the
+  project's own `package.json`, so a package one folder down keeps a
+  timeout as a failure.

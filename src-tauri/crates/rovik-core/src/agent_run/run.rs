@@ -716,8 +716,9 @@ impl Run {
                 let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);
+                // V09: an Autopilot task's checks the stacks one folder down too.
                 crate::rt::spawn_blocking(move || {
-                    project::load(&config_dir, &r, &settings_root, verify)
+                    project::load_for(&config_dir, &r, &settings_root, verify, autopilot)
                 })
                 .await
                 .unwrap_or_default()
