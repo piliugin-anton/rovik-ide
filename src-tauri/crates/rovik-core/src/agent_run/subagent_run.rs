@@ -42,6 +42,12 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// S05: a step's light check: the syntax errors listed per file, the
+/// output kept per failed command, and how long a command may take.
+const LIGHT_SYNTAX_ERRORS: usize = 5;
+const LIGHT_OUTPUT_CHARS: usize = 2_000;
+const LIGHT_TIMEOUT_MS: u64 = 120_000;
+
 /// What a subagent's run knows about itself.
 pub(super) struct SubCtx {
     pub kind: Kind,
@@ -1916,6 +1922,19 @@ impl Run {
                 "Step {n} isn't marked done: {why}. Check it, then continue the worker or finish the step yourself."
             ));
         }
+        // S05 (4.5): in Autopilot a step worker's files are checked lightly
+        // as it ends (a group's workers run their own light checks): what
+        // that finds goes to the lead with the result, and to the steps
+        // after it in their briefs.
+        let light = match base {
+            None if self.in_autopilot() && !actual.is_empty() => {
+                self.light_check_step(n, &result.writes).await
+            }
+            _ => None,
+        };
+        if let Some(note) = &light {
+            result.notes.push(note.clone());
+        }
         if result.status != SubStatus::Done {
             return None;
         }
@@ -1931,6 +1950,7 @@ impl Run {
             number: n,
             title: step.title.clone(),
             summary: crate::chat_db::store::char_prefix(&summary, 300).to_string(),
+            light,
         });
         self.worker_steps.sort_by_key(|d| d.number);
         // The list so far: a group's earlier joins, else the chat's.
@@ -1947,6 +1967,123 @@ impl Run {
             items: items.clone(),
         });
         Some(items)
+    }
+
+    /// S05: the light check of a step's files as its worker ends: their
+    /// syntax (where a file parsed before the step, or is new: V04's
+    /// rule), then the stack's light commands on them
+    /// (`project::light_check_for`: a linter on a file, `go vet` on a
+    /// package; never a build or a test run). None: it found nothing.
+    async fn light_check_step(&self, n: usize, writes: &[ChildWrite]) -> Option<String> {
+        let root = self.root.clone()?;
+        let mut found: Vec<String> = Vec::new();
+        let mut files: Vec<String> = Vec::new();
+        for w in writes {
+            if files.contains(&w.path) {
+                continue;
+            }
+            files.push(w.path.clone());
+            let Ok(now) = std::fs::read(tools::to_absolute_path(&w.path, &root)) else {
+                continue;
+            };
+            let Ok(now) = String::from_utf8(now) else {
+                continue;
+            };
+            let parsed_before = match &w.original.bytes {
+                None => true,
+                Some(bytes) => std::str::from_utf8(bytes).is_ok_and(|before| {
+                    crate::outline::syntax_errors(&w.path, before).is_some_and(|e| e.is_empty())
+                }),
+            };
+            let errors = crate::outline::syntax_errors(&w.path, &now).unwrap_or_default();
+            if !parsed_before || errors.is_empty() {
+                continue;
+            }
+            let mut lines = vec![format!("`{}` doesn't parse:", w.path)];
+            for e in errors.iter().take(LIGHT_SYNTAX_ERRORS) {
+                lines.push(format!(
+                    "- {}:{}:{}: {}",
+                    w.path, e.start_line, e.start_col, e.message
+                ));
+            }
+            if errors.len() > LIGHT_SYNTAX_ERRORS {
+                lines.push(format!("- and {} more", errors.len() - LIGHT_SYNTAX_ERRORS));
+            }
+            found.push(lines.join("\n"));
+        }
+        let permissions = self.config().permissions;
+        let commands = super::project::light_check_for(std::path::Path::new(&root), &files);
+        let mut ran = 0;
+        for command in commands {
+            if self.stopped() {
+                break;
+            }
+            // Autopilot's denylist holds for the IDE's commands too (V01).
+            if super::permissions::denied_entry(&command, &permissions).is_some() {
+                continue;
+            }
+            ran += 1;
+            let stop = self.stop.clone();
+            let overlay = crate::overlay::chats::get(&self.dialog_id);
+            let queued = crate::command_tool::Queued {
+                kind: crate::workload::JobKind::Check {
+                    owner: self.dialog_id.clone(),
+                },
+                note: Box::new(|_| {}),
+                env: overlay
+                    .as_ref()
+                    .map(|o| o.command_env())
+                    .unwrap_or_default(),
+                confine: overlay.as_ref().and_then(|o| o.confine()),
+                whole_output: false,
+            };
+            let timeout = super::verify::check_timeout_ms(&self.dialog_id).min(LIGHT_TIMEOUT_MS);
+            let Ok(out) = crate::command_tool::run_command(
+                root.clone(),
+                command.clone(),
+                Some(timeout),
+                move || stop.is_set(),
+                Some(queued),
+            )
+            .await
+            else {
+                continue;
+            };
+            if out.stopped || (out.exit_code == Some(0) && !out.timed_out) {
+                continue;
+            }
+            let combined = [out.stderr.trim(), out.stdout.trim()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let shown = super::command_output::focus_failures(&combined, LIGHT_OUTPUT_CHARS);
+            found.push(if out.timed_out {
+                format!("`{command}` timed out.")
+            } else if shown.trim().is_empty() {
+                format!("`{command}` failed (exit {}).", out.exit_code.unwrap_or(-1))
+            } else {
+                format!("`{command}` failed:\n```\n{}\n```", shown.trim_end())
+            });
+        }
+        log::write(
+            &self.core,
+            json!({
+                "event": "lightCheck",
+                "dialogId": self.dialog_id,
+                "step": n,
+                "files": files.len(),
+                "commands": ran,
+                "problems": found.len(),
+            }),
+        );
+        if found.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "The light check after step {n} found problems in its files:\n\n{}",
+            found.join("\n\n")
+        ))
     }
 
     /// D06, on the worker's side, before its result: a failed or stopped

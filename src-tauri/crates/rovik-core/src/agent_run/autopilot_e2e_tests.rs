@@ -2665,3 +2665,149 @@ async fn a_blocked_test_writer_is_recorded_and_the_task_goes_on() {
     assert!(!started[0].content.contains("Tests that must pass"));
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }
+
+/// S05: a plan of two steps, each a worker's.
+const STEPS_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok; util.js says it too.\n\n## Criteria\n\n1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+    1. **Write util**\n   - Files: `src/util.js`\n   - Change `src/util.js` to export the string `ok` with `module.exports`.\n\
+    2. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `check.js` checks.\n\n\
+    ## Validation\n- `npm test`\n";
+
+/// A step worker's report: it changed `files`.
+fn step_report(summary: &str, files: &[&str]) -> Reply {
+    let list = files
+        .iter()
+        .map(|f| format!("- `{f}`: changed"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Reply::Text(Box::leak(
+        format!("## Summary\n{summary}\n\n## Changed files\n{list}\n\n## Open questions\nNone")
+            .into_boxed_str(),
+    ))
+}
+
+/// S05 (4.5): a step worker leaves a file that doesn't parse: the light
+/// check as it ends tells the lead, with the task call's result, and the
+/// next step's worker, in its brief.
+#[tokio::test]
+async fn a_step_that_breaks_a_files_syntax_is_reported_to_the_lead_and_the_next_step() {
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        (
+            "check.js",
+            "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("ok.txt", "no"),
+        ("src/util.js", "module.exports = 1;\n"),
+    ])
+    .await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let lead = vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": STEPS_PLAN }),
+        },
+        Reply::Text("Saved the plan."),
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Write util", "status": "in_progress" },
+                { "title": "Write ok", "status": "pending" },
+            ] }),
+        },
+        Reply::Call {
+            id: "s1",
+            name: "task",
+            args: json!({ "kind": "worker", "step": 1 }),
+        },
+        // Told, the lead fixes it.
+        Reply::Call {
+            id: "fix",
+            name: "write",
+            args: json!({ "path": "src/util.js", "content": "module.exports = 'ok';\n" }),
+        },
+        Reply::Call {
+            id: "s2",
+            name: "task",
+            args: json!({ "kind": "worker", "step": 2 }),
+        },
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Write util", "status": "done" },
+                { "title": "Write ok", "status": "done" },
+            ] }),
+        },
+        Reply::Text("Done: ok.txt says ok."),
+    ];
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                "# Your step: 1.",
+                vec![
+                    Reply::Call {
+                        id: "w1",
+                        name: "write",
+                        args: json!({ "path": "src/util.js", "content": "let x = ;\n" }),
+                    },
+                    step_report("Exported ok from util.js.", &["src/util.js"]),
+                ],
+            ),
+            (
+                "# Your step: 2.",
+                vec![
+                    Reply::Call {
+                        id: "w2",
+                        name: "write",
+                        args: json!({ "path": "ok.txt", "content": "ok" }),
+                    },
+                    step_report("ok.txt says ok.", &["ok.txt"]),
+                ],
+            ),
+        ],
+        lead,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
+
+    // The lead heard of it with the worker's result.
+    let messages = h.messages().await;
+    let first = &result_of(&messages, "s1").content;
+    assert!(
+        first.contains("The light check after step 1 found problems in its files:\n\n`src/util.js` doesn't parse:\n- src/util.js:1:"),
+        "{first}"
+    );
+    // Step 2's worker, in its brief: what step 1 left.
+    let requests = seen.lock().unwrap().clone();
+    let brief = requests
+        .iter()
+        .find(|r| route_of(r, &["# Your step: 2."]).is_some())
+        .expect("step 2's brief")["messages"]
+        .to_string();
+    assert!(
+        brief.contains("- Step 1. Write util: Exported ok from util.js.\\n  The light check after step 1 found problems in its files:"),
+        "{brief}"
+    );
+    // Step 2 left nothing to say; both were checked.
+    assert!(!result_of(&messages, "s2")
+        .content
+        .contains("The light check"));
+    let checked = log_lines(&h, "lightCheck").await;
+    let problems: Vec<(Value, Value)> = checked
+        .iter()
+        .map(|l| (l["step"].clone(), l["problems"].clone()))
+        .collect();
+    assert_eq!(problems, [(json!(1), json!(1)), (json!(2), json!(0))]);
+    assert_eq!(
+        h.file("src/util.js").as_deref(),
+        Some("module.exports = 'ok';\n")
+    );
+}

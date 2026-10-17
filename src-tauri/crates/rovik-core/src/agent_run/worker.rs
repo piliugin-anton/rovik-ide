@@ -255,6 +255,9 @@ pub struct DoneStep {
     pub number: usize,
     pub title: String,
     pub summary: String,
+    /// S05: what the light check of its files found as it ended
+    /// (Autopilot), for the steps after it.
+    pub light: Option<String>,
 }
 
 /// The plan's title and its summary (the text before its first `## `).
@@ -356,6 +359,12 @@ pub fn brief(p: &BriefParts) -> String {
                 "- Step {}. {}: {}\n",
                 d.number, d.title, d.summary
             ));
+            // S05: what it left broken, for this step to know of.
+            if let Some(light) = d.light.as_deref().filter(|l| !l.trim().is_empty()) {
+                for line in light.trim().lines() {
+                    out.push_str(&format!("  {line}\n").replace("  \n", "\n"));
+                }
+            }
         }
     }
     out.push_str(&format!(
@@ -769,6 +778,7 @@ mod tests {
                 number: 1,
                 title: "Table".into(),
                 summary: "Added the users table.".into(),
+                light: None,
             }],
             diff: &d,
             scope: &scope,
@@ -784,6 +794,26 @@ mod tests {
         assert!(text.contains("+pub mod b;"), "{text}");
         assert!(text.contains("## From the lead\n\nKeep the route under /api."));
         assert!(text.contains("## Your write scope"));
+
+        // S05: what a step's light check found, under it, for the next.
+        let broken = brief(&BriefParts {
+            plan_path: ".rovik/plans/users.md",
+            plan: PLAN,
+            step: &steps[1],
+            done: &[DoneStep {
+                number: 1,
+                title: "Table".into(),
+                summary: "Added the users table.".into(),
+                light: Some("The light check after step 1 found problems in its files:\n\n`src/db.rs` doesn't parse:\n- src/db.rs:3:1: syntax error".into()),
+            }],
+            diff: &d,
+            scope: &scope,
+            note: None,
+        });
+        assert!(
+            broken.contains("- Step 1. Table: Added the users table.\n  The light check after step 1 found problems in its files:\n\n  `src/db.rs` doesn't parse:\n  - src/db.rs:3:1: syntax error\n"),
+            "{broken}"
+        );
     }
 
     #[test]

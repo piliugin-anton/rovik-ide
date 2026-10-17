@@ -1202,3 +1202,21 @@ T05 depends most on the environment it meets.
   the replies written for them; the daemon's tests route it too.
 - **Stage lines** show their `code` spans as code (S03's commands, S04's
   files).
+
+### S05: a light check after each step
+
+- **When**: in Autopilot, as a step worker that ran alone ends
+  (`after_worker`, on the lead's side), on the files it changed, done or
+  not. A group's workers run their own light checks (F05b) and aren't
+  checked again.
+- **What**: each file's syntax (`outline::syntax_errors`) where it parsed
+  before the step or is new (V04's rule), then the commands
+  `project::light_check_for` gives (a linter on a file, `go vet` on a
+  package) as check work, two minutes at most each; the denylist holds.
+  A stack with no such command is checked for its syntax only: the
+  editor's language server isn't the harness's to run.
+- **Where it goes**: a note with the worker's result, for the lead ("The
+  light check after step 1 found problems in its files: …", five syntax
+  errors a file at most, a command's output cut to 2,000 characters), and
+  under that step in the later steps' briefs ("## Steps done so far").
+  The step stays done: what to do about it is the lead's call.
