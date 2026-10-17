@@ -3423,6 +3423,74 @@ fn tests_first_script(path: &'static str, content: &'static str) -> Vec<Reply> {
 const OK_TEST: &str = "test/ok.test.js";
 const OK_TEST_CODE: &str = "// Criterion 1: ok.txt says ok.\nconst fs = require('fs');\nif (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') process.exit(1);\n";
 
+/// S04 (R03): the Tests stage changes a test file that was there instead
+/// of making one. The red check doesn't run it, so the implementation
+/// isn't told it fails now on purpose, only that it must pass.
+#[tokio::test]
+async fn a_test_file_the_tests_stage_changed_isnt_said_to_fail_on_purpose() {
+    let h = harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        (
+            "check.js",
+            "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("ok.txt", "no"),
+        (OK_TEST, "// Criterion 1, to come.\n"),
+    ])
+    .await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TESTS_FIRST, tests_first_script(OK_TEST, OK_TEST_CODE)),
+        ],
+        task_script(),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    stages_until(&h, "the delivery", delivered).await;
+    let messages = h.messages().await;
+    let starts = implement_messages(&messages);
+    assert!(
+        starts[0]
+            .content
+            .ends_with("\n\nTests that must pass: `test/ok.test.js`."),
+        "{}",
+        starts[0].content
+    );
+}
+
+/// S04, T05 (R03): a candidate's acceptance check is told of the tests its
+/// task's Tests stage wrote first, though the candidate's chat holds none
+/// of its task's rows.
+#[tokio::test]
+async fn a_candidates_acceptance_check_is_told_of_its_tasks_tests() {
+    let routes = vec![
+        (TESTS_FIRST, tests_first_script(OK_TEST, OK_TEST_CODE)),
+        (ACCEPTANCE, vec![Reply::Text(SATISFIED)]),
+    ];
+    let script = candidates_script(&[("ok.txt", "ok")], &[("ok.txt", "ok")]);
+    let Some((h, seen, _)) = candidates_task(routes, script).await else {
+        return;
+    };
+    delivered_slowly(&h).await;
+    let briefs: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| route_of(r, &[ACCEPTANCE]).is_some())
+        .map(|r| r["messages"].to_string())
+        .collect();
+    assert!(!briefs.is_empty());
+    for brief in &briefs {
+        assert!(brief.contains("## The test writer's report"), "{brief}");
+        assert!(brief.contains("Test files: `test/ok.test.js`."), "{brief}");
+    }
+}
+
 /// S04 (4.4): the test writer writes the tests before the code, from the
 /// plan and its criteria, the plan's files hidden; the implementation's
 /// request names them, and they're the test writer's to it (E03: changing

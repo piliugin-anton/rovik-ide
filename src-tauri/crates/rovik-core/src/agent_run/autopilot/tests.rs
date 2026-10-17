@@ -103,30 +103,43 @@ fn a_record_reads_as_the_design_writes_it() {
     assert_eq!(serde_json::to_value(&record).unwrap(), tests);
 }
 
-/// S04: the implementation's request names the tests written first,
-/// and those that pass already apart.
+/// S04: the implementation's request names the tests written first: those
+/// the red check saw fail, those that pass already, and (R03) those it
+/// didn't run, which it says nothing of.
 #[test]
 fn the_implementation_is_told_which_tests_to_make_pass() {
-    let tests = |files: &[&str], passing: &[&str]| TaskTests {
-        files: files.iter().map(|f| f.to_string()).collect(),
-        passing: passing.iter().map(|f| f.to_string()).collect(),
+    let list = |files: &[&str]| files.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+    let tests = |files: &[&str], passing: &[&str], failing: &[&str]| TaskTests {
+        files: list(files),
+        passing: list(passing),
+        failing: list(failing),
     };
-    assert_eq!(tests_line(&tests(&[], &[])), None);
+    let (a, b, c) = ("a.test.ts", "b.test.ts", "c.test.ts");
+    assert_eq!(tests_line(&tests(&[], &[], &[])), None);
     assert_eq!(
-        tests_line(&tests(&["a.test.ts", "b.test.ts"], &[])).as_deref(),
+        tests_line(&tests(&[a, b], &[], &[a, b])).as_deref(),
         Some("Tests that must pass: `a.test.ts`, `b.test.ts`; they fail now on purpose.")
     );
     assert_eq!(
-        tests_line(&tests(&["a.test.ts"], &[])).as_deref(),
+        tests_line(&tests(&[a], &[], &[a])).as_deref(),
         Some("Tests that must pass: `a.test.ts`; it fails now on purpose.")
     );
     assert_eq!(
-        tests_line(&tests(&["a.test.ts", "b.test.ts"], &["b.test.ts"])).as_deref(),
+        tests_line(&tests(&[a, b], &[b], &[a])).as_deref(),
         Some("Tests that must pass: `a.test.ts`; it fails now on purpose. Also `b.test.ts`, which passes already, before the change: check that it tests what the change does.")
     );
     assert_eq!(
-        tests_line(&tests(&["a.test.ts", "b.test.ts"], &["a.test.ts", "b.test.ts"])).as_deref(),
+        tests_line(&tests(&[a, b], &[a, b], &[])).as_deref(),
         Some("Tests that must pass: `a.test.ts`, `b.test.ts`, which pass already, before the change: check that they test what the change does.")
+    );
+    // A file the red check didn't run (one the stage changed): it must pass.
+    assert_eq!(
+        tests_line(&tests(&[c], &[], &[])).as_deref(),
+        Some("Tests that must pass: `c.test.ts`.")
+    );
+    assert_eq!(
+        tests_line(&tests(&[a, b, c], &[b], &[a])).as_deref(),
+        Some("Tests that must pass: `a.test.ts`; it fails now on purpose. Also `c.test.ts`. Also `b.test.ts`, which passes already, before the change: check that it tests what the change does.")
     );
 }
 

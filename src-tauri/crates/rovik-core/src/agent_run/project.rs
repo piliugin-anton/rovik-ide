@@ -441,6 +441,42 @@ pub fn test_command_for(root: &Path, files: &[String], test_check: Option<&str>)
     fallback()
 }
 
+/// R03: whether a test run's output says it ran no test at all, which its
+/// exit code doesn't: `cargo test` whose filter matches nothing (a Rust
+/// test file in a module not declared yet: "running 0 tests" from every
+/// binary), `go test` ("[no tests to run]", "[no test files]"), Node's
+/// test runner ("tests 0"), mocha ("0 passing"). Such a run passes,
+/// proving nothing.
+pub fn ran_no_tests(output: &str) -> bool {
+    let (mut none, mut some) = (false, false);
+    for line in output.lines().map(str::trim) {
+        let count = line
+            // cargo: each test binary's "running 3 tests".
+            .strip_prefix("running ")
+            .and_then(|rest| {
+                rest.strip_suffix(" tests")
+                    .or_else(|| rest.strip_suffix(" test"))
+            })
+            // Node's test runner: its summary, as TAP or as its spec reporter.
+            .or_else(|| line.strip_prefix("# tests "))
+            .or_else(|| line.strip_prefix("ℹ tests "))
+            // mocha: "3 passing (9ms)".
+            .or_else(|| line.split_once(" passing").map(|(n, _)| n))
+            .and_then(|n| n.trim().parse::<u64>().ok());
+        match count {
+            Some(0) => none = true,
+            Some(_) => some = true,
+            // go: a package whose tests didn't run, or one whose did.
+            None if line.ends_with("[no tests to run]") || line.ends_with("[no test files]") => {
+                none = true
+            }
+            None if line.starts_with("ok ") || line.starts_with("--- PASS") => some = true,
+            None => {}
+        }
+    }
+    none && !some
+}
+
 /// F05b: light checks a parallel worker may run on its files, per stack:
 /// a file or a package at a time, never a build or a test run. Tools that
 /// aren't installed are left out; a stack with nothing gets only the
@@ -522,6 +558,31 @@ fn common_module<'a>(filters: impl Iterator<Item = &'a str>) -> String {
 mod tests {
     use super::*;
     use crate::project_profile::{DetectedCheck, ProjectInstructions};
+
+    /// R03: a run that ran no test passes without proving anything.
+    #[test]
+    fn a_run_that_ran_no_test_is_told_apart() {
+        let cargo_none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n\n     Running tests/api.rs (target/debug/deps/api-1)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s\n";
+        assert!(ran_no_tests(cargo_none));
+        let cargo_one = "running 0 tests\n\nrunning 1 test\ntest parse::tests::reads_it ... ok\n\ntest result: ok. 1 passed; 0 failed\n";
+        assert!(!ran_no_tests(cargo_one));
+        assert!(ran_no_tests("# tests 0\n# suites 0\n# pass 0\n# fail 0\n"));
+        assert!(!ran_no_tests(
+            "ok 1 - ok.txt says ok\n# tests 1\n# pass 1\n"
+        ));
+        assert!(ran_no_tests("ℹ tests 0\nℹ pass 0\n"));
+        assert!(ran_no_tests(
+            "ok  \texample.com/p\t0.002s [no tests to run]\n"
+        ));
+        assert!(ran_no_tests("?   \texample.com/p\t[no test files]\n"));
+        assert!(!ran_no_tests("ok  \texample.com/p\t0.002s\n"));
+        assert!(ran_no_tests("\n  0 passing (2ms)\n"));
+        assert!(!ran_no_tests("\n  3 passing (9ms)\n"));
+        assert!(!ran_no_tests(
+            "PASS src/a.test.ts\nTests: 2 passed, 2 total\n"
+        ));
+        assert!(!ran_no_tests(""));
+    }
 
     #[test]
     fn test_paths_follow_each_stacks_conventions() {

@@ -7,6 +7,8 @@
 
 use super::project;
 use super::subagent::{Budget, Format, KindSpec};
+use crate::command_tool::CommandOutput;
+use std::path::PathBuf;
 use std::time::Duration;
 
 const MAX_PLAN_CHARS: usize = 12_000;
@@ -285,7 +287,87 @@ pub fn red_note(passing: &[String]) -> Option<String> {
     })
 }
 
+/// What the red check found of test files on the code as it is: those
+/// whose tests pass there, and those whose tests fail. A run cut short, or
+/// one that ran no test, says neither.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Red {
+    pub passing: Vec<String>,
+    pub failing: Vec<String>,
+}
+
+/// Where the red check runs tests: a folder with the code as it is, and how
+/// its commands run there.
+struct RedPlace {
+    cwd: PathBuf,
+    env: Vec<(String, String)>,
+    confine: Option<crate::overlay::confine::Confine>,
+    timeout_ms: u64,
+}
+
+/// A test run's word on the code as it is: its tests pass (true) or fail
+/// (false). None: it can't say: cut short, or it ran no test at all (R03:
+/// `cargo test` whose filter matches nothing exits 0).
+fn passes_as_it_is(out: &CommandOutput) -> Option<bool> {
+    if out.timed_out || out.stopped {
+        return None;
+    }
+    match out.exit_code? {
+        0 if project::ran_no_tests(&format!("{}\n{}", out.stdout, out.stderr)) => None,
+        0 => Some(true),
+        _ => Some(false),
+    }
+}
+
 impl super::run::Run {
+    /// The red check's runs of `files` at `place`: one file at a time when
+    /// the stack can, else the project's test check once.
+    async fn red(&self, place: RedPlace, files: &[String]) -> Red {
+        let test_check = self
+            .checks
+            .iter()
+            .find(|c| c.kind == "test" && c.enabled)
+            .map(|c| c.command.clone());
+        let alone =
+            |f: &String| project::test_command_for(&place.cwd, std::slice::from_ref(f), None);
+        let runs: Vec<(Vec<String>, Option<String>)> =
+            match files.iter().all(|f| alone(f).is_some()) {
+                true => files.iter().map(|f| (vec![f.clone()], alone(f))).collect(),
+                false => vec![(files.to_vec(), test_check)],
+            };
+        let mut red = Red::default();
+        for (which, command) in runs {
+            let Some(command) = command else { continue };
+            if self.stopped() {
+                break;
+            }
+            let stop = self.stop.clone();
+            let queued = crate::command_tool::Queued {
+                kind: crate::workload::JobKind::Check {
+                    owner: self.dialog_id.clone(),
+                },
+                note: Box::new(|_| {}),
+                env: place.env.clone(),
+                confine: place.confine.clone(),
+                whole_output: false,
+            };
+            let out = crate::command_tool::run_command(
+                place.cwd.to_string_lossy().into_owned(),
+                command,
+                Some(place.timeout_ms),
+                move || stop.is_set(),
+                Some(queued),
+            )
+            .await;
+            match out.ok().as_ref().and_then(passes_as_it_is) {
+                Some(true) => red.passing.extend(which),
+                Some(false) => red.failing.extend(which),
+                None => {}
+            }
+        }
+        red
+    }
+
     /// E04: the test writer's new tests, run on the code before the change
     /// (the project under an isolated chat), in a throwaway overlay. A test
     /// file whose tests pass there is flagged.
@@ -305,11 +387,6 @@ impl super::run::Run {
         if !self.isolated() {
             return Some("Red check skipped: the chat works in the project directly, so the code before the change isn't there to run the tests on.".into());
         }
-        let test_check = self
-            .checks
-            .iter()
-            .find(|c| c.kind == "test" && c.enabled)
-            .map(|c| c.command.clone());
         let id = format!(
             "{}{}",
             crate::overlay::chats::SCRATCH_PREFIX,
@@ -329,53 +406,15 @@ impl super::run::Run {
                 let _ = std::fs::write(target, content);
             }
         }
-        let view = scratch.view.to_string_lossy().into_owned();
-        let mut passing = Vec::new();
-        // One file at a time when the stack can, else the whole test check once.
-        let per_file = files.iter().all(|f| {
-            project::test_command_for(&scratch.view, std::slice::from_ref(f), None).is_some()
-        });
-        let runs: Vec<(Vec<String>, Option<String>)> = if per_file {
-            files
-                .iter()
-                .map(|f| {
-                    (
-                        vec![f.clone()],
-                        project::test_command_for(&scratch.view, std::slice::from_ref(f), None),
-                    )
-                })
-                .collect()
-        } else {
-            vec![(files.clone(), test_check.clone())]
+        let place = RedPlace {
+            cwd: scratch.view.clone(),
+            env: scratch.command_env(),
+            confine: scratch.confine(),
+            timeout_ms: 300_000,
         };
-        for (which, command) in runs {
-            let Some(command) = command else { continue };
-            let stop = self.stop.clone();
-            let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Check {
-                    owner: self.dialog_id.clone(),
-                },
-                note: Box::new(|_| {}),
-                env: scratch.command_env(),
-                confine: scratch.confine(),
-                whole_output: false,
-            };
-            let out = crate::command_tool::run_command(
-                view.clone(),
-                command,
-                Some(300_000),
-                move || stop.is_set(),
-                Some(queued),
-            )
-            .await;
-            if let Ok(out) = out {
-                if out.exit_code == Some(0) && !out.timed_out && !out.stopped {
-                    passing.extend(which);
-                }
-            }
-        }
+        let red = self.red(place, &files).await;
         let _ = crate::rt::spawn_blocking(move || crate::overlay::chats::discard_child(&id)).await;
-        red_note(&passing)
+        red_note(&red.passing)
     }
 }
 
@@ -565,16 +604,19 @@ impl super::run::Run {
                 tests["status"] = json!("done");
             }
         }
-        // The red check: the new tests that pass on the code as it is.
+        // The red check: how the new tests do on the code as it is. Those
+        // that pass, and those seen to fail; the files it changed, it
+        // doesn't run.
         let new: Vec<String> = writes
             .iter()
             .filter(|(_, new)| *new)
             .map(|(path, _)| path.clone())
             .filter(|path| files.contains(path))
             .collect();
-        let passing = self.passing_before_the_change(&root, &new).await;
+        let Red { passing, failing } = self.red_before_the_change(&root, &new).await;
         tests["files"] = json!(files);
         tests["passing"] = json!(passing);
+        tests["failing"] = json!(failing);
         if tests["status"] == "done" && files.is_empty() {
             tests["status"] = json!("skipped");
             let why = "The test writer wrote no test file".to_string();
@@ -767,69 +809,24 @@ impl super::run::Run {
         Ok(true)
     }
 
-    /// S04's red check: the test files of `files` that pass on the code as
-    /// it is, before the change (E04's check, with no copy to make:
-    /// nothing is changed yet). One file at a time when the stack can, else
-    /// the project's test check once.
-    async fn passing_before_the_change(&self, root: &str, files: &[String]) -> Vec<String> {
+    /// S04's red check: how the test files of `files` do on the code as it
+    /// is, before the change (E04's check, with no copy to make: nothing is
+    /// changed yet).
+    async fn red_before_the_change(&self, root: &str, files: &[String]) -> Red {
         if files.is_empty() || self.stopped() {
-            return Vec::new();
+            return Red::default();
         }
-        let base = std::path::Path::new(root);
-        let test_check = self
-            .checks
-            .iter()
-            .find(|c| c.kind == "test" && c.enabled)
-            .map(|c| c.command.clone());
-        let per_file = files
-            .iter()
-            .all(|f| project::test_command_for(base, std::slice::from_ref(f), None).is_some());
-        let runs: Vec<(Vec<String>, Option<String>)> = if per_file {
-            files
-                .iter()
-                .map(|f| {
-                    let command = project::test_command_for(base, std::slice::from_ref(f), None);
-                    (vec![f.clone()], command)
-                })
-                .collect()
-        } else {
-            vec![(files.to_vec(), test_check)]
+        let overlay = crate::overlay::chats::get(&self.dialog_id);
+        let place = RedPlace {
+            cwd: PathBuf::from(root),
+            env: overlay
+                .as_ref()
+                .map(|o| o.command_env())
+                .unwrap_or_default(),
+            confine: overlay.as_ref().and_then(|o| o.confine()),
+            timeout_ms: super::verify::check_timeout_ms(&self.dialog_id),
         };
-        let mut passing = Vec::new();
-        for (which, command) in runs {
-            let Some(command) = command else { continue };
-            if self.stopped() {
-                break;
-            }
-            let stop = self.stop.clone();
-            let overlay = crate::overlay::chats::get(&self.dialog_id);
-            let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Check {
-                    owner: self.dialog_id.clone(),
-                },
-                note: Box::new(|_| {}),
-                env: overlay
-                    .as_ref()
-                    .map(|o| o.command_env())
-                    .unwrap_or_default(),
-                confine: overlay.as_ref().and_then(|o| o.confine()),
-                whole_output: false,
-            };
-            let out = crate::command_tool::run_command(
-                root.to_string(),
-                command,
-                Some(super::verify::check_timeout_ms(&self.dialog_id)),
-                move || stop.is_set(),
-                Some(queued),
-            )
-            .await;
-            if let Ok(out) = out {
-                if out.exit_code == Some(0) && !out.timed_out && !out.stopped {
-                    passing.extend(which);
-                }
-            }
-        }
-        passing
+        self.red(place, files).await
     }
 }
 

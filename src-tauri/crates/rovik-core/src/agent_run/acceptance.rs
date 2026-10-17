@@ -433,9 +433,7 @@ impl Run {
     /// (S04), or the one written after the change (S07), whichever came
     /// last. None: no tests were written for the task.
     async fn tests_report(&self) -> Option<String> {
-        let recent = self.recent().await.ok()?;
-        recent.iter().rev().find_map(|m| {
-            let tests = m.meta.as_ref()?.get("tests")?;
+        let report = |tests: &Value| {
             let files = tests["files"].as_array().filter(|f| !f.is_empty())?;
             let names = files
                 .iter()
@@ -449,7 +447,22 @@ impl Run {
                     .trim()
                     .to_string(),
             )
-        })
+        };
+        let recent = self.recent().await.ok()?;
+        let here = recent
+            .iter()
+            .rev()
+            .find_map(|m| report(m.meta.as_ref()?.get("tests")?));
+        if here.is_some() {
+            return here;
+        }
+        // R03: the tests written first, in the task's chat's Tests stage
+        // row: a candidate's chat holds none (T05), and a long run's may be
+        // past its recent messages.
+        let row = super::autopilot::tests_row(&self.core, &self.dialog_id)
+            .await
+            .ok()??;
+        report(&row)
     }
 }
 

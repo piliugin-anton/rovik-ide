@@ -8,7 +8,7 @@ use super::stage::{Recorded, Stage};
 use crate::agent_run::{plan, UserMessage};
 use crate::chat_db::store;
 use crate::core::Core;
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// The plan the run after row `since` saved: the latest row that names its
 /// file (the reply that shows it), and the file.
@@ -45,11 +45,14 @@ pub async fn task_plan_file(core: &Core, dialog_id: &str) -> Result<Option<Strin
 }
 
 /// S04: what a task's Tests stage wrote, from its latest record: the test
-/// files, and those of them that passed before the change (the red check).
+/// files, those of them that passed before the change, and those the red
+/// check saw fail then. The rest it didn't run: the files the stage
+/// changed rather than made, or ones whose run said nothing (R03).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TaskTests {
     pub files: Vec<String>,
     pub passing: Vec<String>,
+    pub failing: Vec<String>,
 }
 
 /// `TaskTests` of the current task; a candidate's are its task's (T05).
@@ -62,7 +65,7 @@ pub async fn task_tests(core: &Core, dialog_id: &str) -> Result<TaskTests, Strin
 }
 
 /// `TaskTests` of a task's records; the red check's from the stage's
-/// record row (`meta.tests.passing`).
+/// record row (`meta.tests.passing`, `meta.tests.failing`).
 pub(super) async fn tests_of(
     core: &Core,
     dialog_id: &str,
@@ -72,35 +75,65 @@ pub(super) async fn tests_of(
         return Ok(TaskTests::default());
     };
     let files = stage.record.files.clone();
-    let passing = match (&stage.record.reference, files.is_empty()) {
-        (Some(row), false) => {
-            let (id, since) = (dialog_id.to_string(), stage.seq);
-            let rows = core
-                .db
-                .read(move |c| store::messages_with_meta(c, &id, "tests", Some(since)))
-                .await?;
-            rows.iter()
-                .find(|m| &m.id == row)
-                .and_then(|m| {
-                    m.meta
-                        .as_ref()?
-                        .pointer("/tests/passing")?
-                        .as_array()
-                        .cloned()
-                })
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|p| p.as_str().map(str::to_string))
-                .filter(|p| files.contains(p))
-                .collect()
-        }
-        _ => Vec::new(),
+    let row = match files.is_empty() {
+        true => None,
+        false => stage_tests_row(core, dialog_id, stage).await?,
     };
-    Ok(TaskTests { files, passing })
+    // The files of the row's `key` list, those of the stage's only.
+    let listed = |key: &str| -> Vec<String> {
+        row.as_ref()
+            .and_then(|tests| tests[key].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p.as_str().map(str::to_string))
+            .filter(|p| files.contains(p))
+            .collect()
+    };
+    let (passing, failing) = (listed("passing"), listed("failing"));
+    Ok(TaskTests {
+        files,
+        passing,
+        failing,
+    })
+}
+
+/// S04: the row of the current task's Tests stage (`meta.tests`); a
+/// candidate's is its task's (T05). None: no Tests stage wrote one.
+pub async fn tests_row(core: &Core, dialog_id: &str) -> Result<Option<Value>, String> {
+    let chat = task_chat(core, dialog_id).await?;
+    let Some((_, records)) = current_task(core, &chat).await? else {
+        return Ok(None);
+    };
+    match records.iter().rev().find(|r| r.record.name == Stage::Tests) {
+        Some(stage) => stage_tests_row(core, &chat, stage).await,
+        None => Ok(None),
+    }
+}
+
+/// The `meta.tests` of the row a Tests stage's record points at.
+async fn stage_tests_row(
+    core: &Core,
+    dialog_id: &str,
+    stage: &Recorded,
+) -> Result<Option<Value>, String> {
+    let Some(row) = stage.record.reference.clone() else {
+        return Ok(None);
+    };
+    let (id, since) = (dialog_id.to_string(), stage.seq);
+    let rows = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, "tests", Some(since)))
+        .await?;
+    Ok(rows
+        .into_iter()
+        .find(|m| m.id == row)
+        .and_then(|m| m.meta?.get("tests").cloned()))
 }
 
 /// S04 (4.4): the line of the implementation's request that names the
-/// tests written first. None: none were.
+/// tests written first: those the red check saw fail fail on purpose,
+/// those that pass already are to be checked, and the rest (unrun) only
+/// have to pass. None: none were written.
 pub fn tests_line(tests: &TaskTests) -> Option<String> {
     let named = |files: &[&String]| {
         files
@@ -109,40 +142,35 @@ pub fn tests_line(tests: &TaskTests) -> Option<String> {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let (passing, failing): (Vec<&String>, Vec<&String>) =
-        tests.files.iter().partition(|f| tests.passing.contains(f));
-    let already = |files: &[&String]| {
-        let one = files.len() == 1;
-        format!(
+    let of = |list: &[String]| -> Vec<&String> {
+        tests.files.iter().filter(|f| list.contains(f)).collect()
+    };
+    let (failing, passing) = (of(&tests.failing), of(&tests.passing));
+    let unrun: Vec<&String> = (tests.files.iter())
+        .filter(|f| !failing.contains(f) && !passing.contains(f))
+        .collect();
+    let mut clauses = Vec::new();
+    if !failing.is_empty() {
+        let fail = if failing.len() == 1 {
+            "it fails"
+        } else {
+            "they fail"
+        };
+        clauses.push(format!("{}; {fail} now on purpose.", named(&failing)));
+    }
+    if !unrun.is_empty() {
+        clauses.push(format!("{}.", named(&unrun)));
+    }
+    if !passing.is_empty() {
+        let one = passing.len() == 1;
+        clauses.push(format!(
             "{}, which {} already, before the change: check that {} what the change does.",
-            named(files),
+            named(&passing),
             if one { "passes" } else { "pass" },
             if one { "it tests" } else { "they test" },
-        )
-    };
-    match (failing.is_empty(), passing.is_empty()) {
-        (true, true) => None,
-        (false, true) => Some(format!(
-            "Tests that must pass: {}; {} now on purpose.",
-            named(&failing),
-            if failing.len() == 1 {
-                "it fails"
-            } else {
-                "they fail"
-            },
-        )),
-        (false, false) => Some(format!(
-            "Tests that must pass: {}; {} now on purpose. Also {}",
-            named(&failing),
-            if failing.len() == 1 {
-                "it fails"
-            } else {
-                "they fail"
-            },
-            already(&passing),
-        )),
-        (true, false) => Some(format!("Tests that must pass: {}", already(&passing))),
+        ));
     }
+    (!clauses.is_empty()).then(|| format!("Tests that must pass: {}", clauses.join(" Also ")))
 }
 
 /// S02: the review row that blocked the plan the run after row `since`

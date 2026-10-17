@@ -45,7 +45,7 @@ mod stage;
 mod tests;
 
 pub(super) use artifacts::implementation_message;
-pub use artifacts::{task_plan_file, task_tests, tests_line, TaskTests};
+pub use artifacts::{task_plan_file, task_tests, tests_line, tests_row, TaskTests};
 pub use config::{
     needed_kinds, permissions_for, run_config, subagent_config, without_questions,
     DAEMON_FOLDER_REFUSED, MODE, NO_QUESTIONS,
