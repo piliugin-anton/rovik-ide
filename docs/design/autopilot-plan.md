@@ -1294,3 +1294,34 @@ T05 depends most on the environment it meets.
 - **The settings**: "Acceptance checker" joins the kinds' rows, used by
   Autopilot (`needed_kinds`); ordinary chats never run it. The subagents
   doc's report table has its row.
+
+### S09: the report, and delivery per outcome
+
+- **The delivery is a run** of the IDE's (`is_harness_stage`): the driver
+  records it running and starts it; the run (`deliver_stage`) records
+  what became of the result and has the model write the report in one
+  turn it can't call tools in (`tool_choice: "none"`: the history keeps
+  its tools, for the provider's cache), in the implementer's context, the
+  chat. A task the user stopped gets no report (they're there), nor does
+  one resumed after a crash at its delivery: the driver records the
+  delivery as before. The daemon makes no result for the run.
+- **The facts** (`autopilot::report_facts`, kept as `meta.report`): how
+  the task ended and what became of it, the plan's assumptions and
+  criteria, the acceptance's verdicts, the tests written for the task
+  (S04, S07), the last checks, the change review's line, what it spent.
+  The brief lists them and asks for "## Assumptions", "## What changed",
+  "## How it was verified" and "## Open", in that order, "Open" starting
+  with why the result wasn't delivered whole when it wasn't. A failed or
+  empty turn: the IDE writes the report from the facts (`byIde`).
+- **The record**: the delivery's record points at the report; the chat
+  shows it as the final message, its facts under it (`ReportFacts.tsx`).
+- **Per outcome (D7)**: `done` and `verified` land; `unmet`, `budget` and
+  `verify-flagged` are delivered as partial: not landed (an isolated
+  chat's changes wait in it, with why; a chat working in the project
+  left them there), the delivery done and saying so ("Delivered as
+  partial, not landed: …"); the other outcomes deliver nothing, and the
+  delivery fails, as before.
+- **The suites' scripted model**: a route marker that starts with
+  `last:` is looked for in a request's last message
+  (`testing::route_of`): the report's brief ends the chat, whose first
+  message is the task's.

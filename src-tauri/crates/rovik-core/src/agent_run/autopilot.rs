@@ -682,15 +682,16 @@ impl StageRun {
 fn is_run_stage(stage: Stage) -> bool {
     matches!(
         stage,
-        Stage::Plan | Stage::Prepare | Stage::Tests | Stage::Implement
+        Stage::Plan | Stage::Prepare | Stage::Tests | Stage::Implement | Stage::Deliver
     )
 }
 
-/// The stages whose run is the IDE's own work, with no model turn of its
-/// own: the installs (S03), the test writer's tests (S04). A run, so it can
-/// be stopped, its subagents started and its time counted, like any.
+/// The stages whose run is the IDE's own work: the installs (S03), the
+/// test writer's tests (S04), the delivery and its report (S09: one turn
+/// without tools). A run, so it can be stopped, its subagents started and
+/// its time counted, like any.
 pub fn is_harness_stage(stage: Stage) -> bool {
-    matches!(stage, Stage::Prepare | Stage::Tests)
+    matches!(stage, Stage::Prepare | Stage::Tests | Stage::Deliver)
 }
 
 /// A message of the user's that starts a task: sent in Autopilot mode.
@@ -1250,8 +1251,18 @@ async fn advance(
                 }
                 continue;
             }
+            // S09: the delivery's record and the report, in a run of its
+            // own; a task the user stopped has no report: they're there.
             Stage::Deliver => {
-                deliver(core, dialog_id, &records, round, None).await?;
+                let record = StageRecord::running(task, stage, round, effort);
+                let id = add_stage(core, dialog_id, &record).await?;
+                if task_outcome(&records) != "stopped" {
+                    let request = settings.request(dialog_id, StartKind::Retry);
+                    if let Ok(Some(_)) = super::start_run(core, request).await {
+                        return Ok(());
+                    }
+                }
+                deliver(core, dialog_id, &records, round, Some(id)).await?;
                 continue;
             }
             Stage::PlanReview | Stage::Review | Stage::Checks => {
@@ -1683,10 +1694,102 @@ async fn implementation_ran(
     }))
 }
 
-/// The last stage: what became of the result. The implementing run's end
-/// landed it already where it could (landing.rs) or kept it on its server
-/// for its computer; this records which, and the task's outcome.
-/// `existing`: its record from before a crash, filled in now.
+/// The outcomes delivered as partial: not landed, but the task's result,
+/// which its report says is incomplete (D7, S09).
+const PARTIAL: &[&str] = &["unmet", "budget", "verify-flagged"];
+
+/// What became of a task's result (S09, D7): landed, or waiting on its
+/// server; delivered as partial (`PARTIAL`), not landed; or nothing
+/// delivered. The record's status, outcome and line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Delivery {
+    pub status: Status,
+    pub outcome: String,
+    pub delivered: bool,
+    pub partial: bool,
+    pub summary: String,
+}
+
+/// The delivery of a task by its records. The implementing run's end
+/// landed its result already where it could (landing.rs), or kept it on
+/// its server for its computer; this says which.
+async fn delivery_of(
+    core: &Core,
+    dialog_id: &str,
+    records: &[Recorded],
+) -> Result<Delivery, String> {
+    let outcome = task_outcome(records);
+    let implemented = implementation_ran(core, dialog_id, records).await?;
+    let on_server = core.agents.on_server();
+    // An isolated chat's changes wait in its overlay, with why; a chat
+    // working in the project folder made its changes there.
+    let waiting = crate::overlay::chats::pending(dialog_id).map(|p| p.reason);
+    let in_project = !on_server && !crate::overlay::chats::exists(dialog_id);
+    let partial = implemented && PARTIAL.contains(&outcome.as_str());
+    let (delivered, summary) = match (waiting, pending_reason_in(&outcome, true)) {
+        // It ended before anything was changed.
+        _ if !implemented => (false, "Nothing to deliver".to_string()),
+        (Some(reason), _) if partial => (
+            false,
+            format!(
+                "Delivered as partial, not landed: {}",
+                reason.trim_start_matches("Not landed: ")
+            ),
+        ),
+        (Some(reason), _) => (false, reason),
+        (None, Some(_)) if partial && in_project => (
+            false,
+            format!(
+                "Delivered as partial: {}; the changes are in the project as they are",
+                lower_first(&failure_summary(&outcome))
+            ),
+        ),
+        (None, Some(_)) if in_project => (
+            false,
+            format!(
+                "{}; the changes are in the project as they are",
+                failure_summary(&outcome)
+            ),
+        ),
+        (None, Some(reason)) if partial => (
+            false,
+            format!(
+                "Delivered as partial, not landed: {}",
+                reason.trim_start_matches("Not landed: ")
+            ),
+        ),
+        (None, Some(reason)) => (false, reason),
+        (None, None) if on_server => (
+            true,
+            "Delivered: the result waits on the server for its computer".into(),
+        ),
+        (None, None) => (true, "Delivered: the changes are in the project".into()),
+    };
+    Ok(Delivery {
+        status: if delivered || partial {
+            Status::Done
+        } else {
+            Status::Failed
+        },
+        outcome,
+        delivered,
+        partial,
+        summary: summary.trim_end_matches('.').to_string(),
+    })
+}
+
+/// "The checks still fail" as it reads after a colon.
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_lowercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The last stage, without a report (its run couldn't start, a task the
+/// user stopped, a resume after a crash): what became of the result.
+/// `existing`: its record, filled in now.
 async fn deliver(
     core: &Core,
     dialog_id: &str,
@@ -1702,42 +1805,153 @@ async fn deliver(
             add_stage(core, dialog_id, &record).await?
         }
     };
-    let outcome = task_outcome(records);
-    let implemented = implementation_ran(core, dialog_id, records).await?;
-    let on_server = core.agents.on_server();
-    // An isolated chat's changes wait in its overlay, with why; a chat
-    // working in the project folder made its changes there.
-    let waiting = crate::overlay::chats::pending(dialog_id).map(|p| p.reason);
-    let in_project = !on_server && !crate::overlay::chats::exists(dialog_id);
-    let (delivered, summary) = match (waiting, pending_reason_in(&outcome, true)) {
-        // It ended before anything was changed.
-        _ if !implemented => (false, "Nothing to deliver".to_string()),
-        (Some(reason), _) => (false, reason),
-        (None, Some(_)) if in_project => (
-            false,
-            format!(
-                "{}; the changes are in the project as they are",
-                failure_summary(&outcome)
-            ),
-        ),
-        (None, Some(reason)) => (false, reason),
-        (None, None) if on_server => (
-            true,
-            "Delivered: the result waits on the server for its computer".into(),
-        ),
-        (None, None) => (true, "Delivered: the changes are in the project".into()),
-    };
+    let d = delivery_of(core, dialog_id, records).await?;
     end_stage(core, dialog_id, &id, |r| {
-        r.status = if delivered {
-            Status::Done
-        } else {
-            Status::Failed
-        };
-        r.outcome = Some(outcome);
-        r.summary = Some(summary.trim_end_matches('.').to_string());
+        r.status = d.status;
+        r.outcome = Some(d.outcome);
+        r.summary = Some(d.summary);
     })
     .await?;
     Ok(())
+}
+
+/// One check of the task's last round, for its report.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CheckLine {
+    pub command: String,
+    pub status: String,
+}
+
+/// S09 (4.11): what a task's report is written from, by the IDE's
+/// records: how it ended and what became of it, the plan's assumptions
+/// and criteria, the acceptance's verdicts, the tests written for it, the
+/// last checks, the review, and what it spent. `meta.report`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportFacts {
+    pub outcome: String,
+    /// How it ended, in a line: "Its checks pass", or why not.
+    pub ending: String,
+    pub delivered: bool,
+    pub partial: bool,
+    /// What became of the result: the delivery's line.
+    pub delivery: String,
+    pub assumptions: Vec<String>,
+    pub criteria: Vec<String>,
+    pub verdicts: Vec<super::acceptance::Verdict>,
+    pub tests: Vec<String>,
+    pub checks: Vec<CheckLine>,
+    pub review: Option<String>,
+    pub spent: Spent,
+    #[serde(skip)]
+    pub status: Status,
+}
+
+/// S09: the current task's delivery and the facts its report is written
+/// from. None: the chat has no task.
+pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportFacts>, String> {
+    let Some((_, records)) = current_task(core, dialog_id).await? else {
+        return Ok(None);
+    };
+    let d = delivery_of(core, dialog_id, &records).await?;
+    let ending = match d.outcome.as_str() {
+        "verified" => "Its checks pass".to_string(),
+        "done" => "It's done; no checks ran".to_string(),
+        other => failure_summary(other),
+    };
+    let since = records[0].seq;
+    let rows = |key: &'static str| {
+        let id = dialog_id.to_string();
+        core.db
+            .read(move |c| store::messages_with_meta(c, &id, key, Some(since)))
+    };
+    let plan = match task_plan_file(core, dialog_id).await? {
+        Some(file) => std::fs::read_to_string(file).ok(),
+        None => None,
+    };
+    let criteria = plan.as_deref().and_then(plan::criteria);
+    let verdicts: Vec<super::acceptance::Verdict> = rows("acceptance")
+        .await?
+        .iter()
+        .rev()
+        .find_map(|m| {
+            let v = m
+                .meta
+                .as_ref()?
+                .pointer("/acceptance/verdicts")?
+                .as_array()?;
+            Some(
+                v.iter()
+                    .filter_map(|v| {
+                        Some(super::acceptance::Verdict {
+                            criterion: v["criterion"].as_u64()? as usize,
+                            satisfied: v["satisfied"].as_bool()?,
+                            note: v["note"].as_str()?.to_string(),
+                        })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    let mut tests: Vec<String> = Vec::new();
+    for m in rows("tests").await? {
+        let files = m
+            .meta
+            .as_ref()
+            .and_then(|x| x.pointer("/tests/files")?.as_array().cloned())
+            .unwrap_or_default();
+        for f in files.iter().filter_map(Value::as_str) {
+            if !tests.iter().any(|t| t == f) {
+                tests.push(f.to_string());
+            }
+        }
+    }
+    let checks: Vec<CheckLine> = rows("verification")
+        .await?
+        .last()
+        .and_then(|m| {
+            m.meta
+                .as_ref()?
+                .pointer("/verification/checks")?
+                .as_array()
+                .cloned()
+        })
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| {
+            Some(CheckLine {
+                command: c["command"].as_str()?.to_string(),
+                status: c["status"].as_str()?.to_string(),
+            })
+        })
+        .collect();
+    let review = records
+        .iter()
+        .rev()
+        .find(|r| r.record.name == Stage::Review)
+        .and_then(|r| r.record.summary.clone());
+    let spent = records
+        .iter()
+        .filter_map(|r| r.record.spent)
+        .fold(Spent::default(), Spent::plus);
+    Ok(Some(ReportFacts {
+        outcome: d.outcome,
+        ending,
+        delivered: d.delivered,
+        partial: d.partial,
+        delivery: d.summary,
+        assumptions: criteria
+            .as_ref()
+            .map(|c| c.assumptions.clone())
+            .unwrap_or_default(),
+        criteria: criteria.map(|c| c.items).unwrap_or_default(),
+        verdicts,
+        tests,
+        checks,
+        review,
+        spent,
+        status: d.status,
+    }))
 }
 
 /// Goes on with the chat's task where a crash, a restart or a closed app

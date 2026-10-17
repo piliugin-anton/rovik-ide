@@ -330,7 +330,7 @@ impl EventSink for Tap {
 /// An Autopilot stage the IDE runs itself, before the implementation:
 /// what it changes comes with the implementation's result (S03).
 fn makes_no_result(stage: Option<&str>) -> bool {
-    matches!(stage, Some("prepare" | "tests"))
+    matches!(stage, Some("prepare" | "tests" | "deliver"))
 }
 
 /// A run's outcome when the daemon's stop paused it (R02).
@@ -347,6 +347,7 @@ mod tests {
     #[test]
     fn only_the_ides_own_stages_bring_no_result() {
         assert!(makes_no_result(Some("prepare")) && makes_no_result(Some("tests")));
+        assert!(makes_no_result(Some("deliver")));
         for stage in [None, Some("plan"), Some("implement"), Some("later")] {
             assert!(!makes_no_result(stage), "{stage:?}");
         }

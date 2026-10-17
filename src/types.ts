@@ -260,6 +260,8 @@ export interface ToolMeta {
   tests?: import('./lib/autopilot').TestsMeta;
   /** An empty assistant message: an acceptance check of a task's change (lib/autopilot.ts). */
   acceptance?: import('./lib/autopilot').AcceptanceMeta;
+  /** A task's report, its final message: the facts it was written from (lib/autopilot.ts). */
+  report?: import('./lib/autopilot').ReportMeta;
   /**
    * A user-role message the IDE wrote (check failures for the agent). Not
    * shown as a user message, and never mistaken for the user's request.
@@ -283,7 +285,9 @@ export interface ToolMeta {
     /** Autopilot: a loop the run goes on from, told to change approach (U03). */
     | 'loop'
     /** Autopilot: criteria an acceptance check found unmet (S08). */
-    | 'acceptance';
+    | 'acceptance'
+    /** Autopilot: what the task's report is written from (S09). */
+    | 'report';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */

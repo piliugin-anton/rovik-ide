@@ -207,6 +207,12 @@ const ACCEPTANCE: &str = "# Check this change against its criteria";
 /// blocked, so the stage is skipped and judges nothing.
 const NO_VERDICTS: &str = "## Blocked\n\nNothing to judge in this test.";
 
+/// The task's report turn, by its brief at the end of the chat (S09).
+const REPORT: &str = "last:# Write the task's report";
+
+/// The report a task's turn writes unless a test gives it another.
+const A_REPORT: &str = "## Assumptions\n\nNone.\n\n## What changed\n\nThe files the plan names.\n\n## How it was verified\n\nThe project's checks.\n\n## Open\n\nNothing.";
+
 /// What the Tests stage's writer answers unless a test gives it replies:
 /// blocked, so the stage is skipped and writes nothing.
 const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
@@ -226,6 +232,9 @@ async fn model_routed(
     }
     if !routes.iter().any(|(marker, _)| *marker == ACCEPTANCE) {
         routes.push((ACCEPTANCE, vec![Reply::Text(NO_VERDICTS)]));
+    }
+    if !routes.iter().any(|(marker, _)| *marker == REPORT) {
+        routes.push((REPORT, vec![Reply::Text(A_REPORT)]));
     }
     crate::testing::model_routed(routes, default).await
 }
@@ -430,16 +439,20 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
     );
     let tools = tool_names(implementing);
     assert!(tools.iter().any(|t| t == "write"), "Agent mode: {tools:?}");
-    // Four runs, each marked with its stage: the plan's, the Prepare and
-    // Tests stages' (the IDE's own: S03, S04), the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 4);
+    // Five runs, each marked with its stage: the plan's, the Prepare and
+    // Tests stages' (the IDE's own: S03, S04), the implementation's, and
+    // the delivery's, which writes the report (S09).
+    assert_eq!(h.events_of("runStarted").len(), 5);
     let runs = log_lines(&h, "run").await;
     let stage_of: Vec<&str> = runs.iter().filter_map(|r| r["stage"].as_str()).collect();
-    assert_eq!(stage_of, ["plan", "prepare", "tests", "implement"]);
+    assert_eq!(
+        stage_of,
+        ["plan", "prepare", "tests", "implement", "deliver"]
+    );
 
     // Over: a Resume starts nothing.
     assert!(h.start(resume_request(&h, &url)).await.is_none());
-    assert_eq!(h.events_of("runStarted").len(), 4);
+    assert_eq!(h.events_of("runStarted").len(), 5);
 }
 
 /// A07 (D17): the user's subagents are off, and the task's plan is
@@ -555,8 +568,9 @@ async fn a_task_cut_between_two_stages_goes_on_once_resumed() {
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
-    // The plan's, the Prepare and Tests stages', the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 4);
+    // The plan's, the Prepare and Tests stages', the implementation's,
+    // the delivery's.
+    assert_eq!(h.events_of("runStarted").len(), 5);
 }
 
 /// A03: the driver dies after it recorded the implementation, before its
@@ -589,8 +603,9 @@ async fn a_stage_cut_before_its_run_started_is_started_once_resumed() {
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
-    // The plan's, the Prepare and Tests stages', the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 4);
+    // The plan's, the Prepare and Tests stages', the implementation's,
+    // the delivery's.
+    assert_eq!(h.events_of("runStarted").len(), 5);
 }
 
 /// A03: a Resume that comes as a stage's run ends (the app hears the end
@@ -617,8 +632,9 @@ async fn a_resume_as_a_stage_ends_starts_nothing_more() {
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
-    // The plan's, the Prepare and Tests stages', the implementation's.
-    assert_eq!(h.events_of("runStarted").len(), 4);
+    // The plan's, the Prepare and Tests stages', the implementation's,
+    // the delivery's.
+    assert_eq!(h.events_of("runStarted").len(), 5);
 }
 
 /// A03: a plan run that saves no plan fails the task, which delivers
@@ -1380,7 +1396,7 @@ async fn a_loop_goes_on_once_told_and_ends_the_stage_the_second_time() {
     let outcomes: Vec<Value> = h
         .events_of("runEnded")
         .iter()
-        .filter(|e| e["stage"] != "prepare" && e["stage"] != "tests")
+        .filter(|e| !matches!(e["stage"].as_str(), Some("prepare" | "tests" | "deliver")))
         .map(|e| e["outcome"].clone())
         .collect();
     assert_eq!(outcomes.len(), 2, "{outcomes:?}");
@@ -1492,7 +1508,7 @@ async fn a_tiny_budget_ends_the_task_at_the_next_reply() {
             (Stage::Prepare, Status::Skipped),
             (Stage::Tests, Status::Skipped),
             (Stage::Implement, Status::Failed),
-            (Stage::Deliver, Status::Failed),
+            (Stage::Deliver, Status::Done),
         ]
     );
     let plan = records[0].spent.expect("the plan's run's spend");
@@ -1508,7 +1524,7 @@ async fn a_tiny_budget_ends_the_task_at_the_next_reply() {
     assert_eq!(deliver.outcome.as_deref(), Some("budget"));
     assert_eq!(
         deliver.summary.as_deref(),
-        Some("Over the task's budget; the changes are in the project as they are")
+        Some("Delivered as partial: over the task's budget; the changes are in the project as they are")
     );
     // The implementation's first reply's call didn't run.
     let messages = h.messages().await;
@@ -1527,6 +1543,7 @@ async fn a_tiny_budget_ends_the_task_at_the_next_reply() {
     let ends: Vec<Value> = h
         .events_of("runEnded")
         .iter()
+        .filter(|e| e["stage"] == "implement")
         .map(|e| e["outcome"].clone())
         .collect();
     assert_eq!(ends.last(), Some(&json!("budget")));
@@ -1564,7 +1581,8 @@ async fn past_the_budget_between_stages_no_stage_starts() {
     let mut request = resume_request(&h, &url);
     request.config.as_mut().unwrap().autopilot.budget.max_cost = Some(0.05);
     assert!(h.start(request).await.is_none(), "no run starts");
-    let records = stages(&h).await;
+    // The delivery's run, for its report, ends the task (S09).
+    let records = stages_until(&h, "the delivery", delivered).await;
     let last = &records[records.len() - 2..];
     assert_eq!(
         names(last),
@@ -1579,7 +1597,9 @@ async fn past_the_budget_between_stages_no_stage_starts() {
         Some("Not started: over the task's budget: it cost 0.10, past its limit of 0.05")
     );
     assert_eq!(last[1].summary.as_deref(), Some("Nothing to deliver"));
-    assert!(h.events_of("runStarted").is_empty());
+    // The only run: the delivery's, for its report (S09).
+    let started = h.events_of("runStarted");
+    assert_eq!(started.len(), 1, "{started:?}");
 }
 
 /*
@@ -2546,7 +2566,10 @@ async fn the_tests_come_first_and_the_implementation_is_told_to_make_them_pass()
     // The implementation came after it, told to make it pass.
     let runs = log_lines(&h, "run").await;
     let stage_of: Vec<&str> = runs.iter().filter_map(|r| r["stage"].as_str()).collect();
-    assert_eq!(stage_of, ["plan", "prepare", "tests", "implement"]);
+    assert_eq!(
+        stage_of,
+        ["plan", "prepare", "tests", "implement", "deliver"]
+    );
     let messages = h.messages().await;
     let started = implement_messages(&messages);
     assert_eq!(started.len(), 1);
@@ -3234,7 +3257,7 @@ async fn a_criterion_still_unmet_at_the_last_check_ends_the_task_unmet() {
             (Stage::Review, Status::Skipped),
             (Stage::Checks, Status::Done),
             (Stage::Acceptance, Status::Failed),
-            (Stage::Deliver, Status::Failed),
+            (Stage::Deliver, Status::Done),
         ],
         "{records:#?}"
     );
@@ -3249,10 +3272,168 @@ async fn a_criterion_still_unmet_at_the_last_check_ends_the_task_unmet() {
     assert_eq!(deliver.outcome.as_deref(), Some("unmet"));
     assert_eq!(
         deliver.summary.as_deref(),
-        Some("A criterion is still unmet after the last acceptance check; the changes are in the project as they are")
+        Some("Delivered as partial: a criterion is still unmet after the last acceptance check; the changes are in the project as they are")
     );
     let messages = h.messages().await;
     let checks = acceptances(&messages);
     assert_eq!(checks.len(), 2);
     assert_eq!(checks[1]["unmet"], true);
+}
+
+/// S09: TASK_PLAN with an assumption of its planner's.
+fn assuming_plan() -> &'static str {
+    let plan = TASK_PLAN.replace(
+        "**Assumptions**: None.",
+        "**Assumptions**: ok.txt holds one word, with no newline.",
+    );
+    Box::leak(plan.into_boxed_str())
+}
+
+/// The report the task's turn writes in these tests.
+const THE_REPORT: &str = "## Assumptions\n\nok.txt holds one word.\n\n## What changed\n\n`ok.txt` says ok.\n\n## How it was verified\n\n`npm test` passes; `test/ok.test.js` was written first; the criterion is met.\n\n## Open\n\nNothing.";
+
+/// The task's report message: the chat's last, with `meta.report`.
+fn report_of(messages: &[MessageRow]) -> &MessageRow {
+    let last = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant" && !m.content.is_empty())
+        .expect("a last reply");
+    assert!(
+        last.meta
+            .as_ref()
+            .is_some_and(|m| m.get("report").is_some()),
+        "the last reply is the report: {last:#?}"
+    );
+    last
+}
+
+/// S09 (4.11): the task ends with its report, written in a turn without
+/// tools from the IDE's facts: the plan's assumptions, the tests written
+/// first, the acceptance verdicts, the checks and what it cost. Saved as
+/// the chat's last message, which the delivery's record points at.
+#[tokio::test]
+async fn a_task_ends_with_its_report_from_the_ides_facts() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (TESTS_FIRST, tests_first_script(OK_TEST, OK_TEST_CODE)),
+            (ACCEPTANCE, vec![Reply::Text(SATISFIED)]),
+            (REPORT, vec![Reply::Text(THE_REPORT)]),
+        ],
+        script_with_plan(assuming_plan()),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let deliver = records.last().unwrap();
+    assert_eq!(
+        (deliver.name, deliver.status),
+        (Stage::Deliver, Status::Done)
+    );
+    assert_eq!(deliver.outcome.as_deref(), Some("verified"));
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("Delivered: the changes are in the project")
+    );
+
+    let messages = h.messages().await;
+    let report = report_of(&messages);
+    assert_eq!(report.content, THE_REPORT);
+    assert_eq!(deliver.reference.as_ref(), Some(&report.id));
+    let facts = &report.meta.as_ref().unwrap()["report"];
+    assert_eq!(facts["outcome"], "verified");
+    assert_eq!(facts["delivered"], true);
+    assert_eq!(
+        facts["assumptions"],
+        json!(["ok.txt holds one word, with no newline."])
+    );
+    assert_eq!(facts["tests"], json!([OK_TEST]));
+    assert_eq!(facts["verdicts"][0]["satisfied"], true);
+    assert_eq!(facts["checks"][0]["status"], "passed");
+    assert!(facts["spent"]["ms"].as_u64().is_some());
+
+    // Its brief, at the end of the chat: the facts it's written from.
+    let requests = seen.lock().unwrap().clone();
+    let brief = requests
+        .iter()
+        .find(|r| route_of(r, &[REPORT]).is_some())
+        .expect("the report's turn")["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"]
+        .to_string();
+    for fact in [
+        "ok.txt holds one word, with no newline.",
+        "`test/ok.test.js`",
+        "— met: `npm test` passes",
+        "- Spent: ",
+        "## Assumptions",
+    ] {
+        assert!(brief.contains(fact), "{fact}: {brief}");
+    }
+    // A turn whose tools it may not call (words only: the history's
+    // tools stay, for the provider's cache).
+    let turn = requests
+        .iter()
+        .find(|r| route_of(r, &[REPORT]).is_some())
+        .unwrap();
+    assert_eq!(turn["tool_choice"], "none");
+    assert_eq!(log_lines(&h, "report").await.len(), 1);
+}
+
+/// S09 (D7): `unmet` is delivered as partial: in an isolated chat it isn't
+/// landed, it waits there with why, and the report starts with that.
+#[tokio::test]
+async fn a_partial_result_isnt_landed_and_its_report_says_why() {
+    if !has_npm() || !crate::vfs::mount_works() {
+        eprintln!("npm or the virtual files aren't here: skipped");
+        return;
+    }
+    let mut h = task_project().await;
+    h.isolate().await;
+    let mut script = task_script();
+    script.push(Reply::Text("I think it's fine as it is."));
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (ACCEPTANCE, vec![Reply::Text(UNSATISFIED)]),
+        ],
+        script,
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.isolate = Some(true);
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let deliver = records.last().unwrap();
+    assert_eq!(
+        (deliver.status, deliver.outcome.as_deref()),
+        (Status::Done, Some("unmet"))
+    );
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("Delivered as partial, not landed: the acceptance check finds a criterion of the plan unmet")
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("no"), "not landed");
+    let messages = h.messages().await;
+    let facts = &report_of(&messages).meta.as_ref().unwrap()["report"];
+    assert_eq!(
+        (facts["partial"].clone(), facts["delivered"].clone()),
+        (json!(true), json!(false))
+    );
+    let requests = seen.lock().unwrap().clone();
+    let brief = requests
+        .iter()
+        .find(|r| route_of(r, &[REPORT]).is_some())
+        .unwrap()["messages"]
+        .to_string();
+    assert!(brief.contains("starting with why the result wasn't delivered whole"));
+    assert!(brief.contains("Delivered as partial, not landed"));
 }

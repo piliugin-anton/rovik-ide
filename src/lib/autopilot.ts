@@ -397,3 +397,50 @@ export function acceptanceHeadline(meta: AcceptanceMeta, interrupted: boolean): 
       return `Acceptance check skipped: ${meta.reason ?? 'it couldn’t judge'}. The checks decide.`;
   }
 }
+
+/**
+ * `meta.report`: the facts a task's report was written from (S09,
+ * agent_run/autopilot.rs `ReportFacts`), on its final message.
+ */
+export interface ReportMeta {
+  outcome: string;
+  /** How it ended, in a line. */
+  ending: string;
+  delivered: boolean;
+  /** Not landed, but the task's result: unmet, budget, verify-flagged. */
+  partial: boolean;
+  /** What became of the result. */
+  delivery: string;
+  assumptions: string[];
+  criteria: string[];
+  verdicts: AcceptanceVerdict[];
+  tests: string[];
+  checks: { command: string; status: string }[];
+  review?: string | null;
+  spent: { ms: number; cost: number; uncosted: number };
+  /** The model couldn't write it: the IDE did, from these facts. */
+  byIde?: boolean;
+}
+
+/** "2 min", "1 h 5 min", "40 s" (agent_run/report.rs `duration`). */
+export function reportDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+}
+
+/** What the task spent, in a line. */
+export function reportSpent(spent: ReportMeta['spent']): string {
+  const time = reportDuration(spent.ms);
+  if (spent.cost <= 0) return `${time}; no cost reported`;
+  const cost = spent.cost.toFixed(2);
+  return spent.uncosted ? `${time}, at least ${cost}` : `${time}, ${cost}`;
+}
+
+/** The report card's headline: how the task ended and what became of it. */
+export function reportHeadline(meta: ReportMeta): string {
+  if (meta.delivered) return `Task done: ${meta.ending.toLowerCase()}.`;
+  if (meta.partial) return `Task delivered as partial: ${meta.ending.toLowerCase()}.`;
+  return `Task ended: ${meta.ending.toLowerCase()}.`;
+}

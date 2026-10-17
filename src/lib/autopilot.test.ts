@@ -14,6 +14,9 @@ import {
   taskOver,
   taskRecords,
   acceptanceHeadline,
+  reportDuration,
+  reportHeadline,
+  reportSpent,
   testsHeadline,
   unfinishedTask,
   type StageMeta,
@@ -344,4 +347,33 @@ test('the acceptance record’s headline: judging, met, sent back, unmet, skippe
     ),
     'Acceptance check skipped: its verdicts couldn’t be read. The checks decide.'
   );
+});
+
+test('the report card’s lines: how it ended, what it spent (S09)', () => {
+  const meta = {
+    outcome: 'verified',
+    ending: 'Its checks pass',
+    delivered: true,
+    partial: false,
+    delivery: 'Delivered: the changes are in the project',
+    assumptions: [],
+    criteria: [],
+    verdicts: [],
+    tests: [],
+    checks: [],
+    spent: { ms: 125_000, cost: 0.4249, uncosted: 0 },
+  };
+  assert.equal(reportHeadline(meta), 'Task done: its checks pass.');
+  assert.equal(
+    reportHeadline({ ...meta, delivered: false, partial: true, ending: 'Over the task’s budget' }),
+    'Task delivered as partial: over the task’s budget.'
+  );
+  assert.equal(
+    reportHeadline({ ...meta, delivered: false, ending: 'The checks still fail' }),
+    'Task ended: the checks still fail.'
+  );
+  assert.equal(reportSpent(meta.spent), '2 min, 0.42');
+  assert.equal(reportSpent({ ms: 1000, cost: 0.1, uncosted: 2 }), '1 s, at least 0.10');
+  assert.equal(reportSpent({ ms: 1000, cost: 0, uncosted: 2 }), '1 s; no cost reported');
+  assert.equal(reportDuration(3_900_000), '1 h 5 min');
 });

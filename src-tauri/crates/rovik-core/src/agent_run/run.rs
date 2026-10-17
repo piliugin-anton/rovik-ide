@@ -427,6 +427,7 @@ impl Run {
         match self.stage.as_ref().map(|s| s.stage) {
             Some(super::autopilot::Stage::Prepare) => self.prepare_stage().await,
             Some(super::autopilot::Stage::Tests) => self.tests_stage().await,
+            Some(super::autopilot::Stage::Deliver) => self.deliver_stage().await,
             _ => Ok("done".into()),
         }
     }
@@ -2486,7 +2487,7 @@ impl Run {
 
     /// The first answer to a sent message: on none, the message is marked
     /// failed (its draft comes back in the composer).
-    async fn settle(&mut self, ok: bool) {
+    pub(super) async fn settle(&mut self, ok: bool) {
         let Some(message_id) = self.settle_message.take() else {
             return;
         };

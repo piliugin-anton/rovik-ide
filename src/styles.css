@@ -5086,6 +5086,36 @@ body.is-resizing * {
   white-space: pre-wrap;
 }
 
+/* S09: the facts under a task's report (ReportFacts.tsx). */
+.chat-report.delivered {
+  border-left-color: var(--success);
+}
+
+.chat-report.partial {
+  border-left-color: var(--warning);
+}
+
+.chat-report.undelivered {
+  border-left-color: var(--error);
+}
+
+.chat-report-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+
+.chat-report-facts dt {
+  color: var(--fg-dim);
+}
+
+.chat-report-facts dd {
+  margin: 0;
+  color: var(--fg);
+  min-width: 0;
+}
+
 /* S08: an acceptance check's verdicts (AcceptanceRecord.tsx). */
 .chat-acceptance.satisfied {
   border-left-color: var(--success);

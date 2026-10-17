@@ -42,6 +42,7 @@ import VerificationRecord from './VerificationRecord';
 import PrepareRecord from './PrepareRecord';
 import TestsRecord from './TestsRecord';
 import AcceptanceRecord from './AcceptanceRecord';
+import ReportFacts from './ReportFacts';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
 import { currentTask, stageOf } from '../lib/autopilot';
@@ -1514,6 +1515,10 @@ export default function MessageList(props: {
                     </Show>
                   )}
                 </For>
+
+                <Show when={m.role === 'assistant' && m.meta?.report}>
+                  {(r) => <ReportFacts meta={r()} />}
+                </Show>
 
                 <Show when={m.meta?.acceptance}>
                   {(a) => (

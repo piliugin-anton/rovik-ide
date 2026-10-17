@@ -475,6 +475,89 @@ test('an acceptance check shows each criterion with its verdict (S08)', () => {
   }
 });
 
+test('a task’s report shows as its last message, with the facts under it (S09)', () => {
+  const [chat] = createStore({
+    messages: [
+      { id: 'u1', role: 'user', content: 'Make the test pass', meta: { mode: 'autopilot' } },
+      {
+        id: 'b1',
+        role: 'user',
+        content: '# Write the task’s report …',
+        meta: { harness: 'report' },
+      },
+      {
+        id: 'r1',
+        role: 'assistant',
+        content: '## Assumptions\n\nNone.\n\n## Open\n\nNothing.',
+        meta: {
+          report: {
+            outcome: 'unmet',
+            ending: 'A criterion is still unmet after the last acceptance check',
+            delivered: false,
+            partial: true,
+            delivery:
+              'Delivered as partial, not landed: the acceptance check finds a criterion unmet',
+            assumptions: [],
+            criteria: ['ok.txt says ok.'],
+            verdicts: [{ criterion: 1, satisfied: false, note: 'a stray space' }],
+            tests: ['test/ok.test.js'],
+            checks: [{ command: 'npm test', status: 'passed' }],
+            spent: { ms: 61_000, cost: 0.05, uncosted: 0 },
+          },
+        },
+      },
+    ] as ChatMessage[],
+    hasOlder: false,
+    hasNewer: false,
+    loadingOlder: false,
+    lastUsed: 0,
+  });
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () => Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+  const root = container();
+  const noop = async () => 0;
+  let dispose = () => {};
+  try {
+    dispose = render(
+      () => (
+        <MessageList
+          dialogId="d-report"
+          chat={chat}
+          sending={false}
+          focusMessageId={null}
+          onLoadOlder={noop}
+          onLoadNewer={noop}
+          onReloadLatest={async () => {}}
+          onRetry={() => {}}
+          onContinue={() => {}}
+          onContinueRun={() => {}}
+          onRunChecks={() => {}}
+          onOpenProjectChecks={() => {}}
+        />
+      ),
+      root
+    );
+    // The IDE's brief isn't shown; the report is, as a reply.
+    assert.equal(root.querySelector('.chat-item[data-id="b1"] .chat-message'), null);
+    const item = root.querySelector('.chat-item[data-id="r1"]');
+    assert.match(item?.querySelector('.chat-message')?.textContent ?? '', /Assumptions/);
+    const card = item?.querySelector('.chat-report');
+    assert.equal(card?.className, 'chat-verify chat-report partial');
+    assert.equal(
+      card?.querySelector('.chat-verify-title')?.textContent,
+      'Task delivered as partial: a criterion is still unmet after the last acceptance check.'
+    );
+    const facts = [...card!.querySelectorAll('dt')].map((dt) => dt.textContent);
+    assert.deepEqual(facts, ['Result', 'Criteria', 'Tests written', 'Checks', 'Spent']);
+    assert.equal(card!.querySelector('li.unmet .chat-acceptance-verdict')?.textContent, 'Unmet');
+    assert.match(card!.textContent ?? '', /1 min, 0\.05/);
+  } finally {
+    dispose();
+    api.getMessages = original;
+  }
+});
+
 test('a stage record spins only while its task’s run goes, not when another took over', () => {
   const plan = (id: string, task: string) => ({
     id,

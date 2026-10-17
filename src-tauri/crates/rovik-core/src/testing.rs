@@ -199,17 +199,21 @@ pub async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
 /// The script a request is answered from: the first route whose marker is
 /// in the request's first message after the system prompt (a subagent's
 /// brief, or the user's request), else the default script (K05: parallel
-/// runs each get their own replies, in their own order).
+/// runs each get their own replies, in their own order). A marker that
+/// starts with `last:` is looked for in the request's last message instead
+/// (a turn the IDE asks for at the end of a chat, as a task's report).
 pub fn route_of(body: &Value, markers: &[&str]) -> Option<usize> {
-    let first = body["messages"]
-        .as_array()?
-        .iter()
-        .find(|m| m["role"] != "system")?;
-    let text = match &first["content"] {
+    let messages = body["messages"].as_array()?;
+    let text_of = |m: &Value| match &m["content"] {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    markers.iter().position(|m| text.contains(m))
+    let first = text_of(messages.iter().find(|m| m["role"] != "system")?);
+    let last = messages.last().map(text_of).unwrap_or_default();
+    markers.iter().position(|m| match m.strip_prefix("last:") {
+        Some(marker) => last.contains(marker),
+        None => first.contains(m),
+    })
 }
 
 /// `model`, with one script per run: `routes` pairs a marker (found in the
