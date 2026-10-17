@@ -285,6 +285,8 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
     let (planned, outcome) = next_result(&mut heard).await;
     assert_eq!(outcome.as_deref(), Some("done"), "the plan's run");
     assert_eq!(planned.pending, None);
+    // The Prepare stage's run between them is the IDE's own: it brings no
+    // result (S03), so the next is the implementation's.
     let (implemented, outcome) = next_result(&mut heard).await;
     assert_eq!(outcome.as_deref(), Some("unverified"));
     assert_eq!(

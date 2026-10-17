@@ -6,8 +6,8 @@
 // may spend. Saved with the Subagents settings (lib/subagentSettings.ts,
 // `autopilot`) and sent in `AgentConfig.autopilot`
 // (rovik-protocol/src/autopilot.rs `AutopilotConfig`), which only chats in
-// Autopilot read. Preparing the dependencies comes with the task that makes
-// it do something (S03); until then the backend's default stands for it.
+// Autopilot read. And whether a task installs its dependencies before the
+// first check (S03).
 import type { AutopilotEffort } from './autopilot';
 import type { SubagentKindId } from './subagentSettings';
 
@@ -24,6 +24,8 @@ export interface AutopilotSettings {
   deniedCommands?: string[];
   /** Where a task stops on its own (U04); unset: its effort's defaults. */
   budget?: AutopilotBudget;
+  /** false: no Prepare stage, and no install after an environment failure (S03); unset: on. */
+  prepare?: false;
 }
 
 /** A task's budget until the settings set one (3.5): Balanced's is 2 hours and 5. */
@@ -124,6 +126,7 @@ export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {
     effort: effort ?? DEFAULT_AUTOPILOT_SETTINGS.effort,
     ...(denied ? { deniedCommands: denied } : {}),
     ...(budget ? { budget } : {}),
+    ...(r.prepare === false ? { prepare: false as const } : {}),
   };
 }
 
@@ -135,6 +138,7 @@ export interface AutopilotConfig {
   effort: AutopilotEffort;
   deniedCommands?: string[];
   budget: AutopilotBudget;
+  prepare: boolean;
 }
 
 export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
@@ -142,5 +146,6 @@ export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
     effort: settings.effort,
     ...(settings.deniedCommands ? { deniedCommands: settings.deniedCommands } : {}),
     budget: budgetOf(settings),
+    prepare: settings.prepare !== false,
   };
 }

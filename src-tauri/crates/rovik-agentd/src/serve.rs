@@ -309,22 +309,46 @@ impl EventSink for Tap {
             _ => {}
         }
         self.events.agent(event);
-        // The run's end goes out first, then its result.
+        // The run's end goes out first, then its result: not an Autopilot
+        // task's own stages', which change nothing that's a result yet (the
+        // installs it prepared, the tests it wrote first: S03, S04).
         if let AgentEvent::RunEnded {
             dialog_id,
             outcome,
             autopilot,
+            stage,
             ..
         } = event
         {
-            if !drained(outcome) {
+            if !drained(outcome) && !makes_no_result(stage.as_deref()) {
                 self.results.after_run(dialog_id, outcome, *autopilot);
             }
         }
     }
 }
 
+/// An Autopilot stage the IDE runs itself, before the implementation:
+/// what it changes comes with the implementation's result (S03).
+fn makes_no_result(stage: Option<&str>) -> bool {
+    matches!(stage, Some("prepare" | "tests"))
+}
+
 /// A run's outcome when the daemon's stop paused it (R02).
 fn drained(outcome: &str) -> bool {
     outcome.strip_prefix("paused-") == Some(recovery::DRAIN)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::makes_no_result;
+
+    /// S03: the IDE's own stages of an Autopilot task bring no result; the
+    /// runs that change the project do, as every other run does.
+    #[test]
+    fn only_the_ides_own_stages_bring_no_result() {
+        assert!(makes_no_result(Some("prepare")) && makes_no_result(Some("tests")));
+        for stage in [None, Some("plan"), Some("implement"), Some("later")] {
+            assert!(!makes_no_result(stage), "{stage:?}");
+        }
+    }
 }

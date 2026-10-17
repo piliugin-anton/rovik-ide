@@ -35,11 +35,28 @@ test('autopilot settings: the backend gets the effort (AgentConfig.autopilot)', 
   assert.deepEqual(autopilotConfig({ effort: 'thorough' }), {
     effort: 'thorough',
     budget: { maxHours: null, maxCost: null },
+    prepare: true,
   });
   assert.deepEqual(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS), {
     effort: 'balanced',
     budget: { maxHours: 2, maxCost: 5 },
+    prepare: true,
   });
+});
+
+test('autopilot settings: Prepare is on until it’s turned off (S03)', () => {
+  assert.equal(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS).prepare, true);
+  const off = normalizeAutopilotSettings({ effort: 'balanced', prepare: false });
+  assert.deepEqual(off, { effort: 'balanced', prepare: false });
+  assert.equal(autopilotConfig(off).prepare, false);
+  // On, or garbage: the default, kept as nothing.
+  for (const on of [true, 'false', 0, null]) {
+    assert.deepEqual(normalizeAutopilotSettings({ prepare: on }), DEFAULT_AUTOPILOT_SETTINGS);
+  }
+  // The backend's field, and its default.
+  const rust = readFileSync('src-tauri/crates/rovik-protocol/src/autopilot.rs', 'utf8');
+  assert.match(rust, /pub prepare: bool,/);
+  assert.match(rust, /prepare: true,/);
 });
 
 test('autopilot settings: the default denylist is the backend’s', () => {

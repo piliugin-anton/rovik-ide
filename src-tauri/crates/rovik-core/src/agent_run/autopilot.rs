@@ -674,7 +674,17 @@ impl StageRun {
 
 /// The stages a run of their own carries out; the others are the driver's.
 fn is_run_stage(stage: Stage) -> bool {
-    matches!(stage, Stage::Plan | Stage::Implement)
+    matches!(
+        stage,
+        Stage::Plan | Stage::Prepare | Stage::Tests | Stage::Implement
+    )
+}
+
+/// The stages whose run is the IDE's own work, with no model turn of its
+/// own: the installs (S03), the test writer's tests (S04). A run, so it can
+/// be stopped, its subagents started and its time counted, like any.
+pub fn is_harness_stage(stage: Stage) -> bool {
+    matches!(stage, Stage::Prepare | Stage::Tests)
 }
 
 /// A message of the user's that starts a task: sent in Autopilot mode.
@@ -896,6 +906,41 @@ async fn end_run_stage(
     let Some(record) = all.iter().find(|r| r.id == run.record) else {
         return Err(format!("its stage record {} is gone", run.record));
     };
+    // The IDE's own stages end their records themselves; they never end
+    // a task, but for a Stop and the budget.
+    if is_harness_stage(run.stage) {
+        let ended = record.record.status != Status::Running;
+        let failure = failure_of(outcome).filter(|f| matches!(*f, "stopped" | "budget"));
+        let budget_why = || {
+            let task = all
+                .iter()
+                .filter(|r| r.record.task == run.task)
+                .filter_map(|r| r.record.spent)
+                .fold(spent, Spent::plus);
+            let budget = core.agents.config_for(dialog_id).autopilot.budget;
+            budget::over(&budget, &task).map_or(String::new(), |why| format!(": {why}"))
+        };
+        let summary = match failure {
+            Some("budget") => Some(format!("{}{}", failure_summary("budget"), budget_why())),
+            Some(f) => Some(failure_summary(f)),
+            None if ended => None,
+            None => Some(format!("It didn't finish ({outcome})")),
+        };
+        end_stage(core, dialog_id, &run.record, |r| {
+            if let Some(f) = failure {
+                r.status = Status::Failed;
+                r.outcome = Some(f.to_string());
+            } else if !ended {
+                r.status = Status::Skipped;
+            }
+            if let Some(summary) = summary {
+                r.summary = Some(summary);
+            }
+            r.spent = Some(r.spent.unwrap_or_default().plus(spent));
+        })
+        .await?;
+        return Ok(());
+    }
     let (status, outcome, summary, reference) = match failure_of(outcome) {
         // Past the budget: by how much, as the run found.
         Some("budget") => {
@@ -1080,7 +1125,20 @@ async fn advance(
             Stage::PlanReview | Stage::Review | Stage::Checks => {
                 done_in_run(core, dialog_id, &records, stage).await?
             }
-            Stage::Prepare | Stage::Tests | Stage::Break | Stage::Pick | Stage::Acceptance => {
+            // S03: the installs, unless the settings turned them off.
+            Stage::Prepare if !core.agents.config_for(dialog_id).autopilot.prepare => {
+                StageRecord::ended(task, stage, round, effort, Status::Skipped)
+                    .with_summary("Off in the settings")
+            }
+            Stage::Prepare => {
+                if start_harness_stage(core, dialog_id, task, stage, round, effort, settings)
+                    .await?
+                {
+                    return Ok(());
+                }
+                continue;
+            }
+            Stage::Tests | Stage::Break | Stage::Pick | Stage::Acceptance => {
                 StageRecord::ended(task, stage, round, effort, Status::Skipped)
                     .with_summary("Not available yet")
             }
@@ -1097,6 +1155,35 @@ async fn advance(
         .await?;
     }
     Ok(())
+}
+
+/// Starts a stage the IDE does itself (`is_harness_stage`): its record,
+/// then its run, which does the stage's work and ends its record. True:
+/// the run started, and its end goes on with the task; false: it couldn't,
+/// and its record, skipped, says why (these stages never end a task).
+async fn start_harness_stage(
+    core: &Core,
+    dialog_id: &str,
+    task: &str,
+    stage: Stage,
+    round: u32,
+    effort: Effort,
+    settings: &Settings,
+) -> Result<bool, String> {
+    let record = StageRecord::running(task, stage, round, effort);
+    let id = add_stage(core, dialog_id, &record).await?;
+    // A Retry starts it: the run takes up the task's running stage.
+    let why = match super::start_run(core, settings.request(dialog_id, StartKind::Retry)).await {
+        Ok(Some(_)) => return Ok(true),
+        Ok(None) => "It didn't start".to_string(),
+        Err(e) => format!("It couldn't start: {e}"),
+    };
+    end_stage(core, dialog_id, &id, |r| {
+        r.status = Status::Skipped;
+        r.summary = Some(why);
+    })
+    .await?;
+    Ok(false)
 }
 
 /// The record of a stage done inside a run: the plan's review inside the

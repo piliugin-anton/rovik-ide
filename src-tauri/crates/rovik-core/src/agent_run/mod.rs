@@ -1129,6 +1129,7 @@ pub(super) async fn start_run(
             run_id: id,
             outcome: outcome.clone(),
             autopilot,
+            stage: stage.as_ref().map(|s| s.stage.id().to_string()),
         });
         if let (Some(stage), Some(driving)) = (stage, driving) {
             autopilot::after_run(core, dialog_id, stage, outcome, spent, settings, driving).await;

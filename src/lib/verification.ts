@@ -44,7 +44,8 @@ export interface InstallResult {
   command: string;
   /** Where it ran, from the project's folder; '' for the folder itself. */
   folder: string;
-  status: 'passed' | 'failed' | 'skipped';
+  /** pending and running while its record is live. */
+  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
   exitCode?: number | null;
   timedOut?: boolean;
   durationMs?: number;
@@ -62,6 +63,35 @@ export interface EnvironmentMeta {
   command: string;
   /** The installs it ran; none: nothing to install was found. */
   installs: InstallResult[];
+}
+
+/**
+ * An Autopilot task's Prepare stage (S03, agent_run/prepare.rs): the
+ * installs its lockfiles imply, run before the code is written. stopped:
+ * the user stopped the task while they ran.
+ */
+export interface PrepareMeta {
+  status: 'running' | 'passed' | 'failed' | 'stopped';
+  installs: InstallResult[];
+}
+
+/** The headline of a Prepare record; `interrupted`: saved as running, but nothing runs it. */
+export function prepareHeadline(meta: PrepareMeta, interrupted: boolean): string {
+  const n = meta.installs.length;
+  const failed = meta.installs.filter((i) => i.status === 'failed').length;
+  if (interrupted) return 'Installing the dependencies didn’t finish: the run ended meanwhile.';
+  switch (meta.status) {
+    case 'running':
+      return 'Installing the dependencies the lockfiles name…';
+    case 'passed':
+      return 'Installed the dependencies the lockfiles name.';
+    case 'stopped':
+      return 'Stopped while the dependencies were installed.';
+    default:
+      return failed === n
+        ? 'Installing the dependencies failed; the checks will say what’s missing.'
+        : `${failed} of ${n} installs failed; the checks will say what’s missing.`;
+  }
 }
 
 /** What a failure triage found (src-tauri/src/agent_run/triage.rs). */

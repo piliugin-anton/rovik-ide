@@ -309,3 +309,29 @@ test('subagent settings: a task’s budget, its effort’s defaults until set (U
   cost().dispatchEvent(new Event('change', { bubbles: true }));
   assert.equal(settings().autopilot.budget, undefined);
 });
+
+test('subagent settings: Prepare before the first check, on until turned off (S03)', () => {
+  const root = container();
+  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
+  render(
+    () => (
+      <SubagentSettings
+        settings={settings()}
+        providers={[]}
+        chatModel={null}
+        onChange={setSettings}
+      />
+    ),
+    root
+  );
+  const prepare = () => checkbox(root, 'Prepare dependencies before the first check');
+  assert.equal(prepare().checked, true);
+  assert.equal(prepare().disabled, false, 'Autopilot’s, whatever “Use subagents” says');
+  prepare().click();
+  assert.equal(settings().autopilot.prepare, false);
+  assert.equal(prepare().checked, false);
+  // Back on: the default again, kept as nothing.
+  prepare().click();
+  assert.equal(settings().autopilot.prepare, undefined);
+  assert.equal(prepare().checked, true);
+});

@@ -212,6 +212,23 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           report a request cost (OpenRouter does), in their currency: with one that reports none,
           only the time limit is kept. Past either, the task stops and delivers what it has.
         </p>
+        <label class="setting-checkbox autopilot-prepare">
+          <input
+            type="checkbox"
+            checked={s().autopilot.prepare !== false}
+            onChange={(e) =>
+              patchAutopilot({ prepare: e.currentTarget.checked ? undefined : false })
+            }
+          />
+          <span>
+            Prepare dependencies before the first check
+            <span class="setting-checkbox-sub">
+              Where a lockfile’s dependencies aren’t installed (no <code>node_modules</code>, no
+              virtual environment), its install runs before the code is written, and again once if a
+              check fails for want of a program or a package.
+            </span>
+          </span>
+        </label>
         <div class="autopilot-subtitle">Commands Autopilot may never run</div>
         <div class="command-list">
           <For

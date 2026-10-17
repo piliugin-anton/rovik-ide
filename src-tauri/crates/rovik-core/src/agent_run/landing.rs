@@ -101,7 +101,9 @@ impl Run {
     /// the log (None: nothing to land).
     async fn try_land(&mut self, outcome: &str) -> Option<(&'static str, usize)> {
         // Plan mode only reads: what the chat changed before waits as it was.
-        if self.root == self.project_root || self.plan_mode {
+        // An Autopilot task's own stages before its implementation (S03,
+        // S04) land nothing yet: what they did lands with it.
+        if self.root == self.project_root || self.plan_mode || self.harness_stage() {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;

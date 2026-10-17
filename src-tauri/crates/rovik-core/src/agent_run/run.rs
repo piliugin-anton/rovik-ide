@@ -360,6 +360,9 @@ pub(super) enum Entry {
     /// into, on the chat's server (6.6), with what the project changed in
     /// each.
     CheckMerged { files: Vec<(String, String)> },
+    /// An Autopilot stage the IDE does itself, with no model turn: its
+    /// installs (S03), its tests written first (S04).
+    Stage,
 }
 
 /// What one model turn produced.
@@ -392,6 +395,21 @@ impl Run {
     /// is its computer's (D16).
     pub(super) fn config(&self) -> super::AgentConfig {
         self.core.agents.config_for(&self.dialog_id)
+    }
+
+    /// An Autopilot stage the IDE does itself (`autopilot::is_harness_stage`).
+    pub(super) fn harness_stage(&self) -> bool {
+        self.stage
+            .as_ref()
+            .is_some_and(|s| super::autopilot::is_harness_stage(s.stage))
+    }
+
+    /// The work of an Autopilot stage the IDE does itself; its outcome.
+    async fn harness_stage_work(&mut self) -> Result<String, String> {
+        match self.stage.as_ref().map(|s| s.stage) {
+            Some(super::autopilot::Stage::Prepare) => self.prepare_stage().await,
+            _ => Ok("done".into()),
+        }
     }
 
     /// The run is an Autopilot task's, or a subagent of one: nobody waits
@@ -596,6 +614,12 @@ impl Run {
                     files: files.into_iter().zip(diffs).collect(),
                 }
             }
+        };
+        // The IDE's own stages of a task do their work, whatever start
+        // took them up (the driver's, a resume's Retry).
+        let entry = match &stage {
+            Some(s) if super::autopilot::is_harness_stage(s.stage) => Entry::Stage,
+            _ => entry,
         };
 
         // A new message with an unfinished checklist carried from earlier
@@ -1184,6 +1208,7 @@ impl Run {
                     return Ok(outcome);
                 }
             }
+            Entry::Stage => return self.harness_stage_work().await,
         }
 
         loop {

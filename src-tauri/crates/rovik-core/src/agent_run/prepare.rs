@@ -2,12 +2,16 @@
 //! lockfiles imply, where the dependencies they install aren't there, run
 //! as heavy work with the checks' timeout.
 //!
-//! V03 (D12) runs them when a check of an Autopilot task fails on its
+//! S03: an Autopilot task's Prepare stage runs them before the tests and
+//! the code (`prepare_stage`), in a run of its own with no model turn; a
+//! record shows each install, its output saved as `@checks/prepare-…`. A
+//! failed install never ends the task: the checks say what's missing.
+//!
+//! V03 (D12) runs them again when a check of the task fails on its
 //! environment (a program or a package that isn't installed:
 //! `command_output::environment_failure`), once a run: that round isn't
 //! the change's failure, so it isn't counted, and the checks run again
-//! once the installs are done. The stage before the first check, with its
-//! own record and setting on the page, is S03's.
+//! once the installs are done.
 
 use super::check_output;
 use super::command_output::{clean_output, focus_failures};
@@ -148,6 +152,113 @@ impl InstallResult {
 }
 
 impl Run {
+    /// S03 (4.3): the Prepare stage's run. The installs the lockfiles imply
+    /// run where what they install isn't there, a record showing each; the
+    /// stage's record says how it went. "stopped" when the user stopped it,
+    /// else "done": a failed install doesn't end the task.
+    pub(super) async fn prepare_stage(&mut self) -> Result<String, String> {
+        let Some(stage) = self.stage.clone() else {
+            return Ok("done".into());
+        };
+        let (core, dialog_id) = (self.core.clone(), self.dialog_id.clone());
+        let end = |summary: String, status, reference: Option<String>| {
+            let (core, dialog_id, record) = (core.clone(), dialog_id.clone(), stage.record.clone());
+            async move {
+                super::autopilot::end_stage(&core, &dialog_id, &record, |r| {
+                    r.status = status;
+                    r.summary = Some(summary);
+                    r.reference = reference;
+                })
+                .await
+                .map(|_| ())
+            }
+        };
+        use super::autopilot::Status;
+        let Some(root) = self.root.clone() else {
+            end("No project folder".into(), Status::Skipped, None).await?;
+            return Ok("done".into());
+        };
+        let installs = needed(Path::new(&root));
+        if installs.is_empty() {
+            end(
+                "Nothing to install: the dependencies are there".into(),
+                Status::Skipped,
+                None,
+            )
+            .await?;
+            return Ok("done".into());
+        }
+        // The task's first saved output: an earlier task's goes (P4.7);
+        // the task's later runs keep this stage's (`clean_earlier_output`).
+        self.clean_earlier_output();
+        let mut done: Vec<InstallResult> = installs.iter().map(InstallResult::pending).collect();
+        let meta = |status: &str, done: &[InstallResult]| json!({ "prepare": { "status": status, "installs": done } });
+        let mut row = super::run::new_message("assistant", "");
+        row.meta = Some(meta("running", &done));
+        let record_id = row.id.clone();
+        self.append(vec![row]).await?;
+        for (i, install) in installs.iter().enumerate() {
+            if self.stopped() {
+                done[i].status = "skipped";
+                continue;
+            }
+            done[i].status = "running";
+            self.update_meta(&record_id, meta("running", &done)).await?;
+            done[i] = self.install(&root, install, i, "prepare").await;
+            self.update_meta(&record_id, meta("running", &done)).await?;
+        }
+        let failed: Vec<&InstallResult> = done.iter().filter(|d| d.status == "failed").collect();
+        let status = if self.stopped() {
+            "stopped"
+        } else if failed.is_empty() {
+            "passed"
+        } else {
+            "failed"
+        };
+        self.update_meta(&record_id, meta(status, &done)).await?;
+        log::write(
+            &self.core,
+            json!({
+                "event": "prepare",
+                "dialogId": self.dialog_id,
+                "reason": "stage",
+                "installs": done.iter().map(|d| json!({
+                    "command": d.command,
+                    "folder": d.folder,
+                    "status": d.status,
+                    "exitCode": d.exit_code,
+                    "ms": d.duration_ms,
+                })).collect::<Vec<_>>(),
+            }),
+        );
+        if self.stopped() {
+            return Ok("stopped".into());
+        }
+        let named = |d: &InstallResult| match d.folder.as_str() {
+            "" => format!("`{}`", d.command),
+            folder => format!("`{}` in {folder}", d.command),
+        };
+        let summary = if failed.is_empty() {
+            format!(
+                "Installed: {}",
+                done.iter().map(named).collect::<Vec<_>>().join(", ")
+            )
+        } else {
+            format!(
+                "{} of {} installs failed ({}): the checks will say what's missing",
+                failed.len(),
+                done.len(),
+                failed
+                    .iter()
+                    .map(|d| named(d))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        end(summary, Status::Done, Some(record_id)).await?;
+        Ok("done".into())
+    }
+
     /// V03 (D12): the round's checks failed on their environment
     /// (`failure`, from `command`'s output). The round isn't counted: the
     /// installs the lockfiles imply run (when the task's settings let
@@ -188,7 +299,8 @@ impl Run {
             }
             done[i].status = "running";
             self.update_meta(record_id, meta(&done)).await?;
-            done[i] = self.install(root, install, i).await;
+            // Its own names: the Prepare stage's output stays as it was.
+            done[i] = self.install(root, install, i, "prepare-again").await;
             self.update_meta(record_id, meta(&done)).await?;
         }
         log::write(
@@ -229,8 +341,15 @@ impl Run {
         Ok("continue".into())
     }
 
-    /// Runs one install as heavy work, as the checks run.
-    async fn install(&self, root: &str, install: &Install, index: usize) -> InstallResult {
+    /// Runs one install as heavy work, as the checks run; its output is
+    /// saved as `@checks/<stem>-…`.
+    async fn install(
+        &self,
+        root: &str,
+        install: &Install,
+        index: usize,
+        stem: &str,
+    ) -> InstallResult {
         let mut r = InstallResult::pending(install);
         let dir = Path::new(root).join(&install.folder);
         let stop = self.stop.clone();
@@ -282,8 +401,7 @@ impl Run {
                         "" => format!("{}", index + 1),
                         folder => format!("{folder}-{}", index + 1),
                     };
-                    r.saved_output =
-                        check_output::save(&self.dialog_id, "prepare", &name, &combined);
+                    r.saved_output = check_output::save(&self.dialog_id, stem, &name, &combined);
                 }
             }
             Err(e) => {

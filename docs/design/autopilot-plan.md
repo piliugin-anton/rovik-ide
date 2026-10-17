@@ -1137,3 +1137,36 @@ T05 depends most on the environment it meets.
   them under "## Open review findings", as before.
 - **The report** that lists the findings is S09's; until then the review
   record (the stage's `ref`) holds them.
+
+### S03: Prepare
+
+- **A stage the IDE runs**: Prepare (and S04's Tests) is a run of the
+  chat the driver starts with no message (`StartKind::Retry`) whose
+  drive makes no model request (`Entry::Stage`, `autopilot::is_harness_stage`).
+  So Stop, the budget, the run's registration and its log line are a
+  run's, as for the model's stages. The run ends its stage record
+  itself, never lands (`try_land`), and `RunEnded.stage` (additive in
+  the protocol: older ones read as none) names the stage, so the daemon
+  makes no result for it: a task's results stay the plan's and the
+  implementation's.
+- **The record**: an empty assistant row with `meta.prepare` (running,
+  passed, failed or stopped, and each install with how it went), shown
+  as the installs of a check round are (`PrepareRecord.tsx`); the stage
+  record's `ref` is it. Done: "Installed: `npm ci --no-audit --no-fund`",
+  or "1 of 2 installs failed (`uv sync` in api): the checks will say
+  what's missing". Skipped: "Nothing to install: the dependencies are
+  there", "No project folder", "Off in the settings". Stopped by the
+  user: failed, `stopped`, and the delivery comes next.
+- **The saved output**: `@checks/prepare-1.log` (`prepare-api-2.log` one
+  folder down). The stage's run starts the chat's saved output afresh
+  (P4.7), and the task's later runs keep `prepare-…` when they clean
+  theirs: the record links it and the implement run may read it. V03's
+  installs after an environment failure save `prepare-again-…`, leaving
+  the stage's as they were.
+- **The rerun** D12 calls for is V03's environment round, still once a
+  run: the implement run is the one run of a task that checks (a
+  resumed one may install once more). After Prepare, what it finds
+  missing is what Prepare couldn't install, or what the change added.
+- **The setting** "Prepare dependencies before the first check", on by
+  default (`AutopilotConfig.prepare`): off, no stage and no install
+  after an environment failure.

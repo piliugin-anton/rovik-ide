@@ -177,6 +177,127 @@ test('the chat shows a stage record where the stage began', () => {
   }
 });
 
+test('the Prepare stage’s installs show in the chat, live and as they ended (S03)', () => {
+  const [chat, setChat] = createStore({
+    messages: [
+      { id: 'u1', role: 'user', content: 'Make the test pass', meta: { mode: 'autopilot' } },
+      {
+        id: 's2',
+        role: 'assistant',
+        content: '',
+        meta: { stage: record('s2', 'prepare', 'running').stage },
+      },
+      {
+        id: 'p1',
+        role: 'assistant',
+        content: '',
+        meta: {
+          prepare: {
+            status: 'running',
+            installs: [
+              { command: 'npm ci --no-audit --no-fund', folder: '', status: 'running' },
+              { command: 'uv sync', folder: 'api', status: 'pending' },
+            ],
+          },
+        },
+      },
+    ] as ChatMessage[],
+    hasOlder: false,
+    hasNewer: false,
+    loadingOlder: false,
+    lastUsed: 0,
+  });
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () => Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+  const root = container();
+  const noop = async () => 0;
+  const [sending, setSending] = createSignal(true);
+  let dispose = () => {};
+  try {
+    dispose = render(
+      () => (
+        <MessageList
+          dialogId="d-prepare"
+          chat={chat}
+          sending={sending()}
+          focusMessageId={null}
+          onLoadOlder={noop}
+          onLoadNewer={noop}
+          onReloadLatest={async () => {}}
+          onRetry={() => {}}
+          onContinue={() => {}}
+          onContinueRun={() => {}}
+          onRunChecks={() => {}}
+          onOpenProjectChecks={() => {}}
+        />
+      ),
+      root
+    );
+    const card = () => root.querySelector('.chat-item[data-id="p1"] .chat-verify');
+    const rows = () =>
+      [...card()!.querySelectorAll('.chat-verify-check')].map((li) => [
+        li.className.replace('chat-verify-check ', ''),
+        li.querySelector('.chat-verify-command')?.textContent,
+        li.querySelector('.chat-verify-note')?.textContent,
+      ]);
+    assert.equal(card()?.className, 'chat-verify running');
+    assert.equal(
+      card()?.querySelector('.chat-verify-title')?.textContent,
+      'Installing the dependencies the lockfiles name…'
+    );
+    assert.deepEqual(rows(), [
+      ['running', 'npm ci --no-audit --no-fund', ''],
+      ['pending', 'uv sync', 'in api'],
+    ]);
+    // One failed: its output opens from its row.
+    setChat('messages', 2, 'meta', {
+      prepare: {
+        status: 'failed',
+        installs: [
+          {
+            command: 'npm ci --no-audit --no-fund',
+            folder: '',
+            status: 'passed',
+            durationMs: 2300,
+          },
+          {
+            command: 'uv sync',
+            folder: 'api',
+            status: 'failed',
+            exitCode: 2,
+            output: 'error: No interpreter found for Python 3.13',
+          },
+        ],
+      },
+    });
+    assert.equal(card()?.className, 'chat-verify failed');
+    assert.equal(
+      card()?.querySelector('.chat-verify-title')?.textContent,
+      '1 of 2 installs failed; the checks will say what’s missing.'
+    );
+    assert.deepEqual(rows(), [
+      ['passed', 'npm ci --no-audit --no-fund', '2.3 s'],
+      ['failed', 'uv sync', 'exit 2 · in api'],
+    ]);
+    assert.match(card()!.querySelector('details pre')!.textContent!, /No interpreter/);
+    // Saved as running, with nothing running it: it didn't finish.
+    setChat('messages', 2, 'meta', {
+      prepare: { status: 'running', installs: [] },
+    });
+    setSending(false);
+    assert.equal(card()?.className, 'chat-verify stopped');
+    assert.equal(
+      card()?.querySelector('.chat-verify-title')?.textContent,
+      'Installing the dependencies didn’t finish: the run ended meanwhile.'
+    );
+    assert.equal(root.querySelector('.chat-item[data-id="p1"] .chat-message'), null, 'no bubble');
+  } finally {
+    dispose();
+    api.getMessages = original;
+  }
+});
+
 test('a stage record spins only while its task’s run goes, not when another took over', () => {
   const plan = (id: string, task: string) => ({
     id,

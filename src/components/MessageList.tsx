@@ -39,6 +39,7 @@ import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
+import PrepareRecord from './PrepareRecord';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
 import { currentTask, stageOf } from '../lib/autopilot';
@@ -1511,6 +1512,15 @@ export default function MessageList(props: {
                     </Show>
                   )}
                 </For>
+
+                <Show when={m.meta?.prepare}>
+                  {(p) => (
+                    <PrepareRecord
+                      meta={p()}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                    />
+                  )}
+                </Show>
 
                 <Show when={m.meta?.verification}>
                   {(v) => (

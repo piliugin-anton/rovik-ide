@@ -17,6 +17,7 @@ import {
   reviewAfterGreenLine,
   triageHeadline,
   type CheckResult,
+  type InstallResult,
   type TriageMeta,
   type VerificationMeta,
 } from '../lib/verification';
@@ -193,6 +194,56 @@ function TriageBlock(props: {
   );
 }
 
+/**
+ * The installs of a round that failed on its environment (V03) or of an
+ * Autopilot task's Prepare stage (S03, PrepareRecord.tsx), each with how
+ * it went; a failed one opens on its output.
+ */
+export function InstallList(props: { installs: InstallResult[] }) {
+  return (
+    <ul class="chat-verify-checks">
+      <For each={props.installs}>
+        {(install) => (
+          <li class={`chat-verify-check ${install.status}`}>
+            <Show
+              when={install.status === 'failed' && install.output}
+              fallback={
+                <div class="chat-verify-row">
+                  <StatusIcon status={install.status} />
+                  <span class="chat-verify-kind">Install</span>
+                  <code class="chat-verify-command">{install.command}</code>
+                  <span class="chat-verify-note">
+                    {[install.folder && `in ${install.folder}`, seconds(install.durationMs)]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                </div>
+              }
+            >
+              <details>
+                <summary class="chat-verify-row">
+                  <StatusIcon status={install.status} />
+                  <span class="chat-verify-kind">Install</span>
+                  <code class="chat-verify-command">{install.command}</code>
+                  <span class="chat-verify-note">
+                    {install.timedOut
+                      ? 'timed out'
+                      : install.exitCode != null
+                        ? `exit ${install.exitCode}`
+                        : ''}
+                    {install.folder ? ` · in ${install.folder}` : ''}
+                  </span>
+                </summary>
+                <pre class="chat-verify-output">{install.output}</pre>
+              </details>
+            </Show>
+          </li>
+        )}
+      </For>
+    </ul>
+  );
+}
+
 export default function VerificationRecord(props: {
   meta: VerificationMeta;
   /** The chat it's in, and this record's id (its triage's events name it). */
@@ -302,48 +353,7 @@ export default function VerificationRecord(props: {
       </Show>
 
       <Show when={props.meta.environment?.installs.length ? props.meta.environment : undefined}>
-        {(env) => (
-          <ul class="chat-verify-checks">
-            <For each={env().installs}>
-              {(install) => (
-                <li class={`chat-verify-check ${install.status}`}>
-                  <Show
-                    when={install.status === 'failed' && install.output}
-                    fallback={
-                      <div class="chat-verify-row">
-                        <StatusIcon status={install.status} />
-                        <span class="chat-verify-kind">Install</span>
-                        <code class="chat-verify-command">{install.command}</code>
-                        <span class="chat-verify-note">
-                          {[install.folder && `in ${install.folder}`, seconds(install.durationMs)]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </span>
-                      </div>
-                    }
-                  >
-                    <details>
-                      <summary class="chat-verify-row">
-                        <StatusIcon status={install.status} />
-                        <span class="chat-verify-kind">Install</span>
-                        <code class="chat-verify-command">{install.command}</code>
-                        <span class="chat-verify-note">
-                          {install.timedOut
-                            ? 'timed out'
-                            : install.exitCode != null
-                              ? `exit ${install.exitCode}`
-                              : ''}
-                          {install.folder ? ` · in ${install.folder}` : ''}
-                        </span>
-                      </summary>
-                      <pre class="chat-verify-output">{install.output}</pre>
-                    </details>
-                  </Show>
-                </li>
-              )}
-            </For>
-          </ul>
-        )}
+        {(env) => <InstallList installs={env().installs} />}
       </Show>
 
       <Show when={props.meta.status !== 'running' && progressLine(props.meta)}>

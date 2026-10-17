@@ -389,15 +389,16 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
     );
     let tools = tool_names(implementing);
     assert!(tools.iter().any(|t| t == "write"), "Agent mode: {tools:?}");
-    // Two runs, each marked with its stage.
-    assert_eq!(h.events_of("runStarted").len(), 2);
+    // Three runs, each marked with its stage: the plan's, the Prepare
+    // stage's (the IDE's own, no model turn: S03), the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 3);
     let runs = log_lines(&h, "run").await;
     let stage_of: Vec<&str> = runs.iter().filter_map(|r| r["stage"].as_str()).collect();
-    assert_eq!(stage_of, ["plan", "implement"]);
+    assert_eq!(stage_of, ["plan", "prepare", "implement"]);
 
     // Over: a Resume starts nothing.
     assert!(h.start(resume_request(&h, &url)).await.is_none());
-    assert_eq!(h.events_of("runStarted").len(), 2);
+    assert_eq!(h.events_of("runStarted").len(), 3);
 }
 
 /// A07 (D17): the user's subagents are off, and the task's plan is
@@ -513,7 +514,8 @@ async fn a_task_cut_between_two_stages_goes_on_once_resumed() {
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
-    assert_eq!(h.events_of("runStarted").len(), 2);
+    // The plan's, the Prepare stage's, the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 3);
 }
 
 /// A03: the driver dies after it recorded the implementation, before its
@@ -546,7 +548,8 @@ async fn a_stage_cut_before_its_run_started_is_started_once_resumed() {
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
-    assert_eq!(h.events_of("runStarted").len(), 2);
+    // The plan's, the Prepare stage's, the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 3);
 }
 
 /// A03: a Resume that comes as a stage's run ends (the app hears the end
@@ -573,7 +576,8 @@ async fn a_resume_as_a_stage_ends_starts_nothing_more() {
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
-    assert_eq!(h.events_of("runStarted").len(), 2);
+    // The plan's, the Prepare stage's, the implementation's.
+    assert_eq!(h.events_of("runStarted").len(), 3);
 }
 
 /// A03: a plan run that saves no plan fails the task, which delivers
@@ -773,10 +777,11 @@ async fn the_button_and_the_driver_send_the_same_implementation_request() {
         attachments: Vec::new(),
     };
     let asked = seen.lock().unwrap().len();
+    let ended = h.events_of("runEnded").len();
     h.start(h.request(&url, StartKind::Send { message }, Permissions::default()))
         .await;
     for _ in 0..400 {
-        if h.events_of("runEnded").len() == 3 {
+        if h.events_of("runEnded").len() == ended + 1 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1329,9 +1334,12 @@ async fn a_loop_goes_on_once_told_and_ends_the_stage_the_second_time() {
         })
         .collect();
     assert_eq!(paused.len(), 1, "paused once: the second time");
+    // The plan's run and the implementation's (the Prepare stage's run is
+    // the IDE's own: S03).
     let outcomes: Vec<Value> = h
         .events_of("runEnded")
         .iter()
+        .filter(|e| e["stage"] != "prepare")
         .map(|e| e["outcome"].clone())
         .collect();
     assert_eq!(outcomes.len(), 2, "{outcomes:?}");
@@ -1860,12 +1868,11 @@ fn plan_reading(file: &str) -> &'static str {
     Box::leak(plan.into_boxed_str())
 }
 
-/// V03 (D12): the check fails on its environment ("vitest: not found"),
-/// not on the change: the dependencies the lockfile names are installed,
-/// the checks run again at once, and the round isn't counted. The task is
-/// verified on round 1.
+/// S03 (4.3): the Prepare stage installs what the lockfile names, once,
+/// before the code: the checks then pass on their first round, with no
+/// environment round.
 #[tokio::test]
-async fn a_check_that_finds_no_program_prepares_and_runs_again() {
+async fn a_projects_dependencies_are_installed_first() {
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;
@@ -1878,7 +1885,94 @@ async fn a_check_that_finds_no_program_prepares_and_runs_again() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
+    let mut expected = BALANCED_OK.to_vec();
+    expected[2] = (Stage::Prepare, Status::Done);
+    assert_eq!(names(&records), expected);
+    let prepare = &records[2];
+    assert_eq!(
+        prepare.summary.as_deref(),
+        Some("Installed: `npm ci --no-audit --no-fund`")
+    );
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    assert!(h.project.join("node_modules/.bin/vitest").exists());
+    let messages = h.messages().await;
+    // Its record: the install and how it went.
+    let record = messages
+        .iter()
+        .find(|m| Some(&m.id) == prepare.reference.as_ref())
+        .expect("the installs' record");
+    let installs = &record.meta.as_ref().unwrap()["prepare"];
+    assert_eq!(installs["status"], "passed");
+    assert_eq!(
+        installs["installs"][0]["command"],
+        "npm ci --no-audit --no-fund"
+    );
+    assert_eq!(installs["installs"][0]["status"], "passed");
+    let saved = installs["installs"][0]["savedOutput"].as_str().unwrap();
+    assert!(saved.starts_with("@checks/prepare-"), "{saved}");
+    // The implement run's checks cleaned the chat's saved output, but
+    // the task's own Prepare stage's (P4.7).
+    assert!(super::check_output::resolve(&h.dialog_id, saved).is_ok());
+    // Once: the checks met an installed project.
+    let rounds = verifications(&messages);
+    assert_eq!(rounds.len(), 1, "{rounds:#?}");
+    assert!(rounds[0].get("environment").is_none());
+    assert_eq!(log_lines(&h, "prepare").await.len(), 1);
+    // Its run was the IDE's own: no model turn, no landing of its own.
+    let runs = log_lines(&h, "run").await;
+    let prepared = runs.iter().find(|r| r["stage"] == "prepare").unwrap();
+    assert_eq!(
+        (prepared["outcome"].clone(), prepared["toolCalls"].clone()),
+        (json!("done"), json!(0))
+    );
+}
+
+/// V03 (D12): the check fails on its environment ("vitest: not found"),
+/// not on the change: the dependencies the lockfile names are installed,
+/// the checks run again at once, and the round isn't counted. The task is
+/// verified on round 1.
+#[tokio::test]
+async fn a_check_that_finds_no_program_prepares_and_runs_again() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // The change adds the dependency and its lockfile: nothing to install
+    // when the Prepare stage ran, before it (S03).
+    let h = uninstalled_project().await;
+    let lock = std::fs::read_to_string(h.project.join("package-lock.json")).unwrap();
+    let package = std::fs::read_to_string(h.project.join("package.json")).unwrap();
+    std::fs::remove_file(h.project.join("package-lock.json")).unwrap();
+    std::fs::write(
+        h.project.join("package.json"),
+        r#"{ "name": "t", "version": "1.0.0", "private": true, "scripts": { "test": "vitest" } }"#,
+    )
+    .unwrap();
+    let mut script = script_with_plan(plan_reading("vendor/vitest/bin.js"));
+    let add = |id: &'static str, path: &str, content: &str| Reply::Call {
+        id,
+        name: "write",
+        args: json!({ "path": path, "content": content }),
+    };
+    script.splice(
+        3..3,
+        [
+            add("d1", "package.json", &package),
+            add("d2", "package-lock.json", &lock),
+        ],
+    );
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(
+        records[2].summary.as_deref(),
+        Some("Nothing to install: the dependencies are there")
+    );
     assert_eq!(records[4].outcome.as_deref(), Some("verified"));
     let messages = h.messages().await;
     let rounds = verifications(&messages);

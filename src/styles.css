@@ -8518,6 +8518,11 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin-top: 12px;
 }
 
+/* Its Prepare switch, between the budget and the denylist (S03). */
+.setting-checkbox.autopilot-prepare {
+  margin-top: 12px;
+}
+
 /* "Used by Autopilot" on the kinds Autopilot turns on for its chats. */
 .autopilot-kind-tag {
   display: inline-block;

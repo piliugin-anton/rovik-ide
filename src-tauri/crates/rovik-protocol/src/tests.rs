@@ -1018,16 +1018,21 @@ fn the_shared_event_fixtures_round_trip_unchanged() {
 /// lands only once checked; an older peer's end, without it, wasn't.
 #[test]
 fn a_runs_end_says_when_it_was_autopilots() {
-    let ended = |autopilot| AgentEvent::RunEnded {
+    let ended = |autopilot, stage: Option<&str>| AgentEvent::RunEnded {
         dialog_id: "d".into(),
         run_id: "r".into(),
         outcome: "unverified".into(),
         autopilot,
+        stage: stage.map(str::to_string),
     };
-    let task = round_trip(&ended(true));
+    let task = round_trip(&ended(true, None));
     assert_eq!(task["autopilot"], true, "{task}");
-    let plain = round_trip(&ended(false));
+    // S03: and which of its stages.
+    let prepare = round_trip(&ended(true, Some("prepare")));
+    assert_eq!(prepare["stage"], "prepare", "{prepare}");
+    let plain = round_trip(&ended(false, None));
     assert!(plain.get("autopilot").is_none(), "unchanged: {plain}");
+    assert!(plain.get("stage").is_none(), "unchanged: {plain}");
     let older: AgentEvent = serde_json::from_value(json!({
         "type": "runEnded", "dialogId": "d", "runId": "r", "outcome": "done",
     }))
@@ -1036,6 +1041,7 @@ fn a_runs_end_says_when_it_was_autopilots() {
         older,
         AgentEvent::RunEnded {
             autopilot: false,
+            stage: None,
             ..
         }
     ));

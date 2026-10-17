@@ -254,6 +254,8 @@ export interface ToolMeta {
   verification?: import('./lib/verification').VerificationMeta;
   /** An empty assistant message: an Autopilot task's stage (lib/autopilot.ts). */
   stage?: import('./lib/autopilot').StageMeta;
+  /** An empty assistant message: the installs of a task's Prepare stage (lib/verification.ts). */
+  prepare?: import('./lib/verification').PrepareMeta;
   /**
    * A user-role message the IDE wrote (check failures for the agent). Not
    * shown as a user message, and never mistaken for the user's request.

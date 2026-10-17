@@ -988,6 +988,7 @@ impl Remote {
                     run_id,
                     outcome,
                     autopilot: false,
+                    stage: None,
                 };
                 self.agent_event(host, event).await;
             }
