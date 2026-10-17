@@ -429,6 +429,54 @@ test('a rollback of only what broke says what stayed (V05)', () => {
   );
 });
 
+test('a suite too slow for its timeout, and the tests that ran instead (V06)', () => {
+  const root = container();
+  render(
+    () => (
+      <VerificationRecord
+        meta={{
+          status: 'passed',
+          round: 1,
+          maxRounds: 10,
+          byProgress: true,
+          checks: [
+            {
+              kind: 'test',
+              command: 'npm test',
+              status: 'slow',
+              reason: 'timed out after 600 s; the tests of the changed files ran instead',
+            },
+            {
+              kind: 'test',
+              command: 'npx vitest run src/a.test.js',
+              status: 'passed',
+              durationMs: 300,
+            },
+          ],
+          changedFiles: ['src/a.js'],
+        }}
+        dialogId="d"
+        recordId="v1"
+        latest={false}
+        live={false}
+        onRunChecks={() => {}}
+        onOpenProjectChecks={() => {}}
+      />
+    ),
+    root
+  );
+  const rows = [...root.querySelectorAll('.chat-verify-check')];
+  assert.deepEqual(
+    rows.map((r) => r.className),
+    ['chat-verify-check slow', 'chat-verify-check passed']
+  );
+  assert.equal(
+    rows[0].querySelector('.chat-verify-note')?.textContent,
+    'slow: timed out after 600 s; the tests of the changed files ran instead'
+  );
+  assert.equal(root.querySelector('.chat-verify-title')?.textContent, 'Checks passed.');
+});
+
 const button = (root: Element, text: string) =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === text);
 

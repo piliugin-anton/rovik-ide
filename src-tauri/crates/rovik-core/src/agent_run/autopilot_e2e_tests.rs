@@ -1957,6 +1957,99 @@ async fn two_rounds_without_progress_end_autopilots_checks() {
     assert_eq!(rounds[2]["progress"]["verdict"], "no-progress");
 }
 
+/// V06: a Node project whose whole test suite (`vitest`, run bare) never
+/// ends, while `vitest run <files>` runs those files' tests at once: they
+/// pass once src/ok.js says ok. Installed (`npm ci`, no network).
+async fn slow_suite_project() -> Option<Harness> {
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "version": "1.0.0", "private": true, "scripts": { "test": "vitest" }, "devDependencies": { "vitest": "file:vendor/vitest" } }"#,
+        ),
+        (
+            "package-lock.json",
+            r#"{ "name": "t", "version": "1.0.0", "lockfileVersion": 3, "requires": true, "packages": { "": { "name": "t", "version": "1.0.0", "devDependencies": { "vitest": "file:vendor/vitest" } }, "node_modules/vitest": { "resolved": "vendor/vitest", "link": true }, "vendor/vitest": { "version": "0.0.1", "dev": true, "bin": { "vitest": "bin.js" } } } }"#,
+        ),
+        (
+            "vendor/vitest/package.json",
+            r#"{ "name": "vitest", "version": "0.0.1", "bin": { "vitest": "bin.js" } }"#,
+        ),
+        (
+            "vendor/vitest/bin.js",
+            "#!/usr/bin/env node\nconst files = process.argv.slice(2).filter((a) => a !== 'run');\n\
+             if (!files.length) { setInterval(() => {}, 1000); } else {\n\
+             const fs = require('fs');\n\
+             if (!fs.readFileSync('src/ok.js', 'utf8').includes('ok')) { console.error('src/ok.test.js:1: error: not ok'); process.exit(1); }\n\
+             console.log(' Tests  1 passed (1)'); }\n",
+        ),
+        ("src/ok.js", "module.exports = 'no';\n"),
+        ("src/ok.test.js", "// checks src/ok.js\n"),
+        ("ok.txt", "no"),
+    ])
+    .await;
+    let installed = std::process::Command::new("npm")
+        .args(["ci", "--no-audit", "--no-fund"])
+        .current_dir(&h.project)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    installed.then_some(h)
+}
+
+/// V06: the whole suite times out; in Autopilot it's recorded slow, not
+/// failed, and the tests of the changed file run in its place: their pass
+/// is the round's, and the task is verified.
+#[tokio::test]
+async fn a_suite_that_times_out_runs_the_changed_files_tests_instead() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let Some(h) = slow_suite_project().await else {
+        eprintln!("npm ci failed: skipped");
+        return;
+    };
+    super::verify::CHECK_TIMEOUTS
+        .lock()
+        .unwrap()
+        .insert(h.dialog_id.clone(), 2000);
+    let mut script = script_with_plan(plan_reading("src/ok.test.js"));
+    script[3] = Reply::Call {
+        id: "w1",
+        name: "write",
+        args: json!({ "path": "src/ok.js", "content": "module.exports = 'ok';\n" }),
+    };
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    super::verify::CHECK_TIMEOUTS
+        .lock()
+        .unwrap()
+        .remove(&h.dialog_id);
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    assert_eq!(
+        records[4].outcome.as_deref(),
+        Some("verified"),
+        "{rounds:#?}"
+    );
+    assert_eq!(rounds.len(), 1, "{rounds:#?}");
+    let checks = rounds[0]["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 2, "{checks:#?}");
+    assert_eq!(checks[0]["command"], "npm test");
+    assert_eq!(checks[0]["status"], "slow");
+    assert_eq!(
+        checks[0]["reason"],
+        "timed out after 2 s; the tests of the changed files ran instead"
+    );
+    assert_eq!(checks[1]["command"], "npx vitest run src/ok.test.js");
+    assert_eq!(checks[1]["status"], "passed");
+    assert_eq!(rounds[0]["status"], "passed");
+}
+
 /// V02, isolated: the unchecked change stays in the chat, with why.
 #[tokio::test]
 async fn an_isolated_tasks_unchecked_change_waits_with_why() {

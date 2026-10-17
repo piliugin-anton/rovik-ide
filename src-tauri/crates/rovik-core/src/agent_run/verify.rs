@@ -515,6 +515,16 @@ pub fn failure_report(
         lines.push(String::new());
         lines.push(format!("Not run: {}", skipped.join(", ")));
     }
+    // V06: a whole suite that timed out, its changed files' tests run instead.
+    let slow: Vec<String> = results
+        .iter()
+        .filter(|r| r.status == "slow")
+        .map(|r| format!("`{}` ({})", r.command, r.reason.as_deref().unwrap_or("")))
+        .collect();
+    if !slow.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("Too slow: {}", slow.join(", ")));
+    }
     lines.push(String::new());
     lines.push(
         "Find the cause in your changes and fix it; the checks run again when you finish. \
@@ -1488,140 +1498,199 @@ impl Run {
         let progress = |results: &[CheckResult]| record("running", round, results, changed, None);
         self.update_meta(record_id, progress(&results)).await?;
 
-        for i in 0..results.len() {
-            if self.stopped() {
-                results[i].skip("stopped");
-                continue;
-            }
-            if let Verdict::Refused(_) = check_command(&results[i].command, permissions) {
-                // Autopilot's run any command but its denylist's (V01).
-                let why = match denied_entry(&results[i].command, permissions) {
-                    Some(entry) => format!("`{entry}` is a command it may never run"),
-                    None => "not in your allowed commands".into(),
-                };
-                results[i].skip(&why);
-                self.update_meta(record_id, progress(&results)).await?;
-                continue;
-            }
-            if results[i].kind == "test"
-                && results
-                    .iter()
-                    .any(|r| r.kind == "typecheck" && r.status == "failed")
-            {
-                results[i].skip("the type check failed");
-                self.update_meta(record_id, progress(&results)).await?;
-                continue;
-            }
+        // V06: the tests of the changed files, run where the whole suite
+        // timed out: its index.
+        let mut scoped: Option<usize> = None;
+        let mut i = 0;
+        while i < results.len() {
+            'check: {
+                if self.stopped() {
+                    results[i].skip("stopped");
+                    break 'check;
+                }
+                if let Verdict::Refused(_) = check_command(&results[i].command, permissions) {
+                    // Autopilot's run any command but its denylist's (V01).
+                    let why = match denied_entry(&results[i].command, permissions) {
+                        Some(entry) => format!("`{entry}` is a command it may never run"),
+                        None => "not in your allowed commands".into(),
+                    };
+                    results[i].skip(&why);
+                    self.update_meta(record_id, progress(&results)).await?;
+                    break 'check;
+                }
+                if results[i].kind == "test"
+                    && results
+                        .iter()
+                        .any(|r| r.kind == "typecheck" && r.status == "failed")
+                {
+                    results[i].skip("the type check failed");
+                    self.update_meta(record_id, progress(&results)).await?;
+                    break 'check;
+                }
 
-            results[i].status = "running";
-            self.update_meta(record_id, progress(&results)).await?;
-            let stop = self.stop.clone();
-            // Checks are heavy work: they may wait for a CPU slot, and the
-            // record says what for while they do.
-            let waiting: Arc<Mutex<Option<Option<String>>>> = Arc::default();
-            let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Check {
-                    owner: self.dialog_id.clone(),
-                },
-                note: {
-                    let waiting = waiting.clone();
-                    Box::new(move |note| {
-                        *waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(note)
-                    })
-                },
-                env: crate::overlay::chats::get(&self.dialog_id)
-                    .map(|o| o.command_env())
-                    .unwrap_or_default(),
-                confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
-            };
-            let run = crate::command_tool::run_command(
-                root.into(),
-                results[i].command.clone(),
-                Some(check_timeout_ms(&self.dialog_id)),
-                move || stop.is_set(),
-                Some(queued),
-            );
-            tokio::pin!(run);
-            let outcome = loop {
-                tokio::select! {
-                    outcome = &mut run => break outcome,
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
-                        let changed = waiting.lock().unwrap_or_else(|e| e.into_inner()).take();
-                        if let Some(note) = changed {
-                            results[i].note = note;
-                            self.update_meta(record_id, progress(&results)).await?;
+                results[i].status = "running";
+                self.update_meta(record_id, progress(&results)).await?;
+                let stop = self.stop.clone();
+                // Checks are heavy work: they may wait for a CPU slot, and the
+                // record says what for while they do.
+                let waiting: Arc<Mutex<Option<Option<String>>>> = Arc::default();
+                let queued = crate::command_tool::Queued {
+                    kind: crate::workload::JobKind::Check {
+                        owner: self.dialog_id.clone(),
+                    },
+                    note: {
+                        let waiting = waiting.clone();
+                        Box::new(move |note| {
+                            *waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(note)
+                        })
+                    },
+                    env: crate::overlay::chats::get(&self.dialog_id)
+                        .map(|o| o.command_env())
+                        .unwrap_or_default(),
+                    confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
+                };
+                let run = crate::command_tool::run_command(
+                    root.into(),
+                    results[i].command.clone(),
+                    Some(check_timeout_ms(&self.dialog_id)),
+                    move || stop.is_set(),
+                    Some(queued),
+                );
+                tokio::pin!(run);
+                let outcome = loop {
+                    tokio::select! {
+                        outcome = &mut run => break outcome,
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
+                            let changed = waiting.lock().unwrap_or_else(|e| e.into_inner()).take();
+                            if let Some(note) = changed {
+                                results[i].note = note;
+                                self.update_meta(record_id, progress(&results)).await?;
+                            }
                         }
                     }
-                }
-            };
-            let r = &mut results[i];
-            r.note = outcome
-                .as_ref()
-                .ok()
-                .and_then(|o| o.waited.as_ref())
-                .and_then(|w| w.describe());
-            match outcome {
-                Ok(out) if out.stopped => r.skip("stopped"),
-                Ok(out) => {
-                    r.duration_ms = Some(out.duration_ms);
-                    r.exit_code = Some(out.exit_code);
-                    r.timed_out = Some(out.timed_out);
-                    // Compilers print to either stream; keep both, in order of usefulness.
-                    let combined = [out.stderr.trim(), out.stdout.trim()]
-                        .into_iter()
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if r.kind == "test" {
-                        r.tests_ran = tests_ran(&combined);
-                    }
-                    if out.exit_code == Some(0) && !out.timed_out {
-                        r.status = "passed";
-                    } else {
-                        r.status = "failed";
-                        // V03: in Autopilot, whether its environment failed.
-                        if self.in_autopilot() && !out.timed_out {
-                            r.environment = environment_failure(out.exit_code, &combined);
+                };
+                let r = &mut results[i];
+                r.note = outcome
+                    .as_ref()
+                    .ok()
+                    .and_then(|o| o.waited.as_ref())
+                    .and_then(|w| w.describe());
+                match outcome {
+                    Ok(out) if out.stopped => r.skip("stopped"),
+                    Ok(out) => {
+                        r.duration_ms = Some(out.duration_ms);
+                        r.exit_code = Some(out.exit_code);
+                        r.timed_out = Some(out.timed_out);
+                        // Compilers print to either stream; keep both, in order of usefulness.
+                        let combined = [out.stderr.trim(), out.stdout.trim()]
+                            .into_iter()
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        // A scoped run's count isn't the suite's (P3.7 compares them).
+                        if r.kind == "test" && scoped != Some(i) {
+                            r.tests_ran = tests_ran(&combined);
                         }
-                        // From the whole output, not the focused part: every
-                        // failure counts when rounds are compared.
-                        r.failures = Some(failure_keys(&r.kind, &combined, out.timed_out));
-                        let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
-                        let output = if focused.is_empty() {
-                            "(no output)".to_string()
+                        if out.exit_code == Some(0) && !out.timed_out {
+                            r.status = "passed";
                         } else {
-                            focused
-                        };
-                        // From the focused output: the error blocks, not passing tests' paths.
-                        let (changed_hits, other) =
-                            split_by_changed(&error_locations(&output), changed);
-                        if !changed_hits.is_empty() || !other.is_empty() {
-                            r.error_files = Some(ErrorFiles {
-                                changed: changed_hits,
-                                other,
-                            });
-                        }
-                        r.output = Some(output);
-                        if combined.chars().count() > FAILURE_OUTPUT_CHARS {
-                            r.saved_output = super::check_output::save(
-                                &self.dialog_id,
-                                saved_as,
-                                &r.kind,
-                                &combined,
-                            );
+                            r.status = "failed";
+                            // V03: in Autopilot, whether its environment failed.
+                            if self.in_autopilot() && !out.timed_out {
+                                r.environment = environment_failure(out.exit_code, &combined);
+                            }
+                            // From the whole output, not the focused part: every
+                            // failure counts when rounds are compared.
+                            r.failures = Some(failure_keys(&r.kind, &combined, out.timed_out));
+                            let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
+                            let output = if focused.is_empty() {
+                                "(no output)".to_string()
+                            } else {
+                                focused
+                            };
+                            // From the focused output: the error blocks, not passing tests' paths.
+                            let (changed_hits, other) =
+                                split_by_changed(&error_locations(&output), changed);
+                            if !changed_hits.is_empty() || !other.is_empty() {
+                                r.error_files = Some(ErrorFiles {
+                                    changed: changed_hits,
+                                    other,
+                                });
+                            }
+                            r.output = Some(output);
+                            if combined.chars().count() > FAILURE_OUTPUT_CHARS {
+                                r.saved_output = super::check_output::save(
+                                    &self.dialog_id,
+                                    saved_as,
+                                    &r.kind,
+                                    &combined,
+                                );
+                            }
                         }
                     }
+                    Err(e) => {
+                        r.status = "failed";
+                        r.output = Some(format!("Could not run the command: {e}"));
+                        r.failures = Some(vec![format!("{}|could not run", r.kind)]);
+                    }
                 }
-                Err(e) => {
-                    r.status = "failed";
-                    r.output = Some(format!("Could not run the command: {e}"));
-                    r.failures = Some(vec![format!("{}|could not run", r.kind)]);
+                self.update_meta(record_id, progress(&results)).await?;
+                // V06: in Autopilot, a whole test suite that timed out is
+                // recorded slow, not failed, and the tests of the changed files
+                // run in its place: theirs is the round's result.
+                if scoped.is_none()
+                    && results[i].kind == "test"
+                    && results[i].timed_out == Some(true)
+                    && self.in_autopilot()
+                {
+                    if let Some(command) = scoped_tests(root, changed, &results[i].command) {
+                        let limit =
+                            std::time::Duration::from_millis(check_timeout_ms(&self.dialog_id));
+                        let r = &mut results[i];
+                        r.status = "slow";
+                        r.reason = Some(format!(
+                            "timed out after {}; the tests of the changed files ran instead",
+                            crate::chat_request::human_duration(limit)
+                        ));
+                        // Not comparable with other rounds, as any timeout.
+                        r.failures = Some(vec![format!("{}|timed out", r.kind)]);
+                        r.output = None;
+                        r.error_files = None;
+                        r.tests_ran = None;
+                        let check = ProjectCheck {
+                            kind: "test".into(),
+                            command,
+                            enabled: true,
+                        };
+                        results.insert(i + 1, CheckResult::pending(&check));
+                        scoped = Some(i + 1);
+                        self.update_meta(record_id, progress(&results)).await?;
+                    }
                 }
             }
-            self.update_meta(record_id, progress(&results)).await?;
+            i += 1;
         }
         Ok(results)
     }
+}
+
+/// V06: the command that runs the tests of the changed files
+/// (`project::test_command_for`): the test files among them, and those by
+/// their stack's conventions beside the others. None when there are none,
+/// the stack has no way to run some, or it's the whole suite again.
+fn scoped_tests(root: &str, changed: &[String], suite: &str) -> Option<String> {
+    let dir = std::path::Path::new(root);
+    let mut files: Vec<String> = Vec::new();
+    for f in changed {
+        let key = super::repair::rel_key(root, f);
+        for test in super::project::test_paths_for(&key) {
+            if dir.join(&test).is_file() && !files.contains(&test) {
+                files.push(test);
+            }
+        }
+    }
+    let command = super::project::test_command_for(dir, &files, None)?;
+    (command.trim() != suite.trim()).then_some(command)
 }
 
 #[cfg(test)]

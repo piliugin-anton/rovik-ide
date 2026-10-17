@@ -256,8 +256,8 @@ export default function VerificationRecord(props: {
                       <span class="chat-verify-note">
                         {shownStatus(check, interrupted()) !== check.status
                           ? 'didn’t finish'
-                          : check.status === 'skipped'
-                            ? `skipped: ${check.reason}`
+                          : check.status === 'skipped' || check.status === 'slow'
+                            ? `${check.status}: ${check.reason}`
                             : check.status === 'running' && check.note
                               ? check.note
                               : [seconds(check.durationMs), check.note].filter(Boolean).join(' · ')}

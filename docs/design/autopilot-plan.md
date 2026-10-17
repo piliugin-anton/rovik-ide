@@ -1039,3 +1039,20 @@ T05 depends most on the environment it meets.
   gets the round's failures as before, its next attempt still its own.
   On the last round there's no round to check what stays: everything
   goes back.
+
+### V06: a suite too slow for its timeout
+
+- **In Autopilot**, a test check that times out is recorded `slow`, not
+  failed ("timed out after 10 min; the tests of the changed files ran
+  instead"), and the tests of the changed files run in its place, as one
+  more check of the round: the test files among them, and those their
+  stack's conventions put beside the others (`project::test_paths_for`),
+  run by `project::test_command_for`. Its result is the round's: passing,
+  the round passes. Outside Autopilot a timeout stays a failure.
+- **No scoped command**, no rerun: a change with no test files beside
+  it, a stack `test_command_for` can't run a part of, or one where it's
+  the whole suite again keeps the timeout as a failure, as before.
+- **Not compared**: the slow check keeps the `timed out` key, so its
+  round's tests aren't compared with another round's (repair.rs
+  `blind`), and the scoped run's test count isn't kept, so "fewer tests"
+  (P3.7) doesn't flag it. The agent's report lists it under "Too slow".

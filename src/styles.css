@@ -5163,6 +5163,10 @@ summary.chat-verify-row::-webkit-details-marker {
   color: var(--error);
 }
 
+.chat-verify-check.slow svg {
+  color: var(--warning);
+}
+
 .chat-verify-kind {
   flex-shrink: 0;
   color: var(--fg);

@@ -9,7 +9,9 @@ import type { CheckKind } from './projectProfile';
 import type { SubagentUsage } from './subagents';
 import { plural } from './textUtils';
 
-export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+/** slow: the whole suite timed out, and the tests of the changed files ran
+ * in its place (Autopilot, V06). */
+export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'slow';
 
 export interface CheckResult {
   kind: CheckKind;
