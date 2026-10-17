@@ -176,3 +176,70 @@ test('the chat shows a stage record where the stage began', () => {
     api.getMessages = original;
   }
 });
+
+test('a stage record spins only while its task’s run goes, not when another took over', () => {
+  const plan = (id: string, task: string) => ({
+    id,
+    role: 'assistant',
+    content: '',
+    meta: { stage: { ...record(id, 'plan', 'running').stage, task } },
+  });
+  const [chat, setChat] = createStore({
+    messages: [
+      { id: 'u1', role: 'user', content: 'Task one', meta: { mode: 'autopilot' } },
+      plan('s1', 'u1'),
+    ] as ChatMessage[],
+    hasOlder: false,
+    hasNewer: false,
+    loadingOlder: false,
+    lastUsed: 0,
+  });
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () => Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+  const root = container();
+  const noop = async () => 0;
+  let dispose = () => {};
+  try {
+    dispose = render(
+      () => (
+        <MessageList
+          dialogId="d-takeover"
+          chat={chat}
+          sending={true}
+          focusMessageId={null}
+          onLoadOlder={noop}
+          onLoadNewer={noop}
+          onReloadLatest={async () => {}}
+          onRetry={() => {}}
+          onContinue={() => {}}
+          onContinueRun={() => {}}
+          onRunChecks={() => {}}
+          onOpenProjectChecks={() => {}}
+        />
+      ),
+      root
+    );
+    const state = (id: string) =>
+      root.querySelector(`.chat-item[data-id="${id}"] .chat-stage`)?.className;
+    assert.equal(state('s1'), 'chat-stage running', 'its task’s run');
+    // Cut by a crash, then a new request took over: what runs now isn't its.
+    setChat('messages', (list) => [
+      ...list,
+      { id: 'u2', role: 'user', content: 'Never mind', meta: { mode: 'agent' } },
+      { id: 'a2', role: 'assistant', content: 'On it', pending: true },
+    ]);
+    assert.equal(state('s1'), 'chat-stage stopped');
+    // A new task: its own plan spins, the old one stays cut.
+    setChat('messages', (list) => [
+      ...list,
+      { id: 'u3', role: 'user', content: 'Task three', meta: { mode: 'autopilot' } },
+      plan('s3', 'u3'),
+    ]);
+    assert.equal(state('s3'), 'chat-stage running');
+    assert.equal(state('s1'), 'chat-stage stopped');
+  } finally {
+    dispose();
+    api.getMessages = original;
+  }
+});

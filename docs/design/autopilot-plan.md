@@ -758,6 +758,8 @@ T05 depends most on the environment it meets.
 - **A record recorded running with nothing running** shows as "didn't
   finish" with a pause icon: the app closed or a crash cut the stage, and
   opening the chat resumes it (the daemon resumes its own at its start).
+  Only the current task's latest record is at work while a run goes: one
+  a new request took over from stays "didn't finish".
 - **In the chat** each record is one line where its stage began: the
   stage, its round when it ran more than once, its status, and its
   summary. A click on the strip scrolls to it, loading the page around

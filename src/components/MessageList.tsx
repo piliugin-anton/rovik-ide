@@ -41,7 +41,7 @@ import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
-import { stageOf } from '../lib/autopilot';
+import { currentTask, stageOf } from '../lib/autopilot';
 import { liveSubagent } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
 import type { ReviewMeta } from '../lib/changeReview';
@@ -175,6 +175,17 @@ export default function MessageList(props: {
     const left = status.until - now();
     return left > 500 ? `${status.text} in ${formatDuration(left)}…` : `${status.text}…`;
   };
+
+  /**
+   * The stage record a run going now carries out: the latest of the chat's
+   * current task. Another recorded running was cut and never went on (a
+   * new request took over), whatever runs now.
+   */
+  const liveStage = createMemo(() => {
+    if (!props.sending || props.chat?.hasNewer) return null;
+    const task = currentTask(messages());
+    return task ? task[task.length - 1].id : null;
+  });
 
   /** Each call's result, by the call itself (P5.8: ids can repeat). */
   const toolIndex = createMemo(() => indexToolResults(messages()));
@@ -1456,7 +1467,7 @@ export default function MessageList(props: {
 
                 {/* An Autopilot stage: where it began, and how it ended. */}
                 <Show when={stageOf(m)}>
-                  {(stage) => <StageRecord stage={stage()} live={props.sending} />}
+                  {(stage) => <StageRecord stage={stage()} live={liveStage() === m.id} />}
                 </Show>
 
                 <Show when={m.meta?.review}>
