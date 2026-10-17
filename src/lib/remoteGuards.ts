@@ -13,7 +13,7 @@
 //   error is swallowed, so a remote chat's input also stays saved in
 //   `composer_drafts` until its start succeeded (K49).
 import type { ChatMessage, ChatPlace, ChatToolCall } from '../types';
-import { unfinishedTask } from './autopilot';
+import { taskOver, unfinishedTask, type StageRow } from './autopilot';
 import type { DraftSegment } from './composerSegments';
 import type { PendingDraft } from './pendingDraft';
 
@@ -39,10 +39,18 @@ export function unansweredToolCalls(list: ChatMessage[]): ChatToolCall[] {
 /**
  * Whether opening the chat picks its run up here: its last step has calls
  * without results, or its Autopilot task is unfinished (the backend knows
- * where to go on), and it's this computer's chat.
+ * where to go on), and it's this computer's chat. `task`: its task as
+ * stored (`taskRecords`), when the page of messages held shows none of its
+ * records: a long run since its stage's started (R03).
  */
-export function resumesHere(messages: ChatMessage[], place: ChatPlace | undefined): boolean {
-  return !place && (unansweredToolCalls(messages).length > 0 || unfinishedTask(messages));
+export function resumesHere(
+  messages: ChatMessage[],
+  place: ChatPlace | undefined,
+  task?: StageRow[] | null
+): boolean {
+  if (place) return false;
+  const unfinished = unfinishedTask(messages) || (!!task?.length && !taskOver(task));
+  return unansweredToolCalls(messages).length > 0 || unfinished;
 }
 
 /** Whether a chat's draft waits to be judged: its host hasn't caught up yet. */

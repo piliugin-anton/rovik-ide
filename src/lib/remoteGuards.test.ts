@@ -13,6 +13,7 @@ import {
   type KeepInput,
 } from './remoteGuards';
 import { clearPendingDraft, listPendingDrafts, savePendingDraft } from './pendingDraft';
+import { stageRows } from './autopilot';
 import type { DraftSegment } from './composerSegments';
 import type { PendingDraft } from './pendingDraft';
 import type { ChatMessage, ChatPlace } from '../types';
@@ -67,6 +68,18 @@ test('a local chat whose Autopilot task is unfinished resumes; a remote one’s 
   assert.equal(resumesHere(task, ON_BUILD), false);
   const delivered = [...task, record('deliver', 'done')] as ChatMessage[];
   assert.equal(resumesHere(delivered, undefined), false, 'over');
+  // R03: the page held shows none of its records (a long run since), the
+  // task as stored does.
+  const page = [{ id: 'a1', role: 'assistant', content: 'Working.' }] as ChatMessage[];
+  const stored = stageRows([
+    record('plan', 'done'),
+    record('implement', 'running'),
+  ] as ChatMessage[]);
+  assert.equal(resumesHere(page, undefined), false, 'nothing held says so');
+  assert.equal(resumesHere(page, undefined, stored), true, 'cut in a long run');
+  assert.equal(resumesHere(page, ON_BUILD, stored), false);
+  const over = stageRows([record('plan', 'done'), record('deliver', 'done')] as ChatMessage[]);
+  assert.equal(resumesHere(page, undefined, over), false, 'over');
 });
 
 test('a remote chat’s draft waits until its host has caught up; a moving chat’s always', () => {

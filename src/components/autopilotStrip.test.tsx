@@ -217,6 +217,62 @@ test('the chat shows a stage record where the stage began', () => {
   }
 });
 
+test('a running stage’s record on a page opened around it reads running, not cut (R03)', () => {
+  // The strip went to it: the page held isn't the newest, the run goes on.
+  const [chat] = createStore({
+    messages: [
+      {
+        id: 's4',
+        role: 'assistant',
+        content: '',
+        meta: { stage: record('s4', 'implement', 'running').stage },
+      },
+      { id: 'a1', role: 'assistant', content: 'Writing ok.txt.' },
+    ] as ChatMessage[],
+    hasOlder: true,
+    hasNewer: true,
+    loadingOlder: false,
+    lastUsed: 0,
+  });
+  const api = chatApi as { getMessages: typeof chatApi.getMessages };
+  const original = api.getMessages;
+  api.getMessages = () => Promise.resolve({ messages: [], hasOlder: false, hasNewer: false });
+  const root = container();
+  const noop = async () => 0;
+  const [live, setLive] = createSignal<string | null | undefined>('s4');
+  let dispose = () => {};
+  try {
+    dispose = render(
+      () => (
+        <MessageList
+          dialogId="d-around"
+          chat={chat}
+          sending={true}
+          liveStageId={live()}
+          focusMessageId={null}
+          onLoadOlder={noop}
+          onLoadNewer={noop}
+          onReloadLatest={async () => {}}
+          onRetry={() => {}}
+          onContinue={() => {}}
+          onContinueRun={() => {}}
+          onRunChecks={() => {}}
+          onOpenProjectChecks={() => {}}
+        />
+      ),
+      root
+    );
+    const line = () => root.querySelector('.chat-item[data-id="s4"] .chat-stage')!;
+    assert.equal(line().className, 'chat-stage running');
+    // Without the task as stored, the page alone can't tell.
+    setLive(undefined);
+    assert.equal(line().className, 'chat-stage stopped');
+  } finally {
+    dispose();
+    api.getMessages = original;
+  }
+});
+
 test('the Prepare stage’s installs show in the chat, live and as they ended (S03)', () => {
   const [chat, setChat] = createStore({
     messages: [

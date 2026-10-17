@@ -2922,6 +2922,17 @@ export default function ChatPanel(props: ChatProps) {
     const rows = stored && stored.dialogId === activeDialogId() ? stored.rows : null;
     return taskRecords(rows, chat.messages, !chat.hasNewer);
   });
+  /**
+   * The record of the stage the task's run carries out now, whatever page
+   * of the chat is held (the strip opens one around a record): the task's
+   * latest, while it runs.
+   */
+  const liveStageId = createMemo(() => {
+    if (!sending()) return null;
+    const rows = taskStages();
+    const last = rows?.[rows.length - 1];
+    return last?.stage.status === 'running' ? last.id : null;
+  });
   /** A stage's record in the chat, from the strip: loaded around it when it isn't held. */
   async function showStageRecord(id: string) {
     const dialog = activeDialog();
@@ -3000,8 +3011,9 @@ export default function ChatPanel(props: ChatProps) {
     // Wait until the newest messages are loaded and nothing is running.
     if (!dialogId || !chat || chat.hasNewer || sending() || !activeProfile()) return;
     if (resumed.has(dialogId)) return;
-    // A remote chat's daemon picks its run up itself (K07).
-    if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place)) return;
+    // A remote chat's daemon picks its run up itself (K07). The task as
+    // stored: the page held may show none of its records.
+    if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place, taskStages())) return;
     resumed.add(dialogId);
     untrack(() => void beginRun(dialogId, { kind: 'resume' }, lastUserWireContent(dialogId)));
   });
@@ -3796,6 +3808,7 @@ export default function ChatPanel(props: ChatProps) {
         dialogId={activeDialogId()}
         chat={activeChat()}
         sending={sending()}
+        liveStageId={liveStageId()}
         focusMessageId={focusMessageId()}
         onLoadOlder={() =>
           activeDialogId() ? store.loadOlder(activeDialogId()!) : Promise.resolve(0)

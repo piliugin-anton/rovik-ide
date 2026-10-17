@@ -112,6 +112,12 @@ export default function MessageList(props: {
   dialogId: string | null;
   chat: OpenChat | undefined;
   sending: boolean;
+  /**
+   * The record of the stage the task's run carries out now, from the task
+   * as stored: the page held may not be the newest (R03). Without it, the
+   * newest page's latest record, while the chat runs.
+   */
+  liveStageId?: string | null;
   /** Message to scroll to and highlight (a search hit). */
   focusMessageId: string | null;
   onLoadOlder: () => Promise<number>;
@@ -199,7 +205,9 @@ export default function MessageList(props: {
    * new request took over), whatever runs now.
    */
   const liveStage = createMemo(() => {
-    if (!props.sending || props.chat?.hasNewer) return null;
+    if (!props.sending) return null;
+    if (props.liveStageId !== undefined) return props.liveStageId;
+    if (props.chat?.hasNewer) return null;
     const task = currentTask(messages());
     return task ? task[task.length - 1].id : null;
   });
