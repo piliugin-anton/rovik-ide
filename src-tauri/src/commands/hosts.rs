@@ -104,7 +104,7 @@ pub async fn hosts_set_policy(
     id: String,
     policy: ApprovalPolicy,
 ) -> Result<(), String> {
-    page.set_policy(&id, policy)
+    page.set_policy(&id, policy).await
 }
 
 /// What the host's tasks follow while it works on its own (H01), as kept.
@@ -114,7 +114,7 @@ pub async fn hosts_set_autonomy(
     id: String,
     autonomy: rovik_protocol::autopilot::AutonomySettings,
 ) -> Result<rovik_protocol::autopilot::AutonomySettings, String> {
-    page.set_autonomy(&id, autonomy)
+    page.set_autonomy(&id, autonomy).await
 }
 
 /// Deploys Rovik for this user; `sudo_password` when sudo asked for one.

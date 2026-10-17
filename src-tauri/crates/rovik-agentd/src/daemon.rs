@@ -113,6 +113,11 @@ impl Daemon {
                 .configure(computer, config)
                 .map(|()| Response::Done)
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
+            Request::AutonomyConfigure(config) => self
+                .store
+                .set_autonomy(computer, config)
+                .map(|()| Response::Done)
+                .map_err(|e| Fail::new(FailCode::Internal, e)),
             Request::ProjectEnsure {
                 project,
                 settings,

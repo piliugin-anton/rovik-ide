@@ -129,6 +129,9 @@ pub struct HostSummary {
     /// setting names by its socket.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub terminal: bool,
+    /// It works on its own (H02): its chats start in Autopilot.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub autonomous: bool,
 }
 
 /// How a terminal reaches a host's shell (`HostsPage::shell_access`).
@@ -302,6 +305,7 @@ impl HostsPage {
             client: format!("Rovik {}", self.version),
         };
         self.remote.set_policy(&host.id, host.approval_policy);
+        self.remote.set_autonomy(&host.id, host.autonomy.clone());
         if host.auth == AuthKind::SystemSsh {
             let connector = SystemSshConnector::new(system_ssh(host), self.local(host)?);
             self.remote.connect(&host.id, connector, identity);
@@ -397,6 +401,7 @@ impl HostsPage {
                 deployed: matches!(host.deploy, DeployState::Deployed { .. }),
                 caught_up: self.remote.caught_up(&host.id),
                 terminal: true,
+                autonomous: host.approval_policy == ApprovalPolicy::Autonomous,
                 id: host.id,
                 name: host.name,
             })
@@ -412,6 +417,7 @@ impl HostsPage {
                 state: Some(*state),
                 caught_up: self.remote.caught_up(id),
                 terminal: false,
+                autonomous: false,
                 id: id.clone(),
             });
         }
@@ -594,16 +600,19 @@ impl HostsPage {
         self.connect(&self.settings()?.computer, &host)
     }
 
-    /// Who approves on the host while nobody is there (6.9).
-    pub fn set_policy(&self, id: &str, policy: ApprovalPolicy) -> Result<(), String> {
+    /// Who approves on the host while nobody is there (6.9); a connected
+    /// host is told what follows at once (H02).
+    pub async fn set_policy(&self, id: &str, policy: ApprovalPolicy) -> Result<(), String> {
         self.change_host(id, |host| host.approval_policy = policy)?;
         self.remote.set_policy(id, policy);
+        self.remote.reconfigure(id).await;
         Ok(())
     }
 
     /// What the host's tasks follow while it works on its own (H01),
-    /// checked first (`AutonomySettings::checked`). Returns them as kept.
-    pub fn set_autonomy(
+    /// checked first (`AutonomySettings::checked`); a connected host is
+    /// told at once (H02). Returns them as kept.
+    pub async fn set_autonomy(
         &self,
         id: &str,
         autonomy: AutonomySettings,
@@ -611,6 +620,8 @@ impl HostsPage {
         let autonomy = autonomy.checked()?;
         let kept = autonomy.clone();
         self.change_host(id, |host| host.autonomy = kept)?;
+        self.remote.set_autonomy(id, autonomy.clone());
+        self.remote.reconfigure(id).await;
         Ok(autonomy)
     }
 
@@ -1049,6 +1060,7 @@ mod tests {
         setup
             .page
             .set_policy(&saved.id, ApprovalPolicy::AiReviewerThenMe)
+            .await
             .unwrap();
         let moved = Host {
             host: "other.example.com".into(),
@@ -1069,12 +1081,13 @@ mod tests {
         setup
             .page
             .set_policy(&saved.id, ApprovalPolicy::Autonomous)
+            .await
             .unwrap();
         let bad = AutonomySettings {
             notify_url: Some("mailto:me@example.com".into()),
             ..Default::default()
         };
-        assert!(setup.page.set_autonomy(&saved.id, bad).is_err());
+        assert!(setup.page.set_autonomy(&saved.id, bad).await.is_err());
         let block = AutonomySettings {
             delivery: Delivery::PushBranch {
                 deploy_key: " ~/.ssh/rovik_deploy ".into(),
@@ -1083,7 +1096,7 @@ mod tests {
             notify_url: Some("https://ntfy.sh/t".into()),
             ..Default::default()
         };
-        let kept = setup.page.set_autonomy(&saved.id, block).unwrap();
+        let kept = setup.page.set_autonomy(&saved.id, block).await.unwrap();
         assert_eq!(
             kept.delivery,
             Delivery::PushBranch {
@@ -1102,6 +1115,14 @@ mod tests {
         assert_eq!(saved.approval_policy, ApprovalPolicy::Autonomous);
         let listed = setup.page.list().await.unwrap();
         assert_eq!(listed.hosts[0].host.autonomy, kept);
+        // H02: the chats are told it works on its own, and until when.
+        assert!(setup.page.summaries().unwrap()[0].autonomous);
+        setup
+            .page
+            .set_policy(&saved.id, ApprovalPolicy::WaitForMe)
+            .await
+            .unwrap();
+        assert!(!setup.page.summaries().unwrap()[0].autonomous);
     }
 
     #[tokio::test]

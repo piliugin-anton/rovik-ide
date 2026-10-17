@@ -45,7 +45,7 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { estimateContext } from '../lib/aiChat';
 import { DEFAULT_CONTEXT_TOKENS } from '../lib/contextBudget';
 import ContextMeter, { type ContextUsage } from './ContextMeter';
-import { chatMode, setChatMode, type ChatMode } from '../lib/chatMode';
+import { chatMode, setChatMode, setOwnModeChat, type ChatMode } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
 import { formatBytes, plural } from '../lib/textUtils';
@@ -67,7 +67,14 @@ import AutopilotStrip from './AutopilotStrip';
 import { stageRows, taskRecords, type StageRow } from '../lib/autopilot';
 import { autopilotConfig } from '../lib/autopilotSettings';
 import { overlayStatus } from '../lib/overlay';
-import { barChanged, clearUpload, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
+import {
+  barChanged,
+  clearUpload,
+  cloud,
+  onCloudEvent,
+  readOnlyReason,
+  worksOnItsOwn,
+} from '../lib/cloud';
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
 import ChatLocation from './ChatLocation';
 import UploadProgress from './UploadProgress';
@@ -320,6 +327,13 @@ export default function ChatPanel(props: ChatProps) {
       if (barChanged(event, activeDialogId())) setIsolationRevision((n) => n + 1);
     })
   );
+  // A chat on a host that works on its own goes in Autopilot unless the
+  // user picks another mode for it (H02).
+  createEffect(() => {
+    const open = activeDialog();
+    setOwnModeChat(open && worksOnItsOwn(open.place, cloud.hosts) ? open.id : null);
+  });
+  onCleanup(() => setOwnModeChat(null));
   // The chat on screen goes first in the queue for heavy work (builds,
   // tests) when several chats want the CPU at once (src-tauri/src/workload).
   createEffect(() => {

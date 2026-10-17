@@ -40,7 +40,7 @@ pub struct Budget {
 /// go. None: as in the computer's settings. The deploy key is a path on
 /// the server, never its contents; the notify URL may carry a token, and
 /// is never logged whole.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AutonomySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -75,7 +75,82 @@ pub enum Delivery {
     },
 }
 
+/// What a server that works on its own keeps of a computer's settings
+/// (3.5, H02): where its tasks' results go and whom to tell, for runs that
+/// go on with that computer away. Sent beside `AgentConfig`
+/// (`Request::AutonomyConfigure`) and kept per computer by the daemon; the
+/// default, a host that doesn't work on its own: results stay there, and
+/// nobody is called.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutonomyConfig {
+    pub delivery: Delivery,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_url: Option<String>,
+}
+
+impl AutonomyConfig {
+    pub fn is_default(&self) -> bool {
+        *self == AutonomyConfig::default()
+    }
+}
+
+/// A URL as a log or a message shows it: its scheme and host, never its
+/// path or query, which may carry a token (3.5).
+pub fn url_for_logs(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Credentials before the host are a token too.
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let cut = host.len() < rest.len() || rest.contains('@');
+    match (scheme.is_empty(), cut) {
+        (true, _) => "(a URL)".into(),
+        (false, true) => format!("{scheme}://{host}/…"),
+        (false, false) => format!("{scheme}://{host}"),
+    }
+}
+
+/// The notify URL as `Debug` shows it: with `url_for_logs`.
+struct LoggedUrl<'a>(&'a Option<String>);
+
+impl std::fmt::Debug for LoggedUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(url) => write!(f, "Some({:?})", url_for_logs(url)),
+            None => f.write_str("None"),
+        }
+    }
+}
+
+impl std::fmt::Debug for AutonomySettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutonomySettings")
+            .field("effort", &self.effort)
+            .field("budget", &self.budget)
+            .field("delivery", &self.delivery)
+            .field("notify_url", &LoggedUrl(&self.notify_url))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for AutonomyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutonomyConfig")
+            .field("delivery", &self.delivery)
+            .field("notify_url", &LoggedUrl(&self.notify_url))
+            .finish()
+    }
+}
+
 impl AutonomySettings {
+    /// What the server keeps of them for its runs (H02).
+    pub fn config(&self) -> AutonomyConfig {
+        AutonomyConfig {
+            delivery: self.delivery.clone(),
+            notify_url: self.notify_url.clone(),
+        }
+    }
+
     /// The settings as kept, or why they can't be: a deploy key to push
     /// with, a notify URL that's a web address, a budget's limits above 0
     /// (0 and below: as in the computer's settings, and a budget with no
@@ -197,6 +272,51 @@ mod autonomy_tests {
             serde_json::to_value(&none).unwrap(),
             json!({ "delivery": { "kind": "keepOnHost" } })
         );
+    }
+
+    /// H02: what the server keeps, and how a log shows the notify URL,
+    /// which may carry a token: never whole.
+    #[test]
+    fn the_servers_part_round_trips_and_its_url_isnt_logged_whole() {
+        let settings = AutonomySettings {
+            effort: Some(Effort::Thorough),
+            delivery: Delivery::PushBranch {
+                deploy_key: "~/.ssh/k".into(),
+                open_pr: false,
+            },
+            notify_url: Some("https://ntfy.sh/rovik-secret-topic?auth=tok".into()),
+            ..Default::default()
+        };
+        let config = settings.config();
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "delivery": { "kind": "pushBranch", "deployKey": "~/.ssh/k", "openPr": false },
+                "notifyUrl": "https://ntfy.sh/rovik-secret-topic?auth=tok",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<AutonomyConfig>(json).unwrap(),
+            config
+        );
+        let none: AutonomyConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(none.is_default());
+        assert!(!config.is_default());
+        for shown in [format!("{config:?}"), format!("{settings:?}")] {
+            assert!(!shown.contains("secret"), "{shown}");
+            assert!(!shown.contains("tok"), "{shown}");
+            assert!(shown.contains("https://ntfy.sh/…"), "{shown}");
+        }
+        assert_eq!(
+            url_for_logs("https://hooks.example.com"),
+            "https://hooks.example.com"
+        );
+        assert_eq!(
+            url_for_logs("https://user:pw@example.com/x"),
+            "https://example.com/…"
+        );
+        assert_eq!(url_for_logs("example.com/token"), "(a URL)");
     }
 
     #[test]

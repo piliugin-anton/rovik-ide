@@ -66,6 +66,9 @@ pub mod features {
     pub const HOST: &str = "host";
     /// "Clean up now" on the hosts page (R01): `CleanUp`.
     pub const CLEAN_UP: &str = "clean-up";
+    /// A server that works on its own (autopilot-plan H02):
+    /// `AutonomyConfigure`.
+    pub const AUTONOMY: &str = "autonomy";
 }
 
 #[cfg(test)]

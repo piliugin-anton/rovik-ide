@@ -622,17 +622,113 @@ fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
     };
     // Without an AI reviewer, it waits for the user whatever the policy.
     let mut alone = config.clone();
-    ApprovalPolicy::AiReviewerThenMe.apply(&mut alone);
+    ApprovalPolicy::AiReviewerThenMe.apply(&AutonomySettings::default(), &mut alone);
     assert_eq!(alone, config);
     config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
     let mut waiting = config.clone();
-    ApprovalPolicy::WaitForMe.apply(&mut waiting);
+    ApprovalPolicy::WaitForMe.apply(&AutonomySettings::default(), &mut waiting);
     assert_eq!(waiting, config);
-    ApprovalPolicy::AiReviewerThenMe.apply(&mut config);
+    ApprovalPolicy::AiReviewerThenMe.apply(&AutonomySettings::default(), &mut config);
     assert_eq!(config.permissions.command_approval.by, Approver::Ai);
     assert!(
         !config.permissions.edit_approval.required,
         "what needs no approval still doesn't"
+    );
+}
+
+/// H02: the configuration a host that works on its own gets: what would
+/// wait for the user goes to the AI reviewer, and the block's effort and
+/// budget, each where it sets one, are over the computer's. A message that
+/// names no mode runs in Autopilot there; one that names another keeps
+/// it. The host keeps the block's delivery and notify URL, sent on
+/// connecting and at each change, and forgets them once it no longer works
+/// on its own.
+#[tokio::test]
+async fn a_host_that_works_on_its_own_gets_its_block() {
+    use rovik_protocol::autopilot::{AutonomyConfig, Budget, Delivery, Effort};
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let mut config = AgentConfig::default();
+    config.permissions.command_approval = ApprovalRule {
+        required: true,
+        by: Approver::User,
+    };
+    config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
+    config.autopilot.budget = Budget {
+        max_hours: Some(2.0),
+        max_cost: Some(5.0),
+    };
+    let block = AutonomySettings {
+        effort: Some(Effort::Thorough),
+        budget: Some(Budget {
+            max_hours: Some(8.0),
+            max_cost: None,
+        }),
+        delivery: Delivery::PushBranch {
+            deploy_key: "~/.ssh/rovik_deploy".into(),
+            open_pr: true,
+        },
+        notify_url: Some("https://ntfy.sh/rovik-topic".into()),
+    };
+    let remote = Remote::new(app.core.clone());
+    remote.set_policy(HOST, ApprovalPolicy::Autonomous);
+    remote.set_autonomy(HOST, block.clone());
+    remote
+        .everywhere(Request::AgentConfigure(config.clone()))
+        .await
+        .unwrap();
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::AUTONOMY.into()];
+    remote.connect(HOST, fake.clone(), identity(HOST));
+    let requests = requests_once_caught_up(&fake).await;
+
+    // On connecting: the configuration, then what the host keeps.
+    let Request::AgentConfigure(received) = &requests[0] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(received.permissions.command_approval.by, Approver::Ai);
+    assert_eq!(received.autopilot.effort, Effort::Thorough);
+    assert_eq!(
+        received.autopilot.budget,
+        Budget {
+            max_hours: Some(8.0),
+            max_cost: Some(5.0)
+        },
+        "the host's hours, the computer's cost"
+    );
+    let mut rest = received.clone();
+    rest.permissions.command_approval.by = Approver::User;
+    rest.autopilot = config.autopilot.clone();
+    assert_eq!(rest, config.without_keys(), "the rest is the computer's");
+    assert_eq!(requests[1], Request::AutonomyConfigure(block.config()));
+
+    // A start: under the same configuration, in Autopilot unless it says.
+    remote.place("chat", HOST);
+    let mut request = start("chat", StartKind::Retry, None);
+    request.mode = None;
+    request.config = Some(config.clone());
+    remote.start(request.clone()).await.unwrap();
+    request.mode = Some("plan".into());
+    remote.start(request).await.unwrap();
+    let started = starts(&fake);
+    assert_eq!(started[0].mode.as_deref(), Some("autopilot"));
+    assert_eq!(started[1].mode.as_deref(), Some("plan"), "what it named");
+    // With its keys, which a start carries (D11).
+    let start_config = started[0].config.as_ref().map(AgentConfig::without_keys);
+    assert_eq!(start_config.as_ref(), Some(received));
+
+    // A change reaches it at once; "Wait for me" forgets the block there.
+    fake.requests.lock().unwrap().clear();
+    remote.set_policy(HOST, ApprovalPolicy::WaitForMe);
+    remote.reconfigure(HOST).await;
+    let requests = fake.requests.lock().unwrap().clone();
+    let Request::AgentConfigure(waiting) = &requests[0] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(waiting, &config.without_keys(), "the computer's, as it is");
+    assert_eq!(
+        requests[1],
+        Request::AutonomyConfigure(AutonomyConfig::default())
     );
 }
 

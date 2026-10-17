@@ -11,6 +11,7 @@ use crate::keys::{self, Keys};
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
 };
+use rovik_protocol::autopilot::AutonomyConfig;
 use rovik_protocol::host::KeyInfo;
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::work::{ChatResult, Project};
@@ -29,6 +30,11 @@ pub struct State {
     /// Each computer's last configuration.
     #[serde(default)]
     pub computers: BTreeMap<String, AgentConfig>,
+    /// What this server keeps for each computer that has it work on its
+    /// own (H02): where its tasks' results go, whom to tell. A computer
+    /// without it: the default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub autonomy: BTreeMap<String, AutonomyConfig>,
     /// The projects a computer carried here, by id (6.4).
     #[serde(default)]
     pub projects: BTreeMap<String, ProjectState>,
@@ -282,6 +288,35 @@ impl Store {
         }
         inner.set_config(computer, config);
         self.save(inner)
+    }
+
+    /// What `computer` has this server keep for its runs that go on
+    /// without it (`AutonomyConfigure`, H02): the default forgets it.
+    pub fn set_autonomy(&self, computer: &str, config: AutonomyConfig) -> Result<(), String> {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        let kept = &mut inner.state.autonomy;
+        let unchanged = match config.is_default() {
+            true => kept.remove(computer).is_none(),
+            false => kept.insert(computer.to_string(), config.clone()) == Some(config),
+        };
+        if unchanged {
+            return Ok(());
+        }
+        self.save(inner)
+    }
+
+    /// What the chat's computer has this server keep (H02): the default
+    /// when it has nothing kept, or the chat isn't known.
+    // Read by the delivery (H04) and the notice (H06).
+    #[allow(dead_code)]
+    pub fn autonomy_of(&self, dialog_id: &str) -> AutonomyConfig {
+        let inner = self.lock();
+        let computer = inner.state.chats.get(dialog_id).map(|c| &c.computer);
+        computer
+            .and_then(|c| inner.state.autonomy.get(c))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The providers whose key keys.json keeps, and their base URLs: never

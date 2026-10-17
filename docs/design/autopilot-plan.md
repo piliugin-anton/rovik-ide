@@ -1367,3 +1367,41 @@ T05 depends most on the environment it meets.
   then, results stay on the server, and the pull request box is off.
 - `ApprovalPolicy::Autonomous` applies as "Ask the AI reviewer first,
   then me" until H02.
+
+### H02: what a host that works on its own runs with
+
+- **`ApprovalPolicy::apply(autonomy, config)`** takes the host's block:
+  under `Autonomous`, its effort, and each of its budget's limits that it
+  sets, are over the computer's (`config.autopilot`); what would wait for
+  the user goes to the AI reviewer first, as under "Ask the AI reviewer
+  first, then me", and in Autopilot what it doesn't approve is refused
+  (U02). U01's rules and A07's kinds aren't put on the configuration: the
+  core applies them to every Autopilot run wherever it runs
+  (`AgentState::config_for` → `run_config`), the daemon's included, and
+  a message the user sends there in Agent or Plan mode keeps the
+  computer's rules.
+- **The budget's defaults**: the computer sends its budget resolved (the
+  effort's default when the user set none), so a host on Thorough under a
+  computer on Balanced keeps the computer's limits unless it sets its
+  own: limits are the safer side to err on.
+- **Autopilot unless the message says otherwise**: the mode picker keeps
+  a mode of its own for each chat on such a host while it's open,
+  Autopilot until the user picks another for it (`setOwnModeChat`,
+  `HostSummary.autonomous`); the selector's mode for the other chats, and
+  the one saved, stay as they were. A start that names no mode runs in
+  Autopilot there (`Remote::start`), for a client that sends none.
+- **The frame is a request**, `AutonomyConfigure(AutonomyConfig)` (the
+  block's delivery and notify URL), served with the `autonomy` feature,
+  kept per computer in state.json (`State.autonomy`, 0600) and read back
+  at start (`Store::autonomy_of`, for H04 and H06). The client sends it
+  on connecting, after the configuration, whether or not the frontend
+  applied its settings yet (it's the host's own settings), and at each
+  change of the host's policy or block (`Remote::reconfigure`, with the
+  configuration); under another policy it sends the default, which the
+  daemon forgets. A daemon without the feature isn't sent it.
+- **The notify URL is never logged whole**: `AutonomySettings` and
+  `AutonomyConfig` show it in `Debug` as `url_for_logs` does (scheme and
+  host, `/…` when there's more), so a request logged with `{:?}` doesn't
+  carry its token.
+- **`StartRequest.deliver_to`** comes with the delivery (H04), which is
+  the first to read it.

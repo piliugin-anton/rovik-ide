@@ -412,6 +412,13 @@ fn every_request_round_trips() {
             },
             Request::AgentStatus,
             Request::AgentConfigure(config()),
+            Request::AutonomyConfigure(crate::autopilot::AutonomyConfig {
+                delivery: crate::autopilot::Delivery::PushBranch {
+                    deploy_key: "~/.ssh/rovik_deploy".into(),
+                    open_pr: true,
+                },
+                notify_url: Some("https://ntfy.sh/t".into()),
+            }),
             Request::AgentSetEffort {
                 profile_id: "p::m".into(),
                 options: Some(options()),

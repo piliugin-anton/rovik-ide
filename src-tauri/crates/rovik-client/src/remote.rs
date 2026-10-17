@@ -18,6 +18,7 @@ use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
 use rovik_core::chat_db::{api, attachments, moves};
 use rovik_core::{project_profile, Core};
+use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings};
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::{ChatResult, ChatSync};
@@ -118,8 +119,26 @@ pub enum ApprovalPolicy {
 }
 
 impl ApprovalPolicy {
-    /// `config` as the host runs this computer's chats with it.
-    pub fn apply(self, config: &mut AgentConfig) {
+    /// `config` as the host runs this computer's chats with it. A host that
+    /// works on its own (H02) also has its effort and budget, each where it
+    /// sets one, over the computer's (`autonomy`, its block); the rest of
+    /// what an Autopilot task follows (U01's rules, A07's kinds) its core
+    /// applies to every Autopilot run, there as here (`run_config`). What
+    /// would wait for the user goes to the AI reviewer first, as for "Ask
+    /// the AI reviewer first, then me"; in Autopilot, what it doesn't
+    /// approve is refused (U02).
+    pub fn apply(self, autonomy: &AutonomySettings, config: &mut AgentConfig) {
+        if self == ApprovalPolicy::Autonomous {
+            let autopilot = &mut config.autopilot;
+            if let Some(effort) = autonomy.effort {
+                autopilot.effort = effort;
+            }
+            if let Some(budget) = &autonomy.budget {
+                let kept = &mut autopilot.budget;
+                kept.max_hours = budget.max_hours.or(kept.max_hours);
+                kept.max_cost = budget.max_cost.or(kept.max_cost);
+            }
+        }
         if self == ApprovalPolicy::WaitForMe || config.approval_profiles.is_empty() {
             return;
         }
@@ -152,6 +171,9 @@ struct State {
     /// database puts on a host (`location`).
     chats: HashMap<String, String>,
     policies: HashMap<String, ApprovalPolicy>,
+    /// Each host's block for when it works on its own (H01), whatever its
+    /// policy: it applies under `Autonomous` only.
+    autonomy: HashMap<String, AutonomySettings>,
     /// The remote runs the frontend was told of: a host that comes back
     /// without one ended it meanwhile.
     running: HashMap<String, String>,
@@ -295,6 +317,20 @@ impl Remote {
         self.lock().policies.insert(host.to_string(), policy);
     }
 
+    /// The host's block for when it works on its own (H01).
+    pub fn set_autonomy(&self, host: &str, autonomy: AutonomySettings) {
+        self.lock().autonomy.insert(host.to_string(), autonomy);
+    }
+
+    /// After the host's policy or block changed: what follows from them
+    /// goes to it now, when it's connected (`configure`), not at its next
+    /// start. A host that isn't gets it on connecting.
+    pub async fn reconfigure(&self, host: &str) {
+        if self.hosts.ready().iter().any(|(ready, _)| ready == host) {
+            self.configure(host).await;
+        }
+    }
+
     /// How many of the user's chats are on `host` or moving to it.
     pub async fn chats_on(&self, host: &str) -> Result<usize, String> {
         let host = host.to_string();
@@ -308,7 +344,9 @@ impl Remote {
     /// closes once no call holds it.
     pub fn disconnect(&self, host: &str) {
         self.hosts.disconnect(host);
-        self.lock().policies.remove(host);
+        let mut state = self.lock();
+        state.policies.remove(host);
+        state.autonomy.remove(host);
     }
 
     /// A call about the host itself (the Host group): `HostInfo`,
@@ -326,6 +364,35 @@ impl Remote {
 
     fn policy(&self, host: &str) -> ApprovalPolicy {
         self.lock().policies.get(host).copied().unwrap_or_default()
+    }
+
+    /// `config` under the host's policy, and its block when it works on its
+    /// own (`ApprovalPolicy::apply`).
+    fn apply_policy(&self, host: &str, config: &mut AgentConfig) {
+        let (policy, autonomy) = {
+            let state = self.lock();
+            let policy = state.policies.get(host).copied().unwrap_or_default();
+            (
+                policy,
+                state.autonomy.get(host).cloned().unwrap_or_default(),
+            )
+        };
+        policy.apply(&autonomy, config);
+    }
+
+    /// What the host keeps for its runs that go on with this computer away
+    /// (H02): its block's delivery and notify URL when it works on its own;
+    /// else the default, which forgets what it had.
+    fn autonomy_config(&self, host: &str) -> AutonomyConfig {
+        let state = self.lock();
+        match state.policies.get(host) {
+            Some(ApprovalPolicy::Autonomous) => state
+                .autonomy
+                .get(host)
+                .map(AutonomySettings::config)
+                .unwrap_or_default(),
+            _ => AutonomyConfig::default(),
+        }
     }
 
     fn client(&self, host: &str) -> Result<Client, Fail> {
@@ -495,7 +562,12 @@ impl Remote {
             request.root = None;
         }
         if let Some(config) = &mut request.config {
-            self.policy(&host).apply(config);
+            self.apply_policy(&host, config);
+        }
+        // A chat on a host that works on its own runs in Autopilot unless
+        // its message names another mode (H02).
+        if self.policy(&host) == ApprovalPolicy::Autonomous && request.mode.is_none() {
+            request.mode = Some(agent_run::autopilot::MODE.into());
         }
         self.leave_out_known_text(&mut request).await;
         if let StartKind::Send { message } = &mut request.start {
@@ -702,7 +774,7 @@ impl Remote {
             let mut request = request.clone();
             if let Request::AgentConfigure(config) = &mut request {
                 *config = config.without_keys();
-                self.policy(&host).apply(config);
+                self.apply_policy(&host, config);
             }
             async move {
                 if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
@@ -723,18 +795,27 @@ impl Remote {
     /// it went. Before the frontend applied its settings nothing goes: the
     /// host keeps what it has rather than take a configuration nobody set,
     /// and the frontend's reaches it, ready by then.
+    ///
+    /// What the host keeps for runs that go on without this computer
+    /// (`AutonomyConfigure`, H02) goes whether or not the frontend applied
+    /// its settings: it's the host's own settings', on this computer.
     async fn configure(&self, host: &str) {
-        if !self.lock().configured {
-            return;
-        }
         let Ok(client) = self.client(host) else {
             return;
         };
-        let mut config = self.core.agents.config().without_keys();
-        self.policy(host).apply(&mut config);
-        let sent = client.call_within(Request::AgentConfigure(config), HOSTS_WAIT);
-        if let Err(fail) = sent.await {
-            log::warn!("{host} didn't take the configuration: {fail}");
+        if self.lock().configured {
+            let mut config = self.core.agents.config().without_keys();
+            self.apply_policy(host, &mut config);
+            let sent = client.call_within(Request::AgentConfigure(config), HOSTS_WAIT);
+            if let Err(fail) = sent.await {
+                log::warn!("{host} didn't take the configuration: {fail}");
+            }
+        }
+        if self.serves(host, features::AUTONOMY) {
+            let autonomy = Request::AutonomyConfigure(self.autonomy_config(host));
+            if let Err(fail) = client.call_within(autonomy, HOSTS_WAIT).await {
+                log::warn!("{host} didn't take what it keeps for its own work: {fail}");
+            }
         }
     }
 

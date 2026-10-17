@@ -207,3 +207,54 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
         .collect();
     assert_eq!(plan_reply.len(), 1, "{rows:?}");
 }
+
+/// H02: what this computer has the server keep for its runs that go on
+/// without it (where results go, whom to tell) is kept per computer and
+/// read back after a restart: a later change of the state keeps it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_autonomy_frame_is_kept_and_read_back_after_a_restart() {
+    use common::COMPUTER;
+    use rovik_protocol::autopilot::{AutonomyConfig, Delivery};
+    use rovik_protocol::features;
+    let mut daemon = Daemon::start(&[]).await;
+    let mut session = daemon.session().await;
+    let Frame::Welcome {
+        features: served, ..
+    } = &session.welcome
+    else {
+        unreachable!()
+    };
+    assert!(served.iter().any(|f| f == features::AUTONOMY), "{served:?}");
+    let config = AutonomyConfig {
+        delivery: Delivery::PushBranch {
+            deploy_key: "~/.ssh/rovik_deploy".into(),
+            open_pr: true,
+        },
+        notify_url: Some("https://ntfy.sh/rovik-topic".into()),
+    };
+    let sent = session
+        .call(Request::AutonomyConfigure(config.clone()))
+        .await;
+    assert_eq!(sent, Ok(Response::Done));
+    let kept = |daemon: &Daemon| daemon.state()["autonomy"][COMPUTER].clone();
+    assert_eq!(kept(&daemon), serde_json::to_value(&config).unwrap());
+    drop(session);
+    daemon.stop().await;
+    daemon.restart().await;
+    // Another change of the state, written from what the daemon read back.
+    let mut session = daemon.session().await;
+    let configured = session
+        .call(Request::AgentConfigure(AgentConfig::default()))
+        .await;
+    assert_eq!(configured, Ok(Response::Done));
+    assert_eq!(
+        kept(&daemon),
+        serde_json::to_value(&config).unwrap(),
+        "read back"
+    );
+    let forgot = session
+        .call(Request::AutonomyConfigure(AutonomyConfig::default()))
+        .await;
+    assert_eq!(forgot, Ok(Response::Done));
+    assert_eq!(kept(&daemon), Value::Null, "the default forgets it");
+}

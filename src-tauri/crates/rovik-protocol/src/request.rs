@@ -3,6 +3,7 @@
 //! own calls and the daemon's are one list of operations (D3).
 
 use crate::agent::{AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest};
+use crate::autopilot::AutonomyConfig;
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::{HostInfo, KeyInfo, Storage};
@@ -43,6 +44,10 @@ pub enum Request {
     },
     AgentStatus,
     AgentConfigure(AgentConfig),
+    /// Beside `AgentConfigure`: what a server that works on its own keeps
+    /// of this computer's settings for runs that go on without it (H02).
+    /// Served with `features::AUTONOMY`.
+    AutonomyConfigure(AutonomyConfig),
     AgentSetEffort {
         profile_id: String,
         options: Option<OpenAIChatOptions>,
@@ -316,6 +321,7 @@ impl Request {
             }
             Request::AgentStatus
             | Request::AgentConfigure(_)
+            | Request::AutonomyConfigure(_)
             | Request::AgentSetEffort { .. }
             | Request::WorkloadFocus { .. }
             | Request::BlobsMissing { .. }

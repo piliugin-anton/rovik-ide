@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import ModeSelector from './ModeSelector';
-import { chatMode, savedMode, setChatMode } from '../lib/chatMode';
+import { chatMode, savedMode, setChatMode, setOwnModeChat } from '../lib/chatMode';
 
 const radios = (root: HTMLElement) =>
   [...root.querySelectorAll('[role="radio"]')] as HTMLButtonElement[];
@@ -48,4 +48,25 @@ test('chat mode: a saved mode reads back, anything else is Agent', () => {
   assert.equal(savedMode('agent'), 'agent');
   assert.equal(savedMode(null), 'agent');
   assert.equal(savedMode('turbo'), 'agent');
+});
+
+test('a chat on a host that works on its own: Autopilot until the user picks another for it', () => {
+  setChatMode('agent');
+  const root = container();
+  render(() => <ModeSelector />, root);
+  setOwnModeChat('remote-1');
+  assert.equal(chatMode(), 'autopilot');
+  assert.deepEqual(checked(root), ['Autopilot']);
+  // Plan for this chat; the other chats keep theirs, which isn't saved over.
+  radios(root)[1].click();
+  assert.equal(chatMode(), 'plan');
+  assert.equal(localStorage.getItem('rovik.chatMode'), 'agent');
+  setOwnModeChat('remote-2');
+  assert.equal(chatMode(), 'autopilot', 'another such chat starts in Autopilot');
+  setOwnModeChat(null);
+  assert.equal(chatMode(), 'agent');
+  assert.deepEqual(checked(root), ['Agent']);
+  setOwnModeChat('remote-1');
+  assert.equal(chatMode(), 'plan', 'what the user picked for it');
+  setOwnModeChat(null);
 });

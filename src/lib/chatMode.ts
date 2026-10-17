@@ -17,6 +17,8 @@
 //
 // A run keeps the mode of the message that started it, so switching the
 // selector mid-run (or before a Continue) doesn't change a run under way.
+// A chat on a host that works on its own starts in Autopilot: the selector
+// shows its own mode while it's open (`setOwnModeChat`).
 // What Plan mode tells the model and allows is in the backend
 // (src-tauri/src/agent_run/plan.rs).
 import { createSignal } from 'solid-js';
@@ -42,14 +44,35 @@ function load(): ChatMode {
 
 const [mode, setModeSignal] = createSignal<ChatMode>(load());
 
+/**
+ * The open chat, when it's on a host that works on its own (autopilot-plan
+ * H02): its mode is its own, Autopilot until the user picks another for
+ * it; the selector's mode for the other chats stays as it was.
+ */
+const [ownChat, setOwnChat] = createSignal<string | null>(null);
+const [ownModes, setOwnModes] = createSignal<Record<string, ChatMode>>({});
+
 /** The mode the next message is sent in (the selector). */
-export const chatMode = mode;
+export const chatMode = (): ChatMode => {
+  const chat = ownChat();
+  return chat ? (ownModes()[chat] ?? 'autopilot') : mode();
+};
 
 export function setChatMode(next: ChatMode) {
+  const chat = ownChat();
+  if (chat) {
+    setOwnModes({ ...ownModes(), [chat]: next });
+    return;
+  }
   setModeSignal(next);
   try {
     localStorage.setItem(KEY, next);
   } catch {
     // not remembered across restarts, that's all
   }
+}
+
+/** The open chat when its host works on its own; null for any other. */
+export function setOwnModeChat(dialogId: string | null) {
+  setOwnChat(dialogId);
 }

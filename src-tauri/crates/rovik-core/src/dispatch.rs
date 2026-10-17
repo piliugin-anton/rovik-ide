@@ -147,7 +147,8 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::KeysList
         | Request::KeysRemove { .. }
         | Request::Storage
-        | Request::CleanUp => {
+        | Request::CleanUp
+        | Request::AutonomyConfigure(_) => {
             return Err(Fail::new(
                 FailCode::BadRequest,
                 "Only a daemon answers this request.",
@@ -620,6 +621,7 @@ mod tests {
             Request::KeysList,
             Request::Storage,
             Request::CleanUp,
+            Request::AutonomyConfigure(Default::default()),
         ];
         for request in host {
             let fail = dispatch(&test.core, request).await.unwrap_err();

@@ -120,6 +120,8 @@ export interface HostSummary {
    * not a daemon that the developer setting names by its socket.
    */
   terminal?: boolean;
+  /** It works on its own (H02): its chats start in Autopilot. */
+  autonomous?: boolean;
 }
 
 export const hostSummaries = () => invoke<HostSummary[]>('hosts_summaries');
@@ -310,6 +312,15 @@ export async function startMove(
   } finally {
     await chatStore.refreshPlace(dialogId);
   }
+}
+
+/**
+ * The chat is on a host that works on its own (H02): its messages go in
+ * Autopilot unless the user picks another mode for it.
+ */
+export function worksOnItsOwn(place: ChatPlace | undefined, hosts: HostSummary[]): boolean {
+  if (place?.kind !== 'host') return false;
+  return !!hosts.find((h) => h.id === place.host)?.autonomous;
 }
 
 /** A host's name, or its id when this app doesn't know it. */

@@ -16,6 +16,7 @@ import {
   readOnlyReason,
   refreshHosts,
   startMove,
+  worksOnItsOwn,
   type CloudEvent,
   type HostSummary,
 } from './cloud';
@@ -113,6 +114,18 @@ test('the chip: this computer, a host by name and whether it’s there, or the m
     'Moving back from Spare…'
   );
   assert.equal(hostName('h3', HOSTS), 'New');
+});
+
+test('a chat on a host that works on its own, and only there, goes in Autopilot (H02)', () => {
+  const hosts: HostSummary[] = [
+    ...HOSTS,
+    { id: 'own', name: 'Own', deployed: true, state: 'ready', autonomous: true },
+  ];
+  assert.equal(worksOnItsOwn({ kind: 'host', host: 'own' }, hosts), true);
+  assert.equal(worksOnItsOwn({ kind: 'host', host: 'h1' }, hosts), false);
+  assert.equal(worksOnItsOwn({ kind: 'moving', host: 'own' }, hosts), false, 'not there yet');
+  assert.equal(worksOnItsOwn(undefined, hosts), false);
+  assert.equal(worksOnItsOwn({ kind: 'host', host: 'gone' }, hosts), false);
 });
 
 test('a moving chat is read-only, there and back; one on a host isn’t', () => {

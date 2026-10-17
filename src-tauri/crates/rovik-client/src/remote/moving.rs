@@ -83,7 +83,7 @@ impl Remote {
         let mut preflight = MovePreflight::default();
 
         let mut config = self.core.agents.config();
-        self.policy(host).apply(&mut config);
+        self.apply_policy(host, &mut config);
         let p = &config.permissions;
         for (rule, what) in [
             (p.command_approval, "Commands"),
