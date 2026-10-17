@@ -151,12 +151,12 @@ impl Results {
             })
         };
         self.all_committed(chat).await;
-        let Some(last) = self.store.result_of(chat) else {
+        if self.store.result_of(chat).is_none() {
             return failed(
                 "There's no result to push: this chat has no worktree on the server".into(),
             );
-        };
-        let result = match self.commit_after(chat, &last.outcome, true).await {
+        }
+        let result = match self.recommit(chat).await {
             Ok(result) => result,
             Err(fail) => {
                 return failed(format!(
@@ -216,6 +216,41 @@ impl Results {
         outcome: &str,
         autopilot: bool,
     ) -> Result<ChatResult, Fail> {
+        let hold = pending_reason_in(outcome, autopilot);
+        self.commit_holding(dialog_id, outcome, hold).await
+    }
+
+    /// Commits the chat's worktree again as its result when it changed with
+    /// no run of its own (a merge of its project's newer changes, a merge
+    /// undone, a landing that moved its base), or as its computer asks for
+    /// it (a move back): once the results of its ended runs are in, what the
+    /// last of them made of it stays, its outcome and why it waits to land.
+    /// The last run of an Autopilot task, its delivery, brings no result,
+    /// and doesn't make one landable. A chat with no result yet is committed
+    /// as its last run ended.
+    pub async fn recommit(&self, dialog_id: &str) -> Result<ChatResult, Fail> {
+        self.all_committed(dialog_id).await;
+        match self.store.result_of(dialog_id) {
+            Some(last) => {
+                self.commit_holding(dialog_id, &last.outcome, last.pending)
+                    .await
+            }
+            None => {
+                let outcome = self.store.outcome_of(dialog_id);
+                self.commit(dialog_id, outcome.as_deref().unwrap_or("unknown"))
+                    .await
+            }
+        }
+    }
+
+    /// `commit`, the result held back for `hold` (None: it may land), or for
+    /// why the chat's changes waited when it moved here (6.8).
+    async fn commit_holding(
+        &self,
+        dialog_id: &str,
+        outcome: &str,
+        hold: Option<String>,
+    ) -> Result<ChatResult, Fail> {
         let _base = self.base.lock().await;
         let (place, base) = self.worktree(dialog_id)?;
         let (index, chat) = (
@@ -244,8 +279,7 @@ impl Results {
             outcome: outcome.to_string(),
             // A chat that moved here waits as it waited there until a run
             // ends here (6.8).
-            pending: (self.store.pending_of(dialog_id))
-                .or_else(|| pending_reason_in(outcome, autopilot)),
+            pending: self.store.pending_of(dialog_id).or(hold),
             marked,
             unchecked: !checks,
             branch: None,
@@ -284,8 +318,8 @@ impl Results {
         // A newer result, on the old base, would bring back what landed:
         // it's committed again, on the new one.
         let newer = self.store.result_of(dialog_id);
-        if let Some(newer) = newer.filter(|result| result.commit != commit) {
-            self.commit(dialog_id, &newer.outcome).await?;
+        if newer.is_some_and(|result| result.commit != commit) {
+            self.recommit(dialog_id).await?;
         }
         Ok(())
     }

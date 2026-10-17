@@ -172,9 +172,7 @@ pub async fn undo_merge(
         (restored, changed_since, subpath)
     };
     if !restored.is_empty() {
-        let outcome = daemon.store.outcome_of(chat);
-        let outcome = outcome.as_deref().unwrap_or("unknown");
-        daemon.results.commit(chat, outcome).await?;
+        daemon.results.recommit(chat).await?;
     }
     Ok(Response::UndoneMerge(UndoneMerge {
         restored: results::in_root(&subpath, restored),

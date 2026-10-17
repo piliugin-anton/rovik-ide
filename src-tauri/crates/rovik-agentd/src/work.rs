@@ -122,9 +122,7 @@ pub async fn recheck(
     let merged = merge_into(daemon, chat, project, snapshot, excludes, false).await?;
     if merged.state == SyncState::Synced {
         if merged.files.is_empty() {
-            let outcome = daemon.store.outcome_of(chat);
-            let outcome = outcome.as_deref().unwrap_or("unknown");
-            daemon.results.commit(chat, outcome).await?;
+            daemon.results.recommit(chat).await?;
         } else {
             let (files, diffs) = (merged.files.clone(), merged.diffs.clone());
             daemon.check_merged(chat, files, diffs).await?;

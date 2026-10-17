@@ -157,9 +157,7 @@ impl Daemon {
             }
             Request::WorkResult { dialog_id } => {
                 self.store.check_owner(computer, &dialog_id)?;
-                let outcome = self.store.outcome_of(&dialog_id);
-                let outcome = outcome.as_deref().unwrap_or("unknown");
-                let result = self.results.commit(&dialog_id, outcome).await?;
+                let result = self.results.recommit(&dialog_id).await?;
                 Ok(Response::ChatResult(result))
             }
             Request::WorkResults => Ok(Response::ChatResults(self.store.results_of(computer))),

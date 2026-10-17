@@ -303,4 +303,29 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
     assert!(std::fs::read_to_string(root.join("src/main.rs"))
         .unwrap()
         .contains("hello"));
+
+    // D7: once the task is delivered, its result committed again (as a
+    // move back asks for it) still waits, and says why: the delivery's own
+    // run, which brings no result, doesn't make it landable.
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(60), heard.recv()).await;
+        let delivered = matches!(
+            next.expect("the delivery's run's end").expect("the client went"),
+            Incoming::Event {
+                event: Event::Agent(AgentEvent::RunEnded { stage: Some(stage), .. }),
+                ..
+            } if stage == "deliver"
+        );
+        if delivered {
+            break;
+        }
+    }
+    let again: ChatResult = (setup.client)
+        .request(Request::WorkResult {
+            dialog_id: CHAT.into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(again.outcome, "unverified");
+    assert_eq!(again.pending, implemented.pending);
 }
