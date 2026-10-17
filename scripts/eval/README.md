@@ -164,13 +164,38 @@ again when the campaign is resumed.
 
 The report, per task and overall:
 
-- success rate (and per repetition)
+- success rate (and per repetition), and beside it pass@k and pass^k for
+  each k up to the repetitions (see below)
 - cost
 - tokens
 - peak main-agent context (its largest request)
 - time
 - interventions
+- tool errors, edit misses and the checks' rounds (see below)
 - the runs' outcomes
+- for Autopilot runs, each stage: how many runs reached it, how they ended
+  it and its rounds
+
+**pass@k and pass^k** (the Autopilot plan's G03). pass@k is the chance that
+at least one of k runs of a task passes: whether the agent can do it.
+pass^k is the chance that all k do: how reliably it does. Each is the
+unbiased estimate from a task's n runs and c passes (1 − C(n−c, k)/C(n, k),
+and C(c, k)/C(n, k)), over the tasks with at least k runs. pass@1 and
+pass^1 are the success rate.
+
+**Tool errors and the checks' rounds** (the Autopilot plan's G02). The agent
+log has a `tool` line for every finished tool call: its tool, whether it
+failed and the error's class (`old_text not found`, `no such file`,
+`denied`, … from the words the tools write; `rovik-core`'s
+`tools::error_class`), how long it took, and a command's exit code. A
+command that ran and exited non-zero didn't fail as a call. The runner's
+report counts them, the run's subagents' included: `toolErrors` (failed
+calls, those a Stop, a closed app or a budget cut aside), by class
+(`toolErrorClasses`), `editMisses` (edits whose old text matched nowhere,
+or more than once) and `allToolCalls`; `verifyRounds` is the checks' rounds
+from the lead's `verify` lines, and `stages` an Autopilot task's stage
+records (null otherwise). `result.json` keeps these, with the run's `mode`
+and `effort`.
 
 ## Each kind on by itself (G02) and the defaults (G03)
 
@@ -219,3 +244,72 @@ node scripts/eval/eval.mjs dry-run-variants # all of it with the scripted model,
 - `apply-defaults` turns the chosen kinds on, with the master switch, in
   `DEFAULT_SUBAGENT_SETTINGS`. It refuses results from the scripted model.
   Then update the defaults test and link the results file in the pull request.
+
+## Autopilot at each effort (the Autopilot plan's G03)
+
+Beside the kinds, `variants` runs Autopilot at each effort, each a campaign
+of its own (`eval-results/autopilot-balanced/`,
+`eval-results/autopilot-thorough/`): the request as an Autopilot task
+(the runner's `--mode autopilot --effort …`), on the baseline's settings.
+A task turns on the kinds its stages need itself.
+
+```sh
+node scripts/eval/eval.mjs variants --settings my-settings.json --variants autopilot-balanced,autopilot-thorough
+node scripts/eval/eval.mjs variants --settings my-settings.json --variants autopilot-balanced --repeats 1   # a pilot
+node scripts/eval/eval.mjs compare baseline autopilot-balanced
+node scripts/eval/eval.mjs compare autopilot-balanced autopilot-thorough
+node scripts/eval/eval.mjs dry-run-variants --variants autopilot-balanced,autopilot-thorough
+```
+
+- `--variants` takes campaign or kind ids (`autopilot-thorough`, `scout`,
+  `kind-scout`); `--kinds` still takes kinds only; with neither, every
+  variant runs.
+- **Budget** (`budget.json` `autopilot`). A task costs more than a plain
+  run: "two to three plain Agent runs" for Balanced, several times that
+  for Thorough (the Autopilot plan, section 8). Each effort has:
+
+  | Effort   | The task's budget         | Cost budget      | Cap  |
+  | -------- | ------------------------- | ---------------- | ---- |
+  | Balanced | 1.5 h, 4.5 million tokens | 3× the baseline  | $225 |
+  | Thorough | 4 h, 15 million tokens    | 10× the baseline | $750 |
+
+  The task's budget is its own (`config.autopilot.budget` in the variant's
+  settings): the task ends itself with outcome `budget` and delivers what
+  it has. The runner's caps (`--timeout`, `--max-tokens`) are a tenth above
+  it, so they only catch a runaway. A campaign starts only if the
+  baseline's cost a run, times the cost budget, times its runs, fits the
+  cap, as a kind's does; 3 repetitions unless `--repeats` says.
+
+- **Prepare is off** (`config.autopilot.prepare: false`): the evaluation
+  gives each workspace its dependencies, and an install would change the
+  caches every run shares. The dry run's Prepare found more-itertools'
+  `docs/requirements.txt` and installed it into the shared virtualenv.
+- **Checks that fail before any change.** Autopilot's checks are the
+  project's, as detected: `go vet ./...` fails on lo's own tests, and
+  `ruff check .` (run wherever ruff is installed) on more-itertools, with
+  or without the change. The task then ends `verify-unresolved` at its
+  checks; with a real model, after rounds spent on them. The baseline's
+  checks, on by default, meet the same failures.
+
+- **`compare A B`** compares any two campaigns over the tasks both ran:
+  every number side by side, pass@k and pass^k, each task, and B's stages.
+  B is better when its success beats A's by more than the noise (the
+  larger spread between repetitions, and at least one task) within its
+  cost budget: a variant's own, `--cost-ratio N`, or none for other
+  campaigns. A campaign that stopped early, or fewer than 5 tasks in
+  both (`--min-tasks`), decides nothing. It writes
+  `eval-results/compare-A-B.md` and `.json`, or `--out`. Without names,
+  `compare` is the kinds' comparison above.
+- **The dry run** gives Autopilot the scripted model's `autopilot` mode
+  (`fake-model.mjs autopilot <files.json>`): a plan naming the files the
+  reference changes, the answer each stage's brief is read for (the plan
+  review and the change review find nothing, the test writers and the
+  adversarial tester are blocked, the acceptance check finds every
+  criterion satisfied, Thorough's planners plan and its judges pick the
+  first), and the change as `write` calls of the reference's files, so
+  the change review and the acceptance check see it. Every run must pass
+  and reach its delivery with none of the stages the scripted model
+  answers failed; the project's own checks may fail (above), and the run's
+  line names them. It tests the pipeline, not Autopilot: what a task does
+  with a real model is the campaigns'. `FAKE_MODEL_LOG=file` makes the
+  scripted model write each request it gets to the file, a JSON line each.

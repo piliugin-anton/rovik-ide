@@ -5,9 +5,17 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  AUTOPILOT_VARIANTS,
   applyDefaults,
+  autopilotCaps,
+  autopilotSettings,
   budgetAllows,
+  compareCampaigns,
   compareVariant,
+  comparisonMarkdown,
+  passAt,
+  passHat,
+  stageTotals,
   resultsMarkdown,
   subagentsOn,
   variantSettings,
@@ -497,5 +505,247 @@ describe('two campaigns at once (round 3)', () => {
     const unlock = lockCampaign(dir);
     assert.equal(readFileSync(join(dir, '.lock'), 'utf8'), String(process.pid));
     unlock();
+  });
+});
+
+describe('the Autopilot plan’s G02: tools, checks and stages in the summary', () => {
+  const run = (task, rep, extra = {}) => ({
+    task,
+    rep,
+    success: true,
+    costUsd: 0.1,
+    tokens: 1000,
+    peakLeadContext: 500,
+    ms: 60000,
+    interventions: 0,
+    outcome: 'verified',
+    toolErrors: 0,
+    editMisses: 0,
+    verifyRounds: 1,
+    ...extra,
+  });
+  it('means of the tool errors, edit misses and check rounds, and the errors by class', () => {
+    const s = summarize([
+      run('a', 1, {
+        toolErrors: 3,
+        editMisses: 2,
+        verifyRounds: 2,
+        toolErrorClasses: { 'old_text not found': 2, denied: 1 },
+      }),
+      run('a', 2, { toolErrors: 1, toolErrorClasses: { 'no such file': 1 } }),
+      // Written before G02: none of its numbers.
+      { task: 'b', rep: 1, success: false, costUsd: 0.1, tokens: 0, ms: 0, outcome: 'done' },
+    ]);
+    assert.ok(Math.abs(s.meanToolErrors - 4 / 3) < 1e-9);
+    assert.ok(Math.abs(s.meanEditMisses - 2 / 3) < 1e-9);
+    assert.ok(Math.abs(s.meanVerifyRounds - 1) < 1e-9);
+    assert.deepEqual(s.toolErrorClasses, { 'old_text not found': 2, denied: 1, 'no such file': 1 });
+    const a = s.tasks.find((t) => t.task === 'a');
+    assert.deepEqual([a.meanToolErrors, a.meanEditMisses, a.meanVerifyRounds], [2, 1, 1.5]);
+    const md = summaryMarkdown(s, 'x');
+    assert.match(
+      md,
+      /Tool errors a run: 1\.33 \(edit misses 0\.67\); by class: old_text not found 2, denied 1, no such file 1; checks' rounds a run: 1\.00/
+    );
+    assert.match(md, /\| Tool errors \| Edit misses \| Check rounds \| Outcomes \|/);
+    assert.match(
+      md,
+      /\| a \| 2\/2 \| \$0\.100 \| 1,000 \| 500 \| 1\.0 \| 2\.0 \| 1\.0 \| 1\.5 \| verified, verified \|/
+    );
+    assert.doesNotMatch(md, /## Stages/, 'no Autopilot runs');
+  });
+  it('an Autopilot campaign’s stages: how each ended (its last round) and its rounds', () => {
+    const stages = (...list) => list.map(([name, status, round = 1]) => ({ name, status, round }));
+    const runs = [
+      run('a', 1, {
+        stages: stages(
+          ['plan', 'done'],
+          ['implement', 'failed'],
+          ['implement', 'done', 2],
+          ['deliver', 'done']
+        ),
+      }),
+      run('b', 1, {
+        stages: stages(['plan', 'done'], ['implement', 'failed'], ['deliver', 'done']),
+      }),
+      run('c', 1, { stages: stages(['plan', 'failed'], ['deliver', 'running']) }),
+      run('d', 1, { stages: null }),
+    ];
+    assert.deepEqual(stageTotals(runs), [
+      { name: 'plan', runs: 3, done: 2, failed: 1, skipped: 0, other: 0, meanRounds: 1 },
+      { name: 'implement', runs: 2, done: 1, failed: 1, skipped: 0, other: 0, meanRounds: 1.5 },
+      { name: 'deliver', runs: 3, done: 2, failed: 0, skipped: 0, other: 1, meanRounds: 1 },
+    ]);
+    const md = summaryMarkdown(summarize(runs), 'x');
+    assert.match(md, /## Stages/);
+    assert.match(md, /\| implement \| 2 \| 1 \| 1 \| 0 \| 0 \| 1\.5 \|/);
+  });
+});
+
+describe('the Autopilot plan’s G03: pass@k and pass^k, the variants, any two campaigns', () => {
+  it('pass@k: at least one of k runs passes; pass^k: all of them do', () => {
+    const near = (x, y) => assert.ok(Math.abs(x - y) < 1e-12, `${x} vs ${y}`);
+    near(passAt(3, 1, 1), 1 / 3);
+    near(passAt(3, 1, 2), 2 / 3);
+    near(passAt(3, 1, 3), 1);
+    near(passAt(3, 0, 3), 0);
+    near(passHat(3, 2, 1), 2 / 3);
+    near(passHat(3, 2, 2), 1 / 3);
+    near(passHat(3, 2, 3), 0);
+    near(passHat(3, 3, 3), 1);
+    // pass@1 and pass^1 are the success rate.
+    near(passAt(5, 2, 1), passHat(5, 2, 1));
+    assert.throws(() => passAt(2, 1, 3), /needs at least 3 runs/);
+  });
+  const run = (task, rep, success, extra = {}) => ({
+    task,
+    rep,
+    success,
+    costUsd: 1,
+    tokens: 1000,
+    peakLeadContext: 100,
+    ms: 60000,
+    interventions: 0,
+    outcome: success ? 'verified' : 'unverified',
+    ...extra,
+  });
+  it('beside the mean, over the tasks with k runs', () => {
+    // a: 1 of 3; b: 3 of 3; c: one run only, passed.
+    const s = summarize([
+      run('a', 1, true),
+      run('a', 2, false),
+      run('a', 3, false),
+      run('b', 1, true),
+      run('b', 2, true),
+      run('b', 3, true),
+      run('c', 1, true),
+    ]);
+    const near = (x, y) => assert.ok(Math.abs(x - y) < 1e-12, `${x} vs ${y}`);
+    assert.deepEqual(
+      s.passAt.map((r) => [r.k, r.tasks]),
+      [
+        [1, 3],
+        [2, 2],
+        [3, 2],
+      ]
+    );
+    near(s.passAt[0].rate, (1 / 3 + 1 + 1) / 3);
+    near(s.passAt[1].rate, (2 / 3 + 1) / 2);
+    near(s.passAt[2].rate, 1);
+    near(s.passHat[1].rate, (0 + 1) / 2);
+    near(s.passHat[2].rate, 0.5);
+    assert.match(
+      summaryMarkdown(s, 'x'),
+      /- pass@2 83% over 2 tasks, pass@3 100% over 2 tasks, pass\^2 50% over 2 tasks, pass\^3 50% over 2 tasks/
+    );
+    // One run a task: the mean says it all.
+    assert.doesNotMatch(summaryMarkdown(summarize([run('a', 1, true)]), 'x'), /pass@/);
+  });
+
+  it('an Autopilot variant: the baseline’s settings with the task’s own budget, and caps above it', () => {
+    assert.deepEqual(
+      AUTOPILOT_VARIANTS.map((v) => [v.id, v.effort]),
+      [
+        ['autopilot-balanced', 'balanced'],
+        ['autopilot-thorough', 'thorough'],
+      ]
+    );
+    const base = { profile: { id: 'x' }, config: { permissions: { allowAnyCommand: true } } };
+    const budget = { maxHours: 1.5, maxTokens: 4_500_000 };
+    const s = autopilotSettings(base, 'thorough', budget);
+    assert.deepEqual(s.config.autopilot, {
+      effort: 'thorough',
+      budget: { maxHours: 1.5, maxCost: null, maxTokens: 4_500_000 },
+      prepare: false,
+    });
+    assert.equal(base.config.autopilot, undefined, 'the baseline’s settings stay');
+    assert.deepEqual(s.config.permissions, base.config.permissions);
+    assert.deepEqual(autopilotCaps(budget), { maxTokens: 4_950_000, timeoutSeconds: 5940 });
+    // The budget file has both efforts.
+    const file = JSON.parse(readFileSync('scripts/eval/budget.json', 'utf8'));
+    for (const v of AUTOPILOT_VARIANTS) {
+      const e = file.autopilot.efforts[v.effort];
+      assert.ok(e.maxHours > 0 && e.maxTokens > 0 && e.costRatioMax > 0 && e.capUsd > 0, v.id);
+    }
+  });
+
+  /** Ten tasks × 3 repetitions; `passing[i]`: how many of repetition i's ten pass. */
+  const campaign = (passing, cost) =>
+    summarize(
+      [1, 2, 3].flatMap((rep) =>
+        Array.from({ length: 10 }, (_, i) =>
+          run(`t${i}`, rep, i < passing[rep - 1], { costUsd: cost })
+        )
+      )
+    );
+  const base = campaign([5, 5, 6], 1);
+  it('any two campaigns: better beyond the noise, within the cost budget', () => {
+    const better = compareCampaigns(base, campaign([8, 8, 8], 2.5), { costRatioMax: 3 });
+    assert.equal(better.better, true, better.reason);
+    assert.match(better.reason, /within its 3× cost budget/);
+    assert.ok(Math.abs(better.costRatio - 2.5) < 1e-9);
+    assert.deepEqual(
+      better.passAt.map((p) => p.k),
+      [1, 2, 3]
+    );
+    // The noise: the larger spread between repetitions, here a tenth.
+    assert.ok(Math.abs(better.noise - 0.1) < 1e-9);
+    const costly = compareCampaigns(base, campaign([8, 8, 8], 4), { costRatioMax: 3 });
+    assert.equal(costly.better, false);
+    assert.match(costly.reason, /over its 3× budget/);
+    // Without a cost budget, any cost.
+    assert.equal(compareCampaigns(base, campaign([8, 8, 8], 4)).better, true);
+    const same = compareCampaigns(base, campaign([6, 5, 5], 1), { costRatioMax: 3 });
+    assert.equal(same.better, false);
+    assert.match(same.reason, /no gain in success beyond the noise/);
+    const worse = compareCampaigns(base, campaign([2, 2, 2], 1));
+    assert.match(worse.reason, /worse beyond the noise/);
+    // Too few tasks, or a campaign that stopped: nothing decided.
+    const few = summarize([run('a', 1, true)]);
+    assert.equal(compareCampaigns(few, few).better, null);
+    assert.equal(
+      compareCampaigns(base, campaign([8, 8, 8], 1), { stopped: 'its cap' }).better,
+      null
+    );
+    // A cost not known: better, but not decided against a budget.
+    const unknown = summarize(
+      [1, 2, 3].flatMap((rep) =>
+        Array.from({ length: 10 }, (_, i) => run(`t${i}`, rep, i < 8, { costUsd: null }))
+      )
+    );
+    const d = compareCampaigns(base, unknown, { costRatioMax: 3 });
+    assert.deepEqual([d.better, d.costRatio], [null, null]);
+  });
+
+  it('the comparison as Markdown: both side by side, the verdict, each task, the stages', () => {
+    const stages = [{ name: 'plan', status: 'done', round: 1 }];
+    const b = summarize(
+      [1, 2, 3].flatMap((rep) =>
+        Array.from({ length: 10 }, (_, i) => run(`t${i}`, rep, i < 8, { costUsd: 2, stages }))
+      )
+    );
+    const c = {
+      date: '2026-10-17',
+      model: 'Test/m',
+      fake: false,
+      a: { name: 'baseline', summary: base },
+      b: { name: 'autopilot-balanced', summary: b },
+      decision: compareCampaigns(base, b, { costRatioMax: 3 }),
+    };
+    const md = comparisonMarkdown(c);
+    assert.match(md, /^# Evaluation: autopilot-balanced against baseline/);
+    assert.match(md, /`node scripts\/eval\/eval\.mjs compare baseline autopilot-balanced`/);
+    assert.match(md, /\| Success \| 53% \| 80% \| \+27 pts \(noise ±10\) \|/);
+    assert.match(md, /\| pass@3 \| 60% \| 80% \|/);
+    assert.match(md, /\| pass\^3 \| 50% \| 80% \|/);
+    assert.match(md, /\| Cost a run \| \$1\.000 \| \$2\.000 \| 2\.00× \|/);
+    assert.match(
+      md,
+      /\*\*autopilot-balanced is better\*\*: its success is better beyond the noise/
+    );
+    assert.match(md, /\| t9 \| 0\/3 \| 0\/3 \|/);
+    assert.match(md, /## Stages \(autopilot-balanced\)/);
+    assert.doesNotMatch(md, /Dry run/);
+    assert.match(comparisonMarkdown({ ...c, fake: true }), /Dry run with a scripted model/);
   });
 });

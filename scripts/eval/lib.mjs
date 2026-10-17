@@ -278,8 +278,91 @@ export async function runCampaign(plan, { cap, firstEstimate, runOne }) {
 }
 
 /**
+ * The chance that at least one of `k` runs passes, from a task's `n` runs
+ * of which `c` passed (pass@k; the unbiased estimate, 1 − C(n−c, k)/C(n, k)).
+ */
+export function passAt(n, c, k) {
+  if (k < 1 || k > n) throw new Error(`pass@${k} needs at least ${k} runs (${n})`);
+  return 1 - drawOdds(n - c, n, k);
+}
+
+/**
+ * The chance that all of `k` runs pass (pass^k, C(c, k)/C(n, k)): how
+ * reliably the agent does it, where pass@k says whether it can.
+ */
+export function passHat(n, c, k) {
+  if (k < 1 || k > n) throw new Error(`pass^${k} needs at least ${k} runs (${n})`);
+  return drawOdds(c, n, k);
+}
+
+/** C(a, k)/C(n, k): the chance that `k` of `n` drawn without replacement all come from `a`. */
+function drawOdds(a, n, k) {
+  let odds = 1;
+  for (let i = 0; i < k; i++) odds *= Math.max(0, a - i) / (n - i);
+  return odds;
+}
+
+/**
+ * pass@k or pass^k (`f`) for each k from 1 to the most runs a task has,
+ * over the tasks with at least k runs: [{ k, rate, tasks }].
+ */
+function passRates(tasks, f) {
+  const most = Math.max(0, ...tasks.map((t) => t.runs));
+  const rates = [];
+  for (let k = 1; k <= most; k++) {
+    const over = tasks.filter((t) => t.runs >= k);
+    rates.push({ k, rate: mean(over.map((t) => f(t.runs, t.successes, k))), tasks: over.length });
+  }
+  return rates;
+}
+
+/** A number of a run's result, 0 when it has none (a result written before it was). */
+const meanOf = (runs, key) => mean(runs.map((r) => r[key] ?? 0));
+
+/** G02: the runs' failed tool calls by class, added up. */
+function classTotals(runs) {
+  const totals = {};
+  for (const r of runs)
+    for (const [cls, n] of Object.entries(r.toolErrorClasses ?? {}))
+      totals[cls] = (totals[cls] ?? 0) + n;
+  return totals;
+}
+
+const STAGE_ENDS = ['done', 'failed', 'skipped'];
+
+/**
+ * G02: an Autopilot campaign's stages, in the order the runs met them:
+ * how many runs reached each, how each ended there (its last round's
+ * status) and its rounds a run. Empty for runs that have no stages.
+ */
+export function stageTotals(runs) {
+  const by = new Map();
+  for (const r of runs) {
+    if (!Array.isArray(r.stages)) continue;
+    const last = new Map();
+    for (const s of r.stages) {
+      const seen = last.get(s.name);
+      last.set(s.name, {
+        status: s.status,
+        rounds: Math.max(seen?.rounds ?? 0, s.round ?? 1),
+      });
+    }
+    for (const [name, { status, rounds }] of last) {
+      if (!by.has(name))
+        by.set(name, { name, runs: 0, done: 0, failed: 0, skipped: 0, other: 0, rounds: 0 });
+      const t = by.get(name);
+      t.runs++;
+      t.rounds += rounds;
+      t[STAGE_ENDS.includes(status) ? status : 'other']++;
+    }
+  }
+  return [...by.values()].map(({ rounds, ...t }) => ({ ...t, meanRounds: rounds / t.runs }));
+}
+
+/**
  * The campaign's summary from its runs' results
- * ({task, rep, success, costUsd, tokens, peakLeadContext, ms, interventions, outcome}).
+ * ({task, rep, success, costUsd, tokens, peakLeadContext, ms, interventions, outcome},
+ * and G02's toolErrors, toolErrorClasses, editMisses, verifyRounds, stages).
  */
 export function summarize(results) {
   const byTask = new Map();
@@ -300,6 +383,9 @@ export function summarize(results) {
       maxPeakLeadContext: Math.max(0, ...runs.map((r) => r.peakLeadContext ?? 0)),
       meanMinutes: mean(runs.map((r) => (r.ms ?? 0) / 60000)),
       meanInterventions: mean(runs.map((r) => r.interventions ?? 0)),
+      meanToolErrors: meanOf(runs, 'toolErrors'),
+      meanEditMisses: meanOf(runs, 'editMisses'),
+      meanVerifyRounds: meanOf(runs, 'verifyRounds'),
       outcomes: runs.map((r) => r.outcome),
     }));
   // Each repetition's success rate over the tasks it ran: their spread
@@ -323,14 +409,65 @@ export function summarize(results) {
     maxPeakLeadContext: Math.max(0, ...results.map((r) => r.peakLeadContext ?? 0)),
     meanMinutes: mean(results.map((r) => (r.ms ?? 0) / 60000)),
     meanInterventions: mean(results.map((r) => r.interventions ?? 0)),
+    // G02: how the runs used their tools, and their checks' rounds.
+    meanToolErrors: meanOf(results, 'toolErrors'),
+    meanEditMisses: meanOf(results, 'editMisses'),
+    meanVerifyRounds: meanOf(results, 'verifyRounds'),
+    toolErrorClasses: classTotals(results),
+    stages: stageTotals(results),
+    // G03: beside the mean, whether the agent can (pass@k) and how
+    // reliably it does (pass^k), over each task's repetitions.
+    passAt: passRates(tasks, passAt),
+    passHat: passRates(tasks, passHat),
     tasks,
   };
 }
 
 const pct = (x) => `${Math.round(x * 100)}%`;
 
+/**
+ * G03: pass@k and pass^k for k past 1 (pass@1 and pass^1 are the success
+ * rate), each over the tasks with k runs: '' when no task has two.
+ */
+function passLine(s) {
+  const more = (rates) => (rates ?? []).filter((r) => r.k > 1);
+  const at = more(s.passAt);
+  if (!at.length) return '';
+  const over = (r) => (r.tasks === s.tasks.length ? '' : ` over ${r.tasks} tasks`);
+  const list = (sign, rates) => rates.map((r) => `pass${sign}${r.k} ${pct(r.rate)}${over(r)}`);
+  return `- ${[...list('@', at), ...list('^', more(s.passHat))].join(', ')}`;
+}
+
+/** G02: the runs' tool errors by class, the most common first. */
+function classesLine(classes) {
+  const sorted = Object.entries(classes ?? {}).sort(
+    ([a, x], [b, y]) => y - x || a.localeCompare(b)
+  );
+  return sorted.length ? `; by class: ${sorted.map(([c, n]) => `${c} ${n}`).join(', ')}` : '';
+}
+
+/** G02: an Autopilot campaign's stages as a table ([] for none). */
+function stagesTable(stages) {
+  if (!stages?.length) return [];
+  return [
+    '## Stages',
+    '',
+    'Each stage as its runs ended it (their last round), and its rounds a run.',
+    '',
+    '| Stage | Runs | Done | Failed | Skipped | Other | Rounds a run |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
+    ...stages.map(
+      (t) =>
+        `| ${t.name} | ${t.runs} | ${t.done} | ${t.failed} | ${t.skipped} | ${t.other} | ` +
+        `${t.meanRounds.toFixed(1)} |`
+    ),
+    '',
+  ];
+}
+
 /** The summary as Markdown. */
 export function summaryMarkdown(s, title) {
+  const passes = passLine(s);
   const lines = [
     `# ${title}`,
     '',
@@ -340,6 +477,7 @@ export function summaryMarkdown(s, title) {
         ? ` (per repetition: ${s.perRep.map((r) => pct(r.successRate)).join(', ')}; ` +
           `stdev ${pct(s.successRateStdev)})`
         : ''),
+    ...(passes ? [passes] : []),
     `- Cost: $${s.totalCostUsd.toFixed(2)} in all, ${money(s.meanCostUsd, 3)} a run` +
       (s.unknownCosts
         ? ` (${s.unknownCosts} run${s.unknownCosts === 1 ? '' : 's'} not counted: cost unknown)`
@@ -347,17 +485,22 @@ export function summaryMarkdown(s, title) {
     `- Tokens a run: ${Math.round(s.meanTokens).toLocaleString('en-US')}; ` +
       `peak main-agent context: ${s.maxPeakLeadContext.toLocaleString('en-US')}`,
     `- Time a run: ${s.meanMinutes.toFixed(1)} min; interventions a run: ${s.meanInterventions.toFixed(2)}`,
+    `- Tool errors a run: ${(s.meanToolErrors ?? 0).toFixed(2)} ` +
+      `(edit misses ${(s.meanEditMisses ?? 0).toFixed(2)})${classesLine(s.toolErrorClasses)}; ` +
+      `checks' rounds a run: ${(s.meanVerifyRounds ?? 0).toFixed(2)}`,
     '',
-    '| Task | Success | Cost a run | Tokens a run | Peak context | Minutes | Outcomes |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| Task | Success | Cost a run | Tokens a run | Peak context | Minutes | Tool errors | Edit misses | Check rounds | Outcomes |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...s.tasks.map(
       (t) =>
         `| ${t.task} | ${t.successes}/${t.runs} | ${money(t.meanCostUsd, 3)} | ` +
         `${Math.round(t.meanTokens).toLocaleString('en-US')} | ` +
         `${t.maxPeakLeadContext.toLocaleString('en-US')} | ${t.meanMinutes.toFixed(1)} | ` +
-        `${t.outcomes.join(', ')} |`
+        `${(t.meanToolErrors ?? 0).toFixed(1)} | ${(t.meanEditMisses ?? 0).toFixed(1)} | ` +
+        `${(t.meanVerifyRounds ?? 0).toFixed(1)} | ${t.outcomes.join(', ')} |`
     ),
     '',
+    ...stagesTable(s.stages),
   ];
   return lines.join('\n');
 }
@@ -410,6 +553,179 @@ export function variantSettings(base, kind) {
 export function subagentsOn(settings) {
   const sub = settings?.config?.subagents;
   return !!sub?.enabled && Object.values(sub.kinds ?? {}).some((k) => k?.enabled);
+}
+
+/**
+ * G03 (docs/design/autopilot-plan.md): Autopilot at each effort, beside the
+ * kinds: the request as a task (`--mode autopilot --effort`), on the
+ * baseline's settings. A task turns on the kinds its stages need itself.
+ */
+export const AUTOPILOT_VARIANTS = [
+  { id: 'autopilot-balanced', effort: 'balanced', label: 'Autopilot, Balanced' },
+  { id: 'autopilot-thorough', effort: 'thorough', label: 'Autopilot, Thorough' },
+];
+
+/**
+ * An Autopilot variant's settings: the baseline's, with the task's own
+ * budget (`budget.json` `autopilot.efforts`), so that a task ends itself
+ * and delivers what it has before the runner's caps cut it. The Prepare
+ * stage is off: the evaluation gives each workspace its dependencies,
+ * and an install would change the caches every run shares (P6.5), as a
+ * `pip install` into the shared virtualenv did in the dry run.
+ */
+export function autopilotSettings(base, effort, budget) {
+  const s = structuredClone(base);
+  s.config = s.config ?? {};
+  s.config.autopilot = {
+    ...(s.config.autopilot ?? {}),
+    effort,
+    budget: { maxHours: budget.maxHours, maxCost: null, maxTokens: budget.maxTokens },
+    prepare: false,
+  };
+  return s;
+}
+
+/**
+ * The runner's caps for an Autopilot run: a tenth over the task's own
+ * budget, so the task's ends it first and the caps only catch a runaway.
+ */
+export function autopilotCaps(budget) {
+  // Times 11, then a tenth: 1.1 itself would make 1.5 hours 5,941 seconds.
+  return {
+    maxTokens: Math.ceil((budget.maxTokens * 11) / 10),
+    timeoutSeconds: Math.ceil((budget.maxHours * 3600 * 11) / 10),
+  };
+}
+
+/** G03: `rates` (passAt or passHat) at `k`, null when no task had k runs. */
+const rateAt = (rates, k) => (rates ?? []).find((r) => r.k === k)?.rate ?? null;
+
+/**
+ * G03: campaign `b` against campaign `a`, over the tasks both ran (both
+ * `summarize` results over those tasks): every number of each, and
+ * whether `b` is better beyond the noise within its cost budget. The
+ * noise is the larger spread between repetitions, and at least one task;
+ * `costRatioMax` null: any cost.
+ */
+export function compareCampaigns(a, b, { costRatioMax = null, minTasks = 5, stopped = null } = {}) {
+  const tasks = Math.min(a.tasks.length, b.tasks.length);
+  const noise = Math.max(
+    width(a.successRateRange),
+    width(b.successRateRange),
+    tasks ? 1 / tasks : 1
+  );
+  const costsKnown =
+    !a.unknownCosts && !b.unknownCosts && a.meanCostUsd !== null && b.meanCostUsd !== null;
+  const ratioOf = (x, y) => (x > 0 && y !== null ? y / x : null);
+  const ks = [...new Set([...(a.passAt ?? []), ...(b.passAt ?? [])].map((r) => r.k))].sort(
+    (p, q) => p - q
+  );
+  const numbers = {
+    tasks,
+    successDiff: b.successRate - a.successRate,
+    noise,
+    costRatio: costsKnown ? ratioOf(a.meanCostUsd, b.meanCostUsd) : null,
+    costRatioMax,
+    tokensRatio: ratioOf(a.meanTokens, b.meanTokens),
+    minutesRatio: ratioOf(a.meanMinutes, b.meanMinutes),
+    passAt: ks.map((k) => ({ k, a: rateAt(a.passAt, k), b: rateAt(b.passAt, k) })),
+    passHat: ks.map((k) => ({ k, a: rateAt(a.passHat, k), b: rateAt(b.passHat, k) })),
+  };
+  const verdict = (better, reason) => ({ better, reason, ...numbers });
+  if (stopped) return verdict(null, `not enough runs: a campaign stopped (${stopped})`);
+  if (tasks < minTasks)
+    return verdict(null, `not enough runs: ${tasks} tasks in both (at least ${minTasks})`);
+  if (numbers.successDiff <= numbers.noise)
+    return verdict(
+      false,
+      numbers.successDiff < -noise
+        ? 'its success is worse beyond the noise'
+        : 'no gain in success beyond the noise'
+    );
+  if (costRatioMax !== null) {
+    if (numbers.costRatio === null)
+      return verdict(null, 'its success is better, but the cost ratio isn’t known');
+    if (numbers.costRatio > costRatioMax)
+      return verdict(
+        false,
+        `its success is better, at ${numbers.costRatio.toFixed(2)}× the cost: over its ${costRatioMax}× budget`
+      );
+  }
+  return verdict(
+    true,
+    'its success is better beyond the noise' +
+      (costRatioMax === null ? '' : `, within its ${costRatioMax}× cost budget`)
+  );
+}
+
+/** A number, or "n/a". */
+const num = (x, digits) => (typeof x === 'number' ? x.toFixed(digits) : 'n/a');
+const rate = (x) => (typeof x === 'number' ? pct(x) : 'n/a');
+
+/**
+ * G03: the comparison of two campaigns as Markdown: the numbers side by
+ * side, the verdict, the tasks one by one and `b`'s stages.
+ * `c`: { a: {name, summary}, b: {name, summary}, decision, date, model, fake }.
+ */
+export function comparisonMarkdown(c) {
+  const { a, b, decision: d } = c;
+  const [x, y] = [a.summary, b.summary];
+  const row = (label, left, right, diff = '') => `| ${label} | ${left} | ${right} | ${diff} |`;
+  const tokens = (s) => Math.round(s.meanTokens).toLocaleString('en-US');
+  const peak = (s) => s.maxPeakLeadContext.toLocaleString('en-US');
+  const byTask = new Map(x.tasks.map((t) => [t.task, { a: t }]));
+  for (const t of y.tasks) byTask.set(t.task, { ...(byTask.get(t.task) ?? {}), b: t });
+  const verdict =
+    d.better === true
+      ? `**${b.name} is better**: ${d.reason}.`
+      : d.better === false
+        ? `**${b.name} isn’t better**: ${d.reason}.`
+        : `**Nothing decided**: ${d.reason}.`;
+  return [
+    `# Evaluation: ${b.name} against ${a.name}`,
+    '',
+    c.fake
+      ? '> **Dry run with a scripted model: these numbers test the pipeline and say nothing about any real model.**\n'
+      : '',
+    `Generated by \`node scripts/eval/eval.mjs compare ${a.name} ${b.name}\` on ${c.date}. ` +
+      `Model: ${c.model}. Over the ${d.tasks} tasks both ran.`,
+    '',
+    `| | ${a.name} | ${b.name} | Difference |`,
+    '| --- | --- | --- | --- |',
+    row('Runs', x.runs, y.runs),
+    row(
+      'Success',
+      pct(x.successRate),
+      pct(y.successRate),
+      `${pctSigned(d.successDiff)} (noise ±${Math.round(d.noise * 100)})`
+    ),
+    ...d.passAt.filter((p) => p.k > 1).map((p) => row(`pass@${p.k}`, rate(p.a), rate(p.b))),
+    ...d.passHat.filter((p) => p.k > 1).map((p) => row(`pass^${p.k}`, rate(p.a), rate(p.b))),
+    row('Cost a run', money(x.meanCostUsd, 3), money(y.meanCostUsd, 3), ratio(d.costRatio)),
+    row('Tokens a run', tokens(x), tokens(y), ratio(d.tokensRatio)),
+    row('Peak main-agent context', peak(x), peak(y)),
+    row('Minutes a run', num(x.meanMinutes, 1), num(y.meanMinutes, 1), ratio(d.minutesRatio)),
+    row('Interventions a run', num(x.meanInterventions, 2), num(y.meanInterventions, 2)),
+    row('Tool errors a run', num(x.meanToolErrors, 2), num(y.meanToolErrors, 2)),
+    row('Edit misses a run', num(x.meanEditMisses, 2), num(y.meanEditMisses, 2)),
+    row('Check rounds a run', num(x.meanVerifyRounds, 2), num(y.meanVerifyRounds, 2)),
+    '',
+    verdict,
+    '',
+    '## Each task',
+    '',
+    `| Task | ${a.name} | ${b.name} | Outcomes (${b.name}) |`,
+    '| --- | --- | --- | --- |',
+    ...[...byTask.entries()]
+      .sort(([p], [q]) => p.localeCompare(q))
+      .map(
+        ([task, t]) =>
+          `| ${task} | ${t.a ? `${t.a.successes}/${t.a.runs}` : '—'} | ` +
+          `${t.b ? `${t.b.successes}/${t.b.runs}` : '—'} | ${t.b ? t.b.outcomes.join(', ') : ''} |`
+      ),
+    '',
+    ...stagesTable(y.stages).map((l) => (l === '## Stages' ? `## Stages (${b.name})` : l)),
+  ].join('\n');
 }
 
 const width = (range) => (range?.length === 2 ? range[1] - range[0] : 0);

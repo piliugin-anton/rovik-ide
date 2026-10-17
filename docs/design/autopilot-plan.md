@@ -1927,3 +1927,104 @@ T05 depends most on the environment it meets.
   turned off by hand after that first run, so the row's "passes on a pull
   request" waits for them to be turned on again. Each of its commands
   passes locally.
+
+### G02: a line per tool call, and what the report counts
+
+- **The `tool` line** is written where a call's result is stored
+  (`Run::add_tool_result`), so every finished call has one, whatever path
+  it took: run alone or in a parallel batch, refused before it ran, a
+  Stop's or a budget's answer, the checklist, a subagent's. It has the
+  tool, `failed`, the error's class, `ms`, a command's `exitCode` (and
+  `timedOut`), the stage of an Autopilot run, and a subagent's role, kind
+  and lead. The run keeps which tool each call is and when it started
+  (`CallClock`), from the reply that made it: its time runs from its turn,
+  or from its approval once given, to its stored result; a parallel
+  batch's call has its own time, from its slot.
+- **The classes** (`tools::error_class`) come from the words the tools
+  write, the most specific first:
+  - an edit's: `old_text not found`, `old_text not unique`, `bad edit`;
+  - a file's: `file changed`, `no such file`, `no such symbol`,
+    `binary file`, `bad path`;
+  - `denied`: the user's permissions, an approval, an AI reviewer;
+  - `not allowed`: the harness's rules (a mode's or a kind's tools, a
+    writer's scope, the checklist first);
+  - `plan`, `subagent`, `bad arguments`;
+  - `stopped`, `interrupted` and `not run`: the calls a Stop, a closed
+    app or a budget cut;
+  - `other`: anything else.
+
+  A command that ran and exited non-zero didn't fail as a call: its exit
+  code is on its line. The unit test takes each class's text from the
+  code that writes it where a function does.
+
+- **Every chat's log** has the lines: they're diagnostics, and nothing a
+  run does changes, so D20 holds.
+- **The headless report** counts the run's lines, its subagents'
+  included: `allToolCalls`, `toolErrors` (failed calls but the cut ones),
+  `toolErrorClasses`, `editMisses` (`old_text` not found or not unique),
+  and `verifyRounds` from the lead's `verify` lines; `stages` is null
+  outside Autopilot. `result.json` keeps them, with `mode`, `effort` and
+  each stage's name, status, round and outcome.
+- **The summary** has the means of the tool errors, edit misses and
+  checks' rounds per task and overall, the errors by class, and for an
+  Autopilot campaign a table of its stages: how many runs reached each,
+  how they ended it (its last round's status) and its rounds a run.
+
+### G03: Autopilot against the baseline
+
+- **The variants** `autopilot-balanced` and `autopilot-thorough` run
+  beside the kinds (`variants --variants …`; `--kinds` still takes kinds
+  only), each a campaign of its own on the baseline's settings and tasks,
+  the runner started with `--mode autopilot --effort …`. A task turns on
+  the kinds its stages need itself (A07), so the baseline's settings,
+  subagents off, are the right start.
+- **Their budgets** (`budget.json` `autopilot`), from section 8's "two to
+  three plain Agent runs" for Balanced and "several times that" for
+  Thorough: the task's own budget (1.5 h and 4.5 million tokens, 4 h and
+  15 million), a cost budget against the baseline (3×, 10×) and a cap
+  ($225, $750) for 30 tasks × 3. The task's budget goes in the variant's
+  settings, so a task ends itself with outcome `budget` and delivers what
+  it has; the runner's caps are a tenth above it. These are proposals:
+  the user agrees the evaluation's budget before it runs.
+- **Prepare is off** in the evaluation's tasks: the evaluation gives each
+  workspace its dependencies, and the dry run's Prepare ran
+  `pip install -r requirements.txt` in more-itertools' `docs/` into the
+  virtualenv every run shares, which P6.5 forbids.
+- **`compare A B`** compares any two campaigns over the tasks both ran
+  (`compareCampaigns`, `comparisonMarkdown`): every number side by side,
+  pass@k and pass^k, each task, B's stages, and whether B is better:
+  success up by more than the noise, within B's cost budget (a variant's
+  own, `--cost-ratio`, or none). `compare` alone is the kinds' comparison,
+  as before.
+- **pass@k and pass^k** are in every summary beside the mean, for each k
+  up to the repetitions, over the tasks with k runs: the unbiased
+  estimates 1 − C(n−c, k)/C(n, k) and C(c, k)/C(n, k).
+- **The dry run** (`dry-run-variants`) runs both efforts with the
+  scripted model's `autopilot` mode (`fake-model.mjs`): a plan naming the
+  files the reference changes, each brief's answer (no findings from the
+  reviews, blocked test writers and adversarial tester, every criterion
+  satisfied, Thorough's planners planning and its judges picking the
+  first), and the change as `write` calls of the reference's files, so
+  the change review and the acceptance check see it. A brief is found by
+  its heading's line in the first message, which starts with the
+  repository map. A run passes when it grades as a success and its task
+  reaches its delivery with no stage the scripted model answers failed.
+- **What the dry run found**:
+  - The projects' own checks fail before any change: `go vet` on lo's
+    `try_test.go` ("unreachable code"), and `ruff check .` on
+    more-itertools, which doesn't use ruff (detection runs it wherever
+    it's installed). The checks don't know a failure was there before,
+    so both tasks end `verify-unresolved`, and the stages after the
+    checks don't run. The baseline's checks, on by default, meet the
+    same failures. A real model will spend rounds on them; a check run
+    before the first change would tell those failures apart.
+  - The plan review counts a reply with no Findings section and nothing
+    finding-shaped as clean (`findingless`), in every chat, Autopilot's
+    included, where rule 6 says skipped.
+- **Not done**: the real pilot on the 30 tasks. Like the subagents plan's
+  baseline, it needs a provider key in the environment and the provider's
+  host allowed. Then, in order:
+  - `pilot` and `run`, the baseline;
+  - `variants --variants autopilot-balanced,autopilot-thorough --repeats 1`;
+  - `compare baseline autopilot-balanced`, and the other pairs, whose
+    files are the summary to commit.
