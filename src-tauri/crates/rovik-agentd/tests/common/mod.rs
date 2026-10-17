@@ -610,3 +610,60 @@ pub fn commit_paths(root: &Path, paths: &[&str]) -> git2::Oid {
     repo.commit(Some("HEAD"), &me, &me, "more", &tree, &[&parent])
         .unwrap()
 }
+
+/// An HTTP server that keeps each request's path and JSON body, and
+/// answers them with `statuses` in turn, the last one again once they run
+/// out: its URL, and what it got.
+pub async fn listening(
+    statuses: Vec<u16>,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = got.clone();
+    tokio::spawn(async move {
+        let mut answered = 0;
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut bytes = Vec::new();
+            let mut buffer = [0u8; 4096];
+            let body = loop {
+                let Ok(n) = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await else {
+                    break None;
+                };
+                if n == 0 {
+                    break None;
+                }
+                bytes.extend_from_slice(&buffer[..n]);
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                let Some(end) = text.find("\r\n\r\n") else {
+                    continue;
+                };
+                let length = text[..end]
+                    .lines()
+                    .find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= end + 4 + length {
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let body = serde_json::from_slice(&bytes[end + 4..end + 4 + length])
+                        .unwrap_or(Value::Null);
+                    break Some((path, body));
+                }
+            };
+            let Some(request) = body else { continue };
+            kept.lock().unwrap().push(request);
+            let status = statuses[answered.min(statuses.len() - 1)];
+            answered += 1;
+            let reply =
+                format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, reply.as_bytes()).await;
+        }
+    });
+    (url, got)
+}

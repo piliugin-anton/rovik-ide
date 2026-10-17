@@ -59,12 +59,23 @@ fn bare_remote(setup: &Setup) -> PathBuf {
 /// The chat's worktree, its project's remote `remote`, and its computer
 /// having the server push its results there with `key`.
 async fn ready(setup: &Setup, remote: &str, key: &str, open_pr: bool) {
+    ready_telling(setup, remote, key, open_pr, None).await
+}
+
+/// `ready`, the task's end told to `notify` (H06).
+async fn ready_telling(
+    setup: &Setup,
+    remote: &str,
+    key: &str,
+    open_pr: bool,
+    notify: Option<&str>,
+) {
     let push = AutonomyConfig {
         delivery: Delivery::PushBranch {
             deploy_key: key.into(),
             open_pr,
         },
-        notify_url: None,
+        notify_url: notify.map(str::to_string),
     };
     let configured = setup
         .client
@@ -161,7 +172,8 @@ async fn a_tasks_result_is_pushed_to_its_branch() {
     npm_project(&setup);
     let remote = bare_remote(&setup);
     let url = format!("file://{}", remote.display());
-    ready(&setup, &url, "~/.ssh/unused", false).await;
+    let (hook, told) = common::listening(vec![200]).await;
+    ready_telling(&setup, &url, "~/.ssh/unused", false, Some(&hook)).await;
 
     let (found, record) = delivered(&setup).await;
     assert_eq!(found, delivered_whole(), "{}", setup.daemon.output());
@@ -170,6 +182,12 @@ async fn a_tasks_result_is_pushed_to_its_branch() {
         format!("Delivered: pushed to `{BRANCH}`"),
         "{record}"
     );
+    // H06: the notice of its end names the branch.
+    common::until("the notice", || {
+        (!told.lock().unwrap().is_empty()).then_some(())
+    })
+    .await;
+    assert_eq!(told.lock().unwrap()[0].1["branch"], BRANCH);
     let (commit, ok) = pushed_there(&remote, BRANCH);
     assert_eq!(ok, "ok");
     let result = newest_result(&setup).await;

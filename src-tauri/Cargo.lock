@@ -4790,6 +4790,7 @@ dependencies = [
  "libc",
  "log",
  "rand 0.10.3",
+ "reqwest",
  "rovik-client",
  "rovik-core",
  "rovik-protocol",

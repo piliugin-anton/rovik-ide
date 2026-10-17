@@ -16,6 +16,7 @@
 //!   restart.rs  the runs a crash or an upgrade cut, at start-up (5.4)
 //!   results.rs  each chat's result: its worktree committed (6.5)
 //!   deliver.rs  an Autopilot task's result pushed to its branch (D15)
+//!   notify.rs   the notice of a task's end, to its computer's URL (D18)
 //!   sync.rs     a chat's worktree merged with a new snapshot (6.7)
 //!   keys.rs     keys.json: the providers' keys (D11)
 //!   packs.rs    each project's repository and its packs (6.4)
@@ -63,6 +64,8 @@ mod limits;
 mod logfile;
 #[cfg(unix)]
 mod moves;
+#[cfg(unix)]
+mod notify;
 #[cfg(unix)]
 mod packs;
 #[cfg(unix)]

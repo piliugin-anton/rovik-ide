@@ -22,6 +22,8 @@ hyper-util.workspace = true
 tokio-tungstenite.workspace = true
 # Each project's bare repository, and the packs in and out of it (6.4).
 git2.workspace = true
+# A task's notice to the URL its computer named (autopilot-plan H06).
+reqwest.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

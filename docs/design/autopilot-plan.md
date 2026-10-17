@@ -1506,3 +1506,27 @@ T05 depends most on the environment it meets.
   with an `origin`, or a daemon without the feature: the page says so.
 - **The button** shows under the push's settings once they're saved, and
   the line under it what the test found.
+
+### H06: the notice
+
+- **From the events** (`Tap::agent` → `notify::Notifier`): a stage
+  record comes by in `MessagesAdded` or `MessagePatched`, as every client
+  gets it. A record whose status is `failed`, and the delivery's once
+  it's no longer running, are told, each once by message and status (a
+  record patched again, its spend updated, tells nobody twice; the set
+  is the process's, so a restart may tell a record that ends again). A
+  failed stage that ends its task gives two notices: the stage's, then
+  the end's.
+- **The body**: `{ chat, task, stage, outcome, summary, branch, pr }`,
+  `outcome` being the record's (the task's outcome) or its status when
+  it has none, `summary` its line (for the end, the delivery's: where
+  the result went). The branch and the pull request are the task's
+  report's (`meta.report`, H04), seen go by before its delivery's end; a
+  delivery recorded without a report (a resume after a crash at it)
+  names none.
+- **The call**: `POST` with a 10-second timeout, tried again three
+  times, a second, two, then four after the one before; a 2xx is done.
+  One that never goes through is logged with `url_for_logs` (the URL's
+  scheme and host), and the error without its URL
+  (`reqwest::Error::without_url`): the URL may carry a token. It never
+  waits in the task's way: each notice is a task of its own.

@@ -112,6 +112,7 @@ async fn run(
         store: store.clone(),
         events: events.clone(),
         results: results.clone(),
+        notifier: crate::notify::Notifier::new(store.clone()),
     };
     let core = Core::new(paths, Arc::new(sink))?;
     // `ChatChanged` names the database's clock (6.3).
@@ -296,6 +297,9 @@ struct Tap {
     store: Arc<Store>,
     events: Arc<Events>,
     results: Arc<Results>,
+    /// A task's end and its failed stages, told where its computer asked
+    /// (H06).
+    notifier: Arc<crate::notify::Notifier>,
 }
 
 impl EventSink for Tap {
@@ -313,6 +317,7 @@ impl EventSink for Tap {
             _ => {}
         }
         self.events.agent(event);
+        self.notifier.agent(event);
         // The run's end goes out first, then its result: not an Autopilot
         // task's own stages', which change nothing that's a result yet (the
         // installs it prepared, the tests it wrote first: S03, S04).
