@@ -697,7 +697,20 @@ T05 depends most on the environment it meets.
   The implementation's request is the plan in full, as the button sends
   it; it starts from the IDE's message (`meta.harness: "autopilot"`,
   `meta.autopilot.record`), which is never marked failed, so a Retry
-  still has it.
+  still has it. **Built since the robustness pass after T**: a history
+  can start at a window (`history::Window`: a chat's rows from a
+  sequence number on, after one row it keeps before them), which only an
+  Autopilot stage's run asks for (`autopilot::history_window`). The
+  implementation, its retries included, sees the task's request (its
+  message, which the repository map goes on) and its own stage's rows
+  from its first round's record: not the plan stage's conversation, which
+  was part of the request's turn and so never trimmed away, nor the
+  chat's earlier tasks. The delivery's report, written in the
+  implementer's context (S09), sees the same. The plan stage keeps the
+  chat as it was: an exchange before the task is the request's context.
+  A run with a window is fitted by trimming, CLM or not: CLM's context is
+  the whole chat's, and a stage's fresh context is short by design. The
+  context bar's estimate stays the whole chat's.
 - **Stop and Retry.** A stage the user stopped ends the task without a
   delivery: they're there. A Retry or a Continue of a run stage that a
   failure (`error`, `repetition`, `stopped`) ended opens that stage again,

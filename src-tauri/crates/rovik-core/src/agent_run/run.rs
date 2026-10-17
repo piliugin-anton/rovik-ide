@@ -121,6 +121,9 @@ pub struct Run {
     pub(super) autopilot: bool,
     /// The task's stage this run carries out, which its end hands on.
     pub(super) stage: Option<super::autopilot::StageRun>,
+    /// Where its history starts (D2): an Autopilot stage's fresh context.
+    /// None: the chat's whole history.
+    pub(super) history_window: Option<crate::chat_db::history::Window>,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
     /// The project folder itself. Differs from `root` in an isolated chat,
@@ -889,6 +892,10 @@ impl Run {
                 _ => implements_plan && plan::current_checklist(&recent).is_none(),
             };
 
+        // D2: a stage's fresh context, from its own rows.
+        let history_window =
+            super::autopilot::history_window(core, &dialog_id, stage.as_ref()).await?;
+
         // S04: the tests the task's Tests stage wrote are the
         // implementation's to make pass, as the test writer's are (E03).
         let test_writer_files = match &stage {
@@ -902,6 +909,7 @@ impl Run {
             plan_mode,
             autopilot,
             stage,
+            history_window,
             test_writer_files,
             context_mode: request
                 .context_mode
@@ -957,6 +965,7 @@ impl Run {
             plan_mode: false,
             autopilot: false,
             stage: None,
+            history_window: None,
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
             project_root: None,
@@ -1742,6 +1751,7 @@ impl Run {
                 chat_id: None,
                 force_tool: force_tool.clone(),
                 checklist_note: checklist_note.clone(),
+                history_window: self.history_window.clone(),
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);

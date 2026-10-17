@@ -511,6 +511,99 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
     assert_eq!(h.events_of("runStarted").len(), 5);
 }
 
+/// D2: each stage starts fresh from the task's artifacts. The chat had an
+/// exchange before the task, which the plan stage sees, as the request's
+/// context; the implementation's requests carry the task's request and
+/// then the plan, never that exchange nor the plan stage's conversation;
+/// the delivery's report is written in the implementer's context, without
+/// them either.
+#[tokio::test]
+async fn each_stage_starts_fresh_from_the_tasks_artifacts() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let id = h.dialog_id.clone();
+    let earlier = vec![
+        run::new_message("user", "What does check.js check?"),
+        run::new_message("assistant", "EARLIER-REPLY: it checks ok.txt."),
+    ];
+    h.core
+        .db
+        .write(move |c| store::append_messages(c, &id, &earlier).map(|_| ()))
+        .await
+        .unwrap();
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (REPORT, vec![Reply::Text(A_REPORT)]),
+        ],
+        task_script(),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    let requests = seen.lock().unwrap().clone();
+    let text = |r: &Value| r["messages"].to_string();
+
+    // The plan stage: the chat as it was, the earlier exchange in it.
+    assert!(
+        text(&requests[0]).contains("EARLIER-REPLY"),
+        "{}",
+        text(&requests[0])
+    );
+
+    // The implementation: the task's request, then the plan, then its own work.
+    let implementing: Vec<&Value> = requests
+        .iter()
+        .filter(|r| text(r).contains("Implement this plan") && route_of(r, &[REPORT]).is_none())
+        .collect();
+    assert!(implementing.len() >= 3, "its turns: {}", implementing.len());
+    for r in &implementing {
+        let t = text(r);
+        assert!(!t.contains("EARLIER-REPLY"), "the chat's earlier talk: {t}");
+        assert!(
+            !t.contains("Saved the plan."),
+            "the plan stage's conversation: {t}"
+        );
+        let messages = r["messages"].as_array().unwrap();
+        assert_eq!(messages[1]["role"], "user");
+        let request = messages[1]["content"].as_str().unwrap();
+        assert!(
+            request.ends_with("Make the test pass"),
+            "the task's request: {request}"
+        );
+        let plan = messages[2]["content"].as_str().unwrap();
+        assert!(
+            plan.starts_with("Implement this plan"),
+            "then the plan: {plan}"
+        );
+    }
+    let last = implementing.last().unwrap();
+    assert!(
+        text(last).contains("Write ok"),
+        "its own work: {}",
+        text(last)
+    );
+
+    // The report: in the implementer's context, the plan stage not in it.
+    let reporting = requests
+        .iter()
+        .find(|r| route_of(r, &[REPORT]).is_some())
+        .expect("the report's request");
+    let t = text(reporting);
+    assert!(
+        t.contains("Implement this plan") && t.contains("Done: ok.txt says ok."),
+        "{t}"
+    );
+    assert!(
+        !t.contains("EARLIER-REPLY") && !t.contains("Saved the plan."),
+        "{t}"
+    );
+}
+
 /// A07 (D17): the user's subagents are off, and the task's plan is
 /// reviewed all the same: Autopilot turns on the kinds its stages need for
 /// its own runs. Its change review, on for it too, says why it didn't run.

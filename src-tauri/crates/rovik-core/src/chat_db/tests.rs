@@ -1036,6 +1036,66 @@ fn chat_model_round_trips() {
     assert_eq!(chat_model(&conn, "ghost").unwrap(), None);
 }
 
+/// D2: a window keeps the chat's rows from its start, after the one row
+/// it keeps before them (the task's request); without one, the chat is
+/// whole.
+#[test]
+fn a_history_window_keeps_its_rows_after_the_request() {
+    use super::history::{load_messages, load_messages_in, Window};
+    let mut conn = db();
+    dialog(&mut conn, "d", "Windowed", 0);
+    let mut stage = message("r1", "assistant", "");
+    stage.meta = Some(serde_json::json!({ "stage": { "name": "implement" } }));
+    add(
+        &mut conn,
+        "d",
+        vec![
+            message("u0", "user", "Earlier talk"),
+            message("a0", "assistant", "An earlier answer."),
+            message("task", "user", "Make the test pass"),
+            message("a1", "assistant", "Saved the plan."),
+            stage,
+            message("ide", "user", "Implement this plan."),
+            message("a2", "assistant", "Done."),
+        ],
+    );
+    let texts = |window: Option<&Window>| -> Vec<String> {
+        load_messages_in(&conn, "d", None, window)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.text)
+            .collect()
+    };
+    let whole = load_messages(&conn, "d", None).unwrap();
+    assert_eq!(whole.len(), 6, "the stage record is never sent");
+    let from = get_messages(&conn, "d", None, 50)
+        .unwrap()
+        .messages
+        .iter()
+        .find(|m| m.id == "r1")
+        .unwrap()
+        .seq;
+    let window = Window {
+        from_seq: from,
+        keep: Some("task".into()),
+    };
+    assert_eq!(
+        texts(Some(&window)),
+        ["Make the test pass", "Implement this plan.", "Done."]
+    );
+    // A row it keeps that isn't the chat's, or none: its rows alone.
+    let elsewhere = Window {
+        keep: Some("ghost".into()),
+        ..window.clone()
+    };
+    assert_eq!(texts(Some(&elsewhere)), ["Implement this plan.", "Done."]);
+    let alone = Window {
+        keep: None,
+        ..window
+    };
+    assert_eq!(texts(Some(&alone)), ["Implement this plan.", "Done."]);
+}
+
 #[test]
 fn history_sends_a_user_message_as_it_was_first_sent() {
     use super::history::{load_messages, use_sent_content};

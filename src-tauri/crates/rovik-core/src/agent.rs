@@ -772,6 +772,10 @@ pub struct ChatParams {
     // after the task card (built in `model_turn` from `current_checklist`).
     // Trimming mode keeps using the end-of-request `focus_note` instead.
     pub checklist_note: Option<String>,
+    // Where a stored chat's history starts (Autopilot's fresh contexts,
+    // D2): its rows from there, after the task's request. A history with a
+    // window is fitted by trimming: CLM's context is the whole chat's.
+    pub history_window: Option<crate::chat_db::history::Window>,
     // The chat a one-off request (`messages`) is for, such as its title or
     // an approval review; a stored chat is `dialog_id` itself. Sessions on
     // opencode.ai follow it (`opencode`).
@@ -838,6 +842,7 @@ pub async fn run_chat(
         chat_id,
         force_tool,
         checklist_note,
+        history_window,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 
@@ -885,6 +890,7 @@ pub async fn run_chat(
     // edits the file there); without it the chat falls back to trimming.
     let clm = match (context_mode.as_deref(), dialog_id.as_deref()) {
         (Some(crate::clm::MODE_CLM), Some(_)) if !has_tools => false,
+        (Some(crate::clm::MODE_CLM), Some(_)) if history_window.is_some() => false,
         (Some(crate::clm::MODE_CLM), Some(_)) => match crate::clm::availability(vfs) {
             Ok(_) => true,
             Err(why) => {
@@ -1014,6 +1020,7 @@ pub async fn run_chat(
             let kept = crate::chat_db::history::last_cut(&dialog_id);
             let chat = dialog_id.clone();
             let context = request_context.clone();
+            let window = history_window.clone();
             let build = db.read(move |conn| {
                 crate::chat_db::history::build_wire(
                     conn,
@@ -1027,6 +1034,7 @@ pub async fn run_chat(
                     gemini,
                     chars_per_token,
                     kept.as_ref(),
+                    window.as_ref(),
                 )
             });
             let (wire, info) = match clm_built {
@@ -1847,6 +1855,7 @@ pub async fn chat_context_estimate(
                 gemini,
                 chars_per_token,
                 kept.as_ref(),
+                None,
             )
         })
         .await?;

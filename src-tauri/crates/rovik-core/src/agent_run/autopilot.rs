@@ -733,6 +733,37 @@ pub(super) async fn task_chat(core: &Core, dialog_id: &str) -> Result<String, St
         .unwrap_or_else(|| dialog_id.to_string()))
 }
 
+/// D2: where a stage's run starts its history, a context fresh from the
+/// task's artifacts. The implementation, and the delivery's report (written
+/// in the implementer's context, S09), see the task's request (its
+/// message, which the repository map goes on) and then their own stage's
+/// rows, from its first round's record: not the plan stage's conversation,
+/// whose result is the plan the implementation's request carries, nor the
+/// chat's earlier tasks. Its rounds see each other's. A candidate's chat
+/// holds no request of the task's: its implementation's request carries
+/// the plan. The plan stage keeps the chat as it was, where the request is
+/// read. None: the chat's whole history.
+pub(super) async fn history_window(
+    core: &Core,
+    dialog_id: &str,
+    stage: Option<&StageRun>,
+) -> Result<Option<crate::chat_db::history::Window>, String> {
+    let Some(stage) = stage.filter(|s| matches!(s.stage, Stage::Implement | Stage::Deliver)) else {
+        return Ok(None);
+    };
+    let all = load(core, dialog_id).await?;
+    let mine = records_of(&all, &stage.task);
+    let from = mine
+        .iter()
+        .find(|r| r.record.name == Stage::Implement)
+        .or_else(|| mine.iter().find(|r| r.id == stage.record))
+        .map(|r| r.seq);
+    Ok(from.map(|from_seq| crate::chat_db::history::Window {
+        from_seq,
+        keep: Some(stage.task.clone()),
+    }))
+}
+
 /// Whether the chat has a task that isn't over: a Resume goes on with it.
 pub async fn unfinished(core: &Core, dialog_id: &str) -> Result<bool, String> {
     let Some((_, records)) = current_task(core, dialog_id).await? else {
