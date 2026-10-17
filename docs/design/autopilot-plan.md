@@ -1873,3 +1873,31 @@ T05 depends most on the environment it meets.
 - **On the page**: a hint under the Autopilot section says why, and a
   judging row's warning ("In Autopilot, code will also be sent to …")
   names the provider it now starts on.
+
+## G: measure
+
+### G01: checks on every pull request
+
+- **Two jobs** (`.github/workflows/ci.yml`, on pull requests and by
+  hand): the Rust workspace's tests, then the evaluation's dry run, in
+  one; the frontend's tests, the eval harness's own (`npm run test:eval`,
+  beside the row's list), the type check and the formatting in the
+  other. The Rust job installs WebKitGTK for the app's crate and fuse3 so
+  the overlay tests get a mount, gives git a name for the tests that
+  commit, and checks out the whole history, which the evaluation's tasks
+  on this repository start from.
+- **The dry run had been failing** since chat requests try the Responses
+  API first: the eval's fake model answered `/responses` with a chat
+  completions stream, which reads as an empty reply. It answers 404
+  there now, as a provider without that API does, and the app goes on to
+  chat completions. The app's own end-to-end fake model
+  (`scripts/e2e/fake-model.mjs`) has the same gap, left for the
+  Autopilot scenarios that will need it.
+- **The runner's disk**: the first run ran out of it linking the
+  workspace's 40-odd test binaries. CI builds them without debug info
+  (`CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_PROFILE_TEST_DEBUG=0`) and removes
+  the runner's toolchains it doesn't use first.
+- **Not yet seen green on GitHub**: the repository's workflows were
+  turned off by hand after that first run, so the row's "passes on a pull
+  request" waits for them to be turned on again. Each of its commands
+  passes locally.
