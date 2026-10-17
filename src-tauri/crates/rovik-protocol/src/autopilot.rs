@@ -36,13 +36,17 @@ pub struct Budget {
 }
 
 /// Commands an Autopilot run never runs, whatever the command rules say
-/// (U01): each is a program and the words it's run with, as
-/// `Permissions::denied_commands` matches them. (A download piped to a
-/// shell is a rule across a pipe, which an entry can't say: U01's.)
+/// (U01): each is a program and the words it's run with, or such entries
+/// joined by `|` (a download run by a shell), as
+/// `Permissions::denied_commands` matches them.
 pub const DEFAULT_AUTOPILOT_DENYLIST: &[&str] = &[
     "rm -rf /",
     "git push",
     "git commit --amend",
+    "curl | sh",
+    "curl | bash",
+    "wget | sh",
+    "wget | bash",
     "sudo",
     "shutdown",
     "dd",

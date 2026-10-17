@@ -375,6 +375,12 @@ impl Run {
         self.core.agents.config_for(&self.dialog_id)
     }
 
+    /// The run is an Autopilot task's, or a subagent of one: nobody waits
+    /// on it to answer anything (D6).
+    pub(super) fn in_autopilot(&self) -> bool {
+        self.core.agents.autopilot_of(&self.dialog_id).is_some()
+    }
+
     /// Everything a run needs before its first step; None when there's
     /// nothing to do.
     pub(super) async fn prepare(
@@ -398,12 +404,17 @@ impl Run {
             }
             false => None,
         };
-        if autopilot {
-            // The kinds the pipeline needs are on for this run (D17), at
-            // the effort its task started with.
-            let effort = stage.as_ref().map_or(config.autopilot.effort, |s| s.effort);
-            core.agents.set_autopilot(&dialog_id, effort);
-        }
+        // An Autopilot task's run follows Autopilot's configuration from
+        // here on, at the effort its task started with: the kinds its
+        // pipeline needs (A07), the rules of an unattended run (U01).
+        let config = match autopilot {
+            true => {
+                let effort = stage.as_ref().map_or(config.autopilot.effort, |s| s.effort);
+                core.agents.set_autopilot(&dialog_id, effort);
+                core.agents.config_for(&dialog_id)
+            }
+            false => config,
+        };
         let plan_mode = mode == "plan"
             || stage
                 .as_ref()

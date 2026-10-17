@@ -816,3 +816,32 @@ T05 depends most on the environment it meets.
   to: otherwise "the rows there give the models" couldn't be done without
   turning subagents on for every chat. Such a row's models from another
   provider than the chat's say "In Autopilot, code will also be sent to …".
+
+### U01: the rules of an unattended run
+
+- **One place.** `autopilot::permissions_for` makes the user's
+  permissions an unattended run's (no checkpoint, any command but the
+  denylist's, the checks on, the checklist on Auto), and `config_for`
+  gives it, with A07's kinds, to every run that carries out a stage and
+  to that run's subagents. The run reads it from its start: the checkpoint
+  and the checks are set when it's prepared.
+- **The denylist** is the user's denied commands and the settings' list,
+  each entry once. An entry can now be entries joined by `|`, one piped
+  into the next (`denied_entry`), which is how the defaults say "a
+  download run by a shell": `curl | sh`, `curl | bash`, `wget | sh`,
+  `wget | bash`. A shell run on a substitution of the download
+  (`sh -c "$(curl …)"`, `bash <(curl …)`) counts too. Like the other
+  entries, it's a match on the command's text: it stops accidents, not a
+  determined command.
+- **The page** lists the commands Autopilot may never run, the defaults
+  until the list is changed, with Add, Remove and Reset list as for the
+  allowed commands; the defaults are the protocol's, which a test checks.
+- **The fixed refusals.** A command naming the server's own folder
+  (`~/.rovik`), which waits for the user in any other chat, is refused in
+  Autopilot with why. Git writes on a server were refused already.
+- **Plan mode's refusal** of a tool it doesn't offer says, in Autopilot,
+  that Autopilot implements the plan next, not the user.
+- **Conflicts with the project** stay the user's setting ("the chat
+  resolves its conflicts" is one switch for the app): with it off, an
+  isolated Autopilot chat's conflicts wait for its delivery, which says
+  so.

@@ -248,21 +248,28 @@ impl AgentState {
     pub fn config_for(&self, dialog_id: &str) -> AgentConfig {
         let (resolver, lead, effort) = {
             let inner = self.lock();
-            let mut chat = dialog_id;
-            while let Some(parent) = inner.runs.get(chat).and_then(|r| r.parent.as_deref()) {
-                chat = parent;
-            }
-            let effort = inner.runs.get(chat).and_then(|r| r.autopilot);
-            (inner.resolver.clone(), chat.to_string(), effort)
+            let lead = Self::lead_of(&inner, dialog_id);
+            let effort = inner.runs.get(lead).and_then(|r| r.autopilot);
+            (inner.resolver.clone(), lead.to_string(), effort)
         };
         // Asked without the lock: the resolver may take locks of its own.
-        let mut config = resolver
+        let config = resolver
             .and_then(|resolve| resolve(&lead))
             .unwrap_or_else(|| self.config());
-        if let Some(effort) = effort {
-            config.subagents = autopilot::subagent_config(&config.subagents, effort);
+        match effort {
+            Some(effort) => autopilot::run_config(config, effort),
+            None => config,
         }
-        config
+    }
+
+    /// The chat whose run a chat's run is under: its lead's, for a
+    /// subagent's (and its own, for a lead's).
+    fn lead_of<'a>(inner: &'a Inner, dialog_id: &'a str) -> &'a str {
+        let mut chat = dialog_id;
+        while let Some(parent) = inner.runs.get(chat).and_then(|r| r.parent.as_deref()) {
+            chat = parent;
+        }
+        chat
     }
 
     /// The chat's run carries out a stage of an Autopilot task of this
@@ -272,6 +279,14 @@ impl AgentState {
         if let Some(run) = self.lock().runs.get_mut(dialog_id) {
             run.autopilot = Some(effort);
         }
+    }
+
+    /// The effort of the Autopilot task the chat's run, or its lead's,
+    /// carries out a stage of; None: it's no task's.
+    pub(super) fn autopilot_of(&self, dialog_id: &str) -> Option<autopilot::Effort> {
+        let inner = self.lock();
+        let lead = Self::lead_of(&inner, dialog_id);
+        inner.runs.get(lead).and_then(|r| r.autopilot)
     }
 
     /// Runs follow the resolver's configuration from now on (a daemon's).

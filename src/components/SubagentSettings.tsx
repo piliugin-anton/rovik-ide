@@ -12,7 +12,13 @@ import type { ModelSelection, Provider } from '../types';
 import ModelWithFallbacks from './ModelWithFallbacks';
 import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
-import { AUTOPILOT_EFFORTS, AUTOPILOT_KINDS } from '../lib/autopilotSettings';
+import {
+  AUTOPILOT_EFFORTS,
+  AUTOPILOT_KINDS,
+  denylistEntry,
+  denylistOf,
+  type AutopilotSettings,
+} from '../lib/autopilotSettings';
 import {
   LIMIT_FIELDS,
   LIMITS,
@@ -80,6 +86,19 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
     patch({ kinds: { ...s().kinds, [id]: { ...s().kinds[id], ...changes } } });
   const [limitsOpen, setLimitsOpen] = createSignal(false);
   const off = () => !s().enabled;
+  const patchAutopilot = (changes: Partial<AutopilotSettings>) =>
+    patch({ autopilot: { ...s().autopilot, ...changes } });
+  // Autopilot's denylist: the defaults until the list is changed.
+  const [newDenied, setNewDenied] = createSignal('');
+  const denylist = () => denylistOf(s().autopilot);
+  function addDenied() {
+    const entry = denylistEntry(newDenied());
+    if (!entry) return;
+    if (!denylist().includes(entry)) patchAutopilot({ deniedCommands: [...denylist(), entry] });
+    setNewDenied('');
+  }
+  const removeDenied = (entry: string) =>
+    patchAutopilot({ deniedCommands: denylist().filter((c) => c !== entry) });
   // P5.7: what needs isolated chats can't run without virtual files. When
   // their status can't be read, it isn't known: nothing is turned off.
   const [vfs] = createResource(() => vfsStatus().catch(() => undefined));
@@ -140,7 +159,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   name="autopilot-effort"
                   value={effort.id}
                   checked={s().autopilot.effort === effort.id}
-                  onChange={() => patch({ autopilot: { ...s().autopilot, effort: effort.id } })}
+                  onChange={() => patchAutopilot({ effort: effort.id })}
                 />
                 <span>
                   {effort.label}
@@ -159,6 +178,59 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
         <p class="settings-hint">
           Autopilot turns on the kinds marked “Used by Autopilot” for its own chats, with the models
           set for them below, even when “Use subagents” is off.
+        </p>
+        <div class="autopilot-denylist-title">Commands Autopilot may never run</div>
+        <div class="command-list">
+          <For
+            each={denylist()}
+            fallback={<div class="command-list-empty">None: any command can run.</div>}
+          >
+            {(entry) => (
+              <div class="command-row">
+                <code class="command-row-text">{entry}</code>
+                <button
+                  class="icon-button"
+                  onClick={() => removeDenied(entry)}
+                  aria-label={`Remove ${entry}`}
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          </For>
+        </div>
+        <div class="provider-manual-row">
+          <input
+            value={newDenied()}
+            onInput={(e) => setNewDenied(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addDenied();
+              }
+            }}
+            placeholder="Add a command, e.g. npm publish"
+            aria-label="A command Autopilot may never run"
+            spellcheck={false}
+          />
+          <button onClick={addDenied} disabled={!denylistEntry(newDenied())}>
+            Add
+          </button>
+        </div>
+        <p class="settings-hint command-list-note">
+          Any other command can run in Autopilot. An entry covers its arguments too:{' '}
+          <code>git push</code> also stops <code>git -C . push origin</code>; two joined by{' '}
+          <code>|</code> stop one piped into the other (<code>curl | sh</code>).
+          <Show when={s().autopilot.deniedCommands}>
+            {' '}
+            <button
+              class="link-button"
+              onClick={() => patchAutopilot({ deniedCommands: undefined })}
+            >
+              Reset list
+            </button>
+          </Show>
         </p>
       </section>
 

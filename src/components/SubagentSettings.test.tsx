@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import { createSignal } from 'solid-js';
 import SubagentSettings from './SubagentSettings';
-import { AUTOPILOT_KINDS } from '../lib/autopilotSettings';
+import { AUTOPILOT_KINDS, DEFAULT_AUTOPILOT_DENYLIST } from '../lib/autopilotSettings';
 import { SUBAGENT_KINDS } from '../lib/subagentSettings';
 import type { Provider } from '../types';
 import {
@@ -221,4 +221,48 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
     controls.every((c) => !c.disabled),
     'and on'
   );
+});
+
+test('subagent settings: the commands Autopilot may never run, the defaults until changed (U01)', () => {
+  const root = container();
+  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
+  render(
+    () => (
+      <SubagentSettings
+        settings={settings()}
+        providers={[]}
+        chatModel={null}
+        onChange={setSettings}
+      />
+    ),
+    root
+  );
+  const shown = () =>
+    [...root.querySelectorAll('.command-row-text')].map((c) => c.textContent ?? '');
+  const reset = () =>
+    [...root.querySelectorAll('button')].find((b) => b.textContent === 'Reset list');
+  assert.deepEqual(shown(), DEFAULT_AUTOPILOT_DENYLIST);
+  assert.equal(reset(), undefined, 'nothing to reset');
+
+  const input = root.querySelector(
+    'input[aria-label="A command Autopilot may never run"]'
+  ) as HTMLInputElement;
+  const add = input.parentElement!.querySelector('button') as HTMLButtonElement;
+  input.value = '  npm   publish ';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  add.click();
+  assert.deepEqual(settings().autopilot.deniedCommands, [
+    ...DEFAULT_AUTOPILOT_DENYLIST,
+    'npm publish',
+  ]);
+  assert.deepEqual(shown().slice(-1), ['npm publish']);
+  assert.equal(input.value, '', 'the input is cleared');
+
+  const remove = root.querySelector('button[aria-label="Remove git push"]') as HTMLButtonElement;
+  remove.click();
+  assert.ok(!settings().autopilot.deniedCommands!.includes('git push'));
+  assert.ok(reset(), 'a changed list can be reset');
+  reset()!.click();
+  assert.equal(settings().autopilot.deniedCommands, undefined);
+  assert.deepEqual(shown(), DEFAULT_AUTOPILOT_DENYLIST);
 });

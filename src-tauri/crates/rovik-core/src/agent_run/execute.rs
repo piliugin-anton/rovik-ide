@@ -607,9 +607,14 @@ impl Run {
                 return self.ask_user(tc, &args).await;
             }
             name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
+                // Autopilot's plan stage: the task implements its plan next.
+                let next = match self.autopilot {
+                    true => "Autopilot implements it next, once it's reviewed",
+                    false => "the user implements it in Agent mode",
+                };
                 let content = format!(
                     "Error: {name} isn't available in Plan mode, which doesn't change anything. \
-                     Finish the plan; the user implements it in Agent mode."
+                     Finish the plan; {next}."
                 );
                 return self
                     .add_tool_result(&tc.id, content, None, Vec::new())
@@ -999,6 +1004,10 @@ impl Run {
         let config = self.config();
         let p = &config.permissions;
         let daemon_folder = self.names_daemon_folder(tc);
+        // What always waits for the user: nobody is there in Autopilot (D6).
+        if daemon_folder && self.in_autopilot() {
+            return rejected(super::autopilot::DAEMON_FOLDER_REFUSED);
+        }
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
                 return rejected(format!(

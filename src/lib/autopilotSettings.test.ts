@@ -1,9 +1,13 @@
 // Autopilot's settings (lib/autopilotSettings.ts). Run with: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   autopilotConfig,
+  DEFAULT_AUTOPILOT_DENYLIST,
   DEFAULT_AUTOPILOT_SETTINGS,
+  denylistEntry,
+  denylistOf,
   normalizeAutopilotSettings,
 } from './autopilotSettings';
 import { DEFAULT_SUBAGENT_SETTINGS, normalizeSubagentSettings } from './subagentSettings';
@@ -29,4 +33,39 @@ test('autopilot settings: saved with the Subagents page’s, a file without them
 test('autopilot settings: the backend gets the effort (AgentConfig.autopilot)', () => {
   assert.deepEqual(autopilotConfig({ effort: 'thorough' }), { effort: 'thorough' });
   assert.deepEqual(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS), { effort: 'balanced' });
+});
+
+test('autopilot settings: the default denylist is the backend’s', () => {
+  // Read from the project's folder, as npm test runs.
+  const rust = readFileSync('src-tauri/crates/rovik-protocol/src/autopilot.rs', 'utf8');
+  const list = /DEFAULT_AUTOPILOT_DENYLIST: &\[&str\] = &\[([\s\S]*?)\];/.exec(rust);
+  assert.ok(list, 'the constant is there');
+  const entries = [...list[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  assert.deepEqual(DEFAULT_AUTOPILOT_DENYLIST, entries);
+});
+
+test('autopilot settings: a denylist entry is kept as its words, a pipe’s sides joined', () => {
+  assert.equal(denylistEntry('  git   push  '), 'git push');
+  assert.equal(denylistEntry('curl|sh'), 'curl | sh');
+  assert.equal(denylistEntry(' wget -qO-  |  bash '), 'wget -qO- | bash');
+  for (const nothing of ['', '   ', 'curl |', '| sh', 'a || b']) {
+    assert.equal(denylistEntry(nothing), '', JSON.stringify(nothing));
+  }
+});
+
+test('autopilot settings: the denylist is the defaults until it’s changed, then the user’s', () => {
+  assert.deepEqual(denylistOf(DEFAULT_AUTOPILOT_SETTINGS), DEFAULT_AUTOPILOT_DENYLIST);
+  assert.equal(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS).deniedCommands, undefined);
+  const saved = normalizeAutopilotSettings({
+    effort: 'balanced',
+    deniedCommands: ['npm  publish', 'curl|sh', 'npm publish', 7, '', 'x |'],
+  });
+  assert.deepEqual(saved.deniedCommands, ['npm publish', 'curl | sh']);
+  assert.deepEqual(denylistOf(saved), ['npm publish', 'curl | sh']);
+  assert.deepEqual(autopilotConfig(saved).deniedCommands, ['npm publish', 'curl | sh']);
+  // Every entry taken off: none, which isn't the defaults.
+  const none = normalizeAutopilotSettings({ deniedCommands: [] });
+  assert.deepEqual(denylistOf(none), []);
+  assert.deepEqual(autopilotConfig(none).deniedCommands, []);
+  assert.equal(normalizeAutopilotSettings({ deniedCommands: 'sudo' }).deniedCommands, undefined);
 });
