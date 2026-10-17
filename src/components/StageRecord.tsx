@@ -9,11 +9,12 @@ import {
   shownStatus,
   stageTitle,
   statusWord,
+  waitsOutRateLimit,
   type StageMeta,
   type StageShown,
 } from '../lib/autopilot';
 
-/** A stage's state as an icon: a tick, a cross, a spinner, a pause, a dash or a ring. */
+/** A stage's state as an icon: a tick, a cross, a spinner, a pause, a clock, a dash or a ring. */
 export function StageIcon(props: { status: StageShown }) {
   const common = {
     width: 12,
@@ -54,6 +55,12 @@ export function StageIcon(props: { status: StageShown }) {
           <path d="M6 4.5v7M10 4.5v7" />
         </svg>
       </Match>
+      <Match when={props.status === 'waiting'}>
+        <svg {...common}>
+          <circle cx="8" cy="8" r="5.5" />
+          <path d="M8 5.2V8l1.9 1.4" />
+        </svg>
+      </Match>
       <Match when={props.status === 'pending'}>
         <svg {...common}>
           <circle cx="8" cy="8" r="4" />
@@ -76,7 +83,7 @@ export default function StageRecord(props: {
   /** A run of the chat's is going on: a stage recorded running is at work. */
   live: boolean;
 }) {
-  const status = () => shownStatus(props.stage.status, props.live);
+  const status = () => shownStatus(props.stage.status, props.live, waitsOutRateLimit(props.stage));
   return (
     <div class={`chat-stage ${status()}`} role="status">
       <StageIcon status={status()} />

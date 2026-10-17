@@ -28,7 +28,7 @@ export default function AutopilotStrip(props: {
         {/* By position: a stage's button stays as its record changes. */}
         <Index each={stripStages(props.rows)}>
           {(stage) => {
-            const status = () => shownStatus(stage().status, props.running);
+            const status = () => shownStatus(stage().status, props.running, stage().waiting);
             const hover = () => stageHover(stage(), props.running);
             return (
               <li class={`autopilot-stage ${status()}`}>

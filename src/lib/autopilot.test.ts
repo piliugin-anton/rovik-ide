@@ -170,6 +170,32 @@ test('the strip: a stage recorded running spins while a run goes, else it didn�
   assert.equal(stageHover(again, false), 'Plan, round 3: failed. The run ended without a plan');
 });
 
+test('the strip: a stage that waits out the provider’s rate limit waits, nothing cut it', () => {
+  assert.equal(shownStatus('running', false, true), 'waiting');
+  assert.equal(shownStatus('running', true, true), 'running');
+  assert.equal(shownStatus('done', false, true), 'done');
+  const rateLimit = { until: 1_700_000_000_000, waits: 1, waitedMs: 60_000 };
+  const summary = 'Rate limited by the provider: again in 1 min';
+  const [plan] = stripStages(stageRows([stage('t', 'plan', 'running', { rateLimit, summary })]));
+  assert.equal(plan.waiting, true);
+  assert.equal(stageHover(plan, false), `Plan: waiting. ${summary}`);
+  assert.equal(stageHover(plan, true), `Plan: running. ${summary}`);
+  // Gone on: its run goes, or a crash cut it.
+  const [gone] = stripStages(
+    stageRows([stage('t', 'plan', 'running', { rateLimit: { waits: 1, waitedMs: 60_000 } })])
+  );
+  assert.equal(gone.waiting, undefined);
+  assert.equal(stageHover(gone, false), 'Plan: didn’t finish');
+  assert.equal(
+    taskLine(stageRows([stage('t', 'plan', 'running', { rateLimit })]), false),
+    'Autopilot: plan waits out the provider’s rate limit'
+  );
+  assert.equal(
+    taskLine(stageRows([stage('t', 'plan', 'running', { rateLimit })]), true),
+    'Autopilot: plan…'
+  );
+});
+
 test('the strip’s line: the stage at work, or how the task ended', () => {
   const line = (running: boolean, ...messages: ChatMessage[]) =>
     taskLine(stageRows(messages), running);

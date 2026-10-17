@@ -5490,6 +5490,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--warning);
 }
 
+.chat-stage.waiting svg {
+  color: var(--info);
+}
+
 .chat-stage.skipped {
   opacity: 0.8;
 }
@@ -5565,6 +5569,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .autopilot-stage.stopped svg {
   color: var(--warning);
+}
+
+.autopilot-stage.waiting svg {
+  color: var(--info);
 }
 
 .autopilot-stage-label {

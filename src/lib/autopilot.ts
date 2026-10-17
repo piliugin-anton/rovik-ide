@@ -51,6 +51,8 @@ export interface StageMeta {
   files?: string[];
   /** Thorough (T05): an implementation by candidates, by letter; `ref` is their record. */
   candidates?: string[];
+  /** H07: the provider's rate limit holds it up; `until`: when its run goes on (ms). */
+  rateLimit?: { until?: number; waits: number; waitedMs: number };
 }
 
 /**
@@ -256,15 +258,26 @@ export function taskRecords(
 }
 
 /**
- * How a stage shows: as recorded, `pending` when not reached (yet), and
- * `stopped` when recorded running but nothing runs it (the app closed, or
- * a crash, cut it; it goes on once the task is resumed).
+ * How a stage shows: as recorded, `pending` when not reached (yet), and,
+ * when recorded running but nothing runs it, `waiting` while it waits out
+ * the provider's rate limit (H07: its run goes on by itself), else
+ * `stopped` (the app closed, or a crash, cut it; it goes on once the task
+ * is resumed).
  */
-export type StageShown = StageStatus | 'pending' | 'stopped';
+export type StageShown = StageStatus | 'pending' | 'stopped' | 'waiting';
 
-export function shownStatus(status: StageStatus | 'pending', running: boolean): StageShown {
-  return status === 'running' && !running ? 'stopped' : status;
+export function shownStatus(
+  status: StageStatus | 'pending',
+  running: boolean,
+  waiting = false
+): StageShown {
+  if (status !== 'running' || running) return status;
+  return waiting ? 'waiting' : 'stopped';
 }
+
+/** Whether a record waits out the provider's rate limit (H07). */
+export const waitsOutRateLimit = (stage: Pick<StageMeta, 'status' | 'rateLimit'>): boolean =>
+  stage.status === 'running' && stage.rateLimit?.until !== undefined;
 
 /** One stage as the strip shows it. */
 export interface StripStage {
@@ -277,6 +290,8 @@ export interface StripStage {
   summary?: string;
   /** Its latest record's message, to go to. */
   recordId?: string;
+  /** Its latest record waits out the provider's rate limit (H07). */
+  waiting?: boolean;
 }
 
 /** The task's stages in order, each as its latest record says. */
@@ -292,6 +307,7 @@ export function stripStages(rows: StageRow[]): StripStage[] {
       ...(latest.stage.round > 1 ? { round: latest.stage.round } : {}),
       ...(latest.stage.summary ? { summary: latest.stage.summary } : {}),
       recordId: latest.id,
+      ...(waitsOutRateLimit(latest.stage) ? { waiting: true } : {}),
     };
   });
 }
@@ -303,8 +319,9 @@ export function taskLine(rows: StageRow[], running: boolean): string {
   const last = rows[rows.length - 1]?.stage;
   if (!last) return 'Autopilot';
   if (last.status === 'running') {
-    return running
-      ? `Autopilot: ${lower(last.name)}…`
+    if (running) return `Autopilot: ${lower(last.name)}…`;
+    return waitsOutRateLimit(last)
+      ? `Autopilot: ${lower(last.name)} waits out the provider’s rate limit`
       : `Autopilot: ${lower(last.name)} didn’t finish`;
   }
   if (taskOver(rows)) {
@@ -324,6 +341,7 @@ const STATUS_WORDS: Record<StageShown, string> = {
   pending: 'not reached',
   running: 'running',
   stopped: 'didn’t finish',
+  waiting: 'waiting',
   done: 'done',
   failed: 'failed',
   skipped: 'skipped',
@@ -341,7 +359,7 @@ export function stageTitle(stage: Pick<StageMeta, 'name' | 'round'>): string {
 
 /** A stage's hover text on the strip: its status, and its summary. */
 export function stageHover(stage: StripStage, running: boolean): string {
-  const status = statusWord(shownStatus(stage.status, running));
+  const status = statusWord(shownStatus(stage.status, running, stage.waiting));
   const title = stageTitle({ name: stage.name, round: stage.round ?? 1 });
   return stage.summary ? `${title}: ${status}. ${stage.summary}` : `${title}: ${status}`;
 }

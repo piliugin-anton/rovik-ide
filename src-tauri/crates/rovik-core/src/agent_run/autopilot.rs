@@ -35,10 +35,10 @@ use crate::core::Core;
 use rovik_protocol::agent::ModelProfile;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 
@@ -302,6 +302,36 @@ pub struct StageRecord {
     /// them (candidates.rs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<String>,
+    /// H07: the provider's rate limit holds the stage up: its run goes on
+    /// when the wait is over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitWait>,
+}
+
+/// H07: a stage's waits for the provider's rate limit, kept in its record
+/// so that a restart keeps them: when its run goes on, and how many waits
+/// it had, how long in all (`RATE_LIMIT_PATIENCE` at most).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RateLimitWait {
+    /// When the stage's run goes on, in ms since the epoch; None once it
+    /// has gone on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<i64>,
+    pub waits: u32,
+    pub waited_ms: u64,
+}
+
+impl StageRecord {
+    /// When the stage's run goes on after a wait for the provider's rate
+    /// limit, while it waits for one (H07).
+    pub fn waits_until(&self) -> Option<i64> {
+        let waiting = self.status == Status::Running;
+        self.rate_limit
+            .as_ref()
+            .and_then(|w| w.until)
+            .filter(|_| waiting)
+    }
 }
 
 fn first_round() -> u32 {
@@ -324,6 +354,7 @@ impl StageRecord {
             spent: None,
             files: Vec::new(),
             candidates: Vec::new(),
+            rate_limit: None,
         }
     }
 
@@ -543,17 +574,7 @@ pub async fn end_stage(
     id: &str,
     change: impl FnOnce(&mut StageRecord),
 ) -> Result<StageRecord, String> {
-    let ids = vec![id.to_string()];
-    let row = core
-        .db
-        .read(move |c| store::messages_by_id(c, &ids))
-        .await?
-        .into_iter()
-        .next()
-        .filter(|row| row.dialog_id == dialog_id)
-        .ok_or_else(|| format!("stage record {id} isn't in chat {dialog_id}"))?;
-    let mut record =
-        record_of(&row).ok_or_else(|| format!("message {id} holds no stage record"))?;
+    let (row, mut record) = record_row(core, dialog_id, id).await?;
     change(&mut record);
     let mut meta = row
         .meta
@@ -592,6 +613,30 @@ pub async fn end_stage(
         }),
     );
     Ok(record)
+}
+
+/// The stage record in row `id` of the chat, with its row.
+async fn record_row(
+    core: &Core,
+    dialog_id: &str,
+    id: &str,
+) -> Result<(MessageRow, StageRecord), String> {
+    let ids = vec![id.to_string()];
+    let row = core
+        .db
+        .read(move |c| store::messages_by_id(c, &ids))
+        .await?
+        .into_iter()
+        .next()
+        .filter(|row| row.dialog_id == dialog_id)
+        .ok_or_else(|| format!("stage record {id} isn't in chat {dialog_id}"))?;
+    let record = record_of(&row).ok_or_else(|| format!("message {id} holds no stage record"))?;
+    Ok((row, record))
+}
+
+/// The stage record in row `id` of the chat.
+async fn record_in(core: &Core, dialog_id: &str, id: &str) -> Result<StageRecord, String> {
+    Ok(record_row(core, dialog_id, id).await?.1)
 }
 
 /// Stores a row at the end of the chat and shows it.
@@ -960,13 +1005,18 @@ pub(super) fn after_run(
                 .await?;
                 return Ok(());
             }
-            // H07: on a server, the provider's rate limit holds the stage up
-            // until it resets, then its run goes on.
+            // H07: the provider's rate limit holds the stage up until it
+            // resets, then its run goes on.
             if let Some(wait) = rate_limit_wait(&core, &dialog_id, &run, &outcome, spent).await? {
                 let again = super::failure::format_duration(wait.as_millis() as i64);
+                let until = store::now_ms() + wait.as_millis() as i64;
                 end_stage(&core, &dialog_id, &run.record, |r| {
                     r.spent = Some(r.spent.unwrap_or_default().plus(spent));
                     r.summary = Some(format!("Rate limited by the provider: again in {again}"));
+                    let kept = r.rate_limit.get_or_insert_with(Default::default);
+                    kept.until = Some(until);
+                    kept.waits += 1;
+                    kept.waited_ms += wait.as_millis() as u64;
                 })
                 .await?;
                 retry_later(
@@ -974,7 +1024,7 @@ pub(super) fn after_run(
                     dialog_id.clone(),
                     run.record.clone(),
                     settings,
-                    wait,
+                    until,
                 );
                 return Ok(());
             }
@@ -999,12 +1049,13 @@ const RATE_LIMIT_FIRST_WAIT: std::time::Duration = std::time::Duration::from_sec
 /// How long a stage waits for rate limits in all, at most.
 const RATE_LIMIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// H07 (3.6): on a server, nobody is there to press Retry: a stage's run
-/// that ended `error` because the provider rate limited it goes on once
-/// the limit resets: at the time its failure named, else after a minute,
-/// then two, four…, while the task is within its budget (U04) and the
-/// stage's waits add up to an hour at most. None: the stage ends as
-/// before.
+/// H07 (3.6): nobody is there to press Retry, on a server or on this
+/// computer (Autopilot never asks, D5): a stage's run that ended `error`
+/// because the provider rate limited it goes on once the limit resets: at
+/// the time its failure named, else after a minute, then two, four…,
+/// while the task is within its budget (U04) and the stage's waits add up
+/// to an hour at most (its record keeps them, so a restart does too).
+/// None: the stage ends as before.
 async fn rate_limit_wait(
     core: &Core,
     dialog_id: &str,
@@ -1012,7 +1063,7 @@ async fn rate_limit_wait(
     outcome: &str,
     spent: Spent,
 ) -> Result<Option<std::time::Duration>, String> {
-    if outcome != "error" || !core.agents.on_server() {
+    if outcome != "error" {
         return Ok(None);
     }
     let recent = super::run::recent_messages(&core.db, dialog_id).await?;
@@ -1029,7 +1080,11 @@ async fn rate_limit_wait(
     if budget::over(&budget, &task).is_some() {
         return Ok(None);
     }
-    let (waits, waited) = core.agents.rate_limit_waits(&run.record);
+    let kept = record_in(core, dialog_id, &run.record)
+        .await?
+        .rate_limit
+        .unwrap_or_default();
+    let (waits, waited) = (kept.waits, std::time::Duration::from_millis(kept.waited_ms));
     let reset = failure["resetAt"]
         .as_i64()
         .map(|at| (at - store::now_ms()).max(0) as u64);
@@ -1040,7 +1095,6 @@ async fn rate_limit_wait(
     if waited + wait > RATE_LIMIT_PATIENCE {
         return Ok(None);
     }
-    core.agents.rate_limit_waited(&run.record, wait);
     super::log::write(
         core,
         json!({
@@ -1053,18 +1107,20 @@ async fn rate_limit_wait(
     Ok(Some(wait))
 }
 
-/// The stage's run again after `wait`, as a Retry, when the stage is still
-/// the task's latest and running, and no run of the chat goes: a Stop, a
-/// new message or a resume meanwhile leaves it be.
-fn retry_later(
-    core: Core,
-    dialog_id: String,
-    record: String,
-    settings: Settings,
-    wait: std::time::Duration,
-) {
+/// H07: the stage's run again once its wait is over (`until`, in ms since
+/// the epoch), as a Retry, while the stage is still the task's latest,
+/// under way and waiting for this very wait, and no run of the chat goes:
+/// a Stop, a new message, a Retry or a resume meanwhile leaves it be. One
+/// timer a wait: arming one that's armed does nothing.
+fn retry_later(core: Core, dialog_id: String, record: String, settings: Settings, until: i64) {
+    let key = (record.clone(), until);
+    if !armed_waits().insert(key.clone()) {
+        return;
+    }
     crate::rt::spawn(async move {
-        tokio::time::sleep(wait).await;
+        let wait = (until - store::now_ms()).max(0) as u64;
+        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        armed_waits().remove(&key);
         let driving = drive_lock(&dialog_id).await;
         if core.agents.is_running(&dialog_id) {
             return;
@@ -1073,9 +1129,30 @@ fn retry_later(
             Ok(Some((_, records))) => records.last().cloned(),
             _ => None,
         };
-        let still = latest.is_some_and(|r| r.id == record && r.record.status == Status::Running);
+        let still = latest.is_some_and(|r| r.id == record && r.record.waits_until() == Some(until));
         if !still {
             return;
+        }
+        // A chat that moved meanwhile (to a host, or back from this one)
+        // goes on where it is now, never here.
+        let chat = dialog_id.clone();
+        let here = core
+            .db
+            .read(move |c| crate::chat_db::location::of_chat(c, &chat))
+            .await
+            .is_ok_and(|at| at == crate::chat_db::location::Location::Here);
+        if !here {
+            return;
+        }
+        // It waits no more: its run goes on.
+        let gone_on = end_stage(&core, &dialog_id, &record, |r| {
+            if let Some(kept) = r.rate_limit.as_mut() {
+                kept.until = None;
+            }
+        })
+        .await;
+        if let Err(e) = gone_on {
+            return stopped_by(&core, &dialog_id, &e);
         }
         drop(driving);
         let request = settings.request(&dialog_id, StartKind::Retry);
@@ -1083,6 +1160,26 @@ fn retry_later(
             stopped_by(&core, &dialog_id, &e);
         }
     });
+}
+
+/// The waits a timer of this process is armed for (`retry_later`), by
+/// record and end. A restart has none: a resume arms them again from the
+/// records (`go_on`).
+fn armed_waits() -> std::sync::MutexGuard<'static, HashSet<(String, i64)>> {
+    static ARMED: LazyLock<Mutex<HashSet<(String, i64)>>> = LazyLock::new(Default::default);
+    ARMED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether this process goes on with stage record `record` once its wait
+/// for the provider's rate limit, until `until`, is over (H07).
+pub(super) fn rate_limit_armed(record: &str, until: i64) -> bool {
+    armed_waits().contains(&(record.to_string(), until))
+}
+
+/// A restart, as far as a wait's timer goes: this process forgets it.
+#[cfg(test)]
+pub(super) fn forget_rate_limit_wait(record: &str, until: i64) {
+    armed_waits().remove(&(record.to_string(), until));
 }
 
 /// The driver couldn't go on (the database failed it): said in the log and
@@ -2526,6 +2623,14 @@ pub(super) async fn go_on(
     }
     let settings = Settings::of(request);
     let last = records.last().expect("a task has a record");
+    // H07: held up by the provider's rate limit, the stage goes on once its
+    // wait is over: a resume meanwhile starts nothing, and after a restart
+    // it arms the wait again.
+    if let Some(until) = last.record.waits_until() {
+        let (chat, record) = (dialog_id.to_string(), last.id.clone());
+        retry_later(core.clone(), chat, record, settings, until);
+        return Ok(Some(None));
+    }
     let stage = match next {
         Next::Running(stage) => stage,
         _ => {
@@ -2780,6 +2885,53 @@ mod tests {
             ..mine(Stage::Implement, Status::Failed)
         }];
         assert_eq!(next(&stopped), Next::Over);
+    }
+
+    /// H07: a record keeps its waits for the provider's rate limit, and
+    /// waits while it's running with a time to go on at.
+    #[test]
+    fn a_record_keeps_its_rate_limit_waits() {
+        let waiting = StageRecord {
+            rate_limit: Some(RateLimitWait {
+                until: Some(1_700_000_000_000),
+                waits: 2,
+                waited_ms: 180_000,
+            }),
+            ..StageRecord::running("t", Stage::Plan, 1, Effort::Balanced)
+        };
+        let saved = serde_json::to_value(&waiting).unwrap();
+        assert_eq!(
+            saved["rateLimit"],
+            json!({ "until": 1_700_000_000_000i64, "waits": 2, "waitedMs": 180_000 })
+        );
+        let read: StageRecord = serde_json::from_value(saved).unwrap();
+        assert_eq!(read, waiting);
+        assert_eq!(waiting.waits_until(), Some(1_700_000_000_000));
+        // Gone on: no time left, the count stays.
+        let gone_on = StageRecord {
+            rate_limit: Some(RateLimitWait {
+                until: None,
+                ..waiting.rate_limit.clone().unwrap()
+            }),
+            ..waiting.clone()
+        };
+        assert_eq!(gone_on.waits_until(), None);
+        assert_eq!(
+            serde_json::to_value(&gone_on).unwrap()["rateLimit"],
+            json!({ "waits": 2, "waitedMs": 180_000 })
+        );
+        // Ended: it waits for nothing.
+        let ended = StageRecord {
+            status: Status::Failed,
+            ..waiting.clone()
+        };
+        assert_eq!(ended.waits_until(), None);
+        // A record from before H07 kept its waits has none, and says none.
+        let plain = rec(Stage::Plan, Status::Done);
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("rateLimit")
+            .is_none());
     }
 
     /// A stage that failed and was run again (a Retry's round) doesn't

@@ -1531,24 +1531,37 @@ T05 depends most on the environment it meets.
   (`reqwest::Error::without_url`): the URL may carry a token. It never
   waits in the task's way: each notice is a task of its own.
 
-### H07: rate limits on the server
+### H07: rate limits on the server, and on the computer
 
 - **In the driver, not the daemon**: the stage's end is the core's
   (`after_run`), so a run that ended `error` with its last failure
   `rate_limited` (`meta.failure.kind`, after the request's own four
-  attempts) doesn't end its stage on a server (`on_server`): the stage
-  stays running, its line says when it goes on ("Rate limited by the
-  provider: again in …"), and its run starts again as a Retry after the
-  wait, when the stage is still the task's latest and running and no run
-  of the chat goes. On a computer, the user is there: the stage ends as
-  before.
+  attempts) doesn't end its stage: the stage stays running, its line says
+  when it goes on ("Rate limited by the provider: again in …"), and its
+  run starts again as a Retry after the wait, when the stage is still the
+  task's latest, running and waiting for that very wait, and no run of the
+  chat goes. At first only on a server, as 3.6 has it; since the
+  robustness pass after T, on a computer too: a task there is no more
+  watched than one on a server (D5), and Thorough's planners, at once, are
+  the likeliest to meet a limit.
 - **The wait**: until the reset the failure named (`resetAt`, from the
   provider's `Retry-After`), at least a second; without one, a minute,
   then two, four…. The stage's waits add up to an hour at most, and none
   starts past the task's budget (U04: what it spent, the run's with it);
-  past either, the stage ends as before. The waits are counted in memory
-  by stage record: a daemon that restarts meanwhile resumes the task at
-  once (A03), and counts again.
+  past either, the stage ends as before. The record keeps them
+  (`rateLimit`: when its run goes on, how many waits, how long in all), so
+  the hour holds across a restart.
+- **A resume meanwhile starts nothing** (the app's, as the chat is
+  opened): the wait goes on. A restart has no timer for it: the resume
+  arms the wait again from the record (`go_on`), for what's left of it.
+  A chat that moved meanwhile (to a host, or back from the server) goes
+  on where it is: the timer left behind starts nothing.
+- **The strip and the record's line** show a waiting stage as waiting (a
+  clock), not as one a crash cut ("didn't finish").
+- **A candidate's stage** (T05) waits the same way in its own chat, and
+  the task's run that runs it waits with it. Before, that run took a
+  waiting candidate for one a restart cut: it started it again at once,
+  and gave up on it after twice.
 
 ### H08: what's going on there
 

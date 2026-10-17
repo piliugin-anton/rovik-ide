@@ -1225,8 +1225,9 @@ async fn an_autopilot_run_on_a_server_refuses_the_daemons_folder() {
 }
 
 /// H07: a task whose plan's run the provider rate limits, through all the
-/// request's attempts, run on a server or on this computer.
-async fn rate_limited_task(on_server: bool) -> Option<(Harness, Vec<StageRecord>)> {
+/// request's attempts, run on a server or on this computer; the limit the
+/// last attempt meets resets in `reset` seconds. Started, with its model.
+async fn rate_limited_task(on_server: bool, reset: u64) -> Option<(Harness, String)> {
     let h = task_project().await;
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
@@ -1236,7 +1237,8 @@ async fn rate_limited_task(on_server: bool) -> Option<(Harness, Vec<StageRecord>
         h.core.agents.set_on_server();
     }
     let mut script = task_script();
-    for _ in 0..crate::chat_request::MAX_ATTEMPTS {
+    script.insert(0, Reply::RateLimited(reset));
+    for _ in 1..crate::chat_request::MAX_ATTEMPTS {
         script.insert(0, Reply::RateLimited(0));
     }
     let (url, _) = model_routed(
@@ -1245,44 +1247,79 @@ async fn rate_limited_task(on_server: bool) -> Option<(Harness, Vec<StageRecord>
     )
     .await;
     h.start(task_request(&h, &url)).await;
-    let records = stages_until(&h, "the delivery", delivered).await;
-    Some((h, records))
+    Some((h, url))
 }
 
-/// H07: on a server nobody presses Retry: a stage's run the provider's
-/// rate limit ended goes on once the limit resets, in the same stage, and
-/// the task completes.
-#[tokio::test]
-async fn a_rate_limited_stage_goes_on_once_the_limit_resets_on_a_server() {
-    let Some((h, records)) = rate_limited_task(true).await else {
+/// H07: nobody presses Retry, on a server or on this computer: a stage's
+/// run the provider's rate limit ended goes on once the limit resets, in
+/// the same stage, and the task completes. Its record keeps the wait.
+async fn a_rate_limited_stage_goes_on(on_server: bool) {
+    let Some((h, _)) = rate_limited_task(on_server, 0).await else {
         return;
     };
+    let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK);
     let waits = log_lines(&h, "rateLimitWait").await;
     assert_eq!(waits.len(), 1, "{waits:?}");
     // Its reset was now: a second's wait, the least.
     assert_eq!(waits[0]["waitMs"], 1000);
+    assert_eq!(
+        records[0].rate_limit,
+        Some(super::autopilot::RateLimitWait {
+            until: None,
+            waits: 1,
+            waited_ms: 1000
+        })
+    );
 }
 
-/// H07: on this computer the user is there to retry: the stage ends as
-/// before, and the task with it.
 #[tokio::test]
-async fn a_rate_limited_stage_fails_on_this_computer() {
-    let Some((h, records)) = rate_limited_task(false).await else {
+async fn a_rate_limited_stage_goes_on_once_the_limit_resets_on_a_server() {
+    a_rate_limited_stage_goes_on(true).await;
+}
+
+#[tokio::test]
+async fn a_rate_limited_stage_goes_on_once_the_limit_resets_on_this_computer() {
+    a_rate_limited_stage_goes_on(false).await;
+}
+
+/// H07: a resume while a stage waits out the provider's rate limit (the
+/// app's, as the chat is opened) starts nothing: the wait goes on. One
+/// after a restart, which forgot the wait's timer, arms it again from the
+/// record. Either way, the stage's run goes on once, when the wait is over.
+#[tokio::test]
+async fn a_resume_while_a_stage_waits_out_a_rate_limit_starts_nothing() {
+    let Some((h, url)) = rate_limited_task(false, 3).await else {
         return;
     };
-    assert_eq!(
-        (
-            records[0].name,
-            records[0].status,
-            records[0].outcome.as_deref()
-        ),
-        (Stage::Plan, Status::Failed, Some("error"))
+    let waiting = stages_until(&h, "the wait", |records| {
+        records.first().is_some_and(|r| r.waits_until().is_some())
+    })
+    .await;
+    let until = waiting[0].waits_until().unwrap();
+    assert!(
+        h.start(resume_request(&h, &url)).await.is_none(),
+        "no run starts"
     );
-    // Its stages are in the log: a wait would be by now.
-    log_lines(&h, "stage").await;
-    let log = std::fs::read_to_string(h.core.paths.log_dir.join("agent-log.jsonl")).unwrap();
-    assert!(!log.contains("rateLimitWait"), "{log}");
+    let plan = super::autopilot::load(&h.core, &h.dialog_id).await.unwrap()[0]
+        .id
+        .clone();
+    super::autopilot::forget_rate_limit_wait(&plan, until);
+    assert!(
+        h.start(resume_request(&h, &url)).await.is_none(),
+        "no run starts"
+    );
+    assert!(super::autopilot::rate_limit_armed(&plan, until));
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(log_lines(&h, "rateLimitWait").await.len(), 1);
+    // The plan's run: the one the limit ended, and the one after the wait.
+    let plan_runs = h
+        .events_of("runEnded")
+        .iter()
+        .filter(|e| e["stage"] == "plan")
+        .count();
+    assert_eq!(plan_runs, 2);
 }
 
 /*
@@ -5502,5 +5539,81 @@ async fn a_retry_after_a_stop_implements_by_new_candidates() {
         crate::overlay::chats::get(&first).is_none(),
         "the stopped round's copy is gone"
     );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
+/// H07: a chat that moves to a host while its stage waits out the
+/// provider's rate limit goes on there: the wait's timer here starts
+/// nothing once it's over.
+#[tokio::test]
+async fn a_waiting_stage_of_a_chat_that_moved_away_starts_nothing_here() {
+    let Some((h, _)) = rate_limited_task(false, 2).await else {
+        return;
+    };
+    let waiting = stages_until(&h, "the wait", |records| {
+        records.first().is_some_and(|r| r.waits_until().is_some())
+    })
+    .await;
+    let until = waiting[0].waits_until().unwrap();
+    let id = h.dialog_id.clone();
+    h.core
+        .db
+        .write(move |c| {
+            crate::chat_db::location::set(
+                c,
+                &id,
+                &crate::chat_db::location::Location::Host("h1".into()),
+            )
+        })
+        .await
+        .unwrap();
+    let past = (until - store::now_ms()).max(0) as u64 + 1500;
+    tokio::time::sleep(Duration::from_millis(past)).await;
+    let plan_runs = h
+        .events_of("runEnded")
+        .iter()
+        .filter(|e| e["stage"] == "plan")
+        .count();
+    assert_eq!(plan_runs, 1, "only the run the limit ended");
+    assert_eq!(stages(&h).await[0].waits_until(), Some(until));
+}
+
+/// H07 and T05: a candidate's implementation that the provider's rate
+/// limit ends waits it out in its own chat and goes on once the limit
+/// resets. The task's run that runs it waits too, and doesn't take the
+/// candidate for one a restart cut (which it would give up after twice).
+#[tokio::test]
+async fn a_rate_limited_candidate_waits_it_out_and_goes_on() {
+    let mut script = candidates_script(
+        &[("ok.txt", "ok")],
+        &[("ok.txt", "ok"), ("notes.txt", "Wrote ok.\n")],
+    );
+    // Candidate a's first request, through all its attempts: after the
+    // plan's two replies.
+    for _ in 0..crate::chat_request::MAX_ATTEMPTS {
+        script.insert(2, Reply::RateLimited(0));
+    }
+    let Some((h, _, _)) = candidates_task(Vec::new(), script).await else {
+        return;
+    };
+    let records = delivered_slowly(&h).await;
+    let pick = records.iter().find(|r| r.name == Stage::Pick).unwrap();
+    assert_eq!(pick.status, Status::Done, "{records:#?}");
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+    let messages = h.messages().await;
+    let row = candidates_row(&messages);
+    assert_eq!(row["status"], "done", "{row}");
+    let a = row["candidates"][0]["chat"].as_str().unwrap().to_string();
+    let theirs = theirs_records(&h, &a).await;
+    let implement = theirs.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(implement.status, Status::Done, "{theirs:#?}");
+    assert_eq!(implement.rate_limit.as_ref().map(|w| w.waits), Some(1));
+    assert!(
+        !theirs
+            .iter()
+            .any(|r| r.summary.as_deref() == Some("It couldn't go on after it was cut")),
+        "{theirs:#?}"
+    );
+    assert_eq!(log_lines(&h, "rateLimitWait").await.len(), 1);
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }

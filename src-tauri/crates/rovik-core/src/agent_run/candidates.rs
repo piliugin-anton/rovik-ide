@@ -66,6 +66,9 @@ pub const CANDIDATES_OUTCOME: &str = "candidates";
 
 /// How often the task's chat looks at where its candidate is.
 const POLL: Duration = Duration::from_millis(100);
+/// How often, while the candidate's stage waits out the provider's rate
+/// limit (H07), which can take up to an hour.
+const WAIT_POLL: Duration = Duration::from_secs(1);
 
 /// What the Pick's record keeps of the losing candidate's diff.
 pub const MAX_KEPT_DIFF_CHARS: usize = 60_000;
@@ -943,6 +946,18 @@ impl Run {
             if self.stopped() {
                 give_up(&core, chat, &mine, "stopped", "Stopped").await?;
                 return Ok(Driven::Over);
+            }
+            // H07: its stage waits out the provider's rate limit, and its run
+            // goes on once the wait is over: it isn't cut. After a restart,
+            // its resume arms the wait again.
+            let last = &mine[mine.len() - 1];
+            if let Some(until) = last.record.waits_until() {
+                if !autopilot::rate_limit_armed(&last.id, until) {
+                    let request = settings.request(chat, StartKind::Resume);
+                    autopilot::go_on_boxed(&core, &request).await?;
+                }
+                tokio::time::sleep(WAIT_POLL).await;
+                continue;
             }
             if picked_up >= 2 {
                 let why = "It couldn't go on after it was cut";

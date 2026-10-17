@@ -133,6 +133,36 @@ test('a stage’s record in the chat: at work, cut, ended with its summary', () 
   }
 });
 
+test('a stage that waits out the provider’s rate limit shows waiting, in the strip and the chat', () => {
+  const root = container();
+  const waiting = record('r1', 'plan', 'running', {
+    summary: 'Rate limited by the provider: again in 1 min',
+    rateLimit: { until: 1_700_000_000_000, waits: 1, waitedMs: 60_000 },
+  });
+  const dispose = render(
+    () => (
+      <>
+        <AutopilotStrip rows={[waiting]} running={false} onShow={() => {}} />
+        <StageRecord stage={waiting.stage} live={false} />
+      </>
+    ),
+    root
+  );
+  try {
+    assert.equal(
+      root.querySelector('.autopilot-strip-line')?.textContent,
+      'Autopilot: plan waits out the provider’s rate limit'
+    );
+    assert.equal(shown(root)[0][1], 'waiting');
+    const line = root.querySelector('.chat-stage')!;
+    assert.equal(line.className, 'chat-stage waiting');
+    assert.equal(line.querySelector('.chat-stage-status')?.textContent, 'waiting');
+    assert.ok(line.querySelector('svg circle'), 'a clock, not a pause');
+  } finally {
+    dispose();
+  }
+});
+
 test('the chat shows a stage record where the stage began', () => {
   const [chat] = createStore({
     messages: [
