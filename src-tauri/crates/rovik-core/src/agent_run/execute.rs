@@ -1696,6 +1696,17 @@ impl Run {
         tc: &ToolCall,
         args: &Map<String, Value>,
     ) -> Result<(), String> {
+        // S02: blocked by its last review, the plan is never saved.
+        if self.plan_blocked {
+            return self
+                .add_tool_result(
+                    &tc.id,
+                    super::plan_review::BLOCKED_AGAIN.into(),
+                    None,
+                    Vec::new(),
+                )
+                .await;
+        }
         // Findings are the reviewer's: a "## Findings" section the agent
         // wrote (or the IDE's open findings from an earlier save) is left
         // out before the plan is checked, reviewed and saved.

@@ -929,12 +929,22 @@ async fn end_run_stage(
                 ),
                 Some(row),
             ),
-            None => (
-                Status::Failed,
-                "plan-failed".to_string(),
-                failure_summary("plan-failed"),
-                None,
-            ),
+            // S02: written, and held back by its last review: the review's
+            // stage ends the task.
+            None => match blocked_review(core, dialog_id, record.seq).await? {
+                Some(row) => (
+                    Status::Done,
+                    outcome.to_string(),
+                    "Written; its review held it back".into(),
+                    Some(row),
+                ),
+                None => (
+                    Status::Failed,
+                    "plan-failed".to_string(),
+                    failure_summary("plan-failed"),
+                    None,
+                ),
+            },
         },
         None => (Status::Done, outcome.to_string(), "Finished".into(), None),
     };
@@ -967,10 +977,29 @@ async fn saved_plan(
     }))
 }
 
+/// S02: the review row that blocked the plan the run after row `since`
+/// wrote, if one did (`meta.review.blocked`).
+async fn blocked_review(
+    core: &Core,
+    dialog_id: &str,
+    since: i64,
+) -> Result<Option<String>, String> {
+    let id = dialog_id.to_string();
+    let rows = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, "review", Some(since)))
+        .await?;
+    Ok(rows.iter().rev().find_map(|m| {
+        let review = m.meta.as_ref()?.get("review")?;
+        (review["kind"] == "plan" && review["blocked"] == true).then(|| m.id.clone())
+    }))
+}
+
 /// The strip's line for a task's outcome when a stage failed with it.
 fn failure_summary(outcome: &str) -> String {
     match outcome {
         "plan-failed" => "No plan was saved".into(),
+        "plan-blocked" => "A high finding is still open after the plan's last review".into(),
         "stopped" => "Stopped".into(),
         "unfinished-checklist" => "The checklist isn't finished".into(),
         "paused-loop" => "The run kept looping after it was told to change approach".into(),
@@ -1172,6 +1201,23 @@ fn review_record(
         };
         return base.with_summary(why);
     };
+    // S02: blocked at the last round, with a high finding open.
+    if review["blocked"] == true {
+        let round = review["round"].as_u64().unwrap_or(1) as u32;
+        let high = review["findings"]
+            .as_array()
+            .map_or(0, |f| f.iter().filter(|f| f["severity"] == "high").count());
+        return StageRecord {
+            status: Status::Failed,
+            round,
+            reference: Some(row.id.clone()),
+            outcome: Some("plan-blocked".into()),
+            ..base.with_summary(format!(
+                "Blocked after {round} reviews: {high} high finding{} open",
+                if high == 1 { "" } else { "s" }
+            ))
+        };
+    }
     let (status, summary) = match review["status"].as_str().unwrap_or("") {
         "clean" => (Status::Done, "Clean".to_string()),
         "findings" => (Status::Done, findings_summary(review)),

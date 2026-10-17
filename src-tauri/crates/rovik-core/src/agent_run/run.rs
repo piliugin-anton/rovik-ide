@@ -309,6 +309,9 @@ pub struct Run {
     /// a plan is saved), and the `submit_plan` call they answered
     /// (plan_review.rs).
     pub(super) plan_reviews: u32,
+    /// S02: an Autopilot task's last plan review blocked the plan: it's
+    /// never saved in this run.
+    pub(super) plan_blocked: bool,
     pub(super) plan_findings: Vec<super::change_review::Finding>,
     /// The plan as it was held with those findings (round 3): sent again
     /// unchanged with nothing said, every one stays open; the follow-up
@@ -956,6 +959,7 @@ impl Run {
             cleaned_this_run: false,
             group_grants: Default::default(),
             plan_reviews: 0,
+            plan_blocked: false,
             plan_findings: Vec::new(),
             plan_held: None,
             plan_review_call: None,

@@ -34,6 +34,9 @@ use std::time::{Duration, Instant};
 
 /// Plan reviews in one run; past them, a plan is saved as it is.
 pub const MAX_PLAN_REVIEW_ROUNDS: u32 = 2;
+/// An Autopilot task's plan reviews (4.2): at the last, a high finding
+/// still open blocks the plan, which isn't implemented (S02).
+pub const AUTOPILOT_PLAN_REVIEW_ROUNDS: u32 = 3;
 /// B12: after a hold, a submit that leaves a held finding unanswered goes
 /// back, without a review, at most this many times; then it's reviewed
 /// with the answers it has.
@@ -225,22 +228,25 @@ pub fn brief(p: &BriefParts) -> String {
 
 /// The `submit_plan` result when findings keep the plan from being saved:
 /// with how to check, fix and answer them, and what the next review is
-/// (B11).
-pub fn findings_result(findings: &[Finding], round: u32) -> String {
+/// (B11). `max`: the run's reviews; `autopilot`: an Autopilot task's,
+/// whose last review blocks the plan on a high finding (S02).
+pub fn findings_result(findings: &[Finding], round: u32, max: u32, autopilot: bool) -> String {
     let list = findings
         .iter()
         .enumerate()
         .map(|(i, f)| describe(f, i + 1))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let left = MAX_PLAN_REVIEW_ROUNDS.saturating_sub(round);
-    let next = if left <= 1 {
+    let left = max.saturating_sub(round);
+    let next = if left <= 1 && autopilot {
+        "Your next submit gets the last review: a high finding it still finds ends the task, and the plan isn't implemented.".to_string()
+    } else if left <= 1 {
         "Your next submit gets this run's last review: what it still finds is saved at the end of the plan for the user, not sent back to you.".to_string()
     } else {
         format!("{left} more reviews are left in this run.")
     };
     format!(
-        "The plan wasn't saved yet: a reviewer checked it against the code (review {round} of at most {MAX_PLAN_REVIEW_ROUNDS}) and found problems. \
+        "The plan wasn't saved yet: a reviewer checked it against the code (review {round} of at most {max}) and found problems. \
          It saw the request, the user's answers and the plan, not this conversation; its findings are another model's opinion.\n\n{list}\n\n\
          Before you submit again:\n\
          - Check each finding against the code with your tools (read, search_code, callers) before you change the plan.\n\
@@ -252,6 +258,25 @@ pub fn findings_result(findings: &[Finding], round: u32) -> String {
          {{\"finding\": 2, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}. {next}"
     )
 }
+
+/// S02: the `submit_plan` result when an Autopilot task's last plan review
+/// still finds a high problem: the plan isn't saved, the task ends.
+pub fn blocked_result(findings: &[Finding], max: u32) -> String {
+    let list = findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| describe(f, i + 1))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "The plan wasn't saved, and won't be: after {max} reviews the reviewer still finds a high problem in it. \
+         An Autopilot task doesn't implement a plan with a high finding open, so the task ends here, and its report lists \
+         the findings for the user:\n\n{list}\n\nDon't submit the plan again: reply in a sentence that the plan is blocked, and why."
+    )
+}
+
+/// S02: what `submit_plan` answers once the plan is blocked.
+pub const BLOCKED_AGAIN: &str = "Error: the plan is blocked: its last review still found a high problem, and an Autopilot task doesn't implement such a plan. Don't submit it again: reply in a sentence that the plan is blocked, and why.";
 
 /// The plan as saved after the last round: what's still open at its end.
 pub fn with_open_findings(plan: &str, open: &[Finding]) -> String {
@@ -1051,6 +1076,15 @@ pub struct Outcome {
 }
 
 impl Run {
+    /// The plan reviews a run has: Autopilot's three (S02), or two.
+    pub(super) fn plan_review_rounds(&self) -> u32 {
+        if self.in_autopilot() {
+            AUTOPILOT_PLAN_REVIEW_ROUNDS
+        } else {
+            MAX_PLAN_REVIEW_ROUNDS
+        }
+    }
+
     /// Whether a submitted plan gets a review: the lead's, with a project,
     /// while the plan reviewer is on.
     fn plan_reviewer_on(&self) -> bool {
@@ -1114,14 +1148,15 @@ impl Run {
             return Ok(save(None));
         }
         // P4.6: a save past the budget says so, in the result and its record.
-        if self.plan_reviews >= MAX_PLAN_REVIEW_ROUNDS {
-            let reason = format!("this run's {MAX_PLAN_REVIEW_ROUNDS} plan reviews are used");
+        let max = self.plan_review_rounds();
+        if self.plan_reviews >= max {
+            let reason = format!("this run's {max} plan reviews are used");
             return Ok(Outcome {
                 record: Some(json!({
                     "kind": "plan",
                     "status": "skipped",
                     "reason": reason,
-                    "maxRounds": MAX_PLAN_REVIEW_ROUNDS,
+                    "maxRounds": max,
                 })),
                 ..save(Some(format!("Review skipped: {reason}.")))
             });
@@ -1190,7 +1225,7 @@ impl Run {
         let mut review = json!({
             "kind": "plan",
             "round": round,
-            "maxRounds": MAX_PLAN_REVIEW_ROUNDS,
+            "maxRounds": max,
             "ms": started.elapsed().as_millis() as u64,
         });
         // The findings it reported and its report, when it could be read.
@@ -1290,7 +1325,7 @@ impl Run {
                 plan: plan.to_string(),
                 note: None,
             }
-        } else if round < MAX_PLAN_REVIEW_ROUNDS {
+        } else if round < max {
             // B13: what's still open is what the next review checks, by the
             // numbers the agent answers to.
             self.plan_review_call = Some(call_id.to_string());
@@ -1299,7 +1334,16 @@ impl Run {
             self.plan_answer_nudges = 0;
             review["held"] = json!(true);
             Decision::Hold {
-                result: findings_result(&serious, round),
+                result: findings_result(&serious, round, max, self.in_autopilot()),
+            }
+        } else if self.in_autopilot() && serious.iter().any(|f| f.severity == "high") {
+            // S02 (4.2): an Autopilot task's last review with a high finding
+            // open blocks the plan: it isn't saved for implementation.
+            review["open"] = json!(serious.len());
+            review["blocked"] = json!(true);
+            self.plan_blocked = true;
+            Decision::Hold {
+                result: blocked_result(&serious, max),
             }
         } else {
             review["open"] = json!(serious.len());
@@ -1464,7 +1508,7 @@ mod tests {
     #[test]
     fn the_hold_asks_for_checked_fixes_and_answers() {
         let f = parse_findings(STEP_FINDINGS).unwrap();
-        let result = findings_result(&f, 1);
+        let result = findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false);
         assert!(result.starts_with("The plan wasn't saved yet"), "{result}");
         assert!(result.contains("1. [high] Step 2 — `list_users` is called"));
         assert!(result.contains("look for the same kind of problem in the other steps"));
@@ -1476,6 +1520,20 @@ mod tests {
             result.ends_with("not sent back to you."),
             "the next review is the run's last: {result}"
         );
+        // S02: an Autopilot task's last review blocks the plan on a high one.
+        let autopilot = findings_result(&f, 2, AUTOPILOT_PLAN_REVIEW_ROUNDS, true);
+        assert!(autopilot.contains("review 2 of at most 3"), "{autopilot}");
+        assert!(
+            autopilot.ends_with(
+                "a high finding it still finds ends the task, and the plan isn't implemented."
+            ),
+            "{autopilot}"
+        );
+        assert!(findings_result(&f, 1, 3, true).ends_with("2 more reviews are left in this run."));
+        let blocked = blocked_result(&f, 3);
+        assert!(blocked.starts_with("The plan wasn't saved, and won't be: after 3 reviews"));
+        assert!(blocked.contains("1. [high] Step 2"));
+        assert!(blocked.ends_with("reply in a sentence that the plan is blocked, and why."));
     }
 
     /// B12: the shapes models send `responses` in.
@@ -1975,7 +2033,9 @@ mod tests {
         );
         let rewritten = plan.replace("line", "row");
         assert_eq!(changed_lines(&plan, &rewritten), 20);
-        assert!(findings_result(&f, 1).contains("review 1 of at most 2"));
+        assert!(
+            findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false).contains("review 1 of at most 2")
+        );
     }
 
     /// Round 2: CRLF plans keep one line ending, and a CRLF → LF

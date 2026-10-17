@@ -894,6 +894,95 @@ async fn a_plan_without_criteria_goes_back_and_its_review_checks_them() {
     );
 }
 
+/// S02 (4.2): the plan review's high finding the planner never fixes: an
+/// Autopilot task's three reviews, then the plan is blocked: never saved,
+/// never implemented, the task ending `plan-blocked`. A submit after that
+/// is refused.
+#[tokio::test]
+async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
+    let h = task_project().await;
+    let high = "## Findings\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`\n   \
+        - Scenario: the test still fails after the change.\n   \
+        - Fix: read `check.js` and change the file it reads.\n   \
+        - Confidence: confirmed";
+    let again = "## Earlier findings\n\n- Earlier 1: not resolved — `check.js` still reads another file.\n\n## Findings\n\nNone.";
+    let answer =
+        json!([{ "finding": 1, "action": "not_a_problem", "note": "check.js reads ok.txt" }]);
+    let submit = |id: &'static str| Reply::Call {
+        id,
+        name: "submit_plan",
+        args: json!({ "plan": TASK_PLAN, "responses": answer }),
+    };
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(high), Reply::Text(again), Reply::Text(again)],
+        )],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            submit("p2"),
+            submit("p3"),
+            submit("p4"),
+            Reply::Text("The plan is blocked: its review still finds `check.js` wrong."),
+        ],
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ]
+    );
+    let review = &records[1];
+    assert_eq!(review.outcome.as_deref(), Some("plan-blocked"));
+    assert_eq!(review.round, 3);
+    assert_eq!(
+        review.summary.as_deref(),
+        Some("Blocked after 3 reviews: 1 high finding open")
+    );
+    assert_eq!(
+        records[0].summary.as_deref(),
+        Some("Written; its review held it back")
+    );
+    let deliver = records.last().unwrap();
+    assert_eq!(deliver.outcome.as_deref(), Some("plan-blocked"));
+    assert_eq!(deliver.summary.as_deref(), Some("Nothing to deliver"));
+    let messages = h.messages().await;
+    assert!(
+        result_of(&messages, "p2")
+            .content
+            .contains("review 2 of at most 3"),
+        "{}",
+        result_of(&messages, "p2").content
+    );
+    let blocked = &result_of(&messages, "p3").content;
+    assert!(
+        blocked.contains("The plan wasn't saved, and won't be: after 3 reviews"),
+        "{blocked}"
+    );
+    assert_eq!(
+        result_of(&messages, "p4").content,
+        super::plan_review::BLOCKED_AGAIN
+    );
+    // Never saved, never implemented.
+    assert!(!messages
+        .iter()
+        .any(|m| m.meta.as_ref().is_some_and(|x| x.get("planFile").is_some())));
+    assert!(!messages.iter().any(|m| m
+        .meta
+        .as_ref()
+        .is_some_and(|x| x.pointer("/autopilot/stage") == Some(&json!("implement")))));
+    assert_eq!(h.file("ok.txt").as_deref(), Some("no"));
+}
+
 /*
  * The rules of an unattended run (U01)
  */

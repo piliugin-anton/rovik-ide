@@ -1119,3 +1119,21 @@ T05 depends most on the environment it meets.
   criteria" after the plan: criteria nothing could check, a part of the
   request none covers, one beyond the request, and an assumption the
   request or the code contradicts are findings, about "Plan".
+
+### S02: the plan review's cap
+
+- **Three reviews** a task's plan run (`AUTOPILOT_PLAN_REVIEW_ROUNDS`), in
+  Balanced and, until T07 brings "two rounds without progress", in
+  Thorough; elsewhere two, as before. The holds say so ("review 2 of at
+  most 3", and before the last: "a high finding it still finds ends the
+  task").
+- **Blocked**: the last review with a high finding open holds the plan
+  for good (`review.blocked`): `submit_plan` answers that the plan won't
+  be saved and lists the findings, and a later submit gets "the plan is
+  blocked". The plan stage is done ("Written; its review held it back"),
+  the plan review fails with `plan-blocked` ("Blocked after 3 reviews: 1
+  high finding open"), and the delivery says "Nothing to deliver". With
+  only medium findings open at the last review, the plan is saved with
+  them under "## Open review findings", as before.
+- **The report** that lists the findings is S09's; until then the review
+  record (the stage's `ref`) holds them.
