@@ -369,6 +369,30 @@ pub fn latest_task(all: &[Recorded]) -> Option<&str> {
     all.last().map(|r| r.record.task.as_str())
 }
 
+/// H08: where the latest task among a chat's stage rows is: its latest
+/// stage record, and what its runs spent. None: the chat never ran one.
+pub fn task_state(rows: &[MessageRow]) -> Option<rovik_protocol::autopilot::TaskState> {
+    let all = recorded(rows);
+    let task = latest_task(&all)?;
+    let records = records_of(&all, task);
+    let last = &records.last()?.record;
+    let spent = records
+        .iter()
+        .filter_map(|r| r.record.spent)
+        .fold(Spent::default(), Spent::plus);
+    let status = serde_json::to_value(last.status).ok()?;
+    Some(rovik_protocol::autopilot::TaskState {
+        id: task.to_string(),
+        stage: last.name.id().to_string(),
+        status: status.as_str().unwrap_or_default().to_string(),
+        outcome: last.outcome.clone(),
+        summary: last.summary.clone(),
+        ms: spent.ms,
+        cost: spent.cost,
+        uncosted: spent.uncosted as u64,
+    })
+}
+
 /*
  * ---------------------------------------------------------------------------
  * What comes next

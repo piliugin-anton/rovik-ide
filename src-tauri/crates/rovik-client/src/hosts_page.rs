@@ -19,7 +19,7 @@ use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
 use crate::system_ssh::{Local, SystemSsh, SystemSshConnector};
-use rovik_protocol::autopilot::{AutonomySettings, DeliveryTest};
+use rovik_protocol::autopilot::{AutonomySettings, ChatTask, DeliveryTest};
 use rovik_protocol::host::{HostInfo, KeyInfo, Storage};
 use rovik_protocol::{features, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
@@ -623,6 +623,17 @@ impl HostsPage {
         self.remote.set_autonomy(id, autonomy.clone());
         self.remote.reconfigure(id).await;
         Ok(autonomy)
+    }
+
+    /// This computer's chats on the host, each with its latest Autopilot
+    /// task (autopilot-plan H08), as `rovik-agentd status` lists them.
+    pub async fn tasks(&self, id: &str) -> Result<Vec<ChatTask>, String> {
+        if !self.remote.serves(id, features::AUTONOMY) {
+            return Err("This server's Rovik is too old to list its tasks.".into());
+        }
+        let listed = self.remote.host_call(id, Request::TaskStatus).await;
+        let listed = listed.map_err(|fail| fail.message)?;
+        Vec::<ChatTask>::try_from(listed).map_err(|fail| fail.message)
     }
 
     /// "Test delivery" (autopilot-plan H05): the host pushes an empty

@@ -111,6 +111,47 @@ pub struct DeliveryTest {
     pub pull_requests: Option<String>,
 }
 
+/// A chat on a server and its latest Autopilot task (H08), as
+/// `rovik-agentd status --json` and the hosts page show it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChatTask {
+    pub chat: String,
+    pub title: String,
+    /// The computer that started it there, or moved it there.
+    pub computer: String,
+    /// The run of it going now, by its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running: Option<String>,
+    /// How its last run ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// Its latest task; none for a chat that never ran one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskState>,
+}
+
+/// Where a task is: its latest stage record, and what its runs spent.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TaskState {
+    /// The task: the id of the message that started it.
+    pub id: String,
+    /// Its latest stage ("plan" … "deliver"), and that stage's status
+    /// ("running", "done", "failed", "skipped"), outcome and line.
+    pub stage: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// What its runs spent: their time, and their replies' cost in the
+    /// providers' currency, with how many replies reported none.
+    pub ms: u64,
+    pub cost: f64,
+    pub uncosted: u64,
+}
+
 /// A URL as a log or a message shows it: its scheme and host, never its
 /// path or query, which may carry a token (3.5).
 pub fn url_for_logs(url: &str) -> String {

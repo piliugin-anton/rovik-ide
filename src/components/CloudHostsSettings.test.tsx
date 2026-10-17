@@ -794,3 +794,78 @@ test('works on its own: “Test delivery” says what the push found, or why it 
   assert.equal(root.querySelector('.host-autonomy-tested'), null);
   assert.match(root.querySelector('.host-autonomy [role="alert"]')!.textContent!, /Open a project/);
 });
+
+test('connected: the tasks of this computer’s chats there, each a line (H08)', async () => {
+  let tasks: unknown[] = [
+    {
+      chat: 'c1',
+      title: 'Make the test pass',
+      computer: 'laptop',
+      running: 'run-2',
+      task: {
+        id: 'u1',
+        stage: 'implement',
+        status: 'running',
+        summary: 'Step 2 of 3',
+        ms: 125_000,
+        cost: 0.4,
+        uncosted: 0,
+      },
+    },
+    {
+      chat: 'c2',
+      title: 'Fix the parser',
+      computer: 'laptop',
+      outcome: 'done',
+      task: {
+        id: 'u9',
+        stage: 'deliver',
+        status: 'done',
+        outcome: 'verified',
+        summary: 'Delivered: pushed to `rovik/fix-the-parser-u9`',
+        ms: 61_000,
+        cost: 0,
+        uncosted: 3,
+      },
+    },
+    { chat: 'c3', title: '', computer: 'laptop', outcome: 'stopped' },
+  ];
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => DETAILS,
+    hosts_tasks: () => tasks,
+  });
+  assert.deepEqual(sent('hosts_tasks'), [{ id: 'h1' }]);
+  const rows = () => [...root.querySelectorAll('.host-tasks-list li')];
+  assert.equal(rows().length, 3);
+  assert.equal(rows()[0].querySelector('.host-task-title')!.textContent, 'Make the test pass');
+  assert.equal(
+    rows()[0].querySelector('.host-task-line')!.textContent,
+    'Implement: running · 2 min, 0.40'
+  );
+  assert.ok(rows()[0].classList.contains('running'));
+  assert.equal(rows()[0].querySelector('.host-task-running')!.textContent, 'Running');
+  assert.match(rows()[0].textContent!, /Step 2 of 3/);
+  assert.equal(
+    rows()[1].querySelector('.host-task-line')!.textContent,
+    'Delivered (verified) · 1 min; no cost reported'
+  );
+  assert.equal(rows()[1].querySelector('.host-task-running'), null);
+  assert.equal(
+    rows()[1].querySelector('.host-task-summary code')?.textContent,
+    'rovik/fix-the-parser-u9'
+  );
+  assert.equal(rows()[2].querySelector('.host-task-title')!.textContent, 'c3', 'by its id');
+  assert.equal(
+    rows()[2].querySelector('.host-task-line')!.textContent,
+    'No task: its last run stopped'
+  );
+  // Refresh asks again.
+  tasks = [];
+  button(root, 'Refresh')!.click();
+  await flush();
+  assert.equal(sent('hosts_tasks').length, 2);
+  assert.match(
+    root.querySelector('.host-tasks')!.textContent!,
+    /No chats of this computer’s there/
+  );
+});

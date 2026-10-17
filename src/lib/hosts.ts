@@ -224,6 +224,35 @@ export interface DeliveryTest {
 
 export const testDelivery = (id: string) => invoke<DeliveryTest>('hosts_test_delivery', { id });
 
+/** Where a chat's latest Autopilot task is (H08; rovik-protocol `TaskState`). */
+export interface TaskState {
+  id: string;
+  /** Its latest stage, and that stage's status, outcome and line. */
+  stage: string;
+  status: string;
+  outcome?: string;
+  summary?: string;
+  /** What its runs spent: time, cost, and replies with no cost reported. */
+  ms: number;
+  cost: number;
+  uncosted: number;
+}
+
+/** A chat on a host and its latest task (H08; rovik-protocol `ChatTask`). */
+export interface ChatTask {
+  chat: string;
+  title: string;
+  computer: string;
+  /** The run going now, by its id. */
+  running?: string;
+  /** How its last run ended. */
+  outcome?: string;
+  task?: TaskState;
+}
+
+/** This computer's chats on the host, each with its latest task. */
+export const hostTasks = (id: string) => invoke<ChatTask[]>('hosts_tasks', { id });
+
 /** Deploys Rovik; `sudoPassword` when sudo asked for one. Resolves with its version. */
 export const deployHost = (id: string, sudoPassword?: string) =>
   invoke<string>('hosts_deploy', { id, sudoPassword: sudoPassword ?? null });

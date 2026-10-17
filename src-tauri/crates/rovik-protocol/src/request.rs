@@ -3,7 +3,7 @@
 //! own calls and the daemon's are one list of operations (D3).
 
 use crate::agent::{AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest};
-use crate::autopilot::{AutonomyConfig, DeliveryTest};
+use crate::autopilot::{AutonomyConfig, ChatTask, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::{HostInfo, KeyInfo, Storage};
@@ -54,6 +54,10 @@ pub enum Request {
     DeliveryTest {
         remote: String,
     },
+    /// This computer's chats on the server, each with its latest Autopilot
+    /// task (H08), as `rovik-agentd status` lists them. Served with
+    /// `features::AUTONOMY`.
+    TaskStatus,
     AgentSetEffort {
         profile_id: String,
         options: Option<OpenAIChatOptions>,
@@ -334,6 +338,7 @@ impl Request {
             | Request::AgentConfigure(_)
             | Request::AutonomyConfigure(_)
             | Request::DeliveryTest { .. }
+            | Request::TaskStatus
             | Request::AgentSetEffort { .. }
             | Request::WorkloadFocus { .. }
             | Request::BlobsMissing { .. }
@@ -390,6 +395,8 @@ pub enum Response {
     Storage(Storage),
     /// `DeliveryTest`.
     DeliveryTested(DeliveryTest),
+    /// `TaskStatus`.
+    Tasks(Vec<ChatTask>),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -446,4 +453,5 @@ replies! {
     Keys => Vec<KeyInfo>,
     Storage => Storage,
     DeliveryTested => DeliveryTest,
+    Tasks => Vec<ChatTask>,
 }

@@ -417,6 +417,7 @@ fn every_request_round_trips() {
             Request::DeliveryTest {
                 remote: "git@github.com:acme/app.git".into(),
             },
+            Request::TaskStatus,
             Request::AutonomyConfigure(crate::autopilot::AutonomyConfig {
                 delivery: crate::autopilot::Delivery::PushBranch {
                     deploy_key: "~/.ssh/rovik_deploy".into(),
@@ -764,6 +765,26 @@ fn every_response_round_trips() {
                 pull_requests: Some("`gh` is logged in to github.com".into()),
             }),
             Response::DeliveryTested(crate::autopilot::DeliveryTest::default()),
+            Response::Tasks(vec![
+                crate::autopilot::ChatTask {
+                    chat: "c1".into(),
+                    title: "Make the test pass".into(),
+                    computer: "laptop".into(),
+                    running: Some("run-2".into()),
+                    outcome: Some("done".into()),
+                    task: Some(crate::autopilot::TaskState {
+                        id: "u1".into(),
+                        stage: "implement".into(),
+                        status: "running".into(),
+                        outcome: None,
+                        summary: Some("Step 2 of 3".into()),
+                        ms: 61_000,
+                        cost: 0.42,
+                        uncosted: 1,
+                    }),
+                },
+                crate::autopilot::ChatTask::default(),
+            ]),
         ],
     );
 }

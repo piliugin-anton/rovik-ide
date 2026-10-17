@@ -118,6 +118,18 @@ impl Daemon {
                 .set_autonomy(computer, config)
                 .map(|()| Response::Done)
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
+            // H08: this computer's chats, as `status` lists them.
+            Request::TaskStatus => {
+                let chats = self.store.chats_of(computer);
+                let listed = self.core.db.read(move |c| {
+                    let all = chats.iter().map(|(id, chat)| (id, chat));
+                    Ok(crate::status::chat_tasks(Some(c), all))
+                });
+                listed
+                    .await
+                    .map(Response::Tasks)
+                    .map_err(|e| Fail::new(FailCode::Internal, e))
+            }
             // H05: with this computer's delivery settings.
             Request::DeliveryTest { remote } => {
                 let delivery = self.store.computer_autonomy(computer).delivery;

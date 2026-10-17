@@ -26,6 +26,7 @@ import {
 } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
 import HostAutonomy from './HostAutonomy';
+import HostTasks from './HostTasks';
 import { onCloudEvent, refreshHosts } from '../lib/cloud';
 import { formatBytes, plural } from '../lib/textUtils';
 import {
@@ -960,6 +961,7 @@ function HostPage(props: {
                   </section>
                 )}
               </Show>
+              <HostTasks hostId={id} />
               <section class="settings-section host-keys">
                 <div class="settings-section-title">API keys on this server</div>
                 <p class="settings-hint">

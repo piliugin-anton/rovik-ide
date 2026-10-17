@@ -117,6 +117,15 @@ pub async fn hosts_set_autonomy(
     page.set_autonomy(&id, autonomy).await
 }
 
+/// This computer's chats on the host and their tasks (autopilot-plan H08).
+#[tauri::command]
+pub async fn hosts_tasks(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+) -> Result<Vec<rovik_protocol::autopilot::ChatTask>, String> {
+    page.tasks(&id).await
+}
+
 /// "Test delivery" (autopilot-plan H05): what the host's push found.
 #[tauri::command]
 pub async fn hosts_test_delivery(

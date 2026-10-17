@@ -1549,3 +1549,21 @@ T05 depends most on the environment it meets.
   past either, the stage ends as before. The waits are counted in memory
   by stage record: a daemon that restarts meanwhile resumes the task at
   once (A03), and counts again.
+
+### H08: what's going on there
+
+- **`rovik-agentd status [--data DIR] [--json]`** reads the daemon's
+  folder, not its socket: state.json's chats (computer, the run going,
+  the last run's outcome) and, from the chat database opened to read
+  only (safe while the daemon writes it), each chat's title and its
+  latest task (`autopilot::task_state`: the task's latest stage record,
+  its status, outcome and line, and what its runs spent). `--json`
+  prints `{ "chats": [ChatTask…] }`; without it, a line a chat.
+- **The cost is the records'**, not the agent log's: each stage record
+  keeps what its runs spent (U04), from the same replies' costs the log
+  has, and a task's records are its own, where the log would be read
+  whole and sorted by chat.
+- **The hosts page asks the daemon** (`TaskStatus`, served with
+  `autonomy`): the same list, of the asking computer's chats only (D16),
+  under "Tasks on this server" on a connected host's page, with a
+  Refresh.

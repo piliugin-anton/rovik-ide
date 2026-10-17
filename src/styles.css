@@ -8646,6 +8646,46 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin-left: 24px;
 }
 
+/* The host's tasks (HostTasks.tsx, H08): a chat a line, its summary under. */
+.host-tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.host-tasks-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+
+.host-task-title {
+  color: var(--fg);
+}
+
+.host-task-line {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.host-task-running {
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--accent);
+}
+
+.host-task-summary {
+  flex-basis: 100%;
+  margin: 0;
+}
+
 /* "Test delivery" (H05): its button, then what it found. */
 .host-autonomy-test {
   display: flex;

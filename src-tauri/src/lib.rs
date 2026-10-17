@@ -163,6 +163,7 @@ pub fn run() {
             commands::hosts::hosts_set_policy,
             commands::hosts::hosts_set_autonomy,
             commands::hosts::hosts_test_delivery,
+            commands::hosts::hosts_tasks,
             commands::hosts::hosts_deploy,
             commands::hosts::hosts_upgrade,
             commands::hosts::hosts_run_setup,

@@ -12,7 +12,7 @@ use common::{listening, until, Daemon, Session};
 use rovik_core::testing::Reply;
 use rovik_protocol::autopilot::{AutonomyConfig, Delivery};
 use rovik_protocol::{Request, Response};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::time::Duration;
 use tokio::net::{TcpListener, UnixStream};
 

@@ -5,7 +5,7 @@
 use crate::config::Config;
 use crate::home::Home;
 use crate::installer::{self, System};
-use crate::{attach, doctor, serve};
+use crate::{attach, doctor, serve, status};
 use rovik_protocol::PROTOCOL;
 use std::path::PathBuf;
 
@@ -25,6 +25,10 @@ usage: rovik-agentd <command>
   doctor [--socket PATH] [--data DIR] [--json]
       Check this account and server for the daemon, and say what Rovik's
       folders take and its limits here. --json prints it for the app.
+  status [--data DIR] [--json]
+      This user's chats on the server: each one's latest Autopilot task,
+      its stage, its outcome and what it spent, and the run going now.
+      --json prints it for scripts.
   version
       Print the daemon's version and protocol.
   token add COMPUTER [--data DIR]
@@ -55,6 +59,7 @@ pub enum Command {
         socket: Option<PathBuf>,
     },
     Doctor(Options),
+    Status(Options),
     Version,
     Help,
     AddToken {
@@ -112,7 +117,7 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
             "--data" if command != "attach" => options.data = Some(value()?),
             "--same-machine" if command == "serve" => options.same_machine = true,
             "--no-virtual-files" if command == "serve" => options.no_virtual_files = true,
-            "--json" if command == "doctor" => options.json = true,
+            "--json" if matches!(command.as_str(), "doctor" | "status") => options.json = true,
             "--stdio" if command == "attach" => stdio = true,
             "--help" | "-h" => return Ok(Command::Help),
             other => return Err(format!("unknown argument {other} for {command}")),
@@ -125,6 +130,7 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         }),
         "attach" => Err("attach needs --stdio".into()),
         "doctor" => Ok(Command::Doctor(options)),
+        "status" => Ok(Command::Status(options)),
         "version" | "--version" => Ok(Command::Version),
         "help" | "--help" | "-h" => Ok(Command::Help),
         other => Err(format!("unknown command {other}")),
@@ -210,6 +216,7 @@ pub fn run(argv: &[String]) -> i32 {
         Command::Serve(options) => serve::serve(options),
         Command::Attach { socket } => attach::attach(socket),
         Command::Doctor(options) => doctor::doctor(options),
+        Command::Status(options) => status::status(options),
         Command::Version => {
             println!("rovik-agentd {VERSION} (protocol {PROTOCOL})");
             Ok(())

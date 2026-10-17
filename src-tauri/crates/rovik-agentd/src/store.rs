@@ -659,6 +659,17 @@ impl Store {
             .collect()
     }
 
+    /// `computer`'s chats here, with what state.json keeps of each (H08):
+    /// not those it took back.
+    pub fn chats_of(&self, computer: &str) -> Vec<(String, ChatState)> {
+        let inner = self.lock();
+        let chats = inner.state.chats.iter();
+        chats
+            .filter(|(_, chat)| chat.computer == computer && chat.released.is_none())
+            .map(|(id, chat)| (id.clone(), chat.clone()))
+            .collect()
+    }
+
     /// Every chat known here.
     pub fn chats(&self) -> Vec<String> {
         self.lock().state.chats.keys().cloned().collect()
