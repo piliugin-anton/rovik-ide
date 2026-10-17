@@ -1415,6 +1415,53 @@ async fn a_resume_while_a_stage_waits_out_a_rate_limit_starts_nothing() {
     assert_eq!(plan_runs, 2);
 }
 
+/// H07, A03: resumes all the while a task goes on (the app's, each time
+/// the chat is opened), across a wait for the provider's rate limit and
+/// its end. The driver starts each stage with its turn taken, so none of
+/// them starts one too: the plan's run goes on once after its wait, and
+/// nobody is told the task couldn't go on.
+#[tokio::test]
+async fn resumes_while_a_task_goes_on_start_none_of_its_stages() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let Some((h, url)) = rate_limited_task(false, 1).await else {
+        return;
+    };
+    stages_until(&h, "the wait", |records| {
+        records.first().is_some_and(|r| r.waits_until().is_some())
+    })
+    .await;
+    let over = Arc::new(AtomicBool::new(false));
+    let resumes: Vec<_> = (0..4)
+        .map(|_| {
+            let (core, request, over) = (h.core.clone(), resume_request(&h, &url), over.clone());
+            crate::rt::spawn(async move {
+                while !over.load(Ordering::SeqCst) {
+                    // A resume a run beat to the chat is the resume's to hear.
+                    let _ = agent_start(&core, request.clone()).await;
+                }
+            })
+        })
+        .collect();
+    let records = stages_until(&h, "the delivery", delivered).await;
+    over.store(true, Ordering::SeqCst);
+    for resume in resumes {
+        resume.await.unwrap();
+    }
+    assert_eq!(names(&records), BALANCED_OK);
+    let stopped: Vec<Value> = h
+        .events_of("notice")
+        .into_iter()
+        .filter(|n| n["title"] == "Autopilot stopped")
+        .collect();
+    assert!(stopped.is_empty(), "{stopped:#?}");
+    let plan_runs = h
+        .events_of("runEnded")
+        .iter()
+        .filter(|e| e["stage"] == "plan")
+        .count();
+    assert_eq!(plan_runs, 2);
+}
+
 /*
  * Approvals in Autopilot (U02)
  */

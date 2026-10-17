@@ -1256,11 +1256,13 @@ fn retry_later(core: Core, dialog_id: String, record: String, settings: Settings
         if let Err(e) = gone_on {
             return stopped_by(&core, &dialog_id, &e);
         }
-        drop(driving);
+        // Started with the driver's turn still taken, as a resume starts
+        // one: a resume meanwhile finds the run, never a stage to start.
         let request = settings.request(&dialog_id, StartKind::Retry);
         if let Err(e) = super::start_run(&core, request).await {
             stopped_by(&core, &dialog_id, &e);
         }
+        drop(driving);
     });
 }
 
