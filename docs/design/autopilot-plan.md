@@ -1405,3 +1405,29 @@ T05 depends most on the environment it meets.
   carry its token.
 - **`StartRequest.deliver_to`** comes with the delivery (H04), which is
   the first to read it.
+
+### H03: the pipeline on the server
+
+- **Already there since A03**: the core drives the task wherever it
+  runs. `autopilot::after_run` is called where a run's end is told
+  (`agent_start`), on the daemon as on the desktop, and starts the next
+  stage's run itself; `restart.rs` restarts a cut run, then resumes
+  every chat whose task is unfinished with no run to restart
+  (`resume_task`: a Resume start, which `autopilot::resume` takes).
+  Nothing waits for a client: H03 adds the daemon tests that show it.
+- **The tests** (rovik-agentd/tests/autopilot.rs): a task started over a
+  WebSocket whose client then goes runs to its delivery, and the client
+  back pulls its stage records (`ChatChangesSince`); `kill -9` while the
+  plan's review is written (inside the plan's run, S02) goes on, the
+  review asked again, the plan not made again; `kill -9` between two
+  stages goes on through `restart_interrupted`'s second pass.
+- **Between two stages, made**: the driver writes the stages done inside
+  a run, then starts the next run, all in milliseconds, so a kill lands
+  there only by chance. The test kills the daemon as the Tests stage's
+  writer is asked and sets state.json to say no run of the chat went, as
+  it said a moment before that run was told.
+- **A kill in the instant after a run's end is kept and before its stage
+  ends** (the record still running, no run going) retries that stage's
+  run when the daemon starts again: `recovery::after_crash` can't tell a
+  run that ended from one cut between steps, so the stage is done again.
+  Work is redone, nothing is lost.

@@ -9,9 +9,11 @@ use common::{start_request, until, Daemon, Row};
 use rovik_core::agent_run::permissions::Permissions;
 use rovik_core::agent_run::{AgentConfig, StartKind, UserMessage};
 use rovik_core::testing::{model_routed, Reply};
+use rovik_protocol::agent::StartRequest;
 use rovik_protocol::{Frame, Request, Response};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CHAT: &str = "chat-1";
@@ -66,25 +68,24 @@ const PLAN_REVIEW: &str = "# Review this plan";
 /// The Tests stage's test writer's brief starts so (test_writer.rs, S04).
 const TESTS_FIRST: &str = "# Write the tests before the change";
 
-/// A03: the daemon is killed while the task's plan streams; started again,
-/// it picks the plan's run up where it was cut, and the task goes on by
-/// itself: the plan's review (A07: on for Autopilot, though the computer's
-/// subagents are off), the implementation, its checks, the delivery.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
-    if !has_npm() {
-        eprintln!("npm isn't installed: skipped");
-        return;
-    }
-    let mut daemon = Daemon::start(&["--same-machine"]).await;
-    let project = project(&daemon);
-    let review = vec![Reply::Text("## Findings\n\nNone.")];
-    // The Tests stage's writer finds nothing to test: it's skipped.
-    let blocked = vec![Reply::Text("## Blocked\n\nNothing to test here.")];
-    let (url, _) = model_routed(
-        vec![(PLAN_REVIEW, review), (TESTS_FIRST, blocked)],
+/// The Tests stage's writer finds nothing to test: it's skipped.
+fn nothing_to_test() -> Reply {
+    Reply::Text("## Blocked\n\nNothing to test here.")
+}
+
+/// The task's model: the plan's run, whose first reply is `first` (a
+/// reply that hangs, for a kill to cut), the implementation's, and the
+/// subagents' answers by their briefs, each in turn: the plan's review's
+/// `review`, the Tests stage's writer's `tests`.
+async fn task_model(
+    first: Reply,
+    review: Vec<Reply>,
+    tests: Vec<Reply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    model_routed(
+        vec![(PLAN_REVIEW, review), (TESTS_FIRST, tests)],
         vec![
-            Reply::Hang(Some("Looking at the project")),
+            first,
             Reply::Call {
                 id: "p1",
                 name: "submit_plan",
@@ -115,8 +116,22 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
             Reply::Text("Done: ok.txt says ok."),
         ],
     )
-    .await;
-    let mut start = start_request(&url, &project, "Make the test pass".into());
+    .await
+}
+
+/// The plan's first step when nothing cuts it: a look at the check.
+fn look() -> Reply {
+    Reply::Call {
+        id: "r0",
+        name: "read",
+        args: json!({ "path": "check.js" }),
+    }
+}
+
+/// The task's start: "Make the test pass", in Autopilot, from a computer
+/// whose commands need no approval.
+fn task_start(url: &str, project: &Path) -> StartRequest {
+    let mut start = start_request(url, project, "Make the test pass".into());
     start.start = StartKind::Send {
         message: UserMessage {
             id: "u1".into(),
@@ -134,6 +149,66 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
         },
         ..AgentConfig::default()
     });
+    start
+}
+
+/// The stage records of a task that went all the way.
+fn delivered_whole() -> Vec<(String, String)> {
+    [
+        ("plan", "done"),
+        ("planReview", "done"),
+        ("prepare", "skipped"),
+        ("tests", "skipped"),
+        ("implement", "done"),
+        ("review", "skipped"),
+        ("checks", "done"),
+        ("acceptance", "skipped"),
+        ("deliver", "done"),
+    ]
+    .iter()
+    .map(|(n, s)| (n.to_string(), s.to_string()))
+    .collect()
+}
+
+/// The chat's stage records once its delivery ended.
+async fn until_delivered(daemon: &Daemon) -> Vec<(String, String)> {
+    for _ in 0..2400 {
+        let found = stages(&daemon.rows(CHAT));
+        if found
+            .last()
+            .is_some_and(|(name, status)| name == "deliver" && status != "running")
+        {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "never delivered: {:?}\n{}",
+        stages(&daemon.rows(CHAT)),
+        daemon.output()
+    )
+}
+
+/// A03: the daemon is killed while the task's plan streams; started again,
+/// it picks the plan's run up where it was cut, and the task goes on by
+/// itself: the plan's review (A07: on for Autopilot, though the computer's
+/// subagents are off), the implementation, its checks, the delivery.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let review = vec![Reply::Text("## Findings\n\nNone.")];
+    let (url, _) = task_model(
+        Reply::Hang(Some("Looking at the project")),
+        review,
+        vec![nothing_to_test()],
+    )
+    .await;
+    let start = task_start(&url, &project);
     let reply = daemon.post_call(1, Request::AgentStart(start)).await;
     assert!(
         matches!(
@@ -160,40 +235,8 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
     daemon.kill().await;
     daemon.restart().await;
 
-    let mut delivered = None;
-    for _ in 0..2400 {
-        let found = stages(&daemon.rows(CHAT));
-        if found
-            .last()
-            .is_some_and(|(name, status)| name == "deliver" && status != "running")
-        {
-            delivered = Some(found);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let found = delivered.unwrap_or_else(|| {
-        panic!(
-            "never delivered: {:?}\n{}",
-            stages(&daemon.rows(CHAT)),
-            daemon.output()
-        )
-    });
-    let expected: Vec<(String, String)> = [
-        ("plan", "done"),
-        ("planReview", "done"),
-        ("prepare", "skipped"),
-        ("tests", "skipped"),
-        ("implement", "done"),
-        ("review", "skipped"),
-        ("checks", "done"),
-        ("acceptance", "skipped"),
-        ("deliver", "done"),
-    ]
-    .iter()
-    .map(|(n, s)| (n.to_string(), s.to_string()))
-    .collect();
-    assert_eq!(found, expected, "{}", daemon.output());
+    let found = until_delivered(&daemon).await;
+    assert_eq!(found, delivered_whole(), "{}", daemon.output());
     assert_eq!(
         std::fs::read_to_string(project.join("ok.txt")).unwrap(),
         "ok"
@@ -206,6 +249,186 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
         .map(|r| &r.meta)
         .collect();
     assert_eq!(plan_reply.len(), 1, "{rows:?}");
+}
+
+/// H03: a task started by a client that then goes away runs to its
+/// delivery on the server alone; when the client is back, its records are
+/// there for it to pull, as the daemon has them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_whose_client_goes_away_runs_to_its_delivery() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let review = vec![Reply::Text("## Findings\n\nNone.")];
+    let (url, _) = task_model(look(), review, vec![nothing_to_test()]).await;
+    let mut session = daemon.session().await;
+    let started = session
+        .call(Request::AgentStart(task_start(&url, &project)))
+        .await;
+    assert!(
+        matches!(started, Ok(Response::RunId(Some(_)))),
+        "{started:?}"
+    );
+    // The client goes: nobody is connected from here on.
+    drop(session);
+
+    let found = until_delivered(&daemon).await;
+    assert_eq!(found, delivered_whole(), "{}", daemon.output());
+    assert_eq!(
+        std::fs::read_to_string(project.join("ok.txt")).unwrap(),
+        "ok"
+    );
+    // Back: the client pulls the chat, its stage records with it.
+    let mut session = daemon.session().await;
+    let pulled = session
+        .call(Request::ChatChangesSince {
+            dialog_id: CHAT.into(),
+            rev: 0,
+            cursor: None,
+        })
+        .await;
+    let Ok(Response::ChatChanges(page)) = pulled else {
+        panic!("no changes: {pulled:?}");
+    };
+    let mut messages = page.changes.messages;
+    messages.sort_by_key(|m| m.seq);
+    let pulled: Vec<(String, String)> = messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .filter_map(|m| {
+            let meta: Value = serde_json::from_str(m.meta.as_deref()?).ok()?;
+            let stage = meta.get("stage")?;
+            Some((
+                stage["name"].as_str()?.to_string(),
+                stage["status"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    assert_eq!(pulled, delivered_whole());
+}
+
+/// H03: `kill -9` once the task's plan is written, while its review is
+/// (inside the plan's run, S02): started again, the daemon goes on with
+/// the task on its own, the review asked again, the plan not made again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_killed_while_its_plan_is_reviewed_goes_on() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    // The first review never comes: the kill cuts it.
+    let review = vec![Reply::Hang(None), Reply::Text("## Findings\n\nNone.")];
+    let (url, seen) = task_model(look(), review, vec![nothing_to_test()]).await;
+    let reply = daemon
+        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .await;
+    assert!(
+        matches!(
+            reply,
+            Frame::Reply {
+                res: Ok(Response::RunId(Some(_))),
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    let reviews = |seen: &Mutex<Vec<Value>>| asked(seen, PLAN_REVIEW);
+    until("the plan's review asked for", || {
+        (reviews(&seen) > 0).then_some(())
+    })
+    .await;
+    assert_eq!(
+        stages(&daemon.rows(CHAT)),
+        [("plan".into(), "running".into())]
+    );
+    daemon.kill().await;
+    daemon.restart().await;
+
+    let found = until_delivered(&daemon).await;
+    assert_eq!(found, delivered_whole(), "{}", daemon.output());
+    assert_eq!(reviews(&seen), 2, "the review again, once");
+    assert_eq!(
+        std::fs::read_to_string(project.join("ok.txt")).unwrap(),
+        "ok"
+    );
+}
+
+/// Bodies of the requests whose first message has `marker`.
+fn asked(seen: &Mutex<Vec<Value>>, marker: &str) -> usize {
+    let bodies = seen.lock().unwrap();
+    bodies
+        .iter()
+        .filter(|b| b.to_string().contains(marker))
+        .count()
+}
+
+/// H03: `kill -9` between two stages: the plan's stage and its review
+/// done, the Tests stage's record written, its run not told yet. A kill
+/// lands there only by chance (the driver writes records, then starts
+/// the run), so it's made: the daemon is killed as the Tests stage's
+/// writer is asked, and its state.json is set to say no run of the chat
+/// went, as it would have said a moment before. Started again, the
+/// daemon finds the task between two stages, with no run to restart, and
+/// goes on with it on its own (`restart_interrupted`'s second pass).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_killed_between_two_stages_goes_on() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let review = vec![Reply::Text("## Findings\n\nNone.")];
+    let tests = vec![Reply::Hang(None), nothing_to_test()];
+    let (url, seen) = task_model(look(), review, tests).await;
+    let reply = daemon
+        .post_call(1, Request::AgentStart(task_start(&url, &project)))
+        .await;
+    assert!(
+        matches!(
+            reply,
+            Frame::Reply {
+                res: Ok(Response::RunId(Some(_))),
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    until("the Tests stage's writer asked", || {
+        (asked(&seen, TESTS_FIRST) > 0).then_some(())
+    })
+    .await;
+    daemon.kill().await;
+    let file = daemon.data.join("state.json");
+    let mut state: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    state["chats"][CHAT]["running"] = Value::Bool(false);
+    std::fs::write(&file, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    let before = stages(&daemon.rows(CHAT));
+    assert_eq!(
+        before.last(),
+        Some(&("tests".into(), "running".into())),
+        "{before:?}"
+    );
+    daemon.restart().await;
+
+    let found = until_delivered(&daemon).await;
+    assert!(
+        daemon.log().contains("its task goes on"),
+        "resumed between stages: {}",
+        daemon.output()
+    );
+    // The Tests stage's record goes on where it was, the rest as ever.
+    assert_eq!(found, delivered_whole(), "{}", daemon.output());
+    assert_eq!(asked(&seen, TESTS_FIRST), 2, "the Tests stage again, once");
+    assert_eq!(
+        std::fs::read_to_string(project.join("ok.txt")).unwrap(),
+        "ok"
+    );
 }
 
 /// H02: what this computer has the server keep for its runs that go on
