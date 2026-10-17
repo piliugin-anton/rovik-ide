@@ -204,6 +204,13 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
   // Off on the page, and subagents off: Autopilot's chats still send it there.
   assert.equal(warning('reviewer'), 'In Autopilot, code will also be sent to Beta.');
   assert.equal(warning('scout'), undefined, 'nothing uses an off scout');
+  // T09: a judging row on Default starts on another provider than the chat's.
+  assert.equal(warning('judge'), 'In Autopilot, code will also be sent to Beta.');
+  assert.equal(warning('triage'), undefined, 'not a judging row');
+  assert.ok(
+    root.textContent?.includes('they start on a model of a provider other than the chat’s'),
+    'the hint says why'
+  );
   // Subagents off: a kind Autopilot uses keeps its model and effort to set,
   // its switch (ordinary chats') doesn't; the others are greyed out whole.
   const effort = (label: string) =>

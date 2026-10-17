@@ -2656,7 +2656,12 @@ export default function ChatPanel(props: ChatProps) {
   const agentConfig = (): AgentConfig => ({
     permissions: permissions(),
     approvalProfiles: approvalProfiles(permissions()),
-    subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
+    subagents: resolveSubagentConfig(
+      subagentSettings(),
+      providers(),
+      resolveProfile,
+      selection() ?? null
+    ),
     autopilot: autopilotConfig(subagentSettings().autopilot),
   });
   createEffect(() => configureAgent(agentConfig()));

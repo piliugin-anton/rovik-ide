@@ -368,6 +368,54 @@ export function kindChain(settings: SubagentSettings, kind: SubagentKindId): Cha
   return out;
 }
 
+/**
+ * The kinds that judge another's work (autopilot-plan 3.2, T09): the
+ * planner, the judge, the acceptance checker, the adversarial tester. Left
+ * on Default, they start on a model of a provider other than the chat
+ * model's, when one is set up: a judgment from another model family.
+ */
+export const JUDGING_KINDS: SubagentKindId[] = ['planner', 'judge', 'acceptance', 'breaker'];
+
+/**
+ * T09: the first enabled model that can call tools of a provider other
+ * than the chat model's, in the providers' order. Null: there's none, or
+ * the chat's model isn't known.
+ */
+export function otherProviderModel(
+  providers: Provider[],
+  chat: ModelSelection | null
+): ModelSelection | null {
+  if (!chat) return null;
+  for (const provider of providers) {
+    if (provider.id === chat.providerId) continue;
+    const model = provider.models.find((m) =>
+      usableModel(providers, { providerId: provider.id, modelId: m.id })
+    );
+    if (model) return { providerId: provider.id, modelId: model.id };
+  }
+  return null;
+}
+
+/**
+ * The models a kind tries as it runs: `kindChain`, and for a judging row
+ * left on Default (T09) another provider's model first, unless the default
+ * model is one already (that choice holds).
+ */
+export function runChain(
+  settings: SubagentSettings,
+  kind: SubagentKindId,
+  providers: Provider[],
+  chat: ModelSelection | null
+): ChainEntry[] {
+  const chain = kindChain(settings, kind);
+  if (!JUDGING_KINDS.includes(kind) || settings.kinds[kind].model !== 'default') return chain;
+  const other = otherProviderModel(providers, chat);
+  if (!other || !chat) return chain;
+  const d = settings.defaultModel;
+  if (d !== CHAT && d.providerId !== chat.providerId && usableModel(providers, d)) return chain;
+  return [other, ...chain.filter((e) => !sameEntry(e, other))];
+}
+
 /** An enabled model that can call tools: one a kind can use. */
 export function usableModel(providers: Provider[], sel: ModelSelection): boolean {
   const model = providers
@@ -380,17 +428,19 @@ export function usableModel(providers: Provider[], sel: ModelSelection): boolean
  * The settings as the backend takes them. `resolve` turns a selection into
  * a model (lib/aiSettings.ts `resolveProfile`); models turned off, removed
  * or marked "no tools" are left out, so the next one is tried instead.
+ * `chat`: the chat's model, which judging rows on Default avoid (T09).
  */
 export function resolveSubagentConfig(
   settings: SubagentSettings,
   providers: Provider[],
-  resolve: (providers: Provider[], sel: ModelSelection) => ModelProfile | null
+  resolve: (providers: Provider[], sel: ModelSelection) => ModelProfile | null,
+  chat: ModelSelection | null = null
 ): SubagentConfig {
   const kinds: Partial<Record<SubagentKindId, KindConfig>> = {};
   for (const { id } of SUBAGENT_KINDS) {
     const k = settings.kinds[id];
     const models: ModelChoice[] = [];
-    for (const entry of kindChain(settings, id)) {
+    for (const entry of runChain(settings, id, providers, chat)) {
       if (entry === CHAT) {
         models.push({ chat: true });
         continue;
@@ -447,7 +497,7 @@ export function otherProviders(
   chat: ModelSelection | null
 ): string[] {
   const names: string[] = [];
-  for (const entry of kindChain(settings, kind)) {
+  for (const entry of runChain(settings, kind, providers, chat)) {
     if (entry === CHAT || !usableModel(providers, entry)) continue;
     if (chat && entry.providerId === chat.providerId) continue;
     const provider = providerOf(providers, entry);

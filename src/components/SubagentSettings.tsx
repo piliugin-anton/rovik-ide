@@ -288,6 +288,11 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           Thorough at that effort only, with the models set for them below, even when “Use
           subagents” is off.
         </p>
+        <p class="settings-hint autopilot-kinds-note">
+          The planner, the judge, the acceptance checker and the adversarial tester judge others’
+          work: left on Default, they start on a model of a provider other than the chat’s, when one
+          is set up, so another model family checks what the chat’s model did.
+        </p>
       </section>
 
       <section class="settings-section" classList={{ disabled: off() }}>

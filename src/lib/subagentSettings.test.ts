@@ -5,7 +5,9 @@ import {
   DEFAULT_SUBAGENT_SETTINGS,
   kindChain,
   normalizeSubagentSettings,
+  JUDGING_KINDS,
   numberFieldValue,
+  otherProviderModel,
   otherProviders,
   resolveSubagentConfig,
   subagentSummary,
@@ -350,4 +352,54 @@ test('number_field_value_table', () => {
   ];
   for (const [args, expected] of table)
     assert.equal(numberFieldValue(...args), expected, JSON.stringify(args));
+});
+
+test('judging rows left on Default start on another provider than the chat’s (T09)', () => {
+  const chat = sel('a', 'cheap');
+  const s: SubagentSettings = { ...DEFAULT_SUBAGENT_SETTINGS, enabled: true };
+  assert.deepEqual(otherProviderModel(providers, chat), sel('b', 'other'));
+  assert.equal(otherProviderModel(providers, null), null, 'no chat model known');
+  // Two providers: the judging rows resolve to the other one first.
+  const config = resolveSubagentConfig(s, providers, resolve, chat);
+  for (const kind of JUDGING_KINDS) {
+    assert.deepEqual(ids(config.kinds[kind]!.models), ['b::other', 'chat'], kind);
+  }
+  // The others keep their chain.
+  assert.deepEqual(ids(config.kinds.reviewer!.models), ['chat']);
+  assert.deepEqual(otherProviders(providers, s, 'judge', chat), ['Beta']);
+  assert.deepEqual(otherProviders(providers, s, 'reviewer', chat), []);
+  // One provider: the default.
+  const one = providers.slice(0, 1);
+  assert.deepEqual(ids(resolveSubagentConfig(s, one, resolve, chat).kinds.judge!.models), ['chat']);
+  // The chat on b: a's first usable model.
+  assert.deepEqual(
+    ids(resolveSubagentConfig(s, providers, resolve, sel('b', 'other')).kinds.planner!.models),
+    ['a::cheap', 'chat']
+  );
+  // A default model of another provider already holds; one of the chat's
+  // provider comes after the other provider's.
+  const otherDefault = { ...s, defaultModel: sel('b', 'other') };
+  assert.deepEqual(
+    ids(resolveSubagentConfig(otherDefault, providers, resolve, chat).kinds.acceptance!.models),
+    ['b::other', 'chat']
+  );
+  const sameDefault = { ...s, defaultModel: sel('a', 'strong') };
+  assert.deepEqual(
+    ids(resolveSubagentConfig(sameDefault, providers, resolve, chat).kinds.breaker!.models),
+    ['b::other', 'a::strong', 'chat']
+  );
+  // A row set to a model of its own keeps it.
+  const own: SubagentSettings = {
+    ...s,
+    kinds: {
+      ...s.kinds,
+      judge: { ...s.kinds.judge, model: sel('a', 'strong') },
+    },
+  };
+  assert.deepEqual(ids(resolveSubagentConfig(own, providers, resolve, chat).kinds.judge!.models), [
+    'a::strong',
+    'chat',
+  ]);
+  // Without the chat's model, nothing changes.
+  assert.deepEqual(ids(resolveSubagentConfig(s, providers, resolve).kinds.judge!.models), ['chat']);
 });

@@ -1727,3 +1727,22 @@ T05 depends most on the environment it meets.
   whether it's there. No change review reported (none ran, or none could
   be read), or its turn gave nothing: the report is the implementer's
   alone, as in Balanced.
+
+### T09: judging roles on another provider
+
+- **Which rows**: the planner, the judge, the acceptance checker and the
+  adversarial tester (`JUDGING_KINDS`), the kinds that judge another's
+  work. Left on Default, they start on the first enabled model, that can
+  call tools, of a provider other than the chat model's
+  (`otherProviderModel`, in the providers' order), then go on as their
+  chain did. With one provider, or a row set to a model of its own, or a
+  default subagent model that is another provider's already, nothing
+  changes.
+- **The chat's model** is the open chat's (`ChatPanel`'s selection),
+  passed to `resolveSubagentConfig`; the configuration goes again when it
+  changes. A task running in another chat meanwhile follows the open
+  chat's: the configuration is the app's, not a chat's. All four kinds are
+  Autopilot's only, so nothing changes outside it.
+- **On the page**: a hint under the Autopilot section says why, and a
+  judging row's warning ("In Autopilot, code will also be sent to …")
+  names the provider it now starts on.
