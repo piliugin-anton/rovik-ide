@@ -16,7 +16,7 @@
 //! with the task chat's configuration: its change review, its checks, its
 //! adversarial tester and its acceptance check run in it, as in any
 //! implementation's run, and its stage records are its own chat's, each
-//! with its letter (`autopilot::CANDIDATE_STAGES`). They implement one
+//! with its letter (`Stage::in_candidates`). They implement one
 //! after the other, in the task chat's Implement stage, whose run is the
 //! IDE's (`candidates_stage`): it starts each and waits for its records to
 //! end, so the chat is running, and its Stop stops them. A restart picks
@@ -43,7 +43,7 @@ use super::judge;
 use super::run::{new_message, Run};
 use super::subagent::{self, Kind, SubOutcome, SubagentSettings};
 use super::StartKind;
-use crate::chat_db::store::{self, char_prefix, MessagePatch, NewChildDialog};
+use crate::chat_db::store::{self, char_prefix, NewChildDialog};
 use crate::core::Core;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -303,23 +303,6 @@ async fn row_by_id(
         .and_then(|m| serde_json::from_value(m.meta?.get("candidates")?.clone()).ok()))
 }
 
-/// A record of the IDE's at the end of the chat (`meta.<key>`): its row.
-async fn add_row(core: &Core, dialog_id: &str, key: &str, value: Value) -> Result<String, String> {
-    let mut row = new_message("assistant", "");
-    row.meta = Some(json!({ key: value }));
-    let id = row.id.clone();
-    let (chat, stored) = (dialog_id.to_string(), vec![row.clone()]);
-    let seqs = core
-        .db
-        .write(move |c| store::append_messages(c, &chat, &stored))
-        .await?;
-    core.emit(AgentEvent::MessagesAdded {
-        dialog_id: dialog_id.to_string(),
-        messages: vec![super::events::out_message(dialog_id, seqs[0], &row, false)],
-    });
-    Ok(id)
-}
-
 /// The record in row `id` changed to `value` (`meta.<key>`), and shown.
 async fn save_row(
     core: &Core,
@@ -328,26 +311,7 @@ async fn save_row(
     key: &str,
     value: Value,
 ) -> Result<(), String> {
-    let meta = json!({ key: value });
-    let (row, patch) = (
-        id.to_string(),
-        MessagePatch {
-            meta: Some(meta.clone()),
-            ..Default::default()
-        },
-    );
-    core.db
-        .write(move |c| store::update_message(c, &row, &patch))
-        .await?;
-    core.emit(AgentEvent::MessagePatched {
-        dialog_id: dialog_id.to_string(),
-        message_id: id.to_string(),
-        patch: super::events::Patch {
-            meta: Some(meta),
-            ..Default::default()
-        },
-    });
-    Ok(())
+    autopilot::save_meta(core, dialog_id, id, json!({ key: value })).await
 }
 
 /// T05: the chat whose task `chat` implements, when it's a candidate's.
@@ -385,10 +349,7 @@ async fn spent_by(core: &Core, row: &CandidatesRecord) -> Result<Spent, String> 
         .filter(|c| !matches!(c.status.as_str(), "waiting" | "running"))
     {
         let theirs = task_records(core, &c.chat, &row.task).await?;
-        total = theirs
-            .iter()
-            .filter_map(|r| r.record.spent_so_far())
-            .fold(total, Spent::plus);
+        total = autopilot::add_spent(total, theirs.iter().map(|r| &r.record));
     }
     Ok(total)
 }
@@ -461,7 +422,7 @@ pub(super) async fn start(
                 reason: Some(why.clone()),
                 candidates: Vec::new(),
             };
-            add_row(core, dialog_id, "candidates", json!(single)).await?;
+            autopilot::add_record_row(core, dialog_id, "candidates", json!(single)).await?;
             super::log::write(
                 core,
                 json!({ "event": "candidates", "dialogId": dialog_id, "status": "single", "reason": why }),
@@ -477,10 +438,9 @@ pub(super) async fn start(
     };
     let id = add_stage(core, dialog_id, &record).await?;
     // The IDE's run takes the stage up, as a Retry does.
-    let why = match super::start_run(core, settings.request(dialog_id, StartKind::Retry)).await {
-        Ok(Some(_)) => return Ok(Some(true)),
-        Ok(None) => "It didn't start".to_string(),
-        Err(e) => format!("It couldn't start: {e}"),
+    let started = super::start_run(core, settings.request(dialog_id, StartKind::Retry)).await;
+    let Some(why) = autopilot::not_started_why(started) else {
+        return Ok(Some(true));
     };
     end_stage(core, dialog_id, &id, |r| {
         r.status = Status::Failed;
@@ -568,15 +528,7 @@ async fn make(
     let mut row = row;
     row.meta = Some(json!({ "candidates": record }));
     let id = row.id.clone();
-    let (chat, stored) = (dialog_id.to_string(), vec![row.clone()]);
-    let seqs = core
-        .db
-        .write(move |c| store::append_messages(c, &chat, &stored))
-        .await?;
-    core.emit(AgentEvent::MessagesAdded {
-        dialog_id: dialog_id.to_string(),
-        messages: vec![super::events::out_message(dialog_id, seqs[0], &row, false)],
-    });
+    autopilot::append(core, dialog_id, row).await?;
     super::log::write(
         core,
         json!({ "event": "candidates", "dialogId": dialog_id, "status": "running", "chats": chats }),
@@ -643,10 +595,9 @@ async fn start_candidate(
     let why = match built {
         Ok(message) => {
             let request = settings.request(&state.chat, StartKind::Send { message });
-            match super::start_run_boxed(core, request).await {
-                Ok(Some(_)) => return Ok(true),
-                Ok(None) => "It didn't start".to_string(),
-                Err(e) => format!("It couldn't start: {e}"),
+            match autopilot::not_started_why(super::start_run_boxed(core, request).await) {
+                None => return Ok(true),
+                Some(why) => why,
             }
         }
         Err(why) => why,
@@ -1281,11 +1232,7 @@ async fn checked(core: &Core, chat: &str) -> Result<(usize, bool, usize, String)
                             )
                         })
                         .collect();
-                    format!(
-                        "{n} finding{}: {}",
-                        if n == 1 { "" } else { "s" },
-                        titles.join("; ")
-                    )
+                    format!("{n} finding{}: {}", autopilot::plural(n), titles.join("; "))
                 }
             };
             (serious.len(), line)
@@ -1302,27 +1249,19 @@ impl Run {
     /// Its outcome is the winner's implementation's, so the change lands
     /// as that run's would have (landing.rs); "stopped" when stopped.
     pub(super) async fn pick_stage(&mut self) -> Result<String, String> {
-        let Some(stage) = self.stage.clone() else {
+        if self.stage.is_none() {
             return Ok("done".into());
-        };
+        }
         let (core, main) = (self.core.clone(), self.dialog_id.clone());
         let Some((task, records)) = autopilot::current_task(&core, &main).await? else {
             return Ok("done".into());
         };
-        let end = |status: Status,
-                   outcome: Option<String>,
-                   summary: String,
-                   reference: Option<String>| {
-            let (core, main, record) = (core.clone(), main.clone(), stage.record.clone());
-            async move {
-                end_stage(&core, &main, &record, |r| {
-                    r.status = status;
-                    r.outcome = outcome;
-                    r.summary = Some(summary);
-                    r.reference = reference;
-                })
-                .await
-                .map(|_| ())
+        let failed = |outcome: Option<String>, summary: String, reference: String| {
+            move |r: &mut StageRecord| {
+                r.status = Status::Failed;
+                r.outcome = outcome;
+                r.summary = Some(summary);
+                r.reference = Some(reference);
             }
         };
         let implement = records
@@ -1335,13 +1274,8 @@ impl Run {
             None => None,
         };
         let Some(row) = row else {
-            end(
-                Status::Skipped,
-                None,
-                "No candidates to pick from".into(),
-                None,
-            )
-            .await?;
+            let why = "No candidates to pick from";
+            self.end_own_stage(Status::Skipped, why, None).await?;
             return Ok("done".into());
         };
         // A pick a restart cut goes on in its record, from the winner's
@@ -1354,7 +1288,7 @@ impl Run {
                     status: "running".into(),
                     ..PickRecord::default()
                 };
-                let id = add_row(&core, &main, "pick", json!(pick)).await?;
+                let id = autopilot::add_record_row(&core, &main, "pick", json!(pick)).await?;
                 (id, pick)
             }
         };
@@ -1372,7 +1306,9 @@ impl Run {
                     pick.status = "failed".into();
                     pick.reason = Some(why.clone());
                     save_row(&core, &main, &pick_row, "pick", json!(pick)).await?;
-                    end(Status::Failed, Some("error".into()), why, Some(pick_row)).await?;
+                    let error = Some("error".into());
+                    self.end_own_stage_with(failed(error, why, pick_row))
+                        .await?;
                     return Ok("error".into());
                 }
                 Taken::Taken => {}
@@ -1396,7 +1332,7 @@ impl Run {
         // its failure, if a stage of its failed, is the task's.
         let chat = pick.chat.clone().unwrap_or_default();
         let theirs = task_records(&core, &chat, &task).await?;
-        let failed = theirs
+        let theirs_failed = theirs
             .iter()
             .find(|r| r.record.status == Status::Failed && r.record.name != Stage::Acceptance)
             .map(|r| (r.record.outcome.clone(), r.record.summary.clone()));
@@ -1411,18 +1347,17 @@ impl Run {
         pick.status = "done".into();
         save_row(&core, &main, &pick_row, "pick", json!(pick)).await?;
         let summary = pick_summary(&pick);
-        match failed {
+        match theirs_failed {
             Some((outcome, why)) => {
                 let why = why.unwrap_or_else(|| "a stage failed".into());
-                end(
-                    Status::Failed,
-                    outcome,
-                    format!("{summary}; {letter}: {why}"),
-                    Some(pick_row),
-                )
-                .await?
+                let summary = format!("{summary}; {letter}: {why}");
+                self.end_own_stage_with(failed(outcome, summary, pick_row))
+                    .await?
             }
-            None => end(Status::Done, None, summary, Some(pick_row)).await?,
+            None => {
+                self.end_own_stage(Status::Done, summary, Some(pick_row))
+                    .await?
+            }
         }
         super::log::write(
             &core,
@@ -1493,19 +1428,7 @@ impl Run {
                     tests_passed += usize::from(passes);
                 }
             }
-            let finished = c.outcome.as_deref().is_some_and(|o| {
-                !matches!(
-                    o,
-                    "stopped"
-                        | "verify-stopped"
-                        | "error"
-                        | "repetition"
-                        | "unfinished-checklist"
-                        | "paused-loop"
-                        | "paused-checkpoint"
-                        | "budget"
-                )
-            });
+            let finished = c.outcome.as_deref().is_some_and(autopilot::finished);
             let score = Score {
                 changed: !change.is_empty(),
                 finished,
@@ -1755,13 +1678,13 @@ pub fn pick_summary(pick: &PickRecord) -> String {
                 "{}: {} test{} pass, {} check{} pass, {} finding{} open, {} line{}",
                 c.letter,
                 s.tests_passed,
-                if s.tests_passed == 1 { "" } else { "s" },
+                autopilot::plural(s.tests_passed),
                 s.checks_passed,
-                if s.checks_passed == 1 { "" } else { "s" },
+                autopilot::plural(s.checks_passed),
                 s.open_findings,
-                if s.open_findings == 1 { "" } else { "s" },
+                autopilot::plural(s.open_findings),
                 s.diff_lines,
-                if s.diff_lines == 1 { "" } else { "s" },
+                autopilot::plural(s.diff_lines),
             )
         })
         .collect::<Vec<_>>()

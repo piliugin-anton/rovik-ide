@@ -431,43 +431,23 @@ impl super::run::Run {
         use super::autopilot::Status;
         use super::subagent::{Kind, SubOutcome, SubStatus};
         use serde_json::json;
-        let Some(stage) = self.stage.clone() else {
+        if self.stage.is_none() {
             return Ok("done".into());
-        };
+        }
         let (core, dialog_id) = (self.core.clone(), self.dialog_id.clone());
-        let end =
-            |status: Status, summary: String, files: Vec<String>, reference: Option<String>| {
-                let (core, dialog_id, record) =
-                    (core.clone(), dialog_id.clone(), stage.record.clone());
-                async move {
-                    super::autopilot::end_stage(&core, &dialog_id, &record, |r| {
-                        r.status = status;
-                        r.summary = Some(summary);
-                        r.files = files;
-                        r.reference = reference;
-                    })
-                    .await
-                    .map(|_| ())
-                }
-            };
         let Some(root) = self.root.clone() else {
-            end(
-                Status::Skipped,
-                "No project folder".into(),
-                Vec::new(),
-                None,
-            )
-            .await?;
+            self.end_own_stage(Status::Skipped, "No project folder", None)
+                .await?;
             return Ok("done".into());
         };
         let Some(file) = super::autopilot::task_plan_file(&core, &dialog_id).await? else {
-            let why = "The task's plan isn't in the chat".to_string();
-            end(Status::Skipped, why, Vec::new(), None).await?;
+            let why = "The task's plan isn't in the chat";
+            self.end_own_stage(Status::Skipped, why, None).await?;
             return Ok("done".into());
         };
         let Ok(plan) = std::fs::read_to_string(&file) else {
             let why = format!("The plan's file {file} can't be read");
-            end(Status::Skipped, why, Vec::new(), None).await?;
+            self.end_own_stage(Status::Skipped, why, None).await?;
             return Ok("done".into());
         };
         let shown = super::plan::relative_plan_path(&file, self.project_root.as_deref());
@@ -630,7 +610,14 @@ impl super::run::Run {
             ),
             (false, None) => (Status::Done, stage_summary(&files, &passing)),
         };
-        end(status, summary, files, Some(record_id)).await?;
+        // The files, which the implementation is told to make pass.
+        self.end_own_stage_with(|r| {
+            r.status = status;
+            r.summary = Some(summary);
+            r.files = files;
+            r.reference = Some(record_id);
+        })
+        .await?;
         Ok("done".into())
     }
 

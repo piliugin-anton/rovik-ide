@@ -182,35 +182,19 @@ impl Run {
     /// stage's record says how it went. "stopped" when the user stopped it,
     /// else "done": a failed install doesn't end the task.
     pub(super) async fn prepare_stage(&mut self) -> Result<String, String> {
-        let Some(stage) = self.stage.clone() else {
-            return Ok("done".into());
-        };
-        let (core, dialog_id) = (self.core.clone(), self.dialog_id.clone());
-        let end = |summary: String, status, reference: Option<String>| {
-            let (core, dialog_id, record) = (core.clone(), dialog_id.clone(), stage.record.clone());
-            async move {
-                super::autopilot::end_stage(&core, &dialog_id, &record, |r| {
-                    r.status = status;
-                    r.summary = Some(summary);
-                    r.reference = reference;
-                })
-                .await
-                .map(|_| ())
-            }
-        };
         use super::autopilot::Status;
+        if self.stage.is_none() {
+            return Ok("done".into());
+        }
         let Some(root) = self.root.clone() else {
-            end("No project folder".into(), Status::Skipped, None).await?;
+            self.end_own_stage(Status::Skipped, "No project folder", None)
+                .await?;
             return Ok("done".into());
         };
         let installs = needed(Path::new(&root));
         if installs.is_empty() {
-            end(
-                "Nothing to install: the dependencies are there".into(),
-                Status::Skipped,
-                None,
-            )
-            .await?;
+            let why = "Nothing to install: the dependencies are there";
+            self.end_own_stage(Status::Skipped, why, None).await?;
             return Ok("done".into());
         }
         // The task's first saved output: an earlier task's goes (P4.7);
@@ -259,7 +243,8 @@ impl Run {
         if self.stopped() {
             return Ok("stopped".into());
         }
-        end(installs_line(&done), Status::Done, Some(record_id)).await?;
+        self.end_own_stage(Status::Done, installs_line(&done), Some(record_id))
+            .await?;
         Ok("done".into())
     }
 

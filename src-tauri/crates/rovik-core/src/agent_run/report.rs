@@ -5,7 +5,7 @@
 //! final assistant message with `meta.report` (the facts); when the turn
 //! fails, the IDE writes it from the facts alone.
 
-use super::autopilot::{end_stage, ReportFacts};
+use super::autopilot::ReportFacts;
 use super::run::{reasoning_meta, text_before_cut, Run, IDE_NOTE};
 use serde_json::json;
 
@@ -260,9 +260,9 @@ impl Run {
     /// when the turn fails, the IDE's own. Always "done": a delivery is
     /// recorded whatever becomes of the report.
     pub(super) async fn deliver_stage(&mut self) -> Result<String, String> {
-        let Some(stage) = self.stage.clone() else {
+        if self.stage.is_none() {
             return Ok("done".into());
-        };
+        }
         let Some(mut facts) = super::autopilot::report_facts(&self.core, &self.dialog_id).await?
         else {
             return Ok("done".into());
@@ -329,7 +329,7 @@ impl Run {
         );
         let (status, outcome, summary) =
             (facts.status, facts.outcome.clone(), facts.delivery.clone());
-        end_stage(&self.core, &self.dialog_id, &stage.record, |r| {
+        self.end_own_stage_with(|r| {
             r.status = status;
             r.outcome = Some(outcome);
             r.summary = Some(summary);
