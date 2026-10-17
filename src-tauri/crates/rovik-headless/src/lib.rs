@@ -7,7 +7,14 @@
 //!   cargo run -p rovik-headless -- \
 //!     --project ./repo --settings settings.json [--policy policy.json] \
 //!     --prompt "Fix the failing test" --out report.json [--data ./data] \
-//!     [--timeout 1800] [--max-tokens 1500000]
+//!     [--timeout 1800] [--max-tokens 1500000] \
+//!     [--mode agent|plan|autopilot] [--effort balanced|thorough]
+//!
+//! `--mode autopilot` (S10, docs/design/autopilot-plan.md) runs the prompt
+//! as an Autopilot task, at `--effort` (Balanced unless said): the runner
+//! waits for the whole task, not its first run, and the report lists its
+//! stages, its outcome and its report's facts. `--mode` wins over the
+//! settings file's `mode`.
 //!
 //! `--max-tokens` stops the run once its requests (its subagents' included)
 //! have used that many tokens, as the provider reports them: a budget cap
@@ -40,6 +47,7 @@
 //! needs the virtual-files driver).
 
 use rovik_core::agent::OpenAIChatOptions;
+pub use rovik_core::agent_run::autopilot::Effort;
 pub use rovik_core::agent_run::budget::{usage_of, Price, Totals};
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
@@ -189,11 +197,16 @@ pub struct Args {
     pub timeout: Duration,
     /// Stop the run past this many tokens (all its requests).
     pub max_tokens: Option<u64>,
+    /// The chat mode, over the settings file's (S10: "autopilot").
+    pub mode: Option<String>,
+    /// An Autopilot task's effort.
+    pub effort: Option<Effort>,
 }
 
 pub const USAGE: &str =
     "usage: rovik-headless --project DIR --settings FILE --prompt TEXT --out FILE \
-     [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N]";
+     [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N] \
+     [--mode agent|plan|autopilot] [--effort balanced|thorough]";
 
 pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut project = None;
@@ -204,6 +217,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut data = None;
     let mut timeout = Duration::from_secs(1800);
     let mut max_tokens = None;
+    let mut mode = None;
+    let mut effort = None;
     let mut it = argv.iter();
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -230,6 +245,20 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .map_err(|_| format!("--max-tokens takes a number\n{USAGE}"))?;
                 max_tokens = Some(n.max(1));
             }
+            "--mode" => {
+                let m = value()?;
+                if !matches!(m.as_str(), "agent" | "plan" | "autopilot") {
+                    return Err(format!("--mode is agent, plan or autopilot\n{USAGE}"));
+                }
+                mode = Some(m);
+            }
+            "--effort" => {
+                effort = Some(match value()?.as_str() {
+                    "balanced" => Effort::Balanced,
+                    "thorough" => Effort::Thorough,
+                    _ => return Err(format!("--effort is balanced or thorough\n{USAGE}")),
+                });
+            }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -245,6 +274,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         data,
         timeout,
         max_tokens,
+        mode,
+        effort,
     })
 }
 
@@ -385,6 +416,16 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     };
     db.write(move |c| store::create_dialog(c, &dialog)).await?;
 
+    // S10: the command line's mode over the settings file's.
+    if let Some(mode) = &args.mode {
+        settings.mode = Some(mode.clone());
+    }
+    let autopilot = settings.mode.as_deref() == Some("autopilot");
+    if autopilot {
+        settings.config.autopilot.effort = args.effort.unwrap_or_default();
+    } else if args.effort.is_some() {
+        return Err(format!("--effort is for --mode autopilot\n{USAGE}"));
+    }
     let started = Instant::now();
     let request = StartRequest {
         dialog_id: dialog_id.clone(),
@@ -435,9 +476,18 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     let mut children: Vec<String> = Vec::new();
     let mut watched = Totals::default();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
+    // S10: an Autopilot task is over when its stages are, whatever runs
+    // it took (the driver may record the last ones without a run).
+    let mut task_tick = tokio::time::interval(Duration::from_millis(250));
     let outcome = loop {
         let next = tokio::select! {
             e = tokio::time::timeout_at(deadline, rx.recv()) => e,
+            _ = task_tick.tick(), if autopilot => {
+                if let Some(outcome) = task_over(&core, &dialog_id).await {
+                    break outcome;
+                }
+                continue;
+            }
             _ = tick.tick(), if args.max_tokens.is_some() => {
                 for line in new_log_lines(&log_file, &mut log_offset) {
                     if of_run(&line, &dialog_id, &children) {
@@ -502,7 +552,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                     policy.answer(&r["questions"]),
                 );
             }
-            Some("runEnded") if event["dialogId"] == dialog_id.as_str() => {
+            // An Autopilot task goes on after a stage's run: its end is
+            // the task's (`task_over`).
+            Some("runEnded") if event["dialogId"] == dialog_id.as_str() && !autopilot => {
                 break event["outcome"].as_str().unwrap_or("").to_string();
             }
             _ => {}
@@ -522,7 +574,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         .read(move |c| store::get_messages(c, &id, None, 100_000))
         .await?
         .messages;
-    let report = report(
+    let mut report = report(
         &dialog_id,
         &outcome,
         ms,
@@ -533,6 +585,29 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         questions,
         &log_dir.join("agent-log.jsonl"),
     );
+    if autopilot {
+        let stages = agent_run::autopilot::task_stages(&core, &dialog_id)
+            .await?
+            .unwrap_or_default();
+        report["effort"] = json!(settings.config.autopilot.effort);
+        report["stages"] = json!(stages
+            .iter()
+            .map(|r| json!({
+                "name": r.stage.name,
+                "status": r.stage.status,
+                "round": r.stage.round,
+                "outcome": r.stage.outcome,
+                "summary": r.stage.summary,
+                "files": r.stage.files,
+                "spent": r.stage.spent,
+            }))
+            .collect::<Vec<_>>());
+        report["report"] = messages
+            .iter()
+            .rev()
+            .find_map(|m| m.meta.as_ref()?.get("report").cloned())
+            .unwrap_or(Value::Null);
+    }
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
     // Closed first: Windows won't remove an open database's folder. The
@@ -553,6 +628,26 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         let _ = std::fs::remove_dir_all(&data);
     }
     Ok(report)
+}
+
+/// S10: an Autopilot task's outcome once it's over: its stages are done
+/// and nothing of the chat runs (the delivery's report included). None:
+/// it goes on.
+async fn task_over(core: &Core, dialog_id: &str) -> Option<String> {
+    if core.agents.is_running(dialog_id) {
+        return None;
+    }
+    if agent_run::autopilot::unfinished(core, dialog_id)
+        .await
+        .ok()?
+    {
+        return None;
+    }
+    let stages = agent_run::autopilot::task_stages(core, dialog_id)
+        .await
+        .ok()??;
+    let last = stages.last()?;
+    Some(last.stage.outcome.clone().unwrap_or_else(|| "done".into()))
 }
 
 /// Whether the run's `"event":"run"` line (written as it ends) is in the log.
@@ -767,6 +862,7 @@ mod tests {
         assert_eq!(a.timeout, Duration::from_secs(60));
         assert_eq!(a.max_tokens, None);
         assert_eq!(a.policy, None);
+        assert_eq!((a.mode.clone(), a.effort), (None, None));
         assert!(parse_args(&argv(&["--project", "p"]))
             .unwrap_err()
             .starts_with("--settings is required"));
@@ -776,6 +872,29 @@ mod tests {
         assert!(parse_args(&argv(&["--prompt"]))
             .unwrap_err()
             .contains("needs a value"));
+        // S10: an Autopilot task, at an effort.
+        let base = [
+            "--project",
+            "p",
+            "--settings",
+            "s.json",
+            "--prompt",
+            "Do it",
+            "--out",
+            "r.json",
+        ];
+        let with = |more: &[&str]| parse_args(&argv(&[&base[..], more].concat()));
+        let a = with(&["--mode", "autopilot", "--effort", "thorough"]).unwrap();
+        assert_eq!(
+            (a.mode.as_deref(), a.effort),
+            (Some("autopilot"), Some(Effort::Thorough))
+        );
+        assert!(with(&["--mode", "yolo"])
+            .unwrap_err()
+            .contains("agent, plan or autopilot"));
+        assert!(with(&["--effort", "max"])
+            .unwrap_err()
+            .contains("balanced or thorough"));
     }
 
     #[test]
@@ -1124,6 +1243,8 @@ mod tests {
             data: Some(data.clone()),
             timeout: Duration::from_secs(5),
             max_tokens: None,
+            mode: None,
+            effort: None,
         };
         let err = run(&args(dir.join("missing"))).await.unwrap_err();
         assert!(err.contains("missing"), "{err}");

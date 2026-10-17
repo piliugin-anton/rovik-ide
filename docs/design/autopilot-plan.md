@@ -1325,3 +1325,19 @@ T05 depends most on the environment it meets.
   `last:` is looked for in a request's last message
   (`testing::route_of`): the report's brief ends the chat, whose first
   message is the task's.
+
+### S10: the headless runner
+
+- **The flags**: `--mode agent|plan|autopilot`, over the settings file's
+  `mode`, and `--effort balanced|thorough`, for Autopilot only (Balanced
+  unless said).
+- **It waits for the task**, not its first run: the task is over when
+  its stages are and nothing of the chat runs (`autopilot::unfinished`,
+  `is_running`), looked at every 250 ms, since the driver records some
+  stages without a run.
+- **The report**: `outcome` is the task's; it adds `effort`, `stages`
+  (each with its status, round, outcome, line, files and spend) and
+  `report` (the task report's facts); `finalMessage` is the task's
+  report. A timeout or the token cap stops the run going on, as before:
+  the stages after it may still be being recorded as the report is
+  written.
