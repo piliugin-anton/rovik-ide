@@ -287,8 +287,8 @@ pub struct CheckLine {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportFacts {
-    /// The task: the id of the message that started it.
-    #[serde(skip)]
+    /// The task: the id of the message that started it. Kept in the report
+    /// too: a server's notifier goes by it (R03).
     pub task: String,
     /// The task's name: its plan's title, else its message's first line.
     #[serde(skip_serializing_if = "String::is_empty")]

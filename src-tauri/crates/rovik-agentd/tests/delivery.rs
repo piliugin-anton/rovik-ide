@@ -197,16 +197,30 @@ async fn a_tasks_result_is_pushed_to_its_branch() {
 }
 
 /// A `gh` that keeps what it's asked, its input beside it, and opens a
-/// pull request at a fixed URL.
+/// pull request at a fixed URL. One open already (its URL in `open-pr`
+/// beside it) is what it lists, and it refuses to open another, as `gh`
+/// does.
 fn fake_gh(dir: &Path) -> PathBuf {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let gh = bin.join("gh");
-    std::fs::write(
-        &gh,
-        "#!/bin/sh\ndir=$(dirname \"$0\")\necho \"$*\" >> \"$dir/gh.log\"\ncat > \"$dir/gh-$1-$2.body\"\nif [ \"$1 $2\" = \"pr create\" ]; then echo \"https://github.example/team/remote/pull/1\"; fi\n",
-    )
-    .unwrap();
+    let script = r#"#!/bin/sh
+dir=$(dirname "$0")
+echo "$*" >> "$dir/gh.log"
+cat > "$dir/gh-$1-$2.body"
+case "$1 $2" in
+  "pr list") [ -f "$dir/open-pr" ] && cat "$dir/open-pr" ;;
+  "pr create")
+    if [ -f "$dir/open-pr" ]; then
+      echo "a pull request for this branch already exists:" >&2
+      cat "$dir/open-pr" >&2
+      exit 1
+    fi
+    echo "https://github.example/team/remote/pull/1" ;;
+esac
+exit 0
+"#;
+    std::fs::write(&gh, script).unwrap();
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     bin
 }
@@ -250,13 +264,17 @@ async fn a_push_over_ssh_opens_its_pull_request() {
     assert_eq!(ok, "ok");
     let asked = std::fs::read_to_string(bin.join("gh.log")).unwrap();
     let mut lines = asked.lines();
-    let create = lines.next().unwrap();
     let repo = format!(
         "127.0.0.1/{}/remote",
         setup.daemon.dir.0.file_name().unwrap().to_string_lossy()
     );
     assert_eq!(
-        create,
+        lines.next().unwrap(),
+        format!("pr list --repo {repo} --head {BRANCH} --state open --json url --jq .[].url"),
+        "one open already, first"
+    );
+    assert_eq!(
+        lines.next().unwrap(),
         format!("pr create --repo {repo} --head {BRANCH} --title Make the test pass --body-file -")
     );
     assert_eq!(
@@ -277,6 +295,47 @@ async fn a_push_over_ssh_opens_its_pull_request() {
     assert_eq!(described, report.content);
     let result = newest_result(&setup).await;
     assert_eq!(result.pr.as_deref(), Some(pr));
+}
+
+/// H04 (R03): the task's branch has its pull request open already (a
+/// delivery done again after it opened, which `gh` refuses to open
+/// twice): the delivery takes it, and the result and its line keep it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pull_request_open_already_is_the_deliverys() {
+    let ssh = std::process::Command::new("ssh").arg("-V").output();
+    if !has_npm() || ssh.is_err() {
+        eprintln!("npm or ssh isn't installed: skipped");
+        return;
+    }
+    let server = SshServer::start().await;
+    let dir = rovik_core::testing::temp_dir();
+    let bin = fake_gh(&dir.0);
+    let open = "https://github.example/team/remote/pull/7";
+    std::fs::write(bin.join("open-pr"), format!("{open}\n")).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let daemon = Daemon::start_with(&[], &[("PATH", &path)]).await;
+    let setup = Setup::on(daemon).await;
+    npm_project(&setup);
+    let remote = bare_remote(&setup);
+    let key = server.plain_key_file(&setup.daemon.dir.0);
+    let url = format!("ssh://{USER}@127.0.0.1:{}{}", server.port, remote.display());
+    ready(&setup, &url, &key.to_string_lossy(), true).await;
+
+    let (found, record) = delivered(&setup).await;
+    assert_eq!(found, delivered_whole(), "{}", setup.daemon.output());
+    assert_eq!(
+        record["summary"],
+        format!("Delivered: pushed to `{BRANCH}`, pull request {open}"),
+        "{record}\n{}",
+        setup.daemon.output()
+    );
+    let asked = std::fs::read_to_string(bin.join("gh.log")).unwrap();
+    assert!(!asked.contains("pr create"), "{asked}");
+    assert_eq!(newest_result(&setup).await.pr.as_deref(), Some(open));
 }
 
 /// H04: a push that fails (no repository at the remote) is a failed

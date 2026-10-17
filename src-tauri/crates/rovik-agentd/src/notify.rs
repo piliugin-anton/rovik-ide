@@ -39,14 +39,19 @@ pub struct Notice {
 /// A task report's branch and pull request, where it went.
 type BranchAndPr = (Option<String>, Option<String>);
 
+/// A chat's latest task report: its task, and its branch and pull request.
+type LatestReport = (String, BranchAndPr);
+
 pub struct Notifier {
     store: Arc<Store>,
     client: reqwest::Client,
     /// The records told already, by message and status: an event that
     /// brings one again (its spend updated, a resume) tells nobody twice.
     told: Mutex<HashSet<String>>,
-    /// Each chat's task report's branch and pull request, as it went by.
-    pushed: Mutex<HashMap<String, BranchAndPr>>,
+    /// Each chat's latest task report, as it went by: taken when that
+    /// task's delivery is over, told or not (R03), so it's never another
+    /// task's, and none outlives its delivery.
+    reports: Mutex<HashMap<String, LatestReport>>,
 }
 
 impl Notifier {
@@ -59,7 +64,7 @@ impl Notifier {
             store,
             client,
             told: Mutex::new(HashSet::new()),
-            pushed: Mutex::new(HashMap::new()),
+            reports: Mutex::new(HashMap::new()),
         })
     }
 
@@ -90,8 +95,12 @@ impl Notifier {
         for (message_id, meta) in rows {
             if let Some(report) = meta.get("report") {
                 let text = |key: &str| report.get(key).and_then(Value::as_str).map(str::to_string);
-                let mut pushed = self.pushed.lock().unwrap_or_else(|e| e.into_inner());
-                pushed.insert(dialog_id.to_string(), (text("branch"), text("pr")));
+                let latest = (
+                    text("task").unwrap_or_default(),
+                    (text("branch"), text("pr")),
+                );
+                let mut reports = self.reports.lock().unwrap_or_else(|e| e.into_inner());
+                reports.insert(dialog_id.to_string(), latest);
             }
             if let Some(record) = meta.get("stage") {
                 if let Some(notice) = self.notice_of(dialog_id, message_id, record) {
@@ -110,6 +119,11 @@ impl Notifier {
         if !(over || status == "failed") {
             return None;
         }
+        // Its report's branch and pull request, taken told or not.
+        let (branch, pr) = match over {
+            true => self.report_of(dialog_id, field("task")),
+            false => (None, None),
+        };
         self.store.autonomy_of(dialog_id).notify_url.as_ref()?;
         let key = format!("{message_id}:{status}");
         if !self
@@ -120,13 +134,6 @@ impl Notifier {
         {
             return None;
         }
-        let (branch, pr) = match stage {
-            "deliver" => {
-                let mut pushed = self.pushed.lock().unwrap_or_else(|e| e.into_inner());
-                pushed.remove(dialog_id).unwrap_or_default()
-            }
-            _ => (None, None),
-        };
         let outcome = match field("outcome") {
             "" => status,
             outcome => outcome,
@@ -140,6 +147,16 @@ impl Notifier {
             branch,
             pr,
         })
+    }
+
+    /// The branch and pull request of `task`'s report in the chat, taken:
+    /// none when the chat's latest report is another task's.
+    fn report_of(&self, dialog_id: &str, task: &str) -> BranchAndPr {
+        let mut reports = self.reports.lock().unwrap_or_else(|e| e.into_inner());
+        match reports.remove(dialog_id) {
+            Some((of, pushed)) if of == task => pushed,
+            _ => (None, None),
+        }
     }
 
     /// POSTs `notice` to its chat's computer's URL, on its own: tried again
@@ -171,5 +188,75 @@ impl Notifier {
                 url_for_logs(&url)
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rovik_protocol::events::{OutMessage, Patch};
+    use serde_json::json;
+
+    fn notifier(dir: &std::path::Path) -> Arc<Notifier> {
+        Notifier::new(Arc::new(Store::open(dir).unwrap()))
+    }
+
+    /// A task's report as the chat stores it.
+    fn report(id: &str, task: &str, branch: &str) -> AgentEvent {
+        AgentEvent::MessagesAdded {
+            dialog_id: "chat".into(),
+            messages: vec![OutMessage {
+                id: id.into(),
+                dialog_id: "chat".into(),
+                seq: 1,
+                role: "assistant".into(),
+                content: "The report.".into(),
+                body_external: false,
+                body_bytes: 0,
+                tool_calls: None,
+                tool_call_id: None,
+                meta: Some(json!({ "report": { "task": task, "branch": branch } })),
+                error: None,
+                failed: false,
+                finalized: true,
+                attachments: Vec::new(),
+                created_at: 0,
+                pending: false,
+            }],
+        }
+    }
+
+    /// A task's delivery, over.
+    fn delivered(id: &str, task: &str) -> AgentEvent {
+        AgentEvent::MessagePatched {
+            dialog_id: "chat".into(),
+            message_id: id.into(),
+            patch: Patch {
+                meta: Some(json!({ "stage": {
+                    "task": task, "name": "deliver", "status": "done", "outcome": "verified",
+                } })),
+                ..Patch::default()
+            },
+        }
+    }
+
+    /// R03: a delivery takes its own task's report, whether a notice goes
+    /// or not (none here: no URL), so none is kept past it, and a report
+    /// of an earlier task's, whose delivery never ended, isn't a later
+    /// one's.
+    #[test]
+    fn a_delivery_takes_its_own_tasks_report_and_no_other() {
+        let dir = rovik_core::testing::temp_dir();
+        let notifier = notifier(&dir.0);
+        notifier.agent(&report("r1", "t1", "rovik/one-t1"));
+        notifier.agent(&delivered("d1", "t1"));
+        assert!(notifier.reports.lock().unwrap().is_empty(), "taken");
+        notifier.agent(&report("r2", "t2", "rovik/two-t2"));
+        assert_eq!(notifier.report_of("chat", "t3"), (None, None));
+        notifier.agent(&report("r3", "t3", "rovik/three-t3"));
+        assert_eq!(
+            notifier.report_of("chat", "t3"),
+            (Some("rovik/three-t3".into()), None)
+        );
     }
 }

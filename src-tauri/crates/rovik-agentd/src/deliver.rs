@@ -184,7 +184,9 @@ pub fn forge_repo(remote: &str) -> Option<String> {
 }
 
 /// Opens the pull request of `branch`, on `remote`'s repository, into its
-/// default branch: its URL, or why it didn't open.
+/// default branch: its URL, or why it didn't open. One open for the branch
+/// already (a delivery done again after it opened, which `gh` would refuse
+/// to open twice) is the one (R03).
 pub async fn open_pull_request(
     remote: &str,
     branch: &str,
@@ -194,6 +196,9 @@ pub async fn open_pull_request(
     let Some(repo) = forge_repo(remote) else {
         return Err("the remote is on this server, where no pull request opens".into());
     };
+    if let Some(url) = open_pull_request_of(&repo, branch).await {
+        return Ok(url);
+    }
     let title = if title.trim().is_empty() {
         branch
     } else {
@@ -212,13 +217,25 @@ pub async fn open_pull_request(
         "-",
     ];
     let out = gh(&args, body).await?;
-    let url = out
-        .lines()
-        .rev()
+    url_in(&out).ok_or_else(|| "`gh` opened no pull request it named".into())
+}
+
+/// The URL of the pull request open for `branch` on `repo`, if one is.
+async fn open_pull_request_of(repo: &str, branch: &str) -> Option<String> {
+    let args = [
+        "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq",
+        ".[].url",
+    ];
+    let out = gh(&args, "").await.ok()?;
+    url_in(&out)
+}
+
+/// The first URL `gh` printed on a line of its own.
+fn url_in(out: &str) -> Option<String> {
+    out.lines()
         .map(str::trim)
-        .find(|l| l.starts_with("https://") || l.starts_with("http://"));
-    url.map(str::to_string)
-        .ok_or_else(|| "`gh` opened no pull request it named".into())
+        .find(|l| l.starts_with("https://") || l.starts_with("http://"))
+        .map(str::to_string)
 }
 
 /// "Test delivery" (3.5, H05): an empty branch `rovik/test-<date>`, of a
