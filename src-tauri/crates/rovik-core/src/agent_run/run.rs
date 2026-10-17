@@ -116,7 +116,7 @@ pub struct Run {
     pub(super) options: Option<OpenAIChatOptions>,
     /// The mode of the message that started the run (Plan or Agent).
     pub(super) plan_mode: bool,
-    /// The run is part of an Autopilot task (autopilot.rs): its request was
+    /// The run is part of an Autopilot task (autopilot/): its request was
     /// sent in Autopilot mode.
     pub(super) autopilot: bool,
     /// The task's stage this run carries out, which its end hands on.

@@ -17,7 +17,7 @@
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   change_review.rs  a fresh-context review of the change before the checks
 //!   tools.rs      tool schemas and running a tool
-//!   autopilot.rs  a task carried out with nobody there: its stages
+//!   autopilot/    a task carried out with nobody there: its stages
 //!   candidates.rs Thorough's two implementers, each in its own copy, and
 //!                 the pick of the better
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
@@ -1083,7 +1083,7 @@ pub fn stored_message(message: &UserMessage) -> NewMessage {
 
 /// Starts a run in the chat. Returns its id, or None when there was nothing
 /// to do (a Resume with nothing left to run). A Resume of a chat whose
-/// Autopilot task was cut goes on with the task (autopilot.rs).
+/// Autopilot task was cut goes on with the task (autopilot/).
 pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
     if matches!(request.start, StartKind::Resume) {
         if let Some(config) = request.config.clone() {

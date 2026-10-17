@@ -46,7 +46,7 @@ Contents:
 | #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Why                                                                                                                                                                                                                                                        |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | D1  | **Autopilot is a chat mode**, the third beside Agent and Plan (`src/lib/chatMode.ts`, `StartRequest.mode`). It works on a local chat and on a remote one. A run keeps the mode of the message that started it, as today.                                                                                                                                                                                                                                                        | It can be watched and evaluated locally before it's trusted on a server, and the headless runner and the evaluation set get it for free. A host policy alone couldn't be tried without a host.                                                             |
-| D2  | **A task is a pipeline of runs in one chat**, driven by the harness (`agent_run/autopilot.rs`), not one long run. Each stage is a run (the plan, the implementation) or an IDE-started subagent (the reviews, the tests, the acceptance check), and starts in a fresh context from artifacts: the request, the criteria, the plan, the diff, the checks' output.                                                                                                                | Context rot is the main reason long unattended runs degrade. Fresh contexts also mean every stage reuses an existing code path: the Plan-mode run, the "Implement this plan" run, the verify gate, `run_ide_subagent`.                                     |
+| D2  | **A task is a pipeline of runs in one chat**, driven by the harness (`agent_run/autopilot/`), not one long run. Each stage is a run (the plan, the implementation) or an IDE-started subagent (the reviews, the tests, the acceptance check), and starts in a fresh context from artifacts: the request, the criteria, the plan, the diff, the checks' output.                                                                                                                  | Context rot is the main reason long unattended runs degrade. Fresh contexts also mean every stage reuses an existing code path: the Plan-mode run, the "Implement this plan" run, the verify gate, `run_ide_subagent`.                                     |
 | D3  | **Every stage leaves a record** in the chat: an empty assistant message with `meta.stage`, like the verification records (`meta.verification`), never sent to the model. The pipeline's state _is_ its records: what ran, with which outcome, what comes next.                                                                                                                                                                                                                  | Rows survive restarts, go to the mirror with the chat (dev plan 6.3), and need no new storage. A daemon that restarts, or an app that reopens, reads the records and continues.                                                                            |
 | D4  | **Effort: Balanced or Thorough**, in `AutopilotConfig.effort`. It's a setting on the Subagents page's new Autopilot section, and a host's "Works on its own" block can override it for that host's chats. No per-chat choice in v1.                                                                                                                                                                                                                                             | Two levels are explainable; a slider isn't. The host override exists because a server is where tokens matter least and time matters most.                                                                                                                  |
 | D5  | **Autopilot never asks.** `ask_user` is refused in its plan stage with the message Agent mode gives today; assumptions go under the plan's "## Decisions". The system prompt's line on clarifying questions is replaced in Autopilot by "decide, state the assumption, proceed".                                                                                                                                                                                                | A question nobody answers is a run that never ends. The plan reviewer sees the assumptions, and the report lists them first, so a wrong one is caught at the cheapest point that has a reader.                                                             |
@@ -2028,3 +2028,124 @@ T05 depends most on the environment it meets.
   - `variants --variants autopilot-balanced,autopilot-thorough --repeats 1`;
   - `compare baseline autopilot-balanced`, and the other pairs, whose
     files are the summary to commit.
+
+## R: a review of the flow
+
+An adversarial review of the pipeline (the driver, the stages, Thorough's
+candidates, the daemon's side, the strip), each finding traced through
+the code and the fixed ones reproduced by a test first.
+
+### R01: what it fixed
+
+- **The budget unmade stages a run had done** (4f1beb1). The driver's
+  list of stages that start work predated S08 and T04, so a run whose
+  acceptance check took the task past its budget had that check recorded
+  "Not started" and the task delivered as partial, its change checked and
+  accepted.
+- **A rate limit's wait let go of the driver's turn** before it started
+  its stage (5f9a6ca), so a resume could start the stage too.
+- **The adversarial tester's cleanup deleted test files** it had added a
+  speculative test to (eeb933a): a file that was there goes back to what
+  it was; only a file the tester made is deleted.
+- **An implementation taken up again landed unchecked** (339103c): a
+  Retry, a Continue or the run after a rate limit's wait knows only its
+  own writes, so one whose model just said it was done ended "done". It
+  reviews and checks what it inherits now (D7).
+- **A Retry after a failed Pick re-picked used-up copies** (21d1ac6): a
+  Pick that took its winner's change reopens the implementation.
+- **The daemon made held results landable** (84788f1): re-commits (a move
+  back, a sync, an undone merge, a landing) judged the result by the last
+  run of any kind, the delivery's "done", as no Autopilot task's.
+  `Results::recommit` keeps the last result's outcome and hold.
+- **A review that couldn't report let a high finding through** (0bdba1a,
+  D10): the change review's last round and the plan review's follow-ups.
+- **A candidate's judges saw no request** (58801b5, D8): a candidate's
+  chat holds none of its own; the task's is used.
+- **The strip read a retried task's ending wrong** (4817fa5), and a
+  partial delivery as delivered; the hosts page had its own stage names.
+
+### R02: the refactor
+
+- **One home for what a stage is** (1e61f38): `Stage::carrier()` (the
+  agent's run, the IDE's, or inside another stage's run, with its rows'
+  key) and the properties derived from it replace six lists that had to
+  agree; `RUN_FAILURES` replaces three copies of the outcome table.
+  `advance` keeps to its loop; starting a stage and recording one done in
+  a run are functions of their own. Repeated code went: the spend sums,
+  the record rows, the stages' closures that ended their own record.
+- **The driver's module split** (56bfa0b) into `agent_run/autopilot/`:
+  `stage`, `outcome`, `config`, `rows`, `artifacts`, `driver`,
+  `rate_limit`, `inside`, `delivery`, and the tests. Callers' paths stay.
+- **A new stage** says who carries it out in `Stage::carrier`; the
+  matches that need its case (`start_stage`, `done_in_run`, the IDE's
+  dispatch in run.rs, the strip's labels) are exhaustive, so the compiler
+  lists them.
+
+### R03: found, not fixed
+
+Confirmed by tracing the code unless marked plausible. Two are design
+calls the plan made on purpose (marked), for a decision rather than a
+patch.
+
+- **Driver**
+  - A user's Send, Retry or Continue arriving between two stages isn't
+    serialized with the driver: it can interleave two tasks' records
+    (`latest_task` takes the last record's task) or reopen a stage while
+    the driver starts the next. A timing window of milliseconds. Fix:
+    user starts in an Autopilot chat wait for the driver's turn.
+  - `stage_for` treats every start but Send and Resume as the user's
+    Retry or Continue, the daemon's CheckMerged included (plausible).
+    Fix: take up or reopen a stage only for Retry, ContinueReply and
+    ContinueRun.
+  - A reset at or before now is a one-second wait each time, so a
+    provider answering 429 with `Retry-After: 0` is retried up to about
+    3,600 times in the hour's patience. Fix: a doubling floor.
+  - A stage waiting out a rate limit has no run: Stop does nothing, and
+    the wait's run starts anyway. Fix: Stop with no run ends a waiting
+    stage as stopped.
+  - After a crash, `go_on` looks for the implementation's message in the
+    last 500 messages only, and a candidate's `implementation_message`
+    looks for the plan in the candidate's own records, which have none.
+- **Stages**
+  - (Design call, S08) An acceptance check that can't judge after one
+    that found a criterion unmet is skipped and the checks' word stands:
+    the task lands as verified while its report shows the unmet verdict.
+  - The budget is checked per lead reply and between stages, not during
+    work done only by IDE-started subagents (Thorough's planners, criteria
+    writers and judges, the Tests stage), which can go far past it.
+  - The red check counts a Rust test file in a new module as passing
+    before the change: `cargo test path::tests` runs none and exits 0.
+    Fix: require that tests ran.
+  - `tests_line` tells the implementer that test files the Tests stage
+    changed (not made) "fail now on purpose", unrun; the acceptance
+    brief's `tests_report` reads S04's rows from its own chat, which a
+    candidate's isn't.
+- **Thorough's candidates**
+  - (Design call, D14) The score's `finished` counts `unmet`,
+    `verify-flagged`, `review-open` and `verify-gave-up` as finished, and
+    the acceptance verdicts aren't in it: a candidate whose acceptance
+    found a criterion unmet can win on diff size over one that met all.
+    Fix: a `sound` key after `finished` (no failed stage).
+  - A task moved to a host while a candidate implements: the paused
+    candidate never continues there (`go_on` sees the move's pause), and
+    the other's copy, a local child overlay, is made again empty on the
+    host and can win the pick. Fix: continue a paused candidate with
+    ContinueRun; at the pick, a started candidate's missing copy is lost,
+    not empty.
+  - A pick resumed after a crash between taking the winner's change and
+    saving `adopted` scores copies that are gone (a narrow window).
+  - A round that never reaches the Pick (a Stop, a failed start) leaves
+    its copies and registrations, and later copies get 1 MB of room; after
+    a restart a reopened copy takes all of it. A copy that fails to open
+    at the pick is scored empty and discarded. A candidate's spend can be
+    lost in a crash between two saves.
+- **App and daemon**
+  - Opening a local chat resumes its task only when the loaded page (50
+    messages) holds a stage record: a long implementation cut by a closed
+    app isn't resumed. Fix: resume when the stored task isn't over.
+  - After the strip jumps to a running stage whose record wasn't loaded,
+    the record reads "didn't finish" while the strip spins.
+  - A delivery resumed after its pull request opened loses the PR (`gh`
+    says it exists; the stored one is overwritten), and the notifier's
+    bookkeeping grows for the daemon's life (plausible: an earlier task's
+    branch in a later notice).

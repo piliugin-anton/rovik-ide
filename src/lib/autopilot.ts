@@ -4,7 +4,7 @@
 // (docs/design/autopilot-plan.md, 3.3): a task is a pipeline of stages,
 // and each leaves an empty assistant message with `meta.stage`, which the
 // backend writes and updates as the task goes on
-// (src-tauri/crates/rovik-core/src/agent_run/autopilot.rs). The task's
+// (src-tauri/crates/rovik-core/src/agent_run/autopilot/). The task's
 // state is these records alone, so what the chat shows of it is right
 // after a restart and in a remote chat's mirror, and nothing here keeps
 // state of its own.
@@ -28,7 +28,7 @@ export type StageStatus = 'running' | 'done' | 'failed' | 'skipped';
 /** How much a task spends on independence (AutopilotConfig.effort). */
 export type AutopilotEffort = 'balanced' | 'thorough';
 
-/** `meta.stage` (agent_run/autopilot.rs `StageRecord`). */
+/** `meta.stage` (agent_run/autopilot/stage.rs `StageRecord`). */
 export interface StageMeta {
   /** The task: the id of the message that started it. */
   task: string;
@@ -783,7 +783,7 @@ export function scoreLine(s: CandidateScore): string {
 
 /**
  * `meta.report`: the facts a task's report was written from (S09,
- * agent_run/autopilot.rs `ReportFacts`), on its final message.
+ * agent_run/autopilot/delivery.rs `ReportFacts`), on its final message.
  */
 export interface ReportMeta {
   outcome: string;

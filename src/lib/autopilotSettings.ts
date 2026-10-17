@@ -124,7 +124,7 @@ export const AUTOPILOT_EFFORTS: { id: AutopilotEffort; label: string; hint: stri
 /**
  * The kinds Autopilot turns on for its own chats, with the models their
  * rows give, whatever their switches and the master switch say (D17,
- * agent_run/autopilot.rs `needed_kinds`).
+ * agent_run/autopilot/config.rs `needed_kinds`).
  */
 export const AUTOPILOT_KINDS: SubagentKindId[] = [
   'planReviewer',

@@ -1,7 +1,7 @@
 //! Autopilot's settings (docs/design/autopilot-plan.md, 3.5), sent by the
 //! frontend in `AgentConfig::autopilot` (src/lib/autopilotSettings.ts).
 //! Autopilot is a chat mode in which one message is a whole task: the core
-//! drives it through its stages (agent_run/autopilot.rs) with nobody at the
+//! drives it through its stages (agent_run/autopilot/) with nobody at the
 //! keyboard. Nothing here changes a chat that isn't in Autopilot.
 
 use serde::{Deserialize, Serialize};

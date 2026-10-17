@@ -1,7 +1,7 @@
 //! Runs that a crash, a kill or the daemon's stop cut or paused (5.4): at
 //! start-up, each chat whose run was going picks up where its stored rows
 //! say, unless a crash cut it twice within the hour. An Autopilot task
-//! (agent_run/autopilot.rs) goes on too: cut where no start picks its run
+//! (agent_run/autopilot/) goes on too: cut where no start picks its run
 //! up, or between two of its stages, which no run's restart reaches.
 //! Start-up's events reach the clients that subscribe from the start of
 //! this boot.
