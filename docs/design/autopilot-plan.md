@@ -1017,3 +1017,25 @@ T05 depends most on the environment it meets.
 - **The result's first line** keeps the line counts, which
   `result_meta` and the frontend's `toolResultMeta` now read from the
   first line, not the last.
+
+### V05: a rollback of only what broke
+
+- **For every chat** (D20). A fix round that breaks what passed before
+  puts back only the files behind what it broke, when every failure it
+  brought in names one the round changed (`causes::files_behind`): an
+  error's own file, or for a failing test the changed files whose name
+  it carries (`posts` in `posts > lists`, three letters or more). The
+  rest of the fix stays (`rolledBack.kept`).
+- **Most regressions don't name such a file**: an error in a file the
+  round wrote is a slip (P3.2), not a regression, so a regression's
+  error is in a file the round didn't touch; and a test's name often
+  carries no file's. Those go back whole, as before: the existing suites
+  pass unchanged.
+- **The rest is checked at once**: what stays is new code, so the checks
+  run again on it before the agent hears anything ("repaired"). Their
+  result is the round's: it counts once (the same round number, and in
+  Autopilot one round toward "without progress"). Still broken, the
+  round goes back whole to its checkpoint, kept for that, and the agent
+  gets the round's failures as before, its next attempt still its own.
+  On the last round there's no round to check what stays: everything
+  goes back.

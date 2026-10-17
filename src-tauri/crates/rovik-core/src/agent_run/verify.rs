@@ -915,8 +915,10 @@ impl Run {
         // P3.2: an error in what the round wrote is a slip, not a regression.
         // This round's: the checkpoint's files that differ from it now (it
         // also holds what earlier rounds changed).
+        let project = self.project_root.clone().unwrap_or_default();
+        let mut written: Vec<String> = Vec::new();
         if let Some(cp) = &self.checkpoint {
-            let written: Vec<String> = cp
+            written = cp
                 .files
                 .iter()
                 .filter(|(key, before)| {
@@ -924,9 +926,11 @@ impl Run {
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
-            let project = self.project_root.clone().unwrap_or_default();
             judgement = judgement.keeping_slips_in(&written, &[root.as_str(), project.as_str()]);
         }
+        // V05: the checks of what a partial rollback kept (below): the same
+        // round's, counted once.
+        let after_partial = std::mem::take(&mut self.after_partial_rollback);
         // V03 (D12): Autopilot's rounds end after STALLED_ROUNDS in a row
         // without progress (a rolled-back regression is none), or at the
         // budget, not at a count. A round that only shows failures the last
@@ -935,6 +939,7 @@ impl Run {
             match judgement.verdict {
                 _ if !failed => self.stalled_rounds = 0,
                 Progress::Progress => self.stalled_rounds = 0,
+                _ if after_partial => {}
                 Progress::NoProgress | Progress::Regression => self.stalled_rounds += 1,
                 Progress::First => {}
             }
@@ -978,9 +983,35 @@ impl Run {
         };
         // R02: a fix that broke what didn't fail before is undone; the
         // agent hears what it broke and gets the earlier failures again.
+        // V05: only the files behind what it broke go back, when its
+        // failures name them and a round is left to check the rest of the
+        // fix; when that round still finds it broken, everything does.
         if failed && judgement.verdict == Progress::Regression && !self.stopped() {
-            if let Some(rb) = self.roll_back(judgement.broke.clone()).await {
+            let roots = [root.clone(), project.clone()];
+            let only = (!after_partial && round < max_rounds && !stalled)
+                .then(|| super::causes::files_behind(&judgement.broke, &written, &roots))
+                .flatten();
+            if let Some(rb) = self
+                .roll_back(judgement.broke.clone(), only.as_deref())
+                .await
+            {
                 self.rolled_back_attempts.push(rb.clone());
+                if !rb.kept.is_empty() {
+                    // The rest of the fix stays: the checks run again on it
+                    // now. Theirs is this round's result: it counts once.
+                    let changed = self.changed_files.clone();
+                    let meta = with(
+                        record("rolled-back", round, &results, &changed, None),
+                        extra(Some(&rb)),
+                    );
+                    self.update_meta(&record_id, meta).await?;
+                    self.log_round(round, "rolled-back", &results, &judgement, &flags);
+                    self.after_partial_rollback = true;
+                    self.last_verify_failed = true;
+                    self.writes_since_verify = true;
+                    self.verify_rounds = self.verify_rounds.saturating_sub(1);
+                    return Ok("repaired".into());
+                }
                 let status = if round >= max_rounds || stalled {
                     "gave-up"
                 } else {

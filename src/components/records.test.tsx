@@ -386,6 +386,49 @@ test('Autopilot’s rounds: no count, an environment round, two without progress
   );
 });
 
+test('a rollback of only what broke says what stayed (V05)', () => {
+  const meta = {
+    status: 'rolled-back' as const,
+    round: 2,
+    maxRounds: 3,
+    checks: [{ kind: 'test' as const, command: 'npm test', status: 'failed' as const }],
+    changedFiles: ['users.txt', 'posts.txt', 'tags.txt'],
+    rolledBack: {
+      restored: ['tags.txt'],
+      skipped: [],
+      broke: ['test|test|t::tags'],
+      diff: '--- tags.txt',
+      kept: ['posts.txt', 'users.txt'],
+    },
+  };
+  const props = {
+    dialogId: 'd',
+    recordId: 'v1',
+    latest: false,
+    live: false,
+    onRunChecks: () => {},
+    onOpenProjectChecks: () => {},
+  };
+  const partial = container();
+  render(() => <VerificationRecord meta={meta} {...props} />, partial);
+  assert.equal(
+    partial.querySelector('.chat-verify-title')?.textContent,
+    'The fix broke something that passed before: the files behind it were put back (tags.txt), the rest of it stays (posts.txt, users.txt), and the checks run again.'
+  );
+  assert.ok(
+    partial
+      .querySelector('.chat-verify-rollback summary')
+      ?.textContent?.includes('kept: posts.txt, users.txt')
+  );
+  const all = container();
+  const { kept: _kept, ...everything } = meta.rolledBack;
+  render(() => <VerificationRecord meta={{ ...meta, rolledBack: everything }} {...props} />, all);
+  assert.equal(
+    all.querySelector('.chat-verify-title')?.textContent,
+    'The fix broke something that passed before, so it was rolled back (attempt 2 of 3).'
+  );
+});
+
 const button = (root: Element, text: string) =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === text);
 

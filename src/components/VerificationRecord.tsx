@@ -58,6 +58,8 @@ function headline(meta: VerificationMeta, interrupted: boolean): string {
         : `Checks still fail ${after}. The agent stopped here.`;
     }
     case 'rolled-back':
+      if (meta.rolledBack?.kept?.length)
+        return `The fix broke something that passed before: the files behind it were put back (${meta.rolledBack.restored.join(', ') || 'none could be'}), the rest of it stays (${meta.rolledBack.kept.join(', ')}), and the checks run again.`;
       return `The fix broke something that passed before, so it was rolled back (${attemptText(meta)}).`;
     case 'flagged':
       return 'Checks pass, but the change weakens tests or what the checks run: review it before relying on it.';
@@ -355,6 +357,7 @@ export default function VerificationRecord(props: {
               Broke: {rb().broke.map(describeFailure).join(', ')}
               {rb().restored.length ? ` · put back: ${rb().restored.join(', ')}` : ''}
               {rb().skipped.length ? ` · left as they were: ${rb().skipped.join(', ')}` : ''}
+              {rb().kept?.length ? ` · kept: ${rb().kept!.join(', ')}` : ''}
             </summary>
             <Show when={rb().diff}>
               <pre class="chat-verify-output">{rb().diff}</pre>

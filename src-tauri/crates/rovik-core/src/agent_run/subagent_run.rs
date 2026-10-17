@@ -1957,7 +1957,7 @@ impl Run {
             .map(|s| s.resumed_writes.clone())
             .unwrap_or_default();
         if matches!(status, SubStatus::Failed | SubStatus::Stopped) {
-            if let Some(rb) = self.roll_back(Vec::new()).await {
+            if let Some(rb) = self.roll_back(Vec::new(), None).await {
                 let mut note = String::from("Its changes were undone");
                 if rb.restored.is_empty() && rb.skipped.is_empty() {
                     note = if resumed.is_empty() {

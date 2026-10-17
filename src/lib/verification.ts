@@ -136,6 +136,9 @@ export interface RolledBack {
   /** The failures the fix brought in. */
   broke: string[];
   diff: string;
+  /** Changed in the fix and kept: only the files behind what broke went
+   * back, and the checks ran again (V05). */
+  kept?: string[];
 }
 
 /** Who fixes a cause (src-tauri/src/agent_run/causes.rs). */

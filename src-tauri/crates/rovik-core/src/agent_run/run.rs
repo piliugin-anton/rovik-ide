@@ -174,6 +174,10 @@ pub struct Run {
     /// A check failed on its environment and Prepare ran again: once a
     /// run (V03).
     pub(super) prepared_again: bool,
+    /// The last round put back only the files behind what it broke, and
+    /// its checks run again: should they still break it, everything goes
+    /// back (V05).
+    pub(super) after_partial_rollback: bool,
     /// Unfinished checklist steps were pointed out; at most MAX_CHECKLIST_NUDGES.
     pub(super) checklist_nudges: u32,
     /// Force the `todo` tool on the next model turn (plan implementation
@@ -892,6 +896,7 @@ impl Run {
             last_verify_failed: false,
             stalled_rounds: 0,
             prepared_again: false,
+            after_partial_rollback: false,
             checklist_nudges: 0,
             force_todo_next: false,
             checklist_gate_refused: false,
