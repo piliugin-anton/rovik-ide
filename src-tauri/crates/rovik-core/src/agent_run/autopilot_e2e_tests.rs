@@ -157,7 +157,7 @@ async fn stage_records_are_rows_that_read_back_after_a_reload() {
  * The driver (A03)
  */
 
-use super::autopilot::{crash_at, Crash, Stage, StageRecord, Status};
+use super::autopilot::{crash_at, task_stages, Crash, Stage, StageRecord, Status};
 
 /// A project whose test (`npm test`) passes once ok.txt says "ok".
 async fn task_project() -> Harness {
@@ -509,7 +509,8 @@ async fn a_plan_run_without_a_plan_fails_the_task() {
 }
 
 /// A03: a user message after an unfinished task takes over: the old task
-/// isn't resumed, and its records stay as they were.
+/// isn't resumed, and its records stay as they were. A05: the strip reads
+/// the task while it's the chat's current request, and none after.
 #[tokio::test]
 async fn a_new_message_takes_over_from_an_unfinished_task() {
     let h = harness(&[]).await;
@@ -521,6 +522,16 @@ async fn a_new_message_takes_over_from_an_unfinished_task() {
         r.first().is_some_and(|p| p.status != Status::Running)
     })
     .await;
+    let shown = task_stages(&h.core, &h.dialog_id).await.unwrap().unwrap();
+    let rows = stages(&h).await;
+    assert_eq!(
+        shown.iter().map(|r| &r.stage).collect::<Vec<_>>(),
+        rows.iter().collect::<Vec<_>>()
+    );
+    let json = serde_json::to_value(&shown[0]).unwrap();
+    assert_eq!(json["stage"]["name"], "plan", "{json}");
+    assert_eq!(json["id"], json!(shown[0].id));
+
     h.start(h.request(&url, Harness::send("Never mind"), quiet_permissions()))
         .await;
     for _ in 0..200 {
@@ -529,6 +540,7 @@ async fn a_new_message_takes_over_from_an_unfinished_task() {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    assert_eq!(task_stages(&h.core, &h.dialog_id).await.unwrap(), None);
     let before = stages(&h).await;
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     tokio::time::sleep(Duration::from_millis(200)).await;

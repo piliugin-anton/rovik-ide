@@ -448,6 +448,29 @@ pub async fn current_task(
     Ok(Some((task, records)))
 }
 
+/// A stage record and its row, as the app shows them.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageRow {
+    pub id: String,
+    pub stage: StageRecord,
+}
+
+/// The records of the chat's task while it's the chat's current request,
+/// oldest first, for the strip above the input; None when there's none. A
+/// task's runs can be longer than the page of messages the app holds.
+pub async fn task_stages(core: &Core, dialog_id: &str) -> Result<Option<Vec<StageRow>>, String> {
+    Ok(current_task(core, dialog_id).await?.map(|(_, records)| {
+        records
+            .into_iter()
+            .map(|r| StageRow {
+                id: r.id,
+                stage: r.record,
+            })
+            .collect()
+    }))
+}
+
 /// Whether the chat has a task that isn't over: a Resume goes on with it.
 pub async fn unfinished(core: &Core, dialog_id: &str) -> Result<bool, String> {
     let Some((_, records)) = current_task(core, dialog_id).await? else {

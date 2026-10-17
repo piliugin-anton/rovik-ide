@@ -5235,6 +5235,154 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   }
 }
 
+/* An Autopilot stage in the chat (StageRecord.tsx): one line. */
+
+.chat-stage {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 90%;
+  padding: 4px 10px;
+  border-left: 3px solid var(--fg-dim);
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.chat-stage svg {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.chat-stage-name {
+  color: var(--fg);
+}
+
+.chat-stage-status {
+  color: var(--fg-dim);
+}
+
+.chat-stage-summary {
+  min-width: 0;
+  color: var(--fg-dim);
+}
+
+.chat-stage-summary::before {
+  content: '· ';
+}
+
+.chat-stage.done {
+  border-left-color: var(--success);
+}
+
+.chat-stage.done svg {
+  color: var(--success);
+}
+
+.chat-stage.failed {
+  border-left-color: var(--error);
+}
+
+.chat-stage.failed svg {
+  color: var(--error);
+}
+
+.chat-stage.running {
+  border-left-color: var(--info);
+}
+
+.chat-stage.running svg {
+  color: var(--info);
+}
+
+.chat-stage.stopped svg {
+  color: var(--warning);
+}
+
+.chat-stage.skipped {
+  opacity: 0.8;
+}
+
+/* The chat's Autopilot task above the input (AutopilotStrip.tsx). */
+
+.autopilot-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  flex-shrink: 0;
+  margin: 0 10px 8px;
+  padding: 4px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.autopilot-strip-line {
+  color: var(--fg);
+}
+
+.autopilot-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+
+.autopilot-stage-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.autopilot-stage-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.autopilot-stage-button:disabled {
+  cursor: default;
+}
+
+.autopilot-stage.pending .autopilot-stage-button,
+.autopilot-stage.skipped .autopilot-stage-button {
+  color: var(--fg-dim);
+}
+
+.autopilot-stage.done svg {
+  color: var(--success);
+}
+
+.autopilot-stage.failed svg {
+  color: var(--error);
+}
+
+.autopilot-stage.running svg {
+  color: var(--info);
+}
+
+.autopilot-stage.stopped svg {
+  color: var(--warning);
+}
+
+.autopilot-stage-round {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Project checks settings (ProjectChecksSettings.tsx) */
 
 .project-check-list {

@@ -742,3 +742,29 @@ T05 depends most on the environment it meets.
   message that starts the request: the button's own, or in Autopilot the
   task's message, since the IDE's message starts none (it's a harness
   message, never taken for the user's request).
+
+### A05: the strip and the records
+
+- **The task the strip shows** is the chat's latest while it's the
+  chat's current request: a message of the user's after it ends it there
+  too (its records stay in the chat), as it does for a Resume.
+- **It reads the whole task.** A task's runs are longer than the page of
+  messages the app holds, so the strip reads its records from the
+  database (`chat_task_stages`, a remote chat's mirror's) when the chat
+  opens, a run starts or ends, or a record comes or changes; the records
+  in the messages held are the live ones over those read. A chat opened
+  around a search hit holds an older page, and the read alone says which
+  task is current.
+- **A record recorded running with nothing running** shows as "didn't
+  finish" with a pause icon: the app closed or a crash cut the stage, and
+  opening the chat resumes it (the daemon resumes its own at its start).
+- **In the chat** each record is one line where its stage began: the
+  stage, its round when it ran more than once, its status, and its
+  summary. A click on the strip scrolls to it, loading the page around
+  it when it isn't held, once (the messages that come after don't scroll
+  back to it).
+- **Checked by hand** in a browser (the components with the app's
+  styles, at a side panel's width): the app itself and a same-machine
+  daemon couldn't be run in the sandbox this was built in. The daemon's
+  test (`rovik-agentd/tests/autopilot.rs`) checks the rows a remote
+  chat's mirror gets.

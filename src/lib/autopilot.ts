@@ -68,6 +68,21 @@ export const STAGES: StageName[] = [
   'deliver',
 ];
 
+/** What the strip and the chat call each stage. */
+export const STAGE_LABELS: Record<StageName, string> = {
+  plan: 'Plan',
+  planReview: 'Plan review',
+  prepare: 'Prepare',
+  tests: 'Tests',
+  implement: 'Implement',
+  review: 'Change review',
+  checks: 'Checks',
+  break: 'Break',
+  pick: 'Pick',
+  acceptance: 'Acceptance',
+  deliver: 'Deliver',
+};
+
 /** Only Thorough has these (3.2). */
 const THOROUGH_ONLY: StageName[] = ['break', 'pick'];
 
@@ -123,4 +138,137 @@ export function taskOver(rows: StageRow[]): boolean {
 export function unfinishedTask(messages: ChatMessage[]): boolean {
   const task = currentTask(messages);
   return !!task && !taskOver(task);
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The strip (AutopilotStrip.tsx) and the records (StageRecord.tsx)
+ * ---------------------------------------------------------------------------
+ */
+
+/** A message of the user's: one that starts a request. */
+const isRequest = (m: ChatMessage) => m.role === 'user' && !m.meta?.harness && !m.failed;
+
+/**
+ * The current task's records, for the strip: those stored (`stored`, as
+ * `chatApi.taskStages` read them; a task's runs can be longer than the page
+ * of messages the chat holds), with the chat's loaded messages over them,
+ * which hold the latest of each (they change live). A task started since
+ * the read is the loaded one; a message of the user's after the task's last
+ * record ends it as the current one. `newest`: the loaded messages reach
+ * the chat's newest (not a page opened around a search hit), so the task
+ * they end with is the chat's latest.
+ */
+export function taskRecords(
+  stored: StageRow[] | null,
+  messages: ChatMessage[],
+  newest = true
+): StageRow[] | null {
+  const loaded = newest ? currentTask(messages) : null;
+  const task = loaded?.[0].stage.task ?? stored?.[0]?.stage.task;
+  const fromStore = stored?.length && stored[0].stage.task === task ? stored : [];
+  if (!task || (!loaded && !fromStore.length)) return null;
+  const live = new Map(stageRows(messages).map((r) => [r.id, r]));
+  const rows = fromStore.map((r) => live.get(r.id) ?? r);
+  for (const r of loaded ?? []) if (!rows.some((x) => x.id === r.id)) rows.push(r);
+  if (!loaded && newest) {
+    // The newest messages held end with none of its records: current unless
+    // a request of the user's came after its last one (all held messages
+    // did, when that isn't held). A page around a search hit is older, and
+    // the read says.
+    const at = messages.findIndex((m) => m.id === rows[rows.length - 1].id);
+    if (messages.slice(at + 1).some(isRequest)) return null;
+  }
+  return rows;
+}
+
+/**
+ * How a stage shows: as recorded, `pending` when not reached (yet), and
+ * `stopped` when recorded running but nothing runs it (the app closed, or
+ * a crash, cut it; it goes on once the task is resumed).
+ */
+export type StageShown = StageStatus | 'pending' | 'stopped';
+
+export function shownStatus(status: StageStatus | 'pending', running: boolean): StageShown {
+  return status === 'running' && !running ? 'stopped' : status;
+}
+
+/** One stage as the strip shows it. */
+export interface StripStage {
+  name: StageName;
+  label: string;
+  /** How its latest record stands; `pending`: not reached (yet). */
+  status: StageStatus | 'pending';
+  /** Its latest record's round, when it ran more than once. */
+  round?: number;
+  summary?: string;
+  /** Its latest record's message, to go to. */
+  recordId?: string;
+}
+
+/** The task's stages in order, each as its latest record says. */
+export function stripStages(rows: StageRow[]): StripStage[] {
+  const effort = rows[0]?.stage.effort ?? 'balanced';
+  return pipeline(effort).map((name) => {
+    const latest = [...rows].reverse().find((r) => r.stage.name === name);
+    const stage: StripStage = { name, label: STAGE_LABELS[name], status: 'pending' };
+    if (!latest) return stage;
+    return {
+      ...stage,
+      status: latest.stage.status,
+      ...(latest.stage.round > 1 ? { round: latest.stage.round } : {}),
+      ...(latest.stage.summary ? { summary: latest.stage.summary } : {}),
+      recordId: latest.id,
+    };
+  });
+}
+
+const lower = (name: StageName) => STAGE_LABELS[name].toLowerCase();
+
+/** One line on the task as a whole, the strip's own label. */
+export function taskLine(rows: StageRow[], running: boolean): string {
+  const last = rows[rows.length - 1]?.stage;
+  if (!last) return 'Autopilot';
+  if (last.status === 'running') {
+    return running
+      ? `Autopilot: ${lower(last.name)}…`
+      : `Autopilot: ${lower(last.name)} didn’t finish`;
+  }
+  if (taskOver(rows)) {
+    const failed = rows.find((r) => r.stage.status === 'failed' && r.stage.name !== 'deliver');
+    if (failed?.stage.outcome === 'stopped') {
+      return `Autopilot: stopped during ${lower(failed.stage.name)}`;
+    }
+    if (last.name === 'deliver' && last.status === 'done') return 'Autopilot: delivered';
+    if (failed) return `Autopilot: ${lower(failed.stage.name)} failed, not delivered`;
+    return 'Autopilot: not delivered';
+  }
+  return running ? 'Autopilot' : 'Autopilot: waiting to go on';
+}
+
+/** What a stage's own status says, in words. */
+const STATUS_WORDS: Record<StageShown, string> = {
+  pending: 'not reached',
+  running: 'running',
+  stopped: 'didn’t finish',
+  done: 'done',
+  failed: 'failed',
+  skipped: 'skipped',
+};
+
+export function statusWord(status: StageShown): string {
+  return STATUS_WORDS[status];
+}
+
+/** A stage's name with its round, when it ran more than once: "Implement, round 2". */
+export function stageTitle(stage: Pick<StageMeta, 'name' | 'round'>): string {
+  const label = STAGE_LABELS[stage.name];
+  return stage.round > 1 ? `${label}, round ${stage.round}` : label;
+}
+
+/** A stage's hover text on the strip: its status, and its summary. */
+export function stageHover(stage: StripStage, running: boolean): string {
+  const status = statusWord(shownStatus(stage.status, running));
+  const title = stageTitle({ name: stage.name, round: stage.round ?? 1 });
+  return stage.summary ? `${title}: ${status}. ${stage.summary}` : `${title}: ${status}`;
 }

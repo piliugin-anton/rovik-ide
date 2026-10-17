@@ -63,6 +63,8 @@ import {
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
+import AutopilotStrip from './AutopilotStrip';
+import { stageRows, taskRecords, type StageRow } from '../lib/autopilot';
 import { overlayStatus } from '../lib/overlay';
 import { barChanged, clearUpload, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
@@ -2864,6 +2866,58 @@ export default function ChatPanel(props: ChatProps) {
     return undefined;
   });
 
+  /*
+   * The open chat's Autopilot task, for the strip above the input. Its
+   * records as stored are read again when the chat changes, a run starts or
+   * ends, or a record comes or changes: the messages held can be a page of
+   * a task's longer runs. Those held are the live ones (taskRecords).
+   */
+  const [storedStages, setStoredStages] = createSignal<{
+    dialogId: string;
+    rows: StageRow[] | null;
+  } | null>(null);
+  const stagesKey = createMemo(() => {
+    const records = stageRows(messages()).map((r) => `${r.id}:${r.stage.status}`);
+    return `${activeDialogId() ?? ''}|${sending()}|${records.join(',')}`;
+  });
+  let stagesRead = 0;
+  createEffect(
+    on(stagesKey, () => {
+      const dialogId = activeDialogId();
+      const read = ++stagesRead;
+      if (!dialogId) return setStoredStages(null);
+      chatApi.taskStages(dialogId).then(
+        (rows) => {
+          if (read === stagesRead) setStoredStages({ dialogId, rows });
+        },
+        (err) => console.error('Failed to read the Autopilot task:', err)
+      );
+    })
+  );
+  const taskStages = createMemo(() => {
+    const chat = activeChat();
+    const stored = storedStages();
+    if (!chat) return null;
+    const rows = stored && stored.dialogId === activeDialogId() ? stored.rows : null;
+    return taskRecords(rows, chat.messages, !chat.hasNewer);
+  });
+  /** A stage's record in the chat, from the strip: loaded around it when it isn't held. */
+  async function showStageRecord(id: string) {
+    const dialog = activeDialog();
+    if (!dialog) return;
+    if (!messages().some((m) => m.id === id)) {
+      try {
+        await store.openChatAround(dialog, id);
+      } catch (err) {
+        console.error('Failed to open the stage’s record:', err);
+        return;
+      }
+    }
+    setFocusMessageId(id);
+    // Shown once: messages coming in afterwards don't scroll back to it.
+    window.setTimeout(() => setFocusMessageId((f) => (f === id ? null : f)), 0);
+  }
+
   /** A question waiting in the open chat: the composer answers it. */
   const waitingQuestion = () => {
     const id = store.state.activeId;
@@ -3774,6 +3828,16 @@ export default function ChatPanel(props: ChatProps) {
             chatTitle={(other) => store.state.list.items.find((d) => d.id === other)?.title}
             remote={store.summaryOf(id)?.place?.kind === 'host'}
             readOnly={readOnly()}
+          />
+        )}
+      </Show>
+      {/* The chat's Autopilot task: its stages, each with how it went. */}
+      <Show when={taskStages()}>
+        {(rows) => (
+          <AutopilotStrip
+            rows={rows()}
+            running={sending()}
+            onShow={(id) => void showStageRecord(id)}
           />
         )}
       </Show>

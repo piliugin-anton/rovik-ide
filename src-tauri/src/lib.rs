@@ -141,6 +141,7 @@ pub fn run() {
             commands::chat::chat_delete_project,
             commands::chat::chat_get_messages,
             commands::chat::chat_get_messages_around,
+            commands::chat::chat_task_stages,
             commands::chat::chat_get_message_body,
             commands::chat::chat_create_dialog,
             commands::chat::chat_update_message,

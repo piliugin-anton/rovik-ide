@@ -40,6 +40,8 @@ import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
 import ReviewRecord from './ReviewRecord';
+import StageRecord from './StageRecord';
+import { stageOf } from '../lib/autopilot';
 import { liveSubagent } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
 import type { ReviewMeta } from '../lib/changeReview';
@@ -1450,6 +1452,11 @@ export default function MessageList(props: {
                       , where you can edit it before implementing.
                     </div>
                   )}
+                </Show>
+
+                {/* An Autopilot stage: where it began, and how it ended. */}
+                <Show when={stageOf(m)}>
+                  {(stage) => <StageRecord stage={stage()} live={props.sending} />}
                 </Show>
 
                 <Show when={m.meta?.review}>
