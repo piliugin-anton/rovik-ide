@@ -5,33 +5,21 @@
 // lists them on the server: its stage and how it is, its outcome, what it
 // spent, and whether a run of it goes now.
 import { createResource, For, Show } from 'solid-js';
-import { reportSpent } from '../lib/autopilot';
+import { deliveredAsPartial, reportSpent, STAGE_LABELS, type StageName } from '../lib/autopilot';
 import { hostTasks, type ChatTask } from '../lib/hosts';
 import { summaryParts } from './StageRecord';
 
-/** A stage's name as the strip says it (AutopilotStrip). */
-const STAGES: Record<string, string> = {
-  plan: 'Plan',
-  planReview: 'Plan review',
-  prepare: 'Prepare',
-  tests: 'Tests',
-  implement: 'Implement',
-  review: 'Review',
-  checks: 'Checks',
-  acceptance: 'Acceptance',
-  deliver: 'Deliver',
-};
-
-/** Where a chat's task is, in a few words. */
+/** Where a chat's task is, in a few words; its stage as the strip names it. */
 export function taskLine(chat: ChatTask): string {
   const task = chat.task;
   if (!task) return chat.outcome ? `No task: its last run ${chat.outcome}` : 'No task';
-  const stage = STAGES[task.stage] ?? task.stage;
+  const stage = STAGE_LABELS[task.stage as StageName] ?? task.stage;
+  const delivered = deliveredAsPartial(task.outcome) ? 'Delivered as partial' : 'Delivered';
   const where =
     task.stage === 'deliver' && task.status !== 'running'
       ? task.status === 'failed'
         ? 'Ended: not delivered'
-        : 'Delivered'
+        : delivered
       : `${stage}: ${task.status}`;
   const outcome = task.outcome ? ` (${task.outcome})` : '';
   return `${where}${outcome} · ${reportSpent(task)}`;

@@ -223,6 +223,32 @@ test('the strip’s line: the stage at work, or how the task ended', () => {
     line(false, stage('t', 'implement', 'failed', { outcome: 'stopped' })),
     'Autopilot: stopped during implement'
   );
+  // A stage a Retry ran again is its later round's to say, as the backend's
+  // task_outcome reads it.
+  const retried = (...after: ChatMessage[]) =>
+    line(
+      false,
+      stage('t', 'implement', 'failed', { outcome: 'stopped' }),
+      stage('t', 'implement', 'done', { round: 2, outcome: 'verified' }),
+      ...after
+    );
+  assert.equal(retried(stage('t', 'deliver', 'done')), 'Autopilot: delivered');
+  assert.equal(
+    retried(
+      stage('t', 'review', 'failed', { outcome: 'review-open' }),
+      stage('t', 'deliver', 'failed', { outcome: 'review-open' })
+    ),
+    'Autopilot: change review failed, not delivered'
+  );
+  // Delivered as partial (D7, S09): not landed, and said so.
+  assert.equal(
+    line(
+      false,
+      stage('t', 'acceptance', 'failed', { outcome: 'unmet' }),
+      stage('t', 'deliver', 'done', { outcome: 'unmet' })
+    ),
+    'Autopilot: delivered as partial'
+  );
 });
 
 test('the strip reads the stored records, with the loaded ones over them', () => {

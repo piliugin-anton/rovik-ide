@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import CloudHostsSettings, { type HostsSettingsController } from './CloudHostsSettings';
+import { taskLine as hostTaskLine } from './HostTasks';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import type { HostDetails, HostRow, HostsList, Step } from '../lib/hosts';
 
@@ -878,5 +879,27 @@ test('connected: the tasks of this computer’s chats there, each a line (H08)',
   assert.match(
     root.querySelector('.host-tasks')!.textContent!,
     /No chats of this computer’s there/
+  );
+});
+
+test('a host’s task line names its stage as the strip does, and a partial delivery as one', () => {
+  const line = (stage: string, status: string, outcome?: string) =>
+    hostTaskLine({
+      chat: 'c',
+      title: '',
+      computer: 'laptop',
+      task: { id: 't', stage, status, outcome, ms: 0, cost: 0, uncosted: 0 },
+    });
+  assert.match(line('break', 'running'), /^Break: running · /);
+  assert.match(line('pick', 'done'), /^Pick: done · /);
+  assert.match(
+    line('review', 'failed', 'review-open'),
+    /^Change review: failed \(review-open\) · /
+  );
+  assert.match(line('deliver', 'done', 'verified'), /^Delivered \(verified\) · /);
+  assert.match(line('deliver', 'done', 'unmet'), /^Delivered as partial \(unmet\) · /);
+  assert.match(
+    line('deliver', 'failed', 'plan-blocked'),
+    /^Ended: not delivered \(plan-blocked\) · /
   );
 });

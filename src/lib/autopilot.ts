@@ -316,6 +316,26 @@ export function stripStages(rows: StageRow[]): StripStage[] {
 
 const lower = (name: StageName) => STAGE_LABELS[name].toLowerCase();
 
+/**
+ * The record that ended the task, if a stage failed it: as the backend's
+ * `task_outcome` reads it, the first failed stage but the delivery that
+ * no later round of it ran again (a Retry's round says how it went).
+ */
+export function endingFailure(rows: StageRow[]): StageRow | undefined {
+  return rows.find(
+    (r, i) =>
+      r.stage.status === 'failed' &&
+      r.stage.name !== 'deliver' &&
+      !rows.slice(i + 1).some((later) => later.stage.name === r.stage.name)
+  );
+}
+
+/** Outcomes delivered as partial: not landed, the report says why (D7, S09). */
+const PARTIAL = ['unmet', 'budget', 'verify-flagged'];
+
+/** Whether a task that ended with `outcome` was delivered as partial. */
+export const deliveredAsPartial = (outcome?: string): boolean => PARTIAL.includes(outcome ?? '');
+
 /** One line on the task as a whole, the strip's own label. */
 export function taskLine(rows: StageRow[], running: boolean): string {
   const last = rows[rows.length - 1]?.stage;
@@ -327,11 +347,15 @@ export function taskLine(rows: StageRow[], running: boolean): string {
       : `Autopilot: ${lower(last.name)} didn’t finish`;
   }
   if (taskOver(rows)) {
-    const failed = rows.find((r) => r.stage.status === 'failed' && r.stage.name !== 'deliver');
+    const failed = endingFailure(rows);
     if (failed?.stage.outcome === 'stopped') {
       return `Autopilot: stopped during ${lower(failed.stage.name)}`;
     }
-    if (last.name === 'deliver' && last.status === 'done') return 'Autopilot: delivered';
+    if (last.name === 'deliver' && last.status === 'done') {
+      return deliveredAsPartial(last.outcome)
+        ? 'Autopilot: delivered as partial'
+        : 'Autopilot: delivered';
+    }
     if (failed) return `Autopilot: ${lower(failed.stage.name)} failed, not delivered`;
     return 'Autopilot: not delivered';
   }
