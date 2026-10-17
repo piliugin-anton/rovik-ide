@@ -1603,3 +1603,31 @@ T05 depends most on the environment it meets.
 - **The Subagents page** has the planner's row, tagged "Used by Autopilot
   (Thorough)": `needed_kinds(Thorough)` turns it on for a Thorough task's
   chats, never for Balanced's.
+
+### T02: the judge
+
+- **When.** Once the planners gave two plans or more (`judge.rs`, in
+  `thorough_planning`); one plan alone needs no judgment and is taken
+  when it passes the checks. The judge is read-only (`Kind::Judge`) and
+  gets the request and each plan whole, by its planner's letter, with
+  what the plan's checks found in it, and the plans' form for a plan it
+  merges.
+- **Its report** is "## Choice" (a letter, or "merged"), "## Why", and
+  "## Plan" last, only when it merged or revised a plan: a pick as it is
+  costs no copy of the plan, and can't change it by mistake. Read
+  strictly (`read_judgment`): the choice's first line, up to its first
+  ":", "," or bracket, is one letter of the plans given or a merge; a
+  merge needs its plan; the plan taken needs steps. Anything else is no
+  judgment.
+- **Its plan goes through `submit_plan`** as the planners' did in T01:
+  the checks first (a revision that names a file there isn't goes back to
+  the run's model, unreviewed), then the review. The note before it says
+  how the judge came to it, and the planner picked is marked `chosen`.
+- **A judge that gives no judgment** (its model failed, it was blocked,
+  its report couldn't be read): the first planner's plan that passes the
+  checks, as in T01, the note and the judge's record (`fallback`) saying
+  why and which. None passes: the run's model plans.
+- **Its record** is `meta.judge` (`JudgeRecord`): what it was given, its
+  choice, why, and its own plan when it merged or revised. A run cut while
+  it worked leaves it running; the stage's next run stops it with the
+  planners' records and plans again.

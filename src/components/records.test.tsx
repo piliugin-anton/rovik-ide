@@ -9,6 +9,7 @@ import ToolCallBlock from './ToolCallBlock';
 import ReviewRecord from './ReviewRecord';
 import VerificationRecord from './VerificationRecord';
 import PlannerRecord from './PlannerRecord';
+import JudgeRecord from './JudgeRecord';
 import MessageList from './MessageList';
 import { chatApi } from '../lib/chatApi';
 import { liveSubagent, noteSubagentStarted } from '../lib/subagents';
@@ -853,4 +854,59 @@ test('a planner record: the plan taken, problems flagged, the plan on demand (T0
     records[2].querySelector('.chat-verify-title')?.textContent,
     'Planner C didn’t finish: the run ended meanwhile.'
   );
+});
+
+test('a judge record: what it chose and why, its merged plan on demand (T02)', () => {
+  const root = container();
+  render(
+    () => (
+      <>
+        <JudgeRecord
+          meta={{
+            role: 'plans',
+            status: 'done',
+            offered: ['a', 'b', 'c'],
+            choice: 'merged',
+            revised: true,
+            title: 'Greet',
+            steps: 2,
+            plan: '# Greet\n\n## Steps\n\n1. **Say hi**',
+            why: 'Plan a’s steps with plan c’s criteria.',
+            model: 'Test/m',
+          }}
+          dialogId="lead-j"
+          recordId="j1"
+          live={false}
+        />
+        <JudgeRecord
+          meta={{
+            role: 'plans',
+            status: 'skipped',
+            reason: 'its model failed',
+            fallback: 'b',
+          }}
+          dialogId="lead-j"
+          recordId="j2"
+          live={false}
+        />
+      </>
+    ),
+    root
+  );
+  const records = [...root.querySelectorAll('.chat-judge')];
+  assert.deepEqual(
+    records.map((r) => r.className),
+    ['chat-verify chat-judge done', 'chat-verify chat-judge skipped']
+  );
+  assert.equal(
+    records[0].querySelector('.chat-judge-why')?.textContent,
+    'Plan a’s steps with plan c’s criteria.'
+  );
+  assert.equal(records[0].querySelector('details summary')?.textContent, 'The merged plan');
+  assert.equal(records[0].querySelector('details pre')?.textContent?.startsWith('# Greet'), true);
+  assert.equal(
+    records[1].querySelector('.chat-verify-title')?.textContent,
+    'The judge gave no choice: its model failed. The task takes planner B’s plan.'
+  );
+  assert.equal(records[1].querySelector('details'), null, 'no plan of its own');
 });

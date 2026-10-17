@@ -63,6 +63,8 @@ pub enum Kind {
     Acceptance,
     /// Plans a Thorough task, one of several (planning.rs, Autopilot only).
     Planner,
+    /// Picks or merges a Thorough task's plans (judge.rs, Autopilot only).
+    Judge,
 }
 
 /// The repository map a kind gets (S18, K21): what it's about and its size.
@@ -80,7 +82,7 @@ impl Kind {
     pub fn map_scope(self) -> MapScope {
         match self {
             // A plan changes nothing yet: the whole project, ranked for it.
-            Kind::Scout | Kind::PlanReviewer | Kind::Planner => MapScope::Lead,
+            Kind::Scout | Kind::PlanReviewer | Kind::Planner | Kind::Judge => MapScope::Lead,
             Kind::Reviewer | Kind::Triage | Kind::TestWriter | Kind::Acceptance => {
                 MapScope::Changed {
                     fraction_percent: 50,
@@ -102,6 +104,7 @@ impl Kind {
         Kind::TestWriter,
         Kind::Acceptance,
         Kind::Planner,
+        Kind::Judge,
     ];
 
     pub fn id(self) -> &'static str {
@@ -114,6 +117,7 @@ impl Kind {
             Kind::TestWriter => "testWriter",
             Kind::Acceptance => "acceptance",
             Kind::Planner => "planner",
+            Kind::Judge => "judge",
         }
     }
 
@@ -146,6 +150,7 @@ impl Kind {
             Kind::TestWriter => &super::test_writer::TEST_WRITER,
             Kind::Acceptance => &super::acceptance::ACCEPTANCE,
             Kind::Planner => &super::planning::PLANNER,
+            Kind::Judge => &super::judge::JUDGE,
         }
     }
 
@@ -1754,6 +1759,7 @@ mod tests {
                 "plan reviewer" => Kind::PlanReviewer,
                 "acceptance" => Kind::Acceptance,
                 "planner" => Kind::Planner,
+                "judge" => Kind::Judge,
                 other => panic!("the table names a kind there isn't: {other}"),
             };
             // The `Name` list the cell starts with: `;` ends the required

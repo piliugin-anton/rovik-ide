@@ -15,6 +15,7 @@ import {
   taskRecords,
   acceptanceHeadline,
   plannerHeadline,
+  judgeHeadline,
   reportDuration,
   reportHeadline,
   reportSpent,
@@ -375,6 +376,43 @@ test('a planner record’s headline: at work, its plan, taken or flagged, none (
     'Planner B gave no plan: its report has no plan.'
   );
   assert.equal(plannerHeadline({ ...base, status: 'stopped' }, false), 'Planner B was stopped.');
+});
+
+test('a judge record’s headline: weighing, picked, revised, merged, no choice (T02)', () => {
+  const base = { role: 'plans' as const, offered: ['a', 'b', 'c'] };
+  assert.equal(
+    judgeHeadline({ ...base, status: 'running' }, false),
+    'The judge is weighing the 3 plans against the code…'
+  );
+  assert.equal(
+    judgeHeadline({ ...base, status: 'running' }, true),
+    'The judge didn’t finish: the run ended meanwhile.'
+  );
+  const done = { ...base, status: 'done' as const, title: 'Greet', steps: 2 };
+  assert.equal(
+    judgeHeadline({ ...done, choice: 'b' }, false),
+    'The judge took planner B’s plan, “Greet”, 2 steps.'
+  );
+  assert.equal(
+    judgeHeadline({ ...done, choice: 'b', revised: true, steps: 1 }, false),
+    'The judge took planner B’s plan, revised: “Greet”, 1 step.'
+  );
+  assert.equal(
+    judgeHeadline({ ...done, choice: 'merged', revised: true }, false),
+    'The judge merged the plans into one: “Greet”, 2 steps.'
+  );
+  assert.equal(
+    judgeHeadline(
+      { ...base, status: 'skipped', reason: 'its report couldn’t be read', fallback: 'a' },
+      false
+    ),
+    'The judge gave no choice: its report couldn’t be read. The task takes planner A’s plan.'
+  );
+  assert.equal(
+    judgeHeadline({ ...base, status: 'skipped', reason: 'its model failed' }, false),
+    'The judge gave no choice: its model failed. The agent plans the task itself.'
+  );
+  assert.equal(judgeHeadline({ ...base, status: 'stopped' }, false), 'The judge was stopped.');
 });
 
 test('the report card’s lines: how it ended, what it spent (S09)', () => {

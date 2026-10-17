@@ -217,6 +217,13 @@ const PLANNING: &str = super::planning::PLAN_HEADING;
 /// the plan run's model plans, as in Balanced.
 const NO_PLAN: &str = "## Blocked\n\nNo plan in this test.";
 
+/// The judge's brief for the planners' plans starts so (T02).
+const JUDGING: &str = super::judge::JUDGE_PLANS_HEADING;
+
+/// What the judge answers unless a test gives it replies: blocked, so the
+/// task takes the first planner's plan that passes the checks.
+const NO_JUDGMENT: &str = "## Blocked\n\nNo judgment in this test.";
+
 /// The report a task's turn writes unless a test gives it another.
 const A_REPORT: &str = "## Assumptions\n\nNone.\n\n## What changed\n\nThe files the plan names.\n\n## How it was verified\n\nThe project's checks.\n\n## Open\n\nNothing.";
 
@@ -226,9 +233,9 @@ const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
 
 /// `testing::model_routed`, with the test writers of the Tests stage and of
 /// a change without tests (`NO_TESTS`), the acceptance checker
-/// (`NO_VERDICTS`) and Thorough's planners (`NO_PLAN`) answered apart
-/// unless the test routes them: a task's other runs get the replies
-/// they're written for.
+/// (`NO_VERDICTS`), Thorough's planners (`NO_PLAN`) and its judge
+/// (`NO_JUDGMENT`) answered apart unless the test routes them: a task's
+/// other runs get the replies they're written for.
 async fn model_routed(
     mut routes: Vec<(&'static str, Vec<Reply>)>,
     default: Vec<Reply>,
@@ -240,6 +247,9 @@ async fn model_routed(
     }
     if !routes.iter().any(|(marker, _)| *marker == PLANNING) {
         routes.push((PLANNING, vec![Reply::Text(NO_PLAN)]));
+    }
+    if !routes.iter().any(|(marker, _)| *marker == JUDGING) {
+        routes.push((JUDGING, vec![Reply::Text(NO_JUDGMENT)]));
     }
     if !routes.iter().any(|(marker, _)| *marker == ACCEPTANCE) {
         routes.push((ACCEPTANCE, vec![Reply::Text(NO_VERDICTS)]));
@@ -3975,4 +3985,267 @@ async fn a_plan_stage_cut_among_its_planners_plans_again_once_resumed() {
         };
         assert_eq!(record["status"], expected, "{record}");
     }
+}
+
+/// The chat's judge records, oldest first.
+fn judge_records(messages: &[MessageRow]) -> Vec<&Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("judge"))
+        .collect()
+}
+
+/// The plan the task saved, as its file holds it.
+fn saved_plan(messages: &[MessageRow]) -> String {
+    let file = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?["planFile"].as_str())
+        .expect("the plan saved");
+    std::fs::read_to_string(file).unwrap()
+}
+
+/// The note the stage wrote before the plan it submitted, or instead.
+fn planning_note(messages: &[MessageRow]) -> &MessageRow {
+    messages
+        .iter()
+        .find(|m| {
+            m.role == "user"
+                && m.meta
+                    .as_ref()
+                    .is_some_and(|x| x["harness"] == "thoroughPlan")
+        })
+        .expect("the stage's note")
+}
+
+/// The planners' three reports, under the titles `titles`.
+fn planners_route(titles: &[&str]) -> (&'static str, Vec<Reply>) {
+    (
+        PLANNING,
+        titles
+            .iter()
+            .map(|t| Reply::Text(planners_report(t)))
+            .collect(),
+    )
+}
+
+/// T02 (4.1): the judge, given the three plans whole, merges them: its
+/// plan, not a planner's, is the one submitted, reviewed and saved; its
+/// record says what it chose and why, and no planner's plan was taken.
+#[tokio::test]
+async fn the_judges_merged_plan_is_reviewed_and_saved() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let titles = ["Make the test pass", "Write ok", "Find ok"];
+    let merged = String::leak(format!(
+        "## Choice\n\nmerged\n\n## Why\n\nPlan a's steps with plan c's criteria.\n\n## Plan\n\n{}",
+        TASK_PLAN.replacen("# Make the test pass", "# The merged plan", 1)
+    ));
+    let (url, seen) = model_routed(
+        vec![
+            planners_route(&titles),
+            (JUDGING, vec![Reply::Text(merged)]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script().into_iter().skip(1).collect(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+
+    let messages = h.messages().await;
+    let judges = judge_records(&messages);
+    assert_eq!(judges.len(), 1);
+    let judge = judges[0];
+    assert_eq!(judge["status"], "done", "{judge}");
+    assert_eq!(judge["choice"], "merged");
+    assert_eq!(judge["revised"], true);
+    assert_eq!(judge["title"], "The merged plan");
+    assert_eq!(judge["steps"], 2);
+    assert_eq!(judge["why"], "Plan a's steps with plan c's criteria.");
+    assert_eq!(judge["offered"], json!(["a", "b", "c"]));
+    assert!(judge["plan"]
+        .as_str()
+        .unwrap()
+        .starts_with("# The merged plan"));
+    assert!(planner_records(&messages)
+        .iter()
+        .all(|p| p.get("chosen").is_none()));
+
+    // Its brief: the request and each plan whole, by its planner's letter.
+    let requests = seen.lock().unwrap().clone();
+    let brief = requests
+        .iter()
+        .find(|r| route_of(r, &[JUDGING]).is_some())
+        .expect("the judge's turn")["messages"]
+        .to_string();
+    for letter in ["a", "b", "c"] {
+        assert!(
+            brief.contains(&format!("<plan name=\\\"{letter}\\\">")),
+            "{brief}"
+        );
+    }
+    for title in titles {
+        assert!(brief.contains(&format!("# {title}")), "{title}");
+    }
+    // Its plan went through the review and is the one saved.
+    let reviewed = requests
+        .iter()
+        .find(|r| route_of(r, &[PLAN_REVIEW]).is_some())
+        .expect("the plan's review")["messages"]
+        .to_string();
+    assert!(reviewed.contains("# The merged plan"));
+    assert!(saved_plan(&messages).starts_with("# The merged plan"));
+    let note = &planning_note(&messages).content;
+    assert!(
+        note.contains(
+            "a judge that checked their plans against the code merged their plans into one"
+        ),
+        "{note}"
+    );
+    assert_eq!(log_lines(&h, "judge").await[0]["choice"], "merged");
+}
+
+/// T02: the judge picks planner b's plan and revises it; the revision
+/// fails the plan's checks, which send it back to the run's model before
+/// any review, and the model's fixed plan is reviewed and saved.
+#[tokio::test]
+async fn the_judges_plan_goes_through_the_plans_checks() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let revised = String::leak(format!(
+        "## Choice\n\nb\n\n## Why\n\nIt is the simplest.\n\n## Plan\n\n{}",
+        TASK_PLAN.replace("`ok.txt`", "`gone/ok.txt`")
+    ));
+    let mut script = vec![Reply::Call {
+        id: "p2",
+        name: "submit_plan",
+        args: json!({ "plan": TASK_PLAN }),
+    }];
+    script.extend(task_script().into_iter().skip(1));
+    let (url, seen) = model_routed(
+        vec![
+            planners_route(&["Make the test pass", "Write ok", "Find ok"]),
+            (JUDGING, vec![Reply::Text(revised)]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        script,
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+
+    let messages = h.messages().await;
+    let judge = judge_records(&messages)[0];
+    assert_eq!(
+        (judge["choice"].clone(), judge["revised"].clone()),
+        (json!("b"), json!(true))
+    );
+    let chosen: Vec<String> = planner_records(&messages)
+        .iter()
+        .filter(|p| p["chosen"] == true)
+        .map(|p| p["candidate"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(chosen, ["b"], "the judge's pick, revised");
+    // The submitted plan's result: its checks' problems, for the run's model.
+    let call = messages
+        .iter()
+        .find(|m| {
+            m.role == "assistant"
+                && m.meta
+                    .as_ref()
+                    .is_some_and(|x| x["harness"] == "thoroughPlan")
+        })
+        .and_then(|m| m.tool_calls.as_ref())
+        .map(|calls| calls[0].id.clone())
+        .expect("the IDE's submission");
+    let result = messages
+        .iter()
+        .find(|m| m.tool_call_id.as_deref() == Some(call.as_str()))
+        .expect("its result");
+    assert!(result.content.contains("gone/ok.txt"), "{}", result.content);
+    // Reviewed was the model's fix, not the judge's plan.
+    let requests = seen.lock().unwrap().clone();
+    let reviews: Vec<String> = requests
+        .iter()
+        .filter(|r| route_of(r, &[PLAN_REVIEW]).is_some())
+        .map(|r| r["messages"].to_string())
+        .collect();
+    assert!(!reviews.is_empty());
+    assert!(reviews.iter().all(|r| !r.contains("gone/ok.txt")));
+    assert!(saved_plan(&messages).starts_with("# Make the test pass"));
+    assert!(planning_note(&messages)
+        .content
+        .contains("took planner b's plan and revised it"));
+}
+
+/// T02: a judge whose report can't be read gives no judgment: the task
+/// takes the first planner's plan that passes the checks; the note and the
+/// judge's record say why, and which plan the task took.
+#[tokio::test]
+async fn a_judge_that_fails_falls_back_to_the_first_planners_plan() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![
+            (
+                PLANNING,
+                vec![
+                    // One plan names a file there isn't: not the one taken.
+                    Reply::Text(String::leak(format!(
+                        "## Plan\n\n{}",
+                        TASK_PLAN.replace("`ok.txt`", "`gone/ok.txt`")
+                    ))),
+                    Reply::Text(planners_report("Write ok")),
+                    Reply::Text(planners_report("Find ok")),
+                ],
+            ),
+            (JUDGING, vec![Reply::Text("I can't decide between them.")]),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script().into_iter().skip(1).collect(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+
+    let messages = h.messages().await;
+    let planners = planner_records(&messages);
+    let first = planners
+        .iter()
+        .find(|p| p.get("problems").is_none())
+        .expect("a plan that passes the checks");
+    let letter = first["candidate"].as_str().unwrap();
+    let judge = judge_records(&messages)[0];
+    assert_eq!(judge["status"], "skipped", "{judge}");
+    let why = judge["reason"].as_str().unwrap();
+    assert!(why.starts_with("its report couldn't be read"), "{why}");
+    assert_eq!(judge["fallback"], letter);
+    assert_eq!(first["chosen"], true);
+    let note = &planning_note(&messages).content;
+    assert!(note.contains(&format!("gave no choice ({why})")), "{note}");
+    assert!(
+        note.contains(&format!("took planner {letter}'s plan")),
+        "{note}"
+    );
+    let title = first["title"].as_str().unwrap();
+    assert!(saved_plan(&messages).starts_with(&format!("# {title}")));
 }

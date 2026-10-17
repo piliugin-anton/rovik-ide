@@ -52,8 +52,8 @@ pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 /// plan reviewer (the plan's review), the change reviewer and the failure
 /// triage (the implementation's review and checks), the test writer, the
 /// step workers and the acceptance checker; in Thorough also the planners
-/// (T01). Thorough's judge and adversarial tester (T02, T04) join them as
-/// they're built.
+/// and the judge (T01, T02). Thorough's adversarial tester (T04) joins
+/// them once it's built.
 pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
     const BALANCED: &[Kind] = &[
         Kind::PlanReviewer,
@@ -71,6 +71,7 @@ pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
         Kind::Worker,
         Kind::Acceptance,
         Kind::Planner,
+        Kind::Judge,
     ];
     match effort {
         Effort::Balanced => BALANCED,

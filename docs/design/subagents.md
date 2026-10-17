@@ -322,6 +322,7 @@ sections (`subagent.rs` `KindSpec`); a report must have the first ones
 | plan reviewer | `Findings`, the same list, with `Step N` for a location.         |
 | acceptance    | `Verdicts`; `Evidence`, `Unmet` (Autopilot's, `acceptance.rs`)   |
 | planner       | `Plan`, then the whole plan under it (Thorough's, `planning.rs`) |
+| judge         | `Choice`; `Plan`, `Why` (Thorough's, `judge.rs`)                 |
 
 There's no `## Status` section: the harness decides the status.
 

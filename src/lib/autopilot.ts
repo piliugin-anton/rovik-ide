@@ -447,6 +447,62 @@ export function plannerHeadline(meta: PlannerMeta, interrupted: boolean): string
 }
 
 /**
+ * `meta.judge`: a Thorough task's judge of its planners' plans (T02,
+ * agent_run/judge.rs): at work, then the plan it took, or why none.
+ */
+export interface JudgeMeta {
+  /** What it judged: the planners' plans. */
+  role: 'plans';
+  status: 'running' | 'done' | 'skipped' | 'stopped';
+  /** The planners whose plans it was given. */
+  offered?: string[];
+  /** done: the plan it took, by its planner's letter, or "merged". */
+  choice?: string;
+  /** It merged the plans or revised the one it took: `plan` is its own. */
+  revised?: boolean;
+  plan?: string;
+  title?: string;
+  steps?: number;
+  why?: string;
+  /** skipped: why, and the planner whose plan the task took instead. */
+  reason?: string;
+  fallback?: string;
+  partial?: boolean;
+  childDialogId?: string;
+  model?: string;
+  toolCalls?: number;
+  ms?: number;
+}
+
+/** The headline of a judge's record; `interrupted`: saved as running, but nothing runs it. */
+export function judgeHeadline(meta: JudgeMeta, interrupted: boolean): string {
+  if (interrupted) return 'The judge didn’t finish: the run ended meanwhile.';
+  const planner = (letter: string) => `planner ${letter.toUpperCase()}`;
+  const steps = meta.steps ?? 0;
+  const plan = `“${meta.title || 'Untitled'}”, ${steps} step${steps === 1 ? '' : 's'}`;
+  switch (meta.status) {
+    case 'running':
+      return meta.offered?.length
+        ? `The judge is weighing the ${meta.offered.length} plans against the code…`
+        : 'The judge is weighing the planners’ plans against the code…';
+    case 'stopped':
+      return 'The judge was stopped.';
+    case 'skipped': {
+      const instead = meta.fallback
+        ? `The task takes ${planner(meta.fallback)}’s plan.`
+        : 'The agent plans the task itself.';
+      return `The judge gave no choice: ${meta.reason ?? 'it couldn’t judge'}. ${instead}`;
+    }
+    default:
+      if (!meta.choice || meta.choice === 'merged')
+        return `The judge merged the plans into one: ${plan}.`;
+      return meta.revised
+        ? `The judge took ${planner(meta.choice)}’s plan, revised: ${plan}.`
+        : `The judge took ${planner(meta.choice)}’s plan, ${plan}.`;
+  }
+}
+
+/**
  * `meta.report`: the facts a task's report was written from (S09,
  * agent_run/autopilot.rs `ReportFacts`), on its final message.
  */

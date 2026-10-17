@@ -27,7 +27,8 @@ export type SubagentKindId =
   | 'worker'
   | 'testWriter'
   | 'acceptance'
-  | 'planner';
+  | 'planner'
+  | 'judge';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -102,6 +103,14 @@ export const SUBAGENT_KINDS: {
     when: 'Runs in Autopilot’s Thorough effort, three at once before a task’s plan; ordinary chats don’t use it.',
     toolCalls: 40,
     minutes: 8,
+  },
+  {
+    id: 'judge',
+    label: 'Judge',
+    hint: 'Checks the planners’ plans against the code and picks one, or merges them. Read-only.',
+    when: 'Runs in Autopilot’s Thorough effort once the planners gave two plans or more; ordinary chats don’t use it.',
+    toolCalls: 30,
+    minutes: 6,
   },
 ];
 
@@ -193,6 +202,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     testWriter: { ...DEFAULT_KIND },
     acceptance: { ...DEFAULT_KIND },
     planner: { ...DEFAULT_KIND },
+    judge: { ...DEFAULT_KIND },
   },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,

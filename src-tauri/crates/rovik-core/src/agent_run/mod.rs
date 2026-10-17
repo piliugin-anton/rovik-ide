@@ -36,6 +36,7 @@ mod execute;
 pub mod failure;
 pub mod group;
 pub mod guard;
+pub mod judge;
 mod landing;
 pub mod log;
 mod parallel;

@@ -262,6 +262,8 @@ export interface ToolMeta {
   acceptance?: import('./lib/autopilot').AcceptanceMeta;
   /** Autopilot, Thorough: one of the task's planners and its plan (T01). */
   planner?: import('./lib/autopilot').PlannerMeta;
+  /** Autopilot, Thorough: the judge of the planners' plans (T02). */
+  judge?: import('./lib/autopilot').JudgeMeta;
   /** A task's report, its final message: the facts it was written from (lib/autopilot.ts). */
   report?: import('./lib/autopilot').ReportMeta;
   /**

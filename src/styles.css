@@ -5129,6 +5129,20 @@ body.is-resizing * {
   border-left-color: var(--warning);
 }
 
+/* T02: the judge of a Thorough task's plans (JudgeRecord.tsx). */
+.chat-judge.done {
+  border-left-color: var(--success);
+}
+
+.chat-judge.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-judge-why {
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+
 /* S08: an acceptance check's verdicts (AcceptanceRecord.tsx). */
 .chat-acceptance.satisfied {
   border-left-color: var(--success);

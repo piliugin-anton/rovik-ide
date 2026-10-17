@@ -192,7 +192,7 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
   assert.deepEqual(
     rows.map((r) => r.querySelector('.autopilot-kind-tag')?.textContent ?? null),
     SUBAGENT_KINDS.map((k) =>
-      k.id === 'planner'
+      k.id === 'planner' || k.id === 'judge'
         ? 'Used by Autopilot (Thorough)'
         : AUTOPILOT_KINDS.includes(k.id)
           ? 'Used by Autopilot'

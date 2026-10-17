@@ -13,12 +13,18 @@
 //! writes, runs nothing and asks nobody. Its report is "## Plan" and the
 //! whole plan under it: everything after that heading is the plan, whose
 //! own "## " sections are the plan's, not the report's.
+//!
+//! T02: when the planners gave two plans or more, the judge (judge.rs)
+//! weighs them against the code and returns the plan to build: one as it
+//! is, revised, or several merged; that's the plan submitted. A judge that
+//! gives no judgment: the first planner's plan that passes the checks,
+//! with a note saying why.
 
-use super::plan;
 use super::run::{new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, SubOutcome};
 use super::subagent_run::IdeJob;
-use crate::chat_db::store::ToolCall;
+use super::{judge, plan};
+use crate::chat_db::store::{char_prefix, ToolCall};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, Instant};
 
@@ -119,6 +125,87 @@ impl Candidate {
     }
 }
 
+/// What the stage's note says after where its plan came from.
+const SUBMITTED_FOR_YOU: &str = "The IDE submits it for you below, as if you had: what the plan's checks and the reviewer say about it comes back to you as for your own plan. Answer the reviewer and resubmit the plan, revised, as you would yours; once it's saved, reply in a few sentences.";
+
+/// What the judge's turn gave the stage.
+enum Judgment {
+    /// The plan to submit, and how the judge came to it, for the note.
+    Taken {
+        plan: String,
+        how: String,
+    },
+    /// It gave none: why, and its record's row and record.
+    Failed {
+        why: String,
+        row: String,
+        record: Value,
+    },
+    Stopped,
+}
+
+/// The plan a judge's report returns.
+struct Taken {
+    plan: String,
+    choice: judge::Choice,
+    /// Not a planner's plan as it was: merged, or revised.
+    revised: bool,
+}
+
+/// The judge's report read strictly (T02): its choice names a plan it was
+/// given, or a merge with the merged plan under "## Plan"; the plan it
+/// returns has steps. Else why it's no judgment.
+fn read_judgment(report: &str, given: &[&Candidate]) -> Result<Taken, String> {
+    let letters: Vec<&str> = given.iter().map(|c| c.letter).collect();
+    let section = subagent::sections(report)
+        .get("Choice")
+        .unwrap_or("")
+        .to_string();
+    let choice = judge::choice_of(&section, &letters)
+        .ok_or_else(|| "its choice names none of the plans".to_string())?;
+    let written = judge::judged_plan(report).map(|p| plan::without_findings(&p).0);
+    let taken = match (&choice, written) {
+        (judge::Choice::Merged, None) => {
+            return Err("it merged the plans, but gave no plan under \"## Plan\"".into())
+        }
+        (judge::Choice::Merged, Some(plan)) => Taken {
+            plan,
+            choice,
+            revised: true,
+        },
+        (judge::Choice::Pick(letter), written) => {
+            let own = given
+                .iter()
+                .find(|c| c.letter == letter)
+                .and_then(|c| c.plan.clone())
+                .unwrap_or_default();
+            let revised = written.as_ref().is_some_and(|w| w.trim() != own.trim());
+            Taken {
+                plan: written.unwrap_or(own),
+                choice,
+                revised,
+            }
+        }
+    };
+    if plan::steps(&taken.plan).is_empty() {
+        return Err("the plan it gave has no steps".into());
+    }
+    Ok(taken)
+}
+
+/// Why the judge gave no judgment, for its record and the note.
+fn judge_skip_reason(skip: &subagent::Skip) -> String {
+    use subagent::Skip;
+    match skip {
+        Skip::NotStarted(why) => why.clone(),
+        Skip::NotRun => "it couldn't run".into(),
+        Skip::ModelFailed(error) => format!("its model failed ({error})"),
+        Skip::Blocked(why) => format!("it couldn't judge: {}", why.trim()),
+        Skip::Unformatted { why, .. } if why.is_empty() => "its report couldn't be read".into(),
+        Skip::Unformatted { why, .. } => format!("its report couldn't be read: {why}"),
+    }
+}
+
 /// Why a planner gave no plan, for its record.
 fn skip_reason(skip: &subagent::Skip) -> String {
     use subagent::Skip;
@@ -136,7 +223,7 @@ fn skip_reason(skip: &subagent::Skip) -> String {
 fn title_of(plan: &str) -> String {
     let line = plan.lines().map(str::trim).find(|l| !l.is_empty());
     let title = line.unwrap_or("").trim_start_matches('#').trim();
-    crate::chat_db::store::char_prefix(title, 120).to_string()
+    char_prefix(title, 120).to_string()
 }
 
 impl Run {
@@ -167,41 +254,179 @@ impl Run {
         })
     }
 
-    /// T01: Thorough's planning, before the run's first turn: the planners,
-    /// then the plan the stage takes, submitted for the run's model to see
-    /// through the review. None of them usable: the run's model plans.
+    /// T01, T02: Thorough's planning, before the run's first turn: the
+    /// planners, then the judge when they gave two plans or more, then the
+    /// plan the stage takes, submitted for the run's model to see through
+    /// the review. A judge that gives no judgment: the first planner's plan
+    /// that passes the plan's checks, with a note. None usable: the run's
+    /// model plans.
     pub(super) async fn thorough_planning(&mut self) -> Result<(), String> {
         let request = self.latest_user_request().await;
         let candidates = self.run_planners(&request).await?;
         if self.stopped() {
             return Ok(());
         }
-        match candidates.iter().find(|c| c.usable()) {
-            Some(chosen) => {
-                let mut record = chosen.record.clone();
-                record["chosen"] = json!(true);
-                self.update_meta(&chosen.row, json!({ "planner": record }))
-                    .await?;
-                let plan = chosen.plan.clone().unwrap_or_default();
-                let note = format!(
-                    "{IDE_NOTE}{} planners planned this task, each on their own. The IDE took planner {}'s plan (the first whose plan passes the plan's checks) and submits it for you below, as if you had: what the checks and the reviewer say about it comes back to you as for your own plan. Answer the reviewer and resubmit the plan, revised, as you would yours; once it's saved, reply in a few sentences.",
-                    candidates.len(),
-                    chosen.letter
-                );
-                self.submit_for_review(&plan, note).await
-            }
-            None => {
-                let mut note = new_message(
-                    "user",
-                    &format!(
-                        "{IDE_NOTE}The {} planners gave no plan that passes the plan's checks: plan the task yourself, as the instructions say.",
-                        candidates.len()
-                    ),
-                );
-                note.meta = Some(json!({ "harness": "thoroughPlan" }));
-                self.append(vec![note]).await
+        let n = candidates.len();
+        let given: Vec<&Candidate> = candidates.iter().filter(|c| c.plan.is_some()).collect();
+        let mut judge_failed = None;
+        if given.len() >= 2 {
+            match self.judge_plans(&request, &given).await? {
+                Judgment::Stopped => return Ok(()),
+                Judgment::Taken { plan, how } => {
+                    let note = format!(
+                        "{IDE_NOTE}{n} planners planned this task, each on their own, and a judge that checked their plans against the code {how}. {SUBMITTED_FOR_YOU}"
+                    );
+                    return self.submit_for_review(&plan, note).await;
+                }
+                Judgment::Failed { why, row, record } => judge_failed = Some((why, row, record)),
             }
         }
+        let first = candidates.iter().find(|c| c.usable());
+        if let Some((_, row, record)) = &judge_failed {
+            // Its record says what the task took instead.
+            let mut record = record.clone();
+            if let Some(first) = first {
+                record["fallback"] = json!(first.letter);
+            }
+            self.update_meta(row, json!({ "judge": record })).await?;
+        }
+        let Some(first) = first else {
+            let judge = match &judge_failed {
+                Some((why, _, _)) => format!(", and the judge gave no choice ({why})"),
+                None => String::new(),
+            };
+            let mut note = new_message(
+                "user",
+                &format!(
+                    "{IDE_NOTE}The {n} planners gave no plan that passes the plan's checks{judge}: plan the task yourself, as the instructions say."
+                ),
+            );
+            note.meta = Some(json!({ "harness": "thoroughPlan" }));
+            return self.append(vec![note]).await;
+        };
+        let mut record = first.record.clone();
+        record["chosen"] = json!(true);
+        self.update_meta(&first.row, json!({ "planner": record }))
+            .await?;
+        let plan = first.plan.clone().unwrap_or_default();
+        let letter = first.letter;
+        let note = match judge_failed {
+            Some((why, _, _)) => format!(
+                "{IDE_NOTE}{n} planners planned this task, each on their own. The judge, which was to choose among their plans, gave no choice ({why}), so the IDE took planner {letter}'s plan, the first whose plan passes the plan's checks. {SUBMITTED_FOR_YOU}"
+            ),
+            None => format!(
+                "{IDE_NOTE}{n} planners planned this task, each on their own. The IDE took planner {letter}'s plan (the first whose plan passes the plan's checks). {SUBMITTED_FOR_YOU}"
+            ),
+        };
+        self.submit_for_review(&plan, note).await
+    }
+
+    /// T02: the judge weighs the plans `given`, in a record of its own
+    /// (`meta.judge`): the plan it returns, picked, revised or merged, or
+    /// why it returned none.
+    async fn judge_plans(
+        &mut self,
+        request: &str,
+        given: &[&Candidate],
+    ) -> Result<Judgment, String> {
+        let letters: Vec<&str> = given.iter().map(|c| c.letter).collect();
+        let offered: Vec<judge::Offered> = given
+            .iter()
+            .map(|c| judge::Offered {
+                letter: c.letter,
+                plan: c.plan.as_deref().unwrap_or(""),
+                problems: &c.problems,
+            })
+            .collect();
+        let message = judge::plans_brief(request, &offered);
+        let mut row = new_message("assistant", "");
+        let mut record = json!({ "role": "plans", "status": "running", "offered": letters });
+        row.meta = Some(json!({ "judge": record.clone() }));
+        let row_id = row.id.clone();
+        self.append(vec![row]).await?;
+        let started = Instant::now();
+        let outcome = self
+            .run_ide_subagent(Kind::Judge, &row_id, "Judge the planners' plans", message)
+            .await;
+        record["ms"] = json!(started.elapsed().as_millis() as u64);
+        let judged = match subagent::outcome_of(&mut record, outcome) {
+            SubOutcome::Stopped => None,
+            SubOutcome::Skipped(skip) => Some(Err(judge_skip_reason(&skip))),
+            SubOutcome::Report(r) => {
+                if r.status == subagent::SubStatus::Partial {
+                    record["partial"] = json!(true);
+                }
+                let why = subagent::sections(&r.text)
+                    .get("Why")
+                    .map(|w| char_prefix(w.trim(), judge::MAX_RECORDED_WHY_CHARS).to_string());
+                if let Some(why) = why.filter(|w| !w.is_empty()) {
+                    record["why"] = json!(why);
+                }
+                Some(read_judgment(&r.text, given))
+            }
+        };
+        let judgment = match judged {
+            None => {
+                record["status"] = json!("stopped");
+                Judgment::Stopped
+            }
+            Some(Err(why)) => {
+                record["status"] = json!("skipped");
+                record["reason"] = json!(why);
+                Judgment::Failed {
+                    why,
+                    row: row_id.clone(),
+                    record: record.clone(),
+                }
+            }
+            Some(Ok(taken)) => {
+                record["status"] = json!("done");
+                record["title"] = json!(title_of(&taken.plan));
+                record["steps"] = json!(plan::steps(&taken.plan).len());
+                let how = match &taken.choice {
+                    judge::Choice::Merged => {
+                        record["choice"] = json!("merged");
+                        "merged their plans into one".to_string()
+                    }
+                    judge::Choice::Pick(letter) => {
+                        record["choice"] = json!(letter);
+                        if let Some(c) = given.iter().find(|c| c.letter == letter) {
+                            let mut picked = c.record.clone();
+                            picked["chosen"] = json!(true);
+                            self.update_meta(&c.row, json!({ "planner": picked }))
+                                .await?;
+                        }
+                        match taken.revised {
+                            true => format!("took planner {letter}'s plan and revised it"),
+                            false => format!("took planner {letter}'s plan"),
+                        }
+                    }
+                };
+                if taken.revised {
+                    record["revised"] = json!(true);
+                    record["plan"] = json!(char_prefix(&taken.plan, MAX_RECORDED_PLAN_CHARS));
+                }
+                Judgment::Taken {
+                    plan: taken.plan,
+                    how,
+                }
+            }
+        };
+        self.update_meta(&row_id, json!({ "judge": record.clone() }))
+            .await?;
+        super::log::write(
+            &self.core,
+            json!({
+                "event": "judge",
+                "dialogId": self.dialog_id,
+                "role": "plans",
+                "status": record["status"],
+                "choice": record["choice"],
+                "offered": given.len(),
+                "ms": record["ms"],
+            }),
+        );
+        Ok(judgment)
     }
 
     /// The planners, at the same time, each with a record of its own: what
@@ -259,10 +484,7 @@ impl Run {
                         record["status"] = json!("done");
                         record["title"] = json!(title_of(&text));
                         record["steps"] = json!(plan::steps(&text).len());
-                        record["plan"] = json!(crate::chat_db::store::char_prefix(
-                            &text,
-                            MAX_RECORDED_PLAN_CHARS
-                        ));
+                        record["plan"] = json!(char_prefix(&text, MAX_RECORDED_PLAN_CHARS));
                         if !problems.is_empty() {
                             record["problems"] = json!(problems);
                         }
@@ -294,8 +516,8 @@ impl Run {
         Ok(candidates)
     }
 
-    /// A run cut while its planners worked left their records running:
-    /// they're stopped, before the stage's next run plans again.
+    /// A run cut while its planners or its judge worked left their records
+    /// running: they're stopped, before the stage's next run plans again.
     async fn stop_cut_planners(&self) -> Result<(), String> {
         let task = self
             .stage
@@ -308,14 +530,15 @@ impl Run {
             .position(|m| m.id == task)
             .unwrap_or(recent.len());
         for m in &recent[start..] {
-            let Some(record) = m.meta.as_ref().and_then(|x| x.get("planner")) else {
-                continue;
-            };
-            if record["status"] == "running" {
-                let mut record = record.clone();
-                record["status"] = json!("stopped");
-                self.update_meta(&m.id, json!({ "planner": record }))
-                    .await?;
+            for key in ["planner", "judge"] {
+                let Some(record) = m.meta.as_ref().and_then(|x| x.get(key)) else {
+                    continue;
+                };
+                if record["status"] == "running" {
+                    let mut record = record.clone();
+                    record["status"] = json!("stopped");
+                    self.update_meta(&m.id, json!({ key: record })).await?;
+                }
             }
         }
         Ok(())
