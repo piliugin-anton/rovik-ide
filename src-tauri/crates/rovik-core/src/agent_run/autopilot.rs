@@ -146,7 +146,7 @@ pub fn run_config(user: AgentConfig, effort: Effort) -> AgentConfig {
 pub const MODE: &str = "autopilot";
 
 /// What `ask_user` answers in Autopilot (D5): nobody is there.
-pub const NO_QUESTIONS: &str = "Error: nobody answers questions in Autopilot. Decide yourself and say what you assumed, under \"## Decisions\" in the plan.";
+pub const NO_QUESTIONS: &str = "Error: nobody answers questions in Autopilot. Decide yourself and say what you assumed, under **Assumptions** in the plan's \"## Criteria\".";
 
 /// An Autopilot run's tools: never `ask_user` (D5).
 pub fn without_questions(tools: &mut Vec<Value>) {

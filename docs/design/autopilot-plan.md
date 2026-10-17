@@ -1094,3 +1094,28 @@ T05 depends most on the environment it meets.
 - **Not yet per folder**: V06's scoped rerun finds the test runner in the
   project's own `package.json`, so a package one folder down keeps a
   timeout as a failure.
+
+### S01: criteria
+
+- **What the planner is told** (`plan::plan_mode_instructions`, in
+  Autopilot): after the title and summary, "## Criteria": numbered
+  statements of what done means that a test or a reading of the result
+  can check, together the whole request and nothing beyond it; then
+  **Out of scope** and **Assumptions**, either of which may say "None.".
+  Assumptions now go there: A04's "under ## Decisions" (the plan stage's
+  lines and `ask_user`'s refusal) says **Assumptions** in its place;
+  "## Decisions" stays for design decisions.
+- **The parser** (`plan::criteria`) is strict: only numbered lines are
+  criteria (a line under one continues it), the parts are found by their
+  names (`**Out of scope**`, `### Assumptions`, `Assumptions: …`), a
+  part may list bullets or say "None", and code blocks are skipped. The
+  section is the first `## ` heading with "criteria" in it, so
+  "## Acceptance criteria" is one.
+- **The check** (`plan::plan_problems_for`): in Autopilot `submit_plan`
+  also needs the section, a numbered criterion and both parts, each
+  missing one named in the result. The implementing run's check of the
+  plan file at its start (B07b) doesn't add it.
+- **The plan review** (`plan_review::brief`) in Autopilot adds "## The
+  criteria" after the plan: criteria nothing could check, a part of the
+  request none covers, one beyond the request, and an assumption the
+  request or the code contradicts are findings, about "Plan".

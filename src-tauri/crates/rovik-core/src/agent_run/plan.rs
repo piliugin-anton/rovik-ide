@@ -64,7 +64,11 @@ const PLAN_MODE_CHOSEN: &str =
     "The user chose Plan mode: investigate and write a plan; don't carry it out.";
 const AUTOPILOT_PLAN_STAGE: &str = "This is the plan stage of an Autopilot task: investigate and write a plan; don't carry it out. Once it's reviewed, another run implements it, with nobody there.";
 const PLAN_MODE_QUESTIONS: &str = "2. Ask only what the code can't tell you and what really changes the design, behavior or scope: with the ask_user tool, early, all questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything the repository decides: decide it and say so in the plan. Never ask in plain text and stop.";
-const AUTOPILOT_QUESTIONS: &str = "2. Nobody answers questions in Autopilot: decide what the code and the request can't tell you, and write each assumption under \"## Decisions\" with why. Never ask, with a tool or in plain text.";
+const AUTOPILOT_QUESTIONS: &str = "2. Nobody answers questions in Autopilot: decide what the code and the request can't tell you, and write each assumption under **Assumptions** in \"## Criteria\", with why. Never ask, with a tool or in plain text.";
+/// The plan's first section, after which Autopilot's plan says what done
+/// means (S01, D8).
+const PLAN_SUMMARY_LINE: &str = "   - a \"# \" title and a one-paragraph summary of the approach;";
+const AUTOPILOT_CRITERIA: &str = "   - \"## Criteria\": what done means, as numbered statements (`1.`, `2.`), each one a test or a reading of the result can check, together covering the whole request and nothing beyond it; then **Out of scope**: what the task leaves alone, and **Assumptions**: what you decided that the request doesn't say, with why (either may say \"None.\"). The tests are written from them before the code, and the result is judged by them;";
 
 /// What Plan mode tells the model: `PLAN_MODE_INSTRUCTIONS`, or in
 /// Autopilot's plan stage the same with its own lines.
@@ -75,6 +79,190 @@ pub fn plan_mode_instructions(autopilot: bool) -> String {
     PLAN_MODE_INSTRUCTIONS
         .replace(PLAN_MODE_CHOSEN, AUTOPILOT_PLAN_STAGE)
         .replace(PLAN_MODE_QUESTIONS, AUTOPILOT_QUESTIONS)
+        .replace(
+            PLAN_SUMMARY_LINE,
+            &format!("{PLAN_SUMMARY_LINE}\n{AUTOPILOT_CRITERIA}"),
+        )
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The criteria (S01, D8)
+ * ---------------------------------------------------------------------------
+ */
+
+/// An Autopilot plan's "## Criteria": what done means, as numbered,
+/// testable statements, then what the task leaves alone and what it
+/// assumed. The test writer writes from them and the acceptance check
+/// judges by them.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Criteria {
+    /// The numbered statements, in order, each on one line.
+    pub items: Vec<String>,
+    /// What the task leaves alone; empty when it says "None".
+    pub out_of_scope: Vec<String>,
+    /// What the planner decided that the request doesn't say.
+    pub assumptions: Vec<String>,
+    /// Whether the section has its **Out of scope** part (even "None.").
+    pub has_out_of_scope: bool,
+    /// Whether it has its **Assumptions** part (even "None.").
+    pub has_assumptions: bool,
+}
+
+/// A part's heading inside the criteria: `**Out of scope**`, `**Out of
+/// scope:** the CLI`, `### Assumptions`, `- Assumptions: none`.
+static CRITERIA_PART: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^\s*(?:[-*+]\s+)?(?:#{3,6}\s*)?(?:\*\*|__)?\s*(out[ -]of[ -]scope|non[- ]goals|assumptions?)\s*:?\s*(?:\*\*|__)?\s*:?\s*(.*)$",
+    )
+    .unwrap()
+});
+/// A numbered line: `1. Text`, `2) Text`.
+static NUMBERED_ITEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*\d+[.)]\s+(\S.*)$").unwrap());
+/// A bullet: `- Text`, `* Text`.
+static BULLET_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*[-*+]\s+(\S.*)$").unwrap());
+
+/// Whether a part's line says it has nothing: "None.", "n/a", "—".
+fn says_none(text: &str) -> bool {
+    let t = text
+        .trim()
+        .trim_matches(|c: char| c == '*' || c == '_' || c == '.' || c == '-' || c == '—');
+    matches!(
+        t.to_lowercase().as_str(),
+        "" | "none" | "n/a" | "na" | "nothing"
+    )
+}
+
+/// The plan's criteria section: the first `## ` heading with "criteria" in
+/// it (`## Criteria`, `## Acceptance criteria`), without its heading.
+fn criteria_section(markdown: &str) -> Option<String> {
+    let markdown = markdown.replace("\r\n", "\n");
+    for (at, line, fenced) in lines_with_fences(&markdown) {
+        if fenced || !NEXT_HEADING.is_match(line) {
+            continue;
+        }
+        if line.to_lowercase().contains("criteri") {
+            return Some(section_after(&markdown, at + line.len()).trim().to_string());
+        }
+    }
+    None
+}
+
+/// S01: an Autopilot plan's criteria, read from its "## Criteria"; None
+/// when it has none. Strict: only numbered lines are criteria (a line
+/// under one continues it), and the two parts are found by their names.
+pub fn criteria(markdown: &str) -> Option<Criteria> {
+    let section = criteria_section(markdown)?;
+    #[derive(PartialEq)]
+    enum Part {
+        Items,
+        OutOfScope,
+        Assumptions,
+    }
+    let mut part = Part::Items;
+    let mut out = Criteria::default();
+    // The list a line continues: the latest item of the part it's in.
+    let mut open = false;
+    for (_, line, fenced) in lines_with_fences(&section) {
+        let line = line.trim_end_matches('\n');
+        if fenced {
+            continue;
+        }
+        if line.trim().is_empty() {
+            open = false;
+            continue;
+        }
+        if let Some(c) = CRITERIA_PART.captures(line) {
+            let name = c[1].to_lowercase();
+            part = if name.starts_with("assum") {
+                out.has_assumptions = true;
+                Part::Assumptions
+            } else {
+                out.has_out_of_scope = true;
+                Part::OutOfScope
+            };
+            let rest = c[2].trim();
+            open = false;
+            if !says_none(rest) {
+                let list = match part {
+                    Part::Assumptions => &mut out.assumptions,
+                    _ => &mut out.out_of_scope,
+                };
+                list.push(rest.to_string());
+                open = true;
+            }
+            continue;
+        }
+        let list = match part {
+            Part::Items => &mut out.items,
+            Part::OutOfScope => &mut out.out_of_scope,
+            Part::Assumptions => &mut out.assumptions,
+        };
+        let item = NUMBERED_ITEM
+            .captures(line)
+            .or_else(|| {
+                (part != Part::Items)
+                    .then(|| BULLET_ITEM.captures(line))
+                    .flatten()
+            })
+            .map(|c| c[1].trim().to_string());
+        match item {
+            Some(text) if part != Part::Items && says_none(&text) => open = false,
+            Some(text) => {
+                list.push(text);
+                open = true;
+            }
+            // A line under an item continues it.
+            None if open => {
+                if let Some(last) = list.last_mut() {
+                    last.push(' ');
+                    last.push_str(line.trim());
+                }
+            }
+            // A part's text that isn't a list: one item, unless it says none.
+            None if part != Part::Items && !says_none(line) => {
+                list.push(line.trim().to_string());
+                open = true;
+            }
+            None => {}
+        }
+    }
+    Some(out)
+}
+
+/// S01: what an Autopilot plan's criteria lack (empty: they're there).
+pub fn criteria_problems(markdown: &str) -> Vec<String> {
+    let Some(c) = criteria(markdown) else {
+        return vec![
+            "Add a \"## Criteria\" section: what done means, as numbered statements (1., 2., ...), each one a test or a \
+             reading of the result can check; then **Out of scope** and **Assumptions** (either may say \"None.\")."
+                .into(),
+        ];
+    };
+    let mut problems = Vec::new();
+    if c.items.is_empty() {
+        problems.push(
+            "List the criteria under \"## Criteria\" as a numbered list (1., 2., ...): each a statement of what done \
+             means that a test or a reading of the result can check."
+                .into(),
+        );
+    }
+    if !c.has_out_of_scope {
+        problems.push(
+            "Add **Out of scope** under \"## Criteria\": what the task leaves alone, or \"None.\"."
+                .into(),
+        );
+    }
+    if !c.has_assumptions {
+        problems.push(
+            "Add **Assumptions** under \"## Criteria\": what you decided that the request doesn't say, with why, or \
+             \"None.\"."
+                .into(),
+        );
+    }
+    problems
 }
 
 /*
@@ -1421,6 +1609,15 @@ pub fn plan_problems_in(markdown: &str, root: Option<&Path>) -> Vec<String> {
     problems
 }
 
+/// `plan_problems_in`, and in an Autopilot task's plan its criteria (S01).
+pub fn plan_problems_for(markdown: &str, root: Option<&Path>, autopilot: bool) -> Vec<String> {
+    let mut problems = plan_problems_in(markdown, root);
+    if autopilot {
+        problems.extend(criteria_problems(markdown));
+    }
+    problems
+}
+
 /*
  * ---------------------------------------------------------------------------
  * Questions (ask_user)
@@ -1889,6 +2086,101 @@ mod tests {
         );
         assert!(!autopilot.contains("ask_user") && !autopilot.contains("The user chose"));
         assert!(autopilot.contains("submit_plan") && autopilot.contains("## Decisions"));
+        // S01: and what done means, before the steps.
+        assert!(PLAN_MODE_INSTRUCTIONS.contains(PLAN_SUMMARY_LINE));
+        let criteria = autopilot
+            .find(AUTOPILOT_CRITERIA)
+            .expect("the criteria line");
+        assert!(criteria < autopilot.find("\"## Steps\"").unwrap());
+        assert!(!PLAN_MODE_INSTRUCTIONS.contains("## Criteria"));
+    }
+
+    const CRITERIA_PLAN: &str = "# Add users\n\nUsers can sign up.\n\n## Criteria\n\n\
+        1. `POST /users` with a new email creates a user and answers 201.\n\
+        2. The same email again answers 409\n   and creates nothing.\n\
+        3) `GET /users` lists them, newest first.\n\n\
+        **Out of scope**: password resets.\n\n\
+        **Assumptions**\n\n\
+        - Emails compare case-insensitively: the request doesn't say, and `users.email` is `CITEXT`.\n\
+        - Paging stays as the other lists do.\n\n\
+        ## Steps\n\n1. **Users**\n   - Files: `src/users.rs`\n   - Add `create_user` to `src/users.rs`.\n";
+
+    /// S01: a plan's criteria, its parts, a criterion over two lines, the
+    /// numbered list's two spellings.
+    #[test]
+    fn a_plans_criteria_are_read() {
+        let c = criteria(CRITERIA_PLAN).unwrap();
+        assert_eq!(
+            c.items,
+            [
+                "`POST /users` with a new email creates a user and answers 201.",
+                "The same email again answers 409 and creates nothing.",
+                "`GET /users` lists them, newest first.",
+            ]
+        );
+        assert_eq!(c.out_of_scope, ["password resets."]);
+        assert_eq!(c.assumptions.len(), 2);
+        assert!(c.assumptions[0].starts_with("Emails compare case-insensitively"));
+        assert!(c.has_out_of_scope && c.has_assumptions);
+        assert!(criteria_problems(CRITERIA_PLAN).is_empty());
+        // `## Acceptance criteria`, `### ` parts, "None." for a part.
+        let other = "# T\n\n## Acceptance criteria\n\n1. It works.\n\n### Out of scope\n\nNone.\n\n### Assumptions\n- None\n\n## Steps\n";
+        let c = criteria(other).unwrap();
+        assert_eq!(c.items, ["It works."]);
+        assert!(c.out_of_scope.is_empty() && c.assumptions.is_empty());
+        assert!(c.has_out_of_scope && c.has_assumptions);
+        assert!(criteria_problems(other).is_empty());
+    }
+
+    /// S01: what's missing, said so; garbage reads as no criteria, never as
+    /// some.
+    #[test]
+    fn criteria_missing_or_partial_say_what_to_add() {
+        assert_eq!(criteria("# T\n\n## Steps\n\n1. x"), None);
+        let none = criteria_problems("# T\n\n## Steps\n\n1. x");
+        assert_eq!(none.len(), 1);
+        assert!(
+            none[0].starts_with("Add a \"## Criteria\" section"),
+            "{none:?}"
+        );
+        // Bullets aren't criteria; the parts missing are named.
+        let bullets = "# T\n\n## Criteria\n\n- It works.\n- It's fast.\n\n## Steps\n";
+        assert!(criteria(bullets).unwrap().items.is_empty());
+        let problems = criteria_problems(bullets);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].starts_with("List the criteria"));
+        assert!(
+            problems[1].contains("**Out of scope**") && problems[2].contains("**Assumptions**")
+        );
+        // A numbered list in a code block isn't one.
+        let fenced = "# T\n\n## Criteria\n\n```\n1. not this\n```\n\n**Out of scope**: none\n**Assumptions**: none\n";
+        assert!(criteria(fenced).unwrap().items.is_empty());
+        for garbage in [
+            "",
+            "## Criteria",
+            "## Criteria\n\n\u{0}\u{1}",
+            "## criteria\n\n***\n1.",
+        ] {
+            let c = criteria(garbage).unwrap_or_default();
+            assert!(c.items.is_empty(), "{garbage:?}: {c:?}");
+        }
+    }
+
+    /// S01: Autopilot's plans need criteria; anyone else's, as before.
+    #[test]
+    fn only_autopilots_plans_need_criteria() {
+        let plan = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Steps\n\n\
+            1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `check.js` checks.\n\
+            2. **Check**\n   - Files: `check.js` (read)\n   - Read `check.js` to confirm it checks `ok.txt`; it keeps its code.\n\n\
+            ## Validation\n- `npm test`\n";
+        assert!(plan_problems_for(plan, None, false).is_empty());
+        let problems = plan_problems_for(plan, None, true);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        let with = plan.replace(
+            "## Steps",
+            "## Criteria\n\n1. `npm test` passes.\n\n**Out of scope**: None.\n**Assumptions**: None.\n\n## Steps",
+        );
+        assert!(plan_problems_for(&with, None, true).is_empty());
     }
 
     /// A04: "Implement this plan" sent with the plan's path gets the text

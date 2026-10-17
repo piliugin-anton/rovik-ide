@@ -16,7 +16,7 @@ use std::time::Duration;
 
 const CHAT: &str = "chat-1";
 
-const PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Steps\n\n\
+const PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Criteria\n\n1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
     1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `check.js` checks.\n\
     2. **Check**\n   - Files: `check.js` (read)\n   - Read `check.js` to confirm it checks `ok.txt`; it keeps its code.\n\n\
     ## Validation\n- `npm test`\n";

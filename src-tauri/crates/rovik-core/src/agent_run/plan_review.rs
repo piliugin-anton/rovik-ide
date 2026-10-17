@@ -124,7 +124,19 @@ pub struct BriefParts<'a> {
     pub plan: &'a str,
     /// B13: a follow-up review, after a hold.
     pub earlier: Option<Earlier<'a>>,
+    /// S01: an Autopilot task's plan, whose criteria are reviewed too.
+    pub autopilot: bool,
 }
+
+/// S01 (4.2): what the reviewer checks in an Autopilot task's criteria.
+const CRITERIA_REVIEW: &str = "## The criteria\n\n\
+     This plan is for an Autopilot task: nobody reads it before it's built, and its \"## Criteria\" say what done means. \
+     The tests are written from them before the code, and the result is judged by them. These are findings too:\n\
+     - a criterion no test or reading of the result could check (\"it works well\", \"the code is clean\");\n\
+     - a part of the request no criterion covers;\n\
+     - a criterion beyond the request;\n\
+     - an assumption under **Assumptions** that the request or the code contradicts.\n\
+     Report them as findings about \"Plan\".";
 
 /// B13: what a follow-up review is told of the hold before it.
 pub struct Earlier<'a> {
@@ -157,6 +169,10 @@ pub fn brief(p: &BriefParts) -> String {
         "\n\n## The plan\n\n````markdown\n{}\n````",
         p.plan.trim()
     ));
+    if p.autopilot {
+        out.push_str("\n\n");
+        out.push_str(CRITERIA_REVIEW);
+    }
     if let Some(e) = &p.earlier {
         let list = e
             .findings
@@ -1151,6 +1167,7 @@ impl Run {
                 replies: &replies,
                 changes: &changes,
             }),
+            autopilot: self.in_autopilot(),
         });
 
         // B13: its verdicts are asked for when its report leaves some out;
@@ -1350,6 +1367,7 @@ mod tests {
             answers: &["Which DB? → SQLite".into()],
             plan: "# Users\n\n## Steps\n1. …",
             earlier: None,
+            autopilot: false,
         });
         assert!(text.starts_with("# Review this plan"));
         assert!(text.contains("## The user's request\n\nAdd a users page"));
@@ -1358,6 +1376,20 @@ mod tests {
         );
         assert!(text.contains("## The plan\n\n````markdown\n# Users"));
         assert!(!text.contains("earlier review"));
+        assert!(!text.contains("## The criteria"), "not Autopilot's");
+        // S01: an Autopilot task's criteria are checked too, after the plan.
+        let autopilot = brief(&BriefParts {
+            request: "Add a users page",
+            answers: &[],
+            plan: "# Users\n\n## Criteria\n\n1. The page lists users.",
+            earlier: None,
+            autopilot: true,
+        });
+        let at = autopilot
+            .find("## The criteria\n\nThis plan is for an Autopilot task")
+            .unwrap();
+        assert!(at > autopilot.find("## The plan").unwrap());
+        assert!(autopilot.contains("a part of the request no criterion covers"));
         let f = parse_findings(STEP_FINDINGS).unwrap();
         let responses = parse_responses(Some(&json!([{
             "finding": 1,
@@ -1374,6 +1406,7 @@ mod tests {
                 replies: "Not shown: the answers came with the plan.",
                 changes: "@@ line 3 @@\n-1. x\n+1. y",
             }),
+            autopilot: false,
         });
         assert!(later.contains("## The earlier review\n\nThis is a follow-up review."));
         // B13: each finding with the agent's answer, on one line, or none.
@@ -1416,6 +1449,7 @@ mod tests {
                 replies: "1: not a problem, the CLI is gone.",
                 changes: "",
             }),
+            autopilot: false,
         });
         assert!(silent.contains(
             "The agent sent no answers with the plan. What it wrote since the hold:\n\n1: not a problem, the CLI is gone."

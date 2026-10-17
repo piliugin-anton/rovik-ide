@@ -229,7 +229,7 @@ async fn an_autopilot_tasks_unchecked_result_waits() {
     let setup = Setup::new().await;
     let (root, _) = worktree(&setup).await;
     let (_listener, mut heard) = listening(&setup.daemon).await;
-    let plan = "# Say hello\n\nmain prints hello.\n\n## Steps\n\n\
+    let plan = "# Say hello\n\nmain prints hello.\n\n## Criteria\n\n1. Running `main` prints `hello`.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
         1. **Say hello**\n   - Files: `src/main.rs`\n   - Change `main` in `src/main.rs` to print `hello` with `println!`.\n\
         2. **Check**\n   - Files: `src/main.rs` (read)\n   - Read `src/main.rs` to confirm `main` prints `hello`; it keeps its signature.\n\n\
         ## Validation\n- Run it by hand: it prints hello.\n";

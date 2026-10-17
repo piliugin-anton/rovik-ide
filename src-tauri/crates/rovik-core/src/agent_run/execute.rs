@@ -1704,9 +1704,13 @@ impl Run {
         let plan_text = plan_text.as_str();
         // B12: the agent's answers to the findings that held the plan back.
         let responses = super::plan_review::parse_responses(args.get("responses"));
-        // B07: against the project too, as this chat sees it.
-        let mut problems =
-            plan::plan_problems_in(plan_text, self.root.as_deref().map(std::path::Path::new));
+        // B07: against the project too, as this chat sees it; S01: an
+        // Autopilot task's plan says what done means.
+        let mut problems = plan::plan_problems_for(
+            plan_text,
+            self.root.as_deref().map(std::path::Path::new),
+            self.in_autopilot(),
+        );
         // B12: a held finding left unanswered sends the plan back with the
         // checker's problems, before a review is spent on it.
         problems.extend(self.unanswered(&responses));

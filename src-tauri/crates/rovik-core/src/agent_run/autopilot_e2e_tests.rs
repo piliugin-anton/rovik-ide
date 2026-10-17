@@ -186,7 +186,7 @@ async fn task_project() -> Harness {
     .await
 }
 
-const TASK_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Steps\n\n\
+const TASK_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Criteria\n\n1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
     1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `check.js` checks.\n\
     2. **Check**\n   - Files: `check.js` (read)\n   - Read `check.js` to confirm it checks `ok.txt`; it keeps its code.\n\n\
     ## Validation\n- `npm test`\n";
@@ -660,12 +660,13 @@ fn last_user_text(request: &Value) -> String {
 
 /// A04: the plan stage asks nobody: `ask_user` isn't offered, a call to it
 /// anyway is refused with the reason, nothing waits for an answer, and the
-/// plan goes in with its assumptions under "## Decisions". What the model
-/// is told says so, in Plan mode's place.
+/// plan goes in with its assumptions written down (S01: under
+/// **Assumptions** in its criteria). What the model is told says so, in
+/// Plan mode's place.
 #[tokio::test]
 async fn a_plan_that_asks_is_refused_and_submits_with_assumptions() {
     let h = harness(&[("src/a.rs", "fn main() {}\n")]).await;
-    let plan = "# Flag\n\nAdd a flag.\n\n## Steps\n\n\
+    let plan = "# Flag\n\nAdd a flag.\n\n## Criteria\n\n1. `main --verbose` prints each step.\n\n**Out of scope**: None.\n\n**Assumptions**\n- The flag is `--verbose`: nobody was there to ask.\n\n## Steps\n\n\
         1. **Flag**\n   - Files: `src/a.rs`\n   - Add a `verbose` flag that `main` reads and prints with.\n\
         2. **Use it**\n   - Files: `src/a.rs`\n   - Print each step when the `verbose` flag is set.\n\n\
         ## Decisions\n- Assumed the flag is `--verbose`: nobody was there to ask.\n\n\
@@ -810,6 +811,87 @@ async fn an_agent_mode_run_is_not_autopilots() {
     assert_eq!(h.run_end().await, "done");
     let runs = log_lines(&h, "run").await;
     assert!(runs.last().unwrap().get("autopilot").is_none(), "{runs:?}");
+}
+
+/*
+ * Criteria (S01)
+ */
+
+/// S01 (D8): a task's plan without criteria goes back to the planner with
+/// what to add; with them it's reviewed, and the reviewer is told to check
+/// them, with the plan's criteria in its brief.
+#[tokio::test]
+async fn a_plan_without_criteria_goes_back_and_its_review_checks_them() {
+    let h = task_project().await;
+    let without = TASK_PLAN.replace(
+        "## Criteria\n\n1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n",
+        "",
+    );
+    assert_ne!(without, TASK_PLAN);
+    let mut script = task_script();
+    script.insert(
+        0,
+        Reply::Call {
+            id: "p0",
+            name: "submit_plan",
+            args: json!({ "plan": without }),
+        },
+    );
+    let (url, seen) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records)[..2], BALANCED_OK[..2]);
+    let messages = h.messages().await;
+    let back = &result_of(&messages, "p0").content;
+    assert!(back.starts_with("Error: the plan wasn't saved."), "{back}");
+    assert!(back.contains("Add a \"## Criteria\" section"), "{back}");
+    assert!(
+        result_of(&messages, "p1")
+            .content
+            .starts_with("Saved the plan to"),
+        "{}",
+        result_of(&messages, "p1").content
+    );
+    // The review's brief: the plan's criteria, and what to check in them.
+    let bodies = seen.lock().unwrap().clone();
+    // A request's messages as one text, whatever shape their content has.
+    let text_of = |body: &Value| -> String {
+        body["messages"]
+            .as_array()
+            .map(|ms| {
+                ms.iter()
+                    .map(|m| match &m["content"] {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    };
+    let review = bodies
+        .iter()
+        .map(text_of)
+        .find(|t| t.contains(PLAN_REVIEW))
+        .expect("a plan review");
+    assert!(
+        review.contains("1. `npm test` passes: `check.js` finds `ok.txt` saying ok."),
+        "{review}"
+    );
+    assert!(
+        review.contains("## The criteria\n\nThis plan is for an Autopilot task"),
+        "{review}"
+    );
+    // The planner was told what done means, before the steps.
+    let planner = text_of(&bodies[0]);
+    assert!(
+        planner.contains("\"## Criteria\": what done means"),
+        "{planner}"
+    );
 }
 
 /*
@@ -1390,7 +1472,7 @@ async fn python_project() -> Harness {
     .await
 }
 
-const PYTHON_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Steps\n\n\
+const PYTHON_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Criteria\n\n1. `pytest` passes: `tests/test_ok.py` finds `ok.txt` saying ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
     1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `tests/test_ok.py` checks.\n\
     2. **Check**\n   - Files: `tests/test_ok.py` (read)\n   - Read `tests/test_ok.py` to confirm it checks `ok.txt`; it keeps its code.\n\n\
     ## Validation\n- `pytest`\n";
