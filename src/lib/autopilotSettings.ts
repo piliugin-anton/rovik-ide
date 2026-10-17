@@ -107,10 +107,11 @@ export const AUTOPILOT_KINDS: SubagentKindId[] = [
   'acceptance',
   'planner',
   'judge',
+  'breaker',
 ];
 
 /** Of those, the kinds only Thorough uses (`needed_kinds(Effort::Thorough)`). */
-export const THOROUGH_KINDS: SubagentKindId[] = ['planner', 'judge'];
+export const THOROUGH_KINDS: SubagentKindId[] = ['planner', 'judge', 'breaker'];
 
 /** The tag a kind's row on the Subagents page carries, if Autopilot uses it. */
 export function autopilotKindTag(kind: SubagentKindId): string | null {

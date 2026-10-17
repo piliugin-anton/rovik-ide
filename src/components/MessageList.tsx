@@ -44,6 +44,7 @@ import TestsRecord from './TestsRecord';
 import AcceptanceRecord from './AcceptanceRecord';
 import PlannerRecord from './PlannerRecord';
 import JudgeRecord from './JudgeRecord';
+import BreakerRecord from './BreakerRecord';
 import ReportFacts from './ReportFacts';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
@@ -1545,6 +1546,17 @@ export default function MessageList(props: {
                   {(j) => (
                     <JudgeRecord
                       meta={j()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.breaker}>
+                  {(b) => (
+                    <BreakerRecord
+                      meta={b()}
                       dialogId={props.dialogId}
                       recordId={m.id}
                       live={props.sending && messages()[messages().length - 1]?.id === m.id}

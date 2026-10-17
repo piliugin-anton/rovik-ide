@@ -16,6 +16,7 @@ import {
   acceptanceHeadline,
   plannerHeadline,
   judgeHeadline,
+  breakerHeadline,
   reportDuration,
   reportHeadline,
   reportSpent,
@@ -444,6 +445,38 @@ test('criteria records’ headlines: a writer’s set, the judge’s merge (T03)
       false
     ),
     'The judge couldn’t merge the criteria: its report couldn’t be read. The task takes writer A’s criteria.'
+  );
+});
+
+test('the adversarial tester’s headline: at work, found a fault, passed, none (T04)', () => {
+  assert.equal(
+    breakerHeadline({ status: 'running' }, false),
+    'The checks pass: an adversarial tester is trying to break the change…'
+  );
+  assert.equal(
+    breakerHeadline({ status: 'running' }, true),
+    'The adversarial tester didn’t finish: the run ended meanwhile.'
+  );
+  assert.equal(
+    breakerHeadline({ status: 'done', files: ['a.test.js'] }, false),
+    'The adversarial tester wrote 1 test file; the checks run them next.'
+  );
+  assert.equal(
+    breakerHeadline({ status: 'done', files: ['a.test.js', 'b.test.js'], found: true }, false),
+    'The adversarial tester’s 2 test files found a fault: the agent fixes the change to pass them.'
+  );
+  assert.equal(
+    breakerHeadline({ status: 'done', files: ['a.test.js'], found: false }, false),
+    'The change passes the adversarial tester’s 1 test file.'
+  );
+  assert.equal(
+    breakerHeadline({ status: 'blocked', reason: 'it couldn’t test the change: no API' }, false),
+    'The adversarial tester left no test: it couldn’t test the change: no API.'
+  );
+  // Blocked with tests written: they stay.
+  assert.equal(
+    breakerHeadline({ status: 'blocked', files: ['a.test.js'], found: false }, false),
+    'The change passes the adversarial tester’s 1 test file.'
   );
 });
 

@@ -306,6 +306,15 @@ impl Judgement {
         self
     }
 
+    /// The same round with nothing to compare it with, as a first round
+    /// (T04: the adversarial tester's tests, run for the first time: what
+    /// fails is what they found, and nothing but they changed).
+    pub fn as_first(mut self) -> Judgement {
+        self.verdict = Verdict::First;
+        self.broke.clear();
+        self
+    }
+
     /// The same round with nothing counted as broken.
     pub fn without_regression(mut self) -> Judgement {
         if self.verdict == Verdict::Regression {

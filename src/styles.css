@@ -5141,6 +5141,15 @@ body.is-resizing * {
   color: var(--fg-dim);
 }
 
+/* T04: the adversarial tester (BreakerRecord.tsx): its tests found a fault. */
+.chat-breaker.found {
+  border-left-color: var(--warning);
+}
+
+.chat-breaker-removed {
+  color: var(--fg-dim);
+}
+
 /* T02: the judge of a Thorough task's plans (JudgeRecord.tsx). */
 .chat-judge.done {
   border-left-color: var(--success);

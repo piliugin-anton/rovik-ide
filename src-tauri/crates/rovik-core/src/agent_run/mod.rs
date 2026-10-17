@@ -23,6 +23,7 @@
 
 pub mod acceptance;
 pub mod autopilot;
+pub mod breaker;
 pub mod budget;
 pub mod causes;
 pub mod change_review;

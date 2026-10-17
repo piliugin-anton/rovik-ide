@@ -230,6 +230,13 @@ const MERGING: &str = super::judge::JUDGE_CRITERIA_HEADING;
 /// them replies: blocked, so the planners write the criteria themselves.
 const NO_CRITERIA: &str = "## Blocked\n\nNo criteria in this test.";
 
+/// The adversarial tester's brief starts so (T04).
+const BREAKING: &str = super::breaker::BREAK_HEADING;
+
+/// What the adversarial tester answers unless a test gives it replies:
+/// blocked, so it writes nothing.
+const NO_BREAK: &str = "## Blocked\n\nNothing to break in this test.";
+
 /// What the judge answers unless a test gives it replies: blocked, so the
 /// task takes the first planner's plan that passes the checks.
 const NO_JUDGMENT: &str = "## Blocked\n\nNo judgment in this test.";
@@ -244,9 +251,9 @@ const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
 /// `testing::model_routed`, with the test writers of the Tests stage and of
 /// a change without tests (`NO_TESTS`), the acceptance checker
 /// (`NO_VERDICTS`), Thorough's criteria writers and their merge
-/// (`NO_CRITERIA`), its planners (`NO_PLAN`) and its judge
-/// (`NO_JUDGMENT`) answered apart unless the test routes them: a task's
-/// other runs get the replies they're written for.
+/// (`NO_CRITERIA`), its planners (`NO_PLAN`), its judge (`NO_JUDGMENT`)
+/// and its adversarial tester (`NO_BREAK`) answered apart unless the test
+/// routes them: a task's other runs get the replies they're written for.
 async fn model_routed(
     mut routes: Vec<(&'static str, Vec<Reply>)>,
     default: Vec<Reply>,
@@ -266,6 +273,9 @@ async fn model_routed(
         if !routes.iter().any(|(m, _)| *m == marker) {
             routes.push((marker, vec![Reply::Text(NO_CRITERIA)]));
         }
+    }
+    if !routes.iter().any(|(marker, _)| *marker == BREAKING) {
+        routes.push((BREAKING, vec![Reply::Text(NO_BREAK)]));
     }
     if !routes.iter().any(|(marker, _)| *marker == ACCEPTANCE) {
         routes.push((ACCEPTANCE, vec![Reply::Text(NO_VERDICTS)]));
@@ -525,9 +535,9 @@ async fn a_task_has_its_reviewer_with_the_users_subagents_off() {
 }
 
 /// A06: a Thorough task has Thorough's stages: Break and Pick, after the
-/// checks, recorded skipped until T builds them; every record carries the
-/// effort the task started with, which a change of the setting meanwhile
-/// doesn't change.
+/// checks (Pick recorded skipped until T06 builds it, Break skipped when
+/// its tester writes nothing); every record carries the effort the task
+/// started with, which a change of the setting meanwhile doesn't change.
 #[tokio::test]
 async fn a_thorough_task_records_its_own_stages_skipped_until_built() {
     let h = task_project().await;
@@ -563,9 +573,18 @@ async fn a_thorough_task_records_its_own_stages_skipped_until_built() {
         records.iter().all(|r| r.effort == Effort::Thorough),
         "{records:#?}"
     );
-    for record in records.iter().filter(|r| r.name.thorough_only()) {
-        assert_eq!(record.summary.as_deref(), Some("Not available yet"));
-    }
+    let summaries: Vec<Option<&str>> = records
+        .iter()
+        .filter(|r| r.name.thorough_only())
+        .map(|r| r.summary.as_deref())
+        .collect();
+    assert_eq!(
+        summaries,
+        [
+            Some("Skipped: it couldn't test the change: Nothing to break in this test."),
+            Some("Not available yet"),
+        ]
+    );
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }
 
@@ -4442,4 +4461,148 @@ async fn criteria_without_a_merge_are_the_first_writers() {
         saved.items,
         ["`npm test` passes.", "`ok.txt` says OK, in capitals."]
     );
+}
+
+/// A project whose `npm test` is Node's own runner, which runs every
+/// `*.test.js`: its test passes once ok.txt says ok.
+async fn node_test_project() -> Harness {
+    harness(&[
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node --test" } }"#),
+        ("check.js", "// The project's own check is ok.test.js.\n"),
+        (
+            "ok.test.js",
+            "const test = require('node:test');\nconst assert = require('assert');\nconst fs = require('fs');\ntest('ok.txt says ok', () => assert.strictEqual(fs.readFileSync(__dirname + '/ok.txt', 'utf8').trim(), 'ok'));\n",
+        ),
+        ("ok.txt", "no"),
+    ])
+    .await
+}
+
+/// T04's tester's tests: one a criterion asks for, which the change fails
+/// (ok.txt has no newline at its end), and a speculative one, which passes.
+const EDGE_TEST: &str = "const test = require('node:test');\nconst assert = require('assert');\nconst fs = require('fs');\ntest('ok.txt ends its line', () => assert.ok(fs.readFileSync(__dirname + '/ok.txt', 'utf8').endsWith('\\n')));\n";
+const GUESS_TEST: &str = "const test = require('node:test');\nconst assert = require('assert');\nconst fs = require('fs');\ntest('ok.txt is not empty', () => assert.ok(fs.readFileSync(__dirname + '/ok.txt', 'utf8').length > 0));\n";
+
+/// T04 (4.8): green in a Thorough task, the adversarial tester tries to
+/// break the change. Its write outside test paths is refused; its
+/// speculative test, which passes alone, is removed; its criterion's test
+/// fails on the change, and the next round is a repair round with it, not
+/// a regression: the fix makes it pass, and it stays.
+#[tokio::test]
+async fn the_adversarial_testers_failing_test_leads_to_a_repair_round() {
+    let h = node_test_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let report = "## Summary\n\nTried the line's ending (criterion 1), and that ok.txt isn't empty.\n\n## Test files\n\n- `edge.test.js`: criterion 1\n- `guess.test.js`: speculative\n\n## Assumptions\n\nok.txt is a line of text.";
+    let mut lead = task_script();
+    lead.extend([
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok\n" }),
+        },
+        Reply::Text("Fixed: ok.txt ends its line."),
+    ]);
+    let (url, seen) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                BREAKING,
+                vec![
+                    Reply::Call {
+                        id: "b1",
+                        name: "write",
+                        args: json!({ "path": "src/hack.js", "content": "module.exports = 1;\n" }),
+                    },
+                    Reply::Call {
+                        id: "b2",
+                        name: "write",
+                        args: json!({ "path": "edge.test.js", "content": EDGE_TEST }),
+                    },
+                    Reply::Call {
+                        id: "b3",
+                        name: "write",
+                        args: json!({ "path": "guess.test.js", "content": GUESS_TEST }),
+                    },
+                    Reply::Text(report),
+                ],
+            ),
+        ],
+        lead,
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        records.last().unwrap().outcome.as_deref(),
+        Some("verified"),
+        "{records:#?}"
+    );
+    // The fix stays, and so does the test that found it; the guess is gone.
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok\n"));
+    assert_eq!(h.file("edge.test.js").as_deref(), Some(EDGE_TEST));
+    assert_eq!(h.file("guess.test.js"), None);
+    assert_eq!(h.file("src/hack.js"), None);
+
+    // Its brief had the criteria and the diff; its write outside test
+    // paths came back refused.
+    let requests = seen.lock().unwrap().clone();
+    let briefs = briefs_of(&requests, BREAKING);
+    assert!(briefs[0].contains("## The criteria"), "{}", briefs[0]);
+    assert!(
+        briefs[0].contains("## The change\n\n```diff\n--- ok.txt"),
+        "{}",
+        briefs[0]
+    );
+    let refused = requests
+        .iter()
+        .filter(|r| route_of(r, &[BREAKING]).is_some())
+        .any(|r| {
+            r["messages"]
+                .to_string()
+                .contains("`src/hack.js` isn't a test file")
+        });
+    assert!(refused, "the refusal");
+
+    // Its record; the rounds: green, its tests failing, then green again.
+    let messages = h.messages().await;
+    let tester = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?.get("breaker"))
+        .expect("the tester's record");
+    assert_eq!(tester["status"], "done", "{tester}");
+    assert_eq!(tester["files"], json!(["edge.test.js"]));
+    assert_eq!(tester["removed"], json!(["guess.test.js"]));
+    assert_eq!(tester["found"], true);
+    assert_eq!(
+        tester["marks"],
+        json!([{ "file": "edge.test.js", "mark": "criterion 1" }])
+    );
+    let rounds = verifications(&messages);
+    let statuses: Vec<&str> = rounds
+        .iter()
+        .map(|r| r["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, ["passed", "failed", "passed"], "{rounds:#?}");
+    assert!(
+        rounds[1].get("rolledBack").is_none_or(Value::is_null),
+        "not a regression"
+    );
+    let note = messages
+        .iter()
+        .find(|m| m.content.contains(super::breaker::FINDINGS_NOTE_START))
+        .expect("the lead was told");
+    assert!(note.content.contains("- `edge.test.js` (criterion 1)"));
+    let stage = records.iter().find(|r| r.name == Stage::Break).unwrap();
+    assert_eq!(stage.status, Status::Done);
+    assert_eq!(
+        stage.summary.as_deref(),
+        Some("1 test file found a fault; a repair round followed; 1 speculative test that passed removed")
+    );
+    assert_eq!(log_lines(&h, "breaker").await.len(), 1, "once a task");
 }

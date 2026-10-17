@@ -323,6 +323,7 @@ sections (`subagent.rs` `KindSpec`); a report must have the first ones
 | acceptance    | `Verdicts`; `Evidence`, `Unmet` (Autopilot's, `acceptance.rs`)                                                                                                                     |
 | planner       | `Plan`, `Criteria`: one of them, as the brief asks: the whole plan under `Plan`, or the criteria alone (Thorough's, `planning.rs`)                                                 |
 | judge         | `Choice`, `Criteria`: one of them, as the brief asks: a choice among plans (then `Why`, and `Plan` when it merged or revised one), or the merged criteria (Thorough's, `judge.rs`) |
+| breaker       | `Summary`; `Test files`, `Assumptions` (Thorough's, `breaker.rs`)                                                                                                                  |
 
 There's no `## Status` section: the harness decides the status.
 

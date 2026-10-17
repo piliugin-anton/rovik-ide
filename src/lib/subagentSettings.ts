@@ -28,7 +28,8 @@ export type SubagentKindId =
   | 'testWriter'
   | 'acceptance'
   | 'planner'
-  | 'judge';
+  | 'judge'
+  | 'breaker';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -111,6 +112,14 @@ export const SUBAGENT_KINDS: {
     when: 'Runs in Autopilot’s Thorough effort once the planners gave two plans or more; ordinary chats don’t use it.',
     toolCalls: 30,
     minutes: 6,
+  },
+  {
+    id: 'breaker',
+    label: 'Adversarial tester',
+    hint: 'Tries to break a finished change with tests a wrong implementation would fail. Writes test files only.',
+    when: 'Runs in Autopilot’s Thorough effort once a task’s checks pass; what its tests find, the agent fixes. Ordinary chats don’t use it.',
+    toolCalls: 40,
+    minutes: 10,
   },
 ];
 
@@ -203,6 +212,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     acceptance: { ...DEFAULT_KIND },
     planner: { ...DEFAULT_KIND },
     judge: { ...DEFAULT_KIND },
+    breaker: { ...DEFAULT_KIND },
   },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,

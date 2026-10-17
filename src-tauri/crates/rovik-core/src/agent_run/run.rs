@@ -311,6 +311,10 @@ pub struct Run {
     pub(super) review_blocked: bool,
     /// S07: the test writer ran for a change that had no test (once).
     pub(super) tests_after_change: bool,
+    /// T04: the adversarial tester ran in this run (once a run).
+    pub(super) breaker_ran: bool,
+    /// T04: its tests, until the gate's round that runs them is judged.
+    pub(super) breaker_round: Option<super::breaker::BreakerRound>,
     /// S08: the acceptance checks this run had; the criteria the last
     /// found unsatisfied, for the next; and whether the last check left
     /// one unmet: the run ends `unmet`.
@@ -1014,6 +1018,8 @@ impl Run {
             review_answer_nudges: 0,
             review_blocked: false,
             tests_after_change: false,
+            breaker_ran: false,
+            breaker_round: None,
             acceptance_checks: 0,
             acceptance_unsatisfied: Vec::new(),
             acceptance_unmet: false,

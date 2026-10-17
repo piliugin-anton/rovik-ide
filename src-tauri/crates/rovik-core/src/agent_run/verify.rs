@@ -917,6 +917,11 @@ impl Run {
         let mut now = round_failures(&results);
         now.own_tests = Some(self.own_test_count());
         let mut judgement = repair::judge(&self.verify_history, &now);
+        // T04: the adversarial tester's tests, run for the first time: what
+        // fails is what they found, not a fix that broke something.
+        if self.breaker_round.is_some() {
+            judgement = judgement.as_first();
+        }
         // R05: asked to put back a weakened test, the agent did, and it
         // fails: that's what was asked for, not a fix that broke something.
         if std::mem::take(&mut self.asked_integrity) {
@@ -1114,6 +1119,9 @@ impl Run {
         }
         self.update_meta(&record_id, meta.clone()).await?;
         self.log_round(round, status, &results, &judgement, &flags);
+        // T04: the round that ran the adversarial tester's tests: what they
+        // found, for its record and the lead.
+        let breaker_note = self.breaker_round_judged(failed).await?;
 
         self.last_verify_failed = failed;
         if status == "passed" && !flags.is_empty() {
@@ -1153,6 +1161,12 @@ impl Run {
             self.take_checkpoint();
             return Ok("repaired".into());
         }
+        // T04: green in a Thorough task: the adversarial tester's tests,
+        // which the checks run now; what they find is the next round's.
+        if status == "passed" && self.break_after_green().await? {
+            self.take_checkpoint();
+            return Ok("repaired".into());
+        }
         // S08: green: the acceptance check, by the plan's criteria. Its
         // unsatisfied criteria get one more round, like any other.
         if status == "passed" && self.accept_after_green().await? {
@@ -1178,6 +1192,9 @@ impl Run {
         // assistant reply; marked as the IDE's, so it's never shown as the
         // user's message or replaced by the request's editor context.
         let mut notes: Vec<String> = Vec::new();
+        if let Some(note) = breaker_note {
+            notes.push(note);
+        }
         if self.carry_lost.is_some() && !std::mem::replace(&mut self.carry_lost_told, true) {
             notes.push(
                 "What the earlier rounds of checks knew (their failures, what each file was before) didn't carry over to these, so they start afresh: nothing is compared with or rolled back to before them.".into(),

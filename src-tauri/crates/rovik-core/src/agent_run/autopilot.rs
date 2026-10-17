@@ -51,9 +51,8 @@ pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 /// The kinds an Autopilot task's stages need (D17), of those built: the
 /// plan reviewer (the plan's review), the change reviewer and the failure
 /// triage (the implementation's review and checks), the test writer, the
-/// step workers and the acceptance checker; in Thorough also the planners
-/// and the judge (T01, T02). Thorough's adversarial tester (T04) joins
-/// them once it's built.
+/// step workers and the acceptance checker; in Thorough also the planners,
+/// the judge and the adversarial tester (T01, T02, T04).
 pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
     const BALANCED: &[Kind] = &[
         Kind::PlanReviewer,
@@ -72,6 +71,7 @@ pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
         Kind::Acceptance,
         Kind::Planner,
         Kind::Judge,
+        Kind::Breaker,
     ];
     match effort {
         Effort::Balanced => BALANCED,
@@ -1429,11 +1429,12 @@ async fn advance(
                 }
                 continue;
             }
-            Stage::Acceptance => done_in_run(core, dialog_id, &records, stage).await?,
-            Stage::Break | Stage::Pick => {
-                StageRecord::ended(task, stage, round, effort, Status::Skipped)
-                    .with_summary("Not available yet")
+            // S08, T04: inside the implementation's run, as its checks pass.
+            Stage::Acceptance | Stage::Break => {
+                done_in_run(core, dialog_id, &records, stage).await?
             }
+            Stage::Pick => StageRecord::ended(task, stage, round, effort, Status::Skipped)
+                .with_summary("Not available yet"),
         };
         add_stage(
             core,
@@ -1499,6 +1500,7 @@ async fn done_in_run(
     let kind = match stage {
         Stage::Checks => "verification",
         Stage::Acceptance => "acceptance",
+        Stage::Break => "breaker",
         _ => "review",
     };
     let (id, since) = (dialog_id.to_string(), run.seq);
@@ -1518,8 +1520,48 @@ async fn done_in_run(
     Ok(match stage {
         Stage::Checks => checks_record(base, run.record.outcome.as_deref(), rows.last(), &config),
         Stage::Acceptance => acceptance_record(base, rows.last()),
+        Stage::Break => break_record(base, rows.last()),
         _ => review_record(base, &rows, &config),
     })
+}
+
+/// T04: the Break stage's record, from the adversarial tester's record in
+/// the implementing run (`meta.breaker`).
+fn break_record(base: StageRecord, last: Option<&MessageRow>) -> StageRecord {
+    let Some((row, tester)) = last.and_then(|m| Some((m, m.meta.as_ref()?.get("breaker")?))) else {
+        return base.with_summary("Not run: the checks didn't pass");
+    };
+    let count = |key: &str| tester[key].as_array().map_or(0, Vec::len);
+    let files = |n: usize| format!("{n} test file{}", if n == 1 { "" } else { "s" });
+    let (kept, removed) = (count("files"), count("removed"));
+    let mut summary = match (kept, tester["found"].as_bool()) {
+        (0, _) => match tester["reason"].as_str() {
+            Some(why) => format!("Skipped: {why}"),
+            None => "It wrote no test that stays".into(),
+        },
+        (n, Some(true)) => format!("{} found a fault; a repair round followed", files(n)),
+        (n, _) => format!("{} pass, kept as regression tests", files(n)),
+    };
+    if removed > 0 {
+        summary.push_str(&format!(
+            "; {} speculative {} that passed removed",
+            removed,
+            if removed == 1 { "test" } else { "tests" }
+        ));
+    }
+    let status = match (kept, removed, tester["status"].as_str()) {
+        (0, 0, _) | (_, _, Some("running")) => Status::Skipped,
+        _ => Status::Done,
+    };
+    let summary = match tester["status"].as_str() {
+        Some("running") => "It didn't finish".to_string(),
+        _ => summary,
+    };
+    StageRecord {
+        status,
+        reference: Some(row.id.clone()),
+        ..base.with_summary(summary)
+    }
 }
 
 /// S08: the acceptance's record, from the implementing run's last check

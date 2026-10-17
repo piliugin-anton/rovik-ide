@@ -10,6 +10,7 @@ import ReviewRecord from './ReviewRecord';
 import VerificationRecord from './VerificationRecord';
 import PlannerRecord from './PlannerRecord';
 import JudgeRecord from './JudgeRecord';
+import BreakerRecord from './BreakerRecord';
 import MessageList from './MessageList';
 import { chatApi } from '../lib/chatApi';
 import { liveSubagent, noteSubagentStarted } from '../lib/subagents';
@@ -964,5 +965,41 @@ test('criteria records: the set written, the merge with what it assumed (T03)', 
   assert.equal(
     judge.querySelector('.chat-planner-assumptions li')?.textContent,
     'The sets disagreed on waving: none, the narrower reading.'
+  );
+});
+
+test('the adversarial tester’s record: its tests and marks, what it removed (T04)', () => {
+  const root = container();
+  render(
+    () => (
+      <BreakerRecord
+        meta={{
+          status: 'done',
+          files: ['edge.test.js'],
+          marks: [{ file: 'edge.test.js', mark: 'criterion 1' }],
+          removed: ['guess.test.js'],
+          found: true,
+          summary: 'Tried the line’s ending.',
+        }}
+        dialogId="lead-b"
+        recordId="b1"
+        live={false}
+      />
+    ),
+    root
+  );
+  const record = root.querySelector('.chat-breaker')!;
+  assert.equal(record.className, 'chat-verify chat-tests chat-breaker found');
+  assert.equal(
+    record.querySelector('.chat-tests-files li')?.textContent,
+    'edge.test.js · criterion 1'
+  );
+  assert.equal(
+    record.querySelector('.chat-breaker-removed')?.textContent,
+    'Removed, speculative and passing: guess.test.js '
+  );
+  assert.equal(
+    record.querySelector('.chat-tests-summary')?.textContent,
+    'Tried the line’s ending.'
   );
 });

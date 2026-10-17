@@ -1660,3 +1660,31 @@ T05 depends most on the environment it meets.
   and the consumer reads it strictly (a plans judgment without its
   choice is still no judgment). The repair turn and the budget's note
   name the sections that way.
+
+### T04: the adversarial tester
+
+- **Where it runs.** Inside the implementation's run, as S07's test
+  writer and S08's acceptance check do: once a run, in a Thorough task,
+  the first time its checks pass (after the test-exists rule, before the
+  acceptance check). The Break stage's record is then written from its
+  record (`meta.breaker`), as the Checks and Acceptance stages' are.
+- **Its limits** are the test writer's (`tests_only`): test files only,
+  and bash for the project's checks and test runners only, but not just
+  light ones: it runs its tests to see which fail. Its brief has the
+  request, the criteria, the plan, the diff (rendered as for the
+  acceptance check) and the test check that runs its files.
+- **Its tests are the run's**: kept with the test writer's
+  (`test_writer_files`), so the lead changing one is flagged as E03 says,
+  and the checks run them at once. The round that runs them is judged as a
+  first round (`Judgement::as_first`): what fails is what they found, not
+  a fix that broke the green round before (nothing else changed since),
+  so nothing is rolled back and V03 counts no round without progress.
+  The lead gets that round's failures with a note naming the tests, and
+  the record says whether they found a fault (`found`).
+- **Speculative files** (its report's mark under "## Test files") run
+  alone first: the stack's own way (`project::test_command_for`), or
+  `node --test <file>` where `npm test` is Node's runner. One that passes
+  found nothing and is removed, as it was before the run; one that fails
+  stays, as a finding. One there's no way to run alone stays, listed
+  `unjudged`. Unmarked files stay: a test is kept unless it's known to
+  have found nothing.

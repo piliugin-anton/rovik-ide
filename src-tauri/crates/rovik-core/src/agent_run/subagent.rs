@@ -65,6 +65,9 @@ pub enum Kind {
     Planner,
     /// Picks or merges a Thorough task's plans (judge.rs, Autopilot only).
     Judge,
+    /// Tries to break a Thorough task's change with tests (breaker.rs,
+    /// Autopilot only).
+    Breaker,
 }
 
 /// The repository map a kind gets (S18, K21): what it's about and its size.
@@ -83,7 +86,7 @@ impl Kind {
         match self {
             // A plan changes nothing yet: the whole project, ranked for it.
             Kind::Scout | Kind::PlanReviewer | Kind::Planner | Kind::Judge => MapScope::Lead,
-            Kind::Reviewer | Kind::Triage | Kind::TestWriter | Kind::Acceptance => {
+            Kind::Reviewer | Kind::Triage | Kind::TestWriter | Kind::Acceptance | Kind::Breaker => {
                 MapScope::Changed {
                     fraction_percent: 50,
                 }
@@ -105,6 +108,7 @@ impl Kind {
         Kind::Acceptance,
         Kind::Planner,
         Kind::Judge,
+        Kind::Breaker,
     ];
 
     pub fn id(self) -> &'static str {
@@ -118,6 +122,7 @@ impl Kind {
             Kind::Acceptance => "acceptance",
             Kind::Planner => "planner",
             Kind::Judge => "judge",
+            Kind::Breaker => "breaker",
         }
     }
 
@@ -151,12 +156,13 @@ impl Kind {
             Kind::Acceptance => &super::acceptance::ACCEPTANCE,
             Kind::Planner => &super::planning::PLANNER,
             Kind::Judge => &super::judge::JUDGE,
+            Kind::Breaker => &super::breaker::BREAKER,
         }
     }
 
     /// Kinds that change files: they get a write scope (D7).
     pub fn writes(self) -> bool {
-        matches!(self, Kind::Worker | Kind::TestWriter)
+        matches!(self, Kind::Worker | Kind::TestWriter | Kind::Breaker)
     }
 }
 
@@ -1797,6 +1803,7 @@ mod tests {
                 "acceptance" => Kind::Acceptance,
                 "planner" => Kind::Planner,
                 "judge" => Kind::Judge,
+                "breaker" => Kind::Breaker,
                 other => panic!("the table names a kind there isn't: {other}"),
             };
             // The `Name` list the cell starts with: `;` ends the required

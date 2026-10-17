@@ -537,6 +537,50 @@ export function judgeHeadline(meta: JudgeMeta, interrupted: boolean): string {
 }
 
 /**
+ * `meta.breaker`: a Thorough task's adversarial tester (T04,
+ * agent_run/breaker.rs): at work, then the tests it left, the speculative
+ * ones that passed and were removed, and whether its tests found a fault.
+ */
+export interface BreakerMeta {
+  status: 'running' | 'done' | 'blocked' | 'skipped' | 'stopped';
+  /** The test files that stay, with how its report marked them. */
+  files?: string[];
+  marks?: { file: string; mark: string }[];
+  /** Speculative files that passed alone: removed. */
+  removed?: string[];
+  /** Speculative files there was no way to run alone: kept. */
+  unjudged?: string[];
+  /** The round that ran its tests: they failed on the change. */
+  found?: boolean;
+  summary?: string;
+  assumptions?: string;
+  report?: string;
+  /** blocked or skipped: why. */
+  reason?: string;
+  partial?: boolean;
+  childDialogId?: string;
+  model?: string;
+  toolCalls?: number;
+  ms?: number;
+}
+
+/** The headline of the adversarial tester's record. */
+export function breakerHeadline(meta: BreakerMeta, interrupted: boolean): string {
+  if (interrupted) return 'The adversarial tester didn’t finish: the run ended meanwhile.';
+  const n = meta.files?.length ?? 0;
+  const files = `${n} test file${n === 1 ? '' : 's'}`;
+  if (meta.status === 'running')
+    return 'The checks pass: an adversarial tester is trying to break the change…';
+  if (meta.status === 'stopped') return 'The adversarial tester was stopped.';
+  // Blocked or skipped with tests written: they stay all the same.
+  if (!n) return `The adversarial tester left no test: ${meta.reason ?? 'it wrote none'}.`;
+  if (meta.found === true)
+    return `The adversarial tester’s ${files} found a fault: the agent fixes the change to pass them.`;
+  if (meta.found === false) return `The change passes the adversarial tester’s ${files}.`;
+  return `The adversarial tester wrote ${files}; the checks run them next.`;
+}
+
+/**
  * `meta.report`: the facts a task's report was written from (S09,
  * agent_run/autopilot.rs `ReportFacts`), on its final message.
  */
