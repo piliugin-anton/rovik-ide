@@ -237,13 +237,17 @@ export function attemptText(meta: Pick<VerificationMeta, 'round' | 'maxRounds' |
 /** The headline of a round that failed on the environment (V03). */
 export function environmentHeadline(env: EnvironmentMeta): string {
   const what = `Checks failed on the environment, not on the change (${env.failure})`;
-  if (!env.installs.length)
+  const n = env.installs.length;
+  if (!n)
     return `${what}: nothing to install was found, so it went to the agent. This attempt isn’t counted.`;
-  const commands = env.installs.map((i) => (i.folder ? `${i.command} in ${i.folder}` : i.command));
   const failed = env.installs.filter((i) => i.status === 'failed').length;
-  return `${what}: ran ${commands.join(', ')}${
-    failed ? ` (${failed === env.installs.length ? 'it failed' : `${failed} failed`})` : ''
-  } and checked again. This attempt isn’t counted.`;
+  const installed =
+    failed === 0
+      ? 'the dependencies were installed, and the checks run again'
+      : failed === n
+        ? 'installing the dependencies failed; the checks run again anyway'
+        : `the dependencies were installed (${failed} of ${n} installs failed), and the checks run again`;
+  return `${what}: ${installed}. This attempt isn’t counted.`;
 }
 
 /** The repair round's one-line summary. */

@@ -362,7 +362,7 @@ test('Autopilot’s rounds: no count, an environment round, two without progress
   });
   assert.equal(
     installed.text,
-    'Checks failed on the environment, not on the change (sh: 1: vitest: not found): ran npm ci, pnpm install --frozen-lockfile in web (1 failed) and checked again. This attempt isn’t counted.'
+    'Checks failed on the environment, not on the change (sh: 1: vitest: not found): the dependencies were installed (1 of 2 installs failed), and the checks run again. This attempt isn’t counted.'
   );
   const rows = [...installed.root.querySelectorAll('.chat-verify-check')].map((li) => li.className);
   assert.deepEqual(rows, [
