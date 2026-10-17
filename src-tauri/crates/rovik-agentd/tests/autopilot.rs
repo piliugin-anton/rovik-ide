@@ -8,7 +8,7 @@ mod common;
 use common::{start_request, until, Daemon, Row};
 use rovik_core::agent_run::permissions::Permissions;
 use rovik_core::agent_run::{AgentConfig, StartKind, UserMessage};
-use rovik_core::testing::{model, Reply};
+use rovik_core::testing::{model_routed, Reply};
 use rovik_protocol::{Frame, Request, Response};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -60,9 +60,13 @@ fn stages(rows: &[Row]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The plan reviewer's brief starts so (plan_review.rs).
+const PLAN_REVIEW: &str = "# Review this plan";
+
 /// A03: the daemon is killed while the task's plan streams; started again,
 /// it picks the plan's run up where it was cut, and the task goes on by
-/// itself: the implementation, its checks, the delivery.
+/// itself: the plan's review (A07: on for Autopilot, though the computer's
+/// subagents are off), the implementation, its checks, the delivery.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
     if !has_npm() {
@@ -71,37 +75,41 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
     }
     let mut daemon = Daemon::start(&["--same-machine"]).await;
     let project = project(&daemon);
-    let (url, _) = model(vec![
-        Reply::Hang(Some("Looking at the project")),
-        Reply::Call {
-            id: "p1",
-            name: "submit_plan",
-            args: json!({ "plan": PLAN }),
-        },
-        Reply::Text("Saved the plan."),
-        Reply::Call {
-            id: "t1",
-            name: "todo",
-            args: json!({ "items": [
+    let review = vec![Reply::Text("## Findings\n\nNone.")];
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, review)],
+        vec![
+            Reply::Hang(Some("Looking at the project")),
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": PLAN }),
+            },
+            Reply::Text("Saved the plan."),
+            Reply::Call {
+                id: "t1",
+                name: "todo",
+                args: json!({ "items": [
                 { "title": "Write ok", "status": "in_progress" },
                 { "title": "Check", "status": "pending" },
             ] }),
-        },
-        Reply::Call {
-            id: "w1",
-            name: "write",
-            args: json!({ "path": "ok.txt", "content": "ok" }),
-        },
-        Reply::Call {
-            id: "t2",
-            name: "todo",
-            args: json!({ "items": [
+            },
+            Reply::Call {
+                id: "w1",
+                name: "write",
+                args: json!({ "path": "ok.txt", "content": "ok" }),
+            },
+            Reply::Call {
+                id: "t2",
+                name: "todo",
+                args: json!({ "items": [
                 { "title": "Write ok", "status": "done" },
                 { "title": "Check", "status": "done" },
             ] }),
-        },
-        Reply::Text("Done: ok.txt says ok."),
-    ])
+            },
+            Reply::Text("Done: ok.txt says ok."),
+        ],
+    )
     .await;
     let mut start = start_request(&url, &project, "Make the test pass".into());
     start.start = StartKind::Send {
@@ -168,7 +176,7 @@ async fn a_task_cut_by_a_kill_goes_on_when_the_daemon_starts_again() {
     });
     let expected: Vec<(String, String)> = [
         ("plan", "done"),
-        ("planReview", "skipped"),
+        ("planReview", "done"),
         ("prepare", "skipped"),
         ("tests", "skipped"),
         ("implement", "done"),
