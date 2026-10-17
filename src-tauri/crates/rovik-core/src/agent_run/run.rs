@@ -504,12 +504,23 @@ impl Run {
         if self.stage.as_ref().is_some_and(|s| s.candidates) {
             return self.candidates_stage().await;
         }
-        match self.stage.as_ref().map(|s| s.stage) {
-            Some(super::autopilot::Stage::Prepare) => self.prepare_stage().await,
-            Some(super::autopilot::Stage::Tests) => self.tests_stage().await,
-            Some(super::autopilot::Stage::Pick) => self.pick_stage().await,
-            Some(super::autopilot::Stage::Deliver) => self.deliver_stage().await,
-            _ => Ok("done".into()),
+        use super::autopilot::Stage;
+        let Some(stage) = self.stage.as_ref().map(|s| s.stage) else {
+            return Ok("done".into());
+        };
+        match stage {
+            Stage::Prepare => self.prepare_stage().await,
+            Stage::Tests => self.tests_stage().await,
+            Stage::Pick => self.pick_stage().await,
+            Stage::Deliver => self.deliver_stage().await,
+            // Not the IDE's work (`Stage::is_ide_work`): nothing to do here.
+            Stage::Plan
+            | Stage::PlanReview
+            | Stage::Implement
+            | Stage::Review
+            | Stage::Checks
+            | Stage::Break
+            | Stage::Acceptance => Ok("done".into()),
         }
     }
 
