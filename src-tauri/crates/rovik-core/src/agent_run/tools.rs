@@ -488,6 +488,155 @@ pub fn is_error(result: &str) -> bool {
     result.trim_start().starts_with("Error:")
 }
 
+/// G02 (autopilot-plan): what kind of error a tool call's result is, for
+/// its `tool` line in the agent log and the evaluation's counts: one of
+/// the classes below, by the words the tools write, or "other". None: the
+/// call didn't fail. A command that ran and exited non-zero didn't fail as
+/// a call: its result is the command's (`command_end`).
+pub fn error_class(result: &str) -> Option<&'static str> {
+    if !is_error(result) {
+        return None;
+    }
+    let text = result.to_lowercase();
+    let class = ERROR_CLASSES
+        .iter()
+        .find(|(_, words)| words.iter().any(|w| text.contains(w)))
+        .map_or("other", |(class, _)| *class);
+    Some(class)
+}
+
+/// The classes of errors cut short by the run, not made by the model: a
+/// Stop, a closed app, a budget. The evaluation's error counts leave them
+/// out.
+pub const CUT_CLASSES: &[&str] = &["stopped", "interrupted", "not run"];
+
+/// The classes of an edit whose `old_text` didn't pick one place in the
+/// file: the evaluation's edit misses.
+pub const EDIT_MISS_CLASSES: &[&str] = &["old_text not found", "old_text not unique"];
+
+/// Each class with words only its results have (lowercase), the first
+/// match winning: the most specific first.
+const ERROR_CLASSES: &[(&str, &[&str])] = &[
+    (
+        "stopped",
+        &["stopped by the user", "the user stopped the task"],
+    ),
+    ("interrupted", &["interrupted: the app closed"]),
+    ("not run", &["error: not run"]),
+    // edit_file.rs: an edit whose text isn't in the file once.
+    ("old_text not found", &["old_text was not found"]),
+    ("old_text not unique", &["old_text matches"]),
+    (
+        "bad edit",
+        &[
+            "old_text must not be empty",
+            "nothing would change",
+            "invalid line range",
+            "is past the end of the file",
+        ],
+    ),
+    // file_guard.rs: someone else changed the file.
+    (
+        "file changed",
+        &[
+            "changed since you last read it",
+            "kept changing while this edit waited",
+        ],
+    ),
+    (
+        "no such file",
+        &[
+            "no such file",
+            ": not a file",
+            ": not a directory",
+            "does not exist",
+        ],
+    ),
+    ("no such symbol", &["no declaration named"]),
+    ("binary file", &["binary file"]),
+    (
+        "bad path",
+        &[
+            "path must not contain",
+            "path escapes project root",
+            "path must not be empty",
+            "needs an open project folder",
+        ],
+    ),
+    // The user's permissions and approvals, or an AI reviewer's.
+    (
+        "denied",
+        &[
+            "blocked by the user's permission settings",
+            "rejected by the user's ai reviewer",
+            "the user denied",
+            "the user rejected",
+            "need a person's approval",
+        ],
+    ),
+    // The harness's rules: a mode's or a subagent's tools, a writer's
+    // scope, the checklist first, the context's limits.
+    (
+        "not allowed",
+        &[
+            "isn't available",
+            "is only available",
+            "unknown tool",
+            "not granted",
+            "outside your write scope",
+            "isn't a test file",
+            "one of the files the change touches",
+            "heavy command",
+            "can't be told to be light",
+            "can't be checked",
+            "has no checklist",
+            "this turn offers only",
+            "can't be used on your context folder",
+            "nobody answers questions",
+        ],
+    ),
+    // submit_plan's: its problems follow, in any words.
+    (
+        "plan",
+        &[
+            "the plan wasn't saved",
+            "the plan couldn't be saved",
+            "the plan can't be saved",
+            "the plan is blocked",
+        ],
+    ),
+    ("subagent", &["subagent", "worker"]),
+    (
+        "bad arguments",
+        &[
+            "could not parse arguments",
+            "is required",
+            "must not be empty",
+            "give either",
+            "pass items",
+            "pass questions",
+        ],
+    ),
+];
+
+/// G02: how a command that ran ended, from its result's second line
+/// (`format_command_output`): its exit code (None when it didn't exit on
+/// its own), and whether it timed out. None: no command ran (a refusal,
+/// another tool's result).
+pub fn command_end(result: &str) -> Option<(Option<i64>, bool)> {
+    let mut lines = result.split('\n');
+    if !lines.next()?.starts_with("$ ") {
+        return None;
+    }
+    let status = lines.next()?;
+    if let Some(c) = EXIT_CODE.captures(status) {
+        return Some((c[1].parse::<i64>().ok(), false));
+    }
+    let timed_out = status.starts_with("timed out");
+    (timed_out || status.starts_with("stopped by the user") || status.starts_with("ended by"))
+        .then_some((None, timed_out))
+}
+
 fn num(args: &Map<String, Value>, key: &str) -> Option<f64> {
     args.get(key).and_then(|v| v.as_f64())
 }
@@ -2123,5 +2272,156 @@ a.rs (3 matches)
         let _ = search_outlines(&root, &result, start + SEARCH_OUTLINE_TIME);
         println!("{}", format_search_result(&result, &outlines));
         eprintln!("outlines: cold {cold:?}, cached {:?}", start.elapsed());
+    }
+
+    /// G02: a failed call's class, by the words the tools write: each from
+    /// the code that writes it where a function does, so a change of
+    /// wording that loses its class fails here.
+    #[test]
+    fn a_failed_calls_class_comes_from_the_words_its_tool_wrote() {
+        let file = "fn a() {}\nfn a() {}\n";
+        let edit = |old: &str, new: &str, lines: Option<usize>| {
+            let e = crate::edit_file::apply_edit(file, old, new, lines, lines).unwrap_err();
+            format!("Error: src/a.rs: {e}")
+        };
+        let cases: Vec<(String, Option<&str>)> = vec![
+            // Not failures: a write, and a command that ran and failed.
+            ("wrote 3 bytes to a.txt (+1 -0 lines)".into(), None),
+            (
+                "$ npm test\nexit code 1, 0.4 s\n--- stderr ---\nfail".into(),
+                None,
+            ),
+            (edit("fn b", "x", None), Some("old_text not found")),
+            (edit("fn b", "x", Some(1)), Some("old_text not found")),
+            (edit("fn a", "x", None), Some("old_text not unique")),
+            (edit("", "x", None), Some("bad edit")),
+            (edit("fn a", "fn a", None), Some("bad edit")),
+            (edit("fn a", "x", Some(9)), Some("bad edit")),
+            (
+                "Error: stopped by the user before this ran.".into(),
+                Some("stopped"),
+            ),
+            (
+                "Error: interrupted: the app closed before this ran. Run it again if you still need it."
+                    .into(),
+                Some("interrupted"),
+            ),
+            (
+                "Error: not run: the task went over its budget (it ran for 2 h).".into(),
+                Some("not run"),
+            ),
+            (
+                "Error: a.txt changed since you last read it (by another chat); your write was not applied."
+                    .into(),
+                Some("file changed"),
+            ),
+            ("Error: src/x.ts: not a file".into(), Some("no such file")),
+            ("Error: notes: not a directory".into(), Some("no such file")),
+            (
+                "Error: no declaration named \"Foo\" in the project graph.".into(),
+                Some("no such symbol"),
+            ),
+            (
+                "Error: logo.png: binary file, cannot edit".into(),
+                Some("binary file"),
+            ),
+            (
+                "Error: path must not contain '..': ../x".into(),
+                Some("bad path"),
+            ),
+            (
+                "Error: blocked by the user's permission settings. `git push` isn't allowed in this run."
+                    .into(),
+                Some("denied"),
+            ),
+            (
+                "Error: rejected by the user's AI reviewer (Reviewer): Not asked for.".into(),
+                Some("denied"),
+            ),
+            (
+                super::super::autopilot::DAEMON_FOLDER_REFUSED.into(),
+                Some("denied"),
+            ),
+            (
+                super::super::autopilot::NO_QUESTIONS.into(),
+                Some("not allowed"),
+            ),
+            (
+                "Error: write isn't available in Plan mode, which doesn't change anything.".into(),
+                Some("not allowed"),
+            ),
+            (
+                super::super::test_writer::not_a_test_file("src/a.ts"),
+                Some("not allowed"),
+            ),
+            (
+                super::super::test_writer::hidden_file("src/a.ts"),
+                Some("not allowed"),
+            ),
+            (
+                super::super::plan::checklist_gate_error("4 files changed", "write"),
+                Some("not allowed"),
+            ),
+            (
+                "Error: unknown tool \"frob\".".into(),
+                Some("not allowed"),
+            ),
+            (
+                "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- A \"## Criteria\" section is required."
+                    .into(),
+                Some("plan"),
+            ),
+            (
+                "Error: subagents are turned off in the settings. Do the work yourself.".into(),
+                Some("subagent"),
+            ),
+            (
+                "Error: could not parse arguments as JSON: {".into(),
+                Some("bad arguments"),
+            ),
+            ("Error: \"path\" is required.".into(), Some("bad arguments")),
+            ("Error: boom.".into(), Some("other")),
+        ];
+        for (text, want) in cases {
+            assert_eq!(error_class(&text), want, "{text}");
+        }
+        for class in CUT_CLASSES.iter().chain(EDIT_MISS_CLASSES) {
+            assert!(
+                ERROR_CLASSES.iter().any(|(c, _)| c == class),
+                "{class} is a class"
+            );
+        }
+    }
+
+    /// G02: how a command that ran ended, from its result; nothing for a
+    /// refusal or another tool's result.
+    #[test]
+    fn a_commands_end_comes_from_its_result() {
+        let end = |exit_code: Option<i32>, timed_out: bool, stopped: bool| {
+            let out = CommandOutput {
+                exit_code,
+                stdout: "ok\n".into(),
+                stderr: String::new(),
+                timed_out,
+                stopped,
+                truncated: false,
+                duration_ms: 400,
+                waited: None,
+                whole: None,
+            };
+            command_end(&format_command_output("npm test", &out))
+        };
+        assert_eq!(end(Some(0), false, false), Some((Some(0), false)));
+        assert_eq!(end(Some(2), false, false), Some((Some(2), false)));
+        assert_eq!(end(None, true, false), Some((None, true)));
+        assert_eq!(end(None, false, true), Some((None, false)));
+        assert_eq!(end(None, false, false), Some((None, false)), "a signal");
+        for other in [
+            "Error: blocked by the user's permission settings.",
+            "wrote 3 bytes to a.txt",
+            "",
+        ] {
+            assert_eq!(command_end(other), None, "{other}");
+        }
     }
 }

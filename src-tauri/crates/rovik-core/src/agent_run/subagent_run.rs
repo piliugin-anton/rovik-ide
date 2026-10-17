@@ -1346,6 +1346,7 @@ impl Run {
                 self.execute_tool_calls(run_now, None).await?;
             }
             for tc in over {
+                self.calls.start(&tc.id);
                 let content = format!(
                     "Error: not run: it's past your budget of {} tool calls. Write your report now with what you have.",
                     self.sub().map_or(0, |s| s.budget.tool_calls)

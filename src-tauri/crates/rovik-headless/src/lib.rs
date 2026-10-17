@@ -675,6 +675,50 @@ async fn stop_and_wait(core: &Core, rx: &mut UnboundedReceiver<Value>, dialog_id
     .await;
 }
 
+/// G02 (autopilot-plan): what the run's `tool` lines and its lead's
+/// `verify` lines say, for the report.
+#[derive(Debug, Default, PartialEq)]
+pub struct ToolCounts {
+    /// Its tool calls, its subagents' included.
+    pub calls: u64,
+    /// The ones that failed by the model's doing: a Stop's, a closed app's
+    /// and a budget's left out (`tools::CUT_CLASSES`).
+    pub errors: u64,
+    /// Those by class (`tools::error_class`).
+    pub classes: std::collections::BTreeMap<String, u64>,
+    /// Edits whose old text didn't pick one place in the file.
+    pub edit_misses: u64,
+    /// The checks' rounds the lead's runs went through.
+    pub verify_rounds: u64,
+}
+
+pub fn tool_counts(run_log: &[Value], dialog_id: &str) -> ToolCounts {
+    use rovik_core::agent_run::tools::{CUT_CLASSES, EDIT_MISS_CLASSES};
+    let mut counts = ToolCounts::default();
+    for line in run_log {
+        match line["event"].as_str() {
+            Some("tool") => {
+                counts.calls += 1;
+                if line["failed"] != true {
+                    continue;
+                }
+                let class = line["error"].as_str().unwrap_or("other");
+                if CUT_CLASSES.contains(&class) {
+                    continue;
+                }
+                counts.errors += 1;
+                *counts.classes.entry(class.to_string()).or_default() += 1;
+                if EDIT_MISS_CLASSES.contains(&class) {
+                    counts.edit_misses += 1;
+                }
+            }
+            Some("verify") if line["dialogId"] == dialog_id => counts.verify_rounds += 1,
+            _ => {}
+        }
+    }
+    counts
+}
+
 /// Whether a run log line is this run's: the lead's (`dialog_id`) or one of
 /// its subagents' (`children`: the ones seen starting). P6.4: a subagent's
 /// line names its lead, so it counts even before its start event is seen.
@@ -760,6 +804,7 @@ fn report(
     } else {
         (None, "unknown")
     };
+    let tools = tool_counts(&run_log, dialog_id);
     json!({
         "outcome": outcome,
         "ms": ms,
@@ -769,6 +814,14 @@ fn report(
         "mode": settings.mode.clone().unwrap_or_else(|| "agent".into()),
         "messages": messages.len(),
         "toolCalls": tool_calls,
+        // G02: from the run log's tool and verify lines.
+        "allToolCalls": tools.calls,
+        "toolErrors": tools.errors,
+        "toolErrorClasses": tools.classes,
+        "editMisses": tools.edit_misses,
+        "verifyRounds": tools.verify_rounds,
+        // An Autopilot task's, set by `run`.
+        "stages": Value::Null,
         "filesWritten": changed,
         "verification": meta("verification"),
         "reviews": meta("review"),
@@ -978,6 +1031,47 @@ mod tests {
             "d",
         );
         assert_eq!((t.replies, t.missing_usage), (0, 0));
+    }
+
+    /// G02: the report's counts from the run log: every tool line is a
+    /// call; a failure the run cut (Stop, a closed app, a budget) isn't the
+    /// model's error; an edit miss is one whose old text didn't pick one
+    /// place; the checks' rounds are the lead's.
+    #[test]
+    fn tool_counts_from_the_run_log() {
+        let tool = |failed: bool, error: Option<&str>| json!({ "event": "tool", "dialogId": "lead", "tool": "write", "failed": failed, "error": error });
+        let log = vec![
+            tool(false, None),
+            tool(true, Some("old_text not found")),
+            tool(true, Some("old_text not unique")),
+            tool(true, Some("no such file")),
+            tool(true, Some("stopped")),
+            tool(true, Some("not run")),
+            json!({ "event": "tool", "dialogId": "kid", "parentDialogId": "lead", "tool": "bash", "failed": true, "error": "denied" }),
+            json!({ "event": "verify", "dialogId": "lead", "round": 1 }),
+            json!({ "event": "verify", "dialogId": "lead", "round": 2 }),
+            json!({ "event": "verify", "dialogId": "kid", "round": 1 }),
+            json!({ "event": "reply", "dialogId": "lead" }),
+        ];
+        let counts = tool_counts(&log, "lead");
+        assert_eq!(
+            counts,
+            ToolCounts {
+                calls: 7,
+                errors: 4,
+                classes: [
+                    ("denied".to_string(), 1),
+                    ("no such file".to_string(), 1),
+                    ("old_text not found".to_string(), 1),
+                    ("old_text not unique".to_string(), 1),
+                ]
+                .into_iter()
+                .collect(),
+                edit_misses: 2,
+                verify_rounds: 2,
+            }
+        );
+        assert_eq!(tool_counts(&[], "lead"), ToolCounts::default());
     }
 
     #[test]

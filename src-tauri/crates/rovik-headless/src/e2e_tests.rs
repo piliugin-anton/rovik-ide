@@ -19,6 +19,12 @@ async fn a_scripted_task_runs_headless_and_reports() {
             name: "bash",
             args: json!({ "command": "git push origin main" }),
         },
+        // G02: an edit whose text isn't in the file.
+        Reply::Call {
+            id: "e1",
+            name: "write",
+            args: json!({ "path": "a.txt", "old_text": "older", "content": "new" }),
+        },
         Reply::Call {
             id: "w1",
             name: "write",
@@ -78,8 +84,19 @@ async fn a_scripted_task_runs_headless_and_reports() {
 
     let report: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(report["outcome"], "done");
-    assert_eq!(report["toolCalls"], 2);
+    assert_eq!(report["toolCalls"], 3);
     assert_eq!(report["filesWritten"], json!(["a.txt"]));
+    // G02: from the run log's tool lines: the refused push and the edit
+    // that missed; no checks ran, and the run is no Autopilot task's.
+    assert_eq!(report["allToolCalls"], 3);
+    assert_eq!(report["toolErrors"], 2);
+    assert_eq!(
+        report["toolErrorClasses"],
+        json!({ "denied": 1, "old_text not found": 1 })
+    );
+    assert_eq!(report["editMisses"], 1);
+    assert_eq!(report["verifyRounds"], 0);
+    assert_eq!(report["stages"], Value::Null);
     // The policy's denied command is refused as the run asks for it,
     // before any approval.
     assert_eq!(report["approvals"], json!([]));
@@ -769,6 +786,10 @@ async fn an_autopilot_task_runs_headless_to_its_report() {
     assert_eq!(report["mode"], "autopilot");
     assert_eq!(report["effort"], "balanced");
     assert_eq!(report["outcome"], "verified", "{report:#}");
+    // G02: the checks' rounds, and no failed call.
+    assert_eq!(report["verifyRounds"], 1, "{report:#}");
+    assert_eq!(report["toolErrors"], 0, "{report:#}");
+    assert_eq!(report["editMisses"], 0);
     let stages: Vec<(String, String)> = report["stages"]
         .as_array()
         .unwrap()

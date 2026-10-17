@@ -182,6 +182,8 @@ impl Run {
             None
         };
 
+        // G02: calls an earlier run made (a resume) are this run's now.
+        self.calls.made(calls);
         let mut rest = calls;
         while !rest.is_empty() {
             // P2.2: a subagent's time runs out within a reply too: what's
@@ -189,6 +191,7 @@ impl Run {
             if self.wall_left() == Some(std::time::Duration::ZERO) {
                 let wall = self.sub().map_or(0, |s| s.budget.wall.as_secs());
                 for tc in rest {
+                    self.calls.start(&tc.id);
                     let content = format!(
                         "Error: not run: it's past your time budget of about {wall} seconds. Write your report now with what you have."
                     );
@@ -204,6 +207,9 @@ impl Run {
                 0
             };
             if tasks > 0 {
+                for tc in &rest[..tasks] {
+                    self.calls.start(&tc.id);
+                }
                 self.execute_tasks(&rest[..tasks], resume_note.is_some())
                     .await?;
                 rest = &rest[tasks..];
@@ -216,9 +222,13 @@ impl Run {
                 self.runs_in_parallel(tc, resume_note, clm, context_dir.as_deref())
             });
             if n > 0 {
+                for tc in &rest[..n] {
+                    self.calls.start(&tc.id);
+                }
                 self.execute_parallel(&rest[..n], clm).await?;
                 rest = &rest[n..];
             } else {
+                self.calls.start(&rest[0].id);
                 self.execute_one(&rest[0], resume_note, clm, context_dir.as_deref())
                     .await?;
                 rest = &rest[1..];
@@ -288,21 +298,25 @@ impl Run {
                 let (name, args, stop) = (tc.name.clone(), tc.arguments.clone(), self.stop.clone());
                 let ctx = self.call_context(&tc.id);
                 async move {
-                    parallel::spawned(async move {
+                    // G02: its own time, from when its slot came.
+                    let started = std::time::Instant::now();
+                    let result = parallel::spawned(async move {
                         tools::execute(&app, root.as_deref(), &name, &args, &stop, &ctx).await
                     })
                     .await
                     .unwrap_or_else(|e| tools::ToolResult {
                         content: format!("Error: {e}"),
                         ..Default::default()
-                    })
+                    });
+                    (result, started.elapsed())
                 }
             })
             .collect();
         let mut results = InOrder::new(jobs, parallel::MAX_PARALLEL, self.stop.subscribe());
         for tc in calls {
             match results.next().await.flatten() {
-                Some(result) => {
+                Some((result, took)) => {
+                    self.calls.ran(&tc.id, took);
                     let run = Ran {
                         tool_name: tc.name.clone(),
                         args_json: tc.arguments.clone(),
@@ -672,6 +686,8 @@ impl Run {
         if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
             return self.stopped_result(tc).await;
         }
+        // G02: its time is its own from here, not its approval's wait.
+        self.calls.start(&tc.id);
         let mut args_json = auth
             .args_override
             .clone()

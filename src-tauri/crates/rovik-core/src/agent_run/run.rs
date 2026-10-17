@@ -366,6 +366,66 @@ pub struct Run {
     /// The last round asked the agent about changes that weaken the checks
     /// (R05): the next round's new failures aren't a regression.
     pub(super) asked_integrity: bool,
+    /// G02: the run's tool calls under way, for each one's `tool` line in
+    /// the agent log as its result is stored.
+    pub(super) calls: CallClock,
+}
+
+/// G02 (autopilot-plan): which tool each of a run's calls is and when it
+/// started, by id, from the reply that made it to its stored result.
+/// Behind a lock: the result is stored, and its line written, where the
+/// run is only borrowed.
+#[derive(Default)]
+pub(super) struct CallClock(Mutex<std::collections::HashMap<String, Clocked>>);
+
+struct Clocked {
+    tool: String,
+    started: Instant,
+    /// How long it ran, measured where it ran: a call of a parallel batch
+    /// is recorded once the ones before it are.
+    ran: Option<Duration>,
+}
+
+impl CallClock {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Clocked>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A reply's calls, made now; a call already known keeps its start.
+    pub(super) fn made(&self, calls: &[ToolCall]) {
+        let mut clock = self.lock();
+        for tc in calls {
+            clock.entry(tc.id.clone()).or_insert_with(|| Clocked {
+                tool: tc.name.clone(),
+                started: Instant::now(),
+                ran: None,
+            });
+        }
+    }
+
+    /// The call starts now: its turn came, or what it waited for (an
+    /// approval) did.
+    pub(super) fn start(&self, id: &str) {
+        if let Some(c) = self.lock().get_mut(id) {
+            c.started = Instant::now();
+            c.ran = None;
+        }
+    }
+
+    /// The call ran for `ran`, as measured where it ran.
+    pub(super) fn ran(&self, id: &str, ran: Duration) {
+        if let Some(c) = self.lock().get_mut(id) {
+            c.ran = Some(ran);
+        }
+    }
+
+    /// The call's tool and how long it took, its result just stored; None
+    /// for a call no reply of this run made.
+    fn finish(&self, id: &str) -> Option<(String, Duration)> {
+        self.lock()
+            .remove(id)
+            .map(|c| (c.tool, c.ran.unwrap_or_else(|| c.started.elapsed())))
+    }
 }
 
 /// Who a run works for.
@@ -1105,6 +1165,7 @@ impl Run {
             rolled_back_attempts: Vec::new(),
             bonus_rounds: 0,
             asked_integrity: false,
+            calls: CallClock::default(),
         }
     }
 
@@ -2474,10 +2535,48 @@ impl Run {
         m.tool_call_id = Some(tool_call_id.to_string());
         m.meta = meta;
         m.attachments = attachments;
-        self.append(vec![m]).await
+        self.append(vec![m]).await?;
+        self.log_tool(tool_call_id, &content);
+        Ok(())
+    }
+
+    /// G02 (autopilot-plan): the agent log's line for a finished tool call,
+    /// as its result is stored, once whatever path the call took: its tool,
+    /// whether it failed and how (`tools::error_class`), how long it took
+    /// (from its turn, or its approval, to its result), and for a command
+    /// that ran, how it ended.
+    fn log_tool(&self, tool_call_id: &str, content: &str) {
+        let (tool, took) = self
+            .calls
+            .finish(tool_call_id)
+            .unwrap_or_else(|| ("unknown".into(), Duration::ZERO));
+        let class = tools::error_class(content);
+        let mut entry = json!({
+            "event": "tool",
+            "dialogId": self.dialog_id,
+            "model": self.profile.model,
+            "tool": tool,
+            "failed": class.is_some(),
+            "error": class,
+            "ms": took.as_millis() as u64,
+        });
+        if tool == "bash" {
+            if let Some((exit_code, timed_out)) = tools::command_end(content) {
+                entry["exitCode"] = json!(exit_code);
+                if timed_out {
+                    entry["timedOut"] = json!(true);
+                }
+            }
+        }
+        if let Some(stage) = &self.stage {
+            entry["stage"] = json!(stage.stage.id());
+        }
+        self.note_sub_fields(&mut entry);
+        log::write(&self.core, entry);
     }
 
     /// A reply's final content: stored (indexed for search), and shown.
+    /// Its calls are the run's from here (G02's `tool` lines).
     pub(super) async fn finalize(
         &self,
         message_id: &str,
@@ -2486,6 +2585,7 @@ impl Run {
         meta: Option<Value>,
         error: Option<String>,
     ) -> Result<(), String> {
+        self.calls.made(&tool_calls);
         finalize_message(
             &self.core,
             &self.dialog_id,
