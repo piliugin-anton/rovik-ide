@@ -260,6 +260,8 @@ export interface ToolMeta {
   tests?: import('./lib/autopilot').TestsMeta;
   /** An empty assistant message: an acceptance check of a task's change (lib/autopilot.ts). */
   acceptance?: import('./lib/autopilot').AcceptanceMeta;
+  /** Autopilot, Thorough: one of the task's planners and its plan (T01). */
+  planner?: import('./lib/autopilot').PlannerMeta;
   /** A task's report, its final message: the facts it was written from (lib/autopilot.ts). */
   report?: import('./lib/autopilot').ReportMeta;
   /**
@@ -286,6 +288,8 @@ export interface ToolMeta {
     | 'loop'
     /** Autopilot: criteria an acceptance check found unmet (S08). */
     | 'acceptance'
+    /** Autopilot, Thorough: the planners' plan submitted for the run, or why none was (T01). */
+    | 'thoroughPlan'
     /** Autopilot: what the task's report is written from (S09). */
     | 'report';
   /** Dismiss the open checklist: don't carry it into the next request. */

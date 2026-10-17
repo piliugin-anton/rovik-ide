@@ -210,6 +210,13 @@ const NO_VERDICTS: &str = "## Blocked\n\nNothing to judge in this test.";
 /// The task's report turn, by its brief at the end of the chat (S09).
 const REPORT: &str = "last:# Write the task's report";
 
+/// A Thorough task's planners' brief starts so (T01).
+const PLANNING: &str = super::planning::PLAN_HEADING;
+
+/// What the planners answer unless a test gives them replies: blocked, so
+/// the plan run's model plans, as in Balanced.
+const NO_PLAN: &str = "## Blocked\n\nNo plan in this test.";
+
 /// The report a task's turn writes unless a test gives it another.
 const A_REPORT: &str = "## Assumptions\n\nNone.\n\n## What changed\n\nThe files the plan names.\n\n## How it was verified\n\nThe project's checks.\n\n## Open\n\nNothing.";
 
@@ -218,9 +225,10 @@ const A_REPORT: &str = "## Assumptions\n\nNone.\n\n## What changed\n\nThe files 
 const NO_TESTS: &str = "## Blocked\n\nThe request gives nothing to test.";
 
 /// `testing::model_routed`, with the test writers of the Tests stage and of
-/// a change without tests (`NO_TESTS`) and the acceptance checker
-/// (`NO_VERDICTS`) answered apart unless the test routes them: a task's
-/// other runs get the replies they're written for.
+/// a change without tests (`NO_TESTS`), the acceptance checker
+/// (`NO_VERDICTS`) and Thorough's planners (`NO_PLAN`) answered apart
+/// unless the test routes them: a task's other runs get the replies
+/// they're written for.
 async fn model_routed(
     mut routes: Vec<(&'static str, Vec<Reply>)>,
     default: Vec<Reply>,
@@ -229,6 +237,9 @@ async fn model_routed(
         if !routes.iter().any(|(marker, _)| *marker == writer) {
             routes.push((writer, vec![Reply::Text(NO_TESTS)]));
         }
+    }
+    if !routes.iter().any(|(marker, _)| *marker == PLANNING) {
+        routes.push((PLANNING, vec![Reply::Text(NO_PLAN)]));
     }
     if !routes.iter().any(|(marker, _)| *marker == ACCEPTANCE) {
         routes.push((ACCEPTANCE, vec![Reply::Text(NO_VERDICTS)]));
@@ -3627,4 +3638,341 @@ async fn a_partial_result_isnt_landed_and_its_report_says_why() {
         .to_string();
     assert!(brief.contains("starting with why the result wasn't delivered whole"));
     assert!(brief.contains("Delivered as partial, not landed"));
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * T: Thorough
+ * ---------------------------------------------------------------------------
+ */
+
+/// A planner's report: `TASK_PLAN` under the title `title`.
+fn planners_report(title: &str) -> &'static str {
+    let plan = TASK_PLAN.replacen("# Make the test pass", &format!("# {title}"), 1);
+    String::leak(format!("## Plan\n\n{plan}"))
+}
+
+/// The chat's planner records, oldest first.
+fn planner_records(messages: &[MessageRow]) -> Vec<&Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("planner"))
+        .collect()
+}
+
+/// T01 (4.1): a Thorough task's plan stage starts with three planners, at
+/// once and each on its own, each a record of its own with its plan. The
+/// first plan that passes the plan's checks (planner a's) is submitted for
+/// the run's model, as its own would be: reviewed, saved, implemented.
+#[tokio::test]
+async fn three_planners_plan_a_thorough_task_each_in_a_record_of_its_own() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let titles = [
+        "Make the test pass",
+        "Write ok to ok.txt",
+        "Have check.js find ok",
+    ];
+    let (url, seen) = model_routed(
+        vec![
+            (
+                PLANNING,
+                titles
+                    .iter()
+                    .map(|t| Reply::Text(planners_report(t)))
+                    .collect(),
+            ),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        // The plan run's model plans nothing: its first turn answers the
+        // submitted plan's result.
+        task_script().into_iter().skip(1).collect(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records)[..2],
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Done)
+        ]
+    );
+    assert_eq!(records[1].summary.as_deref(), Some("Clean"));
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+
+    // Three records, a, b and c, each with a plan of its own.
+    let messages = h.messages().await;
+    let planners = planner_records(&messages);
+    let field = |p: &Value, key: &str| p[key].as_str().unwrap_or_default().to_string();
+    assert_eq!(
+        planners
+            .iter()
+            .map(|p| field(p, "candidate"))
+            .collect::<Vec<_>>(),
+        ["a", "b", "c"]
+    );
+    for p in &planners {
+        assert_eq!(
+            (field(p, "role"), field(p, "status")),
+            ("plan".into(), "done".into())
+        );
+        assert_eq!(p["steps"], 2, "{p}");
+        assert!(p.get("problems").is_none(), "{p}");
+        assert!(field(p, "plan").contains("## Criteria"), "{p}");
+    }
+    let mut planned: Vec<String> = planners.iter().map(|p| field(p, "title")).collect();
+    planned.sort();
+    let mut expected: Vec<String> = titles.iter().map(|t| t.to_string()).collect();
+    expected.sort();
+    assert_eq!(planned, expected, "a plan each");
+    // Each in a chat of its own, from the request and the plan's form alone,
+    // with read-only tools.
+    let children: std::collections::HashSet<String> =
+        planners.iter().map(|p| field(p, "childDialogId")).collect();
+    assert_eq!(children.len(), 3);
+    let requests = seen.lock().unwrap().clone();
+    let briefs: Vec<&Value> = requests
+        .iter()
+        .filter(|r| route_of(r, &[PLANNING]).is_some())
+        .collect();
+    assert_eq!(briefs.len(), 3, "a turn each");
+    for brief in &briefs {
+        let text = brief["messages"]
+            .as_array()
+            .and_then(|m| m.iter().find(|m| m["role"] == "user"))
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or_default();
+        assert!(
+            text.contains("## The user's request\n\nMake the test pass"),
+            "{text}"
+        );
+        assert!(text.contains("\"## Criteria\": what done means"), "{text}");
+        let tools = tool_names(brief);
+        assert!(tools.iter().any(|t| t == "read"), "{tools:?}");
+        for tool in ["write", "bash", "task", "submit_plan", "ask_user"] {
+            assert!(!tools.iter().any(|t| t == tool), "{tool}: {tools:?}");
+        }
+    }
+
+    // Planner a's plan went through `submit_plan` as the run's model's own:
+    // the IDE's call, its review, the plan saved.
+    let submitted: Vec<&MessageRow> = messages
+        .iter()
+        .filter(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|x| x["harness"] == "thoroughPlan")
+        })
+        .collect();
+    assert_eq!(
+        submitted
+            .iter()
+            .map(|m| m.role.as_str())
+            .collect::<Vec<_>>(),
+        ["user", "assistant"]
+    );
+    assert!(
+        submitted[0].content.contains("planner a's plan"),
+        "{}",
+        submitted[0].content
+    );
+    let call = &submitted[1].tool_calls.as_ref().unwrap()[0];
+    assert_eq!(call.name, "submit_plan");
+    let chosen = field(planners[0], "title");
+    assert_eq!(
+        planners
+            .iter()
+            .map(|p| p["chosen"] == true)
+            .collect::<Vec<_>>(),
+        [true, false, false]
+    );
+    let file = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?["planFile"].as_str())
+        .expect("the plan saved");
+    let saved = std::fs::read_to_string(file).unwrap();
+    assert!(saved.starts_with(&format!("# {chosen}")), "{saved}");
+    let reviewed = requests
+        .iter()
+        .find(|r| route_of(r, &[PLAN_REVIEW]).is_some())
+        .expect("the plan's review")["messages"]
+        .to_string();
+    assert!(
+        reviewed.contains(&chosen),
+        "the review is of planner a's plan"
+    );
+    // The run's model answered the call's result: its first request has it.
+    let answered = requests
+        .iter()
+        .find(|r| {
+            route_of(r, &[PLANNING, PLAN_REVIEW]).is_none()
+                && r["messages"].to_string().contains(&call.id)
+        })
+        .expect("the run's model's turn after the submission");
+    assert!(answered["messages"]
+        .to_string()
+        .contains("planner a's plan"));
+    let logged = log_lines(&h, "planner").await;
+    assert_eq!(logged.len(), 3);
+}
+
+/// T01: planners that give no plan the checks pass: the plan run's model
+/// plans itself, told why, as in Balanced; each planner's record says why
+/// it gave none.
+#[tokio::test]
+async fn with_no_usable_plan_the_runs_model_plans_itself() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![
+            (
+                PLANNING,
+                vec![
+                    Reply::Text(NO_PLAN),
+                    // Its steps name a file there isn't.
+                    Reply::Text(String::leak(format!(
+                        "## Plan\n\n{}",
+                        TASK_PLAN.replace("`ok.txt`", "`gone/ok.txt`")
+                    ))),
+                    Reply::Text("## Blocked\n\nThe request is unclear."),
+                ],
+            ),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[0].status, Status::Done);
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    let messages = h.messages().await;
+    let planners = planner_records(&messages);
+    assert_eq!(planners.len(), 3);
+    let mut statuses: Vec<String> = planners
+        .iter()
+        .map(|p| p["status"].as_str().unwrap().to_string())
+        .collect();
+    statuses.sort();
+    assert_eq!(statuses, ["done", "skipped", "skipped"]);
+    for p in &planners {
+        match p["status"].as_str() {
+            Some("done") => assert!(!p["problems"].as_array().unwrap().is_empty(), "{p}"),
+            _ => assert!(!p["reason"].as_str().unwrap().is_empty(), "{p}"),
+        }
+    }
+    let told: Vec<&MessageRow> = messages
+        .iter()
+        .filter(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|x| x["harness"] == "thoroughPlan")
+        })
+        .collect();
+    assert_eq!(told.len(), 1, "a note, no submission");
+    assert!(told[0].content.contains("plan the task yourself"));
+    // The run's own plan is the one saved.
+    let file = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?["planFile"].as_str())
+        .expect("the plan saved");
+    assert!(std::fs::read_to_string(file)
+        .unwrap()
+        .starts_with("# Make the test pass"));
+}
+
+/// T01: a plan stage cut while its planners worked (the app closed, the
+/// server restarted) plans again once resumed; the cut planners' records,
+/// left running, are stopped, so the chat doesn't show them at work.
+#[tokio::test]
+async fn a_plan_stage_cut_among_its_planners_plans_again_once_resumed() {
+    use super::autopilot::add_stage;
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // What the cut left: the task's message, its plan stage running, and
+    // its planners' records.
+    let mut task = run::new_message("user", "Make the test pass");
+    task.meta = Some(json!({ "mode": "autopilot" }));
+    let task_id = task.id.clone();
+    let id = h.dialog_id.clone();
+    h.core
+        .db
+        .write(move |c| store::append_messages(c, &id, &[task]))
+        .await
+        .unwrap();
+    add_stage(
+        &h.core,
+        &h.dialog_id,
+        &StageRecord::running(&task_id, Stage::Plan, 1, Effort::Thorough),
+    )
+    .await
+    .unwrap();
+    let cut: Vec<_> = super::planning::CANDIDATES
+        .iter()
+        .map(|letter| {
+            let mut row = run::new_message("assistant", "");
+            row.meta = Some(json!({ "planner": {
+                "role": "plan", "candidate": letter, "status": "running",
+            } }));
+            row
+        })
+        .collect();
+    let cut_ids: Vec<String> = cut.iter().map(|r| r.id.clone()).collect();
+    let id = h.dialog_id.clone();
+    h.core
+        .db
+        .write(move |c| store::append_messages(c, &id, &cut))
+        .await
+        .unwrap();
+
+    let titles = ["Make the test pass", "Write ok", "Find ok"];
+    let (url, _) = model_routed(
+        vec![
+            (
+                PLANNING,
+                titles
+                    .iter()
+                    .map(|t| Reply::Text(planners_report(t)))
+                    .collect(),
+            ),
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+        ],
+        task_script().into_iter().skip(1).collect(),
+    )
+    .await;
+    let mut request = resume_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[0].status, Status::Done, "{records:#?}");
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    let messages = h.messages().await;
+    let planners: Vec<(&str, &Value)> = messages
+        .iter()
+        .filter_map(|m| Some((m.id.as_str(), m.meta.as_ref()?.get("planner")?)))
+        .collect();
+    assert_eq!(planners.len(), 6, "the cut three, then three anew");
+    for (id, record) in &planners {
+        let expected = if cut_ids.iter().any(|c| c == id) {
+            "stopped"
+        } else {
+            "done"
+        };
+        assert_eq!(record["status"], expected, "{record}");
+    }
 }

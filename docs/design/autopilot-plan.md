@@ -1567,3 +1567,39 @@ T05 depends most on the environment it meets.
   `autonomy`): the same list, of the asking computer's chats only (D16),
   under "Tasks on this server" on a connected host's page, with a
   Refresh.
+
+## T: Thorough
+
+### T01: three planners
+
+- **Where they run.** The plan stage's run is a Plan-mode run as in
+  Balanced; before its first turn (`drive`'s `Entry::Turn`), a Thorough
+  task's plan stage runs its planners (`planning.rs`), once per task: a
+  retry of the stage, or a Resume, goes on from what its run did (a
+  `thoroughPlan` note or a saved plan after the task's message ends it).
+  A run cut while its planners work leaves their records "running"; the
+  chat reads them as interrupted, and the stage's next run plans again.
+- **Three at once, each on its own** (`run_ide_subagents`): three
+  IDE-started planner subagents with one brief: the request and the
+  plan's form (`plan::plan_form`, Plan mode's own in Autopilot, criteria
+  included, so their plans pass the same checks), with the lead's
+  repository map. When a kind's settings give several models, planner b
+  starts from the second and c from the third, so their plans aren't one
+  model's three times. A planner is read-only (`Kind::Planner`: read and
+  search, no `bash`, no `ask_user`); it isn't the lead's to start.
+- **Its report is the plan.** The format asks for "## Plan" alone, and
+  everything after that heading is the plan, whose own "## " sections
+  (Criteria, Steps, Validation) are the plan's (`plan_of`). Each plan is
+  checked as `submit_plan` checks one (`plan_problems_for`); each planner
+  is a record of its own (`meta.planner`: candidate a, b or c, status, the
+  plan's title, steps and text, its problems) shown by `PlannerRecord`.
+- **Until T02's judge**, the stage takes the first planner's plan that
+  passes the checks (in candidate order, its record marked `chosen`) and
+  submits it as the run's model would, through `submit_plan` (an assistant
+  message with the call, the IDE's note before it): the plan review and
+  the saving are `submit_plan`'s, and the run's model answers the review's
+  findings as for its own plan. None usable: the run's model plans as in
+  Balanced, told why.
+- **The Subagents page** has the planner's row, tagged "Used by Autopilot
+  (Thorough)": `needed_kinds(Thorough)` turns it on for a Thorough task's
+  chats, never for Balanced's.

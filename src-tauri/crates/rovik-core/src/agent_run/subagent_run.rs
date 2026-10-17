@@ -197,6 +197,16 @@ impl SubCtx {
     }
 }
 
+/// A subagent the IDE starts in a batch (`run_ide_subagents`): the record
+/// that shows it (its call id), its goal and brief, and the first of its
+/// kind's models it starts on.
+pub(super) struct IdeJob {
+    pub(super) call_id: String,
+    pub(super) goal: String,
+    pub(super) message: String,
+    pub(super) models_from: usize,
+}
+
 /// A `task` call, ready to run or already answered.
 enum Job {
     Run(Box<Run>),
@@ -875,6 +885,63 @@ impl Run {
             self.note_models(r);
         }
         Ok((child_id, result))
+    }
+
+    /// Several subagents of `kind` the IDE starts itself, each from its
+    /// own brief, run at the same time (at most `max_at_once`), as a
+    /// batch of `task` calls is (T01: Thorough's planners). Each job's
+    /// `models_from` rotates the kind's models, so jobs start on different
+    /// ones where the row has several (T03). Results come back in the
+    /// jobs' order, as `run_ide_subagent`'s would.
+    pub(super) async fn run_ide_subagents(
+        &mut self,
+        kind: Kind,
+        jobs: Vec<IdeJob>,
+    ) -> Vec<Result<(String, Option<SubResult>), String>> {
+        let config = self.config().subagents;
+        let mut started: Vec<Result<(String, Run), String>> = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            let launched = async {
+                let mut sub = self
+                    .new_sub(kind, &job.call_id, config.budget(kind), &config)
+                    .await?;
+                let n = sub.models.len();
+                if n > 1 {
+                    sub.models.rotate_left(job.models_from % n);
+                    sub.options = sub.options_for(&sub.models[0]);
+                }
+                let child_id = uuid::Uuid::new_v4().to_string();
+                self.store_child(&child_id, &job.call_id, kind, &job.goal, job.message)
+                    .await?;
+                let child = self.launch_child(child_id.clone(), &job.call_id, &job.goal, sub)?;
+                Ok((child_id, child))
+            };
+            started.push(launched.await);
+        }
+        type Ran =
+            Pin<Box<dyn Future<Output = Result<(String, Option<SubResult>), String>> + Send>>;
+        let futures: Vec<Ran> = started
+            .into_iter()
+            .map(|launched| -> Ran {
+                match launched {
+                    Ok((child_id, child)) => {
+                        Box::pin(async move { Ok((child_id, run_child(child).await)) })
+                    }
+                    Err(e) => Box::pin(async move { Err(e) }),
+                }
+            })
+            .collect();
+        let results: Vec<Result<(String, Option<SubResult>), String>> = stream::iter(futures)
+            .buffered(config.max_at_once())
+            .collect()
+            .await;
+        for (_, result) in results.iter().flatten() {
+            if let Some(r) = result {
+                self.absorb_child_writes(&r.writes);
+                self.note_models(r);
+            }
+        }
+        results
     }
 
     /// The child chat, with the brief as its first message.

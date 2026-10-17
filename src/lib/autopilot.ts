@@ -399,6 +399,54 @@ export function acceptanceHeadline(meta: AcceptanceMeta, interrupted: boolean): 
 }
 
 /**
+ * `meta.planner`: one of a Thorough task's planners (T01,
+ * agent_run/planning.rs): at work, then the plan it gave, or why none.
+ */
+export interface PlannerMeta {
+  /** What it planned: the task's plan. */
+  role: 'plan';
+  /** Its name among the task's planners: a, b, c. */
+  candidate: string;
+  status: 'running' | 'done' | 'skipped' | 'stopped';
+  /** done: its plan's title and steps, and the plan (cut when long). */
+  title?: string;
+  steps?: number;
+  plan?: string;
+  /** What the plan's checks find in it; none: it passes them. */
+  problems?: string[];
+  /** Its plan is the one the task took. */
+  chosen?: boolean;
+  /** skipped: why. */
+  reason?: string;
+  partial?: boolean;
+  childDialogId?: string;
+  model?: string;
+  toolCalls?: number;
+  ms?: number;
+}
+
+/** The headline of a planner's record; `interrupted`: saved as running, but nothing runs it. */
+export function plannerHeadline(meta: PlannerMeta, interrupted: boolean): string {
+  const who = `Planner ${meta.candidate.toUpperCase()}`;
+  if (interrupted) return `${who} didn’t finish: the run ended meanwhile.`;
+  switch (meta.status) {
+    case 'running':
+      return `${who} is planning the task on its own…`;
+    case 'stopped':
+      return `${who} was stopped.`;
+    case 'skipped':
+      return `${who} gave no plan: ${meta.reason ?? 'it couldn’t plan'}.`;
+    default: {
+      const steps = meta.steps ?? 0;
+      const planned = `${who} planned “${meta.title || 'Untitled'}” in ${steps} step${steps === 1 ? '' : 's'}`;
+      if (meta.chosen) return `${planned}: the task takes this plan.`;
+      if (meta.problems?.length) return `${planned}, but the plan’s checks find problems in it.`;
+      return `${planned}.`;
+    }
+  }
+}
+
+/**
  * `meta.report`: the facts a task's report was written from (S09,
  * agent_run/autopilot.rs `ReportFacts`), on its final message.
  */

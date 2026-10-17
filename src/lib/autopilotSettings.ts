@@ -105,7 +105,17 @@ export const AUTOPILOT_KINDS: SubagentKindId[] = [
   'testWriter',
   'worker',
   'acceptance',
+  'planner',
 ];
+
+/** Of those, the kinds only Thorough uses (`needed_kinds(Effort::Thorough)`). */
+export const THOROUGH_KINDS: SubagentKindId[] = ['planner'];
+
+/** The tag a kind's row on the Subagents page carries, if Autopilot uses it. */
+export function autopilotKindTag(kind: SubagentKindId): string | null {
+  if (THOROUGH_KINDS.includes(kind)) return 'Used by Autopilot (Thorough)';
+  return AUTOPILOT_KINDS.includes(kind) ? 'Used by Autopilot' : null;
+}
 
 /** Saved settings (or nothing, or garbage) as valid settings; defaults fill gaps. */
 export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {

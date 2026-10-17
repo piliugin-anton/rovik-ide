@@ -20,7 +20,14 @@ import {
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
 export type SubagentKindId =
-  'scout' | 'reviewer' | 'triage' | 'planReviewer' | 'worker' | 'testWriter' | 'acceptance';
+  | 'scout'
+  | 'reviewer'
+  | 'triage'
+  | 'planReviewer'
+  | 'worker'
+  | 'testWriter'
+  | 'acceptance'
+  | 'planner';
 
 export const SUBAGENT_KINDS: {
   id: SubagentKindId;
@@ -87,6 +94,14 @@ export const SUBAGENT_KINDS: {
     when: 'Runs in Autopilot once a task’s checks pass; ordinary chats don’t use it.',
     toolCalls: 30,
     minutes: 5,
+  },
+  {
+    id: 'planner',
+    label: 'Planner',
+    hint: 'Plans a task on its own, one of three; the plan that passes the plan’s checks is taken and reviewed. Read-only.',
+    when: 'Runs in Autopilot’s Thorough effort, three at once before a task’s plan; ordinary chats don’t use it.',
+    toolCalls: 40,
+    minutes: 8,
   },
 ];
 
@@ -177,6 +192,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
     worker: { ...DEFAULT_KIND },
     testWriter: { ...DEFAULT_KIND },
     acceptance: { ...DEFAULT_KIND },
+    planner: { ...DEFAULT_KIND },
   },
   maxAtOnce: LIMITS.atOnce.default,
   maxPerRun: LIMITS.perRun.default,

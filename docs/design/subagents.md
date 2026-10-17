@@ -312,15 +312,16 @@ not through `task`.
 sections (`subagent.rs` `KindSpec`); a report must have the first ones
 (`required`), and the rest are optional:
 
-| Kind          | Sections (required first)                                      |
-| ------------- | -------------------------------------------------------------- |
-| scout         | `Answer`; `Evidence`, `Open questions`, `Web sources`          |
-| worker        | `Summary`; `Changed files`, `Open questions`                   |
-| test writer   | `Summary`; `Test files`, `Assumptions`                         |
-| triage        | `Root cause`, `Files to fix`, `Next step`, `Confidence`        |
-| reviewer      | `Findings`: a numbered list (`change_review.rs`), or None.     |
-| plan reviewer | `Findings`, the same list, with `Step N` for a location.       |
-| acceptance    | `Verdicts`; `Evidence`, `Unmet` (Autopilot's, `acceptance.rs`) |
+| Kind          | Sections (required first)                                        |
+| ------------- | ---------------------------------------------------------------- |
+| scout         | `Answer`; `Evidence`, `Open questions`, `Web sources`            |
+| worker        | `Summary`; `Changed files`, `Open questions`                     |
+| test writer   | `Summary`; `Test files`, `Assumptions`                           |
+| triage        | `Root cause`, `Files to fix`, `Next step`, `Confidence`          |
+| reviewer      | `Findings`: a numbered list (`change_review.rs`), or None.       |
+| plan reviewer | `Findings`, the same list, with `Step N` for a location.         |
+| acceptance    | `Verdicts`; `Evidence`, `Unmet` (Autopilot's, `acceptance.rs`)   |
+| planner       | `Plan`, then the whole plan under it (Thorough's, `planning.rs`) |
 
 There's no `## Status` section: the harness decides the status.
 

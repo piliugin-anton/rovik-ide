@@ -50,11 +50,12 @@ pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 
 /// The kinds an Autopilot task's stages need (D17), of those built: the
 /// plan reviewer (the plan's review), the change reviewer and the failure
-/// triage (the implementation's review and checks), the test writer and
-/// the step workers. The acceptance checker (S08) and Thorough's planner,
-/// judge and adversarial tester (T01, T02, T04) join them as they're built.
+/// triage (the implementation's review and checks), the test writer, the
+/// step workers and the acceptance checker; in Thorough also the planners
+/// (T01). Thorough's judge and adversarial tester (T02, T04) join them as
+/// they're built.
 pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
-    const BUILT: &[Kind] = &[
+    const BALANCED: &[Kind] = &[
         Kind::PlanReviewer,
         Kind::Reviewer,
         Kind::Triage,
@@ -62,8 +63,18 @@ pub fn needed_kinds(effort: Effort) -> &'static [Kind] {
         Kind::Worker,
         Kind::Acceptance,
     ];
+    const THOROUGH: &[Kind] = &[
+        Kind::PlanReviewer,
+        Kind::Reviewer,
+        Kind::Triage,
+        Kind::TestWriter,
+        Kind::Worker,
+        Kind::Acceptance,
+        Kind::Planner,
+    ];
     match effort {
-        Effort::Balanced | Effort::Thorough => BUILT,
+        Effort::Balanced => BALANCED,
+        Effort::Thorough => THOROUGH,
     }
 }
 

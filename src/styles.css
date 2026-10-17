@@ -5116,6 +5116,19 @@ body.is-resizing * {
   min-width: 0;
 }
 
+/* T01: a Thorough task's planners (PlannerRecord.tsx); the one taken stands out. */
+.chat-planner.done {
+  border-left-color: var(--fg-dim);
+}
+
+.chat-planner.done.chosen {
+  border-left-color: var(--success);
+}
+
+.chat-planner.skipped {
+  border-left-color: var(--warning);
+}
+
 /* S08: an acceptance check's verdicts (AcceptanceRecord.tsx). */
 .chat-acceptance.satisfied {
   border-left-color: var(--success);

@@ -14,6 +14,7 @@ import {
   taskOver,
   taskRecords,
   acceptanceHeadline,
+  plannerHeadline,
   reportDuration,
   reportHeadline,
   reportSpent,
@@ -347,6 +348,33 @@ test('the acceptance record’s headline: judging, met, sent back, unmet, skippe
     ),
     'Acceptance check skipped: its verdicts couldn’t be read. The checks decide.'
   );
+});
+
+test('a planner record’s headline: at work, its plan, taken or flagged, none (T01)', () => {
+  const base = { role: 'plan' as const, candidate: 'b' };
+  assert.equal(
+    plannerHeadline({ ...base, status: 'running' }, false),
+    'Planner B is planning the task on its own…'
+  );
+  assert.equal(
+    plannerHeadline({ ...base, status: 'running' }, true),
+    'Planner B didn’t finish: the run ended meanwhile.'
+  );
+  const done = { ...base, status: 'done' as const, title: 'Greet', steps: 3 };
+  assert.equal(plannerHeadline(done, false), 'Planner B planned “Greet” in 3 steps.');
+  assert.equal(
+    plannerHeadline({ ...done, chosen: true }, false),
+    'Planner B planned “Greet” in 3 steps: the task takes this plan.'
+  );
+  assert.equal(
+    plannerHeadline({ ...done, steps: 1, problems: ['Step 1 names a file there isn’t'] }, false),
+    'Planner B planned “Greet” in 1 step, but the plan’s checks find problems in it.'
+  );
+  assert.equal(
+    plannerHeadline({ ...base, status: 'skipped', reason: 'its report has no plan' }, false),
+    'Planner B gave no plan: its report has no plan.'
+  );
+  assert.equal(plannerHeadline({ ...base, status: 'stopped' }, false), 'Planner B was stopped.');
 });
 
 test('the report card’s lines: how it ended, what it spent (S09)', () => {

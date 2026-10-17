@@ -85,6 +85,24 @@ pub fn plan_mode_instructions(autopilot: bool) -> String {
         )
 }
 
+/// The plan's form as Plan mode describes it (its sections and each
+/// step's lines), in Autopilot with its criteria: what Thorough's planners
+/// are asked to write (T01), so their plans pass the same checks.
+pub fn plan_form() -> String {
+    let all = plan_mode_instructions(true);
+    let start = all.find(PLAN_SUMMARY_LINE).unwrap_or(0);
+    let end = all[start..]
+        .find("   Before you submit")
+        .map_or(all.len(), |e| start + e);
+    all[start..end]
+        .lines()
+        .map(|l| l.strip_prefix("   ").unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
+}
+
 /*
  * ---------------------------------------------------------------------------
  * The criteria (S01, D8)

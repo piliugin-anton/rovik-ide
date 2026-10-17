@@ -15,6 +15,7 @@ import { EFFORTS, type Effort } from '../lib/reasoning';
 import {
   AUTOPILOT_EFFORTS,
   AUTOPILOT_KINDS,
+  autopilotKindTag,
   budgetOf,
   DEFAULT_BUDGETS,
   denylistEntry,
@@ -283,8 +284,9 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           </Show>
         </p>
         <p class="settings-hint autopilot-kinds-note">
-          Autopilot turns on the kinds marked “Used by Autopilot” for its own chats, with the models
-          set for them below, even when “Use subagents” is off.
+          Autopilot turns on the kinds marked “Used by Autopilot” for its own chats, those marked
+          Thorough at that effort only, with the models set for them below, even when “Use
+          subagents” is off.
         </p>
       </section>
 
@@ -295,6 +297,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             const k = () => s().kinds[kind.id];
             const others = () => otherProviders(props.providers, s(), kind.id, props.chatModel);
             const autopilot = AUTOPILOT_KINDS.includes(kind.id);
+            const tag = autopilotKindTag(kind.id);
             // Its switch is for ordinary chats; Autopilot's use its model either way.
             const locked = () => off() && !autopilot;
             return (
@@ -308,8 +311,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   />
                   <span>
                     {kind.label}
-                    <Show when={autopilot}>
-                      <span class="autopilot-kind-tag">Used by Autopilot</span>
+                    <Show when={tag}>
+                      <span class="autopilot-kind-tag">{tag}</span>
                     </Show>
                     <span class="setting-checkbox-sub">
                       {kind.hint} {kind.when}

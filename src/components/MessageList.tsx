@@ -42,6 +42,7 @@ import VerificationRecord from './VerificationRecord';
 import PrepareRecord from './PrepareRecord';
 import TestsRecord from './TestsRecord';
 import AcceptanceRecord from './AcceptanceRecord';
+import PlannerRecord from './PlannerRecord';
 import ReportFacts from './ReportFacts';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
@@ -158,6 +159,14 @@ export default function MessageList(props: {
   const isLatest = (m: ChatMessage) => {
     const list = messages();
     return !props.sending && !props.readOnly && list[list.length - 1]?.id === m.id;
+  };
+  // T01: a task's planners run at once, their records side by side at the
+  // chat's end: each is live while a run goes and nothing but planners follow it.
+  const plannerLive = (m: ChatMessage) => {
+    if (!props.sending) return false;
+    const list = messages();
+    const at = list.findIndex((x) => x.id === m.id);
+    return at >= 0 && list.slice(at + 1).every((x) => !!x.meta?.planner);
   };
   const requestUndelivered = () => {
     const list = messages();
@@ -1518,6 +1527,17 @@ export default function MessageList(props: {
 
                 <Show when={m.role === 'assistant' && m.meta?.report}>
                   {(r) => <ReportFacts meta={r()} />}
+                </Show>
+
+                <Show when={m.meta?.planner}>
+                  {(p) => (
+                    <PlannerRecord
+                      meta={p()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={plannerLive(m)}
+                    />
+                  )}
                 </Show>
 
                 <Show when={m.meta?.acceptance}>

@@ -1698,7 +1698,7 @@ impl Run {
     /// submit_plan: the plan is checked and, if it holds up, saved to the
     /// chat's plan file (a revision replaces it). Problems go back to the
     /// model to fix. Only this changes the file: a reply never does.
-    async fn submit_plan(
+    pub(super) async fn submit_plan(
         &mut self,
         tc: &ToolCall,
         args: &Map<String, Value>,

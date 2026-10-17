@@ -1203,6 +1203,14 @@ impl Run {
             self.supersede_waiting_checks().await;
         }
         match entry {
+            // T01: a Thorough task's plan stage plans with its planners
+            // first.
+            Entry::Turn if self.thorough_plan_due().await => {
+                self.thorough_planning().await?;
+                if self.stopped() {
+                    return Ok("stopped".into());
+                }
+            }
             Entry::Turn => {}
             Entry::Verify { record_id } => {
                 // What the last run's fix rounds knew (command approval on).

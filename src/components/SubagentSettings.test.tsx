@@ -191,7 +191,13 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
   assert.equal(rows.length, SUBAGENT_KINDS.length);
   assert.deepEqual(
     rows.map((r) => r.querySelector('.autopilot-kind-tag')?.textContent ?? null),
-    SUBAGENT_KINDS.map((k) => (AUTOPILOT_KINDS.includes(k.id) ? 'Used by Autopilot' : null))
+    SUBAGENT_KINDS.map((k) =>
+      k.id === 'planner'
+        ? 'Used by Autopilot (Thorough)'
+        : AUTOPILOT_KINDS.includes(k.id)
+          ? 'Used by Autopilot'
+          : null
+    )
   );
   const warning = (id: string) =>
     rows[SUBAGENT_KINDS.findIndex((k) => k.id === id)].querySelector('.warning')?.textContent;

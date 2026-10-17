@@ -8,6 +8,7 @@ import { render } from 'solid-js/web';
 import ToolCallBlock from './ToolCallBlock';
 import ReviewRecord from './ReviewRecord';
 import VerificationRecord from './VerificationRecord';
+import PlannerRecord from './PlannerRecord';
 import MessageList from './MessageList';
 import { chatApi } from '../lib/chatApi';
 import { liveSubagent, noteSubagentStarted } from '../lib/subagents';
@@ -783,4 +784,73 @@ test('review_record_doesnt_remount_when_meta_changes (P5.1)', async () => {
     dispose();
     api.getMessages = original;
   }
+});
+
+test('a planner record: the plan taken, problems flagged, the plan on demand (T01)', () => {
+  const root = container();
+  render(
+    () => (
+      <>
+        <PlannerRecord
+          meta={{
+            role: 'plan',
+            candidate: 'a',
+            status: 'done',
+            title: 'Greet',
+            steps: 2,
+            plan: '# Greet\n\n## Steps\n\n1. **Say hi**',
+            chosen: true,
+            model: 'Test/m',
+            toolCalls: 4,
+            ms: 2000,
+          }}
+          dialogId="lead-p"
+          recordId="pa"
+          live={false}
+        />
+        <PlannerRecord
+          meta={{
+            role: 'plan',
+            candidate: 'b',
+            status: 'done',
+            title: 'Greet',
+            steps: 1,
+            problems: ['Step 1 names `gone.txt`, which isn’t in the project'],
+          }}
+          dialogId="lead-p"
+          recordId="pb"
+          live={false}
+        />
+        <PlannerRecord
+          meta={{ role: 'plan', candidate: 'c', status: 'running' }}
+          dialogId="lead-p"
+          recordId="pc"
+          live={false}
+        />
+      </>
+    ),
+    root
+  );
+  const records = [...root.querySelectorAll('.chat-planner')];
+  assert.deepEqual(
+    records.map((r) => r.className),
+    [
+      'chat-verify chat-planner done chosen',
+      'chat-verify chat-planner flagged',
+      'chat-verify chat-planner stopped',
+    ]
+  );
+  assert.equal(
+    records[0].querySelector('.chat-verify-files')?.textContent,
+    'Test/m · 4 tool calls · 2 s'
+  );
+  assert.equal(records[0].querySelector('details pre')?.textContent?.startsWith('# Greet'), true);
+  assert.equal(
+    records[1].querySelector('.chat-verify-flags li')?.textContent,
+    'Step 1 names `gone.txt`, which isn’t in the project'
+  );
+  assert.equal(
+    records[2].querySelector('.chat-verify-title')?.textContent,
+    'Planner C didn’t finish: the run ended meanwhile.'
+  );
 });
