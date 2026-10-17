@@ -181,9 +181,23 @@ impl Run {
         use super::subagent::{Kind, SubStatus, SubagentSettings};
         let config = self.config().subagents;
         config.kind(Kind::Reviewer)?;
-        let recent = self.recent().await.ok()?;
-        let start = recent.iter().position(|m| m.id == facts.task)?;
-        let (record_id, child_id) = recent[start..].iter().rev().find_map(|m| {
+        // T06: a task its candidates implemented has the winner's review,
+        // in the winner's chat.
+        let rows = match self.winners_chat().await {
+            Some(chat) => {
+                let id = chat.clone();
+                let rows = self.core.db.read(move |c| {
+                    crate::chat_db::store::messages_with_meta(c, &id, "review", None)
+                });
+                rows.await.ok()?
+            }
+            None => {
+                let recent = self.recent().await.ok()?;
+                let start = recent.iter().position(|m| m.id == facts.task)?;
+                recent[start..].to_vec()
+            }
+        };
+        let (record_id, child_id) = rows.iter().rev().find_map(|m| {
             let review = m.meta.as_ref()?.get("review")?;
             let reported = matches!(review["status"].as_str(), Some("clean" | "findings"));
             let child = review["childDialogId"].as_str()?;
@@ -226,6 +240,15 @@ impl Run {
             }),
         );
         ok.then(|| text.to_string())
+    }
+
+    /// T06: the chat of the candidate the task's pick took, if it took one.
+    async fn winners_chat(&self) -> Option<String> {
+        let (_, records) = super::autopilot::current_task(&self.core, &self.dialog_id)
+            .await
+            .ok()??;
+        let winner = super::candidates::winner(&self.core, &self.dialog_id, &records).await;
+        winner.ok()?.map(|w| w.chat)
     }
 
     /// S09: the Deliver stage's run: the delivery's record, and the report

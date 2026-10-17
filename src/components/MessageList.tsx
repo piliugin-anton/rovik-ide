@@ -45,6 +45,8 @@ import AcceptanceRecord from './AcceptanceRecord';
 import PlannerRecord from './PlannerRecord';
 import JudgeRecord from './JudgeRecord';
 import BreakerRecord from './BreakerRecord';
+import CandidatesRecord from './CandidatesRecord';
+import PickRecord from './PickRecord';
 import ReportFacts from './ReportFacts';
 import ReviewRecord from './ReviewRecord';
 import StageRecord from './StageRecord';
@@ -1551,6 +1553,21 @@ export default function MessageList(props: {
                       live={props.sending && messages()[messages().length - 1]?.id === m.id}
                     />
                   )}
+                </Show>
+
+                <Show when={m.meta?.candidates}>
+                  {(c) => (
+                    <CandidatesRecord
+                      meta={c()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.pick}>
+                  {(p) => <PickRecord meta={p()} live={props.sending} />}
                 </Show>
 
                 <Show when={m.meta?.breaker}>

@@ -11,6 +11,8 @@ import VerificationRecord from './VerificationRecord';
 import PlannerRecord from './PlannerRecord';
 import JudgeRecord from './JudgeRecord';
 import BreakerRecord from './BreakerRecord';
+import CandidatesRecord from './CandidatesRecord';
+import PickRecord from './PickRecord';
 import MessageList from './MessageList';
 import { chatApi } from '../lib/chatApi';
 import { liveSubagent, noteSubagentStarted } from '../lib/subagents';
@@ -1002,4 +1004,104 @@ test('the adversarial tester’s record: its tests and marks, what it removed (T
     record.querySelector('.chat-tests-summary')?.textContent,
     'Tried the line’s ending.'
   );
+});
+
+test('the candidates’ record: each one’s line, its work on demand, one waiting (T05)', () => {
+  const root = container();
+  render(
+    () => (
+      <CandidatesRecord
+        meta={{
+          task: 't',
+          round: 1,
+          status: 'running',
+          candidates: [
+            {
+              letter: 'a',
+              chat: 'cand-a',
+              status: 'done',
+              outcome: 'verified',
+              summary: '1 check passed',
+            },
+            { letter: 'b', chat: 'cand-b', status: 'waiting' },
+          ],
+        }}
+        dialogId="lead-k"
+        recordId="k1"
+        live={true}
+      />
+    ),
+    root
+  );
+  const record = root.querySelector('.chat-candidates')!;
+  assert.equal(record.className, 'chat-verify chat-candidates running');
+  const lines = [...record.querySelectorAll('.chat-candidate')].map((li) => li.textContent);
+  assert.deepEqual(lines, ['A: done · 1 check passed · Show its work', 'B: waiting']);
+  // Interrupted: nothing runs it any more.
+  const cut = container();
+  render(
+    () => (
+      <CandidatesRecord
+        meta={{ task: 't', round: 1, status: 'running', candidates: [] }}
+        dialogId="lead-k"
+        recordId="k2"
+        live={false}
+      />
+    ),
+    cut
+  );
+  assert.equal(
+    cut.querySelector('.chat-verify-title')?.textContent,
+    'The candidates didn’t finish: the run ended meanwhile.'
+  );
+});
+
+test('the pick’s record: the scores, the winner, the loser’s diff kept (T06)', () => {
+  const root = container();
+  const score = {
+    changed: true,
+    finished: true,
+    testsPassed: 1,
+    checksPassed: 1,
+    openFindings: 0,
+    diffLines: 2,
+  };
+  render(
+    () => (
+      <PickRecord
+        meta={{
+          task: 't',
+          status: 'done',
+          winner: 'a',
+          judged: false,
+          adopted: true,
+          candidates: [
+            { letter: 'a', chat: 'cand-a', score, files: ['ok.txt'] },
+            {
+              letter: 'b',
+              chat: 'cand-b',
+              score: { ...score, diffLines: 3 },
+              files: ['ok.txt', 'notes.txt'],
+              diff: '--- notes.txt (new file)\n+Wrote ok.',
+            },
+          ],
+        }}
+        live={false}
+      />
+    ),
+    root
+  );
+  const record = root.querySelector('.chat-pick')!;
+  assert.equal(record.className, 'chat-verify chat-pick done');
+  assert.equal(
+    record.querySelector('.chat-verify-title')?.textContent,
+    'Candidate A’s change is the task’s: it scored better.'
+  );
+  assert.equal(
+    record.querySelector('.chat-pick-winner')?.textContent,
+    'A: 1 test written first passes · 1 check passes · no findings open · 2 lines changed'
+  );
+  const kept = record.querySelector('details')!;
+  assert.equal(kept.querySelector('summary')?.textContent, 'Candidate B’s change, not taken');
+  assert.equal(kept.querySelector('pre')?.textContent, '--- notes.txt (new file)\n+Wrote ok.');
 });

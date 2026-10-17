@@ -49,6 +49,8 @@ export interface StageMeta {
   spent?: { ms: number; cost: number; uncosted: number };
   /** The files it wrote: the Tests stage's tests (S04). */
   files?: string[];
+  /** Thorough (T05): an implementation by candidates, by letter; `ref` is their record. */
+  candidates?: string[];
 }
 
 /**
@@ -466,8 +468,11 @@ export function plannerHeadline(meta: PlannerMeta, interrupted: boolean): string
  * agent_run/judge.rs): at work, then the plan it took, or why none.
  */
 export interface JudgeMeta {
-  /** What it judged: the planners' plans, or the criteria sets it merged (T03). */
-  role: 'plans' | 'criteria';
+  /**
+   * What it judged: the planners' plans, the criteria sets it merged (T03),
+   * or two candidates' changes whose scores tied (T06).
+   */
+  role: 'plans' | 'criteria' | 'candidates';
   status: 'running' | 'done' | 'skipped' | 'stopped';
   /** The planners whose plans it was given. */
   offered?: string[];
@@ -496,6 +501,18 @@ export interface JudgeMeta {
 /** The headline of a judge's record; `interrupted`: saved as running, but nothing runs it. */
 export function judgeHeadline(meta: JudgeMeta, interrupted: boolean): string {
   if (interrupted) return 'The judge didn’t finish: the run ended meanwhile.';
+  if (meta.role === 'candidates') {
+    switch (meta.status) {
+      case 'running':
+        return 'The candidates’ scores tie: the judge is weighing their changes…';
+      case 'stopped':
+        return 'The judge was stopped.';
+      case 'skipped':
+        return `The judge didn’t decide: ${meta.reason ?? 'it couldn’t judge'}. The first candidate is taken.`;
+      default:
+        return `The judge picked candidate ${(meta.choice ?? '?').toUpperCase()}’s change.`;
+    }
+  }
   if (meta.role === 'criteria') {
     const sets = meta.offered?.length ?? 2;
     switch (meta.status) {
@@ -580,6 +597,142 @@ export function breakerHeadline(meta: BreakerMeta, interrupted: boolean): string
     return `The adversarial tester’s ${files} found a fault: the agent fixes the change to pass them.`;
   if (meta.found === false) return `The change passes the adversarial tester’s ${files}.`;
   return `The adversarial tester wrote ${files}; the checks run them next.`;
+}
+
+/** A candidate in `meta.candidates` (T05). */
+export interface CandidateMeta {
+  letter: string;
+  /** Its chat, under the task's: its implementation's run and records. */
+  chat: string;
+  status: 'waiting' | 'running' | 'done' | 'failed' | 'skipped' | 'stopped';
+  /** How its implementation's run ended. */
+  outcome?: string;
+  summary?: string;
+}
+
+/**
+ * `meta.candidates`: a Thorough task's implementation by two candidates,
+ * each in a working copy of its own, one after the other (T05,
+ * agent_run/candidates.rs `CandidatesRecord`); or, `single`, why there
+ * was one implementer.
+ */
+export interface CandidatesMeta {
+  task: string;
+  round: number;
+  status: 'running' | 'done' | 'stopped' | 'single';
+  reason?: string;
+  candidates?: CandidateMeta[];
+}
+
+/** The headline of the candidates' record. */
+export function candidatesHeadline(meta: CandidatesMeta, interrupted: boolean): string {
+  if (meta.status === 'single')
+    return `One implementer: ${meta.reason ?? 'there’s no second working copy'}.`;
+  if (interrupted) return 'The candidates didn’t finish: the run ended meanwhile.';
+  const all = meta.candidates ?? [];
+  switch (meta.status) {
+    case 'running': {
+      const at = all.find((c) => c.status === 'running');
+      return at
+        ? `Two implementers, one after the other: candidate ${at.letter.toUpperCase()} is implementing the plan in its own copy…`
+        : 'Two implementers, one after the other, each in a copy of its own…';
+    }
+    case 'stopped':
+      return 'The candidates were stopped.';
+    default: {
+      const done = all.filter((c) => c.status === 'done').length;
+      if (done === all.length && done > 0)
+        return `Both candidates implemented the plan, each in its own copy: the pick takes the better.`;
+      return `${done} of ${all.length} candidates implemented the plan: the pick takes the better.`;
+    }
+  }
+}
+
+/** "A: done · 1 check passed" */
+export function candidateLine(c: CandidateMeta): string {
+  const status: Record<CandidateMeta['status'], string> = {
+    waiting: 'waiting',
+    running: 'implementing…',
+    done: 'done',
+    failed: 'failed',
+    skipped: 'skipped',
+    stopped: 'stopped',
+  };
+  const summary = c.summary && c.status !== 'running' ? ` · ${c.summary}` : '';
+  return `${c.letter.toUpperCase()}: ${status[c.status]}${summary}`;
+}
+
+/** A candidate's score (D14, agent_run/candidates.rs `Score`). */
+export interface CandidateScore {
+  changed: boolean;
+  finished: boolean;
+  testsPassed: number;
+  checksPassed: number;
+  openFindings: number;
+  diffLines: number;
+}
+
+/** A candidate as the pick weighed it. */
+export interface ScoredMeta {
+  letter: string;
+  chat: string;
+  outcome?: string;
+  score: CandidateScore;
+  files: string[];
+  /** The loser's diff, kept (cut when `reduced`). */
+  diff?: string;
+  reduced?: boolean;
+}
+
+/**
+ * `meta.pick`: a Thorough task's Pick (T06, agent_run/candidates.rs
+ * `PickRecord`): each candidate's score, the winner and how it won, and
+ * the loser's diff.
+ */
+export interface PickMeta {
+  task: string;
+  status: 'running' | 'done' | 'failed' | 'stopped';
+  winner?: string;
+  chat?: string;
+  /** The scores tied: the judge decided, or (`why`) the first was taken. */
+  judged: boolean;
+  why?: string;
+  adopted: boolean;
+  reason?: string;
+  candidates: ScoredMeta[];
+}
+
+/** The headline of the pick's record. */
+export function pickHeadline(meta: PickMeta, interrupted: boolean): string {
+  if (interrupted) return 'The pick didn’t finish: the run ended meanwhile.';
+  const winner = (meta.winner ?? '?').toUpperCase();
+  switch (meta.status) {
+    case 'running':
+      return 'Scoring the candidates: the tests written first, the checks, the open findings, the size…';
+    case 'stopped':
+      return 'The pick was stopped.';
+    case 'failed':
+      return `The pick failed: ${meta.reason ?? 'the winner’s change couldn’t be taken'}.`;
+    default:
+      if (!meta.judged) return `Candidate ${winner}’s change is the task’s: it scored better.`;
+      if (meta.why)
+        return `Candidate ${winner}’s change is the task’s: the scores tied, and ${meta.why}.`;
+      return `Candidate ${winner}’s change is the task’s: the scores tied, and the judge picked it.`;
+  }
+}
+
+/** "2 tests pass · 1 check passes · no findings open · 12 lines changed" */
+export function scoreLine(s: CandidateScore): string {
+  if (!s.changed) return 'no change';
+  const n = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+  const parts = [
+    n(s.testsPassed, 'test written first passes', 'tests written first pass'),
+    n(s.checksPassed, 'check passes', 'checks pass'),
+    s.openFindings ? n(s.openFindings, 'finding open', 'findings open') : 'no findings open',
+    n(s.diffLines, 'line changed', 'lines changed'),
+  ];
+  if (!s.finished) parts.unshift('its run didn’t finish');
+  return parts.join(' · ');
 }
 
 /**

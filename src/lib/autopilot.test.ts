@@ -17,6 +17,12 @@ import {
   plannerHeadline,
   judgeHeadline,
   breakerHeadline,
+  candidateLine,
+  candidatesHeadline,
+  pickHeadline,
+  scoreLine,
+  type CandidatesMeta,
+  type PickMeta,
   reportDuration,
   reportHeadline,
   reportSpent,
@@ -477,6 +483,147 @@ test('the adversarial tester’s headline: at work, found a fault, passed, none 
   assert.equal(
     breakerHeadline({ status: 'blocked', files: ['a.test.js'], found: false }, false),
     'The change passes the adversarial tester’s 1 test file.'
+  );
+});
+
+test('the candidates’ headline and lines: one at work, both done, one implementer (T05)', () => {
+  const both: CandidatesMeta = {
+    task: 't',
+    round: 1,
+    status: 'running',
+    candidates: [
+      { letter: 'a', chat: 'c1', status: 'done', outcome: 'verified', summary: '1 check passed' },
+      { letter: 'b', chat: 'c2', status: 'running' },
+    ],
+  };
+  assert.equal(
+    candidatesHeadline(both, false),
+    'Two implementers, one after the other: candidate B is implementing the plan in its own copy…'
+  );
+  assert.equal(
+    candidatesHeadline(both, true),
+    'The candidates didn’t finish: the run ended meanwhile.'
+  );
+  const done: CandidatesMeta = {
+    ...both,
+    status: 'done',
+    candidates: [both.candidates![0], { ...both.candidates![1], status: 'done' }],
+  };
+  assert.equal(
+    candidatesHeadline(done, false),
+    'Both candidates implemented the plan, each in its own copy: the pick takes the better.'
+  );
+  const one: CandidatesMeta = {
+    ...done,
+    candidates: [done.candidates![0], { ...done.candidates![1], status: 'failed' }],
+  };
+  assert.equal(
+    candidatesHeadline(one, false),
+    '1 of 2 candidates implemented the plan: the pick takes the better.'
+  );
+  assert.equal(
+    candidatesHeadline({ ...both, status: 'stopped' }, false),
+    'The candidates were stopped.'
+  );
+  assert.equal(
+    candidatesHeadline(
+      {
+        task: 't',
+        round: 1,
+        status: 'single',
+        reason: 'the chat works in the project folder itself',
+      },
+      false
+    ),
+    'One implementer: the chat works in the project folder itself.'
+  );
+  assert.equal(candidateLine(both.candidates![0]), 'A: done · 1 check passed');
+  assert.equal(candidateLine(both.candidates![1]), 'B: implementing…');
+});
+
+test('the pick’s headline and score lines: by score, by the judge, failed (T06)', () => {
+  const score = {
+    changed: true,
+    finished: true,
+    testsPassed: 2,
+    checksPassed: 1,
+    openFindings: 0,
+    diffLines: 12,
+  };
+  const pick: PickMeta = {
+    task: 't',
+    status: 'done',
+    winner: 'a',
+    judged: false,
+    adopted: true,
+    candidates: [
+      { letter: 'a', chat: 'c1', score, files: ['ok.txt'] },
+      {
+        letter: 'b',
+        chat: 'c2',
+        score: { ...score, diffLines: 40 },
+        files: ['ok.txt'],
+        diff: '--- ok.txt',
+      },
+    ],
+  };
+  assert.equal(pickHeadline(pick, false), 'Candidate A’s change is the task’s: it scored better.');
+  assert.equal(
+    pickHeadline({ ...pick, winner: 'b', judged: true }, false),
+    'Candidate B’s change is the task’s: the scores tied, and the judge picked it.'
+  );
+  assert.equal(
+    pickHeadline(
+      { ...pick, judged: true, why: 'the judge is off; the first candidate is taken' },
+      false
+    ),
+    'Candidate A’s change is the task’s: the scores tied, and the judge is off; the first candidate is taken.'
+  );
+  assert.equal(
+    pickHeadline(
+      { ...pick, status: 'failed', reason: 'Candidate A’s change couldn’t be taken: busy' },
+      false
+    ),
+    'The pick failed: Candidate A’s change couldn’t be taken: busy.'
+  );
+  assert.equal(
+    pickHeadline({ ...pick, status: 'running' }, true),
+    'The pick didn’t finish: the run ended meanwhile.'
+  );
+  assert.equal(
+    scoreLine(score),
+    '2 tests written first pass · 1 check passes · no findings open · 12 lines changed'
+  );
+  assert.equal(
+    scoreLine({
+      ...score,
+      finished: false,
+      testsPassed: 1,
+      checksPassed: 0,
+      openFindings: 1,
+      diffLines: 1,
+    }),
+    'its run didn’t finish · 1 test written first passes · 0 checks pass · 1 finding open · 1 line changed'
+  );
+  assert.equal(scoreLine({ ...score, changed: false }), 'no change');
+});
+
+test('the judge’s headline on tied candidates (T06)', () => {
+  const base = { role: 'candidates' as const, offered: ['a', 'b'] };
+  assert.equal(
+    judgeHeadline({ ...base, status: 'running' }, false),
+    'The candidates’ scores tie: the judge is weighing their changes…'
+  );
+  assert.equal(
+    judgeHeadline({ ...base, status: 'done', choice: 'b' }, false),
+    'The judge picked candidate B’s change.'
+  );
+  assert.equal(
+    judgeHeadline(
+      { ...base, status: 'skipped', reason: 'its verdict names neither candidate' },
+      false
+    ),
+    'The judge didn’t decide: its verdict names neither candidate. The first candidate is taken.'
   );
 });
 

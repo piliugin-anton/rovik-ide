@@ -20,7 +20,7 @@ use crate::server::{self, OwnUser};
 use crate::store::Store;
 use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
-use rovik_core::agent_run::{self, recovery};
+use rovik_core::agent_run::{self, candidates, recovery};
 use rovik_core::chat_db::store::now_ms;
 use rovik_core::{process, rt, workload, Core, EventSink, Paths};
 use std::path::{Path, PathBuf};
@@ -161,6 +161,11 @@ async fn run(
     //    last process left going (5.4). The cleanup comes again each day.
     //    A stop meanwhile (an upgrade, a reboot) ends start-up where it
     //    is, and the runs started so far pause for the next start.
+    // T05: a Thorough task's candidates work in worktrees beside its chat's.
+    core.agents
+        .set_copies(Arc::new(crate::candidates::Worktrees(Arc::downgrade(
+            &daemon,
+        ))));
     daemon.projects.clear_stale_locks();
     daemon.results.clear_stale_locks();
     let starting_up = async {
@@ -320,7 +325,8 @@ impl EventSink for Tap {
         self.notifier.agent(event);
         // The run's end goes out first, then its result: not an Autopilot
         // task's own stages', which change nothing that's a result yet (the
-        // installs it prepared, the tests it wrote first: S03, S04).
+        // installs it prepared, the tests it wrote first: S03, S04; its
+        // candidates' implementations, which its pick takes from: T05).
         if let AgentEvent::RunEnded {
             dialog_id,
             outcome,
@@ -329,7 +335,8 @@ impl EventSink for Tap {
             ..
         } = event
         {
-            if !drained(outcome) && !makes_no_result(stage.as_deref()) {
+            let candidates = outcome == candidates::CANDIDATES_OUTCOME;
+            if !drained(outcome) && !makes_no_result(stage.as_deref()) && !candidates {
                 self.results.after_run(dialog_id, outcome, *autopilot);
             }
         }

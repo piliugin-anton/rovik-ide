@@ -5164,6 +5164,40 @@ body.is-resizing * {
   white-space: pre-wrap;
 }
 
+/* T05: a Thorough task's two implementers (CandidatesRecord.tsx). */
+.chat-candidates.done {
+  border-left-color: var(--fg-dim);
+}
+
+.chat-candidates.single {
+  border-left-color: var(--warning);
+}
+
+.chat-candidates-list,
+.chat-pick-scores {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg);
+}
+
+.chat-candidate.failed,
+.chat-candidate.stopped {
+  color: var(--fg-dim);
+}
+
+/* T06: the pick of the better candidate (PickRecord.tsx). */
+.chat-pick.done {
+  border-left-color: var(--success);
+}
+
+.chat-pick.failed {
+  border-left-color: var(--warning);
+}
+
+.chat-pick-winner {
+  font-weight: 600;
+}
+
 /* S08: an acceptance check's verdicts (AcceptanceRecord.tsx). */
 .chat-acceptance.satisfied {
   border-left-color: var(--success);

@@ -296,6 +296,12 @@ pub struct StageRecord {
     /// which the implementation is told to make pass.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
+    /// T05: a Thorough task's implementation by candidates, by letter
+    /// ("a", "b"): each implements the plan in a working copy of its own,
+    /// in a chat of its own, and the stage's run is the IDE's, which runs
+    /// them (candidates.rs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<String>,
 }
 
 fn first_round() -> u32 {
@@ -317,6 +323,7 @@ impl StageRecord {
             summary: None,
             spent: None,
             files: Vec::new(),
+            candidates: Vec::new(),
         }
     }
 
@@ -426,6 +433,17 @@ pub enum Next {
 /// stopped it, and is there to say what happens next.
 const UNDELIVERED: &[&str] = &["stopped"];
 
+/// T05: a candidate's stages, in its own chat: its implementation, and
+/// what its run did inside it. The pick, and what comes after it, are the
+/// task's chat's.
+pub const CANDIDATE_STAGES: &[Stage] = &[
+    Stage::Implement,
+    Stage::Review,
+    Stage::Checks,
+    Stage::Break,
+    Stage::Acceptance,
+];
+
 /// What comes after `records` (a task's, oldest first) in a task of this
 /// effort. Nothing recorded: the plan. A failed stage ends the task, and the
 /// task still delivers what it has, with why, unless the user stopped it;
@@ -436,6 +454,21 @@ pub fn next_stage(records: &[StageRecord], effort: Effort) -> Next {
         return Next::Start(Stage::Plan, 1);
     };
     let round = |stage: Stage| records.iter().filter(|r| r.name == stage).count() as u32 + 1;
+    // T05: a candidate's records, in its chat: its stages, and a failed
+    // one ends them; the task's chat goes on from there.
+    if records[0].candidate.is_some() {
+        return match last.status {
+            Status::Running => Next::Running(last.name),
+            Status::Failed => Next::Over,
+            Status::Done | Status::Skipped => {
+                let at = CANDIDATE_STAGES.iter().position(|s| *s == last.name);
+                match at.and_then(|at| CANDIDATE_STAGES.get(at + 1)) {
+                    Some(next) => Next::Start(*next, round(*next)),
+                    None => Next::Over,
+                }
+            }
+        };
+    }
     match last.status {
         Status::Running => Next::Running(last.name),
         _ if last.name == Stage::Deliver => Next::Over,
@@ -623,15 +656,35 @@ pub async fn task_stages(core: &Core, dialog_id: &str) -> Result<Option<Vec<Stag
 
 /// What the chat's current task spent so far, by its records (U04): its
 /// stages' runs, the one under way's part included where a move or an
-/// upgrade paused it. Nothing when there's no task.
+/// upgrade paused it. A candidate's chat's is its task's (T05): its task
+/// chat's records, whose implementation's has each candidate's spending
+/// once it's over, and the candidate's own until then.
 pub async fn task_spent(core: &Core, dialog_id: &str) -> Result<Spent, String> {
-    let Some((_, records)) = current_task(core, dialog_id).await? else {
+    let chat = task_chat(core, dialog_id).await?;
+    let Some((task, records)) = current_task(core, &chat).await? else {
         return Ok(Spent::default());
     };
-    Ok(records
+    let mut spent = records
         .iter()
         .filter_map(|r| r.record.spent)
-        .fold(Spent::default(), Spent::plus))
+        .fold(Spent::default(), Spent::plus);
+    if chat != dialog_id {
+        let all = load(core, dialog_id).await?;
+        let own = records_of(&all, &task);
+        spent = own
+            .iter()
+            .filter_map(|r| r.record.spent)
+            .fold(spent, Spent::plus);
+    }
+    Ok(spent)
+}
+
+/// T05: the chat whose task a chat's runs carry out: a candidate's task
+/// chat, else the chat itself.
+pub(super) async fn task_chat(core: &Core, dialog_id: &str) -> Result<String, String> {
+    Ok(super::candidates::main_of(core, dialog_id)
+        .await?
+        .unwrap_or_else(|| dialog_id.to_string()))
 }
 
 /// Whether the chat has a task that isn't over: a Resume goes on with it.
@@ -675,7 +728,7 @@ impl Settings {
 
     /// A start of the chat's run with these settings. The configuration is
     /// the one the runs follow already.
-    fn request(&self, dialog_id: &str, start: StartKind) -> StartRequest {
+    pub(super) fn request(&self, dialog_id: &str, start: StartKind) -> StartRequest {
         StartRequest {
             dialog_id: dialog_id.to_string(),
             start,
@@ -701,6 +754,8 @@ pub struct StageRun {
     /// Its record's row.
     pub record: String,
     pub effort: Effort,
+    /// T05: an implementation by candidates, whose run is the IDE's.
+    pub candidates: bool,
 }
 
 impl StageRun {
@@ -710,7 +765,14 @@ impl StageRun {
             stage: r.record.name,
             record: r.id.clone(),
             effort: r.record.effort,
+            candidates: !r.record.candidates.is_empty(),
         }
+    }
+
+    /// Whether its run is the IDE's own work (`is_harness_stage`), as an
+    /// implementation by candidates is (T05).
+    pub fn harness(&self) -> bool {
+        is_harness_stage(self.stage) || self.candidates
     }
 }
 
@@ -718,16 +780,24 @@ impl StageRun {
 fn is_run_stage(stage: Stage) -> bool {
     matches!(
         stage,
-        Stage::Plan | Stage::Prepare | Stage::Tests | Stage::Implement | Stage::Deliver
+        Stage::Plan
+            | Stage::Prepare
+            | Stage::Tests
+            | Stage::Implement
+            | Stage::Pick
+            | Stage::Deliver
     )
 }
 
 /// The stages whose run is the IDE's own work: the installs (S03), the
-/// test writer's tests (S04), the delivery and its report (S09: one turn
-/// without tools). A run, so it can be stopped, its subagents started and
-/// its time counted, like any.
+/// test writer's tests (S04), the pick of a candidate (T06), the delivery
+/// and its report (S09: one turn without tools). A run, so it can be
+/// stopped, its subagents started and its time counted, like any.
 pub fn is_harness_stage(stage: Stage) -> bool {
-    matches!(stage, Stage::Prepare | Stage::Tests | Stage::Deliver)
+    matches!(
+        stage,
+        Stage::Prepare | Stage::Tests | Stage::Pick | Stage::Deliver
+    )
 }
 
 /// A message of the user's that starts a task: sent in Autopilot mode.
@@ -792,6 +862,7 @@ pub async fn stage_for(
                 stage: Stage::Plan,
                 record: id,
                 effort,
+                candidates: false,
             }));
         }
         let Some(record) = record_named(message.meta.as_ref()) else {
@@ -835,13 +906,18 @@ pub async fn stage_for(
         .filter(|r| r.record.name == failed.name)
         .count() as u32
         + 1;
-    let record = StageRecord::running(&failed.task, failed.name, round, failed.effort);
+    // T05: an implementation by candidates is done by candidates again.
+    let record = StageRecord {
+        candidates: failed.candidates.clone(),
+        ..StageRecord::running(&failed.task, failed.name, round, failed.effort)
+    };
     let id = add_stage(core, dialog_id, &record).await?;
     Ok(Some(StageRun {
         task: failed.task.clone(),
         stage: failed.name,
         record: id,
         effort: failed.effort,
+        candidates: !failed.candidates.is_empty(),
     }))
 }
 
@@ -1041,7 +1117,7 @@ pub(super) async fn drive_lock(dialog_id: &str) -> DriveGuard {
     lock_of(dialog_id).lock_owned().await
 }
 
-fn try_drive_lock(dialog_id: &str) -> Option<DriveGuard> {
+pub(super) fn try_drive_lock(dialog_id: &str) -> Option<DriveGuard> {
     lock_of(dialog_id).try_lock_owned().ok()
 }
 
@@ -1062,7 +1138,7 @@ async fn end_run_stage(
     };
     // The IDE's own stages end their records themselves; they never end
     // a task, but for a Stop and the budget.
-    if is_harness_stage(run.stage) {
+    if run.harness() {
         let ended = record.record.status != Status::Running;
         let failure = failure_of(outcome).filter(|f| matches!(*f, "stopped" | "budget"));
         let budget_why = || {
@@ -1191,15 +1267,17 @@ async fn saved_plan(
 }
 
 /// S04: the file of the plan the current task's plan run saved, which
-/// the Tests stage writes the tests from.
+/// the Tests stage writes the tests from; a candidate's is its task's
+/// (T05).
 pub async fn task_plan_file(core: &Core, dialog_id: &str) -> Result<Option<String>, String> {
-    let Some((_, records)) = current_task(core, dialog_id).await? else {
+    let chat = task_chat(core, dialog_id).await?;
+    let Some((_, records)) = current_task(core, &chat).await? else {
         return Ok(None);
     };
     let Some(plan_run) = records.iter().rev().find(|r| r.record.name == Stage::Plan) else {
         return Ok(None);
     };
-    Ok(saved_plan(core, dialog_id, plan_run.seq)
+    Ok(saved_plan(core, &chat, plan_run.seq)
         .await?
         .map(|(_, file)| file))
 }
@@ -1212,10 +1290,11 @@ pub struct TaskTests {
     pub passing: Vec<String>,
 }
 
-/// `TaskTests` of the current task.
+/// `TaskTests` of the current task; a candidate's are its task's (T05).
 pub async fn task_tests(core: &Core, dialog_id: &str) -> Result<TaskTests, String> {
-    match current_task(core, dialog_id).await? {
-        Some((_, records)) => tests_of(core, dialog_id, &records).await,
+    let chat = task_chat(core, dialog_id).await?;
+    match current_task(core, &chat).await? {
+        Some((_, records)) => tests_of(core, &chat, &records).await,
         None => Ok(TaskTests::default()),
     }
 }
@@ -1372,15 +1451,20 @@ async fn advance(
             Next::Running(_) | Next::Over => return Ok(()),
         };
         // Past the task's budget, no stage starts work: it delivers (U04).
-        // The stages done inside a run say what that run did.
-        let spent = list
-            .iter()
-            .filter_map(|r| r.spent)
-            .fold(Spent::default(), Spent::plus);
+        // The stages done inside a run say what that run did; the pick
+        // takes what the candidates did (T06).
+        let spent = match records[0].record.candidate.is_some() {
+            // T05: a candidate's chat counts its task's, all of it.
+            true => task_spent(core, dialog_id).await?,
+            false => list
+                .iter()
+                .filter_map(|r| r.spent)
+                .fold(Spent::default(), Spent::plus),
+        };
         let budget = core.agents.config_for(dialog_id).autopilot.budget;
         let starts_work = !matches!(
             stage,
-            Stage::PlanReview | Stage::Review | Stage::Checks | Stage::Deliver
+            Stage::PlanReview | Stage::Review | Stage::Checks | Stage::Pick | Stage::Deliver
         );
         if let Some(why) = budget::over(&budget, &spent).filter(|_| starts_work) {
             let mut record = StageRecord::ended(task, stage, round, effort, Status::Failed)
@@ -1393,6 +1477,19 @@ async fn advance(
             // A task's plan starts with its message, never here.
             Stage::Plan => return Ok(()),
             Stage::Implement => {
+                // T05: Thorough's implementation is two candidates', each in
+                // a working copy of its own, where copies can be made; else
+                // one implementation, as Balanced's.
+                if effort == Effort::Thorough {
+                    let started =
+                        super::candidates::start(core, dialog_id, &records, round, settings)
+                            .await?;
+                    match started {
+                        Some(true) => return Ok(()),
+                        Some(false) => continue,
+                        None => {}
+                    }
+                }
                 if start_implement(core, dialog_id, &records, round, settings, None).await? {
                     return Ok(());
                 }
@@ -1412,8 +1509,13 @@ async fn advance(
                 deliver(core, dialog_id, &records, round, Some(id)).await?;
                 continue;
             }
-            Stage::PlanReview | Stage::Review | Stage::Checks => {
-                done_in_run(core, dialog_id, &records, stage).await?
+            Stage::PlanReview => done_in_run(core, dialog_id, &records, stage).await?,
+            // T05: a task implemented by candidates has each candidate's.
+            Stage::Review | Stage::Checks => {
+                match super::candidates::stage_record(core, dialog_id, &records, stage).await? {
+                    Some(record) => record,
+                    None => done_in_run(core, dialog_id, &records, stage).await?,
+                }
             }
             // S03: the installs, unless the settings turned them off.
             Stage::Prepare if !core.agents.config_for(dialog_id).autopilot.prepare => {
@@ -1429,19 +1531,35 @@ async fn advance(
                 }
                 continue;
             }
-            // S08, T04: inside the implementation's run, as its checks pass.
+            // S08, T04: inside the implementation's run, as its checks pass;
+            // T05, T06: each candidate's, and the winner's acceptance.
             Stage::Acceptance | Stage::Break => {
-                done_in_run(core, dialog_id, &records, stage).await?
+                match super::candidates::stage_record(core, dialog_id, &records, stage).await? {
+                    Some(record) => record,
+                    None => done_in_run(core, dialog_id, &records, stage).await?,
+                }
+            }
+            // T06: the better candidate, in a run of the IDE's; with one
+            // implementer, the record says why there was one.
+            Stage::Pick if super::candidates::ran(&records) => {
+                if start_harness_stage(core, dialog_id, task, stage, round, effort, settings)
+                    .await?
+                {
+                    return Ok(());
+                }
+                continue;
             }
             Stage::Pick => StageRecord::ended(task, stage, round, effort, Status::Skipped)
-                .with_summary("Not available yet"),
+                .with_summary(super::candidates::single_summary(core, dialog_id, task).await?),
         };
+        // T05: a candidate's records carry its letter.
         add_stage(
             core,
             dialog_id,
             &StageRecord {
                 task: task.to_string(),
                 effort,
+                candidate: records[0].record.candidate.clone(),
                 ..record
             },
         )
@@ -1785,46 +1903,75 @@ async fn start_implement(
     if crashes(dialog_id, Crash::BeforeRun) {
         return Ok(true);
     }
-    let plan_run = records.iter().rev().find(|r| r.record.name == Stage::Plan);
-    let saved = match plan_run {
-        Some(r) => saved_plan(core, dialog_id, r.seq).await?,
-        None => None,
-    };
-    let Some((_, file)) = saved else {
-        return not_started(
-            core,
-            dialog_id,
-            &record,
-            "The task's plan isn't in the chat",
-        )
-        .await;
-    };
-    let Ok(text) = std::fs::read_to_string(&file) else {
-        let why = format!("The plan's file {file} can't be read");
-        return not_started(core, dialog_id, &record, &why).await;
-    };
-    let shown = plan::relative_plan_path(&file, settings.root.as_deref());
-    let mut content = plan::implementation_request(&text, Some(&shown));
-    // S04: the tests written first, which it makes pass.
-    if let Some(line) = tests_line(&tests_of(core, dialog_id, records).await?) {
-        content.push_str("\n\n");
-        content.push_str(&line);
-    }
-    let message = UserMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        content,
-        meta: Some(json!({
-            "harness": MODE,
-            "implementsPlan": true,
-            "autopilot": { "task": task, "stage": Stage::Implement.id(), "record": record, "plan": file },
-        })),
-        attachments: Vec::new(),
+    let built = implementation_message(
+        core,
+        dialog_id,
+        records,
+        &record,
+        settings.root.as_deref(),
+        None,
+    )
+    .await?;
+    let message = match built {
+        Ok(message) => message,
+        Err(why) => return not_started(core, dialog_id, &record, &why).await,
     };
     let request = settings.request(dialog_id, StartKind::Send { message });
     match super::start_run(core, request).await {
         Ok(_) => Ok(true),
         Err(e) => not_started(core, dialog_id, &record, &format!("It couldn't start: {e}")).await,
     }
+}
+
+/// The IDE's message that starts an implementation of the task whose
+/// records are `records` (in `dialog_id`, the task's chat): the plan the
+/// task saved, as "Implement this plan" sends it, named from `root`, and
+/// the tests written first, which it makes pass (S04). Its `meta`
+/// names the stage record `record` it's for, and a candidate's letter
+/// (T05). Ok(Err): why there's none (the plan isn't saved, or its file
+/// can't be read).
+pub(super) async fn implementation_message(
+    core: &Core,
+    dialog_id: &str,
+    records: &[Recorded],
+    record: &str,
+    root: Option<&str>,
+    candidate: Option<&str>,
+) -> Result<Result<UserMessage, String>, String> {
+    let task = &records[0].record.task;
+    let plan_run = records.iter().rev().find(|r| r.record.name == Stage::Plan);
+    let saved = match plan_run {
+        Some(r) => saved_plan(core, dialog_id, r.seq).await?,
+        None => None,
+    };
+    let Some((_, file)) = saved else {
+        return Ok(Err("The task's plan isn't in the chat".into()));
+    };
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return Ok(Err(format!("The plan's file {file} can't be read")));
+    };
+    let shown = plan::relative_plan_path(&file, root);
+    let mut content = plan::implementation_request(&text, Some(&shown));
+    // S04: the tests written first, which it makes pass.
+    if let Some(line) = tests_line(&tests_of(core, dialog_id, records).await?) {
+        content.push_str("\n\n");
+        content.push_str(&line);
+    }
+    let mut autopilot =
+        json!({ "task": task, "stage": Stage::Implement.id(), "record": record, "plan": file });
+    if let Some(letter) = candidate {
+        autopilot["candidate"] = json!(letter);
+    }
+    Ok(Ok(UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content,
+        meta: Some(json!({
+            "harness": MODE,
+            "implementsPlan": true,
+            "autopilot": autopilot,
+        })),
+        attachments: Vec::new(),
+    }))
 }
 
 /// The implementation's record when its run couldn't start: failed, and
@@ -1845,11 +1992,16 @@ async fn not_started(
 }
 
 /// The task's outcome: the one its failed stage ended it with, else how its
-/// implementation's run ended.
+/// implementation's run ended. A failed stage a Retry ran again (a later
+/// round of it) is the later round's to say.
 fn task_outcome(records: &[Recorded]) -> String {
-    let failed = records
-        .iter()
-        .find(|r| r.record.status == Status::Failed && r.record.name != Stage::Deliver);
+    let failed = records.iter().enumerate().find_map(|(i, r)| {
+        let again = records[i + 1..]
+            .iter()
+            .any(|l| l.record.name == r.record.name);
+        (r.record.status == Status::Failed && r.record.name != Stage::Deliver && !again)
+            .then_some(r)
+    });
     let implemented = || {
         records
             .iter()
@@ -1870,6 +2022,10 @@ async fn implementation_ran(
     dialog_id: &str,
     records: &[Recorded],
 ) -> Result<bool, String> {
+    // T05: the candidates' implementations, each in its own chat.
+    if super::candidates::ran(records) {
+        return Ok(true);
+    }
     let (id, since) = (dialog_id.to_string(), records[0].seq);
     let rows = core
         .db
@@ -2184,12 +2340,14 @@ pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportF
         "done" => "It's done; no checks ran".to_string(),
         other => failure_summary(other),
     };
-    let since = records[0].seq;
-    let rows = |key: &'static str| {
-        let id = dialog_id.to_string();
-        core.db
-            .read(move |c| store::messages_with_meta(c, &id, key, Some(since)))
-    };
+    // T06: a task implemented by candidates has its winner's work in the
+    // winner's chat: its checks, its acceptance, the tests it wrote.
+    let winner = super::candidates::winner(core, dialog_id, &records).await?;
+    let mut sources = vec![(dialog_id.to_string(), Some(records[0].seq))];
+    if let Some(w) = &winner {
+        sources.push((w.chat.clone(), None));
+    }
+    let rows = |key: &'static str| task_rows(core, sources.clone(), key);
     let plan = match task_plan_file(core, dialog_id).await? {
         Some(file) => std::fs::read_to_string(file).ok(),
         None => None,
@@ -2264,7 +2422,11 @@ pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportF
             })
         })
         .collect();
-    let review = records
+    let reviewed = match &winner {
+        Some(w) => w.records.as_slice(),
+        None => records.as_slice(),
+    };
+    let review = reviewed
         .iter()
         .rev()
         .find(|r| r.record.name == Stage::Review)
@@ -2297,11 +2459,54 @@ pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportF
     }))
 }
 
+/// The rows of each chat in `sources` (from its `since`, when given) that
+/// have `key` in their meta, oldest first.
+async fn task_rows(
+    core: &Core,
+    sources: Vec<(String, Option<i64>)>,
+    key: &'static str,
+) -> Result<Vec<MessageRow>, String> {
+    let mut all = Vec::new();
+    for (chat, since) in sources {
+        let rows = core
+            .db
+            .read(move |c| store::messages_with_meta(c, &chat, key, since))
+            .await?;
+        all.extend(rows);
+    }
+    all.sort_by_key(|m| m.created_at);
+    Ok(all)
+}
+
 /// Goes on with the chat's task where a crash, a restart or a closed app
 /// cut it, as a Resume start asks (the app's, once a chat with an
 /// unfinished task is opened). None: the chat has no unfinished task, and
 /// the start goes on as any Resume; else what it started, if a run.
 pub async fn resume(core: &Core, request: &StartRequest) -> Result<Option<Option<String>>, String> {
+    // T05: a candidate's chat goes on from its task's chat, which runs it.
+    if super::candidates::main_of(core, &request.dialog_id)
+        .await?
+        .is_some()
+    {
+        return Ok(Some(None));
+    }
+    go_on(core, request).await
+}
+
+/// `go_on`, boxed: the task chat's run that runs its candidates calls it
+/// (candidates.rs), and a run can't name its own future's type.
+pub(super) fn go_on_boxed<'a>(
+    core: &'a Core,
+    request: &'a StartRequest,
+) -> Pin<Box<dyn Future<Output = Result<Option<Option<String>>, String>> + Send + 'a>> {
+    Box::pin(go_on(core, request))
+}
+
+/// `resume`'s work, in a candidate's chat too (candidates.rs).
+pub(super) async fn go_on(
+    core: &Core,
+    request: &StartRequest,
+) -> Result<Option<Option<String>>, String> {
     let dialog_id = request.dialog_id.as_str();
     let Some((task, records)) = current_task(core, dialog_id).await? else {
         return Ok(None);
@@ -2370,7 +2575,9 @@ pub async fn resume(core: &Core, request: &StartRequest) -> Result<Option<Option
             let started = recent
                 .iter()
                 .any(|m| record_named(m.meta.as_ref()) == Some(last.id.as_str()));
-            if stage == Stage::Implement && !started {
+            // An implementation by candidates is the IDE's run, which a
+            // Retry takes up, as the driver started it (T05).
+            if stage == Stage::Implement && !started && last.record.candidates.is_empty() {
                 // Recorded, but its run's message never stored: started
                 // now, as the driver would have.
                 start_implement(
@@ -2534,6 +2741,87 @@ mod tests {
             tests_line(&tests(&["a.test.ts", "b.test.ts"], &["a.test.ts", "b.test.ts"])).as_deref(),
             Some("Tests that must pass: `a.test.ts`, `b.test.ts`, which pass already, before the change: check that they test what the change does.")
         );
+    }
+
+    /// T05: a candidate's records, in its own chat: its implementation,
+    /// then what its run did, and then they're over, the acceptance's or
+    /// a failed stage's end; the task's chat picks and delivers, never a
+    /// candidate's.
+    #[test]
+    fn a_candidates_records_end_after_its_acceptance_or_a_failure() {
+        let mine = |name: Stage, status: Status| StageRecord {
+            candidate: Some("a".into()),
+            ..StageRecord::ended("t", name, 1, Effort::Thorough, status)
+        };
+        let mut records = vec![mine(Stage::Implement, Status::Running)];
+        let next = |records: &[StageRecord]| next_stage(records, Effort::Thorough);
+        assert_eq!(next(&records), Next::Running(Stage::Implement));
+        records[0].status = Status::Done;
+        assert_eq!(next(&records), Next::Start(Stage::Review, 1));
+        for (stage, after) in [
+            (Stage::Review, Next::Start(Stage::Checks, 1)),
+            (Stage::Checks, Next::Start(Stage::Break, 1)),
+            (Stage::Break, Next::Start(Stage::Acceptance, 1)),
+            (Stage::Acceptance, Next::Over),
+        ] {
+            records.push(mine(stage, Status::Skipped));
+            assert_eq!(next(&records), after, "after {stage:?}");
+        }
+        let failed = vec![
+            mine(Stage::Implement, Status::Done),
+            StageRecord {
+                outcome: Some("review-open".into()),
+                ..mine(Stage::Review, Status::Failed)
+            },
+        ];
+        assert_eq!(next(&failed), Next::Over);
+        let stopped = vec![StageRecord {
+            outcome: Some("stopped".into()),
+            ..mine(Stage::Implement, Status::Failed)
+        }];
+        assert_eq!(next(&stopped), Next::Over);
+    }
+
+    /// A stage that failed and was run again (a Retry's round) doesn't
+    /// end the task: its later round says how it went.
+    #[test]
+    fn a_task_ends_as_its_stages_latest_rounds_say() {
+        let at = |records: Vec<StageRecord>| {
+            let recorded: Vec<Recorded> = records
+                .into_iter()
+                .enumerate()
+                .map(|(i, record)| Recorded {
+                    id: format!("r{i}"),
+                    seq: i as i64,
+                    record,
+                })
+                .collect();
+            task_outcome(&recorded)
+        };
+        let done = |outcome: &str| StageRecord {
+            outcome: Some(outcome.into()),
+            ..rec(Stage::Implement, Status::Done)
+        };
+        assert_eq!(
+            at(vec![failed(Stage::Implement, "stopped"), done("verified")]),
+            "verified"
+        );
+        assert_eq!(
+            at(vec![
+                done("verified"),
+                failed(Stage::Checks, "verify-gave-up")
+            ]),
+            "verify-gave-up"
+        );
+        assert_eq!(
+            at(vec![
+                failed(Stage::Implement, "stopped"),
+                done("verified"),
+                failed(Stage::Acceptance, "unmet"),
+            ]),
+            "unmet"
+        );
+        assert_eq!(at(vec![rec(Stage::Plan, Status::Done)]), "done");
     }
 
     #[test]

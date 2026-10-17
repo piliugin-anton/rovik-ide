@@ -22,6 +22,7 @@
 //!   keys.rs     keys.json: the providers' keys (D11)
 //!   packs.rs    each project's repository and its packs (6.4)
 //!   work.rs     each chat's worktree (6.4)
+//!   candidates.rs  a Thorough task's candidates' worktrees (T05)
 //!   changes.rs  a chat's changes there, for the isolation bar (6.1)
 //!   gc.rs       what the folders no longer need goes, each day (R01)
 //!   host.rs     `HostInfo`
@@ -35,6 +36,8 @@
 mod attach;
 #[cfg(unix)]
 mod auth;
+#[cfg(unix)]
+mod candidates;
 #[cfg(unix)]
 mod changes;
 #[cfg(unix)]

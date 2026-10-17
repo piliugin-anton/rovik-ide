@@ -544,11 +544,13 @@ async fn a_task_has_its_reviewer_with_the_users_subagents_off() {
 }
 
 /// A06: a Thorough task has Thorough's stages: Break and Pick, after the
-/// checks (Pick recorded skipped until T06 builds it, Break skipped when
-/// its tester writes nothing); every record carries the effort the task
-/// started with, which a change of the setting meanwhile doesn't change.
+/// checks (Break skipped when its tester writes nothing); every record
+/// carries the effort the task started with, which a change of the
+/// setting meanwhile doesn't change. T05: in the project folder itself
+/// there's no second copy to work in: one implementer, and the Pick's
+/// record says why.
 #[tokio::test]
-async fn a_thorough_task_records_its_own_stages_skipped_until_built() {
+async fn a_thorough_task_in_the_project_folder_has_one_implementer_and_says_why() {
     let h = task_project().await;
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
@@ -591,10 +593,17 @@ async fn a_thorough_task_records_its_own_stages_skipped_until_built() {
         summaries,
         [
             Some("Skipped: it couldn't test the change: Nothing to break in this test."),
-            Some("Not available yet"),
+            Some("One implementer: the chat works in the project folder itself, so there's no copy of its work to give a second implementer"),
         ]
     );
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    // The record of why, and the implementation, the chat's own.
+    let messages = h.messages().await;
+    let row = candidates_row(&messages);
+    assert_eq!(row["status"], "single", "{row}");
+    assert_eq!(implement_messages(&messages).len(), 1);
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert!(implement.candidates.is_empty());
 }
 
 /// A03: the driver dies right after it ended the plan's stage, before the
@@ -5053,4 +5062,445 @@ async fn a_balanced_report_has_no_reviewers_view() {
         .is_none());
     let requests = seen.lock().unwrap().clone();
     assert!(!requests.iter().any(|r| route_of(r, &[VIEWING]).is_some()));
+}
+
+/*
+ * T05, T06: Thorough's two implementers, and the pick
+ */
+
+/// The judge's brief for two candidates that tie starts so (T06).
+const JUDGING_CANDIDATES: &str = super::judge::JUDGE_CANDIDATES_HEADING;
+
+/// A candidate's implementation: its checklist, the files it writes, its
+/// last word.
+fn candidate_script(writes: &[(&'static str, &'static str)]) -> Vec<Reply> {
+    let mut script = vec![Reply::Call {
+        id: "t1",
+        name: "todo",
+        args: json!({ "items": [
+            { "title": "Write ok", "status": "in_progress" },
+            { "title": "Check", "status": "pending" },
+        ] }),
+    }];
+    for ((path, content), id) in writes.iter().zip(["w1", "w2", "w3"]) {
+        script.push(Reply::Call {
+            id,
+            name: "write",
+            args: json!({ "path": path, "content": content }),
+        });
+    }
+    script.extend([
+        Reply::Call {
+            id: "t2",
+            name: "todo",
+            args: json!({ "items": [
+                { "title": "Write ok", "status": "done" },
+                { "title": "Check", "status": "done" },
+            ] }),
+        },
+        Reply::Text("Done: ok.txt says ok."),
+    ]);
+    script
+}
+
+/// A Thorough task's runs: its plan, then each candidate's implementation,
+/// a's, then b's.
+fn candidates_script(
+    a: &[(&'static str, &'static str)],
+    b: &[(&'static str, &'static str)],
+) -> Vec<Reply> {
+    let mut script = vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": TASK_PLAN }),
+        },
+        Reply::Text("Saved the plan."),
+    ];
+    script.extend(candidate_script(a));
+    script.extend(candidate_script(b));
+    script
+}
+
+/// A Thorough task in an isolated chat, whose candidates get a copy each,
+/// every change reviewed (clean unless `routes` say otherwise), and its
+/// model's URL. None: this machine can't mount the copies, or has no npm.
+async fn candidates_task(
+    mut routes: Vec<(&'static str, Vec<Reply>)>,
+    script: Vec<Reply>,
+) -> Option<(Harness, Arc<Mutex<Vec<Value>>>, String)> {
+    if !crate::vfs::mount_works() || !has_npm() {
+        eprintln!("no mounts or no npm here: skipped");
+        return None;
+    }
+    let mut h = node_test_project().await;
+    h.isolate().await;
+    for (marker, reply) in [
+        (PLAN_REVIEW, "## Findings\n\nNone."),
+        (CHANGE_REVIEW, "## Findings\n\nNone."),
+    ] {
+        if !routes.iter().any(|(m, _)| *m == marker) {
+            routes.push((marker, vec![Reply::Text(reply)]));
+        }
+    }
+    let (url, seen) = model_routed(routes, script).await;
+    let mut request = thorough_request(&h, &url);
+    request.isolate = Some(true);
+    request.config.as_mut().unwrap().subagents = serde_json::from_value(json!({
+        "enabled": true,
+        "kinds": { "planReviewer": { "enabled": true } },
+        "reviewMinLines": 1,
+    }))
+    .unwrap();
+    h.start(request).await;
+    Some((h, seen, url))
+}
+
+/// The task's records once it's delivered: two implementations take a
+/// while.
+async fn delivered_slowly(h: &Harness) -> Vec<StageRecord> {
+    for _ in 0..3000 {
+        let records = stages(h).await;
+        if delivered(&records) {
+            return records;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("never delivered: {:#?}", stages(h).await);
+}
+
+/// The task chat's record of its candidates (`meta.candidates`).
+fn candidates_row(messages: &[MessageRow]) -> &Value {
+    messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?.get("candidates"))
+        .expect("the candidates' record")
+}
+
+/// The task chat's Pick record (`meta.pick`).
+fn pick_row(messages: &[MessageRow]) -> &Value {
+    messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?.get("pick"))
+        .expect("the pick's record")
+}
+
+/// A chat's stage records.
+async fn theirs_records(h: &Harness, chat: &str) -> Vec<StageRecord> {
+    super::autopilot::load(&h.core, chat)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.record)
+        .collect()
+}
+
+/// What records spent, added up.
+fn theirs_spent(records: &[StageRecord]) -> Spent {
+    records
+        .iter()
+        .filter_map(|r| r.spent)
+        .fold(Spent::default(), Spent::plus)
+}
+
+async fn chat_messages(h: &Harness, chat: &str) -> Vec<MessageRow> {
+    let id = chat.to_string();
+    h.core
+        .db
+        .read(move |c| store::get_messages(c, &id, None, 500))
+        .await
+        .unwrap()
+        .messages
+}
+
+/// T05 (4.5), T06 (4.9): a Thorough task in an isolated chat is
+/// implemented twice, each candidate in a copy of its own and a chat of
+/// its own, with its own review, checks and records; the smaller change
+/// scores better, its change lands, the other's stays in the pick's
+/// record, and both copies are gone.
+#[tokio::test]
+async fn two_candidates_implement_the_plan_each_in_a_copy_and_the_better_lands() {
+    let script = candidates_script(
+        &[("ok.txt", "ok")],
+        &[("ok.txt", "ok"), ("notes.txt", "Wrote ok.\n")],
+    );
+    let Some((h, seen, _)) = candidates_task(Vec::new(), script).await else {
+        return;
+    };
+    let records = delivered_slowly(&h).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Done),
+            (Stage::Prepare, Status::Skipped),
+            (Stage::Tests, Status::Skipped),
+            (Stage::Implement, Status::Done),
+            (Stage::Review, Status::Done),
+            (Stage::Checks, Status::Done),
+            (Stage::Break, Status::Skipped),
+            (Stage::Pick, Status::Done),
+            (Stage::Acceptance, Status::Skipped),
+            (Stage::Deliver, Status::Done),
+        ],
+        "{records:#?}"
+    );
+    let record = |stage: Stage| records.iter().find(|r| r.name == stage).unwrap();
+    let implement = record(Stage::Implement);
+    assert_eq!(implement.candidates, ["a", "b"]);
+    assert_eq!(implement.outcome.as_deref(), Some("verified"));
+    assert_eq!(implement.summary.as_deref(), Some("Candidate a's, picked"));
+    assert_eq!(
+        record(Stage::Review).summary.as_deref(),
+        Some("a: Clean; b: Clean")
+    );
+    // What the candidates spent is the task's: its implementation's record
+    // has it, as the candidates' own records add it up.
+    let mut by_them = Spent::default();
+    let checks = record(Stage::Checks).summary.clone().unwrap();
+    assert!(
+        checks.starts_with("a: ") && checks.contains("; b: "),
+        "{checks}"
+    );
+    let pick = record(Stage::Pick).summary.clone().unwrap();
+    assert!(pick.starts_with("Candidate a, by score (a: "), "{pick}");
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("verified"));
+
+    // The winner's change landed; the loser's didn't.
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    assert_eq!(h.file("notes.txt"), None);
+
+    // Each implemented in a chat of its own, under the task's, with its
+    // own records, and in a copy of its own, gone now.
+    let messages = h.messages().await;
+    let row = candidates_row(&messages);
+    assert_eq!(row["status"], "done", "{row}");
+    let chats: Vec<String> = row["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["chat"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(chats.len(), 2);
+    for (letter, chat) in ["a", "b"].iter().zip(&chats) {
+        let id = chat.clone();
+        let (child, _) = h
+            .core
+            .db
+            .read(move |c| store::child_dialog(c, &id))
+            .await
+            .unwrap()
+            .expect("a child chat");
+        assert_eq!(
+            (child.kind.as_str(), child.parent_id.as_str()),
+            ("candidate", h.dialog_id.as_str())
+        );
+        let theirs = super::autopilot::load(&h.core, chat).await.unwrap();
+        let stages: Vec<(Stage, Status)> = theirs
+            .iter()
+            .map(|r| (r.record.name, r.record.status))
+            .collect();
+        assert_eq!(
+            stages,
+            [
+                (Stage::Implement, Status::Done),
+                (Stage::Review, Status::Done),
+                (Stage::Checks, Status::Done),
+                (Stage::Break, Status::Skipped),
+                (Stage::Acceptance, Status::Skipped),
+            ],
+            "candidate {letter}"
+        );
+        assert!(theirs
+            .iter()
+            .all(|r| r.record.candidate.as_deref() == Some(*letter)));
+        let rows = chat_messages(&h, chat).await;
+        assert_eq!(implement_messages(&rows).len(), 1, "candidate {letter}");
+        assert!(
+            crate::overlay::chats::get(chat).is_none(),
+            "its copy is gone"
+        );
+        by_them = theirs_spent(&theirs_records(&h, chat).await).plus(by_them);
+    }
+    assert!(by_them.ms > 0);
+    assert_eq!(implement.spent, Some(by_them));
+    assert!(
+        implement_messages(&messages).is_empty(),
+        "the task's chat implements nothing itself"
+    );
+
+    // The pick's record: each one's score; the loser's diff, kept.
+    let pick = pick_row(&messages);
+    assert_eq!(
+        (pick["winner"].as_str(), pick["judged"].as_bool()),
+        (Some("a"), Some(false)),
+        "{pick}"
+    );
+    assert_eq!(pick["candidates"][0]["score"]["diffLines"], 2, "{pick}");
+    assert_eq!(pick["candidates"][1]["score"]["diffLines"], 3, "{pick}");
+    assert!(pick["candidates"][0].get("diff").is_none(), "{pick}");
+    let kept = pick["candidates"][1]["diff"].as_str().unwrap();
+    assert!(
+        kept.contains("notes.txt") && kept.contains("+Wrote ok."),
+        "{kept}"
+    );
+    // Nothing tied, so nothing was judged.
+    let requests = seen.lock().unwrap().clone();
+    assert!(briefs_of(&requests, JUDGING_CANDIDATES).is_empty());
+    assert_eq!(log_lines(&h, "pick").await[0]["winner"], "a");
+}
+
+/// T06 (D14): two candidates whose scores tie go to the judge, whose
+/// brief has the criteria and both changes; its verdict decides, and the
+/// loser's diff stays in the pick's record.
+#[tokio::test]
+async fn candidates_that_tie_go_to_the_judge() {
+    let verdict = "## Verdict\n\nb\n\n## Why\n\nThe two do the same; b's is the one to keep.";
+    let script = candidates_script(&[("ok.txt", "ok")], &[("ok.txt", "ok")]);
+    let routes = vec![(JUDGING_CANDIDATES, vec![Reply::Text(verdict)])];
+    let Some((h, seen, _)) = candidates_task(routes, script).await else {
+        return;
+    };
+    let records = delivered_slowly(&h).await;
+    let pick = records.iter().find(|r| r.name == Stage::Pick).unwrap();
+    assert_eq!(pick.status, Status::Done, "{records:#?}");
+    assert!(
+        pick.summary
+            .as_deref()
+            .unwrap()
+            .starts_with("Candidate b, tied; the judge's pick ("),
+        "{pick:?}"
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    let messages = h.messages().await;
+    let row = pick_row(&messages);
+    assert_eq!(
+        (row["winner"].as_str(), row["judged"].as_bool()),
+        (Some("b"), Some(true)),
+        "{row}"
+    );
+    let kept = row["candidates"][0]["diff"]
+        .as_str()
+        .expect("the loser's diff");
+    assert!(kept.contains("ok.txt") && kept.contains("+ok"), "{kept}");
+    let judge = records_of_role(&messages, "judge", "candidates")
+        .into_iter()
+        .next()
+        .expect("the judge's record");
+    assert_eq!(
+        (judge["status"].as_str(), judge["choice"].as_str()),
+        (Some("done"), Some("b")),
+        "{judge}"
+    );
+    assert_eq!(judge["offered"], json!(["a", "b"]));
+    let requests = seen.lock().unwrap().clone();
+    let briefs = briefs_of(&requests, JUDGING_CANDIDATES);
+    assert_eq!(briefs.len(), 1);
+    assert!(
+        briefs[0].contains("## The criteria\n\n1. `npm test` passes"),
+        "{}",
+        briefs[0]
+    );
+    assert!(briefs[0].contains("<change name=\"a\">") && briefs[0].contains("<change name=\"b\">"));
+    assert!(briefs[0].contains("Its review: Clean"), "{}", briefs[0]);
+}
+
+/// T05: a Stop while the first candidate works stops it and the task,
+/// which isn't delivered; a Retry implements by new candidates, in new
+/// copies, the stopped round's gone, and the task goes on to its delivery.
+#[tokio::test]
+async fn a_retry_after_a_stop_implements_by_new_candidates() {
+    let mut script = vec![
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "plan": TASK_PLAN }),
+        },
+        Reply::Text("Saved the plan."),
+        Reply::Hang(Some("Looking at ok.txt")),
+    ];
+    script.extend(candidate_script(&[("ok.txt", "ok")]));
+    script.extend(candidate_script(&[
+        ("ok.txt", "ok"),
+        ("notes.txt", "Wrote ok.\n"),
+    ]));
+    let Some((h, _, url)) = candidates_task(Vec::new(), script).await else {
+        return;
+    };
+    // The first candidate's reply hangs: the task is stopped there.
+    let first = loop {
+        let messages = h.messages().await;
+        let chat = messages.iter().find_map(|m| {
+            m.meta.as_ref()?.get("candidates")?["candidates"][0]["chat"]
+                .as_str()
+                .map(str::to_string)
+        });
+        if let Some(chat) = chat {
+            let cut = chat_messages(&h, &chat)
+                .await
+                .iter()
+                .any(|m| m.role == "assistant" && m.content.starts_with("Looking"));
+            if cut {
+                break chat;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(agent_stop(&h.core, h.dialog_id.clone()).await);
+    let records = stages_until(&h, "the stop", |r| {
+        r.last()
+            .is_some_and(|i| i.name == Stage::Implement && i.status == Status::Failed)
+    })
+    .await;
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("stopped"));
+    for _ in 0..400 {
+        if !h.core.agents.is_running(&h.dialog_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        !h.core.agents.is_running(&first),
+        "the candidate stopped too"
+    );
+    let theirs = super::autopilot::load(&h.core, &first).await.unwrap();
+    assert_eq!(theirs[0].record.outcome.as_deref(), Some("stopped"));
+
+    // A Retry: new candidates, the first round's copies gone.
+    let mut retry = h.request(&url, StartKind::Retry, Permissions::default());
+    retry.mode = Some("autopilot".into());
+    retry.isolate = Some(true);
+    retry.config = None;
+    h.start(retry).await;
+    let records = delivered_slowly(&h).await;
+    assert_eq!(
+        records.last().unwrap().outcome.as_deref(),
+        Some("verified"),
+        "{records:#?}"
+    );
+    let implements: Vec<(Status, u32)> = records
+        .iter()
+        .filter(|r| r.name == Stage::Implement)
+        .map(|r| (r.status, r.round))
+        .collect();
+    assert_eq!(implements, [(Status::Failed, 1), (Status::Done, 2)]);
+    let messages = h.messages().await;
+    let rows: Vec<&Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("candidates"))
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (rows[0]["status"].as_str(), rows[1]["status"].as_str()),
+        (Some("stopped"), Some("done"))
+    );
+    assert_ne!(
+        rows[1]["candidates"][0]["chat"],
+        rows[0]["candidates"][0]["chat"]
+    );
+    assert!(
+        crate::overlay::chats::get(&first).is_none(),
+        "the stopped round's copy is gone"
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }

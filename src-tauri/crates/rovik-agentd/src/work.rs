@@ -222,6 +222,80 @@ pub async fn new_worktree(
     Ok((worktree, root))
 }
 
+/// T05: a worktree for a Thorough task's candidate `chat`, beside the task
+/// chat's (candidates.rs): at `base`, the task chat's landing base, with
+/// `start` (the task chat's worktree as it was, a commit on `base`)
+/// written into it as changes, and the project's ID file at its root,
+/// which it returns. A candidate is no chat of the store's: its runs
+/// follow its task chat's settings.
+pub async fn candidate_worktree(
+    daemon: &Daemon,
+    chat: &str,
+    project: &str,
+    base: Oid,
+    start: Oid,
+) -> Result<PathBuf, Fail> {
+    if !plain(chat) {
+        return Err(bad_request("Not a chat's id."));
+    }
+    room_for_worktree(daemon, chat).await?;
+    let state = daemon
+        .store
+        .project(project)
+        .ok_or_else(|| bad_request("The chat's project isn't on this server."))?;
+    let worktree = daemon.worktrees.join(chat);
+    let (projects, id, name, at) = (
+        daemon.projects.clone(),
+        project.to_string(),
+        chat.to_string(),
+        worktree.clone(),
+    );
+    let made = rt::spawn_blocking(move || {
+        let repo = projects
+            .open(&id)?
+            .ok_or_else(|| bad_request("The chat's project has no repository here."))?;
+        make_worktree(&repo, &name, base, &at)?;
+        write_changes(base, start, &at)
+    });
+    made.await.map_err(joined)??;
+    let root = worktree.join(&state.subpath);
+    projects::write_id_file(&root, project).map_err(|e| internal(e.to_string()))?;
+    Ok(root)
+}
+
+/// T05: a candidate's worktree and branch, gone (candidates.rs): its
+/// result's ref stays, what it made kept; its start's goes.
+pub async fn remove_candidate(daemon: &Daemon, project: &str, chat: &str) {
+    if !plain(chat) {
+        return;
+    }
+    let (projects, id, name, at) = (
+        daemon.projects.clone(),
+        project.to_string(),
+        chat.to_string(),
+        daemon.worktrees.join(chat),
+    );
+    let removed = rt::spawn_blocking(move || {
+        if let Ok(Some(repo)) = projects.open(&id) {
+            drop_chat_worktree(&repo, &name);
+            if let Ok(mut branch) = repo.find_branch(&branch(&name), BranchType::Local) {
+                let _ = branch.delete();
+            }
+            let start = format!("{PUSHED_REFS}chats/{name}/start");
+            if let Ok(mut reference) = repo.find_reference(&start) {
+                let _ = reference.delete();
+            }
+        }
+        match fs::remove_dir_all(&at) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    });
+    if let Ok(Err(e)) = removed.await {
+        log::warn!("{chat}'s worktree stays: {e}");
+    }
+}
+
 /// Whether a new worktree for the chat fits the server's limits (5.5).
 pub async fn room_for_worktree(daemon: &Daemon, chat: &str) -> Result<(), Fail> {
     let (caps, worktrees, name) = (
@@ -403,6 +477,10 @@ pub async fn collect(daemon: &Daemon, released_before: i64) {
         if known.contains(&name) {
             continue;
         }
+        // T05: a Thorough task's candidate's, its task chat still here.
+        if candidate_of_a_chat(daemon, &name).await {
+            continue;
+        }
         log::info!("work/{name} belongs to no chat: it goes");
         if plain(&name) {
             remove(daemon, &name).await;
@@ -410,6 +488,15 @@ pub async fn collect(daemon: &Daemon, released_before: i64) {
             log::warn!("work/{name} stays: {e}");
         }
     }
+}
+
+/// Whether `name` is a Thorough task's candidate's chat whose task chat
+/// still has its worktree.
+async fn candidate_of_a_chat(daemon: &Daemon, name: &str) -> bool {
+    let main = rovik_core::agent_run::candidates::main_of(&daemon.core, name).await;
+    main.ok()
+        .flatten()
+        .is_some_and(|main| daemon.store.place(&main).is_some())
 }
 
 /// Makes the chat's worktree at `base`, on its branch, in place of what an

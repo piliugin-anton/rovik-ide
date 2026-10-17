@@ -1689,6 +1689,105 @@ T05 depends most on the environment it meets.
   `unjudged`. Unmarked files stay: a test is kept unless it's known to
   have found nothing.
 
+### T05: two working copies, two implementers
+
+- **Not the parallel group's workers** (the T05 row names `group.rs`):
+  a worker is a subagent, and 4.5 gives each implementation "the full
+  stages 4.6 to 4.8", the lead's. Nor a second run in the task's chat:
+  its history, and the context mode's notes, would be the first one's.
+  Each candidate is a chat of its own under the task's
+  (`create_child_dialog`, kind "candidate", in no list), whose run is the
+  task's "Implement this plan" run, the IDE's message the button's: its
+  change review, checks, adversarial tester and acceptance check run in
+  it, as in any implementation. "a", then "b": one after the other, so
+  the provider's limits and the budget meet one implementation at a
+  time, and a restart has one to pick up.
+- **The copies** (`candidates::Copies`). Locally, a child overlay of the
+  chat's overlay (F02's `open_child_shared`): each starts from the chat's
+  changes so far (the tests written first among them) with the project
+  under it, and its run works there as in a project folder (its root the
+  copy, not isolated, so nothing lands at its end), its commands with the
+  copy's environment. On a server, the daemon's (`rovik-agentd`'s
+  `candidates.rs`): a worktree beside the chat's, `work/<candidate>`, at
+  the chat's landing base with the chat's worktree as it was written in
+  (committed at `refs/rovik/chats/<candidate>/start`); what a candidate
+  made is its own result commit (`result_ref`), which stays once its
+  worktree goes. The daemon's start-up keeps a live candidate's worktree
+  (`work::collect`), and the chat gets no result at the end of the run
+  that waited for its candidates: its pick's has the change. What a lockfile installed in the chat's worktree,
+  which git ignores, isn't in a candidate's: its checks find it missing,
+  and V03's installs run there.
+- **One implementer** where no copy can be made: a chat that works in the
+  project folder itself (the headless runner's among them), a server
+  without the daemon's copies, a copy that fails. The implementation is the chat's own, as Balanced's; its
+  record of candidates (status "single") says why, and so does the Pick's
+  ("One implementer: …").
+- **The candidates follow the task's chat**: its configuration
+  (`config_for` maps a candidate's chat to it, as a subagent's to its
+  lead's), its project's settings (`candidate_project`: a copy is no
+  project folder, and `check_project` lets a candidate's chat run there),
+  its Stop, its plan and the tests written first (`task_plan_file`,
+  `task_tests`), and its budget: a candidate's spending goes into the
+  task chat's Implement record once it's over, so the task's records add
+  up to what it spent (H08's status included), and a candidate still to
+  start doesn't once the task is past its budget.
+- **The Implement stage's run is the IDE's** (a harness stage while its
+  record has `candidates`): it starts each candidate and waits for its
+  records to end (`CANDIDATE_STAGES`: Implement, Review, Checks, Break,
+  Acceptance, a failed one ending them), so the chat is running and its
+  Stop stops them; it spends nothing itself. A restart picks the
+  candidate under way up where it was, as its own Resume would (twice at
+  most, then it ends failed). A move or the server's stop pauses the
+  candidate first, then this run, and the task's next start goes on with
+  both. A move to a host takes the candidates' chats along, not their
+  copies: the candidate under way goes on in a new copy there, without
+  what it wrote before the move.
+- **What the task's chat shows**: `meta.candidates` (`CandidatesRecord`:
+  each candidate's line, its work on demand, its events as a subagent's
+  so its transcript follows it live, on a server too); the Implement
+  record's `candidates` and `ref`; Review, Checks and Break records with
+  each candidate's line ("a: Clean; b: 2 findings, 1 high"). A Retry
+  after a Stop implements by new candidates, in new copies, the stopped
+  round's gone. A stage a Retry ran again is its latest round's to end
+  the task with (`task_outcome`), which a Balanced task's retried stage
+  needed too: its first round's failure ended the task, however the
+  next went.
+
+### T06: the pick
+
+- **A run of the IDE's** (`Stage::Pick`, a harness stage), after the
+  task chat's Break record. Each candidate is scored by its records and
+  its copy (`candidates::Score`): before D14's order, a change to take
+  and a run that finished (no error, Stop or budget cut it), which D14
+  doesn't name, so an empty or cut candidate can't win over one that
+  finished; then D14's: the tests written first (S04) that pass in its
+  copy, run alone as T04's speculative tests are (one with no way to run
+  alone counts as its last checks went), the checks its last round
+  passed, the high and medium findings its last change review left open,
+  the lines it adds and removes. The unit tests have the ordering.
+- **A tie is the judge's** (`Kind::Judge` with a third brief,
+  `judge::candidates_brief`: the request, the criteria, each tied
+  candidate's diff and its review; "## Verdict" read as a choice is, one
+  candidate's letter). A verdict that can't be read, a judge that's off,
+  a task past its budget, or two candidates with nothing changed: the
+  first candidate, the record saying why. The judge's own record is
+  `meta.judge`, role "candidates".
+- **The winner's change becomes the chat's** (`Copies::adopt`: landed
+  into the chat's overlay, or written into its worktree); the others'
+  copies go, their diffs kept in `meta.pick` (`PickRecord`, with every
+  score, cut at `MAX_KEPT_DIFF_CHARS`). The task chat's Implement record
+  takes the winner's outcome, and a stage of the winner's that failed
+  fails the Pick with its outcome. The Pick's run ends with that
+  outcome, so the change lands at its end as the winner's own run's
+  would have (`landing.rs`: the one harness stage that lands). A pick
+  cut by a restart goes on in its record, past the winner's change once
+  it's taken.
+- **After it, the winner's**: the Acceptance record (S08 runs inside
+  each candidate's run, before the pick, where 4.10 puts it after: its
+  repair rounds need the implementation's run), the report's facts (its
+  checks, verdicts, tests and review line), the reviewer's view (T08)
+  and what the delivery delivers.
+
 ### T07: Thorough's loops
 
 - **One rule for three loops** (`loops::Progress`): in a Thorough task,

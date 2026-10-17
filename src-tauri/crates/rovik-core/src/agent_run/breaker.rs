@@ -185,7 +185,7 @@ pub fn marks(report: &str) -> Vec<(String, Mark)> {
 /// The command that runs `file`'s tests alone: the stack's way
 /// (`project::test_command_for`), or Node's own runner when the project's
 /// `npm test` is it. None: no way to run it alone.
-fn alone(root: &Path, file: &str) -> Option<String> {
+pub(super) fn alone(root: &Path, file: &str) -> Option<String> {
     if let Some(command) = project::test_command_for(root, &[file.to_string()], None) {
         return Some(command);
     }

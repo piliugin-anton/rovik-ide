@@ -18,6 +18,8 @@
 //!   change_review.rs  a fresh-context review of the change before the checks
 //!   tools.rs      tool schemas and running a tool
 //!   autopilot.rs  a task carried out with nobody there: its stages
+//!   candidates.rs Thorough's two implementers, each in its own copy, and
+//!                 the pick of the better
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
 
@@ -25,6 +27,7 @@ pub mod acceptance;
 pub mod autopilot;
 pub mod breaker;
 pub mod budget;
+pub mod candidates;
 pub mod causes;
 pub mod change_review;
 pub mod check_output;
@@ -231,6 +234,23 @@ struct Inner {
     /// How long an Autopilot task's approval waits for an answer (U03);
     /// None: `APPROVAL_DEADLINE`. Tests make it short.
     approval_deadline: Option<std::time::Duration>,
+    /// T05: a Thorough task's candidates' chats, by chat: the chat whose
+    /// task each implements, whose configuration it follows, and its Stop.
+    candidates: HashMap<String, Candidacy>,
+    /// T05: where a server's candidates implement (its sibling worktrees).
+    copies: Option<Arc<dyn candidates::Copies>>,
+}
+
+/// T05: what a candidate's chat implements for.
+#[derive(Clone, Debug)]
+struct Candidacy {
+    /// The chat whose task it implements.
+    main: String,
+    /// That chat's project folder, whose settings its runs follow (its own
+    /// folder is a copy).
+    project: Option<String>,
+    /// The call id its events and transcript go by in that chat.
+    call: String,
 }
 
 /// How long an approval in an Autopilot task waits before it's denied
@@ -276,7 +296,10 @@ impl AgentState {
             let inner = self.lock();
             let lead = Self::lead_of(&inner, dialog_id);
             let effort = inner.runs.get(lead).and_then(|r| r.autopilot);
-            (inner.resolver.clone(), lead.to_string(), effort)
+            // A candidate's chat follows the configuration of the chat whose
+            // task it implements (T05).
+            let owner = inner.candidates.get(lead).map_or(lead, |c| c.main.as_str());
+            (inner.resolver.clone(), owner.to_string(), effort)
         };
         // Asked without the lock: the resolver may take locks of its own.
         let config = resolver
@@ -649,11 +672,60 @@ impl AgentState {
     /// Whether the chat has a run going (a lead's subagents count as its own).
     pub fn is_running(&self, dialog_id: &str) -> bool {
         let inner = self.lock();
+        let candidate = |chat: &str| {
+            inner
+                .candidates
+                .get(chat)
+                .is_some_and(|c| c.main == dialog_id)
+        };
         inner.runs.contains_key(dialog_id)
-            || inner
-                .runs
-                .values()
-                .any(|r| r.parent.as_deref() == Some(dialog_id))
+            || inner.runs.iter().any(|(chat, r)| {
+                r.parent.as_deref() == Some(dialog_id)
+                    // T05: its task's candidates implement for it.
+                    || candidate(chat)
+                    || r.parent.as_deref().is_some_and(candidate)
+            })
+    }
+
+    /// T05: `candidate` is a chat implementing `main`'s task, in a copy of
+    /// `main`'s project folder `project`: it follows `main`'s configuration
+    /// and its Stop, and the project's settings; `call` is the id its
+    /// events go by in `main`.
+    pub(super) fn add_candidate(
+        &self,
+        candidate: &str,
+        main: &str,
+        project: Option<String>,
+        call: &str,
+    ) {
+        let candidacy = Candidacy {
+            main: main.to_string(),
+            project,
+            call: call.to_string(),
+        };
+        self.lock()
+            .candidates
+            .insert(candidate.to_string(), candidacy);
+    }
+
+    /// T05: the chat is no candidate's any more (its task picked).
+    pub(super) fn drop_candidate(&self, candidate: &str) {
+        self.lock().candidates.remove(candidate);
+    }
+
+    /// T05: the project folder whose settings a candidate's runs follow.
+    pub(super) fn candidate_project(&self, candidate: &str) -> Option<String> {
+        let inner = self.lock();
+        inner.candidates.get(candidate)?.project.clone()
+    }
+
+    /// T05: where a server's candidates implement, set by the daemon.
+    pub fn set_copies(&self, copies: Arc<dyn candidates::Copies>) {
+        self.lock().copies = Some(copies);
+    }
+
+    pub(super) fn copies(&self) -> Option<Arc<dyn candidates::Copies>> {
+        self.lock().copies.clone()
     }
 
     /// Whether the chat's run goes on only by waiting for the user: each
@@ -719,10 +791,17 @@ impl AgentState {
             } else {
                 false
             };
+            // T05: its task's candidates, and theirs, stop with it.
+            let candidates = inner.candidates.clone();
+            let candidate = |chat: &str| candidates.get(chat).is_some_and(|c| c.main == dialog_id);
             let children: Vec<String> = inner
                 .runs
                 .iter()
-                .filter(|(_, r)| r.parent.as_deref() == Some(dialog_id))
+                .filter(|(chat, r)| {
+                    r.parent.as_deref() == Some(dialog_id)
+                        || (itself
+                            && (candidate(chat) || r.parent.as_deref().is_some_and(candidate)))
+                })
                 .map(|(d, r)| {
                     r.stop.set();
                     d.clone()
@@ -947,6 +1026,12 @@ pub async fn check_project(
     let id = dialog_id.to_string();
     let ok = db
         .read(move |c| {
+            // T05: a candidate's chat works in a copy the IDE made of its
+            // task chat's folder, which is no project's.
+            let child = store::child_dialog(c, &id)?;
+            if child.is_some_and(|(d, _)| d.kind == candidates::KIND) {
+                return Ok(true);
+            }
             let project = store::dialog_project(c, &id)?;
             crate::chat_db::projects::chat_may_use(
                 c,
@@ -1033,6 +1118,17 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         }
     }
     start_run(core, request).await
+}
+
+/// A start of a run, boxed (`start_run_boxed`).
+pub(super) type Starting<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send + 'a>,
+>;
+
+/// `start_run`, boxed: a run that starts runs of its own (T05's
+/// candidates) can't name its own future's type otherwise.
+pub(super) fn start_run_boxed(core: &Core, request: StartRequest) -> Starting<'_> {
+    Box::pin(start_run(core, request))
 }
 
 /// `agent_start`'s run, which the Autopilot driver starts its stages with.
@@ -1304,11 +1400,14 @@ pub fn agent_status(core: &Core) -> AgentStatus {
     let inner = core.agents.lock();
     AgentStatus {
         // A subagent's chat isn't a chat in the list: its lead's run stands
-        // for it (its blocks show it running).
+        // for it (its blocks show it running). Nor is a candidate's (T05),
+        // whose task chat's run stands for it.
         runs: inner
             .runs
             .iter()
-            .filter(|(_, r)| r.parent.is_none())
+            .filter(|(dialog_id, r)| {
+                r.parent.is_none() && !inner.candidates.contains_key(*dialog_id)
+            })
             .map(|(dialog_id, r)| RunningRun {
                 dialog_id: dialog_id.clone(),
                 run_id: r.run_id.clone(),
@@ -1318,6 +1417,14 @@ pub fn agent_status(core: &Core) -> AgentStatus {
             .runs
             .iter()
             .filter_map(|(dialog_id, r)| {
+                if let Some(c) = inner.candidates.get(dialog_id) {
+                    return Some(RunningSubagent {
+                        dialog_id: dialog_id.clone(),
+                        parent_dialog_id: c.main.clone(),
+                        parent_call_id: c.call.clone(),
+                        info: None,
+                    });
+                }
                 Some(RunningSubagent {
                     dialog_id: dialog_id.clone(),
                     parent_dialog_id: r.parent.clone()?,

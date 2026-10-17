@@ -315,6 +315,12 @@ impl Results {
         self.base.lock().await
     }
 
+    /// The index a worktree is staged through for `name`'s commits: a
+    /// chat's results (`<chat>.index`), a candidate's start (T05).
+    pub fn index_of(&self, name: &str) -> PathBuf {
+        self.dir.join(format!("{name}.index"))
+    }
+
     /// Keeps what merges or markers replaced in the chat's files.
     pub async fn keep(&self, dialog_id: &str, kept: Vec<(String, Kept)>) {
         if kept.is_empty() {
@@ -366,12 +372,26 @@ impl Results {
 /// commits it on `base` at the chat's result ref. An unchanged tree keeps
 /// the previous result.
 fn commit_worktree(worktree: &Path, index: &Path, base: &str, chat: &str) -> Result<Oid, String> {
+    let message = format!("Result of chat {chat}");
+    commit_at(worktree, index, base, &result_ref(chat), &message)
+}
+
+/// The worktree staged through `index` against `base` and committed on it
+/// at the ref `name`, as a result is (`commit_worktree`): an unchanged
+/// tree keeps the commit there. T05 commits a Thorough task's candidates'
+/// starts and changes so (candidates.rs).
+pub fn commit_at(
+    worktree: &Path,
+    index: &Path,
+    base: &str,
+    name: &str,
+    message: &str,
+) -> Result<Oid, String> {
     let git = |e: git2::Error| e.message().to_string();
     let (repo, base, tree) = stage_worktree(worktree, index, base)?;
     let base = repo.find_commit(base).map_err(git)?;
-    let name = result_ref(chat);
     let previous = repo
-        .find_reference(&name)
+        .find_reference(name)
         .and_then(|reference| reference.peel_to_commit())
         .ok();
     if let Some(previous) =
@@ -381,11 +401,10 @@ fn commit_worktree(worktree: &Path, index: &Path, base: &str, chat: &str) -> Res
     }
     let rovik = Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
     let tree = repo.find_tree(tree).map_err(git)?;
-    let message = format!("Result of chat {chat}");
     let commit = repo
-        .commit(None, &rovik, &rovik, &message, &tree, &[&base])
+        .commit(None, &rovik, &rovik, message, &tree, &[&base])
         .map_err(git)?;
-    repo.reference(&name, commit, true, "result").map_err(git)?;
+    repo.reference(name, commit, true, "result").map_err(git)?;
     Ok(commit)
 }
 

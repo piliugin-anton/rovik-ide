@@ -252,7 +252,7 @@ fn read_judgment(report: &str, given: &[&Candidate]) -> Result<Taken, String> {
 }
 
 /// Why the judge gave no judgment, for its record and the note.
-fn judge_skip_reason(skip: &subagent::Skip) -> String {
+pub(super) fn judge_skip_reason(skip: &subagent::Skip) -> String {
     use subagent::Skip;
     match skip {
         Skip::NotStarted(why) => why.clone(),

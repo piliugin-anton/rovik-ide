@@ -423,18 +423,28 @@ impl Run {
         self.core.agents.config_for(&self.dialog_id)
     }
 
-    /// An Autopilot stage the IDE does itself (`autopilot::is_harness_stage`).
+    /// An Autopilot stage the IDE does itself (`StageRun::harness`).
     pub(super) fn harness_stage(&self) -> bool {
+        self.stage.as_ref().is_some_and(|s| s.harness())
+    }
+
+    /// T06: the run is a Thorough task's Pick, whose winner's change lands
+    /// at its end as the winner's implementation's would.
+    pub(super) fn picks(&self) -> bool {
         self.stage
             .as_ref()
-            .is_some_and(|s| super::autopilot::is_harness_stage(s.stage))
+            .is_some_and(|s| s.stage == super::autopilot::Stage::Pick)
     }
 
     /// The work of an Autopilot stage the IDE does itself; its outcome.
     async fn harness_stage_work(&mut self) -> Result<String, String> {
+        if self.stage.as_ref().is_some_and(|s| s.candidates) {
+            return self.candidates_stage().await;
+        }
         match self.stage.as_ref().map(|s| s.stage) {
             Some(super::autopilot::Stage::Prepare) => self.prepare_stage().await,
             Some(super::autopilot::Stage::Tests) => self.tests_stage().await,
+            Some(super::autopilot::Stage::Pick) => self.pick_stage().await,
             Some(super::autopilot::Stage::Deliver) => self.deliver_stage().await,
             _ => Ok("done".into()),
         }
@@ -496,6 +506,9 @@ impl Run {
         // here on, at the effort its task started with: the kinds its
         // pipeline needs (A07), the rules of an unattended run (U01).
         let config = match autopilot {
+            // T05: an implementation by candidates is their runs': its own
+            // run, which only waits for them, spends nothing of the task's.
+            true if stage.as_ref().is_some_and(|s| s.candidates) => config,
             true => {
                 let effort = stage.as_ref().map_or(config.autopilot.effort, |s| s.effort);
                 // What its task spent before it counts against the budget (U04).
@@ -646,7 +659,7 @@ impl Run {
         // The IDE's own stages of a task do their work, whatever start
         // took them up (the driver's, a resume's Retry).
         let entry = match &stage {
-            Some(s) if super::autopilot::is_harness_stage(s.stage) => Entry::Stage,
+            Some(s) if s.harness() => Entry::Stage,
             _ => entry,
         };
 
@@ -767,8 +780,13 @@ impl Run {
 
         let (checks, project_context) = match &root {
             Some(r) => {
-                // Settings are kept by the project's folder, not the view's.
-                let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
+                // Settings are kept by the project's folder, not the view's;
+                // a candidate's, by its task chat's (T05).
+                let settings_root = core
+                    .agents
+                    .candidate_project(&dialog_id)
+                    .or_else(|| project_root.clone())
+                    .unwrap_or_else(|| r.clone());
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);
                 // V09: an Autopilot task's checks the stacks one folder down too.

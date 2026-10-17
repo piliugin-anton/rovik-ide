@@ -266,6 +266,10 @@ export interface ToolMeta {
   judge?: import('./lib/autopilot').JudgeMeta;
   /** Autopilot, Thorough: the adversarial tester's tests (T04). */
   breaker?: import('./lib/autopilot').BreakerMeta;
+  /** Autopilot, Thorough: the task's two implementers, each in its own copy (T05). */
+  candidates?: import('./lib/autopilot').CandidatesMeta;
+  /** Autopilot, Thorough: the pick of the better candidate (T06). */
+  pick?: import('./lib/autopilot').PickMeta;
   /** A task's report, its final message: the facts it was written from (lib/autopilot.ts). */
   report?: import('./lib/autopilot').ReportMeta;
   /**
