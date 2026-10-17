@@ -273,7 +273,9 @@ export interface ToolMeta {
     /** The saved plan's problems, found when it's implemented (B07b). */
     | 'planCheck'
     /** An Autopilot stage's run: its request, which the IDE wrote. */
-    | 'autopilot';
+    | 'autopilot'
+    /** Autopilot: a loop the run goes on from, told to change approach (U03). */
+    | 'loop';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */

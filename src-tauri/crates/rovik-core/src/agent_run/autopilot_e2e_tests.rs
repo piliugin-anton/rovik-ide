@@ -1085,3 +1085,140 @@ async fn a_call_cut_by_a_crash_runs_again_on_resume_without_asking() {
         "{last:?}"
     );
 }
+
+/*
+ * Nothing waits (U03)
+ */
+
+/// U03: the implementation reads the same file over and over. The guard
+/// warns, then pauses; in Autopilot nobody would Continue, so the run goes
+/// on, told to change approach. Looping again pauses it a second time,
+/// which ends the run as in any chat, and ends its stage: the task
+/// delivers, saying why.
+#[tokio::test]
+async fn a_loop_goes_on_once_told_and_ends_the_stage_the_second_time() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.truncate(3);
+    const READS: [&str; 9] = ["d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9"];
+    for id in READS {
+        script.push(Reply::Call {
+            id,
+            name: "read",
+            args: json!({ "path": "ok.txt" }),
+        });
+    }
+    script.push(Reply::Text("I kept reading ok.txt: it still says no."));
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Done),
+            (Stage::Prepare, Status::Skipped),
+            (Stage::Tests, Status::Skipped),
+            (Stage::Implement, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ]
+    );
+    let implement = &records[4];
+    assert_eq!(implement.outcome.as_deref(), Some("paused-loop"));
+    assert_eq!(
+        implement.summary.as_deref(),
+        Some("The run kept looping after it was told to change approach")
+    );
+    let messages = h.messages().await;
+    let told: Vec<&MessageRow> = messages
+        .iter()
+        .filter(|m| m.meta.as_ref().is_some_and(|x| x["harness"] == "loop"))
+        .collect();
+    assert_eq!(told.len(), 1, "told once");
+    assert!(
+        told[0].content.contains("You repeated yourself: read"),
+        "{}",
+        told[0].content
+    );
+    let paused: Vec<&MessageRow> = messages
+        .iter()
+        .filter(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|x| x["paused"]["kind"] == "loop")
+        })
+        .collect();
+    assert_eq!(paused.len(), 1, "paused once: the second time");
+    let outcomes: Vec<Value> = h
+        .events_of("runEnded")
+        .iter()
+        .map(|e| e["outcome"].clone())
+        .collect();
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert_eq!(outcomes[1], "paused-loop");
+    // All nine reads ran: the run went on after the first pause.
+    for id in READS {
+        result_of(&messages, id);
+    }
+}
+
+/// U03: an approval in an Autopilot task that reaches a person at all
+/// (U02 sends them to the AI reviewer: this is the net under that) is
+/// denied once nobody answers by the deadline, said in a notice and the
+/// log. An ordinary chat's waits for as long as it takes.
+#[tokio::test]
+async fn an_approval_nobody_answers_is_denied_at_the_deadline() {
+    use super::events::ApprovalRequest;
+    let h = harness(&[]).await;
+    let agents = &h.core.agents;
+    agents.set_approval_deadline(Duration::from_millis(100));
+    let task = agents.register("task", "m", None).unwrap();
+    agents.set_autopilot("task", Effort::Balanced);
+    let plain = agents.register("plain", "m", None).unwrap();
+    let request = |chat: &str| ApprovalRequest {
+        tool_call_id: "c1".into(),
+        dialog_id: chat.into(),
+        tool_name: "bash".into(),
+        summary: "Run `make`".into(),
+        command: Some("make".into()),
+        note: None,
+        edit: None,
+        parent_dialog_id: None,
+        parent_call_id: None,
+        remote: false,
+    };
+    let stop = StopSignal::new();
+    let (decision, unanswered) = agents
+        .wait_for_decision(&h.core, request("task"), &stop)
+        .await;
+    assert_eq!(decision, ApprovalDecision::Deny);
+    assert!(unanswered);
+    let settled = h.events_of("approvalSettled");
+    assert_eq!(settled.len(), 1, "the request goes from the chat");
+    assert_eq!(settled[0]["dialogId"], "task");
+    let notice = h
+        .events_of("notice")
+        .into_iter()
+        .find(|n| n["title"] == "An approval wasn't answered")
+        .expect("a notice");
+    assert_eq!(notice["dialogId"], "task");
+    let logged = log_lines(&h, "approval").await;
+    assert_eq!(logged[0]["outcome"], "deadline", "{logged:?}");
+    assert_eq!(logged[0]["tool"], "bash");
+
+    // An ordinary chat's approval doesn't run out.
+    let waiting = agents.wait_for_decision(&h.core, request("plain"), &stop);
+    assert!(tokio::time::timeout(Duration::from_millis(400), waiting)
+        .await
+        .is_err());
+    agents.unregister("task", &task.run_id);
+    agents.unregister("plain", &plain.run_id);
+}

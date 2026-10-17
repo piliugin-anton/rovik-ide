@@ -340,6 +340,14 @@ impl Guard {
         })
     }
 
+    /// Goes on after a loop's pause instead of pausing (Autopilot, U03):
+    /// the reason is the model's to act on, and the evidence starts again.
+    /// Patterns already warned about stay so: the same again pauses.
+    pub fn resume_after_loop(&mut self) {
+        self.stop_reason = None;
+        self.reset_evidence();
+    }
+
     fn reset_evidence(&mut self) {
         self.sequence.clear();
         self.recent_calls.clear();

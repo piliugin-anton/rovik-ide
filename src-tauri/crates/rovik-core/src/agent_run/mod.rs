@@ -210,7 +210,15 @@ struct Inner {
     carries: HashMap<String, verify::VerifyCarry>,
     /// The daemon is stopping (R02): its runs pause, and no new one starts.
     draining: bool,
+    /// How long an Autopilot task's approval waits for an answer (U03);
+    /// None: `APPROVAL_DEADLINE`. Tests make it short.
+    approval_deadline: Option<std::time::Duration>,
 }
+
+/// How long an approval in an Autopilot task waits before it's denied
+/// (U03): one that reaches a person at all (U02 sends them all to the AI
+/// reviewer) would otherwise wait for someone who isn't there.
+pub const APPROVAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Why a run doesn't start while the daemon stops (R02).
 pub const RESTARTING: &str = "Rovik on the server is restarting: send it again in a minute.";
@@ -679,8 +687,24 @@ impl AgentState {
         request: ApprovalRequest,
         stop: &StopSignal,
     ) -> ApprovalDecision {
+        self.wait_for_decision(core, request, stop).await.0
+    }
+
+    /// `wait_for_approval`, and whether the answer is the deadline's: an
+    /// Autopilot task's approval nobody answered in `APPROVAL_DEADLINE` is
+    /// denied (U03), which the log and a notice say.
+    pub(super) async fn wait_for_decision(
+        &self,
+        core: &Core,
+        request: ApprovalRequest,
+        stop: &StopSignal,
+    ) -> (ApprovalDecision, bool) {
         let (tx, rx) = oneshot::channel();
         let key = (request.dialog_id.clone(), request.tool_call_id.clone());
+        let tool = request.tool_name.clone();
+        let deadline = self
+            .autopilot_of(&request.dialog_id)
+            .map(|_| self.lock().approval_deadline.unwrap_or(APPROVAL_DEADLINE));
         self.lock().approvals.insert(
             key.clone(),
             Waiting {
@@ -693,7 +717,43 @@ impl AgentState {
         if stop.is_set() {
             self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Deny);
         }
-        rx.await.unwrap_or(ApprovalDecision::Deny)
+        let Some(limit) = deadline else {
+            return (rx.await.unwrap_or(ApprovalDecision::Deny), false);
+        };
+        match tokio::time::timeout(limit, rx).await {
+            Ok(decision) => (decision.unwrap_or(ApprovalDecision::Deny), false),
+            Err(_) => {
+                // Nobody answered: denied, and the request goes from the chat.
+                self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Deny);
+                log::write(
+                    core,
+                    serde_json::json!({
+                        "event": "approval",
+                        "dialogId": key.0,
+                        "toolCallId": key.1,
+                        "tool": tool,
+                        "outcome": "deadline",
+                        "waitedSeconds": limit.as_secs(),
+                    }),
+                );
+                core.emit(AgentEvent::Notice {
+                    dialog_id: Some(key.0.clone()),
+                    kind: "warning".into(),
+                    title: "An approval wasn't answered".into(),
+                    message: format!(
+                        "Autopilot denied a {tool} call after waiting {} for an answer: nobody was there.",
+                        crate::chat_request::human_duration(limit)
+                    ),
+                });
+                (ApprovalDecision::Deny, true)
+            }
+        }
+    }
+
+    /// An Autopilot task's approvals are denied after `limit` from now on.
+    #[cfg(test)]
+    pub(super) fn set_approval_deadline(&self, limit: std::time::Duration) {
+        self.lock().approval_deadline = Some(limit);
     }
 
     fn resolve_approval(

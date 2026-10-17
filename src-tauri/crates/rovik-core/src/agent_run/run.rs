@@ -173,6 +173,9 @@ pub struct Run {
     /// The checklist gate refused one call this run (small-task safety):
     /// everything after that is let through, repeats included.
     pub(super) checklist_gate_refused: bool,
+    /// Autopilot: the loop guard's pause went on once already this run
+    /// (U03); the next one ends the run.
+    pub(super) loop_resumed: bool,
     /// The run ended as unfinished-checklist with this many open steps
     /// (for the run's log line).
     pub(super) open_steps_at_end: Option<usize>,
@@ -832,6 +835,7 @@ impl Run {
             checklist_nudges: 0,
             force_todo_next: false,
             checklist_gate_refused: false,
+            loop_resumed: false,
             open_steps_at_end: None,
             pending_step_compaction: None,
             clm_restricted: false,
@@ -1284,6 +1288,21 @@ impl Run {
             // Every tool call has its result, so the chat can wait here as
             // long as it likes: Continue picks up with the next request.
             if let Some(pause) = self.guard.pause() {
+                // Autopilot: nobody would Continue. A loop's first pause
+                // goes on, the model told why; the next ends the run (U03).
+                if let (Some(reason), false) = (pause.reason.as_deref(), self.loop_resumed) {
+                    if self.in_autopilot() {
+                        self.loop_resumed = true;
+                        self.guard.resume_after_loop();
+                        let note = format!(
+                            "{IDE_NOTE}You repeated yourself: {reason}. Change approach: re-read the \
+                             relevant code and try something different. If it can't be done this \
+                             way, say what's blocking it and finish."
+                        );
+                        self.add_harness(note, "loop").await?;
+                        continue;
+                    }
+                }
                 if let Some(reason) = pause.reason.as_deref() {
                     if self.summarize_before_pause(reason).await? {
                         return Ok("stopped".into());

@@ -1236,10 +1236,10 @@ impl Run {
             remote: false,
         };
         let waiting = std::time::Instant::now();
-        let decision = self
+        let (decision, unanswered) = self
             .core
             .agents
-            .wait_for_approval(&self.core, request, &self.stop)
+            .wait_for_decision(&self.core, request, &self.stop)
             .await;
         // Waiting for the user isn't the subagent's time (K07).
         if let Some(sub) = self.sub() {
@@ -1250,6 +1250,22 @@ impl Run {
             ApprovalDecision::Allow => Authorized {
                 approval: Some(approval_json(Approver::User, true, None, None, &[])),
                 reviewed,
+                ..Default::default()
+            },
+            // Autopilot's deadline (U03): nobody answered.
+            ApprovalDecision::Deny if unanswered => Authorized {
+                refusal: Some(
+                    "Error: not run: nobody answered its approval, and nobody is there to in Autopilot. Do not retry it; do without it or take another approach."
+                        .into(),
+                ),
+                approval: Some(approval_json(
+                    Approver::User,
+                    false,
+                    None,
+                    Some("Nobody answered in time.".into()),
+                    &[],
+                )),
+                rejected: true,
                 ..Default::default()
             },
             ApprovalDecision::Deny => Authorized {

@@ -677,13 +677,24 @@ fn failure_of(outcome: &str) -> Option<&'static str> {
         "error" => "error",
         "repetition" => "repetition",
         "unfinished-checklist" => "unfinished-checklist",
+        // Paused for a person, which nobody is (U03): the task delivers.
+        "paused-loop" => "paused-loop",
+        "paused-checkpoint" => "paused-checkpoint",
         _ => return None,
     })
 }
 
 /// A failed stage, a Retry or a Continue opens again: the user is there,
-/// and asks for another try (or for the checklist to be finished).
-const REOPENS: &[&str] = &["error", "repetition", "stopped", "unfinished-checklist"];
+/// and asks for another try (or for the checklist to be finished, or for
+/// a paused run to go on).
+const REOPENS: &[&str] = &[
+    "error",
+    "repetition",
+    "stopped",
+    "unfinished-checklist",
+    "paused-loop",
+    "paused-checkpoint",
+];
 
 /// The stage a run starting now carries out, if it's one of the chat's
 /// task: the plan of a task its message starts (recorded here, before the
@@ -759,11 +770,12 @@ pub async fn stage_for(
     }))
 }
 
-/// Outcomes after which the stage's run goes on later, from where it is:
-/// a pause the user (or a move, or the daemon's next start) continues,
-/// checks that wait for approval. Its stage stays under way.
+/// Outcomes after which the stage's run goes on later, from where it is,
+/// with nobody to ask: a move to or from a host, an upgrade of the
+/// server's Rovik (the daemon's next start). Its stage stays under way.
+/// Anything that would wait for a person ends the stage (U03).
 fn run_continues(outcome: &str) -> bool {
-    outcome.starts_with("paused-") || outcome == "verify-needs-approval"
+    outcome == format!("paused-{}", super::MOVE) || outcome == format!("paused-{}", recovery::DRAIN)
 }
 
 type Driving = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -914,6 +926,8 @@ fn failure_summary(outcome: &str) -> String {
         "plan-failed" => "No plan was saved".into(),
         "stopped" => "Stopped".into(),
         "unfinished-checklist" => "The checklist isn't finished".into(),
+        "paused-loop" => "The run kept looping after it was told to change approach".into(),
+        "paused-checkpoint" => "The run paused at its tool-call checkpoint".into(),
         _ => match pending_reason(outcome) {
             // "Not landed: the checks still fail." → "The checks still fail"
             Some(reason) => {

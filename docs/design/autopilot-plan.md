@@ -867,3 +867,24 @@ T05 depends most on the environment it meets.
   approval on would wait for ever.
 - **Tests** use a System One stand-in (`testing::system_one`) for an
   unsure typed reviewer: a text reviewer approves, rejects or fails.
+
+### U03: nothing waits
+
+- **The loop guard** in Autopilot: its first pause of a run goes on
+  instead, the model told "You repeated yourself: … Change approach"
+  (a harness note of kind `loop`). The guard keeps the patterns it warned
+  about, so looping again pauses the run, and that pause ends it as in
+  any chat (`paused-loop`, after the model's summary).
+- **The driver ends the stage** of a run that ended waiting for a person:
+  `paused-loop`, and `paused-checkpoint` (which Autopilot doesn't have
+  since U01), are failures whose task delivers with why. Only a move and
+  an upgrade of the server's Rovik leave a stage under way: they go on by
+  themselves. A user who is there can still Continue such a run: it opens
+  the stage again.
+- **The approval deadline** is in the one wait (`wait_for_decision`): an
+  approval in a task's run, or a subagent's of one, that nobody answers
+  in 10 minutes is denied, the request withdrawn from the chat, with a
+  notice and a log line; the call's result says nobody answered. Since
+  U02 no approval in Autopilot reaches a person, so this is the net under
+  it, and its test drives the wait directly. Questions get no deadline:
+  `ask_user` is refused in Autopilot (A04).
