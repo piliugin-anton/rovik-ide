@@ -71,7 +71,9 @@ pub struct ProjectProfile {
     pub package_manager: Option<String>,
 }
 
-/// Agent instruction files, first found wins. README is the fallback.
+/// Agent instruction files, first found wins. A README is no fallback: an
+/// overview of the repository, which costs every request and, measured,
+/// doesn't help (arXiv 2602.11988, "Evaluating AGENTS.md").
 const INSTRUCTION_FILES: &[&str] = &[
     "AGENTS.md",
     "CLAUDE.md",
@@ -79,7 +81,6 @@ const INSTRUCTION_FILES: &[&str] = &[
     ".cursorrules",
 ];
 const INSTRUCTIONS_MAX_CHARS: usize = 6_000;
-const README_MAX_CHARS: usize = 1_500;
 
 pub fn detect(root: &Path) -> ProjectProfile {
     let mut profile = ProjectProfile::default();
@@ -651,21 +652,12 @@ fn detect_make(root: &Path, profile: &mut ProjectProfile) {
  * ------------------------------------------------------------------------- */
 
 fn read_instructions(root: &Path) -> Option<ProjectInstructions> {
-    let found = INSTRUCTION_FILES
-        .iter()
-        .find_map(|f| {
-            fs::read_to_string(root.join(f))
-                .ok()
-                .map(|t| (f.to_string(), t, INSTRUCTIONS_MAX_CHARS))
-        })
-        .or_else(|| {
-            ["README.md", "README", "readme.md"].iter().find_map(|f| {
-                fs::read_to_string(root.join(f))
-                    .ok()
-                    .map(|t| (f.to_string(), t, README_MAX_CHARS))
-            })
-        })?;
-    let (file, text, max) = found;
+    let (file, text) = INSTRUCTION_FILES.iter().find_map(|f| {
+        fs::read_to_string(root.join(f))
+            .ok()
+            .map(|t| (f.to_string(), t))
+    })?;
+    let max = INSTRUCTIONS_MAX_CHARS;
     let text = text.trim();
     if text.is_empty() {
         return None;
@@ -911,8 +903,8 @@ mod tests {
             ]
         );
         assert!(!p.checks[1].default_enabled, "builds are off by default");
-        let notes = p.instructions.unwrap();
-        assert_eq!(notes.file, "README.md");
+        // A README isn't instructions for agents.
+        assert!(p.instructions.is_none());
     }
 
     #[test]
@@ -963,13 +955,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_instructions_win_over_readme_and_are_cut_on_a_line() {
+    fn agent_instructions_are_cut_on_a_line_and_a_readme_is_none() {
         let long = "rule\n".repeat(3_000);
         let dir = project(&[("README.md", "readme"), ("AGENTS.md", &long)]);
         let notes = detect(&dir).instructions.unwrap();
         assert_eq!(notes.file, "AGENTS.md");
         assert!(notes.truncated);
         assert!(notes.text.len() <= INSTRUCTIONS_MAX_CHARS && notes.text.ends_with("rule"));
+        // An overview of the repository costs every request and doesn't
+        // help: without an instructions file, there are none.
+        for readme in ["README.md", "README", "readme.md"] {
+            let dir = project(&[(readme, "# A project\n\nWhat it does.")]);
+            assert!(detect(&dir).instructions.is_none(), "{readme}");
+        }
     }
 
     #[test]

@@ -121,14 +121,10 @@ pub fn project_context(
     }
 
     if let Some(notes) = &profile.instructions {
-        let label = if notes.file.to_lowercase().starts_with("readme") {
-            format!("From the project's {} (beginning):", notes.file)
-        } else {
-            format!(
-                "The project's instructions for agents ({}); follow them:",
-                notes.file
-            )
-        };
+        let label = format!(
+            "The project's instructions for agents ({}); follow them:",
+            notes.file
+        );
         let more = if notes.truncated {
             "\n[…truncated]"
         } else {
