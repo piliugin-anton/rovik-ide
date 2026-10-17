@@ -137,6 +137,7 @@ impl ApprovalPolicy {
                 let kept = &mut autopilot.budget;
                 kept.max_hours = budget.max_hours.or(kept.max_hours);
                 kept.max_cost = budget.max_cost.or(kept.max_cost);
+                kept.max_tokens = budget.max_tokens.or(kept.max_tokens);
             }
         }
         if self == ApprovalPolicy::WaitForMe || config.approval_profiles.is_empty() {

@@ -440,6 +440,7 @@ pub fn task_state(rows: &[MessageRow]) -> Option<rovik_protocol::autopilot::Task
         ms: spent.ms,
         cost: spent.cost,
         uncosted: spent.uncosted as u64,
+        tokens: spent.tokens,
     })
 }
 

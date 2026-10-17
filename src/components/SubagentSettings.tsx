@@ -17,6 +17,7 @@ import {
   AUTOPILOT_KINDS,
   autopilotKindTag,
   budgetOf,
+  changedBudget,
   DEFAULT_BUDGETS,
   denylistEntry,
   denylistOf,
@@ -106,11 +107,14 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
   // A task's budget: its effort's defaults until it's set to something else.
   const budget = () => budgetOf(s().autopilot);
   function setBudget(change: Partial<AutopilotBudget>) {
-    const next = { ...budget(), ...change };
     const defaults = DEFAULT_BUDGETS[s().autopilot.effort];
-    const same = next.maxHours === defaults.maxHours && next.maxCost === defaults.maxCost;
-    patchAutopilot({ budget: same ? undefined : next });
+    patchAutopilot({ budget: changedBudget(budget(), change, defaults) });
   }
+  // The token limit shows in millions; it's kept in tokens.
+  const tokensMillions = () => {
+    const tokens = budget().maxTokens;
+    return tokens ? tokens / 1_000_000 : undefined;
+  };
   // P5.7: what needs isolated chats can't run without virtual files. When
   // their status can't be read, it isn't known: nothing is turned off.
   const [vfs] = createResource(() => vfsStatus().catch(() => undefined));
@@ -181,12 +185,6 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             )}
           </For>
         </div>
-        <Show when={s().autopilot.effort === 'thorough'}>
-          <p class="settings-hint">
-            Thorough’s own stages aren’t built yet: for now a Thorough task runs as a Balanced one,
-            and its record shows them as skipped.
-          </p>
-        </Show>
         <div class="autopilot-subtitle">Budget per task</div>
         <div class="subagent-limits autopilot-budget">
           <NumberInput
@@ -207,11 +205,24 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             step={0.01}
             onChange={(v) => setBudget({ maxCost: v ?? null })}
           />
+          <NumberInput
+            label="or used (million tokens)"
+            value={tokensMillions()}
+            placeholder="no limit"
+            min={0.1}
+            max={100_000}
+            step={0.1}
+            onChange={(v) =>
+              setBudget({ maxTokens: v === undefined ? null : Math.round(v * 1_000_000) })
+            }
+          />
         </div>
         <p class="settings-hint command-list-note">
-          Empty: no limit. The time counts while the task’s runs run; the cost is what the providers
-          report a request cost (OpenRouter does), in their currency: with one that reports none,
-          only the time limit is kept. Past either, the task stops and delivers what it has.
+          Empty: no limit. The time counts while the task’s runs run. The cost is what the providers
+          report a request cost (OpenRouter does), in their currency; the tokens are what they
+          report a request used, which most do even when they report no cost. A limit the provider
+          reports nothing for can’t be kept; the time limit always is. Past any of them, the task
+          stops and delivers what it has.
         </p>
         <label class="setting-checkbox autopilot-prepare">
           <input

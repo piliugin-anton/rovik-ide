@@ -213,6 +213,7 @@ fn config() -> AgentConfig {
             budget: Budget {
                 max_hours: Some(1.5),
                 max_cost: None,
+                max_tokens: None,
             },
             prepare: false,
             denied_commands: vec!["git push".into()],
@@ -781,6 +782,7 @@ fn every_response_round_trips() {
                         ms: 61_000,
                         cost: 0.42,
                         uncosted: 1,
+                        tokens: 0,
                     }),
                 },
                 crate::autopilot::ChatTask::default(),

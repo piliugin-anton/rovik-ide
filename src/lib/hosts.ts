@@ -28,7 +28,7 @@ export type Delivery =
  */
 export interface AutonomySettings {
   effort?: 'balanced' | 'thorough';
-  budget?: { maxHours: number | null; maxCost: number | null };
+  budget?: { maxHours: number | null; maxCost: number | null; maxTokens?: number | null };
   delivery: Delivery;
   /** Called when a task ends or is blocked; may carry a token. */
   notifyUrl?: string;
@@ -232,10 +232,11 @@ export interface TaskState {
   status: string;
   outcome?: string;
   summary?: string;
-  /** What its runs spent: time, cost, and replies with no cost reported. */
+  /** What its runs spent: time, cost, replies with no cost reported, and tokens. */
   ms: number;
   cost: number;
   uncosted: number;
+  tokens?: number;
 }
 
 /** A chat on a host and its latest task (H08; rovik-protocol `ChatTask`). */

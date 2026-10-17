@@ -26,13 +26,17 @@ impl Effort {
     }
 }
 
-/// Where a task stops on its own (D16): after this many hours, or once it
-/// has cost this much in the provider's currency. None: no limit.
+/// Where a task stops on its own (D16): after this many hours, once it
+/// has cost this much in the provider's currency, or once its requests
+/// used this many tokens, as the providers report them (most do, even
+/// those that report no cost). None: no limit.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Budget {
     pub max_hours: Option<f64>,
     pub max_cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
 }
 
 /// A "Works on its own" host's settings (3.5, H01): what its Autopilot
@@ -146,10 +150,13 @@ pub struct TaskState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     /// What its runs spent: their time, and their replies' cost in the
-    /// providers' currency, with how many replies reported none.
+    /// providers' currency, with how many replies reported none, and the
+    /// tokens they used.
     pub ms: u64,
     pub cost: f64,
     pub uncosted: u64,
+    #[serde(default)]
+    pub tokens: u64,
 }
 
 /// A URL as a log or a message shows it: its scheme and host, never its
@@ -278,6 +285,7 @@ impl AutonomySettings {
             let limit = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0);
             budget.max_hours = limit(budget.max_hours);
             budget.max_cost = limit(budget.max_cost);
+            budget.max_tokens = budget.max_tokens.filter(|t| *t > 0);
         }
         self.budget = self.budget.filter(|b| *b != Budget::default());
         Ok(self)
@@ -343,6 +351,7 @@ mod autonomy_tests {
             budget: Some(Budget {
                 max_hours: Some(3.0),
                 max_cost: None,
+                max_tokens: None,
             }),
             delivery: Delivery::PushBranch {
                 deploy_key: "~/.ssh/rovik_deploy".into(),
@@ -459,6 +468,30 @@ mod autonomy_tests {
     }
 
     #[test]
+    fn a_budget_says_its_token_limit_only_when_it_has_one() {
+        let plain = Budget {
+            max_hours: Some(2.0),
+            max_cost: Some(5.0),
+            max_tokens: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({ "maxHours": 2.0, "maxCost": 5.0 })
+        );
+        let tokens = Budget {
+            max_tokens: Some(2_000_000),
+            ..plain.clone()
+        };
+        let json = serde_json::to_value(&tokens).unwrap();
+        assert_eq!(json["maxTokens"], 2_000_000);
+        assert_eq!(serde_json::from_value::<Budget>(json).unwrap(), tokens);
+        let older: Budget =
+            serde_json::from_value(serde_json::json!({ "maxHours": 1.5, "maxCost": null }))
+                .unwrap();
+        assert_eq!(older.max_tokens, None);
+    }
+
+    #[test]
     fn autonomy_settings_are_checked_before_they_are_kept() {
         let push = |key: &str| AutonomySettings {
             delivery: Delivery::PushBranch {
@@ -487,14 +520,27 @@ mod autonomy_tests {
             budget: Some(Budget {
                 max_hours: Some(0.0),
                 max_cost: Some(-2.0),
+                max_tokens: Some(0),
             }),
             ..Default::default()
         };
         assert_eq!(budget.checked().unwrap().budget, None);
+        let tokens = AutonomySettings {
+            budget: Some(Budget {
+                max_tokens: Some(5_000_000),
+                ..Budget::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            tokens.checked().unwrap().budget.and_then(|b| b.max_tokens),
+            Some(5_000_000)
+        );
         let hours = AutonomySettings {
             budget: Some(Budget {
                 max_hours: Some(2.0),
                 max_cost: Some(0.0),
+                max_tokens: None,
             }),
             ..Default::default()
         };
@@ -502,7 +548,8 @@ mod autonomy_tests {
             hours.checked().unwrap().budget,
             Some(Budget {
                 max_hours: Some(2.0),
-                max_cost: None
+                max_cost: None,
+                max_tokens: None,
             })
         );
     }

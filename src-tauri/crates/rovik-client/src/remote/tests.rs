@@ -774,12 +774,14 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
     config.autopilot.budget = Budget {
         max_hours: Some(2.0),
         max_cost: Some(5.0),
+        max_tokens: Some(3_000_000),
     };
     let block = AutonomySettings {
         effort: Some(Effort::Thorough),
         budget: Some(Budget {
             max_hours: Some(8.0),
             max_cost: None,
+            max_tokens: None,
         }),
         delivery: Delivery::PushBranch {
             deploy_key: "~/.ssh/rovik_deploy".into(),
@@ -809,9 +811,10 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
         received.autopilot.budget,
         Budget {
             max_hours: Some(8.0),
-            max_cost: Some(5.0)
+            max_cost: Some(5.0),
+            max_tokens: Some(3_000_000),
         },
-        "the host's hours, the computer's cost"
+        "the host's hours, the computer's cost and tokens"
     );
     let mut rest = received.clone();
     rest.permissions.command_approval.by = Approver::User;

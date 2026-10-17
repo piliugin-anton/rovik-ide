@@ -29,11 +29,11 @@ pub fn duration(ms: u64) -> String {
     }
 }
 
-/// What the task spent, in a line: its time, and its cost where the
-/// providers said.
+/// What the task spent, in a line: its time, its cost where the providers
+/// said, and its tokens where they said.
 pub fn spent_line(f: &ReportFacts) -> String {
     let time = duration(f.spent.ms);
-    match (f.spent.cost > 0.0, f.spent.uncosted) {
+    let line = match (f.spent.cost > 0.0, f.spent.uncosted) {
         (true, 0) => format!("{time}, {:.2} in the providers' currency", f.spent.cost),
         (true, n) => format!(
             "{time}, at least {:.2} in the providers' currency ({n} repl{} without a reported cost)",
@@ -41,6 +41,10 @@ pub fn spent_line(f: &ReportFacts) -> String {
             if n == 1 { "y" } else { "ies" }
         ),
         (false, _) => format!("{time}; the providers reported no cost"),
+    };
+    match f.spent.tokens {
+        0 => line,
+        n => format!("{line}; {} tokens", super::budget::tokens_text(n)),
     }
 }
 
@@ -362,7 +366,7 @@ mod tests {
             tests: vec!["src/greet.test.ts".into()],
             checks: vec![CheckLine { command: "npm test".into(), status: "passed".into() }],
             review: Some("Clean".into()),
-            spent: Spent { ms: 125_000, cost: 0.42, uncosted: 0 },
+            spent: Spent { ms: 125_000, cost: 0.42, uncosted: 0, tokens: 0 },
             status: Status::Done,
         }
     }
@@ -414,9 +418,20 @@ mod tests {
             ms: 1_000,
             cost: 0.0,
             uncosted: 3,
+            tokens: 0,
         };
         assert_eq!(spent_line(&none), "1 s; the providers reported no cost");
         none.spent.cost = 0.1;
         assert!(spent_line(&none).contains("at least 0.10"));
+        // The tokens, where the providers said.
+        none.spent = Spent {
+            ms: 1_000,
+            tokens: 2_150_000,
+            ..Spent::default()
+        };
+        assert_eq!(
+            spent_line(&none),
+            "1 s; the providers reported no cost; 2.15 million tokens"
+        );
     }
 }

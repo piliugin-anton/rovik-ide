@@ -100,6 +100,10 @@ fn line(chat: &ChatTask) -> String {
             }
             let time = rovik_core::agent_run::report::duration(task.ms);
             line.push_str(&format!("; {time}, {:.2}", task.cost));
+            if task.tokens > 0 {
+                let tokens = rovik_core::agent_run::budget::tokens_text(task.tokens);
+                line.push_str(&format!(", {tokens} tokens"));
+            }
         }
         None => {
             if let Some(outcome) = &chat.outcome {
@@ -138,6 +142,13 @@ mod tests {
         assert_eq!(
             line(&chat),
             "Make the test pass (c1, from laptop): implement running; 2 min, 0.40; running"
+        );
+        let mut counted = chat.clone();
+        counted.task.as_mut().unwrap().tokens = 45_200;
+        counted.running = None;
+        assert_eq!(
+            line(&counted),
+            "Make the test pass (c1, from laptop): implement running; 2 min, 0.40, 45,200 tokens"
         );
         let plain = ChatTask {
             chat: "c2".into(),

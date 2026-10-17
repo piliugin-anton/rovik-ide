@@ -78,15 +78,22 @@ export default function HostAutonomy(props: {
   }
 
   /** A limit left empty: as in this computer's settings. */
-  function setLimit(field: 'maxHours' | 'maxCost', value: number | undefined) {
-    const budget = {
+  function setLimit(field: 'maxHours' | 'maxCost' | 'maxTokens', value: number | undefined) {
+    const { maxTokens, ...limits } = {
       maxHours: block().budget?.maxHours ?? null,
       maxCost: block().budget?.maxCost ?? null,
+      maxTokens: block().budget?.maxTokens ?? null,
       [field]: value ?? null,
     };
-    const empty = budget.maxHours === null && budget.maxCost === null;
+    const budget = { ...limits, ...(maxTokens ? { maxTokens } : {}) };
+    const empty = budget.maxHours === null && budget.maxCost === null && !maxTokens;
     void save({ budget: empty ? undefined : budget });
   }
+  // The token limit shows in millions; it's kept in tokens.
+  const tokensMillions = () => {
+    const tokens = block().budget?.maxTokens;
+    return tokens ? tokens / 1_000_000 : '';
+  };
 
   const effortRadio = (label: string, effort: AutonomySettings['effort']) => (
     <label class="setting-checkbox">
@@ -238,6 +245,26 @@ export default function HostAutonomy(props: {
             onChange={(e) =>
               setLimit('maxCost', numberFieldValue(e.currentTarget.value, 0.01, 100_000, 0.01))
             }
+          />
+        </label>
+        <label class="subagent-limit">
+          <span>or used (million tokens)</span>
+          <input
+            type="number"
+            class="subagent-number"
+            min={0.1}
+            max={100_000}
+            step={0.1}
+            value={tokensMillions()}
+            placeholder="as set"
+            disabled={saving()}
+            onChange={(e) => {
+              const millions = numberFieldValue(e.currentTarget.value, 0.1, 100_000, 0.1);
+              setLimit(
+                'maxTokens',
+                millions === undefined ? undefined : Math.round(millions * 1_000_000)
+              );
+            }}
           />
         </label>
       </div>

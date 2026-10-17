@@ -26,6 +26,7 @@ import {
   reportDuration,
   reportHeadline,
   reportSpent,
+  tokensText,
   testsHeadline,
   unfinishedTask,
   type StageMeta,
@@ -679,5 +680,17 @@ test('the report card’s lines: how it ended, what it spent (S09)', () => {
   assert.equal(reportSpent(meta.spent), '2 min, 0.42');
   assert.equal(reportSpent({ ms: 1000, cost: 0.1, uncosted: 2 }), '1 s, at least 0.10');
   assert.equal(reportSpent({ ms: 1000, cost: 0, uncosted: 2 }), '1 s; no cost reported');
+  // The tokens, where the providers said.
+  assert.equal(
+    reportSpent({ ms: 1000, cost: 0, uncosted: 2, tokens: 2_150_000 }),
+    '1 s; no cost reported; 2.15 million tokens'
+  );
+  assert.equal(
+    reportSpent({ ms: 1000, cost: 0.1, uncosted: 0, tokens: 45_200 }),
+    '1 s, 0.10; 45,200 tokens'
+  );
+  assert.equal(tokensText(330), '330');
+  assert.equal(tokensText(1_000_000), '1 million');
+  assert.equal(tokensText(12_500_000), '12.5 million');
   assert.equal(reportDuration(3_900_000), '1 h 5 min');
 });

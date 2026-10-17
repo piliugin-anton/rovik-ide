@@ -5,7 +5,9 @@ import { readFileSync } from 'node:fs';
 import {
   autopilotConfig,
   budgetOf,
+  changedBudget,
   DEFAULT_AUTOPILOT_DENYLIST,
+  DEFAULT_BUDGETS,
   DEFAULT_AUTOPILOT_SETTINGS,
   denylistEntry,
   denylistOf,
@@ -34,7 +36,7 @@ test('autopilot settings: saved with the Subagents page’s, a file without them
 test('autopilot settings: the backend gets the effort (AgentConfig.autopilot)', () => {
   assert.deepEqual(autopilotConfig({ effort: 'thorough' }), {
     effort: 'thorough',
-    budget: { maxHours: null, maxCost: null },
+    budget: { maxHours: 6, maxCost: null },
     prepare: true,
   });
   assert.deepEqual(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS), {
@@ -96,7 +98,8 @@ test('autopilot settings: the denylist is the defaults until it’s changed, the
 
 test('autopilot settings: a task’s budget, its effort’s until it’s set (U04)', () => {
   assert.deepEqual(budgetOf(DEFAULT_AUTOPILOT_SETTINGS), { maxHours: 2, maxCost: 5 });
-  assert.deepEqual(budgetOf({ effort: 'thorough' }), { maxHours: null, maxCost: null });
+  // Thorough's: 6 hours, a limit kept whatever the provider reports.
+  assert.deepEqual(budgetOf({ effort: 'thorough' }), { maxHours: 6, maxCost: null });
   // Set: it stays whatever the effort.
   const mine = { effort: 'thorough' as const, budget: { maxHours: 0.5, maxCost: null } };
   assert.deepEqual(budgetOf(mine), { maxHours: 0.5, maxCost: null });
@@ -112,4 +115,30 @@ test('autopilot settings: a task’s budget, its effort’s until it’s set (U0
     { maxHours: null, maxCost: null }
   );
   assert.equal(normalizeAutopilotSettings({ budget: 7 }).budget, undefined);
+  // A token limit: kept in whole tokens, only when it's one.
+  assert.deepEqual(
+    normalizeAutopilotSettings({ budget: { maxHours: null, maxCost: null, maxTokens: 2.5e6 } })
+      .budget,
+    { maxHours: null, maxCost: null, maxTokens: 2_500_000 }
+  );
+  assert.deepEqual(
+    normalizeAutopilotSettings({ budget: { maxHours: 1, maxCost: null, maxTokens: 0 } }).budget,
+    { maxHours: 1, maxCost: null }
+  );
+});
+
+test('autopilot settings: a budget changed back to its effort’s own is left unset', () => {
+  const balanced = DEFAULT_BUDGETS.balanced;
+  assert.deepEqual(changedBudget(balanced, { maxTokens: 3_000_000 }, balanced), {
+    maxHours: 2,
+    maxCost: 5,
+    maxTokens: 3_000_000,
+  });
+  // Emptied: no token limit kept, and the rest is the effort's own.
+  const set = { ...balanced, maxTokens: 3_000_000 };
+  assert.equal(changedBudget(set, { maxTokens: null }, balanced), undefined);
+  assert.deepEqual(changedBudget(balanced, { maxHours: 1 }, balanced), {
+    maxHours: 1,
+    maxCost: 5,
+  });
 });

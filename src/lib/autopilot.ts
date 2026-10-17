@@ -45,8 +45,8 @@ export interface StageMeta {
   ref?: string;
   /** One line for the strip. */
   summary?: string;
-  /** What its runs spent (U04): ms they ran, the cost providers reported. */
-  spent?: { ms: number; cost: number; uncosted: number };
+  /** What its runs spent (U04): ms they ran, the cost and the tokens providers reported. */
+  spent?: { ms: number; cost: number; uncosted: number; tokens?: number };
   /** The files it wrote: the Tests stage's tests (S04). */
   files?: string[];
   /** Thorough (T05): an implementation by candidates, by letter; `ref` is their record. */
@@ -777,7 +777,7 @@ export interface ReportMeta {
   tests: string[];
   checks: { command: string; status: string }[];
   review?: string | null;
-  spent: { ms: number; cost: number; uncosted: number };
+  spent: { ms: number; cost: number; uncosted: number; tokens?: number };
   /** The model couldn't write it: the IDE did, from these facts. */
   byIde?: boolean;
 }
@@ -790,12 +790,25 @@ export function reportDuration(ms: number): string {
   return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
 }
 
-/** What the task spent, in a line. */
+/** "330", "45,200", "2.15 million" (agent_run/budget.rs `tokens_text`). */
+export function tokensText(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    return `${Number((tokens / 1_000_000).toFixed(2))} million`;
+  }
+  return Math.round(tokens).toLocaleString('en-US');
+}
+
+/** What the task spent, in a line: its time, its cost, and its tokens where reported. */
 export function reportSpent(spent: ReportMeta['spent']): string {
   const time = reportDuration(spent.ms);
-  if (spent.cost <= 0) return `${time}; no cost reported`;
   const cost = spent.cost.toFixed(2);
-  return spent.uncosted ? `${time}, at least ${cost}` : `${time}, ${cost}`;
+  const line =
+    spent.cost <= 0
+      ? `${time}; no cost reported`
+      : spent.uncosted
+        ? `${time}, at least ${cost}`
+        : `${time}, ${cost}`;
+  return spent.tokens ? `${line}; ${tokensText(spent.tokens)} tokens` : line;
 }
 
 /** The report card's headline: how the task ended and what became of it. */

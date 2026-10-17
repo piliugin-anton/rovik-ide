@@ -143,7 +143,8 @@ test('subagent settings: Autopilot’s effort, Balanced by default, whatever the
   assert.equal(saved.length, 1);
   assert.deepEqual(saved[0], { ...DEFAULT_SUBAGENT_SETTINGS, autopilot: { effort: 'thorough' } });
   assert.equal(effortRadio(root, 'Thorough').checked, true);
-  assert.ok(notBuilt(), 'what Thorough does today, said');
+  // Thorough's stages are built: nothing says otherwise any more.
+  assert.equal(notBuilt(), undefined);
 });
 
 test('subagent settings: the kinds Autopilot uses say so, and where their code goes (D17)', () => {
@@ -300,12 +301,14 @@ test('subagent settings: a task’s budget, its effort’s defaults until set (U
       .querySelector('input') as HTMLInputElement;
   const hours = () => field('Stop a task after (hours)');
   const cost = () => field('or once it cost');
-  // Balanced: 2 hours and 5.
+  const tokens = () => field('or used (million tokens)');
+  // Balanced: 2 hours and 5, no token limit.
   assert.equal(hours().value, '2');
   assert.equal(cost().value, '5');
-  // Thorough: none, while it's not set.
+  assert.equal(tokens().value, '');
+  // Thorough: 6 hours, while it's not set.
   effortRadio(root, 'Thorough').click();
-  assert.equal(hours().value, '');
+  assert.equal(hours().value, '6');
   assert.equal(cost().placeholder, 'no limit');
   assert.equal(settings().autopilot.budget, undefined);
   // Set: kept, whatever the effort.
@@ -320,6 +323,18 @@ test('subagent settings: a task’s budget, its effort’s defaults until set (U
   hours().dispatchEvent(new Event('change', { bubbles: true }));
   cost().value = '5';
   cost().dispatchEvent(new Event('change', { bubbles: true }));
+  assert.equal(settings().autopilot.budget, undefined);
+  // Tokens, in millions on the page, kept in tokens.
+  tokens().value = '2.5';
+  tokens().dispatchEvent(new Event('change', { bubbles: true }));
+  assert.deepEqual(settings().autopilot.budget, {
+    maxHours: 2,
+    maxCost: 5,
+    maxTokens: 2_500_000,
+  });
+  assert.equal(tokens().value, '2.5');
+  tokens().value = '';
+  tokens().dispatchEvent(new Event('change', { bubbles: true }));
   assert.equal(settings().autopilot.budget, undefined);
 });
 

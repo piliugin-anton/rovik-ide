@@ -788,6 +788,7 @@ T05 depends most on the environment it meets.
 - **Thorough says what it does today.** Until T builds its stages, a
   Thorough task runs as a Balanced one, with Break and Pick recorded
   skipped; a line under the radios says so while Thorough is chosen.
+  (T built them; the line went in the robustness pass after it.)
 - **A task keeps the effort it started with** (its records carry it): a
   change of the setting applies to the next task.
 
@@ -914,6 +915,20 @@ T05 depends most on the environment it meets.
   cost [amount]", empty for no limit, showing the effort's defaults
   (Balanced: 2 hours and 5; Thorough: none) until set; a budget set stays
   whatever the effort, until it's set back to the effort's own.
+- **Since the robustness pass after T**, every task has a limit that
+  holds with any provider, and a limit for those that report tokens but
+  no cost:
+  - **Thorough's default is 6 hours**, not none: the time counts whatever
+    the provider reports, so a Thorough task on OpenAI or a local server
+    was bounded only by its loops' caps (`MAX_ROUNDS`).
+  - **"or used [million tokens]"** joins the budget (`Budget.max_tokens`,
+    additive: kept in tokens, left out when there's none, so an older
+    peer reads the budget as before). What counts is what the providers
+    report each request used, in and out (`Spent.tokens`, the records'
+    `spent` and H08's status with it), which most do even when they
+    report no cost; the run checks it where it checks the time and the
+    cost ("it used 2.15 million tokens, past its limit of 2 million").
+    The host's block has it too, merged as the other limits are (H02).
 - **What was implemented** is now whether an implementation's run
   started (the IDE's message for it is in the chat), not whether an
   implement record exists: a stage that never started leaves one too.

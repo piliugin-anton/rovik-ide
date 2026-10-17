@@ -16,6 +16,11 @@ export interface AutopilotBudget {
   maxHours: number | null;
   /** In the provider's currency. */
   maxCost: number | null;
+  /**
+   * In tokens, as the providers report a request used them (most do, even
+   * those that report no cost; the page shows millions). Unset: no limit.
+   */
+  maxTokens?: number | null;
 }
 
 export interface AutopilotSettings {
@@ -28,15 +33,38 @@ export interface AutopilotSettings {
   prepare?: false;
 }
 
-/** A task's budget until the settings set one (3.5): Balanced's is 2 hours and 5. */
+/**
+ * A task's budget until the settings set one (3.5): Balanced's is 2 hours
+ * and 5; Thorough's 6 hours, a limit every provider allows to keep (the
+ * time counts whether or not it reports a cost).
+ */
 export const DEFAULT_BUDGETS: Record<AutopilotEffort, AutopilotBudget> = {
   balanced: { maxHours: 2, maxCost: 5 },
-  thorough: { maxHours: null, maxCost: null },
+  thorough: { maxHours: 6, maxCost: null },
 };
 
 /** The budget the settings give: theirs, or their effort's. */
 export function budgetOf(settings: AutopilotSettings): AutopilotBudget {
   return settings.budget ?? DEFAULT_BUDGETS[settings.effort];
+}
+
+/**
+ * `budget` with `change` made, as it's kept: a token limit only when there
+ * is one. Undefined: the result is `defaults`, which the settings then
+ * leave unset.
+ */
+export function changedBudget(
+  budget: AutopilotBudget,
+  change: Partial<AutopilotBudget>,
+  defaults: AutopilotBudget
+): AutopilotBudget | undefined {
+  const { maxTokens, ...limits } = { ...budget, ...change };
+  const next: AutopilotBudget = { ...limits, ...(maxTokens ? { maxTokens } : {}) };
+  const same =
+    next.maxHours === defaults.maxHours &&
+    next.maxCost === defaults.maxCost &&
+    (next.maxTokens ?? null) === (defaults.maxTokens ?? null);
+  return same ? undefined : next;
 }
 
 /** A budget limit as kept: a positive, finite number, else no limit. */
@@ -134,7 +162,14 @@ export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {
       ]
     : undefined;
   const b = r.budget && typeof r.budget === 'object' ? (r.budget as Record<string, unknown>) : null;
-  const budget = b ? { maxHours: budgetLimit(b.maxHours), maxCost: budgetLimit(b.maxCost) } : null;
+  const tokens = b ? budgetLimit(b.maxTokens) : null;
+  const budget = b
+    ? {
+        maxHours: budgetLimit(b.maxHours),
+        maxCost: budgetLimit(b.maxCost),
+        ...(tokens ? { maxTokens: Math.round(tokens) } : {}),
+      }
+    : null;
   return {
     effort: effort ?? DEFAULT_AUTOPILOT_SETTINGS.effort,
     ...(denied ? { deniedCommands: denied } : {}),

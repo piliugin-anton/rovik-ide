@@ -1,6 +1,7 @@
 //! What an Autopilot task spends, and its budget (D16, U04): the time its
-//! runs ran and the cost their providers reported, against the limits in
-//! the Autopilot settings ("Stop a task after [hours] or [cost]").
+//! runs ran, the cost their providers reported and the tokens they used,
+//! against the limits in the Autopilot settings ("Stop a task after
+//! [hours], once it cost [amount] or used [million tokens]").
 //!
 //! - A task's lead run adds up what its replies, its subagents' included,
 //!   cost as it goes (`AgentState::note_reply`), and the time since it
@@ -11,7 +12,9 @@
 //!   delivers what it has.
 //! - The cost is what the providers say a request cost (OpenRouter does).
 //!   A reply whose provider says nothing isn't in it, and is counted
-//!   (`uncosted`): with such a provider only the time limit is kept.
+//!   (`uncosted`): with such a provider the cost limit can't be kept. The
+//!   tokens are what the providers report the requests used, which most
+//!   do even without a cost: the limit that holds for them.
 //!
 //! The headless runner's accounting of a run's log (`Totals`) is here too,
 //! with its prices for providers that report no cost.
@@ -21,8 +24,8 @@ use rovik_protocol::autopilot::Budget;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// What a task's runs spent: the time they ran, and the cost their
-/// providers reported.
+/// What a task's runs spent: the time they ran, the cost their providers
+/// reported, and the tokens their requests used.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Spent {
@@ -32,6 +35,13 @@ pub struct Spent {
     pub cost: f64,
     /// Replies whose provider said no cost: `cost` leaves them out.
     pub uncosted: u32,
+    /// Tokens in and out, from the replies whose provider said.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tokens: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Spent {
@@ -40,12 +50,15 @@ impl Spent {
             ms: self.ms + other.ms,
             cost: self.cost + other.cost,
             uncosted: self.uncosted + other.uncosted,
+            tokens: self.tokens + other.tokens,
         }
     }
 
     /// One reply's usage, as its provider reported it (none: nothing said).
     pub fn note_reply(&mut self, usage: Option<&Value>) {
-        match usage.and_then(|u| usage_counts(u).2) {
+        let (input, output, cost) = usage.map(usage_counts).unwrap_or_default();
+        self.tokens += input.unwrap_or(0) + output.unwrap_or(0);
+        match cost {
             Some(cost) if cost.is_finite() && cost >= 0.0 => self.cost += cost,
             _ => self.uncosted += 1,
         }
@@ -78,7 +91,34 @@ pub fn over(budget: &Budget, spent: &Spent) -> Option<String> {
             ));
         }
     }
+    if let Some(tokens) = budget.max_tokens.filter(|t| *t > 0) {
+        if spent.tokens >= tokens {
+            return Some(format!(
+                "it used {} tokens, past its limit of {}",
+                tokens_text(spent.tokens),
+                tokens_text(tokens)
+            ));
+        }
+    }
     None
+}
+
+/// "330", "45,200", "2.15 million".
+pub fn tokens_text(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let millions = format!("{:.2}", tokens as f64 / 1_000_000.0);
+        let millions = millions.trim_end_matches('0').trim_end_matches('.');
+        return format!("{millions} million");
+    }
+    let digits = tokens.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// "2 h", "1.5 h", "30 min".
@@ -225,19 +265,72 @@ mod tests {
         spent.note_reply(Some(&json!({ "cost": -1.0 })));
         assert_eq!(spent.cost, 0.25);
         assert_eq!(spent.uncosted, 3);
+        // The tokens of every reply that said, cost or none.
+        assert_eq!(spent.tokens, 24);
         let more = Spent {
             ms: 1_000,
             cost: 1.0,
             uncosted: 1,
+            tokens: 1_000,
         };
         assert_eq!(
             spent.plus(more),
             Spent {
                 ms: 1_000,
                 cost: 1.25,
-                uncosted: 4
+                uncosted: 4,
+                tokens: 1_024,
             }
         );
+        // The Responses API's names count too.
+        let mut responses = Spent::default();
+        responses.note_reply(Some(&json!({ "input_tokens": 300, "output_tokens": 20 })));
+        assert_eq!(responses.tokens, 320);
+    }
+
+    /// The token limit holds with a provider that reports no cost.
+    #[test]
+    fn a_task_is_over_its_budget_once_it_used_its_tokens() {
+        let budget = Budget {
+            max_tokens: Some(2_000_000),
+            ..Budget::default()
+        };
+        let used = |tokens: u64| Spent {
+            uncosted: 40,
+            tokens,
+            ..Spent::default()
+        };
+        assert_eq!(over(&budget, &used(1_999_999)), None);
+        assert_eq!(
+            over(&budget, &used(2_150_000)).as_deref(),
+            Some("it used 2.15 million tokens, past its limit of 2 million")
+        );
+        let none = Budget {
+            max_tokens: Some(0),
+            ..Budget::default()
+        };
+        assert_eq!(over(&none, &used(u64::MAX / 2)), None, "0 is no limit");
+        // Spent as kept: the tokens only when there are some.
+        let kept = serde_json::to_value(used(330)).unwrap();
+        assert_eq!(kept["tokens"], 330);
+        assert!(serde_json::to_value(Spent::default())
+            .unwrap()
+            .get("tokens")
+            .is_none());
+        let old: Spent =
+            serde_json::from_value(json!({ "ms": 5, "cost": 0.1, "uncosted": 0 })).unwrap();
+        assert_eq!(old.tokens, 0, "a record from before tokens were counted");
+    }
+
+    #[test]
+    fn tokens_read_as_people_write_them() {
+        assert_eq!(tokens_text(0), "0");
+        assert_eq!(tokens_text(330), "330");
+        assert_eq!(tokens_text(45_200), "45,200");
+        assert_eq!(tokens_text(999_999), "999,999");
+        assert_eq!(tokens_text(1_000_000), "1 million");
+        assert_eq!(tokens_text(2_150_000), "2.15 million");
+        assert_eq!(tokens_text(12_500_000), "12.5 million");
     }
 
     #[test]
@@ -245,6 +338,7 @@ mod tests {
         let budget = Budget {
             max_hours: Some(2.0),
             max_cost: Some(5.0),
+            max_tokens: None,
         };
         let hour = 3_600_000;
         assert_eq!(
@@ -253,7 +347,8 @@ mod tests {
                 &Spent {
                     ms: hour,
                     cost: 4.99,
-                    uncosted: 0
+                    uncosted: 0,
+                    tokens: 0,
                 }
             ),
             None
@@ -264,7 +359,8 @@ mod tests {
                 &Spent {
                     ms: 2 * hour,
                     cost: 0.0,
-                    uncosted: 0
+                    uncosted: 0,
+                    tokens: 0,
                 }
             )
             .as_deref(),
@@ -276,7 +372,8 @@ mod tests {
                 &Spent {
                     ms: 0,
                     cost: 5.0,
-                    uncosted: 0
+                    uncosted: 0,
+                    tokens: 0,
                 }
             )
             .as_deref(),
@@ -290,7 +387,8 @@ mod tests {
                 &Spent {
                     ms: 100 * hour,
                     cost: 1e9,
-                    uncosted: 0
+                    uncosted: 0,
+                    tokens: 0,
                 }
             ),
             None
@@ -298,6 +396,7 @@ mod tests {
         let odd = Budget {
             max_hours: Some(0.0),
             max_cost: Some(f64::NAN),
+            max_tokens: None,
         };
         assert_eq!(
             over(
@@ -305,7 +404,8 @@ mod tests {
                 &Spent {
                     ms: hour,
                     cost: 1.0,
-                    uncosted: 0
+                    uncosted: 0,
+                    tokens: 0,
                 }
             ),
             None
@@ -313,6 +413,7 @@ mod tests {
         let half = Budget {
             max_hours: Some(0.5),
             max_cost: None,
+            max_tokens: None,
         };
         assert_eq!(
             over(

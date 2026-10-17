@@ -1669,6 +1669,7 @@ async fn a_tiny_budget_ends_the_task_at_the_next_reply() {
     request.config.as_mut().unwrap().autopilot.budget = super::autopilot::Budget {
         max_hours: None,
         max_cost: Some(0.05),
+        max_tokens: None,
     };
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
@@ -1721,6 +1722,57 @@ async fn a_tiny_budget_ends_the_task_at_the_next_reply() {
     assert_eq!(ends.last(), Some(&json!("budget")));
 }
 
+/// U04, by tokens: a provider that reports what each request used and no
+/// cost, and a task that may use 300 tokens. Its plan's two replies use
+/// 220, which its record keeps; the implementation's first reply brings it
+/// to 330, so the run ends there with `budget`, and the task delivers what
+/// it has, saying why.
+#[tokio::test]
+async fn a_token_limit_ends_the_task_where_the_provider_reports_no_cost() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // Every reply of the lead's uses 110 tokens.
+    let script: Vec<Reply> = task_script()
+        .into_iter()
+        .map(|reply| Reply::Usage(100, 10, Box::new(reply)))
+        .collect();
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.budget = super::autopilot::Budget {
+        max_tokens: Some(300),
+        ..Default::default()
+    };
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Done),
+            (Stage::Prepare, Status::Skipped),
+            (Stage::Tests, Status::Skipped),
+            (Stage::Implement, Status::Failed),
+            (Stage::Deliver, Status::Done),
+        ]
+    );
+    let plan = records[0].spent.expect("the plan's run's spend");
+    assert_eq!((plan.tokens, plan.cost), (220, 0.0), "{plan:?}");
+    let implement = &records[4];
+    assert_eq!(implement.outcome.as_deref(), Some("budget"));
+    assert_eq!(
+        implement.summary.as_deref(),
+        Some("Over the task's budget: it used 330 tokens, past its limit of 300")
+    );
+    assert_eq!(records[5].outcome.as_deref(), Some("budget"));
+}
+
 /// U04: the task's records say it spent more than its budget allows by
 /// the time its next stage would start (here, cut between two stages, then
 /// resumed): that stage doesn't start, and the task delivers.
@@ -1743,6 +1795,7 @@ async fn past_the_budget_between_stages_no_stage_starts() {
         ms: 1_000,
         cost: 0.10,
         uncosted: 0,
+        tokens: 0,
     });
     add_stage(&h.core, &h.dialog_id, &plan).await.unwrap();
     for name in [Stage::PlanReview, Stage::Prepare, Stage::Tests] {
@@ -4822,6 +4875,7 @@ async fn the_budget_ends_a_thorough_loop_before_its_progress_does() {
     request.config.as_mut().unwrap().autopilot.budget = super::autopilot::Budget {
         max_hours: None,
         max_cost: Some(0.05),
+        max_tokens: None,
     };
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;

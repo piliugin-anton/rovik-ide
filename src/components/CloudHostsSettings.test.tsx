@@ -740,6 +740,17 @@ test('works on its own: each change is saved, the deploy key only once it’s in
   change(field(block(), 'Stop a task after (hours)')!, '');
   await flush();
   assert.equal(kept().autonomy!.budget, undefined);
+  // A token limit: millions on the page, tokens kept; emptied, none.
+  change(field(block(), 'or used (million tokens)')!, '1.5');
+  await flush();
+  assert.deepEqual(kept().autonomy!.budget, {
+    maxHours: null,
+    maxCost: null,
+    maxTokens: 1_500_000,
+  });
+  change(field(block(), 'or used (million tokens)')!, '');
+  await flush();
+  assert.equal(kept().autonomy!.budget, undefined);
   // The notify URL: kept trimmed; one the app refuses says why, and isn't kept.
   change(field(block(), 'Call this URL')!, ' https://ntfy.sh/rovik-abc ');
   await flush();
