@@ -65,6 +65,7 @@ import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import AutopilotStrip from './AutopilotStrip';
 import { stageRows, taskRecords, type StageRow } from '../lib/autopilot';
+import { autopilotConfig } from '../lib/autopilotSettings';
 import { overlayStatus } from '../lib/overlay';
 import { barChanged, clearUpload, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
@@ -2642,6 +2643,7 @@ export default function ChatPanel(props: ChatProps) {
     permissions: permissions(),
     approvalProfiles: approvalProfiles(permissions()),
     subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
+    autopilot: autopilotConfig(subagentSettings().autopilot),
   });
   createEffect(() => configureAgent(agentConfig()));
 

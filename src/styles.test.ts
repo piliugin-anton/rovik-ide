@@ -73,3 +73,25 @@ test('every subagent-* class the components use has a rule', () => {
   const missing = [...used].filter((c) => !styled.has(c));
   assert.deepEqual(missing, [], 'unstyled subagent classes');
 });
+
+test('every autopilot-* and chat-stage class the components use has a rule', () => {
+  const styled = new Set(
+    rules.flatMap((r) =>
+      r.selectors.flatMap((s) => [...s.matchAll(/\.([\w-]+)/g)].map((m) => m[1]))
+    )
+  );
+  const dir = 'src/components';
+  const used = new Set<string>();
+  for (const file of readdirSync(dir).filter((f) => /\.tsx$/.test(f) && !/\.test\./.test(f))) {
+    const source = readFileSync(join(dir, file), 'utf8');
+    // The classes a class attribute names, a template's words included.
+    for (const m of source.matchAll(/\bclass=\{?[`"']([^`"']*)[`"']/g)) {
+      for (const word of m[1].split(/\s+/)) {
+        if (/^(autopilot-|chat-stage)[\w-]*$/.test(word)) used.add(word);
+      }
+    }
+  }
+  assert.ok(used.size >= 8, `found the classes (${[...used].join(', ')})`);
+  const missing = [...used].filter((c) => !styled.has(c));
+  assert.deepEqual(missing, [], 'unstyled Autopilot classes');
+});

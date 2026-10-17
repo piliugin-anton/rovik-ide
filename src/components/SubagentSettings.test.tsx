@@ -4,8 +4,12 @@ import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
+import { createSignal } from 'solid-js';
 import SubagentSettings from './SubagentSettings';
-import { DEFAULT_SUBAGENT_SETTINGS } from '../lib/subagentSettings';
+import {
+  DEFAULT_SUBAGENT_SETTINGS,
+  type SubagentSettings as Settings,
+} from '../lib/subagentSettings';
 
 /** What `vfs_status` answers in the test running now. */
 let vfsStatus: () => Promise<unknown> = async () => ({ mountpoint: '/mnt/vfs' });
@@ -83,4 +87,58 @@ test('subagent settings: mounted, the isolated options are on offer; no token li
     .querySelector('input') as HTMLInputElement;
   assert.equal(tokens.placeholder, 'no limit');
   assert.equal(tokens.value, '');
+});
+
+/** The Autopilot section's radios, by label. */
+const effortRadio = (root: HTMLElement, label: string) =>
+  [...root.querySelectorAll('label.setting-checkbox')]
+    .find((l) => l.textContent?.startsWith(label))!
+    .querySelector('input[type="radio"]') as HTMLInputElement;
+
+test('subagent settings: Autopilot’s effort, Balanced by default, whatever the master switch', () => {
+  const root = container();
+  const saved: Settings[] = [];
+  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
+  render(
+    () => (
+      <SubagentSettings
+        settings={settings()}
+        providers={[]}
+        chatModel={null}
+        onChange={(next) => {
+          saved.push(next);
+          setSettings(next);
+        }}
+      />
+    ),
+    root
+  );
+  const title = [...root.querySelectorAll('.settings-section-title')].map((t) => t.textContent);
+  assert.deepEqual(title.slice(0, 3), ['Default model', 'Autopilot', 'Kinds'], 'above the kinds');
+  const balanced = effortRadio(root, 'Balanced');
+  const thorough = effortRadio(root, 'Thorough');
+  assert.equal(balanced.checked, true);
+  assert.equal(thorough.checked, false);
+  // Subagents are off: Autopilot's setting is still there to set.
+  assert.equal(balanced.disabled, false);
+  assert.equal(thorough.disabled, false);
+  assert.match(
+    balanced.closest('label')!.textContent!,
+    /Each stage once, with the subagents below\./
+  );
+  assert.match(
+    thorough.closest('label')!.textContent!,
+    /Several candidates, a second model for every judgment, an adversarial tester; takes longer and costs more\./
+  );
+  const notBuilt = () =>
+    [...root.querySelectorAll('.settings-hint')].find((p) =>
+      p.textContent?.includes('aren’t built yet')
+    );
+  assert.equal(notBuilt(), undefined);
+
+  thorough.click();
+  assert.equal(saved.length, 1);
+  assert.deepEqual(saved[0], { ...DEFAULT_SUBAGENT_SETTINGS, autopilot: { effort: 'thorough' } });
+  assert.equal(effortRadio(root, 'Thorough').checked, true);
+  assert.ok(notBuilt(), 'what Thorough does today, said');
 });

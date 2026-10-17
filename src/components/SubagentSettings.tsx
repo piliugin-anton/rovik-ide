@@ -4,12 +4,15 @@
 // master switch, the default subagent model, one row per kind (on/off,
 // model, fallbacks, reasoning effort) and the limits. Everything is off by
 // default; with the master switch off, chats work exactly as without
-// subagents and the rows keep their choices, greyed out.
+// subagents and the rows keep their choices, greyed out. The Autopilot
+// section (docs/design/autopilot-plan.md, 3.5) is for chats in Autopilot,
+// whatever the master switch says.
 import { createResource, createSignal, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import ModelWithFallbacks from './ModelWithFallbacks';
 import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
+import { AUTOPILOT_EFFORTS } from '../lib/autopilotSettings';
 import {
   LIMIT_FIELDS,
   LIMITS,
@@ -120,6 +123,39 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           onChange={(value) => patch({ defaultModel: value })}
           onFallbacksChange={(defaultFallbacks) => patch({ defaultFallbacks })}
         />
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Autopilot</div>
+        <p class="settings-hint">
+          A chat in Autopilot mode carries out a task on its own: it plans, reviews, implements,
+          checks and delivers it without asking.
+        </p>
+        <div role="radiogroup" aria-label="Autopilot effort">
+          <For each={AUTOPILOT_EFFORTS}>
+            {(effort) => (
+              <label class="setting-checkbox">
+                <input
+                  type="radio"
+                  name="autopilot-effort"
+                  value={effort.id}
+                  checked={s().autopilot.effort === effort.id}
+                  onChange={() => patch({ autopilot: { ...s().autopilot, effort: effort.id } })}
+                />
+                <span>
+                  {effort.label}
+                  <span class="setting-checkbox-sub">{effort.hint}</span>
+                </span>
+              </label>
+            )}
+          </For>
+        </div>
+        <Show when={s().autopilot.effort === 'thorough'}>
+          <p class="settings-hint">
+            Thorough’s own stages aren’t built yet: for now a Thorough task runs as a Balanced one,
+            and its record shows them as skipped.
+          </p>
+        </Show>
       </section>
 
       <section class="settings-section" classList={{ disabled: off() }}>

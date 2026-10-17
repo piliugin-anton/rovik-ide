@@ -12,6 +12,11 @@
 import type { ModelProfile, ModelSelection, OpenAIChatOptions, Provider } from '../types';
 import { formatsToSend, type Effort } from './reasoning';
 import { sameModel } from './permissions';
+import {
+  DEFAULT_AUTOPILOT_SETTINGS,
+  normalizeAutopilotSettings,
+  type AutopilotSettings,
+} from './autopilotSettings';
 
 /** The kinds built so far (agent_run/subagent.rs `Kind`). */
 export type SubagentKindId =
@@ -113,6 +118,8 @@ export interface SubagentSettings {
   parallelRepair: boolean;
   /** Tokens one run's subagents may use (as reported); undefined: no limit. */
   maxRunTokens?: number;
+  /** The page's Autopilot section (lib/autopilotSettings.ts), sent apart. */
+  autopilot: AutopilotSettings;
 }
 
 export const LIMITS = {
@@ -169,6 +176,7 @@ export const DEFAULT_SUBAGENT_SETTINGS: SubagentSettings = {
   parallelWorkers: false,
   redCheck: false,
   parallelRepair: false,
+  autopilot: DEFAULT_AUTOPILOT_SETTINGS,
 };
 
 const EFFORT_IDS: Effort[] = ['default', 'none', 'low', 'medium', 'high'];
@@ -253,6 +261,7 @@ export function normalizeSubagentSettings(raw: unknown): SubagentSettings {
     redCheck: r.redCheck === true,
     parallelRepair: r.parallelRepair === true,
     ...(maxRunTokens !== undefined ? { maxRunTokens } : {}),
+    autopilot: normalizeAutopilotSettings(r.autopilot),
   };
 }
 

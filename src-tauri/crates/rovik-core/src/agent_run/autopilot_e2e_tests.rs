@@ -78,9 +78,7 @@ async fn an_autopilot_message_starts_a_plan_mode_run() {
 /// messages have come since.
 #[tokio::test]
 async fn stage_records_are_rows_that_read_back_after_a_reload() {
-    use super::autopilot::{
-        add_stage, end_stage, load, records_of, Effort, Stage, StageRecord, Status,
-    };
+    use super::autopilot::{add_stage, end_stage, load, records_of};
     let h = harness(&[]).await;
     let core = h.core.clone();
     let plan = add_stage(
@@ -157,7 +155,7 @@ async fn stage_records_are_rows_that_read_back_after_a_reload() {
  * The driver (A03)
  */
 
-use super::autopilot::{crash_at, task_stages, Crash, Stage, StageRecord, Status};
+use super::autopilot::{crash_at, task_stages, Crash, Effort, Stage, StageRecord, Status};
 
 /// A project whose test (`npm test`) passes once ok.txt says "ok".
 async fn task_project() -> Harness {
@@ -384,6 +382,51 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
     // Over: a Resume starts nothing.
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     assert_eq!(h.events_of("runStarted").len(), 2);
+}
+
+/// A06: a Thorough task has Thorough's stages: Break and Pick, after the
+/// checks, recorded skipped until T builds them; every record carries the
+/// effort the task started with, which a change of the setting meanwhile
+/// doesn't change.
+#[tokio::test]
+async fn a_thorough_task_records_its_own_stages_skipped_until_built() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        task_script(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    // The setting goes back to Balanced while the plan runs: the task stays Thorough.
+    stages_until(&h, "the plan's start", |r| !r.is_empty()).await;
+    let mut balanced = h.core.agents.config();
+    balanced.autopilot.effort = Effort::Balanced;
+    h.core.agents.set_config(balanced);
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let thorough: Vec<(Stage, Status)> = [
+        &BALANCED_OK[..7],
+        &[
+            (Stage::Break, Status::Skipped),
+            (Stage::Pick, Status::Skipped),
+        ],
+        &BALANCED_OK[7..],
+    ]
+    .concat();
+    assert_eq!(names(&records), thorough);
+    assert!(
+        records.iter().all(|r| r.effort == Effort::Thorough),
+        "{records:#?}"
+    );
+    for record in records.iter().filter(|r| r.name.thorough_only()) {
+        assert_eq!(record.summary.as_deref(), Some("Not available yet"));
+    }
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }
 
 /// A03: the driver dies right after it ended the plan's stage, before the

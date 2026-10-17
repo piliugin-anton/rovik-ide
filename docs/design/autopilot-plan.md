@@ -768,3 +768,23 @@ T05 depends most on the environment it meets.
   daemon couldn't be run in the sandbox this was built in. The daemon's
   test (`rovik-agentd/tests/autopilot.rs`) checks the rows a remote
   chat's mirror gets.
+
+### A06: the effort setting
+
+- **The section has the effort alone for now.** Its other settings (the
+  budget, preparing the dependencies, the commands Autopilot may never
+  run) come with the tasks that make them do something (U04, S03, U01);
+  until then the backend's defaults stand for them. A setting that does
+  nothing yet isn't shown.
+- **Saved with the Subagents settings** (`subagents.autopilot` in the AI
+  settings file), so a file that couldn't be read is never written over
+  with the defaults (P5.7). It's sent apart, as `AgentConfig.autopilot`.
+- **Not greyed out** when "Use subagents" is off: Autopilot's chats use
+  it either way.
+- **"With the subagents below"**: the section is above "Kinds", so the
+  Balanced hint says below where 3.5 says above.
+- **Thorough says what it does today.** Until T builds its stages, a
+  Thorough task runs as a Balanced one, with Break and Pick recorded
+  skipped; a line under the radios says so while Thorough is chosen.
+- **A task keeps the effort it started with** (its records carry it): a
+  change of the setting applies to the next task.

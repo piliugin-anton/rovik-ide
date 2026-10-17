@@ -5378,6 +5378,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--warning);
 }
 
+.autopilot-stage-label {
+  white-space: nowrap;
+}
+
 .autopilot-stage-round {
   color: var(--fg-dim);
   font-variant-numeric: tabular-nums;

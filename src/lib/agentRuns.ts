@@ -65,6 +65,7 @@ import {
   receiveSubagentMessages,
 } from './subagents';
 import type { SubagentConfig } from './subagentSettings';
+import type { AutopilotConfig } from './autopilotSettings';
 
 /** Settings runs follow (agent_run::AgentConfig). */
 export interface AgentConfig {
@@ -73,6 +74,8 @@ export interface AgentConfig {
   approvalProfiles: ModelProfile[];
   /** Subagents (lib/subagentSettings.ts), resolved. */
   subagents: SubagentConfig;
+  /** How chats in Autopilot run their tasks (lib/autopilotSettings.ts). */
+  autopilot: AutopilotConfig;
 }
 
 export type StartKind =
