@@ -45,6 +45,7 @@ fn ended(dialog: &str) -> AgentEvent {
         dialog_id: dialog.into(),
         run_id: "r".into(),
         outcome: "done".into(),
+        autopilot: false,
     }
 }
 

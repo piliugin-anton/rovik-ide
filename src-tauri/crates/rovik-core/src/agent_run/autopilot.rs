@@ -24,7 +24,7 @@
 //! task up where a crash, a restart or a closed app left it.
 
 use super::budget::{self, Spent};
-use super::landing::pending_reason;
+use super::landing::pending_reason_in;
 use super::permissions::{ChecklistMode, Permissions};
 use super::recovery::{self, Recovery};
 use super::subagent::{Kind, SubagentConfig};
@@ -976,7 +976,7 @@ fn failure_summary(outcome: &str) -> String {
         "paused-loop" => "The run kept looping after it was told to change approach".into(),
         "paused-checkpoint" => "The run paused at its tool-call checkpoint".into(),
         "budget" => "Over the task's budget".into(),
-        _ => match pending_reason(outcome) {
+        _ => match pending_reason_in(outcome, true) {
             // "Not landed: the checks still fail." → "The checks still fail"
             Some(reason) => {
                 let why = reason
@@ -1372,7 +1372,7 @@ async fn deliver(
     // working in the project folder made its changes there.
     let waiting = crate::overlay::chats::pending(dialog_id).map(|p| p.reason);
     let in_project = !on_server && !crate::overlay::chats::exists(dialog_id);
-    let (delivered, summary) = match (waiting, pending_reason(&outcome)) {
+    let (delivered, summary) = match (waiting, pending_reason_in(&outcome, true)) {
         // It ended before anything was changed.
         _ if !implemented => (false, "Nothing to deliver".to_string()),
         (Some(reason), _) => (false, reason),

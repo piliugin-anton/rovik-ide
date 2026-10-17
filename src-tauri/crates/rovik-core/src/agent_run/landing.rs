@@ -28,8 +28,25 @@ const MAX_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// Run outcomes after which changes may land without asking.
 const LANDS_AFTER: &[&str] = &["done", "verified", "unverified", "verify-unverified"];
 
-/// Outcomes that land without any check having run.
+/// Outcomes that land without any check having run (outside Autopilot).
 const UNCHECKED: &[&str] = &["unverified", "verify-unverified"];
+
+/// Why a run's changes don't land on their own, for a run of an Autopilot
+/// task or not: in one, a change no check ran on doesn't land either,
+/// with nobody there to read why (D7, V02). None when they may land.
+pub fn pending_reason_in(outcome: &str, autopilot: bool) -> Option<String> {
+    if autopilot && UNCHECKED.contains(&outcome) {
+        return Some(
+            "Not landed: no check ran on it, and Autopilot lands only what's checked.".into(),
+        );
+    }
+    pending_reason(outcome)
+}
+
+/// Whether a run's changes may land on their own after `outcome`.
+fn lands_after(outcome: &str, autopilot: bool) -> bool {
+    pending_reason_in(outcome, autopilot).is_none()
+}
 
 /// Why a run's changes don't land on their own after it ended with
 /// `outcome`: the reason the isolation bar shows, the same for a local
@@ -88,7 +105,8 @@ impl Run {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;
-        if LANDS_AFTER.contains(&outcome) {
+        let autopilot = self.in_autopilot();
+        if lands_after(outcome, autopilot) {
             self.wait_while_project_busy().await;
         }
         let dialog_id = self.dialog_id.clone();
@@ -119,7 +137,7 @@ impl Run {
             return None;
         }
         let count = changes.len();
-        if let Some(reason) = pending_reason(outcome) {
+        if let Some(reason) = pending_reason_in(outcome, autopilot) {
             chats::set_pending(
                 &dialog_id,
                 Some(&Pending {
@@ -353,7 +371,10 @@ impl Run {
         &mut self,
         outcome: &str,
     ) -> Result<Option<String>, String> {
-        if !LANDS_AFTER.contains(&outcome) || self.root == self.project_root || self.plan_mode {
+        if !lands_after(outcome, self.in_autopilot())
+            || self.root == self.project_root
+            || self.plan_mode
+        {
             return Ok(None);
         }
         let Some(overlay) = chats::get(&self.dialog_id) else {
@@ -462,7 +483,7 @@ impl Run {
 
 #[cfg(test)]
 mod tests {
-    use super::{checks_would_run, pending_reason, Permissions, ProjectCheck};
+    use super::{checks_would_run, pending_reason, pending_reason_in, Permissions, ProjectCheck};
 
     /// One table for both sides: a local chat's landing and a daemon's
     /// results give each outcome the same reason (6.5).
@@ -495,6 +516,29 @@ mod tests {
         assert!(flagged.contains("weakens tests"), "{flagged}");
         let unchecked = pending_reason("verify-unchecked").unwrap();
         assert!(unchecked.contains("couldn't be checked"), "{unchecked}");
+    }
+
+    /// V02 (D7): in Autopilot, a change no check ran on doesn't land, and
+    /// says so; every other outcome has its reason as outside it.
+    #[test]
+    fn in_autopilot_an_unchecked_change_doesnt_land() {
+        let why = "Not landed: no check ran on it, and Autopilot lands only what's checked.";
+        for outcome in ["unverified", "verify-unverified"] {
+            assert_eq!(pending_reason_in(outcome, false), None, "{outcome}");
+            assert_eq!(
+                pending_reason_in(outcome, true).as_deref(),
+                Some(why),
+                "{outcome}"
+            );
+        }
+        for outcome in ["done", "verified", "verify-gave-up", "budget", "stopped"] {
+            assert_eq!(
+                pending_reason_in(outcome, true),
+                pending_reason(outcome),
+                "{outcome}"
+            );
+            assert_eq!(pending_reason_in(outcome, false), pending_reason(outcome));
+        }
     }
 
     #[test]

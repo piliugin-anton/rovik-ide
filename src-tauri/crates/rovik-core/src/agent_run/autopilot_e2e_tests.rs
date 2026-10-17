@@ -1502,3 +1502,179 @@ async fn autopilots_checks_run_what_the_allowlist_wouldnt() {
         )]
     );
 }
+
+/// A project with no checks a profile finds: `check.js` passes once
+/// ok.txt says "ok", but nothing says to run it.
+async fn unchecked_project() -> Harness {
+    harness(&[
+        (
+            "check.js",
+            "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("ok.txt", "no"),
+    ])
+    .await
+}
+
+/// `TASK_PLAN` with this Validation section.
+fn plan_validated_by(validation: &str) -> &'static str {
+    let plan = TASK_PLAN.replace(
+        "## Validation\n- `npm test`\n",
+        &format!("## Validation\n{validation}\n"),
+    );
+    assert_ne!(plan, TASK_PLAN);
+    Box::leak(plan.into_boxed_str())
+}
+
+/// The verification records among `messages`, oldest first.
+fn verifications(messages: &[MessageRow]) -> Vec<&Value> {
+    messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification"))
+        .collect()
+}
+
+/// V02 (D7): the project has no checks set up, so the plan's validation
+/// commands are the checks. The first implementation fails one: a repair
+/// round, as with any check; the fix passes it, and the task is verified.
+/// The records say the checks are the plan's.
+#[tokio::test]
+async fn with_no_checks_the_plans_validation_commands_are_the_checks() {
+    if !has_npm() {
+        eprintln!("node isn't installed: skipped");
+        return;
+    }
+    let h = unchecked_project().await;
+    let plan = plan_validated_by("- `node check.js`\n- Look at ok.txt by hand.");
+    let mut script = script_with_plan(plan);
+    // The implementation writes the wrong thing first, then fixes it.
+    script[3] = Reply::Call {
+        id: "w1",
+        name: "write",
+        args: json!({ "path": "ok.txt", "content": "nope" }),
+    };
+    script.extend([
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        Reply::Text("Fixed: ok.txt says ok."),
+    ]);
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    let (first, last) = (rounds[0], rounds[rounds.len() - 1]);
+    assert_eq!(first["status"], "failed", "{rounds:#?}");
+    assert_eq!(first["fromPlan"], true);
+    assert_eq!(first["checks"][0]["command"], "node check.js");
+    assert_eq!(
+        first["checks"].as_array().unwrap().len(),
+        1,
+        "the by-hand line isn't one"
+    );
+    assert_eq!(last["status"], "passed");
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
+/// V02 (D7): the plan's Validation section has nothing to run, and the
+/// project no checks: the implementation ends `unverified`, which in
+/// Autopilot doesn't land, and the task's delivery says so.
+#[tokio::test]
+async fn a_task_nothing_can_check_ends_unverified_and_doesnt_land() {
+    let h = unchecked_project().await;
+    let plan = plan_validated_by("- Look at ok.txt by hand: it says ok.");
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script_with_plan(plan),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[4].outcome.as_deref(), Some("unverified"));
+    assert_eq!(names(&records)[6], (Stage::Checks, Status::Skipped));
+    let deliver = records.last().unwrap();
+    assert_eq!(deliver.status, Status::Failed, "not delivered");
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("No check ran on it, and Autopilot lands only what's checked; the changes are in the project as they are")
+    );
+}
+
+/// V02 (D7): the plan's validation commands are checked against the
+/// task's denylist like any check: one it names is skipped, the record
+/// saying which entry, and with nothing else run nothing lands.
+#[tokio::test]
+async fn a_plans_validation_command_the_denylist_names_is_skipped() {
+    let h = unchecked_project().await;
+    let plan = plan_validated_by("- `node check.js`");
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script_with_plan(plan),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.denied_commands = vec!["node".into()];
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[4].outcome.as_deref(), Some("verify-unverified"));
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    assert_eq!(rounds.len(), 1, "{rounds:#?}");
+    assert_eq!(rounds[0]["fromPlan"], true);
+    let record = messages
+        .iter()
+        .find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|x| x.get("verification").is_some())
+        })
+        .unwrap();
+    assert_eq!(
+        checks_of(record),
+        [(
+            "node check.js".into(),
+            "skipped".into(),
+            Some("`node` is a command it may never run".into())
+        )]
+    );
+    assert_eq!(
+        records.last().unwrap().status,
+        Status::Failed,
+        "not delivered"
+    );
+}
+
+/// V02, isolated: the unchecked change stays in the chat, with why.
+#[tokio::test]
+async fn an_isolated_tasks_unchecked_change_waits_with_why() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = unchecked_project().await;
+    h.isolate().await;
+    let plan = plan_validated_by("- Look at ok.txt by hand: it says ok.");
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script_with_plan(plan),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.isolate = Some(true);
+    h.start(request).await;
+    stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(h.file("ok.txt").as_deref(), Some("no"), "not landed");
+    let pending = crate::overlay::chats::pending(&h.dialog_id).expect("why it waits");
+    assert_eq!(
+        pending.reason,
+        "Not landed: no check ran on it, and Autopilot lands only what's checked."
+    );
+}

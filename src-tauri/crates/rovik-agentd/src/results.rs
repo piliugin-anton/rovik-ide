@@ -26,7 +26,7 @@ use git2::{
     Delta, DiffFile, DiffFindOptions, FileMode, Index, ObjectType, Oid, Repository, ResetType,
     Signature,
 };
-use rovik_core::agent_run::{self, pending_reason, project, AgentConfig};
+use rovik_core::agent_run::{self, pending_reason_in, project, AgentConfig};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_core::staging::{self, Base};
@@ -74,14 +74,15 @@ impl Results {
     }
 
     /// After the chat's run ended with `outcome`: its result, when it has a
-    /// worktree.
-    pub fn after_run(self: &Arc<Self>, dialog_id: &str, outcome: &str) {
+    /// worktree. `autopilot`: the run carried out an Autopilot task's
+    /// stage, whose result doesn't land unchecked (V02).
+    pub fn after_run(self: &Arc<Self>, dialog_id: &str, outcome: &str, autopilot: bool) {
         if self.store.place(dialog_id).is_none() {
             return;
         }
         let (results, chat, outcome) = (self.clone(), dialog_id.to_string(), outcome.to_string());
         rt::spawn(async move {
-            if let Err(fail) = results.commit(&chat, &outcome).await {
+            if let Err(fail) = results.commit_after(&chat, &outcome, autopilot).await {
                 log::warn!("{chat}'s result wasn't committed: {fail}");
             }
         });
@@ -90,6 +91,16 @@ impl Results {
     /// Commits the chat's worktree as its result, after a run that ended
     /// with `outcome`, and tells the chat's computer.
     pub async fn commit(&self, dialog_id: &str, outcome: &str) -> Result<ChatResult, Fail> {
+        self.commit_after(dialog_id, outcome, false).await
+    }
+
+    /// `commit`, after an Autopilot task's run when `autopilot`.
+    pub async fn commit_after(
+        &self,
+        dialog_id: &str,
+        outcome: &str,
+        autopilot: bool,
+    ) -> Result<ChatResult, Fail> {
         let _base = self.base.lock().await;
         let (place, base) = self.worktree(dialog_id)?;
         let (index, chat) = (
@@ -118,7 +129,8 @@ impl Results {
             outcome: outcome.to_string(),
             // A chat that moved here waits as it waited there until a run
             // ends here (6.8).
-            pending: (self.store.pending_of(dialog_id)).or_else(|| pending_reason(outcome)),
+            pending: (self.store.pending_of(dialog_id))
+                .or_else(|| pending_reason_in(outcome, autopilot)),
             marked,
             unchecked: !checks,
         };

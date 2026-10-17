@@ -1014,6 +1014,33 @@ fn the_shared_event_fixtures_round_trip_unchanged() {
     );
 }
 
+/// V02: a run's end says when it was an Autopilot task's, whose result
+/// lands only once checked; an older peer's end, without it, wasn't.
+#[test]
+fn a_runs_end_says_when_it_was_autopilots() {
+    let ended = |autopilot| AgentEvent::RunEnded {
+        dialog_id: "d".into(),
+        run_id: "r".into(),
+        outcome: "unverified".into(),
+        autopilot,
+    };
+    let task = round_trip(&ended(true));
+    assert_eq!(task["autopilot"], true, "{task}");
+    let plain = round_trip(&ended(false));
+    assert!(plain.get("autopilot").is_none(), "unchanged: {plain}");
+    let older: AgentEvent = serde_json::from_value(json!({
+        "type": "runEnded", "dialogId": "d", "runId": "r", "outcome": "done",
+    }))
+    .unwrap();
+    assert!(matches!(
+        older,
+        AgentEvent::RunEnded {
+            autopilot: false,
+            ..
+        }
+    ));
+}
+
 /// K02: a run's file writes and notices say which chat they're from.
 #[test]
 fn file_writes_and_notices_name_their_chat() {

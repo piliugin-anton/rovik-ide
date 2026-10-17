@@ -145,6 +145,9 @@ pub struct Run {
     /// The project's checks and the system-prompt section about it. Fixed
     /// for the run: what changes (the repository map) is sent apart.
     pub(super) checks: Vec<ProjectCheck>,
+    /// The checks are the implemented plan's validation commands: the
+    /// project has none set up (Autopilot, V02).
+    pub(super) checks_from_plan: bool,
     pub(super) project_context: String,
     /// The current repository map text (the `## Repository map` section),
     /// if any. Every model turn sends it on the request's message
@@ -711,6 +714,28 @@ impl Run {
             }
             None => Default::default(),
         };
+        // V02 (D7): an Autopilot implementation in a project with no checks
+        // set up is checked by its plan's validation commands.
+        let set_up = checks
+            .iter()
+            .any(|c| c.enabled && !c.command.trim().is_empty());
+        let from_plan = (autopilot && !plan_mode && !set_up)
+            .then(|| implemented_plan(&recent))
+            .flatten()
+            .map(|plan| plan::validation_commands(&plan))
+            .filter(|commands| !commands.is_empty());
+        let checks_from_plan = from_plan.is_some();
+        let checks = match from_plan {
+            Some(commands) => commands
+                .into_iter()
+                .map(|command| ProjectCheck {
+                    kind: plan::validation_kind(&command).into(),
+                    command,
+                    enabled: true,
+                })
+                .collect(),
+            None => checks,
+        };
         let plan_context = if plan_mode {
             plan::current_plan_context(chat_plan_file(&recent).as_deref(), root.as_deref())
         } else {
@@ -793,6 +818,7 @@ impl Run {
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
             checks,
+            checks_from_plan,
             project_context,
             repo_map,
             repo_map_chars,
@@ -848,6 +874,7 @@ impl Run {
             guard: Guard::new(None, 0),
             questions_asked: 0,
             checks: Vec::new(),
+            checks_from_plan: false,
             project_context: String::new(),
             repo_map: None,
             repo_map_chars: 0,
@@ -3054,6 +3081,26 @@ fn plan_check_at_start(
     let text = std::fs::read_to_string(&file).ok()?;
     let problems = plan::plan_problems_in(&text, root.map(std::path::Path::new));
     (!problems.is_empty()).then_some((file, problems))
+}
+
+/// The plan the run implements: the one in the latest request to
+/// implement one (`meta.implementsPlan`), as it was sent
+/// (`meta.sentContent`, else the message), between its `<plan>` tags.
+fn implemented_plan(messages: &[MessageRow]) -> Option<String> {
+    let request = messages.iter().rev().find(|m| {
+        m.role == "user"
+            && m.meta
+                .as_ref()
+                .is_some_and(|x| x["implementsPlan"] == serde_json::json!(true))
+    })?;
+    let sent = request
+        .meta
+        .as_ref()
+        .and_then(|x| x["sentContent"].as_str())
+        .unwrap_or(&request.content);
+    let start = sent.find("<plan>")? + "<plan>".len();
+    let end = sent[start..].rfind("</plan>")? + start;
+    Some(sent[start..end].trim().to_string())
 }
 
 /// The chat's plan file: the latest one a plan was saved to.

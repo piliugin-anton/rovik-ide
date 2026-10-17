@@ -137,5 +137,6 @@ fn interrupted(daemon: &Daemon, dialog_id: &str) {
         dialog_id: dialog_id.to_string(),
         run_id: daemon.store.run_id(dialog_id).unwrap_or_default(),
         outcome: INTERRUPTED.into(),
+        autopilot: false,
     });
 }

@@ -184,6 +184,9 @@ export interface VerificationMeta {
   /** False: what the files were before the run was lost, so whether the
    * change weakens tests couldn't be checked (P3.9). */
   integrityChecked?: boolean;
+  /** Autopilot: the checks are the plan's validation commands, the project
+   * having none set up (V02). */
+  fromPlan?: boolean;
 }
 
 /** The repair round's one-line summary. */

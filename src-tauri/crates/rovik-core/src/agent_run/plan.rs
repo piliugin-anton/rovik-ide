@@ -923,6 +923,181 @@ pub fn section(markdown: &str, name: &str) -> Option<String> {
     None
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * The plan's validation commands (V02)
+ * ---------------------------------------------------------------------------
+ */
+
+/// Programs a validation command starts with: package managers, build
+/// tools, test runners, interpreters (`node check.js`).
+const CHECK_PROGRAMS: &[&str] = &[
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "bun",
+    "deno",
+    "node",
+    "tsc",
+    "eslint",
+    "prettier",
+    "vitest",
+    "jest",
+    "mocha",
+    "playwright",
+    "cargo",
+    "go",
+    "python",
+    "python3",
+    "pytest",
+    "tox",
+    "nox",
+    "uv",
+    "poetry",
+    "mypy",
+    "pyright",
+    "ruff",
+    "flake8",
+    "pylint",
+    "make",
+    "just",
+    "cmake",
+    "ctest",
+    "gradle",
+    "mvn",
+    "dotnet",
+    "swift",
+    "bundle",
+    "rake",
+    "rspec",
+    "php",
+    "composer",
+    "phpunit",
+    "mix",
+    "sbt",
+    "stack",
+    "cabal",
+    "zig",
+    "bash",
+    "sh",
+];
+
+/// Programs that check on their own (`pytest`), wherever they come.
+const CHECKERS: &[&str] = &[
+    "pytest", "mypy", "pyright", "ruff", "flake8", "pylint", "tox", "nox", "tsc", "eslint",
+    "phpunit", "rspec", "ctest", "jest", "mocha", "vitest", "clippy",
+];
+
+/// Words that make a command a check (`npm run test:unit`, `cargo build`).
+const CHECK_WORDS: &[&str] = &[
+    "test",
+    "tests",
+    "check",
+    "lint",
+    "build",
+    "typecheck",
+    "clippy",
+    "vet",
+    "verify",
+];
+
+/// Words of commands that don't end on their own: a check that ran one
+/// would wait for its timeout.
+const RUNS_ON: &[&str] = &["dev", "start", "serve", "watch", "runserver", "preview"];
+
+/// The commands of a plan's "## Validation" section, in order, each once:
+/// the code spans (`` `cargo test` ``) and the lines of code blocks that
+/// read as a check, not a file (`tests/test_x.py`), a function, or a step
+/// to do by hand. They become an Autopilot task's checks when the project
+/// has none (V02). Nothing when the plan has no such section.
+pub fn validation_commands(plan: &str) -> Vec<String> {
+    let Some(section) = section(plan, "validation") else {
+        return Vec::new();
+    };
+    let mut spans: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in section.lines() {
+        if is_fence(line) {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            spans.push(line.trim().to_string());
+            continue;
+        }
+        spans.extend(CODE_SPAN.captures_iter(line).map(|c| c[1].to_string()));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for span in spans {
+        let command = span.trim().trim_start_matches("$ ").trim().to_string();
+        if is_validation_command(&command) && !out.contains(&command) {
+            out.push(command);
+        }
+    }
+    out
+}
+
+static CODE_SPAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
+
+/// Whether a span reads as a check to run (see `validation_commands`).
+fn is_validation_command(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let Some(first) = words.first() else {
+        return false;
+    };
+    let program = first.rsplit('/').next().unwrap_or(first).to_lowercase();
+    let script = first.starts_with("./");
+    if !CHECK_PROGRAMS.contains(&program.as_str()) && !script {
+        return false;
+    }
+    // The pieces of each word: `test:unit`, `check.js`, `--watch`.
+    let pieces: Vec<String> = words
+        .iter()
+        .flat_map(|w| w.split(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
+        .filter(|p| !p.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    if pieces.iter().any(|p| RUNS_ON.contains(&p.as_str())) {
+        return false;
+    }
+    // `cargo run`, `go run`: the program itself, not a check of it.
+    if matches!(program.as_str(), "cargo" | "go") && words.get(1) == Some(&"run") {
+        return false;
+    }
+    pieces
+        .iter()
+        .any(|p| CHECKERS.contains(&p.as_str()) || CHECK_WORDS.contains(&p.as_str()))
+}
+
+/// A validation command's kind, for the order the gate runs checks in
+/// (type check, lint, tests, build).
+pub fn validation_kind(command: &str) -> &'static str {
+    let words: Vec<String> = command
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let has = |w: &str| words.iter().any(|x| x == w);
+    if has("tsc") || has("typecheck") || has("type-check") || has("mypy") || has("pyright") {
+        "typecheck"
+    } else if has("lint")
+        || has("clippy")
+        || has("eslint")
+        || has("ruff")
+        || has("flake8")
+        || has("pylint")
+        || has("vet")
+        || has("prettier")
+    {
+        "lint"
+    } else if has("build") && !has("test") {
+        "build"
+    } else {
+        "test"
+    }
+}
+
 /// A findings heading an agent may put in its plan (`## Findings`,
 /// `## Review findings`), or the IDE's `## Open review findings` from an
 /// earlier save: findings are the reviewer's, never the plan's.
@@ -3299,6 +3474,56 @@ mod tests {
                 Some("backend"),
                 None
             ]
+        );
+    }
+    /// V02: the commands of a plan's Validation section, as checks: code
+    /// spans and code blocks that read as checks, not files, functions,
+    /// steps by hand or commands that never end.
+    #[test]
+    fn a_plans_validation_commands_are_its_checks() {
+        let plan = "# Add users\n\n## Steps\n\n1. **Users**\n   - Files: `src/users.rs`\n   - Run `cargo fmt` there.\n\n\
+            ## Validation\n\
+            - `cargo test -p users` and `cargo clippy --all-targets`\n\
+            - `npx tsc --noEmit`; `npm run test:unit`\n\
+            - `python -m pytest tests/test_users.py`\n\
+            - Add a test for `parse_args` in `tests/test_users.py`, as `test_parse_args()`\n\
+            - `node check.js`, `./scripts/ci.sh check`\n\
+            - Open /users by hand; `npm run dev` and `cargo run` to look; `vitest --watch`\n\
+            - `cargo test -p users` again\n\
+            ```sh\n$ go vet ./...\nmake test\n```\n";
+        assert_eq!(
+            validation_commands(plan),
+            [
+                "cargo test -p users",
+                "cargo clippy --all-targets",
+                "npx tsc --noEmit",
+                "npm run test:unit",
+                "python -m pytest tests/test_users.py",
+                "node check.js",
+                "./scripts/ci.sh check",
+                "go vet ./...",
+                "make test",
+            ]
+        );
+        // No section, an empty one, or nothing that runs: none.
+        assert!(validation_commands("# Plan\n\n## Steps\n1. x\n").is_empty());
+        assert!(validation_commands("# Plan\n\n## Validation\n\n## Decisions\n- x\n").is_empty());
+        assert!(
+            validation_commands("## Validation\n- Check it by hand.\n- `ok.txt` says ok\n")
+                .is_empty()
+        );
+        assert!(validation_commands("## Validation\n- ``\n- `   `\n- `` ` ``\n").is_empty());
+        assert_eq!(
+            [
+                "npx tsc --noEmit",
+                "cargo clippy",
+                "go vet ./...",
+                "npm run build",
+                "cargo test",
+                "node check.js"
+            ]
+            .map(validation_kind),
+            ["typecheck", "lint", "lint", "build", "test", "test"]
         );
     }
 }

@@ -176,6 +176,10 @@ pub enum AgentEvent {
         dialog_id: String,
         run_id: String,
         outcome: String,
+        /// It carried out a stage of an Autopilot task: its result lands
+        /// only once checked (D7, V02). Absent: false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        autopilot: bool,
     },
     /// Stored, in this order, at the end of the chat.
     MessagesAdded {

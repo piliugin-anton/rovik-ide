@@ -214,6 +214,12 @@ export default function VerificationRecord(props: {
         </Show>
       </div>
 
+      <Show when={props.meta.fromPlan}>
+        <div class="chat-verify-progress">
+          No checks are set up for this project: these are the commands the plan’s Validation
+          section names.
+        </div>
+      </Show>
       <Show when={props.meta.integrityChecked === false}>
         <div class="chat-verify-progress">
           Whether the change weakens tests couldn’t be checked: part of what the files were before

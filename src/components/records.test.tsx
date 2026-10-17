@@ -276,6 +276,34 @@ test('checks saved as running with no run going read as interrupted', () => {
   );
 });
 
+test('checks taken from the plan say so (V02)', () => {
+  const meta = {
+    status: 'passed' as const,
+    round: 1,
+    maxRounds: 3,
+    checks: [{ kind: 'test' as const, command: 'node check.js', status: 'passed' as const }],
+    changedFiles: ['ok.txt'],
+  };
+  const props = {
+    dialogId: 'd',
+    recordId: 'v1',
+    latest: true,
+    live: false,
+    onRunChecks: () => {},
+    onOpenProjectChecks: () => {},
+  };
+  const note = (root: Element) =>
+    [...root.querySelectorAll('.chat-verify-progress')].find((n) =>
+      n.textContent?.includes('Validation section')
+    );
+  const plan = container();
+  render(() => <VerificationRecord meta={{ ...meta, fromPlan: true }} {...props} />, plan);
+  assert.ok(note(plan), 'from the plan: said');
+  const own = container();
+  render(() => <VerificationRecord meta={meta} {...props} />, own);
+  assert.equal(note(own), undefined, "the project's own: nothing to say");
+});
+
 const button = (root: Element, text: string) =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === text);
 

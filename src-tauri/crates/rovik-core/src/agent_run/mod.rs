@@ -68,7 +68,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 
-pub use landing::{checks_would_run, pending_reason};
+pub use landing::{checks_would_run, pending_reason, pending_reason_in};
 pub use rovik_protocol::agent::{
     AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
     RunningSubagent, StartKind, StartRequest, UserMessage,
@@ -1118,13 +1118,16 @@ pub(super) async fn start_run(
             Some(_) => Some(autopilot::drive_lock(&dialog_id).await),
             None => None,
         };
-        // What it spent, for its task's budget (U04): told before it's gone.
+        // What it spent, for its task's budget (U04), and whether it was an
+        // Autopilot task's run: told before it's gone.
         let spent = core.agents.run_spent(&dialog_id).unwrap_or_default();
+        let autopilot = core.agents.autopilot_of(&dialog_id).is_some();
         core.agents.unregister(&dialog_id, &id);
         core.emit(AgentEvent::RunEnded {
             dialog_id: dialog_id.clone(),
             run_id: id,
             outcome: outcome.clone(),
+            autopilot,
         });
         if let (Some(stage), Some(driving)) = (stage, driving) {
             autopilot::after_run(core, dialog_id, stage, outcome, spent, settings, driving).await;

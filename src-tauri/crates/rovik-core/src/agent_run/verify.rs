@@ -690,6 +690,10 @@ impl Run {
     pub(super) fn with_max_rounds(&self, mut meta: Value) -> Value {
         if let Some(v) = meta.get_mut("verification").and_then(|v| v.as_object_mut()) {
             v.insert("maxRounds".into(), json!(self.max_rounds()));
+            // V02: the checks are the plan's validation commands.
+            if self.checks_from_plan {
+                v.insert("fromPlan".into(), json!(true));
+            }
         }
         meta
     }

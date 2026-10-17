@@ -311,11 +311,14 @@ impl EventSink for Tap {
         self.events.agent(event);
         // The run's end goes out first, then its result.
         if let AgentEvent::RunEnded {
-            dialog_id, outcome, ..
+            dialog_id,
+            outcome,
+            autopilot,
+            ..
         } = event
         {
             if !drained(outcome) {
-                self.results.after_run(dialog_id, outcome);
+                self.results.after_run(dialog_id, outcome, *autopilot);
             }
         }
     }

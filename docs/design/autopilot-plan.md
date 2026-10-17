@@ -929,3 +929,31 @@ T05 depends most on the environment it meets.
 - **The denylist still applies to checks**: a check it names is skipped,
   and the record says which entry ("`sudo` is a command it may never
   run"), not "not in your allowed commands".
+
+### V02: nothing lands unchecked; the plan's validation as checks
+
+- **What lands** (`landing.rs`, `pending_reason_in`): in a task's runs,
+  `unverified` and `verify-unverified` don't land: "Not landed: no check
+  ran on it, and Autopilot lands only what's checked." The chat's
+  landing, the driver's delivery and the daemon's results all use it;
+  outside Autopilot nothing changes. A chat that works in the project
+  folder has nothing to hold back: its delivery fails and says "the
+  changes are in the project as they are".
+- **The daemon knows a task's run** from `RunEnded.autopilot`, a new
+  field (additive: left out when false, read as false when missing), set
+  from the run's marking before it's unregistered. The daemon's results
+  hold such a result back with the reason above.
+- **The plan's checks** (`plan::validation_commands`): with no check set
+  up, a task's implementation is checked by the commands of the
+  implemented plan's "## Validation": its code spans and code-block
+  lines that start with a known build or test program (or a `./script`)
+  and name a check (`test`, `lint`, `build`, `pytest`, `tsc`). Steps
+  done by hand, files and functions aren't commands; ones that don't end
+  (`dev`, `watch`, `serve`) and `cargo run`/`go run` are left out. Each
+  gets a kind for the gate's order (`validation_kind`). The plan is the
+  one in the implement request (`meta.implementsPlan`).
+- **Filtered by the denylist** where every check is: the gate skips one
+  the denylist names, saying which entry.
+- **Recorded as such**: the verification record has `fromPlan`, and the
+  record says "No checks are set up for this project: these are the
+  commands the plan's Validation section names."
