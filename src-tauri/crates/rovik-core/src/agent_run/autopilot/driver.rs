@@ -843,6 +843,9 @@ pub(in crate::agent_run) enum Crash {
     /// After recording a candidate's implementation, before its run; set
     /// on the task's chat (candidates.rs).
     BeforeCandidate,
+    /// After the pick took its winner's change, before its record says so;
+    /// on the task's chat. The run goes no further.
+    AfterAdopt,
 }
 
 /// Tests: the crash each chat has coming (tests run side by side).
@@ -854,6 +857,13 @@ pub(super) static CRASHES: Mutex<Vec<(String, Crash)>> = Mutex::new(Vec::new());
 pub(in crate::agent_run) fn crash_at(dialog_id: &str, at: Crash) {
     let mut crashes = CRASHES.lock().unwrap_or_else(|e| e.into_inner());
     crashes.push((dialog_id.to_string(), at));
+}
+
+/// Tests: whether the chat's crash at `at` is still to come.
+#[cfg(test)]
+pub(in crate::agent_run) fn crash_due(dialog_id: &str, at: Crash) -> bool {
+    let crashes = CRASHES.lock().unwrap_or_else(|e| e.into_inner());
+    crashes.iter().any(|(d, c)| d == dialog_id && *c == at)
 }
 
 #[cfg(test)]

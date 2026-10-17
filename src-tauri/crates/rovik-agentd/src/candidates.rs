@@ -73,6 +73,15 @@ impl Copies for Worktrees {
             }
         })
     }
+
+    fn kept(&self, _main: String, chat: String) -> Copying<bool> {
+        let daemon = self.0.clone();
+        Box::pin(async move {
+            daemon
+                .upgrade()
+                .is_some_and(|daemon| daemon.worktrees.join(chat).join(".git").exists())
+        })
+    }
 }
 
 /// The candidate's worktree's root: made from the task chat's worktree as

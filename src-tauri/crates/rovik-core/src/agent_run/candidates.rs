@@ -106,6 +106,9 @@ pub trait Copies: Send + Sync {
     fn adopt(&self, main: String, chat: String) -> Copying<Result<Vec<String>, String>>;
     /// `chat`'s copy, gone.
     fn discard(&self, main: String, chat: String) -> Copying<()>;
+    /// Whether `chat`'s copy is still there: made, and neither taken nor
+    /// thrown away (what a pick a crash cut asks, R03).
+    fn kept(&self, main: String, chat: String) -> Copying<bool>;
 }
 
 /// A local chat's copies: a child overlay of the chat's overlay each
@@ -126,7 +129,8 @@ impl Copies for OverlayCopies {
                     let project = project.ok_or("the chat has no project folder")?;
                     chats::open(&main, Path::new(&project), Box::new(|_, _| {}))?;
                 }
-                let overlay = match chats::reopen_child(&main, &chat) {
+                // A restart forgot them: the candidates share the room again.
+                let overlay = match chats::reopen_child(&main, &chat, LETTERS.len()) {
                     Some(o) => o,
                     None => chats::open_child_shared(&main, &chat, LETTERS.len())?,
                 };
@@ -184,6 +188,14 @@ impl Copies for OverlayCopies {
         Box::pin(async move {
             let _ = crate::rt::spawn_blocking(move || crate::overlay::chats::discard_child(&chat))
                 .await;
+        })
+    }
+
+    fn kept(&self, main: String, chat: String) -> Copying<bool> {
+        Box::pin(async move {
+            let kept =
+                crate::rt::spawn_blocking(move || crate::overlay::chats::child_kept(&main, &chat));
+            kept.await.unwrap_or(false)
         })
     }
 }
@@ -271,6 +283,12 @@ async fn rows_of(
     dialog_id: &str,
     task: &str,
 ) -> Result<Vec<(String, CandidatesRecord)>, String> {
+    let all = all_rows(core, dialog_id).await?;
+    Ok(all.into_iter().filter(|(_, r)| r.task == task).collect())
+}
+
+/// Every round's record of candidates in the chat, of any of its tasks.
+async fn all_rows(core: &Core, dialog_id: &str) -> Result<Vec<(String, CandidatesRecord)>, String> {
     let id = dialog_id.to_string();
     let rows = core
         .db
@@ -281,9 +299,23 @@ async fn rows_of(
         .filter_map(|m| {
             let record: CandidatesRecord =
                 serde_json::from_value(m.meta.as_ref()?.get("candidates")?.clone()).ok()?;
-            (record.task == task).then(|| (m.id.clone(), record))
+            Some((m.id.clone(), record))
         })
         .collect())
+}
+
+/// A round's candidates, done with: their copies gone, and their runs'
+/// registrations.
+async fn discard_round(
+    core: &Core,
+    dialog_id: &str,
+    copies: &dyn Copies,
+    round: &CandidatesRecord,
+) {
+    for c in &round.candidates {
+        copies.discard(dialog_id.to_string(), c.chat.clone()).await;
+        core.agents.drop_candidate(&c.chat);
+    }
 }
 
 /// The candidates' record in row `id`.
@@ -472,7 +504,7 @@ pub(super) async fn start(
     };
     let record = StageRecord {
         candidates: LETTERS.iter().map(|l| l.to_string()).collect(),
-        reference: Some(row),
+        reference: Some(row.clone()),
         summary: Some("Two implementers, one after the other".into()),
         ..StageRecord::running(&task, Stage::Implement, round, effort)
     };
@@ -482,6 +514,10 @@ pub(super) async fn start(
     let Some(why) = autopilot::not_started_why(started) else {
         return Ok(Some(true));
     };
+    // Never started, its round is never picked (R03).
+    if let Some(round) = row_by_id(core, dialog_id, &row).await? {
+        discard_round(core, dialog_id, copies_here(core).as_ref(), &round).await;
+    }
     end_stage(core, dialog_id, &id, |r| {
         r.status = Status::Failed;
         r.outcome = Some("error".into());
@@ -507,6 +543,12 @@ async fn make(
         Ok(copies) => copies,
         Err(why) => return Ok(Err(why)),
     };
+    // Earlier rounds' copies go first, this task's or an earlier one's: none
+    // of them will be picked now, and kept, they'd take the room the new
+    // copies share (R03).
+    for (_, earlier) in all_rows(core, dialog_id).await? {
+        discard_round(core, dialog_id, copies.as_ref(), &earlier).await;
+    }
     let chats: Vec<String> = LETTERS
         .iter()
         .map(|_| uuid::Uuid::new_v4().to_string())
@@ -720,14 +762,6 @@ impl Run {
         let (row_id, mut row) = match found {
             Some(found) => found,
             None => {
-                // An earlier round's copies go: its candidates won't be picked.
-                let copies = copies_here(&core);
-                for (_, earlier) in rows_of(&core, &main, &task).await? {
-                    for c in &earlier.candidates {
-                        copies.discard(main.clone(), c.chat.clone()).await;
-                        core.agents.drop_candidate(&c.chat);
-                    }
-                }
                 let settings = self.main_settings();
                 let made = make(
                     &core,
@@ -847,6 +881,10 @@ impl Run {
         let stopped = self.stopped();
         row.status = if stopped { "stopped" } else { "done" }.into();
         save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
+        // What they spent, all of it: a crash between a candidate's end and
+        // the record of its spend loses none (R03).
+        let spent = spent_by(&core, &row).await?;
+        end_stage(&core, &main, &stage.record, |r| r.spent = Some(spent)).await?;
         super::log::write(
             &core,
             json!({
@@ -857,6 +895,8 @@ impl Run {
             }),
         );
         if stopped {
+            // A round a Stop ended is never picked: a Retry makes another.
+            discard_round(&core, &main, copies.as_ref(), &row).await;
             return Ok("stopped".into());
         }
         let lines = row
@@ -1369,10 +1409,16 @@ impl Run {
             }
         };
         if !pick.adopted {
-            match self
-                .score_and_take(&records, &row, &mut pick, &pick_row)
-                .await?
-            {
+            // Decided before a crash: the winner is taken, never scored again
+            // (its copy may be gone already, taken).
+            let work = match pick.winner {
+                Some(_) => self.take_winner(&mut pick, &pick_row).await?,
+                None => {
+                    self.score_and_take(&records, &row, &mut pick, &pick_row)
+                        .await?
+                }
+            };
+            match work {
                 PickWork::Stopped => {
                     pick.status = "stopped".into();
                     save_row(&core, &main, &pick_row, "pick", json!(pick)).await?;
@@ -1469,15 +1515,24 @@ impl Run {
                 return Ok(PickWork::Stopped);
             }
             let started = !task_records(&core, &c.chat, &task).await?.is_empty();
+            // A copy that can't be opened, or a change that can't be read,
+            // fails the pick, its copies kept: taken as none, it could be
+            // thrown away (R03).
             let folder = match started {
-                true => copies
+                true => match (copies)
                     .open(main.clone(), c.chat.clone(), self.project_root.clone())
                     .await
-                    .ok(),
+                {
+                    Ok(folder) => Some(folder),
+                    Err(why) => {
+                        return Ok(PickWork::Failed(format!(
+                            "Candidate {}'s working copy couldn't be opened: {why}",
+                            c.letter
+                        )))
+                    }
+                },
                 false => None,
             };
-            // A change that can't be read fails the pick, its copies kept:
-            // taken as none, it could be thrown away.
             let change = match &folder {
                 Some(_) => match copies.change(main.clone(), c.chat.clone()).await {
                     Ok(change) => change,
@@ -1573,19 +1628,37 @@ impl Run {
                 s.diff = Some(kept.to_string());
             }
         }
-        let winner = scored[at].clone();
+        let winner = &scored[at];
         pick.winner = Some(winner.letter.clone());
         pick.chat = Some(winner.chat.clone());
         save_row(&core, &main, pick_row, "pick", json!(pick)).await?;
-        if winner.score.changed {
-            if let Err(why) = copies.adopt(main.clone(), winner.chat.clone()).await {
+        self.take_winner(pick, pick_row).await
+    }
+
+    /// The pick's winner's change becomes the chat's, its copy gone (with no
+    /// change, just gone), and the record says so (`adopted`). A pick a
+    /// crash cut after it decided goes on here (R03): a winner's copy that's
+    /// gone was taken already, and the others' were never scored again.
+    async fn take_winner(&self, pick: &mut PickRecord, pick_row: &str) -> Result<PickWork, String> {
+        let (core, main) = (self.core.clone(), self.dialog_id.clone());
+        let (Some(letter), Some(chat)) = (pick.winner.clone(), pick.chat.clone()) else {
+            return Ok(PickWork::Failed("The pick has no winner to take".into()));
+        };
+        let copies = copies_here(&core);
+        let changed = (pick.candidates.iter()).any(|c| c.letter == letter && c.score.changed);
+        if changed && copies.kept(main.clone(), chat.clone()).await {
+            if let Err(why) = copies.adopt(main.clone(), chat.clone()).await {
                 return Ok(PickWork::Failed(format!(
-                    "Candidate {}'s change couldn't be taken: {why}",
-                    winner.letter
+                    "Candidate {letter}'s change couldn't be taken: {why}"
                 )));
             }
         } else {
-            copies.discard(main.clone(), winner.chat.clone()).await;
+            copies.discard(main.clone(), chat.clone()).await;
+        }
+        #[cfg(test)]
+        if autopilot::crashes(&main, autopilot::Crash::AfterAdopt) {
+            // The process "dies" here: nothing more happens in this run.
+            std::future::pending::<()>().await;
         }
         pick.adopted = true;
         save_row(&core, &main, pick_row, "pick", json!(pick)).await?;

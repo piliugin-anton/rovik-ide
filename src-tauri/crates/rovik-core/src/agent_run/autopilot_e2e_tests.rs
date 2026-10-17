@@ -6587,6 +6587,131 @@ async fn a_retry_after_a_pick_its_winner_failed_implements_again() {
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 }
 
+/// T06 (R03): the process dies right after the pick took its winner's
+/// change, before its record said so. The resumed pick goes on with the
+/// winner it decided on, whose copy is gone (taken), and never scores the
+/// candidates again: the loser's change, whose copy is still there, never
+/// lands on top of the winner's.
+#[tokio::test]
+async fn a_pick_cut_after_it_took_its_winner_goes_on_with_that_winner() {
+    // a's change is the smaller: a wins.
+    let script = candidates_script(
+        &[("ok.txt", "ok")],
+        &[("ok.txt", "ok"), ("other.txt", "b\n")],
+    );
+    let Some((h, _, url, request)) = candidates_start(Vec::new(), script).await else {
+        return;
+    };
+    crash_at(&h.dialog_id, Crash::AfterAdopt);
+    h.start(request).await;
+    for _ in 0..3000 {
+        if !super::autopilot::crash_due(&h.dialog_id, Crash::AfterAdopt) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!super::autopilot::crash_due(
+        &h.dialog_id,
+        Crash::AfterAdopt
+    ));
+    // The restart: this process forgets the pick's run, cut where it was.
+    let pick_run = h
+        .events_of("runStarted")
+        .iter()
+        .rev()
+        .find(|e| e["dialogId"] == h.dialog_id.as_str())
+        .and_then(|e| e["runId"].as_str().map(str::to_string))
+        .expect("the pick's run");
+    h.core.agents.unregister(&h.dialog_id, &pick_run);
+    let mut resume = h.request(&url, StartKind::Resume, Permissions::default());
+    resume.mode = Some("autopilot".into());
+    resume.isolate = Some(true);
+    resume.config = None;
+    h.start(resume).await;
+    let records = delivered_slowly(&h).await;
+    let pick = records.iter().find(|r| r.name == Stage::Pick).unwrap();
+    assert_eq!(pick.status, Status::Done, "{records:#?}");
+    let messages = h.messages().await;
+    let row = pick_row(&messages);
+    assert_eq!(
+        (&row["winner"], &row["adopted"]),
+        (&json!("a"), &json!(true))
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    assert_eq!(h.file("other.txt"), None, "b's change never landed");
+}
+
+/// T05 (R03): a round a Stop ended is never picked: its copies go with it,
+/// and so does a round of an earlier task that nothing ended, once the
+/// next round is made, so they don't take the room the new copies share.
+#[tokio::test]
+async fn a_round_never_picked_leaves_no_copies() {
+    let script = candidates_script(&[("ok.txt", "ok")], &[("ok.txt", "ok")]);
+    let Some((h, _, _, request)) = candidates_start(Vec::new(), script).await else {
+        return;
+    };
+    // An earlier task's round, its copy kept: a crash cut it, and the
+    // task was left.
+    let stale = uuid::Uuid::new_v4().to_string();
+    let (main, kept) = (h.dialog_id.clone(), stale.clone());
+    let project = h.project.clone();
+    crate::rt::spawn_blocking(move || {
+        crate::overlay::chats::open(&main, &project, Box::new(|_, _| {}))?;
+        crate::overlay::chats::open_child_shared(&main, &kept, 2).map(drop)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let earlier = json!({
+        "task": "an-earlier-task",
+        "round": 1,
+        "status": "running",
+        "candidates": [{ "letter": "a", "chat": stale, "status": "running" }],
+    });
+    super::autopilot::add_record_row(&h.core, &h.dialog_id, "candidates", earlier)
+        .await
+        .unwrap();
+    h.start(request).await;
+    // This round's, with a candidate at work.
+    let made = loop {
+        let messages = h.messages().await;
+        let made = messages.iter().find_map(|m| {
+            let row = m.meta.as_ref()?.get("candidates")?;
+            (row["task"] != "an-earlier-task" && row["candidates"][0]["status"] == "running")
+                .then(|| row.clone())
+        });
+        if let Some(row) = made {
+            break row;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        !crate::overlay::chats::child_kept(&h.dialog_id, &stale),
+        "the earlier round's copy went"
+    );
+    // This round, stopped: its copies go too.
+    assert!(agent_stop(&h.core, h.dialog_id.clone()).await);
+    let records = stages_until(&h, "the stop", |records| {
+        records
+            .iter()
+            .any(|r| r.name == Stage::Implement && r.status == Status::Failed)
+    })
+    .await;
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(
+        implement.outcome.as_deref(),
+        Some("stopped"),
+        "{records:#?}"
+    );
+    for c in made["candidates"].as_array().unwrap() {
+        let chat = c["chat"].as_str().unwrap();
+        assert!(
+            !crate::overlay::chats::child_kept(&h.dialog_id, chat),
+            "{chat}"
+        );
+    }
+}
+
 /// H07: a chat that moves to a host while its stage waits out the
 /// provider's rate limit goes on there: the wait's timer here starts
 /// nothing once it's over.

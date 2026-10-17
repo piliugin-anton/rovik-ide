@@ -816,18 +816,28 @@ fn content_hash(path: &Path) -> String {
 }
 
 /// Round 2, P1.2: a kept copy of `parent`'s, opened again after the app
-/// closed (it was registered in memory only), so a follow-up goes on in it.
-/// None: `child` has no copy kept for `parent`.
-pub fn reopen_child(parent: &str, child: &str) -> Option<Arc<ChatOverlay>> {
+/// closed (it was registered in memory only), so a follow-up goes on in it;
+/// one of `parts` reopened together, which share the room (R03). None:
+/// `child` has no copy kept for `parent`.
+pub fn reopen_child(parent: &str, child: &str, parts: usize) -> Option<Arc<ChatOverlay>> {
     if let Some(o) = get(child) {
         return (parent_of(child).as_deref() == Some(parent)).then_some(o);
     }
-    let store = store_dir(child)?;
-    let saved = std::fs::read_to_string(store.join("parent.txt")).ok()?;
-    if saved.trim() != parent {
+    if !child_kept(parent, child) {
         return None;
     }
-    open_child_shared(parent, child, 1).ok()
+    open_child_shared(parent, child, parts).ok()
+}
+
+/// Whether `child`'s overlay of `parent` is still there: open, or its store
+/// kept on disk (neither landed nor discarded).
+pub fn child_kept(parent: &str, child: &str) -> bool {
+    if get(child).is_some() {
+        return parent_of(child).as_deref() == Some(parent);
+    }
+    store_dir(child)
+        .and_then(|store| std::fs::read_to_string(store.join("parent.txt")).ok())
+        .is_some_and(|saved| saved.trim() == parent)
 }
 
 /// What an app restart does to an open child: unmounted, and its parent
@@ -4481,8 +4491,19 @@ mod child_tests {
         let (l1, l2) = (s1.fs.used().1, s2.fs.used().1);
         assert!(l1 + l2 <= limit - used, "{l1} + {l2} > {}", limit - used);
         assert!(l1.abs_diff(l2) <= 1, "{l1} vs {l2}");
+        // Reopened together after a restart (R03), they share it again: the
+        // first one reopened doesn't take it all.
+        forget_child_as_if_restarted("kids-s1");
+        forget_child_as_if_restarted("kids-s2");
+        assert!(child_kept("kids-parent", "kids-s1"));
+        assert!(!child_kept("kids-other", "kids-s1"), "another's");
+        let r1 = reopen_child("kids-parent", "kids-s1", 2).unwrap();
+        let r2 = reopen_child("kids-parent", "kids-s2", 2).unwrap();
+        let (l1, l2) = (r1.fs.used().1, r2.fs.used().1);
+        assert!(l1.abs_diff(l2) <= 1, "{l1} vs {l2}");
         discard_child("kids-s1");
         discard_child("kids-s2");
+        assert!(!child_kept("kids-parent", "kids-s1"), "gone");
 
         // Discarding the parent takes any child with it.
         open_child("kids-parent", "kids-w5").unwrap();

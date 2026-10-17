@@ -633,7 +633,7 @@ impl Run {
         let kept_view = if kind == Kind::Worker {
             let (parent, id) = (self.dialog_id.clone(), child.id.clone());
             crate::rt::spawn_blocking(move || {
-                crate::overlay::chats::reopen_child(&parent, &id).map(|o| o.view.clone())
+                crate::overlay::chats::reopen_child(&parent, &id, 1).map(|o| o.view.clone())
             })
             .await
             .ok()
