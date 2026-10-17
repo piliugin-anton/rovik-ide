@@ -44,15 +44,24 @@ const MODES = [
   { label: 'Autopilot', icon: 'M2.5 4l4.5 4-4.5 4M8.5 4l4.5 4-4.5 4' },
 ];
 
-function ModeIcon(props: { d: string; fill?: boolean }) {
+// The app's own marks: the pickers' carets (ModelPicker, EffortSelector),
+// the project switcher's, the terminal's toggle, and the effort's bulb.
+const CARET_UP = 'M4 10l4-4 4 4';
+const CARET_DOWN = 'M4 6l4 4 4-4';
+const CARET_RIGHT = 'M6 4l4 4-4 4';
+const BULB =
+  'M8 1.75a4.25 4.25 0 0 0-2.5 7.7V11h5V9.45A4.25 4.25 0 0 0 8 1.75ZM6 13.25h4M6.75 14.75h2.5';
+
+function Glyph(props: { d: string; size?: number; fill?: boolean; class?: string }) {
   return (
     <svg
-      width="11"
-      height="11"
+      class={props.class}
+      width={props.size ?? 11}
+      height={props.size ?? 11}
       viewBox="0 0 16 16"
       fill={props.fill ? 'currentColor' : 'none'}
       stroke="currentColor"
-      stroke-width="1.5"
+      stroke-width="1.6"
       stroke-linecap="round"
       stroke-linejoin="round"
     >
@@ -81,7 +90,7 @@ export default function AppWindow() {
           <div class="win-project">
             <FolderIcon size={13} />
             <b>acme-api</b>
-            <span class="win-dim">⌄</span>
+            <Glyph d={CARET_DOWN} size={10} class="win-dim" />
             <span class="win-gear">⚙</span>
           </div>
           <div class="win-tabs">
@@ -147,7 +156,7 @@ export default function AppWindow() {
               <For each={MODES}>
                 {(mode, i) => (
                   <span classList={{ active: i() === 0 }}>
-                    <ModeIcon d={mode.icon} fill={mode.fill} />
+                    <Glyph d={mode.icon} fill={mode.fill} />
                     {mode.label}
                   </span>
                 )}
@@ -155,8 +164,15 @@ export default function AppWindow() {
             </span>
           </div>
           <div class="win-row">
-            <span class="win-select">Ollama/qwen3-coder:30b ⌃</span>
-            <span class="win-select">Default effort ⌃</span>
+            <span class="win-select">
+              <span class="win-select-label">Ollama/qwen3-coder</span>
+              <Glyph d={CARET_UP} size={12} />
+            </span>
+            <span class="win-select">
+              <Glyph d={BULB} size={12} />
+              <span class="win-select-label">Default effort</span>
+              <Glyph d={CARET_UP} size={10} />
+            </span>
           </div>
         </div>
         <div class="win-main">
@@ -187,7 +203,9 @@ export default function AppWindow() {
           </div>
           <div class="win-terminal">
             <div class="win-terminal-head">
-              <span class="win-dim">⌄</span> Terminal <span class="win-term-tab">bash (local)</span>
+              <Glyph d={CARET_RIGHT} size={12} class="win-open" />
+              Terminal
+              <span class="win-term-tab">bash (local)</span>
             </div>
             <div class="win-term">
               <div>

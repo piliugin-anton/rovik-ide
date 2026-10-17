@@ -714,15 +714,27 @@ h1 {
 }
 
 .win-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
-  overflow: hidden;
   padding: 3px 8px;
   border: 1px solid var(--w-border);
   border-radius: 4px;
   background: var(--w-control);
   font-size: 12px;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.win-select-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The terminal's toggle, turned down: the panel is open. */
+.win-open {
+  transform: rotate(90deg);
 }
 
 .win-dim {
