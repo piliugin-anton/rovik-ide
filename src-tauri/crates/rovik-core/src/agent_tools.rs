@@ -104,7 +104,7 @@ pub fn project_relative(root: &str, path: &str) -> Option<String> {
 /// targets), where we can't canonicalize to catch a symlink escape anyway.
 /// For paths that *do* exist, we additionally canonicalize to catch the case
 /// where a path component is itself a symlink pointing outside root.
-fn resolve_within_root(root: &str, candidate: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_within_root(root: &str, candidate: &str) -> Result<PathBuf, String> {
     let root_canon = canonicalize_or_err(Path::new(root))?;
     let candidate_path = Path::new(candidate);
 

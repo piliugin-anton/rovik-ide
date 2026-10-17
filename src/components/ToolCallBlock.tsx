@@ -176,8 +176,9 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
       return { exitCode: code !== undefined ? Number(code) : null, ...(waited ? { waited } : {}) };
     }
     case 'write': {
-      // A whole-file write: "wrote 120 bytes to a.ts (+3 -1 lines)".
-      const changes = result.match(/\(\+(\d+) -(\d+) lines\)$/);
+      // A whole-file write: "wrote 120 bytes to a.ts (+3 -1 lines)", on the
+      // first line: a syntax check may follow it (V04).
+      const changes = result.match(/\(\+(\d+) -(\d+) lines\)$/m);
       return changes ? { added: Number(changes[1]), removed: Number(changes[2]) } : undefined;
     }
     case 'browse_url': {

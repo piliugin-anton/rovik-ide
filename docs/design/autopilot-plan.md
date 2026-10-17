@@ -1000,3 +1000,20 @@ T05 depends most on the environment it meets.
   that keep changing what fails. The agent's report and the record say
   "attempt N", with no count (`byProgress`); a record that gave up so
   says the last two made no progress (`noProgress`).
+
+### V04: a syntax check after every write
+
+- **For every chat** (D20): the agent's `write` (a whole file, or a part
+  with `old_text`) checks the file as written with
+  `outline::syntax_errors` and appends what doesn't parse to its result:
+  "The file doesn't parse now (a syntax error):", each error as
+  `line:col: message`, at most ten, then "Fix it before you go on."
+  (`agent_run/tools.rs`, `syntax_note`).
+- **Only what the write broke**: a file that didn't parse before the
+  write, or wasn't text, says nothing. The grammars misread some valid
+  code, and a file broken already says nothing new about this write. A
+  new file is checked. A language with no grammar, or a file over the
+  outline's limits, is written as before.
+- **The result's first line** keeps the line counts, which
+  `result_meta` and the frontend's `toolResultMeta` now read from the
+  first line, not the last.

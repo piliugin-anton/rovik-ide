@@ -581,6 +581,56 @@ pub fn apply_edit(
     crate::agent_tools::edit_file(root, &edit.path, &change, dry_run, seen)
 }
 
+/// A file before a write: None when there was none, Some(None) when it
+/// isn't text.
+type Before = Option<Option<String>>;
+
+fn text_before(root: &str, path: &str) -> Before {
+    let file = crate::agent_tools::resolve_within_root(root, path).ok()?;
+    let bytes = std::fs::read(file).ok()?;
+    Some(String::from_utf8(bytes).ok())
+}
+
+/// Syntax errors a write's result lists, at most.
+const SYNTAX_NOTE_ERRORS: usize = 10;
+
+/// V04 (autopilot-plan, for every chat): what a write broke, for its
+/// result: the syntax errors in the file as written (`outline::
+/// syntax_errors`), where its language is known and it parsed before the
+/// write (or is new). Nothing when it parses, when its language isn't
+/// known, or when it didn't parse before either: a grammar that misreads
+/// a file, or code broken already, says nothing new about this write.
+pub fn syntax_note(path: &str, before: &Before, after: &str) -> Option<String> {
+    match before {
+        None => {}
+        Some(None) => return None,
+        Some(Some(text)) => {
+            if !crate::outline::syntax_errors(path, text)?.is_empty() {
+                return None;
+            }
+        }
+    }
+    let errors = crate::outline::syntax_errors(path, after)?;
+    if errors.is_empty() {
+        return None;
+    }
+    let mut lines = vec![format!(
+        "The file doesn't parse now ({}):",
+        match errors.len() {
+            1 => "a syntax error".to_string(),
+            n => format!("{n} syntax errors"),
+        }
+    )];
+    for e in errors.iter().take(SYNTAX_NOTE_ERRORS) {
+        lines.push(format!("- {}:{}: {}", e.start_line, e.start_col, e.message));
+    }
+    if errors.len() > SYNTAX_NOTE_ERRORS {
+        lines.push(format!("- and {} more", errors.len() - SYNTAX_NOTE_ERRORS));
+    }
+    lines.push("Fix it before you go on.".into());
+    Some(lines.join("\n"))
+}
+
 /// What a tool call runs with besides its arguments.
 pub struct CallContext {
     /// The run's record of the files it has read and written (file_guard.rs).
@@ -770,15 +820,20 @@ async fn run(
             };
             // Off the async threads: a write may wait for a landing's locks.
             let (root_s, seen_arc) = (root.to_string(), ctx.seen.clone());
-            let (edit, outcome) = crate::rt::spawn_blocking(move || {
+            let (edit, outcome, before) = crate::rt::spawn_blocking(move || {
+                let before = text_before(&root_s, &edit.path);
                 let outcome = apply_edit(&root_s, &edit, false, Some(&seen_arc));
-                (edit, outcome)
+                (edit, outcome, before)
             })
             .await
             .map_err(|e| e.to_string())?;
             let outcome = outcome?;
+            let mut summary = outcome.summary;
+            if let Some(note) = syntax_note(&edit.path, &before, &outcome.content) {
+                summary = format!("{summary}\n\n{note}");
+            }
             return Ok(ToolResult {
-                content: outcome.summary,
+                content: summary,
                 written: Some((edit.path, outcome.content)),
                 ..Default::default()
             });
@@ -810,7 +865,13 @@ async fn run(
                 ctx.seen.clone(),
             );
             crate::rt::spawn_blocking(move || {
-                crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc))
+                let before = text_before(&root_s, &path);
+                let wrote =
+                    crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc))?;
+                Ok::<String, String>(match syntax_note(&path, &before, &content) {
+                    Some(note) => format!("{wrote}\n\n{note}"),
+                    None => wrote,
+                })
             })
             .await
             .map_err(|e| e.to_string())??
@@ -1232,8 +1293,9 @@ fn count_lines(text: &str) -> usize {
 static MATCH_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) match").unwrap());
 static NUMBERED_HIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\. ").unwrap());
 static EXIT_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^exit code (-?\d+)").unwrap());
+/// On the result's first line: a syntax check may follow (V04).
 static WRITE_CHANGES: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(\+(\d+) -(\d+) lines\)$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?m)\(\+(\d+) -(\d+) lines\)$").unwrap());
 static PAGE_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 
 /// Small summary of a tool's result, for the chat's tool block header.
@@ -1339,11 +1401,135 @@ mod tests {
             (json!(3), json!(1))
         );
         assert!(result_meta("write", "wrote 9 bytes to a.bin").is_none());
+        // V04: a syntax check after it.
+        let checked = result_meta(
+            "write",
+            "wrote 9 bytes to a.rs (+3 -1 lines)\n\nThe file doesn't parse now (a syntax error):\n- 1:1: missing `}`\nFix it before you go on.",
+        )
+        .unwrap();
+        assert_eq!(checked["added"], json!(3));
         assert!(result_meta(
             "write",
             "Edited a.ts: replaced lines 3-4 (2 → 2 lines), now 9."
         )
         .is_none());
+    }
+
+    /// V04: a write that breaks a file in a known language says so in its
+    /// result; one in a language with no grammar, one that parses, and one
+    /// broken already say nothing new.
+    #[test]
+    fn a_write_that_breaks_a_file_says_so() {
+        let fine = "fn main() {\n    let x = 1;\n}\n";
+        let broken = "fn main() {\n    let x = ;\n}\n";
+        let note = syntax_note("src/main.rs", &Some(Some(fine.into())), broken).unwrap();
+        assert!(note.starts_with("The file doesn't parse now ("), "{note}");
+        assert!(note.contains("\n- 2:11: syntax error: `=`\n"), "{note}");
+        assert!(note.ends_with("Fix it before you go on."), "{note}");
+        // A new file is checked too.
+        assert!(syntax_note("src/new.rs", &None, broken).is_some());
+        // Parses: nothing.
+        assert_eq!(
+            syntax_note("src/main.rs", &Some(Some(fine.into())), fine),
+            None
+        );
+        // No grammar for it: nothing.
+        assert_eq!(syntax_note("notes.xyz", &None, "fn main( {"), None);
+        assert_eq!(syntax_note("README", &None, "fn main( {"), None);
+        // Broken before, or not text before: nothing new to say.
+        assert_eq!(
+            syntax_note("src/main.rs", &Some(Some(broken.into())), broken),
+            None
+        );
+        assert_eq!(syntax_note("src/main.rs", &Some(None), broken), None);
+    }
+
+    /// V04, through the tool: the result says what the write broke, the
+    /// line counts stay on its first line, and a file of an unknown
+    /// language is written as before.
+    #[tokio::test]
+    async fn the_write_tool_reports_what_it_broke() {
+        let t = crate::testing::TestCore::new();
+        let root = t.dir.0.join("project");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let root = root.to_string_lossy().into_owned();
+        let ctx = CallContext {
+            seen: Seen::new("syntax-test"),
+            owner: "syntax-test".into(),
+            checks_owner: "syntax-test".into(),
+            hidden: Vec::new(),
+            note: Arc::new(|_| {}),
+        };
+        let stop = Arc::new(StopSignal::new());
+        let write =
+            |path: &str, content: &str| json!({ "path": path, "content": content }).to_string();
+        let fine = "fn main() {\n    let x = 1;\n}\n";
+        let first = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("src/main.rs", fine),
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(
+            !first.content.contains("doesn't parse"),
+            "{}",
+            first.content
+        );
+        let broken = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("src/main.rs", "fn main() {\n    let x = ;\n}\n"),
+            &stop,
+            &ctx,
+        )
+        .await;
+        let (head, note) = broken.content.split_once("\n\n").unwrap();
+        assert!(
+            head.starts_with("wrote ") && head.ends_with("lines)"),
+            "{head}"
+        );
+        assert!(note.starts_with("The file doesn't parse now"), "{note}");
+        // A partial write that breaks it again, from fine.
+        execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("src/main.rs", fine),
+            &stop,
+            &ctx,
+        )
+        .await;
+        let edit =
+            json!({ "path": "src/main.rs", "old_text": "let x = 1;", "content": "let x = ;" });
+        let edited = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &edit.to_string(),
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(
+            edited.content.contains("\n\nThe file doesn't parse now"),
+            "{}",
+            edited.content
+        );
+        // Unknown language: as before.
+        let other = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("notes.xyz", "fn main( {"),
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert_eq!(other.content, "wrote 10 bytes to notes.xyz (+1 -0 lines)");
     }
 
     #[test]
