@@ -1361,3 +1361,144 @@ async fn past_the_budget_between_stages_no_stage_starts() {
     assert_eq!(last[1].summary.as_deref(), Some("Nothing to deliver"));
     assert!(h.events_of("runStarted").is_empty());
 }
+
+/*
+ * The verification floor (V)
+ */
+
+fn has_pytest() -> bool {
+    std::process::Command::new("pytest")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// A Python project whose test (`pytest`, detected from its config) passes
+/// once ok.txt says "ok".
+async fn python_project() -> Harness {
+    harness(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"t\"\n\n[tool.pytest.ini_options]\n",
+        ),
+        (
+            "tests/test_ok.py",
+            "def test_ok():\n    assert open('ok.txt').read().strip() == 'ok'\n",
+        ),
+        ("ok.txt", "no"),
+    ])
+    .await
+}
+
+const PYTHON_PLAN: &str = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Steps\n\n\
+    1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `tests/test_ok.py` checks.\n\
+    2. **Check**\n   - Files: `tests/test_ok.py` (read)\n   - Read `tests/test_ok.py` to confirm it checks `ok.txt`; it keeps its code.\n\n\
+    ## Validation\n- `pytest`\n";
+
+/// `task_script` with another plan.
+fn script_with_plan(plan: &'static str) -> Vec<Reply> {
+    let mut script = task_script();
+    script[0] = Reply::Call {
+        id: "p1",
+        name: "submit_plan",
+        args: json!({ "plan": plan }),
+    };
+    script
+}
+
+/// The checks a verification record ran, as (command, status, reason).
+fn checks_of(record: &MessageRow) -> Vec<(String, String, Option<String>)> {
+    record.meta.as_ref().unwrap()["verification"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["command"].as_str().unwrap_or_default().to_string(),
+                c["status"].as_str().unwrap_or_default().to_string(),
+                c["reason"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+/// V01 (D7): the project's checks are the IDE's commands, not the
+/// model's: in Autopilot the detected `pytest` runs though the user's
+/// allowed commands don't list it, and the task is verified. In an Agent
+/// chat with the same settings it's skipped, as today.
+#[tokio::test]
+async fn autopilots_checks_run_what_the_allowlist_wouldnt() {
+    if !has_pytest() {
+        eprintln!("pytest isn't installed: skipped");
+        return;
+    }
+    let h = python_project().await;
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script_with_plan(PYTHON_PLAN),
+    )
+    .await;
+    let request = task_request(&h, &url);
+    let allowed = &request
+        .config
+        .as_ref()
+        .unwrap()
+        .permissions
+        .allowed_commands;
+    assert!(!allowed.iter().any(|c| c.contains("pytest")), "{allowed:?}");
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    let messages = h.messages().await;
+    let verification = messages
+        .iter()
+        .rev()
+        .find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|x| x.get("verification").is_some())
+        })
+        .expect("a verification record");
+    assert_eq!(
+        checks_of(verification),
+        [("pytest".into(), "passed".into(), None)]
+    );
+
+    // Outside Autopilot, the same settings skip it.
+    let plain = python_project().await;
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "ok.txt", "content": "ok" }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let request = plain.request(
+        &url,
+        Harness::send("Make the test pass"),
+        Permissions::default(),
+    );
+    plain.start(request).await;
+    assert_eq!(plain.run_end().await, "verify-unverified");
+    let messages = plain.messages().await;
+    let verification = messages
+        .iter()
+        .rev()
+        .find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|x| x.get("verification").is_some())
+        })
+        .expect("a verification record");
+    assert_eq!(
+        checks_of(verification),
+        [(
+            "pytest".into(),
+            "skipped".into(),
+            Some("not in your allowed commands".into())
+        )]
+    );
+}

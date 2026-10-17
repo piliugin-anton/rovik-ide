@@ -917,3 +917,15 @@ T05 depends most on the environment it meets.
 - **What was implemented** is now whether an implementation's run
   started (the IDE's message for it is in the chat), not whether an
   implement record exists: a stage that never started leaves one too.
+
+### V01: the checks run what the allowlist wouldn't
+
+- **Done by U01 already**: a task's runs allow any command but the
+  denylist's, and the gate checks its commands with the run's
+  permissions, so the user's allowed commands don't skip a check in
+  Autopilot. `verify-needs-approval` can't happen there since U02. V01
+  adds the test: a Python project's detected `pytest`, not in the allowed
+  commands, runs in Autopilot and is still skipped in an Agent chat.
+- **The denylist still applies to checks**: a check it names is skipped,
+  and the record says which entry ("`sudo` is a command it may never
+  run"), not "not in your allowed commands".

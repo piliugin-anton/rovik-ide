@@ -12,7 +12,7 @@ use super::command_output::{
     error_locations, failure_keys, focus_failures, split_by_changed, tests_ran,
 };
 use super::log;
-use super::permissions::{check_command, Permissions, Verdict};
+use super::permissions::{check_command, denied_entry, Permissions, Verdict};
 use super::project::{check_label, ordered_checks, ProjectCheck};
 use super::repair::{self, Judgement, RoundFailures, Verdict as Progress};
 use super::run::{new_message, Run};
@@ -1379,7 +1379,12 @@ impl Run {
                 continue;
             }
             if let Verdict::Refused(_) = check_command(&results[i].command, permissions) {
-                results[i].skip("not in your allowed commands");
+                // Autopilot's run any command but its denylist's (V01).
+                let why = match denied_entry(&results[i].command, permissions) {
+                    Some(entry) => format!("`{entry}` is a command it may never run"),
+                    None => "not in your allowed commands".into(),
+                };
+                results[i].skip(&why);
                 self.update_meta(record_id, progress(&results)).await?;
                 continue;
             }
