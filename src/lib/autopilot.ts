@@ -420,8 +420,13 @@ export interface AcceptanceMeta {
   criteria: string[];
   verdicts?: AcceptanceVerdict[];
   evidence?: string;
-  /** The last check left a criterion unsatisfied: the task ends unmet. */
+  /**
+   * The last check left a criterion unsatisfied, or couldn't judge the fix
+   * of those an earlier check found unmet: the task ends unmet.
+   */
   unmet?: boolean;
+  /** skipped, and `unmet`: how many criteria the check before found unmet, which stand. */
+  earlierUnmet?: number;
   /** skipped: why. */
   reason?: string;
   childDialogId?: string;
@@ -450,8 +455,16 @@ export function acceptanceHeadline(meta: AcceptanceMeta, interrupted: boolean): 
         : `${unmet} of ${criteria(n)} unmet: sent to the agent for one more round.`;
     case 'stopped':
       return 'The acceptance check was stopped.';
-    default:
-      return `Acceptance check skipped: ${meta.reason ?? 'it couldn’t judge'}. The checks decide.`;
+    default: {
+      const skipped = `Acceptance check skipped: ${meta.reason ?? 'it couldn’t judge'}.`;
+      if (!meta.unmet) return `${skipped} The checks decide.`;
+      const k = meta.earlierUnmet ?? 1;
+      const standing =
+        k === 1
+          ? 'The criterion the check before found unmet stands'
+          : `The ${k} criteria the check before found unmet stand`;
+      return `${skipped} ${standing}: the task ends unmet.`;
+    }
   }
 }
 

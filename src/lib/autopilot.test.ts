@@ -417,6 +417,19 @@ test('the acceptance record’s headline: judging, met, sent back, unmet, skippe
     ),
     'Acceptance check skipped: its verdicts couldn’t be read. The checks decide.'
   );
+  // R03: after a check that found criteria unmet, nothing confirmed their fix.
+  const unconfirmed = { ...base, round: 2, status: 'skipped' as const, unmet: true };
+  assert.equal(
+    acceptanceHeadline(
+      { ...unconfirmed, reason: 'its verdicts couldn’t be read', earlierUnmet: 1 },
+      false
+    ),
+    'Acceptance check skipped: its verdicts couldn’t be read. The criterion the check before found unmet stands: the task ends unmet.'
+  );
+  assert.equal(
+    acceptanceHeadline({ ...unconfirmed, earlierUnmet: 2 }, false),
+    'Acceptance check skipped: it couldn’t judge. The 2 criteria the check before found unmet stand: the task ends unmet.'
+  );
 });
 
 test('a planner record’s headline: at work, its plan, taken or flagged, none (T01)', () => {

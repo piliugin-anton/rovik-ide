@@ -157,6 +157,17 @@ pub(super) fn acceptance_record(base: StageRecord, last: Option<&MessageRow>) ->
                 "{unmet} of {criteria} criteria unmet, and the run ended before the last check"
             ),
         ),
+        // An earlier check found criteria unmet, and this one couldn't
+        // judge their fix: they stand (S08, R03).
+        "skipped" if check["unmet"] == true => (
+            Status::Failed,
+            Some("unmet".to_string()),
+            format!(
+                "{} of {criteria} criteria still unmet: check {round} was skipped ({})",
+                check["earlierUnmet"].as_u64().unwrap_or(1),
+                check["reason"].as_str().unwrap_or("it couldn't judge"),
+            ),
+        ),
         "skipped" => (
             Status::Skipped,
             None,

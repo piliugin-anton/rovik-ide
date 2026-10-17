@@ -4175,6 +4175,59 @@ async fn a_criterion_still_unmet_at_the_last_check_ends_the_task_unmet() {
     assert_eq!(checks[1]["unmet"], true);
 }
 
+/// S08 (R03): a criterion found unmet, then a check that can't judge the
+/// fix (its checker is blocked). Nothing confirmed the fix, so the earlier
+/// verdict stands: the task ends `unmet`, delivered as partial, never as
+/// verified.
+#[tokio::test]
+async fn a_last_check_that_cant_judge_after_an_unmet_one_ends_the_task_unmet() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.push(Reply::Text("Fixed it."));
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                ACCEPTANCE,
+                vec![Reply::Text(UNSATISFIED), Reply::Text(NO_VERDICTS)],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(records[4].outcome.as_deref(), Some("unmet"), "{records:#?}");
+    let acceptance = records
+        .iter()
+        .find(|r| r.name == Stage::Acceptance)
+        .unwrap();
+    assert_eq!(
+        (acceptance.status, acceptance.outcome.as_deref()),
+        (Status::Failed, Some("unmet"))
+    );
+    assert_eq!(
+        acceptance.summary.as_deref(),
+        Some("1 of 1 criteria still unmet: check 2 was skipped (the acceptance checker couldn't judge: Nothing to judge in this test.)")
+    );
+    assert_eq!(records.last().unwrap().outcome.as_deref(), Some("unmet"));
+    let messages = h.messages().await;
+    let checks = acceptances(&messages);
+    assert_eq!(checks.len(), 2);
+    assert_eq!(
+        (
+            &checks[1]["status"],
+            &checks[1]["unmet"],
+            &checks[1]["earlierUnmet"]
+        ),
+        (&json!("skipped"), &json!(true), &json!(1))
+    );
+}
+
 /// S09: TASK_PLAN with an assumption of its planner's.
 fn assuming_plan() -> &'static str {
     let plan = TASK_PLAN.replace(

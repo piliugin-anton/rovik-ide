@@ -257,7 +257,9 @@ impl Run {
     /// agent, for one more round. At the last check they set
     /// `acceptance_unmet`, and the run ends `unmet`. A checker that can't
     /// run, or whose verdicts can't be read, is recorded skipped: the
-    /// checks' word stands.
+    /// checks' word stands, unless an earlier check found criteria unmet.
+    /// Nothing confirmed their fix then: they stand, and the checks end
+    /// with them (R03).
     pub(super) async fn accept_after_green(&mut self) -> Result<bool, String> {
         if !self.in_autopilot() || self.sub().is_some() || self.plan_mode || self.stopped() {
             return Ok(false);
@@ -375,7 +377,14 @@ impl Run {
                 }
             },
         }
-        let last = if thorough {
+        let unconfirmed = record["status"] == "skipped" && !earlier.is_empty();
+        if unconfirmed {
+            record["earlierUnmet"] = json!(earlier.len());
+            unmet = earlier.clone();
+        }
+        let last = if unconfirmed {
+            true
+        } else if thorough {
             !self.acceptance_progress.another_round(unmet.len(), check)
         } else {
             check >= MAX_ACCEPTANCE_CHECKS
