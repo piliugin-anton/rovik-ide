@@ -1341,3 +1341,29 @@ T05 depends most on the environment it meets.
   report. A timeout or the token cap stops the run going on, as before:
   the stages after it may still be being recorded as the report is
   written.
+
+## H: the host works on its own
+
+### H01: the third choice and its block
+
+- **Where the block lives**: on each host (`Host.autonomy` in
+  `cloud-hosts.json`), not on the file's `HostSettings`: each server has
+  its own key, remote and budget. A host without the block (every host
+  saved before H01) loads with the defaults; a host with the defaults
+  saves without it. The block stays when another choice is picked, and
+  the host's form doesn't send it: `hosts_page.rs` keeps it on a save.
+- **`Delivery::PushBranch.deploy_key` is a `String`**, not a `PathBuf`:
+  it's a path on the server, which a Windows computer would read as one
+  of its own.
+- **Checked where it's kept** (`AutonomySettings::checked`, from
+  `hosts_set_autonomy`): pushing needs a key's path (one line), the
+  notify URL is an `http(s)://` address with no spaces, a budget's limit
+  of 0 or less is no limit of its own; trimmed. The page saves each
+  change as it's made and shows the refusal when there is one.
+- **The budget's empty fields** are as in Settings → Subagents, each on
+  its own: a host that sets only hours keeps the computer's cost limit
+  (H02 merges them). A budget with no limit left isn't kept.
+- **"Push to a branch"** saves nothing until the key's path is in: until
+  then, results stay on the server, and the pull request box is off.
+- `ApprovalPolicy::Autonomous` applies as "Ask the AI reviewer first,
+  then me" until H02.

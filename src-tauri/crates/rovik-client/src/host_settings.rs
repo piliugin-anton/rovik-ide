@@ -7,6 +7,7 @@
 
 use crate::remote::ApprovalPolicy;
 use crate::secrets::{SecretError, SecretName, SecretStore};
+use rovik_protocol::autopilot::AutonomySettings;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -50,6 +51,10 @@ pub struct Host {
     pub host_key: Option<String>,
     #[serde(default)]
     pub approval_policy: ApprovalPolicy,
+    /// What its tasks follow while it works on its own (`Autonomous`):
+    /// kept when another policy is chosen, for when it's chosen again.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub autonomy: AutonomySettings,
     #[serde(default)]
     pub deploy: DeployState,
     /// Commands run on the host after a deploy, and again on request, to
@@ -91,6 +96,10 @@ pub enum DeployState {
 
 fn ssh_port() -> u16 {
     22
+}
+
+fn is_default(autonomy: &AutonomySettings) -> bool {
+    *autonomy == AutonomySettings::default()
 }
 
 impl HostSettings {
@@ -189,6 +198,7 @@ mod tests {
             key_path: Some(PathBuf::from("/home/me/.ssh/id_ed25519")),
             host_key: Some("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtestkey".into()),
             approval_policy: ApprovalPolicy::AiReviewerThenMe,
+            autonomy: AutonomySettings::default(),
             deploy: DeployState::Deployed {
                 version: "0.1.0".into(),
                 sha256: Some("ab".repeat(32)),
@@ -257,6 +267,53 @@ mod tests {
         ] {
             assert!(text.contains(field), "{field} in {text}");
         }
+    }
+
+    /// H01: a host that works on its own keeps its block; a file from
+    /// before it loads with the block's defaults.
+    #[test]
+    fn a_host_that_works_on_its_own_round_trips_and_an_old_file_loads() {
+        use rovik_protocol::autopilot::{Delivery, Effort};
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = HostSettings::load(dir.path()).unwrap();
+        let mut own = host("h1");
+        own.approval_policy = ApprovalPolicy::Autonomous;
+        own.autonomy = AutonomySettings {
+            effort: Some(Effort::Thorough),
+            delivery: Delivery::PushBranch {
+                deploy_key: "~/.ssh/rovik_deploy".into(),
+                open_pr: true,
+            },
+            notify_url: Some("https://ntfy.sh/topic".into()),
+            ..Default::default()
+        };
+        settings.put(own.clone());
+        settings.save(dir.path()).unwrap();
+        let read = HostSettings::load(dir.path()).unwrap();
+        assert_eq!(read.hosts, [own]);
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert!(
+            text.contains("\"approvalPolicy\": \"autonomous\""),
+            "{text}"
+        );
+        assert!(text.contains("\"kind\": \"pushBranch\""), "{text}");
+
+        // Written before the block existed.
+        std::fs::write(
+            dir.path().join(FILE),
+            r#"{"version":1,"computer":"c","hosts":[{"id":"h2","name":"Old","host":"old.example.com","user":"me","auth":"agent","approvalPolicy":"aiReviewerThenMe"}]}"#,
+        )
+        .unwrap();
+        let old = HostSettings::load(dir.path()).unwrap();
+        assert_eq!(old.hosts[0].autonomy, AutonomySettings::default());
+        assert_eq!(
+            old.hosts[0].approval_policy,
+            ApprovalPolicy::AiReviewerThenMe
+        );
+        // Saved again, the default block isn't written.
+        old.save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert!(!text.contains("autonomy"), "{text}");
     }
 
     #[test]

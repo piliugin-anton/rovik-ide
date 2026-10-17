@@ -649,3 +649,108 @@ test('removing Rovik with chats on the server: they’re to move back first', as
   );
   assert.deepEqual(sent('hosts_removal'), [], 'nothing asked of the server');
 });
+
+/** The input in the label that reads `text`. */
+const field = (root: ParentNode, text: string) =>
+  [...root.querySelectorAll('label')]
+    .find((l) => l.textContent?.includes(text))
+    ?.querySelector('input') as HTMLInputElement | undefined;
+
+/** Ticks or fills `input` as the user would, ending in its change. */
+function change(input: HTMLInputElement, value?: string | boolean) {
+  if (typeof value === 'string') input.value = value;
+  else input.checked = value ?? true;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** A host page whose app keeps what the page saves (H01). */
+async function keepingHostPage(row: Partial<HostRow> = {}) {
+  let kept: HostRow = { ...HOST, ...row };
+  const page = await hostPage(hostsList(), {
+    hosts_list: () => ({ ...hostsList(), hosts: [kept] }),
+    hosts_set_policy: ({ policy }: { policy: HostRow['approvalPolicy'] }) => {
+      kept = { ...kept, approvalPolicy: policy };
+    },
+    hosts_set_autonomy: ({ autonomy }: { autonomy: HostRow['autonomy'] }) => {
+      if (autonomy?.notifyUrl?.startsWith('ftp:')) {
+        throw 'The notify URL is an http:// or https:// address.';
+      }
+      kept = { ...kept, autonomy };
+      return autonomy;
+    },
+  });
+  return { ...page, kept: () => kept };
+}
+
+test('works on its own: the third choice shows its block, which an other choice hides', async () => {
+  const { root, kept } = await keepingHostPage();
+  assert.equal(root.querySelector('.host-autonomy'), null, 'no block while it waits for me');
+  const own = field(root, 'Works on its own')!;
+  assert.match(own.closest('label')!.textContent!, /Chats on this server run in Autopilot/);
+  change(own);
+  await flush();
+  assert.deepEqual(sent('hosts_set_policy'), [{ id: 'h1', policy: 'autonomous' }]);
+  assert.equal(kept().approvalPolicy, 'autonomous');
+  const block = root.querySelector('.host-autonomy')!;
+  assert.ok(block, 'its block shows');
+  // Its defaults: this computer's effort and budget, the result kept on the server.
+  assert.ok(field(block, 'As in Settings → Subagents')!.checked);
+  assert.ok(field(block, 'Keep the result on the server')!.checked);
+  assert.match(block.textContent!, /The AI reviewer decides\. What it can’t approve is refused/);
+  assert.equal(field(block, 'Deploy key on the server'), undefined, 'no key to push with');
+  assert.deepEqual(sent('hosts_set_autonomy'), [], 'nothing saved by showing it');
+  change(field(root, 'Wait for me')!);
+  await flush();
+  assert.equal(root.querySelector('.host-autonomy'), null);
+});
+
+test('works on its own: each change is saved, the deploy key only once it’s in', async () => {
+  const { root, kept } = await keepingHostPage({ approvalPolicy: 'autonomous' });
+  const block = () => root.querySelector('.host-autonomy')!;
+  change(field(block(), 'Thorough')!);
+  await flush();
+  assert.deepEqual(sent('hosts_set_autonomy').at(-1), {
+    id: 'h1',
+    autonomy: { delivery: { kind: 'keepOnHost' }, effort: 'thorough' },
+  });
+  // Pushing: nothing goes until the key's path is in, the PR box off until then.
+  change(field(block(), 'Push to a branch')!);
+  await flush();
+  assert.equal(sent('hosts_set_autonomy').length, 1);
+  const key = field(block(), 'Deploy key on the server')!;
+  assert.ok(field(block(), 'Open a pull request')!.disabled);
+  assert.match(block().textContent!, /Its path on the server, never the key itself/);
+  change(key, '  ~/.ssh/rovik_deploy ');
+  await flush();
+  assert.deepEqual(kept().autonomy, {
+    delivery: { kind: 'pushBranch', deployKey: '~/.ssh/rovik_deploy', openPr: false },
+    effort: 'thorough',
+  });
+  change(field(block(), 'Open a pull request')!, true);
+  await flush();
+  assert.deepEqual(kept().autonomy!.delivery, {
+    kind: 'pushBranch',
+    deployKey: '~/.ssh/rovik_deploy',
+    openPr: true,
+  });
+  // A budget: one limit set, the other left as in Settings; then none.
+  change(field(block(), 'Stop a task after (hours)')!, '2');
+  await flush();
+  assert.deepEqual(kept().autonomy!.budget, { maxHours: 2, maxCost: null });
+  change(field(block(), 'Stop a task after (hours)')!, '');
+  await flush();
+  assert.equal(kept().autonomy!.budget, undefined);
+  // The notify URL: kept trimmed; one the app refuses says why, and isn't kept.
+  change(field(block(), 'Call this URL')!, ' https://ntfy.sh/rovik-abc ');
+  await flush();
+  assert.equal(kept().autonomy!.notifyUrl, 'https://ntfy.sh/rovik-abc');
+  change(field(block(), 'Call this URL')!, 'ftp://x');
+  await flush();
+  assert.match(block().querySelector('[role="alert"]')!.textContent!, /http:\/\/ or https:\/\//);
+  assert.equal(kept().autonomy!.notifyUrl, 'https://ntfy.sh/rovik-abc');
+  // Back to keeping the result on the server.
+  change(field(block(), 'Keep the result on the server')!);
+  await flush();
+  assert.deepEqual(kept().autonomy!.delivery, { kind: 'keepOnHost' });
+  assert.equal(field(block(), 'Deploy key on the server'), undefined);
+});

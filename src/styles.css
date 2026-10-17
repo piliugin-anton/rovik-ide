@@ -8621,6 +8621,54 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin-top: 12px;
 }
 
+/* A cloud host that works on its own: its block (HostAutonomy.tsx, H01). */
+.host-autonomy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 0 92px;
+}
+
+.host-autonomy .autopilot-subtitle,
+.host-autonomy .setting-checkbox,
+.host-autonomy-budget {
+  margin-left: 0;
+}
+
+.host-autonomy-note {
+  margin: 0;
+}
+
+.host-autonomy-push {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 24px;
+}
+
+/* Its text fields: the deploy key's path and the notify URL. */
+.host-autonomy-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 420px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.host-autonomy-field input {
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 13px;
+}
+
+.host-autonomy-budget {
+  margin-top: 0;
+}
+
 /* Its Prepare switch, between the budget and the denylist (S03). */
 .setting-checkbox.autopilot-prepare {
   margin-top: 12px;

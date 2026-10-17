@@ -9,8 +9,35 @@ import { listen } from '@tauri-apps/api/event';
 
 export type AuthKind = 'key' | 'agent' | 'password' | 'keyboard-interactive' | 'system-ssh';
 
-/** Who approves on the host while nobody is there (6.9). */
-export type ApprovalPolicy = 'waitForMe' | 'aiReviewerThenMe';
+/**
+ * Who approves on the host while nobody is there (6.9); `autonomous`: it
+ * works on its own, its chats in Autopilot (autopilot-plan 3.5, H01).
+ */
+export type ApprovalPolicy = 'waitForMe' | 'aiReviewerThenMe' | 'autonomous';
+
+/** Where a host that works on its own sends a task's result (D15). */
+export type Delivery =
+  | { kind: 'keepOnHost' }
+  /** `deployKey`: its path on the server, never its contents. */
+  | { kind: 'pushBranch'; deployKey: string; openPr: boolean };
+
+/**
+ * What a host's tasks follow while it works on its own
+ * (rovik-protocol/src/autopilot.rs `AutonomySettings`): unset, as in this
+ * computer's settings.
+ */
+export interface AutonomySettings {
+  effort?: 'balanced' | 'thorough';
+  budget?: { maxHours: number | null; maxCost: number | null };
+  delivery: Delivery;
+  /** Called when a task ends or is blocked; may carry a token. */
+  notifyUrl?: string;
+}
+
+export const DEFAULT_AUTONOMY: AutonomySettings = { delivery: { kind: 'keepOnHost' } };
+
+/** A host's block, its defaults where it has none. */
+export const autonomyOf = (host: Host): AutonomySettings => host.autonomy ?? DEFAULT_AUTONOMY;
 
 export type DeployState =
   { state: 'notDeployed' } | { state: 'deployed'; version: string; sha256?: string };
@@ -29,6 +56,8 @@ export interface Host {
   /** The host key pinned on first use, as OpenSSH writes it. */
   hostKey?: string;
   approvalPolicy: ApprovalPolicy;
+  /** While it works on its own (`autonomous`); kept under another policy. */
+  autonomy?: AutonomySettings;
   deploy: DeployState;
   /** Run on the host after a deploy, and when asked (design §7). */
   setupScript?: string;
@@ -176,6 +205,10 @@ export const trustBuild = (id: string, sha256: string) =>
 
 export const setPolicy = (id: string, policy: ApprovalPolicy) =>
   invoke<void>('hosts_set_policy', { id, policy });
+
+/** Saves a host's block, checked: resolves with it as kept. */
+export const setAutonomy = (id: string, autonomy: AutonomySettings) =>
+  invoke<AutonomySettings>('hosts_set_autonomy', { id, autonomy });
 
 /** Deploys Rovik; `sudoPassword` when sudo asked for one. Resolves with its version. */
 export const deployHost = (id: string, sudoPassword?: string) =>

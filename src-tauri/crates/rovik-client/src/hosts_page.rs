@@ -19,6 +19,7 @@ use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
 use crate::system_ssh::{Local, SystemSsh, SystemSshConnector};
+use rovik_protocol::autopilot::AutonomySettings;
 use rovik_protocol::host::{HostInfo, KeyInfo, Storage};
 use rovik_protocol::{features, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
@@ -488,10 +489,13 @@ impl HostsPage {
                     host.host_key = old.host_key.clone().filter(|_| same_server);
                     host.deploy = old.deploy.clone();
                     host.approval_policy = old.approval_policy;
+                    // Changed through `set_autonomy` only (H01).
+                    host.autonomy = old.autonomy.clone();
                 }
                 None => {
                     host.host_key = None;
                     host.deploy = DeployState::NotDeployed;
+                    host.autonomy = AutonomySettings::default();
                 }
             }
             settings.put(host.clone());
@@ -595,6 +599,19 @@ impl HostsPage {
         self.change_host(id, |host| host.approval_policy = policy)?;
         self.remote.set_policy(id, policy);
         Ok(())
+    }
+
+    /// What the host's tasks follow while it works on its own (H01),
+    /// checked first (`AutonomySettings::checked`). Returns them as kept.
+    pub fn set_autonomy(
+        &self,
+        id: &str,
+        autonomy: AutonomySettings,
+    ) -> Result<AutonomySettings, String> {
+        let autonomy = autonomy.checked()?;
+        let kept = autonomy.clone();
+        self.change_host(id, |host| host.autonomy = kept)?;
+        Ok(autonomy)
     }
 
     /// Deploys Rovik for this user (H05), then connects the host. Returns
@@ -909,6 +926,7 @@ mod tests {
             key_path: None,
             host_key: None,
             approval_policy: ApprovalPolicy::default(),
+            autonomy: AutonomySettings::default(),
             deploy: DeployState::NotDeployed,
             setup_script: None,
         }
@@ -1041,6 +1059,51 @@ mod tests {
         assert_eq!(moved.approval_policy, ApprovalPolicy::AiReviewerThenMe);
     }
 
+    /// H01: the block a host works on its own with, checked and kept; the
+    /// host's form saved again leaves it as it was.
+    #[tokio::test]
+    async fn the_autonomy_block_is_checked_and_kept_by_the_hosts_page() {
+        use rovik_protocol::autopilot::Delivery;
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("pw")).unwrap();
+        setup
+            .page
+            .set_policy(&saved.id, ApprovalPolicy::Autonomous)
+            .unwrap();
+        let bad = AutonomySettings {
+            notify_url: Some("mailto:me@example.com".into()),
+            ..Default::default()
+        };
+        assert!(setup.page.set_autonomy(&saved.id, bad).is_err());
+        let block = AutonomySettings {
+            delivery: Delivery::PushBranch {
+                deploy_key: " ~/.ssh/rovik_deploy ".into(),
+                open_pr: true,
+            },
+            notify_url: Some("https://ntfy.sh/t".into()),
+            ..Default::default()
+        };
+        let kept = setup.page.set_autonomy(&saved.id, block).unwrap();
+        assert_eq!(
+            kept.delivery,
+            Delivery::PushBranch {
+                deploy_key: "~/.ssh/rovik_deploy".into(),
+                open_pr: true
+            }
+        );
+        // The form, saved with the block it never had.
+        let form = Host {
+            name: "Renamed".into(),
+            autonomy: AutonomySettings::default(),
+            ..saved.clone()
+        };
+        let saved = setup.page.save(form, HostSecrets::default()).unwrap();
+        assert_eq!(saved.autonomy, kept);
+        assert_eq!(saved.approval_policy, ApprovalPolicy::Autonomous);
+        let listed = setup.page.list().await.unwrap();
+        assert_eq!(listed.hosts[0].host.autonomy, kept);
+    }
+
     #[tokio::test]
     async fn a_host_with_chats_isnt_removed() {
         let setup = setup();
@@ -1121,6 +1184,7 @@ mod tests {
             key_path: Some("/home/ann/.ssh/id_ed25519".into()),
             host_key: None,
             approval_policy: ApprovalPolicy::default(),
+            autonomy: AutonomySettings::default(),
             deploy: DeployState::NotDeployed,
             setup_script: None,
         };

@@ -107,6 +107,16 @@ pub async fn hosts_set_policy(
     page.set_policy(&id, policy)
 }
 
+/// What the host's tasks follow while it works on its own (H01), as kept.
+#[tauri::command]
+pub async fn hosts_set_autonomy(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+    autonomy: rovik_protocol::autopilot::AutonomySettings,
+) -> Result<rovik_protocol::autopilot::AutonomySettings, String> {
+    page.set_autonomy(&id, autonomy)
+}
+
 /// Deploys Rovik for this user; `sudo_password` when sudo asked for one.
 /// Returns the daemon's version.
 #[tauri::command]

@@ -112,6 +112,9 @@ pub enum ApprovalPolicy {
     /// It waits for the user.
     #[default]
     WaitForMe,
+    /// "Works on its own" (autopilot-plan 3.5, H01): chats there run in
+    /// Autopilot, the host's `AutonomySettings` over the computer's.
+    Autonomous,
 }
 
 impl ApprovalPolicy {

@@ -25,6 +25,7 @@ import {
   Switch,
 } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
+import HostAutonomy from './HostAutonomy';
 import { onCloudEvent, refreshHosts } from '../lib/cloud';
 import { formatBytes, plural } from '../lib/textUtils';
 import {
@@ -893,6 +894,25 @@ function HostPage(props: {
           />
           Ask the AI reviewer first, then me
         </label>
+        <label class="setting-checkbox">
+          <input
+            type="radio"
+            name={`policy-${id}`}
+            checked={props.row.approvalPolicy === 'autonomous'}
+            onChange={() => void choosePolicy('autonomous')}
+          />
+          <span>
+            Works on its own
+            <span class="setting-checkbox-sub">
+              Chats on this server run in Autopilot: they plan, review, implement, check and deliver
+              a task without asking. Nothing waits for you. What the agent can’t decide, it writes
+              down.
+            </span>
+          </span>
+        </label>
+        <Show when={props.row.approvalPolicy === 'autonomous'}>
+          <HostAutonomy host={props.row} onSaved={() => props.onChanged()} />
+        </Show>
       </section>
 
       <Show when={deployed()}>
