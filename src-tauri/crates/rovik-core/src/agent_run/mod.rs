@@ -829,8 +829,29 @@ pub fn stored_message(message: &UserMessage) -> NewMessage {
 }
 
 /// Starts a run in the chat. Returns its id, or None when there was nothing
-/// to do (a Resume with nothing left to run).
+/// to do (a Resume with nothing left to run). A Resume of a chat whose
+/// Autopilot task was cut goes on with the task (autopilot.rs).
 pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
+    if matches!(request.start, StartKind::Resume) {
+        if let Some(config) = request.config.clone() {
+            core.agents.set_config(config);
+        }
+        check_project(&core.db, &request.dialog_id, request.root.as_deref()).await?;
+        if core.agents.draining() {
+            return Err(RESTARTING.into());
+        }
+        if let Some(started) = autopilot::resume(core, &request).await? {
+            return Ok(started);
+        }
+    }
+    start_run(core, request).await
+}
+
+/// `agent_start`'s run, which the Autopilot driver starts its stages with.
+pub(super) async fn start_run(
+    core: &Core,
+    request: StartRequest,
+) -> Result<Option<String>, String> {
     let (state, db) = (&core.agents, &core.db);
     if let Some(config) = request.config.clone() {
         state.set_config(config);
@@ -871,10 +892,16 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         }
     }
 
+    // The user's message, which a run that can't start marks failed; the
+    // IDE's own (an Autopilot stage's) stays as it is.
     let sent = match &request.start {
-        StartKind::Send { message } => Some(message.id.clone()),
+        StartKind::Send { message } if !run::is_harness_meta(message.meta.as_ref()) => {
+            Some(message.id.clone())
+        }
         _ => None,
     };
+    // What a later stage of an Autopilot task starts its run with.
+    let settings = autopilot::Settings::of(&request);
     let prepared = match run::Run::prepare(core, request, controls).await {
         Ok(Some(prepared)) => prepared,
         Ok(None) => {
@@ -922,6 +949,7 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
     let core = core.clone();
     crate::rt::spawn(async move {
         let (mut run, entry) = prepared;
+        let stage = run.stage.clone();
         // The run as a task of its own: should it panic, the chat is still
         // released and told, instead of reading "already working" until
         // the app restarts.
@@ -932,12 +960,22 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
                 "error".to_string()
             }
         };
+        // An Autopilot stage's run: the driver's turn is taken before its
+        // end is told, and the task goes on from here, its landing decided
+        // (D2, A03).
+        let driving = match &stage {
+            Some(_) => Some(autopilot::drive_lock(&dialog_id).await),
+            None => None,
+        };
         core.agents.unregister(&dialog_id, &id);
         core.emit(AgentEvent::RunEnded {
-            dialog_id,
+            dialog_id: dialog_id.clone(),
             run_id: id,
-            outcome,
+            outcome: outcome.clone(),
         });
+        if let (Some(stage), Some(driving)) = (stage, driving) {
+            autopilot::after_run(core, dialog_id, stage, outcome, settings, driving).await;
+        }
     });
     Ok(Some(run_id))
 }

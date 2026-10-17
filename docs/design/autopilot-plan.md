@@ -669,4 +669,54 @@ T05 depends most on the environment it meets.
 
 ## Notes from implementation
 
-(Added as tasks land.)
+### A01–A03: the mode, the records, the driver
+
+- **The denylist (A01).** `DEFAULT_AUTOPILOT_DENYLIST` has the entries
+  `Permissions::denied_commands` can match today. "A download piped to a
+  shell" is a rule across a pipe, which an entry (a program and its words)
+  can't say: U01's.
+- **The task's id** is the id of the message that started it, so a task's
+  request is found from its records.
+- **Stages inside runs.** The plan review runs inside the plan's run (at
+  `submit_plan`), the change review and the checks at the end of the
+  implementing run, as they do today. The driver records those stages
+  from what the run left (`meta.review`, `meta.verification`) once the
+  run ends, with the reviewer's or the gate's last round as the record's
+  round. Meanwhile, the strip shows the run's own stage as running. A run
+  stage's record keeps its run's outcome (`outcome` on a done record too),
+  which the checks' record is derived from after a restart.
+- **Stages not built yet** (prepare, tests, acceptance; Thorough's break
+  and pick) are recorded `skipped`, "Not available yet", as A06 does for
+  Thorough's.
+- **Landing** still happens at the end of the implementing run
+  (`land_at_end`); the delivery stage records what became of the result
+  and the task's outcome. S09 moves landing to the delivery.
+- **Fresh contexts (D2) aren't built.** A stage's run sees the chat's
+  history, trimmed, as today's "Implement this plan" run does: the history
+  builder has no cut-off point, and one changes what every run is sent.
+  The implementation's request is the plan in full, as the button sends
+  it; it starts from the IDE's message (`meta.harness: "autopilot"`,
+  `meta.autopilot.record`), which is never marked failed, so a Retry
+  still has it.
+- **Stop and Retry.** A stage the user stopped ends the task without a
+  delivery: they're there. A Retry or a Continue of a run stage that a
+  failure (`error`, `repetition`, `stopped`) ended opens that stage again,
+  as its next round, and the pipeline goes on from it. A Resume never
+  does.
+- **Waits that remain.** A run that pauses (checkpoint, loop guard, move,
+  drain) or whose checks wait for approval keeps its stage running, as the
+  run itself waits; U01–U03 remove those waits in Autopilot.
+- **Resume.** Locally only the frontend holds the model's key, so a task
+  resumes when its chat is opened, through a `Resume` start, as
+  interrupted tool calls do (`resumesHere`). The daemon resumes at its
+  start (`restart.rs`): a run cut mid-stage is restarted as before and
+  its stage goes on; a run cut where no start picks it up, and a task cut
+  between two stages, go on through `autopilot::resume`, counted as
+  restarts. H03 adds the rest of the server's side (a client that
+  disconnects, a `kill -9` between stages, results and `ResultReady`).
+- **One driver per chat.** A run's end takes the chat's driver lock
+  before `RunEnded` goes out, so a Resume sent when the app hears of it
+  finds the driver at work and starts nothing.
+- **IDE-started subagents as stages** (S04's test writer, S08's
+  acceptance) need a lead run: `run_ide_subagent` is a method of one. No
+  stage of milestone A needs it.

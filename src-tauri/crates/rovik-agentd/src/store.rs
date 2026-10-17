@@ -562,6 +562,11 @@ impl Store {
             .collect()
     }
 
+    /// Every chat known here.
+    pub fn chats(&self) -> Vec<String> {
+        self.lock().state.chats.keys().cloned().collect()
+    }
+
     /// The chats that have a worktree.
     pub fn chats_with_worktrees(&self) -> Vec<String> {
         let inner = self.lock();

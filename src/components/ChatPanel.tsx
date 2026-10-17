@@ -2929,7 +2929,9 @@ export default function ChatPanel(props: ChatProps) {
    * and have no result. When such a chat is opened, the run picks up where
    * it stopped: each of those calls asks the user again (manually, whatever
    * the settings say, since the user wasn't there to decide), runs if
-   * allowed, and the agent continues.
+   * allowed, and the agent continues. An Autopilot task the app's closing
+   * cut, mid-stage or between two, goes on the same way (lib/autopilot.ts):
+   * the backend reads its records and knows where.
    */
 
   createEffect(() => {

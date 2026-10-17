@@ -119,6 +119,8 @@ pub struct Run {
     /// The run is part of an Autopilot task (autopilot.rs): its request was
     /// sent in Autopilot mode.
     pub(super) autopilot: bool,
+    /// The task's stage this run carries out, which its end hands on.
+    pub(super) stage: Option<super::autopilot::StageRun>,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
     /// The project folder itself. Differs from `root` in an isolated chat,
@@ -386,10 +388,20 @@ impl Run {
         let mode = run_mode_for(&recent)
             .or(request.mode.clone())
             .unwrap_or_else(|| "agent".into());
-        // An Autopilot task starts with a plan: its first run is a
-        // Plan-mode run.
+        // An Autopilot task's run carries out one of its stages: its plan
+        // in Plan mode, the stages after it in Agent mode.
         let autopilot = mode == super::autopilot::MODE;
-        let plan_mode = mode == "plan" || autopilot;
+        let stage = match autopilot {
+            true => {
+                let effort = config.autopilot.effort;
+                super::autopilot::stage_for(core, &dialog_id, &request.start, effort).await?
+            }
+            false => None,
+        };
+        let plan_mode = mode == "plan"
+            || stage
+                .as_ref()
+                .is_some_and(|s| s.stage == super::autopilot::Stage::Plan);
         let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
         // An isolated chat works in its overlay: the project with its own
         // changes on top, mounted as a folder (src/overlay). Plan mode
@@ -468,7 +480,11 @@ impl Run {
         let mut verify_rounds = 0;
         let entry = match request.start {
             StartKind::Send { message } => {
-                settle_message = Some(message.id);
+                // The IDE's own message (an Autopilot stage's) is nobody's
+                // to send again: it's never marked failed.
+                if !is_harness_meta(message.meta.as_ref()) {
+                    settle_message = Some(message.id);
+                }
                 Entry::Turn
             }
             StartKind::Retry => Entry::Turn,
@@ -722,6 +738,7 @@ impl Run {
         let run = Run {
             plan_mode,
             autopilot,
+            stage,
             context_mode: request
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
@@ -774,6 +791,7 @@ impl Run {
             options,
             plan_mode: false,
             autopilot: false,
+            stage: None,
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
             project_root: None,
@@ -1017,6 +1035,9 @@ impl Run {
         }
         if self.autopilot {
             entry["autopilot"] = json!(true);
+        }
+        if let Some(stage) = &self.stage {
+            entry["stage"] = json!(stage.stage.id());
         }
         log::write(&self.core, entry);
         outcome
@@ -2898,6 +2919,11 @@ pub(super) async fn recent_messages(
 
 fn sent_content(m: &MessageRow) -> Option<String> {
     sent_text(m.meta.as_ref())
+}
+
+/// A message the IDE wrote (`meta.harness`), not the user.
+pub(super) fn is_harness_meta(meta: Option<&Value>) -> bool {
+    meta.is_some_and(|m| m.get("harness").is_some())
 }
 
 /// A user message's `meta.sentContent`: the text it sent with its editor

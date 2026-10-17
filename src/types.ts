@@ -252,6 +252,8 @@ export interface ToolMeta {
   paused?: RunPause;
   /** The verification gate's record of a round of checks (lib/verification.ts). */
   verification?: import('./lib/verification').VerificationMeta;
+  /** An empty assistant message: an Autopilot task's stage (lib/autopilot.ts). */
+  stage?: import('./lib/autopilot').StageMeta;
   /**
    * A user-role message the IDE wrote (check failures for the agent). Not
    * shown as a user message, and never mistaken for the user's request.
@@ -269,7 +271,9 @@ export interface ToolMeta {
     | 'integrity'
     | 'review'
     /** The saved plan's problems, found when it's implemented (B07b). */
-    | 'planCheck';
+    | 'planCheck'
+    /** An Autopilot stage's run: its request, which the IDE wrote. */
+    | 'autopilot';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */

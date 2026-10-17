@@ -13,11 +13,29 @@
 //! how it went, and so what comes next (`next_stage`). Nothing else holds
 //! it, so an app that reopens, or a daemon that restarts, reads the rows
 //! and goes on (A03).
+//!
+//! The driver (`after_run`) runs where a run's end is told, after its
+//! landing: it ends the stage the run carried out, then records and starts
+//! the stages that follow, until one is a run of its own (the
+//! implementation) or the task is over. Stages a run did inside itself (a
+//! plan's review in `submit_plan`, the change review and the checks at the
+//! end of the implementing run) are recorded from what that run left in
+//! the chat; stages not built yet are recorded as skipped. `resume` picks a
+//! task up where a crash, a restart or a closed app left it.
 
+use super::landing::pending_reason;
+use super::recovery::{self, Recovery};
+use super::{plan, StartKind, StartRequest, UserMessage};
+use crate::agent::OpenAIChatOptions;
 use crate::chat_db::store::{self, MessagePatch, MessageRow, NewMessage};
 use crate::core::Core;
+use rovik_protocol::agent::ModelProfile;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 pub use rovik_protocol::autopilot::{AutopilotConfig, Budget, Effort};
 
@@ -399,6 +417,879 @@ async fn append(core: &Core, dialog_id: &str, row: NewMessage) -> Result<(), Str
     Ok(())
 }
 
+/// The chat's latest task, with its records, while it's the chat's current
+/// request: no message of the user's came after it. A new message takes
+/// over from a task that's still unfinished; its records stay as they were.
+pub async fn current_task(
+    core: &Core,
+    dialog_id: &str,
+) -> Result<Option<(String, Vec<Recorded>)>, String> {
+    let all = load(core, dialog_id).await?;
+    let Some(task) = latest_task(&all).map(str::to_string) else {
+        return Ok(None);
+    };
+    let records: Vec<Recorded> = records_of(&all, &task).into_iter().cloned().collect();
+    let (id, since) = (dialog_id.to_string(), records[0].seq);
+    let later = core
+        .db
+        .read(move |c| store::role_messages_after(c, &id, "user", since))
+        .await?;
+    if later.iter().any(|m| !plan::is_harness(m)) {
+        return Ok(None);
+    }
+    Ok(Some((task, records)))
+}
+
+/// Whether the chat has a task that isn't over: a Resume goes on with it.
+pub async fn unfinished(core: &Core, dialog_id: &str) -> Result<bool, String> {
+    let Some((_, records)) = current_task(core, dialog_id).await? else {
+        return Ok(false);
+    };
+    let list: Vec<StageRecord> = records.into_iter().map(|r| r.record).collect();
+    Ok(next_stage(&list, list[0].effort) != Next::Over)
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The driver (A03)
+ * ---------------------------------------------------------------------------
+ */
+
+/// What a stage's run starts with: the model and settings of the run
+/// before it, which for a task's first run are the user's start's.
+#[derive(Clone, Debug)]
+pub struct Settings {
+    pub profile: ModelProfile,
+    pub options: Option<OpenAIChatOptions>,
+    pub context_mode: Option<String>,
+    pub root: Option<String>,
+    pub local_date: Option<String>,
+    pub isolate: Option<bool>,
+}
+
+impl Settings {
+    pub fn of(request: &StartRequest) -> Settings {
+        Settings {
+            profile: request.profile.clone(),
+            options: request.options.clone(),
+            context_mode: request.context_mode.clone(),
+            root: request.root.clone(),
+            local_date: request.local_date.clone(),
+            isolate: request.isolate,
+        }
+    }
+
+    /// A start of the chat's run with these settings. The configuration is
+    /// the one the runs follow already.
+    fn request(&self, dialog_id: &str, start: StartKind) -> StartRequest {
+        StartRequest {
+            dialog_id: dialog_id.to_string(),
+            start,
+            profile: self.profile.clone(),
+            options: self.options.clone(),
+            mode: Some(MODE.into()),
+            context_mode: self.context_mode.clone(),
+            root: self.root.clone(),
+            current_user_content: None,
+            local_date: self.local_date.clone(),
+            config: None,
+            isolate: self.isolate,
+            project_settings: None,
+        }
+    }
+}
+
+/// The stage a run carries out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageRun {
+    pub task: String,
+    pub stage: Stage,
+    /// Its record's row.
+    pub record: String,
+    pub effort: Effort,
+}
+
+impl StageRun {
+    fn of(r: &Recorded) -> StageRun {
+        StageRun {
+            task: r.record.task.clone(),
+            stage: r.record.name,
+            record: r.id.clone(),
+            effort: r.record.effort,
+        }
+    }
+}
+
+/// The stages a run of their own carries out; the others are the driver's.
+fn is_run_stage(stage: Stage) -> bool {
+    matches!(stage, Stage::Plan | Stage::Implement)
+}
+
+/// A message of the user's that starts a task: sent in Autopilot mode.
+fn starts_task(message: &UserMessage) -> bool {
+    let meta = message.meta.as_ref();
+    meta.and_then(|m| m.get("mode")).and_then(Value::as_str) == Some(MODE)
+        && meta.and_then(|m| m.get("harness")).is_none()
+}
+
+/// The record row a message the driver wrote is for (`meta.autopilot.record`).
+fn record_named(meta: Option<&Value>) -> Option<&str> {
+    meta?.pointer("/autopilot/record")?.as_str()
+}
+
+/// Outcomes that end a stage's run as failed, and the task's outcome then.
+fn failure_of(outcome: &str) -> Option<&'static str> {
+    Some(match outcome {
+        "stopped" | "verify-stopped" => "stopped",
+        "error" => "error",
+        "repetition" => "repetition",
+        "unfinished-checklist" => "unfinished-checklist",
+        _ => return None,
+    })
+}
+
+/// A failed stage, a Retry or a Continue opens again: the user is there,
+/// and asks for another try (or for the checklist to be finished).
+const REOPENS: &[&str] = &["error", "repetition", "stopped", "unfinished-checklist"];
+
+/// The stage a run starting now carries out, if it's one of the chat's
+/// task: the plan of a task its message starts (recorded here, before the
+/// run), the stage the driver started it for, or the one a Retry, a
+/// Continue or a Resume picks up. A run stage that ended in a failure is
+/// opened again, as its next round, by a Retry or a Continue (never by a
+/// Resume, which nobody asked for). None: the run is no stage's.
+pub async fn stage_for(
+    core: &Core,
+    dialog_id: &str,
+    start: &StartKind,
+    effort: Effort,
+) -> Result<Option<StageRun>, String> {
+    if let StartKind::Send { message } = start {
+        if starts_task(message) {
+            let record = StageRecord::running(&message.id, Stage::Plan, 1, effort);
+            let id = add_stage(core, dialog_id, &record).await?;
+            return Ok(Some(StageRun {
+                task: message.id.clone(),
+                stage: Stage::Plan,
+                record: id,
+                effort,
+            }));
+        }
+        let Some(record) = record_named(message.meta.as_ref()) else {
+            return Ok(None);
+        };
+        let all = load(core, dialog_id).await?;
+        return Ok(all
+            .iter()
+            .find(|r| r.id == record && r.record.status == Status::Running)
+            .map(StageRun::of));
+    }
+    let Some((_, records)) = current_task(core, dialog_id).await? else {
+        return Ok(None);
+    };
+    let last = records.last().expect("a task has a record");
+    if last.record.status == Status::Running {
+        return Ok(is_run_stage(last.record.name).then(|| StageRun::of(last)));
+    }
+    if matches!(start, StartKind::Resume) {
+        return Ok(None);
+    }
+    // The latest run stage, when it failed and only the delivery came after.
+    let Some(at) = records
+        .iter()
+        .rposition(|r| r.record.name != Stage::Deliver)
+    else {
+        return Ok(None);
+    };
+    let failed = &records[at].record;
+    let reopens = is_run_stage(failed.name)
+        && failed.status == Status::Failed
+        && failed
+            .outcome
+            .as_deref()
+            .is_some_and(|o| REOPENS.contains(&o));
+    if !reopens {
+        return Ok(None);
+    }
+    let round = records
+        .iter()
+        .filter(|r| r.record.name == failed.name)
+        .count() as u32
+        + 1;
+    let record = StageRecord::running(&failed.task, failed.name, round, failed.effort);
+    let id = add_stage(core, dialog_id, &record).await?;
+    Ok(Some(StageRun {
+        task: failed.task.clone(),
+        stage: failed.name,
+        record: id,
+        effort: failed.effort,
+    }))
+}
+
+/// Outcomes after which the stage's run goes on later, from where it is:
+/// a pause the user (or a move, or the daemon's next start) continues,
+/// checks that wait for approval. Its stage stays under way.
+fn run_continues(outcome: &str) -> bool {
+    outcome.starts_with("paused-") || outcome == "verify-needs-approval"
+}
+
+type Driving = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// The chat's driver's turn: taken before a stage's run's end is told, so
+/// a Resume that hears of it can't start the stage again meanwhile.
+pub(super) type DriveGuard = tokio::sync::OwnedMutexGuard<()>;
+
+/// After a stage's run ended, with its outcome: the stage ends, and the
+/// task goes on to its next stages. Called where the run's end is told,
+/// after its landing (`agent_start`), with the driver's turn taken before
+/// it was told. Boxed: what it starts is a run whose end comes back here.
+pub(super) fn after_run(
+    core: Core,
+    dialog_id: String,
+    run: StageRun,
+    outcome: String,
+    settings: Settings,
+    driving: DriveGuard,
+) -> Driving {
+    Box::pin(async move {
+        let _driving = driving;
+        let result = async {
+            if run_continues(&outcome) {
+                return Ok(());
+            }
+            end_run_stage(&core, &dialog_id, &run, &outcome, &settings).await?;
+            #[cfg(test)]
+            if crashes(&dialog_id, Crash::AfterEnd) {
+                return Ok(());
+            }
+            advance(&core, &dialog_id, &run.task, &settings).await
+        }
+        .await;
+        if let Err(e) = result {
+            stopped_by(&core, &dialog_id, &e);
+        }
+    })
+}
+
+/// The driver couldn't go on (the database failed it): said in the log and
+/// to the user; the task's records stay as they are, for a resume.
+fn stopped_by(core: &Core, dialog_id: &str, error: &str) {
+    eprintln!("autopilot: chat {dialog_id} stopped: {error}");
+    super::log::write(
+        core,
+        json!({ "event": "autopilot", "dialogId": dialog_id, "error": error }),
+    );
+    core.emit(super::events::AgentEvent::Notice {
+        dialog_id: Some(dialog_id.to_string()),
+        kind: "error".into(),
+        title: "Autopilot stopped".into(),
+        message: format!("The task couldn't go on: {error}"),
+    });
+}
+
+/// One driver at a time in a chat: a run's end and a resume never both
+/// start the next stage.
+fn lock_of(dialog_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: Mutex<Option<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = Mutex::new(None);
+    let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    locks
+        .get_or_insert_with(HashMap::new)
+        .entry(dialog_id.to_string())
+        .or_default()
+        .clone()
+}
+
+pub(super) async fn drive_lock(dialog_id: &str) -> DriveGuard {
+    lock_of(dialog_id).lock_owned().await
+}
+
+fn try_drive_lock(dialog_id: &str) -> Option<DriveGuard> {
+    lock_of(dialog_id).try_lock_owned().ok()
+}
+
+/// Ends the stage a run carried out. A plan's is done once a plan was
+/// saved; the implementation's once the run finished, whatever its checks
+/// said (the checks' stage says that). Either keeps its run's outcome.
+async fn end_run_stage(
+    core: &Core,
+    dialog_id: &str,
+    run: &StageRun,
+    outcome: &str,
+    settings: &Settings,
+) -> Result<(), String> {
+    let all = load(core, dialog_id).await?;
+    let Some(record) = all.iter().find(|r| r.id == run.record) else {
+        return Err(format!("its stage record {} is gone", run.record));
+    };
+    let (status, outcome, summary, reference) = match failure_of(outcome) {
+        Some(failure) => (
+            Status::Failed,
+            failure.to_string(),
+            failure_summary(failure),
+            None,
+        ),
+        None if run.stage == Stage::Plan => match saved_plan(core, dialog_id, record.seq).await? {
+            Some((row, file)) => (
+                Status::Done,
+                outcome.to_string(),
+                format!(
+                    "Saved the plan to {}",
+                    plan::relative_plan_path(&file, settings.root.as_deref())
+                ),
+                Some(row),
+            ),
+            None => (
+                Status::Failed,
+                "plan-failed".to_string(),
+                failure_summary("plan-failed"),
+                None,
+            ),
+        },
+        None => (Status::Done, outcome.to_string(), "Finished".into(), None),
+    };
+    end_stage(core, dialog_id, &run.record, |r| {
+        r.status = status;
+        r.outcome = Some(outcome);
+        r.summary = Some(summary);
+        r.reference = reference;
+    })
+    .await?;
+    Ok(())
+}
+
+/// The plan the run after row `since` saved: the latest row that names its
+/// file (the reply that shows it), and the file.
+async fn saved_plan(
+    core: &Core,
+    dialog_id: &str,
+    since: i64,
+) -> Result<Option<(String, String)>, String> {
+    let id = dialog_id.to_string();
+    let rows = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, "planFile", Some(since)))
+        .await?;
+    Ok(rows.iter().rev().find_map(|m| {
+        let file = m.meta.as_ref()?.get("planFile")?.as_str()?;
+        Some((m.id.clone(), file.to_string()))
+    }))
+}
+
+/// The strip's line for a task's outcome when a stage failed with it.
+fn failure_summary(outcome: &str) -> String {
+    match outcome {
+        "plan-failed" => "No plan was saved".into(),
+        "stopped" => "Stopped".into(),
+        "unfinished-checklist" => "The checklist isn't finished".into(),
+        _ => match pending_reason(outcome) {
+            // "Not landed: the checks still fail." → "The checks still fail"
+            Some(reason) => {
+                let why = reason
+                    .trim_start_matches("Not landed: ")
+                    .trim_end_matches('.');
+                let mut chars = why.chars();
+                chars
+                    .next()
+                    .map(|c| c.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            }
+            None => outcome.to_string(),
+        },
+    }
+}
+
+/// Records and starts the task's stages after its last record, until one
+/// is a run of its own or the task is over. Each pass goes from the records
+/// as they are, so a resume goes on from wherever this stopped.
+async fn advance(
+    core: &Core,
+    dialog_id: &str,
+    task: &str,
+    settings: &Settings,
+) -> Result<(), String> {
+    // Once round the pipeline at most: a record that can't be written
+    // doesn't go round for ever.
+    for _ in 0..=Stage::ALL.len() {
+        let Some((current, records)) = current_task(core, dialog_id).await? else {
+            return Ok(());
+        };
+        if current != task {
+            return Ok(());
+        }
+        let effort = records[0].record.effort;
+        let list: Vec<StageRecord> = records.iter().map(|r| r.record.clone()).collect();
+        let (stage, round) = match next_stage(&list, effort) {
+            Next::Start(stage, round) => (stage, round),
+            Next::Running(_) | Next::Over => return Ok(()),
+        };
+        let record = match stage {
+            // A task's plan starts with its message, never here.
+            Stage::Plan => return Ok(()),
+            Stage::Implement => {
+                if start_implement(core, dialog_id, &records, round, settings, None).await? {
+                    return Ok(());
+                }
+                continue;
+            }
+            Stage::Deliver => {
+                deliver(core, dialog_id, &records, round, None).await?;
+                continue;
+            }
+            Stage::PlanReview | Stage::Review | Stage::Checks => {
+                done_in_run(core, dialog_id, &records, stage).await?
+            }
+            Stage::Prepare | Stage::Tests | Stage::Break | Stage::Pick | Stage::Acceptance => {
+                StageRecord::ended(task, stage, round, effort, Status::Skipped)
+                    .with_summary("Not available yet")
+            }
+        };
+        add_stage(
+            core,
+            dialog_id,
+            &StageRecord {
+                task: task.to_string(),
+                effort,
+                ..record
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// The record of a stage done inside a run: the plan's review inside the
+/// plan's run (in its submits' results), the change review and the checks
+/// at the end of the implementation's, from the records they left there.
+async fn done_in_run(
+    core: &Core,
+    dialog_id: &str,
+    records: &[Recorded],
+    stage: Stage,
+) -> Result<StageRecord, String> {
+    let within = match stage {
+        Stage::PlanReview => Stage::Plan,
+        _ => Stage::Implement,
+    };
+    let run = records
+        .iter()
+        .rev()
+        .find(|r| r.record.name == within)
+        .ok_or_else(|| format!("the task has no {} stage", within.id()))?;
+    let kind = match stage {
+        Stage::Checks => "verification",
+        _ => "review",
+    };
+    let (id, since) = (dialog_id.to_string(), run.seq);
+    let rows = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, kind, Some(since)))
+        .await?;
+    let config = core.agents.config_for(dialog_id);
+    let base = StageRecord::ended(
+        &run.record.task,
+        stage,
+        1,
+        run.record.effort,
+        Status::Skipped,
+    );
+    Ok(match stage {
+        Stage::Checks => checks_record(base, run.record.outcome.as_deref(), rows.last(), &config),
+        _ => review_record(base, &rows, &config),
+    })
+}
+
+/// The checks' record, from how the implementing run ended (`outcome`)
+/// and its last round's record.
+fn checks_record(
+    base: StageRecord,
+    outcome: Option<&str>,
+    last: Option<&MessageRow>,
+    config: &super::AgentConfig,
+) -> StageRecord {
+    let field = |key: &str| last.and_then(|m| m.meta.as_ref()?.get("verification")?.get(key));
+    let ended = |status: Status, summary: String| StageRecord {
+        status,
+        round: field("round").and_then(Value::as_u64).unwrap_or(1) as u32,
+        reference: last.map(|m| m.id.clone()),
+        ..base.clone().with_summary(summary)
+    };
+    match outcome.unwrap_or("done") {
+        "verified" => ended(Status::Done, checks_passed(last)),
+        "unverified" | "verify-unverified" => {
+            let why = field("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("none could run");
+            ended(Status::Skipped, format!("No checks ran: {why}"))
+        }
+        "done" if !config.permissions.verify_changes => {
+            ended(Status::Skipped, "The checks are off".into())
+        }
+        "done" => ended(Status::Skipped, "Nothing to check".into()),
+        failed => StageRecord {
+            outcome: Some(failed.to_string()),
+            ..ended(Status::Failed, failure_summary(failed))
+        },
+    }
+}
+
+/// A review's record, from the last review of its kind among `rows`: the
+/// plan's (`stage` planReview) or the change's.
+fn review_record(
+    base: StageRecord,
+    rows: &[MessageRow],
+    config: &super::AgentConfig,
+) -> StageRecord {
+    use super::subagent::{Kind, SubagentSettings};
+    let (wanted, kind) = match base.name {
+        Stage::PlanReview => ("plan", Kind::PlanReviewer),
+        _ => ("change", Kind::Reviewer),
+    };
+    let last = rows.iter().rev().find_map(|m| {
+        let review = m.meta.as_ref()?.get("review")?;
+        (review["kind"] == wanted).then_some((m, review))
+    });
+    let Some((row, review)) = last else {
+        let why = match config.subagents.kind(kind) {
+            None => format!(
+                "Not reviewed: the {} is off",
+                kind.spec().label.to_lowercase()
+            ),
+            Some(_) => "Not reviewed".to_string(),
+        };
+        return base.with_summary(why);
+    };
+    let (status, summary) = match review["status"].as_str().unwrap_or("") {
+        "clean" => (Status::Done, "Clean".to_string()),
+        "findings" => (Status::Done, findings_summary(review)),
+        "skipped" => (
+            Status::Skipped,
+            match review["reason"].as_str() {
+                Some(why) => format!("Skipped: {why}"),
+                None => "Skipped".into(),
+            },
+        ),
+        _ => (Status::Skipped, "It didn't finish".into()),
+    };
+    StageRecord {
+        status,
+        round: review["round"].as_u64().unwrap_or(1) as u32,
+        reference: Some(row.id.clone()),
+        ..base.with_summary(summary)
+    }
+}
+
+/// "3 findings, 1 high", and how many were left open at the last round.
+fn findings_summary(review: &Value) -> String {
+    let findings = review["findings"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let high = findings.iter().filter(|f| f["severity"] == "high").count();
+    let n = findings.len();
+    let mut text = format!("{n} finding{}", if n == 1 { "" } else { "s" });
+    if high > 0 {
+        text.push_str(&format!(", {high} high"));
+    }
+    if let Some(open) = review["open"].as_u64().filter(|o| *o > 0) {
+        text.push_str(&format!(" ({open} left open)"));
+    }
+    text
+}
+
+/// "2 checks passed", from the last round's record.
+fn checks_passed(last: Option<&MessageRow>) -> String {
+    let passed = last
+        .and_then(|m| {
+            m.meta
+                .as_ref()?
+                .pointer("/verification/checks")?
+                .as_array()
+                .cloned()
+        })
+        .map(|checks| checks.iter().filter(|c| c["status"] == "passed").count())
+        .unwrap_or(0);
+    match passed {
+        0 => "Passed".into(),
+        1 => "1 check passed".into(),
+        n => format!("{n} checks passed"),
+    }
+}
+
+/// Starts the implementation: its record (or `existing`, one recorded
+/// before a crash), then a run whose message, the IDE's, is the plan the
+/// task saved, as "Implement this plan" sends it. True: the run started;
+/// false: it couldn't, and its record says why.
+async fn start_implement(
+    core: &Core,
+    dialog_id: &str,
+    records: &[Recorded],
+    round: u32,
+    settings: &Settings,
+    existing: Option<String>,
+) -> Result<bool, String> {
+    let first = &records[0].record;
+    let (task, effort) = (first.task.clone(), first.effort);
+    let record = match existing {
+        Some(id) => id,
+        None => {
+            let record = StageRecord::running(&task, Stage::Implement, round, effort);
+            add_stage(core, dialog_id, &record).await?
+        }
+    };
+    #[cfg(test)]
+    if crashes(dialog_id, Crash::BeforeRun) {
+        return Ok(true);
+    }
+    let plan_run = records.iter().rev().find(|r| r.record.name == Stage::Plan);
+    let saved = match plan_run {
+        Some(r) => saved_plan(core, dialog_id, r.seq).await?,
+        None => None,
+    };
+    let Some((_, file)) = saved else {
+        return not_started(
+            core,
+            dialog_id,
+            &record,
+            "The task's plan isn't in the chat",
+        )
+        .await;
+    };
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        let why = format!("The plan's file {file} can't be read");
+        return not_started(core, dialog_id, &record, &why).await;
+    };
+    let shown = plan::relative_plan_path(&file, settings.root.as_deref());
+    let message = UserMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: plan::implementation_request(&text, Some(&shown)),
+        meta: Some(json!({
+            "harness": MODE,
+            "implementsPlan": true,
+            "autopilot": { "task": task, "stage": Stage::Implement.id(), "record": record, "plan": file },
+        })),
+        attachments: Vec::new(),
+    };
+    let request = settings.request(dialog_id, StartKind::Send { message });
+    match super::start_run(core, request).await {
+        Ok(_) => Ok(true),
+        Err(e) => not_started(core, dialog_id, &record, &format!("It couldn't start: {e}")).await,
+    }
+}
+
+/// The implementation's record when its run couldn't start: failed, and
+/// why. False: no run started.
+async fn not_started(
+    core: &Core,
+    dialog_id: &str,
+    record: &str,
+    why: &str,
+) -> Result<bool, String> {
+    end_stage(core, dialog_id, record, |r| {
+        r.status = Status::Failed;
+        r.outcome = Some("error".into());
+        r.summary = Some(why.to_string());
+    })
+    .await?;
+    Ok(false)
+}
+
+/// The task's outcome: the one its failed stage ended it with, else how its
+/// implementation's run ended.
+fn task_outcome(records: &[Recorded]) -> String {
+    let failed = records
+        .iter()
+        .find(|r| r.record.status == Status::Failed && r.record.name != Stage::Deliver);
+    let implemented = || {
+        records
+            .iter()
+            .rev()
+            .find(|r| r.record.name == Stage::Implement)
+    };
+    failed
+        .or_else(implemented)
+        .and_then(|r| r.record.outcome.clone())
+        .unwrap_or_else(|| "done".into())
+}
+
+/// The last stage: what became of the result. The implementing run's end
+/// landed it already where it could (landing.rs) or kept it on its server
+/// for its computer; this records which, and the task's outcome.
+/// `existing`: its record from before a crash, filled in now.
+async fn deliver(
+    core: &Core,
+    dialog_id: &str,
+    records: &[Recorded],
+    round: u32,
+    existing: Option<String>,
+) -> Result<(), String> {
+    let first = &records[0].record;
+    let id = match existing {
+        Some(id) => id,
+        None => {
+            let record = StageRecord::running(&first.task, Stage::Deliver, round, first.effort);
+            add_stage(core, dialog_id, &record).await?
+        }
+    };
+    let outcome = task_outcome(records);
+    let implemented = records.iter().any(|r| r.record.name == Stage::Implement);
+    let on_server = core.agents.on_server();
+    // An isolated chat's changes wait in its overlay, with why; a chat
+    // working in the project folder made its changes there.
+    let waiting = crate::overlay::chats::pending(dialog_id).map(|p| p.reason);
+    let in_project = !on_server && !crate::overlay::chats::exists(dialog_id);
+    let (delivered, summary) = match (waiting, pending_reason(&outcome)) {
+        // It ended before anything was changed.
+        _ if !implemented => (false, "Nothing to deliver".to_string()),
+        (Some(reason), _) => (false, reason),
+        (None, Some(_)) if in_project => (
+            false,
+            format!(
+                "{}; the changes are in the project as they are",
+                failure_summary(&outcome)
+            ),
+        ),
+        (None, Some(reason)) => (false, reason),
+        (None, None) if on_server => (
+            true,
+            "Delivered: the result waits on the server for its computer".into(),
+        ),
+        (None, None) => (true, "Delivered: the changes are in the project".into()),
+    };
+    end_stage(core, dialog_id, &id, |r| {
+        r.status = if delivered {
+            Status::Done
+        } else {
+            Status::Failed
+        };
+        r.outcome = Some(outcome);
+        r.summary = Some(summary.trim_end_matches('.').to_string());
+    })
+    .await?;
+    Ok(())
+}
+
+/// Goes on with the chat's task where a crash, a restart or a closed app
+/// cut it, as a Resume start asks (the app's, once a chat with an
+/// unfinished task is opened). None: the chat has no unfinished task, and
+/// the start goes on as any Resume; else what it started, if a run.
+pub async fn resume(core: &Core, request: &StartRequest) -> Result<Option<Option<String>>, String> {
+    let dialog_id = request.dialog_id.as_str();
+    let Some((task, records)) = current_task(core, dialog_id).await? else {
+        return Ok(None);
+    };
+    let list: Vec<StageRecord> = records.iter().map(|r| r.record.clone()).collect();
+    let next = next_stage(&list, list[0].effort);
+    if next == Next::Over {
+        return Ok(None);
+    }
+    // Someone is on it already: the driver between two stages, a run, or a
+    // resume a moment ago.
+    let Some(_driving) = try_drive_lock(dialog_id) else {
+        return Ok(Some(None));
+    };
+    if core.agents.is_running(dialog_id) {
+        return Ok(Some(None));
+    }
+    let settings = Settings::of(request);
+    let last = records.last().expect("a task has a record");
+    let stage = match next {
+        Next::Running(stage) => stage,
+        _ => {
+            advance(core, dialog_id, &task, &settings).await?;
+            return Ok(Some(None));
+        }
+    };
+    if stage == Stage::Deliver {
+        // Cut halfway: it's only records, so it's done again.
+        deliver(
+            core,
+            dialog_id,
+            &records,
+            last.record.round,
+            Some(last.id.clone()),
+        )
+        .await?;
+        return Ok(Some(None));
+    }
+    if !is_run_stage(stage) {
+        // The driver records its other stages as they end: one left
+        // running is a later version's, passed.
+        end_stage(core, dialog_id, &last.id, |r| {
+            r.status = Status::Skipped;
+            r.summary = Some("It didn't finish".into());
+        })
+        .await?;
+        advance(core, dialog_id, &task, &settings).await?;
+        return Ok(Some(None));
+    }
+    let recent = super::run::recent_messages(&core.db, dialog_id).await?;
+    let waits_for_checks = recent.last().is_some_and(|m| {
+        m.meta
+            .as_ref()
+            .and_then(|meta| meta.pointer("/verification/status"))
+            .and_then(Value::as_str)
+            == Some("needs-approval")
+    });
+    if waits_for_checks {
+        return Ok(Some(None));
+    }
+    let start = match recovery::after_crash(core, dialog_id).await? {
+        Recovery::Start(kind) => kind,
+        // It paused for the user's Continue, as it would have without a crash.
+        Recovery::Paused => return Ok(Some(None)),
+        Recovery::Interrupted => {
+            let started = recent
+                .iter()
+                .any(|m| record_named(m.meta.as_ref()) == Some(last.id.as_str()));
+            if stage == Stage::Implement && !started {
+                // Recorded, but its run's message never stored: started
+                // now, as the driver would have.
+                start_implement(
+                    core,
+                    dialog_id,
+                    &records,
+                    last.record.round,
+                    &settings,
+                    Some(last.id.clone()),
+                )
+                .await?;
+                return Ok(Some(None));
+            }
+            StartKind::Retry
+        }
+    };
+    super::start_run(core, settings.request(dialog_id, start))
+        .await
+        .map(Some)
+}
+
+/// Tests: where the driver "crashes" in a chat, once: right after ending a
+/// run's stage, or after recording the implementation before its run.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Crash {
+    AfterEnd,
+    BeforeRun,
+}
+
+/// Tests: the crash each chat has coming (tests run side by side).
+#[cfg(test)]
+static CRASHES: Mutex<Vec<(String, Crash)>> = Mutex::new(Vec::new());
+
+/// Tests: the driver "crashes" in the chat at `at`, once.
+#[cfg(test)]
+pub(super) fn crash_at(dialog_id: &str, at: Crash) {
+    let mut crashes = CRASHES.lock().unwrap_or_else(|e| e.into_inner());
+    crashes.push((dialog_id.to_string(), at));
+}
+
+#[cfg(test)]
+fn crashes(dialog_id: &str, at: Crash) -> bool {
+    let mut crashes = CRASHES.lock().unwrap_or_else(|e| e.into_inner());
+    let due = crashes.iter().position(|(d, c)| d == dialog_id && *c == at);
+    due.map(|i| crashes.remove(i)).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,5 +1467,142 @@ mod tests {
             next_stage(&records, Effort::Balanced),
             Next::Start(Stage::Acceptance, 1)
         );
+    }
+
+    fn row(id: &str, meta: Value) -> MessageRow {
+        MessageRow {
+            id: id.into(),
+            dialog_id: "d".into(),
+            seq: 1,
+            role: "tool".into(),
+            content: String::new(),
+            body_external: false,
+            body_bytes: 0,
+            tool_calls: None,
+            tool_call_id: None,
+            meta: Some(meta),
+            error: None,
+            failed: false,
+            finalized: true,
+            attachments: Vec::new(),
+            created_at: 0,
+        }
+    }
+
+    /// The checks' record says what the implementing run's end says of
+    /// them, with its last round's record for the round and the count.
+    #[test]
+    fn the_checks_record_follows_how_the_implementation_ended() {
+        let base = rec(Stage::Checks, Status::Skipped);
+        let config = super::super::AgentConfig::default();
+        let round = |status: &str, n: u64, extra: Value| {
+            let mut v = json!({ "status": status, "round": n, "checks": [
+                { "status": "passed" }, { "status": "passed" }, { "status": "skipped" }
+            ] });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            row("v", json!({ "verification": v }))
+        };
+        let passed = round("passed", 2, json!({}));
+        let r = checks_record(base.clone(), Some("verified"), Some(&passed), &config);
+        assert_eq!((r.status, r.round), (Status::Done, 2));
+        assert_eq!(r.summary.as_deref(), Some("2 checks passed"));
+        assert_eq!(r.reference.as_deref(), Some("v"));
+
+        let gave_up = round("gave-up", 3, json!({}));
+        let r = checks_record(
+            base.clone(),
+            Some("verify-gave-up"),
+            Some(&gave_up),
+            &config,
+        );
+        assert_eq!(r.status, Status::Failed);
+        assert_eq!(r.outcome.as_deref(), Some("verify-gave-up"));
+        assert_eq!(r.summary.as_deref(), Some("The checks still fail"));
+
+        let none = round(
+            "unverified",
+            0,
+            json!({ "reason": "no checks are set up for this project" }),
+        );
+        let r = checks_record(base.clone(), Some("unverified"), Some(&none), &config);
+        assert_eq!(r.status, Status::Skipped);
+        assert_eq!(
+            r.summary.as_deref(),
+            Some("No checks ran: no checks are set up for this project")
+        );
+
+        let r = checks_record(base.clone(), Some("done"), None, &config);
+        assert_eq!(r.summary.as_deref(), Some("Nothing to check"));
+        let mut off = config.clone();
+        off.permissions.verify_changes = false;
+        let r = checks_record(base.clone(), Some("done"), None, &off);
+        assert_eq!(r.summary.as_deref(), Some("The checks are off"));
+        let r = checks_record(base, Some("verify-flagged"), None, &config);
+        assert_eq!(r.status, Status::Failed);
+        assert!(r.summary.unwrap().starts_with("The change weakens tests"));
+    }
+
+    /// A review's record is the last review of its kind, never another's;
+    /// with none, it says whether the reviewer is off.
+    #[test]
+    fn a_reviews_record_is_its_last_review_of_its_kind() {
+        let plan = rec(Stage::PlanReview, Status::Skipped);
+        let change = rec(Stage::Review, Status::Skipped);
+        let review = |id: &str, kind: &str, status: &str, n: u64, findings: Value| {
+            row(
+                id,
+                json!({ "review": { "kind": kind, "status": status, "round": n, "findings": findings } }),
+            )
+        };
+        let high = json!([{ "severity": "high" }, { "severity": "low" }]);
+        let rows = vec![
+            review("p1", "plan", "findings", 1, high.clone()),
+            review("p2", "plan", "clean", 2, json!([])),
+            review("c1", "change", "findings", 1, high),
+        ];
+        let config = super::super::AgentConfig::default();
+        let r = review_record(plan.clone(), &rows, &config);
+        assert_eq!((r.status, r.round), (Status::Done, 2));
+        assert_eq!(r.summary.as_deref(), Some("Clean"));
+        assert_eq!(r.reference.as_deref(), Some("p2"));
+        let r = review_record(change.clone(), &rows, &config);
+        assert_eq!(r.summary.as_deref(), Some("2 findings, 1 high"));
+        assert_eq!(r.reference.as_deref(), Some("c1"));
+
+        let r = review_record(change.clone(), &[], &config);
+        assert_eq!(r.status, Status::Skipped);
+        assert_eq!(
+            r.summary.as_deref(),
+            Some("Not reviewed: the change reviewer is off")
+        );
+        let mut on = config.clone();
+        on.subagents = serde_json::from_value(
+            json!({ "enabled": true, "kinds": { "reviewer": { "enabled": true } } }),
+        )
+        .unwrap();
+        let r = review_record(change, &[], &on);
+        assert_eq!(r.summary.as_deref(), Some("Not reviewed"));
+
+        let skipped = vec![row(
+            "p1",
+            json!({ "review": { "kind": "plan", "status": "skipped", "round": 1, "reason": "its model failed" } }),
+        )];
+        let r = review_record(plan, &skipped, &config);
+        assert_eq!(r.status, Status::Skipped);
+        assert_eq!(r.summary.as_deref(), Some("Skipped: its model failed"));
+    }
+
+    #[test]
+    fn a_failed_stage_says_why_in_a_line() {
+        assert_eq!(failure_summary("plan-failed"), "No plan was saved");
+        assert_eq!(failure_summary("error"), "The run ended with an error");
+        assert_eq!(
+            failure_summary("verify-unresolved"),
+            "The checks still fail"
+        );
+        assert_eq!(failure_summary("stopped"), "Stopped");
+        assert_eq!(failure_summary("something-new"), "The run didn't finish");
     }
 }

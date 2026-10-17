@@ -428,6 +428,41 @@ pub fn relative_plan_path(path: &str, root: Option<&str>) -> String {
     }
 }
 
+/// The text that implements a plan (Agent mode): the plan in full, kept in
+/// view for the whole run (the current request is never dropped from the
+/// context), then how to carry it out. `file`: where it's saved, as the
+/// chat shows it.
+pub fn implementation_request(plan: &str, file: Option<&str>) -> String {
+    [
+        match file {
+            Some(file) => format!(
+                "Implement this plan. It's saved in {file}; the user may have edited it, and this is its current version."
+            ),
+            None => "Implement this plan.".to_string(),
+        },
+        String::new(),
+        "<plan>".into(),
+        plan.trim().to_string(),
+        "</plan>".into(),
+        String::new(),
+        concat!(
+            "First create your checklist with the todo tool from the plan's steps, with the first step in_progress, then work through them in order, ",
+            "one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, ",
+            "do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. ",
+            "For each step, read the files it names before changing them, and make ",
+            "the changes it describes to the functions, types and settings it names. Follow the plan and its decisions. ",
+            "If a step turns out wrong or unnecessary (a file or function isn\u{2019}t where the plan says, or the change ",
+            "doesn\u{2019}t fit the code), mark it skipped or changed with the reason instead of silently doing something else. ",
+            "When the steps are done, run the checks in the plan\u{2019}s Validation section that you can run (build, ",
+            "typecheck, tests, lint), add or update the tests it asks for, and fix what fails. In your final message, ",
+            "say which checks passed, which you couldn\u{2019}t run and why, what is left to check by hand, and why you changed ",
+            "any files the plan doesn\u{2019}t mention.",
+        )
+        .into(),
+    ]
+    .join("\n")
+}
+
 /// Plan mode: the current plan (as the file is now), for the model to revise.
 pub fn current_plan_context(plan_file: Option<&str>, root: Option<&str>) -> String {
     let Some(file) = plan_file else {

@@ -52,6 +52,23 @@ test('a remote chat with unanswered calls starts no resume: its daemon picks it 
   assert.equal(resumesHere(answered as ChatMessage[], undefined), false, 'nothing to pick up');
 });
 
+test('a local chat whose Autopilot task is unfinished resumes; a remote one’s daemon does', () => {
+  const record = (name: string, status: string) => ({
+    id: `s-${name}-${status}`,
+    role: 'assistant',
+    content: '',
+    meta: { stage: { task: 'u1', name, status, round: 1, effort: 'balanced' } },
+  });
+  const task = [
+    { id: 'u1', role: 'user', content: 'Do it', meta: { mode: 'autopilot' } },
+    record('plan', 'done'),
+  ] as ChatMessage[];
+  assert.equal(resumesHere(task, undefined), true, 'cut between two stages');
+  assert.equal(resumesHere(task, ON_BUILD), false);
+  const delivered = [...task, record('deliver', 'done')] as ChatMessage[];
+  assert.equal(resumesHere(delivered, undefined), false, 'over');
+});
+
 test('a remote chat’s draft waits until its host has caught up; a moving chat’s always', () => {
   assert.equal(draftWaits(undefined, {}), false);
   assert.equal(draftWaits(ON_BUILD, {}), true);
