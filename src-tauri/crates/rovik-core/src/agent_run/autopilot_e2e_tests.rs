@@ -4953,6 +4953,59 @@ async fn the_adversarial_testers_failing_test_leads_to_a_repair_round() {
     assert_eq!(log_lines(&h, "breaker").await.len(), 1, "once a task");
 }
 
+/// T04: a speculative test the tester put in a test file that was there
+/// before it (the project's own, against its brief) passes alone, so it
+/// goes, and the file is put back as it was: the project's tests stay.
+#[tokio::test]
+async fn a_speculative_change_to_an_existing_test_file_is_undone_not_deleted() {
+    let h = node_test_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let original = h.file("ok.test.js").expect("the project's test");
+    // GUESS_TEST's test, below the file's own (which has what it needs).
+    let guessed = format!(
+        "{original}test('ok.txt is not empty', () => assert.ok(fs.readFileSync(__dirname + '/ok.txt', 'utf8').length > 0));\n"
+    );
+    let report = "## Summary\n\nTried that ok.txt isn't empty.\n\n## Test files\n\n- `ok.test.js`: speculative\n\n## Assumptions\n\nNone.";
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (CHANGE_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                BREAKING,
+                vec![
+                    Reply::Call {
+                        id: "b1",
+                        name: "write",
+                        args: json!({ "path": "ok.test.js", "content": guessed }),
+                    },
+                    Reply::Text(report),
+                ],
+            ),
+        ],
+        task_script(),
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.effort = Effort::Thorough;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(h.file("ok.test.js").as_deref(), Some(original.as_str()));
+    let messages = h.messages().await;
+    let tester = messages
+        .iter()
+        .find_map(|m| m.meta.as_ref()?.get("breaker"))
+        .expect("the tester's record");
+    assert_eq!(tester["removed"], json!(["ok.test.js"]), "{tester}");
+    assert_eq!(
+        records.last().unwrap().outcome.as_deref(),
+        Some("verified"),
+        "{records:#?}"
+    );
+}
+
 /*
  * T07: Thorough's loops, bounded by progress
  */

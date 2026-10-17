@@ -160,7 +160,10 @@ pub fn marks(report: &str) -> Vec<(String, Mark)> {
         };
         let path = line[start + 1..start + 1 + len].trim().replace('\\', "/");
         let rest = line[start + 2 + len..].to_lowercase();
-        let mark = if rest.contains("speculative") {
+        // The mark is what comes after the path: "speculative" as itself
+        // ("…: speculative, a guess"), never inside "not speculative".
+        let after = rest.trim_start_matches(|c: char| !c.is_alphanumeric());
+        let mark = if after.starts_with("speculative") {
             Mark::Speculative
         } else {
             rest.split("criterion")
@@ -312,12 +315,14 @@ impl Run {
             )
             .await;
         record["ms"] = json!(started.elapsed().as_millis() as u64);
-        let written: Vec<String> = match &outcome {
+        // The test files it wrote, each with what it was before the tester's
+        // first write to it (None: the tester made it).
+        let written: Vec<(String, Option<Vec<u8>>)> = match &outcome {
             Ok((_, Some(r))) => {
-                let mut files: Vec<String> = Vec::new();
+                let mut files: Vec<(String, Option<Vec<u8>>)> = Vec::new();
                 for w in &r.writes {
-                    if project::is_test_path(&w.path) && !files.contains(&w.path) {
-                        files.push(w.path.clone());
+                    if project::is_test_path(&w.path) && !files.iter().any(|(f, _)| *f == w.path) {
+                        files.push((w.path.clone(), w.original.bytes.clone()));
                     }
                 }
                 files
@@ -351,7 +356,7 @@ impl Run {
         // tests all the same).
         let mut files: Vec<(String, Mark)> = written
             .iter()
-            .map(|f| {
+            .map(|(f, _)| {
                 let mark = marked
                     .iter()
                     .find(|(p, _)| p == f)
@@ -359,7 +364,8 @@ impl Run {
                 (f.clone(), mark)
             })
             .collect();
-        // A speculative file that passes alone found nothing: it goes.
+        // A speculative file that passes alone found nothing: it goes, or,
+        // one that was there before the tester, goes back to what it was.
         let mut removed: Vec<String> = Vec::new();
         let mut kept_alone: Vec<String> = Vec::new();
         for (file, _) in files.iter().filter(|(_, m)| *m == Mark::Speculative) {
@@ -368,7 +374,11 @@ impl Run {
             }
             match self.passes_alone(&root, file).await {
                 Some(true) => {
-                    if self.remove_test_file(file).await {
+                    let before = written
+                        .iter()
+                        .find(|(f, _)| f == file)
+                        .and_then(|(_, before)| before.as_deref());
+                    if self.remove_test_file(file, before).await {
                         removed.push(file.clone());
                     }
                 }
@@ -472,20 +482,25 @@ impl Run {
         Some(out.exit_code == Some(0))
     }
 
-    /// Takes a test file the tester wrote out of the change: gone, as it
-    /// was before the run. False: it couldn't be.
-    async fn remove_test_file(&mut self, key: &str) -> bool {
+    /// Takes a test file the tester wrote out of the change, as it was
+    /// before the tester: `original`, its bytes then, put back; None (the
+    /// tester made it): gone. Never more than the tester's own: a test file
+    /// that was there stays. False: it couldn't be.
+    async fn remove_test_file(&mut self, key: &str, original: Option<&[u8]>) -> bool {
         let Some(root) = self.root.clone() else {
             return false;
         };
         let abs = tools::to_absolute_path(key, &root);
         let path = Path::new(&abs);
         let before = std::fs::read_to_string(path).ok();
-        let removed = {
+        let undone = {
             let _lock = crate::file_guard::lock(path);
-            std::fs::remove_file(path).is_ok()
+            match original {
+                Some(bytes) => std::fs::write(path, bytes).is_ok(),
+                None => std::fs::remove_file(path).is_ok(),
+            }
         };
-        if !removed {
+        if !undone {
             return false;
         }
         if self.isolated() {
@@ -499,14 +514,20 @@ impl Run {
         }
         crate::outline::invalidate_path(path);
         crate::repo_map::invalidate_path(Path::new(&root), path);
-        self.test_writer_files.retain(|f| f != key);
+        // A file it made is no test writer's now; one it changed is still
+        // whoever's it was (the Tests stage's, S04).
+        if original.is_none() {
+            self.test_writer_files.retain(|f| f != key);
+        }
         self.core.emit(super::events::AgentEvent::FileWritten {
             dialog_id: Some(self.dialog_id.clone()),
             abs_path: abs.clone(),
             before,
-            content: String::new(),
+            content: original
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default(),
             reviewed: true,
-            deleted: true,
+            deleted: original.is_none(),
         });
         true
     }
@@ -533,6 +554,16 @@ mod tests {
             ]
         );
         assert!(marks("## Summary\n\nNone written.").is_empty());
+        // "Not speculative" is no mark of speculation: the file stays.
+        let report = "## Test files\n\n- `a.test.js`: criterion 1, not speculative\n- `b.test.js`: not speculative\n- `c.test.js` — speculative";
+        assert_eq!(
+            marks(report),
+            [
+                ("a.test.js".to_string(), Mark::Criterion(1)),
+                ("b.test.js".to_string(), Mark::Unmarked),
+                ("c.test.js".to_string(), Mark::Speculative),
+            ]
+        );
     }
 
     #[test]
