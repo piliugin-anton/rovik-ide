@@ -384,6 +384,29 @@ impl Run {
         self.core.agents.autopilot_of(&self.dialog_id).is_some()
     }
 
+    /// Why the run's Autopilot task is past its budget, if it is (U04): the
+    /// lead's replies are where it's checked; a subagent's count for it.
+    fn over_task_budget(&self) -> Option<String> {
+        if self.sub().is_some() {
+            return None;
+        }
+        self.core.agents.over_budget(&self.dialog_id)
+    }
+
+    /// Ends the run over its task's budget: the reply's calls get a result
+    /// each, so the chat's history is whole, and the log says why.
+    async fn end_over_budget(&mut self, calls: &[ToolCall], why: &str) -> Result<String, String> {
+        for tc in calls {
+            let content = format!("Error: not run: the task went over its budget ({why}).");
+            self.answer_unrun(tc, content, false, None).await?;
+        }
+        log::write(
+            &self.core,
+            json!({ "event": "budget", "dialogId": self.dialog_id, "reason": why }),
+        );
+        Ok("budget".into())
+    }
+
     /// Everything a run needs before its first step; None when there's
     /// nothing to do.
     pub(super) async fn prepare(
@@ -413,7 +436,9 @@ impl Run {
         let config = match autopilot {
             true => {
                 let effort = stage.as_ref().map_or(config.autopilot.effort, |s| s.effort);
-                core.agents.set_autopilot(&dialog_id, effort);
+                // What its task spent before it counts against the budget (U04).
+                let before = super::autopilot::task_spent(core, &dialog_id).await?;
+                core.agents.set_autopilot(&dialog_id, effort, before);
                 core.agents.config_for(&dialog_id)
             }
             false => config,
@@ -1193,6 +1218,11 @@ impl Run {
             )
             .await?;
             self.settle(true).await;
+            // Past its Autopilot task's budget (U04): the run ends at this
+            // reply, its calls answered as not run.
+            if let Some(why) = self.over_task_budget() {
+                return self.end_over_budget(&turn.tool_calls, &why).await;
+            }
             // Stopped meanwhile: a reply with tool calls goes on to
             // execute_tool_calls, which answers each with a "stopped" result
             // (a call left without one reads as interrupted, and the chat
@@ -1676,6 +1706,7 @@ impl Run {
                 if let Some(sub) = self.sub_mut() {
                     sub.note_usage(usage.as_ref());
                 }
+                self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
                 let mut entry = json!({
                     "event": "reply",
                     "dialogId": self.dialog_id,
@@ -1738,6 +1769,7 @@ impl Run {
             if let Some(sub) = self.sub_mut() {
                 sub.note_usage(usage.as_ref());
             }
+            self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
             let mut entry = json!({
                 "event": "reply",
                 "dialogId": self.dialog_id,

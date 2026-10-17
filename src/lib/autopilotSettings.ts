@@ -2,20 +2,44 @@
 //
 // The Autopilot section of Settings → Subagents
 // (docs/design/autopilot-plan.md, 3.5): how much a task spends on
-// independence, and the commands its runs never run. Saved with the
-// Subagents settings (lib/subagentSettings.ts, `autopilot`) and sent in
-// `AgentConfig.autopilot` (rovik-protocol/src/autopilot.rs
-// `AutopilotConfig`), which only chats in Autopilot read. The section's
-// other settings (the budget, preparing the dependencies) come with the
-// tasks that make them do something (U04, S03); until then the backend's
-// defaults stand for them.
+// independence, the commands its runs never run, and the budget a task
+// may spend. Saved with the Subagents settings (lib/subagentSettings.ts,
+// `autopilot`) and sent in `AgentConfig.autopilot`
+// (rovik-protocol/src/autopilot.rs `AutopilotConfig`), which only chats in
+// Autopilot read. Preparing the dependencies comes with the task that makes
+// it do something (S03); until then the backend's default stands for it.
 import type { AutopilotEffort } from './autopilot';
 import type { SubagentKindId } from './subagentSettings';
+
+/** Where a task stops on its own (U04): null, no limit. */
+export interface AutopilotBudget {
+  maxHours: number | null;
+  /** In the provider's currency. */
+  maxCost: number | null;
+}
 
 export interface AutopilotSettings {
   effort: AutopilotEffort;
   /** The commands its runs never run (U01); unset: the defaults. */
   deniedCommands?: string[];
+  /** Where a task stops on its own (U04); unset: its effort's defaults. */
+  budget?: AutopilotBudget;
+}
+
+/** A task's budget until the settings set one (3.5): Balanced's is 2 hours and 5. */
+export const DEFAULT_BUDGETS: Record<AutopilotEffort, AutopilotBudget> = {
+  balanced: { maxHours: 2, maxCost: 5 },
+  thorough: { maxHours: null, maxCost: null },
+};
+
+/** The budget the settings give: theirs, or their effort's. */
+export function budgetOf(settings: AutopilotSettings): AutopilotBudget {
+  return settings.budget ?? DEFAULT_BUDGETS[settings.effort];
+}
+
+/** A budget limit as kept: a positive, finite number, else no limit. */
+function budgetLimit(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
 }
 
 export const DEFAULT_AUTOPILOT_SETTINGS: AutopilotSettings = { effort: 'balanced' };
@@ -94,9 +118,12 @@ export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {
         ),
       ]
     : undefined;
+  const b = r.budget && typeof r.budget === 'object' ? (r.budget as Record<string, unknown>) : null;
+  const budget = b ? { maxHours: budgetLimit(b.maxHours), maxCost: budgetLimit(b.maxCost) } : null;
   return {
     effort: effort ?? DEFAULT_AUTOPILOT_SETTINGS.effort,
     ...(denied ? { deniedCommands: denied } : {}),
+    ...(budget ? { budget } : {}),
   };
 }
 
@@ -107,11 +134,13 @@ export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {
 export interface AutopilotConfig {
   effort: AutopilotEffort;
   deniedCommands?: string[];
+  budget: AutopilotBudget;
 }
 
 export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
   return {
     effort: settings.effort,
     ...(settings.deniedCommands ? { deniedCommands: settings.deniedCommands } : {}),
+    budget: budgetOf(settings),
   };
 }

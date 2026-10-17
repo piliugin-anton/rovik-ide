@@ -45,6 +45,8 @@ export interface StageMeta {
   ref?: string;
   /** One line for the strip. */
   summary?: string;
+  /** What its runs spent (U04): ms they ran, the cost providers reported. */
+  spent?: { ms: number; cost: number; uncosted: number };
 }
 
 /** A stage record and the message that holds it. */

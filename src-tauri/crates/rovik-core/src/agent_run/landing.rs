@@ -49,6 +49,8 @@ pub fn pending_reason(outcome: &str) -> Option<String> {
             "the checks pass, but whether the change weakens tests couldn't be checked (part of the run's saved state was lost): review it first"
         }
         "unfinished-checklist" => "the checklist isn't finished",
+        // An Autopilot task past the time or cost it may take (U04).
+        "budget" => "the task went over its budget",
         _ => "the run didn't finish",
     };
     Some(format!("Not landed: {reason}."))

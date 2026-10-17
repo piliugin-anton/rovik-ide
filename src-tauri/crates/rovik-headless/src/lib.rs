@@ -40,8 +40,8 @@
 //! needs the virtual-files driver).
 
 use rovik_core::agent::OpenAIChatOptions;
+pub use rovik_core::agent_run::budget::{usage_of, Price, Totals};
 use rovik_core::agent_run::events::AgentEvent;
-use rovik_core::agent_run::log::usage_counts;
 use rovik_core::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
 use rovik_core::agent_run::{
     self, AgentConfig, ApprovalDecision, ModelProfile, StartKind, StartRequest, UserMessage,
@@ -75,14 +75,6 @@ pub struct Settings {
     /// What the model costs, for runs whose provider doesn't report it.
     #[serde(default)]
     pub price: Option<Price>,
-}
-
-/// US dollars per million tokens.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Price {
-    pub input_per_million: f64,
-    pub output_per_million: f64,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Default)]
@@ -254,107 +246,6 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         timeout,
         max_tokens,
     })
-}
-
-/// Tokens in and out, and the cost when the provider says, of one reply's
-/// usage (OpenAI's names, or the Responses API's).
-pub fn usage_of(u: &Value) -> (u64, u64, Option<f64>) {
-    let (i, o, cost) = usage_counts(u);
-    (i.unwrap_or(0), o.unwrap_or(0), cost)
-}
-
-/// What a run's requests used, from its run log's reply lines.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct Totals {
-    pub lead_in: u64,
-    pub lead_out: u64,
-    pub sub_in: u64,
-    pub sub_out: u64,
-    /// The largest request the lead sent (its context at its fullest).
-    pub peak_lead_context: u64,
-    /// Of the prompt tokens, those the provider served from its cache
-    /// (prompt_cache.rs); 0 when it doesn't say.
-    pub lead_cached: u64,
-    pub sub_cached: u64,
-    /// Reported cost, when every reply with usage reported one.
-    pub reported_cost: Option<f64>,
-    /// Replies with usage.
-    pub replies: usize,
-    /// Replies that came back whole without usage: the provider doesn't
-    /// report it, so neither tokens nor cost are known.
-    pub missing_usage: usize,
-}
-
-impl Totals {
-    pub fn tokens(&self) -> u64 {
-        self.lead_in + self.lead_out + self.sub_in + self.sub_out
-    }
-
-    /// One reply line of the run log: the lead's (`dialog_id`) or a
-    /// subagent's.
-    pub fn add(&mut self, line: &Value, dialog_id: &str) {
-        if line["event"] != "reply" {
-            return;
-        }
-        // P6.2: an object without token counts reports nothing either.
-        let counted = |u: &&Value| {
-            let (i, o, _) = usage_counts(u);
-            i.is_some() || o.is_some()
-        };
-        let Some(u) = line.get("usage").filter(|u| u.is_object()).filter(counted) else {
-            // A request that failed or was cut short may have none.
-            if line.get("error").is_none() {
-                self.missing_usage += 1;
-            }
-            return;
-        };
-        let (i, o, cost) = usage_of(u);
-        let cached = rovik_core::prompt_cache::cached_tokens(u).unwrap_or(0);
-        if line["dialogId"] == dialog_id {
-            self.lead_in += i;
-            self.lead_out += o;
-            self.lead_cached += cached;
-            self.peak_lead_context = self.peak_lead_context.max(i);
-        } else {
-            self.sub_in += i;
-            self.sub_out += o;
-            self.sub_cached += cached;
-        }
-        self.reported_cost = match (self.replies, self.reported_cost, cost) {
-            (0, _, c) => c,
-            (_, Some(a), Some(c)) => Some(a + c),
-            _ => None,
-        };
-        self.replies += 1;
-    }
-
-    /// The share of the lead's prompt tokens served from the provider's
-    /// cache, in percent; None before any prompt tokens were counted.
-    pub fn cache_hit_percent(&self) -> Option<u64> {
-        (self.lead_in > 0).then(|| self.lead_cached * 100 / self.lead_in)
-    }
-
-    /// Its cost: as reported, else by the settings' price; None: unknown.
-    pub fn cost(&self, price: Option<Price>) -> (Option<f64>, &'static str) {
-        // Some replies' tokens aren't known: nor is the cost.
-        if self.missing_usage > 0 {
-            return (None, "unknown");
-        }
-        if let Some(c) = self.reported_cost {
-            return (Some(c), "provider");
-        }
-        match price {
-            Some(p) => (
-                Some(
-                    (self.lead_in + self.sub_in) as f64 * p.input_per_million / 1e6
-                        + (self.lead_out + self.sub_out) as f64 * p.output_per_million / 1e6,
-                ),
-                "price",
-            ),
-            None if self.replies == 0 => (Some(0.0), "none"),
-            None => (None, "unknown"),
-        }
-    }
 }
 
 /// Reads the run log's new lines since `offset` (the log is appended to).

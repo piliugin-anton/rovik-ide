@@ -329,7 +329,7 @@ impl Run {
     /// A call answered without running it (a subagent's refusal, a scope
     /// grant): it counts for the budget and the loop checks like any other
     /// (P2.1), so refusals can't go on for ever.
-    async fn answer_unrun(
+    pub(super) async fn answer_unrun(
         &mut self,
         tc: &ToolCall,
         mut content: String,

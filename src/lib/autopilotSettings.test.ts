@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   autopilotConfig,
+  budgetOf,
   DEFAULT_AUTOPILOT_DENYLIST,
   DEFAULT_AUTOPILOT_SETTINGS,
   denylistEntry,
@@ -31,8 +32,14 @@ test('autopilot settings: saved with the Subagents page’s, a file without them
 });
 
 test('autopilot settings: the backend gets the effort (AgentConfig.autopilot)', () => {
-  assert.deepEqual(autopilotConfig({ effort: 'thorough' }), { effort: 'thorough' });
-  assert.deepEqual(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS), { effort: 'balanced' });
+  assert.deepEqual(autopilotConfig({ effort: 'thorough' }), {
+    effort: 'thorough',
+    budget: { maxHours: null, maxCost: null },
+  });
+  assert.deepEqual(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS), {
+    effort: 'balanced',
+    budget: { maxHours: 2, maxCost: 5 },
+  });
 });
 
 test('autopilot settings: the default denylist is the backend’s', () => {
@@ -68,4 +75,24 @@ test('autopilot settings: the denylist is the defaults until it’s changed, the
   assert.deepEqual(denylistOf(none), []);
   assert.deepEqual(autopilotConfig(none).deniedCommands, []);
   assert.equal(normalizeAutopilotSettings({ deniedCommands: 'sudo' }).deniedCommands, undefined);
+});
+
+test('autopilot settings: a task’s budget, its effort’s until it’s set (U04)', () => {
+  assert.deepEqual(budgetOf(DEFAULT_AUTOPILOT_SETTINGS), { maxHours: 2, maxCost: 5 });
+  assert.deepEqual(budgetOf({ effort: 'thorough' }), { maxHours: null, maxCost: null });
+  // Set: it stays whatever the effort.
+  const mine = { effort: 'thorough' as const, budget: { maxHours: 0.5, maxCost: null } };
+  assert.deepEqual(budgetOf(mine), { maxHours: 0.5, maxCost: null });
+  assert.deepEqual(autopilotConfig(mine).budget, { maxHours: 0.5, maxCost: null });
+  // Saved, garbage aside.
+  const saved = normalizeAutopilotSettings({
+    effort: 'balanced',
+    budget: { maxHours: 3, maxCost: -1 },
+  });
+  assert.deepEqual(saved.budget, { maxHours: 3, maxCost: null });
+  assert.deepEqual(
+    normalizeAutopilotSettings({ budget: { maxHours: 'x', maxCost: Infinity } }).budget,
+    { maxHours: null, maxCost: null }
+  );
+  assert.equal(normalizeAutopilotSettings({ budget: 7 }).budget, undefined);
 });

@@ -23,6 +23,7 @@
 //! the chat; stages not built yet are recorded as skipped. `resume` picks a
 //! task up where a crash, a restart or a closed app left it.
 
+use super::budget::{self, Spent};
 use super::landing::pending_reason;
 use super::permissions::{ChecklistMode, Permissions};
 use super::recovery::{self, Recovery};
@@ -274,6 +275,10 @@ pub struct StageRecord {
     /// One line for the strip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// What the stage's runs spent: their time and their replies' cost
+    /// (U04), which the task's budget adds up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent: Option<Spent>,
 }
 
 fn first_round() -> u32 {
@@ -293,6 +298,7 @@ impl StageRecord {
             outcome: None,
             reference: None,
             summary: None,
+            spent: None,
         }
     }
 
@@ -573,6 +579,19 @@ pub async fn task_stages(core: &Core, dialog_id: &str) -> Result<Option<Vec<Stag
     }))
 }
 
+/// What the chat's current task spent so far, by its records (U04): its
+/// stages' runs, the one under way's part included where a move or an
+/// upgrade paused it. Nothing when there's no task.
+pub async fn task_spent(core: &Core, dialog_id: &str) -> Result<Spent, String> {
+    let Some((_, records)) = current_task(core, dialog_id).await? else {
+        return Ok(Spent::default());
+    };
+    Ok(records
+        .iter()
+        .filter_map(|r| r.record.spent)
+        .fold(Spent::default(), Spent::plus))
+}
+
 /// Whether the chat has a task that isn't over: a Resume goes on with it.
 pub async fn unfinished(core: &Core, dialog_id: &str) -> Result<bool, String> {
     let Some((_, records)) = current_task(core, dialog_id).await? else {
@@ -680,6 +699,8 @@ fn failure_of(outcome: &str) -> Option<&'static str> {
         // Paused for a person, which nobody is (U03): the task delivers.
         "paused-loop" => "paused-loop",
         "paused-checkpoint" => "paused-checkpoint",
+        // Past the task's budget (U04).
+        "budget" => "budget",
         _ => return None,
     })
 }
@@ -694,6 +715,7 @@ const REOPENS: &[&str] = &[
     "unfinished-checklist",
     "paused-loop",
     "paused-checkpoint",
+    "budget",
 ];
 
 /// The stage a run starting now carries out, if it's one of the chat's
@@ -788,11 +810,13 @@ pub(super) type DriveGuard = tokio::sync::OwnedMutexGuard<()>;
 /// task goes on to its next stages. Called where the run's end is told,
 /// after its landing (`agent_start`), with the driver's turn taken before
 /// it was told. Boxed: what it starts is a run whose end comes back here.
+/// `spent`: what the run spent (U04), which its stage's record keeps.
 pub(super) fn after_run(
     core: Core,
     dialog_id: String,
     run: StageRun,
     outcome: String,
+    spent: Spent,
     settings: Settings,
     driving: DriveGuard,
 ) -> Driving {
@@ -800,9 +824,14 @@ pub(super) fn after_run(
         let _driving = driving;
         let result = async {
             if run_continues(&outcome) {
+                // Under way still: what it spent so far is kept with it.
+                end_stage(&core, &dialog_id, &run.record, |r| {
+                    r.spent = Some(r.spent.unwrap_or_default().plus(spent));
+                })
+                .await?;
                 return Ok(());
             }
-            end_run_stage(&core, &dialog_id, &run, &outcome, &settings).await?;
+            end_run_stage(&core, &dialog_id, &run, &outcome, spent, &settings).await?;
             #[cfg(test)]
             if crashes(&dialog_id, Crash::AfterEnd) {
                 return Ok(());
@@ -860,6 +889,7 @@ async fn end_run_stage(
     dialog_id: &str,
     run: &StageRun,
     outcome: &str,
+    spent: Spent,
     settings: &Settings,
 ) -> Result<(), String> {
     let all = load(core, dialog_id).await?;
@@ -867,6 +897,22 @@ async fn end_run_stage(
         return Err(format!("its stage record {} is gone", run.record));
     };
     let (status, outcome, summary, reference) = match failure_of(outcome) {
+        // Past the budget: by how much, as the run found.
+        Some("budget") => {
+            let task = all
+                .iter()
+                .filter(|r| r.record.task == run.task)
+                .filter_map(|r| r.record.spent)
+                .fold(spent, Spent::plus);
+            let budget = core.agents.config_for(dialog_id).autopilot.budget;
+            let why = budget::over(&budget, &task).map_or(String::new(), |why| format!(": {why}"));
+            (
+                Status::Failed,
+                "budget".to_string(),
+                format!("{}{why}", failure_summary("budget")),
+                None,
+            )
+        }
         Some(failure) => (
             Status::Failed,
             failure.to_string(),
@@ -897,6 +943,7 @@ async fn end_run_stage(
         r.outcome = Some(outcome);
         r.summary = Some(summary);
         r.reference = reference;
+        r.spent = Some(r.spent.unwrap_or_default().plus(spent));
     })
     .await?;
     Ok(())
@@ -928,6 +975,7 @@ fn failure_summary(outcome: &str) -> String {
         "unfinished-checklist" => "The checklist isn't finished".into(),
         "paused-loop" => "The run kept looping after it was told to change approach".into(),
         "paused-checkpoint" => "The run paused at its tool-call checkpoint".into(),
+        "budget" => "Over the task's budget".into(),
         _ => match pending_reason(outcome) {
             // "Not landed: the checks still fail." → "The checks still fail"
             Some(reason) => {
@@ -969,6 +1017,24 @@ async fn advance(
             Next::Start(stage, round) => (stage, round),
             Next::Running(_) | Next::Over => return Ok(()),
         };
+        // Past the task's budget, no stage starts work: it delivers (U04).
+        // The stages done inside a run say what that run did.
+        let spent = list
+            .iter()
+            .filter_map(|r| r.spent)
+            .fold(Spent::default(), Spent::plus);
+        let budget = core.agents.config_for(dialog_id).autopilot.budget;
+        let starts_work = !matches!(
+            stage,
+            Stage::PlanReview | Stage::Review | Stage::Checks | Stage::Deliver
+        );
+        if let Some(why) = budget::over(&budget, &spent).filter(|_| starts_work) {
+            let mut record = StageRecord::ended(task, stage, round, effort, Status::Failed)
+                .with_summary(format!("Not started: over the task's budget: {why}"));
+            record.outcome = Some("budget".into());
+            add_stage(core, dialog_id, &record).await?;
+            continue;
+        }
         let record = match stage {
             // A task's plan starts with its message, never here.
             Stage::Plan => return Ok(()),
@@ -1259,6 +1325,27 @@ fn task_outcome(records: &[Recorded]) -> String {
         .unwrap_or_else(|| "done".into())
 }
 
+/// Whether an implementation's run started in the task: the IDE's message
+/// that starts one is in the chat. An implement stage that never started
+/// (it couldn't, or the budget was spent) changed nothing.
+async fn implementation_ran(
+    core: &Core,
+    dialog_id: &str,
+    records: &[Recorded],
+) -> Result<bool, String> {
+    let (id, since) = (dialog_id.to_string(), records[0].seq);
+    let rows = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, MODE, Some(since)))
+        .await?;
+    let task = &records[0].record.task;
+    Ok(rows.iter().any(|m| {
+        let started = m.meta.as_ref().and_then(|x| x.get(MODE));
+        m.role == "user"
+            && started.is_some_and(|a| a["stage"] == Stage::Implement.id() && a["task"] == *task)
+    }))
+}
+
 /// The last stage: what became of the result. The implementing run's end
 /// landed it already where it could (landing.rs) or kept it on its server
 /// for its computer; this records which, and the task's outcome.
@@ -1279,7 +1366,7 @@ async fn deliver(
         }
     };
     let outcome = task_outcome(records);
-    let implemented = records.iter().any(|r| r.record.name == Stage::Implement);
+    let implemented = implementation_ran(core, dialog_id, records).await?;
     let on_server = core.agents.on_server();
     // An isolated chat's changes wait in its overlay, with why; a chat
     // working in the project folder made its changes there.
@@ -1851,7 +1938,7 @@ mod tests {
         state
             .register_child("kid", "task", "t1", "m", None)
             .unwrap();
-        state.set_autopilot("task", Effort::Balanced);
+        state.set_autopilot("task", Effort::Balanced, Spent::default());
 
         assert_eq!(state.config_for("ordinary"), user, "untouched");
         assert_eq!(state.autopilot_of("ordinary"), None);

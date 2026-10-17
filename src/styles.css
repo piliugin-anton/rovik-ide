@@ -8498,11 +8498,20 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   opacity: 0.55;
 }
 
-/* The Autopilot section's denylist, under its own line (SubagentSettings.tsx). */
-.autopilot-denylist-title {
+/* The Autopilot section's budget and denylist, each under its own line
+   (SubagentSettings.tsx). */
+.autopilot-subtitle {
   margin: 12px 0 0 92px;
   font-size: 12px;
   color: var(--fg);
+}
+
+.autopilot-budget {
+  margin-left: 92px;
+}
+
+.autopilot-kinds-note {
+  margin-top: 12px;
 }
 
 /* "Used by Autopilot" on the kinds Autopilot turns on for its chats. */

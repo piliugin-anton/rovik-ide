@@ -15,8 +15,11 @@ import { EFFORTS, type Effort } from '../lib/reasoning';
 import {
   AUTOPILOT_EFFORTS,
   AUTOPILOT_KINDS,
+  budgetOf,
+  DEFAULT_BUDGETS,
   denylistEntry,
   denylistOf,
+  type AutopilotBudget,
   type AutopilotSettings,
 } from '../lib/autopilotSettings';
 import {
@@ -99,6 +102,14 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
   }
   const removeDenied = (entry: string) =>
     patchAutopilot({ deniedCommands: denylist().filter((c) => c !== entry) });
+  // A task's budget: its effort's defaults until it's set to something else.
+  const budget = () => budgetOf(s().autopilot);
+  function setBudget(change: Partial<AutopilotBudget>) {
+    const next = { ...budget(), ...change };
+    const defaults = DEFAULT_BUDGETS[s().autopilot.effort];
+    const same = next.maxHours === defaults.maxHours && next.maxCost === defaults.maxCost;
+    patchAutopilot({ budget: same ? undefined : next });
+  }
   // P5.7: what needs isolated chats can't run without virtual files. When
   // their status can't be read, it isn't known: nothing is turned off.
   const [vfs] = createResource(() => vfsStatus().catch(() => undefined));
@@ -175,11 +186,33 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             and its record shows them as skipped.
           </p>
         </Show>
-        <p class="settings-hint">
-          Autopilot turns on the kinds marked “Used by Autopilot” for its own chats, with the models
-          set for them below, even when “Use subagents” is off.
+        <div class="autopilot-subtitle">Budget per task</div>
+        <div class="subagent-limits autopilot-budget">
+          <NumberInput
+            label="Stop a task after (hours)"
+            value={budget().maxHours ?? undefined}
+            placeholder="no limit"
+            min={0.25}
+            max={1000}
+            step={0.25}
+            onChange={(v) => setBudget({ maxHours: v ?? null })}
+          />
+          <NumberInput
+            label="or once it cost"
+            value={budget().maxCost ?? undefined}
+            placeholder="no limit"
+            min={0.01}
+            max={100_000}
+            step={0.01}
+            onChange={(v) => setBudget({ maxCost: v ?? null })}
+          />
+        </div>
+        <p class="settings-hint command-list-note">
+          Empty: no limit. The time counts while the task’s runs run; the cost is what the providers
+          report a request cost (OpenRouter does), in their currency: with one that reports none,
+          only the time limit is kept. Past either, the task stops and delivers what it has.
         </p>
-        <div class="autopilot-denylist-title">Commands Autopilot may never run</div>
+        <div class="autopilot-subtitle">Commands Autopilot may never run</div>
         <div class="command-list">
           <For
             each={denylist()}
@@ -231,6 +264,10 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
               Reset list
             </button>
           </Show>
+        </p>
+        <p class="settings-hint autopilot-kinds-note">
+          Autopilot turns on the kinds marked “Used by Autopilot” for its own chats, with the models
+          set for them below, even when “Use subagents” is off.
         </p>
       </section>
 

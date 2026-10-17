@@ -888,3 +888,32 @@ T05 depends most on the environment it meets.
   U02 no approval in Autopilot reaches a person, so this is the net under
   it, and its test drives the wait directly. Questions get no deadline:
   `ask_user` is refused in Autopilot (A04).
+
+### U04: the budget
+
+- **What counts** (`agent_run/budget.rs`, `Spent`): the time a task's
+  runs ran and the cost their providers reported. Each lead run of a task
+  adds its replies' cost, its subagents' too, and its time since it
+  started; each stage record keeps what its runs spent (`spent`), so the
+  task's total is its records' and survives a restart. A run a crash cut
+  loses its part; one a move or an upgrade paused keeps it. Time between
+  runs (a closed laptop) doesn't count.
+- **The cost** is what a provider says a request cost (OpenRouter does),
+  in its currency. The app has no prices, so with a provider that reports
+  none only the time limit is kept, which the page says; such replies are
+  counted (`uncosted`). The headless runner's accounting of a run's log
+  (`Totals`, `Price`) moved here too; the runner uses it from the core.
+- **Where it's checked:** after each of the lead's replies (that reply's
+  calls are answered as not run, and the run ends `budget`), and before
+  each stage that starts work. The stages done inside a run (the
+  reviews, the checks) record what that run did. `budget` fails its stage
+  and the task delivers, saying why; `pending_reason` says "the task went
+  over its budget" (S09 makes it a partial delivery). Raising the budget
+  and pressing Continue opens the stage again.
+- **The page:** "Budget per task: Stop a task after [hours] or once it
+  cost [amount]", empty for no limit, showing the effort's defaults
+  (Balanced: 2 hours and 5; Thorough: none) until set; a budget set stays
+  whatever the effort, until it's set back to the effort's own.
+- **What was implemented** is now whether an implementation's run
+  started (the IDE's message for it is in the chat), not whether an
+  implement record exists: a stage that never started leaves one too.

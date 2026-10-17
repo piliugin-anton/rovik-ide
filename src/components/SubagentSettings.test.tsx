@@ -266,3 +266,46 @@ test('subagent settings: the commands Autopilot may never run, the defaults unti
   assert.equal(settings().autopilot.deniedCommands, undefined);
   assert.deepEqual(shown(), DEFAULT_AUTOPILOT_DENYLIST);
 });
+
+test('subagent settings: a task’s budget, its effort’s defaults until set (U04)', () => {
+  const root = container();
+  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
+  render(
+    () => (
+      <SubagentSettings
+        settings={settings()}
+        providers={[]}
+        chatModel={null}
+        onChange={setSettings}
+      />
+    ),
+    root
+  );
+  const field = (label: string) =>
+    [...root.querySelectorAll('label.subagent-limit')]
+      .find((l) => l.textContent?.startsWith(label))!
+      .querySelector('input') as HTMLInputElement;
+  const hours = () => field('Stop a task after (hours)');
+  const cost = () => field('or once it cost');
+  // Balanced: 2 hours and 5.
+  assert.equal(hours().value, '2');
+  assert.equal(cost().value, '5');
+  // Thorough: none, while it's not set.
+  effortRadio(root, 'Thorough').click();
+  assert.equal(hours().value, '');
+  assert.equal(cost().placeholder, 'no limit');
+  assert.equal(settings().autopilot.budget, undefined);
+  // Set: kept, whatever the effort.
+  hours().value = '1.5';
+  hours().dispatchEvent(new Event('change', { bubbles: true }));
+  assert.deepEqual(settings().autopilot.budget, { maxHours: 1.5, maxCost: null });
+  effortRadio(root, 'Balanced').click();
+  assert.equal(hours().value, '1.5');
+  assert.equal(cost().value, '');
+  // Emptied back to the effort's own: it follows the effort again.
+  hours().value = '2';
+  hours().dispatchEvent(new Event('change', { bubbles: true }));
+  cost().value = '5';
+  cost().dispatchEvent(new Event('change', { bubbles: true }));
+  assert.equal(settings().autopilot.budget, undefined);
+});

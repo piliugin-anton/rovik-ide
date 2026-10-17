@@ -22,6 +22,7 @@
 //!   command_output.rs: the rules and text they use
 
 pub mod autopilot;
+pub mod budget;
 pub mod causes;
 pub mod change_review;
 pub mod check_output;
@@ -156,6 +157,11 @@ struct RunControl {
     /// effort: it and its subagents follow the configuration with the
     /// kinds the pipeline needs on (D17, `autopilot::subagent_config`).
     autopilot: Option<autopilot::Effort>,
+    /// An Autopilot lead's (U04): when it started, what its replies and its
+    /// subagents' cost so far, and what the task spent before it.
+    started: std::time::Instant,
+    spent: budget::Spent,
+    spent_before: budget::Spent,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -281,12 +287,57 @@ impl AgentState {
     }
 
     /// The chat's run carries out a stage of an Autopilot task of this
-    /// effort: from now on it and its subagents follow `config_for`'s
-    /// Autopilot configuration.
-    pub(super) fn set_autopilot(&self, dialog_id: &str, effort: autopilot::Effort) {
+    /// effort, which spent `before` until it: from now on it and its
+    /// subagents follow `config_for`'s Autopilot configuration, and what
+    /// they spend counts against the task's budget.
+    pub(super) fn set_autopilot(
+        &self,
+        dialog_id: &str,
+        effort: autopilot::Effort,
+        before: budget::Spent,
+    ) {
         if let Some(run) = self.lock().runs.get_mut(dialog_id) {
             run.autopilot = Some(effort);
+            run.spent_before = before;
         }
+    }
+
+    /// A reply in the chat's run, or a subagent's of it: what it cost, for
+    /// its Autopilot task's budget (U04). Nothing for any other run.
+    pub(super) fn note_reply(&self, dialog_id: &str, usage: Option<&serde_json::Value>) {
+        let mut inner = self.lock();
+        let lead = Self::lead_of(&inner, dialog_id).to_string();
+        if let Some(run) = inner.runs.get_mut(&lead).filter(|r| r.autopilot.is_some()) {
+            run.spent.note_reply(usage);
+        }
+    }
+
+    /// What the chat's Autopilot run (its lead's) spent itself so far: its
+    /// time and its replies'; None: it's no task's.
+    pub(super) fn run_spent(&self, dialog_id: &str) -> Option<budget::Spent> {
+        let inner = self.lock();
+        let run = inner.runs.get(Self::lead_of(&inner, dialog_id))?;
+        run.autopilot?;
+        Some(budget::Spent {
+            ms: run.started.elapsed().as_millis() as u64,
+            ..run.spent
+        })
+    }
+
+    /// Why the chat's Autopilot task is past its budget, if it is: what it
+    /// spent before this run and what this run spent so far, against the
+    /// settings' limits.
+    pub(super) fn over_budget(&self, dialog_id: &str) -> Option<String> {
+        let spent = self.run_spent(dialog_id)?;
+        let before = {
+            let inner = self.lock();
+            inner
+                .runs
+                .get(Self::lead_of(&inner, dialog_id))?
+                .spent_before
+        };
+        let budget = self.config_for(dialog_id).autopilot.budget;
+        budget::over(&budget, &before.plus(spent))
     }
 
     /// The effort of the Autopilot task the chat's run, or its lead's,
@@ -427,6 +478,9 @@ impl AgentState {
                 effort: effort_tx,
                 child: None,
                 autopilot: None,
+                started: std::time::Instant::now(),
+                spent: budget::Spent::default(),
+                spent_before: budget::Spent::default(),
             },
         );
         Some(Controls {
@@ -1064,6 +1118,8 @@ pub(super) async fn start_run(
             Some(_) => Some(autopilot::drive_lock(&dialog_id).await),
             None => None,
         };
+        // What it spent, for its task's budget (U04): told before it's gone.
+        let spent = core.agents.run_spent(&dialog_id).unwrap_or_default();
         core.agents.unregister(&dialog_id, &id);
         core.emit(AgentEvent::RunEnded {
             dialog_id: dialog_id.clone(),
@@ -1071,7 +1127,7 @@ pub(super) async fn start_run(
             outcome: outcome.clone(),
         });
         if let (Some(stage), Some(driving)) = (stage, driving) {
-            autopilot::after_run(core, dialog_id, stage, outcome, settings, driving).await;
+            autopilot::after_run(core, dialog_id, stage, outcome, spent, settings, driving).await;
         }
     });
     Ok(Some(run_id))

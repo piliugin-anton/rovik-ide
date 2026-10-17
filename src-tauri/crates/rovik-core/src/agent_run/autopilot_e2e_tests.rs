@@ -171,6 +171,7 @@ async fn stage_records_are_rows_that_read_back_after_a_reload() {
  */
 
 use super::autopilot::{crash_at, task_stages, Crash, Effort, Stage, StageRecord, Status};
+use super::budget::Spent;
 
 /// A project whose test (`npm test`) passes once ok.txt says "ok".
 async fn task_project() -> Harness {
@@ -1181,7 +1182,7 @@ async fn an_approval_nobody_answers_is_denied_at_the_deadline() {
     let agents = &h.core.agents;
     agents.set_approval_deadline(Duration::from_millis(100));
     let task = agents.register("task", "m", None).unwrap();
-    agents.set_autopilot("task", Effort::Balanced);
+    agents.set_autopilot("task", Effort::Balanced, Spent::default());
     let plain = agents.register("plain", "m", None).unwrap();
     let request = |chat: &str| ApprovalRequest {
         tool_call_id: "c1".into(),
@@ -1221,4 +1222,142 @@ async fn an_approval_nobody_answers_is_denied_at_the_deadline() {
         .is_err());
     agents.unregister("task", &task.run_id);
     agents.unregister("plain", &plain.run_id);
+}
+
+/*
+ * The budget (U04)
+ */
+
+/// A reply that costs `cost`, as a provider that says (OpenRouter) reports it.
+fn costing(cost: f64, reply: Reply) -> Reply {
+    Reply::UsageAs(
+        json!({ "prompt_tokens": 100, "completion_tokens": 10, "cost": cost }),
+        Box::new(reply),
+    )
+}
+
+/// U04: a task may cost 0.05. Its plan costs 0.04, which its record keeps;
+/// the implementation's first reply brings it to 0.06, so the run ends
+/// there with `budget`, that reply's call answered as not run, and the
+/// task delivers what it has, saying why.
+#[tokio::test]
+async fn a_tiny_budget_ends_the_task_at_the_next_reply() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // Every reply of the lead's costs 0.02.
+    let script: Vec<Reply> = task_script()
+        .into_iter()
+        .map(|reply| costing(0.02, reply))
+        .collect();
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script,
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.budget = super::autopilot::Budget {
+        max_hours: None,
+        max_cost: Some(0.05),
+    };
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Done),
+            (Stage::Prepare, Status::Skipped),
+            (Stage::Tests, Status::Skipped),
+            (Stage::Implement, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ]
+    );
+    let plan = records[0].spent.expect("the plan's run's spend");
+    assert!((plan.cost - 0.04).abs() < 1e-9, "{plan:?}");
+    assert_eq!(plan.uncosted, 1, "the reviewer's reply said no cost");
+    let implement = &records[4];
+    assert_eq!(implement.outcome.as_deref(), Some("budget"));
+    assert_eq!(
+        implement.summary.as_deref(),
+        Some("Over the task's budget: it cost 0.06, past its limit of 0.05")
+    );
+    let deliver = &records[5];
+    assert_eq!(deliver.outcome.as_deref(), Some("budget"));
+    assert_eq!(
+        deliver.summary.as_deref(),
+        Some("Over the task's budget; the changes are in the project as they are")
+    );
+    // The implementation's first reply's call didn't run.
+    let messages = h.messages().await;
+    let todo = result_of(&messages, "t1");
+    assert!(
+        todo.content
+            .starts_with("Error: not run: the task went over its budget"),
+        "{}",
+        todo.content
+    );
+    assert_eq!(
+        h.file("ok.txt").as_deref(),
+        Some("no"),
+        "nothing was written"
+    );
+    let ends: Vec<Value> = h
+        .events_of("runEnded")
+        .iter()
+        .map(|e| e["outcome"].clone())
+        .collect();
+    assert_eq!(ends.last(), Some(&json!("budget")));
+}
+
+/// U04: the task's records say it spent more than its budget allows by
+/// the time its next stage would start (here, cut between two stages, then
+/// resumed): that stage doesn't start, and the task delivers.
+#[tokio::test]
+async fn past_the_budget_between_stages_no_stage_starts() {
+    use super::autopilot::add_stage;
+    let h = harness(&[]).await;
+    let task = "u-task";
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    let asked = vec![store::NewMessage {
+        id: task.into(),
+        meta: Some(json!({ "mode": "autopilot" })),
+        ..run::new_message("user", "Make the test pass")
+    }];
+    db.write(move |c| store::append_messages(c, &id, &asked).map(|_| ()))
+        .await
+        .unwrap();
+    let mut plan = StageRecord::ended(task, Stage::Plan, 1, Effort::Balanced, Status::Done);
+    plan.spent = Some(Spent {
+        ms: 1_000,
+        cost: 0.10,
+        uncosted: 0,
+    });
+    add_stage(&h.core, &h.dialog_id, &plan).await.unwrap();
+    for name in [Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        let done = StageRecord::ended(task, name, 1, Effort::Balanced, Status::Skipped);
+        add_stage(&h.core, &h.dialog_id, &done).await.unwrap();
+    }
+    let (url, _) = model(vec![Reply::Text("Never asked.")]).await;
+    let mut request = resume_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.budget.max_cost = Some(0.05);
+    assert!(h.start(request).await.is_none(), "no run starts");
+    let records = stages(&h).await;
+    let last = &records[records.len() - 2..];
+    assert_eq!(
+        names(last),
+        [
+            (Stage::Implement, Status::Failed),
+            (Stage::Deliver, Status::Failed)
+        ]
+    );
+    assert_eq!(last[0].outcome.as_deref(), Some("budget"));
+    assert_eq!(
+        last[0].summary.as_deref(),
+        Some("Not started: over the task's budget: it cost 0.10, past its limit of 0.05")
+    );
+    assert_eq!(last[1].summary.as_deref(), Some("Nothing to deliver"));
+    assert!(h.events_of("runStarted").is_empty());
 }
