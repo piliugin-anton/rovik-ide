@@ -11,8 +11,8 @@ enum Shutdown {
     ExplicitClose,
 }
 
-async fn shuts_down_streams(shutdown: Shutdown) {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn shuts_down_streams(kind: Kind, shutdown: Shutdown) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let mut events = transport.subscribe();
     let mut barrier = transport.subscribe();
     let (request_tx, mut requests) = mpsc::channel(1);
@@ -26,30 +26,27 @@ async fn shuts_down_streams(shutdown: Shutdown) {
         json!({"requestId":"request", "request":{"headers":{}}}),
         json!({"requestId":"response", "responseStatusCode":200}),
     ] {
-        peer.send(Message::Text(
-            json!({"method":"Fetch.requestPaused", "sessionId":"owned", "params":params})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
+        peer.send_json(
+            json!({"method":"Fetch.requestPaused", "sessionId":"owned", "params":params}),
+        )
+        .await;
     }
-    peer.send(Message::Text(
-        json!({"method":"Test.queued", "params":{}})
-            .to_string()
-            .into(),
-    ))
-    .await
-    .unwrap();
+    peer.send_json(json!({"method":"Test.queued", "params":{}}))
+        .await;
     tokio::time::timeout(Duration::from_secs(1), barrier.recv())
         .await
         .expect("reader must queue every preceding pause")
         .unwrap();
 
     match shutdown {
-        Shutdown::RemoteClose => peer.send(Message::Close(None)).await.unwrap(),
+        Shutdown::RemoteClose => peer.websocket().send(Message::Close(None)).await.unwrap(),
         Shutdown::Eof => drop(peer),
-        Shutdown::ProtocolError => peer.get_mut().write_all(&[0x83, 0]).await.unwrap(),
+        Shutdown::ProtocolError => peer
+            .websocket()
+            .get_mut()
+            .write_all(&[0x83, 0])
+            .await
+            .unwrap(),
         Shutdown::ExplicitClose => transport.close().await.unwrap(),
     }
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -103,50 +100,85 @@ async fn shuts_down_streams(shutdown: Shutdown) {
     .expect("routes installed after shutdown must not retain senders");
 }
 
+// WebSocket only: a pipe has no close frame or framing of its own to break.
 #[tokio::test]
 async fn remote_close_drains_and_closes_event_and_route_streams() {
-    shuts_down_streams(Shutdown::RemoteClose).await;
-}
-
-#[tokio::test]
-async fn eof_drains_and_closes_event_and_route_streams() {
-    shuts_down_streams(Shutdown::Eof).await;
+    shuts_down_streams(Kind::WebSocket, Shutdown::RemoteClose).await;
 }
 
 #[tokio::test]
 async fn websocket_protocol_error_drains_and_closes_event_and_route_streams() {
-    shuts_down_streams(Shutdown::ProtocolError).await;
+    shuts_down_streams(Kind::WebSocket, Shutdown::ProtocolError).await;
 }
 
-#[tokio::test]
-async fn explicit_close_drains_and_closes_event_and_route_streams() {
-    shuts_down_streams(Shutdown::ExplicitClose).await;
+over_both_links!(
+    eof_drains_and_closes_event_and_route_streams,
+    explicit_close_drains_and_closes_event_and_route_streams,
+    reader_abort_shuts_down_socket_before_first_poll_with_writer_retained,
+    explicit_close_shuts_down_socket_while_writer_mutex_is_held,
+    cancelled_explicit_close_still_shuts_down_socket_with_writer_held,
+    transport_drop_shuts_down_socket_with_writer_retained,
+    try_recv_event_does_not_wait_for_a_blocked_recv_event,
+);
+
+async fn eof_drains_and_closes_event_and_route_streams(kind: Kind) {
+    shuts_down_streams(kind, Shutdown::Eof).await;
 }
 
-#[tokio::test]
-async fn reader_abort_shuts_down_socket_before_first_poll_with_writer_retained() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        tokio_tungstenite::accept_async(socket).await.unwrap()
-    });
-    let stream = Transport::ws_connect(&url, Duration::from_secs(2))
-        .await
-        .unwrap();
-    let mut peer = server.await.unwrap();
-    let transport = Transport::build(None, stream, None, 1, false, false).unwrap();
-    // No await between build and abort: this current-thread runtime cannot poll
-    // the spawned reader before its abort request. Keep both socket owners.
+async fn explicit_close_drains_and_closes_event_and_route_streams(kind: Kind) {
+    shuts_down_streams(kind, Shutdown::ExplicitClose).await;
+}
+
+async fn reader_abort_shuts_down_socket_before_first_poll_with_writer_retained(kind: Kind) {
+    // Built with no await between build and abort below: this current-thread
+    // runtime cannot poll the spawned reader before its abort request.
+    let (transport, mut peer) = match kind {
+        Kind::WebSocket => {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                tokio_tungstenite::accept_async(socket).await.unwrap()
+            });
+            let stream = Transport::ws_connect(&url, Duration::from_secs(2))
+                .await
+                .unwrap();
+            let peer = Peer::WebSocket(server.await.unwrap());
+            let transport = Transport::build(
+                None,
+                Link::WebSocket(Box::new(stream)),
+                None,
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+            (transport, peer)
+        }
+        #[cfg(unix)]
+        Kind::Pipe => {
+            let (ours, chrome) = pipe::devtools_pipes().unwrap();
+            let (read, write) = chrome.into_fds();
+            let peer = Peer::Pipe {
+                commands: pipe::PipeReader::new(
+                    tokio::net::unix::pipe::Receiver::from_owned_fd(read).unwrap(),
+                ),
+                replies: tokio::net::unix::pipe::Sender::from_owned_fd(write).unwrap(),
+            };
+            let transport =
+                Transport::build(None, Link::Pipe(ours), None, 1, false, false).unwrap();
+            (transport, peer)
+        }
+    };
+    // Keep both owners of the connection.
     transport.reader_handle.as_ref().unwrap().abort();
     let _writer = transport.writer.lock().await;
     assert_peer_terminated(&mut peer).await;
     assert!(transport.is_closed());
 }
 
-#[tokio::test]
-async fn explicit_close_shuts_down_socket_while_writer_mutex_is_held() {
-    let (mut transport, mut peer) = pending_test_peer().await;
+async fn explicit_close_shuts_down_socket_while_writer_mutex_is_held(kind: Kind) {
+    let (mut transport, mut peer) = pending_test_peer(kind).await;
     transport.cmd_timeout = Duration::from_millis(50);
     let _writer = transport.writer.lock().await;
     tokio::time::timeout(Duration::from_secs(1), transport.close())
@@ -157,9 +189,8 @@ async fn explicit_close_shuts_down_socket_while_writer_mutex_is_held() {
     assert!(transport.is_closed());
 }
 
-#[tokio::test]
-async fn cancelled_explicit_close_still_shuts_down_socket_with_writer_held() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn cancelled_explicit_close_still_shuts_down_socket_with_writer_held(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let _writer = transport.writer.lock().await;
     let mut closing = Box::pin(transport.close());
     poll_fn(|cx| {
@@ -172,18 +203,16 @@ async fn cancelled_explicit_close_still_shuts_down_socket_with_writer_held() {
     assert!(transport.is_closed());
 }
 
-#[tokio::test]
-async fn transport_drop_shuts_down_socket_with_writer_retained() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn transport_drop_shuts_down_socket_with_writer_retained(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let writer = Arc::clone(&transport.writer);
     let _writer = writer.lock().await;
     drop(transport);
     assert_peer_terminated(&mut peer).await;
 }
 
-#[tokio::test]
-async fn try_recv_event_does_not_wait_for_a_blocked_recv_event() {
-    let (transport, _peer) = pending_test_peer().await;
+async fn try_recv_event_does_not_wait_for_a_blocked_recv_event(kind: Kind) {
+    let (transport, _peer) = pending_test_peer(kind).await;
     let mut waiting = Box::pin(transport.recv_event());
     poll_fn(|cx| {
         assert!(matches!(waiting.as_mut().poll(cx), Poll::Pending));

@@ -63,7 +63,7 @@ src/
 ├── error.rs            # Error types (ElementNotVisible, RetryExhausted, etc.)
 ├── cdp/
 │   ├── transport.rs    # WebSocket commands, cancellation and shutdown
-│   ├── transport/      # Reader, Fetch interception, Chrome process lifecycle
+│   ├── transport/      # Reader, WebSocket/pipe links, Fetch interception, Chrome process lifecycle
 │   ├── connection.rs   # Connection and shared target/session state
 │   ├── connection/     # Session commands grouped by page/network/document/input
 │   ├── headers.rs      # Target-scoped temporary header cleanup and recovery

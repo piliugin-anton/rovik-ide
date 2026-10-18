@@ -22,20 +22,27 @@ impl<S: tracing::Subscriber> Layer<S> for Diagnostics {
     }
 }
 
-#[tokio::test]
-async fn unreadable_frames_fail_pending_commands_and_native_completions_without_payload_logs() {
+over_both_links!(
+    unreadable_frames_fail_pending_commands_and_native_completions_without_payload_logs,
+    malformed_network_metadata_cannot_report_false_idle_or_lose_request_completion,
+);
+
+async fn unreadable_frames_fail_pending_commands_and_native_completions_without_payload_logs(
+    kind: Kind,
+) {
     const SECRET: &str = "private-body-token-do-not-log";
     let diagnostics = Diagnostics::default();
     let subscriber = tracing_subscriber::registry().with(diagnostics.clone());
     // This current-thread runtime keeps the reader task under the same subscriber.
     let _guard = tracing::subscriber::set_default(subscriber);
+    // (binary, bytes): binary frames on the WebSocket; a pipe has only bytes.
     let frames = [
-        Message::Text(format!(r#"{{"method":"Fetch.requestPaused","params":{{"requestId":"paused","request":{{"postData":"{SECRET}\q"}}}}}}"#).into()),
-        Message::Text(format!(r#"{{"id":1,"result":{{"value":"{SECRET}\uD800"}}"#).into()),
-        Message::Binary([SECRET.as_bytes(), &[0xff, 0xfe]].concat().into()),
+        (false, format!(r#"{{"method":"Fetch.requestPaused","params":{{"requestId":"paused","request":{{"postData":"{SECRET}\q"}}}}}}"#).into_bytes()),
+        (false, format!(r#"{{"id":1,"result":{{"value":"{SECRET}\uD800"}}"#).into_bytes()),
+        (true, [SECRET.as_bytes(), &[0xff, 0xfe]].concat()),
     ];
-    for frame in frames {
-        let (transport, mut peer) = pending_test_peer().await;
+    for (binary, frame) in frames {
+        let (transport, mut peer) = pending_test_peer(kind).await;
         let transport = Arc::new(transport);
         let session: Arc<str> = "native-owner".into();
         let dispatch = CommandDispatch::new();
@@ -49,7 +56,7 @@ async fn unreadable_frames_fail_pending_commands_and_native_completions_without_
             .await
             .unwrap();
         written.unwrap();
-        peer.next().await.unwrap().unwrap();
+        peer.recv_text().await;
         let command = tokio::spawn({
             let transport = transport.clone();
             async move {
@@ -58,9 +65,9 @@ async fn unreadable_frames_fail_pending_commands_and_native_completions_without_
                     .await
             }
         });
-        peer.next().await.unwrap().unwrap();
+        peer.recv_text().await;
         let writer = transport.writer.lock().await;
-        peer.send(frame).await.unwrap();
+        peer.send_frame(binary, frame).await.unwrap();
 
         let native_result = tokio::time::timeout(Duration::from_secs(1), completion.wait()).await;
         let ordinary_result = tokio::time::timeout(Duration::from_secs(1), command).await;
@@ -101,13 +108,12 @@ async fn unreadable_frames_fail_pending_commands_and_native_completions_without_
 
 async fn network_monitor(
     transport: &Arc<Transport>,
-    peer: &mut WebSocketStream<TcpStream>,
+    peer: &mut Peer,
 ) -> crate::cdp::network_idle::NetworkMonitor {
     let attach = crate::cdp::network_idle::NetworkMonitor::start(transport, "target", true);
     let replies = async {
         for _ in 0..5 {
-            let message = peer.next().await.unwrap().unwrap();
-            let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            let command = peer.recv_json().await;
             let result = match command["method"].as_str().unwrap() {
                 "Target.attachToTarget" => json!({"sessionId":"monitor"}),
                 "Page.getFrameTree" => {
@@ -116,13 +122,8 @@ async fn network_monitor(
                 "Page.enable" | "Page.setLifecycleEventsEnabled" | "Network.enable" => json!({}),
                 method => panic!("unexpected monitor setup command: {method}"),
             };
-            peer.send(Message::Text(
-                json!({"id":command["id"],"result":result})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
+            peer.send_json(json!({"id":command["id"],"result":result}))
+                .await;
         }
     };
     let (monitor, ()) = tokio::time::timeout(Duration::from_secs(2), async {
@@ -133,15 +134,10 @@ async fn network_monitor(
     monitor.unwrap()
 }
 
-async fn reader_barrier(
-    peer: &mut WebSocketStream<TcpStream>,
-    events: &mut broadcast::Receiver<CdpMessage>,
-) {
-    peer.send(Message::Text(
-        r#"{"method":"Fixture.barrier","params":{}}"#.into(),
-    ))
-    .await
-    .unwrap();
+async fn reader_barrier(peer: &mut Peer, events: &mut broadcast::Receiver<CdpMessage>) {
+    peer.send_text(r#"{"method":"Fixture.barrier","params":{}}"#)
+        .await
+        .unwrap();
     let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
         .await
         .unwrap()
@@ -149,18 +145,19 @@ async fn reader_barrier(
     assert!(matches!(event, CdpMessage::Event { method, .. } if method == "Fixture.barrier"));
 }
 
-#[tokio::test]
-async fn malformed_network_metadata_cannot_report_false_idle_or_lose_request_completion() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn malformed_network_metadata_cannot_report_false_idle_or_lose_request_completion(
+    kind: Kind,
+) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let transport = Arc::new(transport);
     let monitor = network_monitor(&transport, &mut peer).await;
     let mut events = transport.subscribe();
     let request = r#"{"method":"Network.requestWillBeSent","sessionId":"monitor","params":{"requestId":"binary","loaderId":"loader","frameId":"main","type":"Fetch","request":{"postData":"\uD800"}}}"#;
-    peer.send(Message::Text(request.into())).await.unwrap();
+    peer.send_text(request).await.unwrap();
     reader_barrier(&mut peer, &mut events).await;
     assert!(matches!(monitor.wait(0, 0).await, Err(Error::Timeout(_))));
 
-    peer.send(Message::Text(r#"{"method":"Network.loadingFailed","sessionId":"monitor","params":{"requestId":"binary","errorText":"\uDC00"}}"#.into()))
+    peer.send_text(r#"{"method":"Network.loadingFailed","sessionId":"monitor","params":{"requestId":"binary","errorText":"\uDC00"}}"#)
         .await
         .unwrap();
     reader_barrier(&mut peer, &mut events).await;
@@ -168,9 +165,9 @@ async fn malformed_network_metadata_cannot_report_false_idle_or_lose_request_com
 
     // An unrepairable event must invalidate accounting, not be mistaken for a
     // quiet network or leave the active request waiting until the idle deadline.
-    peer.send(Message::Text(request.into())).await.unwrap();
+    peer.send_text(request).await.unwrap();
     reader_barrier(&mut peer, &mut events).await;
-    peer.send(Message::Text("{".into())).await.unwrap();
+    peer.send_text("{").await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(1), monitor.wait(0, 30_000))
         .await
         .expect("network idle must be notified of protocol failure");

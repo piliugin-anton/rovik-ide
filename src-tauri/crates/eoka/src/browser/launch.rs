@@ -3,6 +3,8 @@
 use crate::cdp::transport::{
     chrome_version_output, launch_chrome_with_profile_dir, stop_child, RuntimeDirectory,
 };
+#[cfg(unix)]
+use crate::cdp::transport::{launch_chrome_with_pipe, DevToolsPipe, StderrTail};
 use crate::stealth::{find_chrome, fingerprint::Fingerprint, ChromePatcher};
 use crate::{Error, Result, StealthConfig};
 use std::{
@@ -147,13 +149,26 @@ impl BrowserProfile {
     }
 }
 
+/// Where a prepared browser takes CDP commands.
+pub(super) enum Endpoint {
+    /// The browser WebSocket URL, on a DevTools port.
+    WebSocket(String),
+    /// The pipe Chrome was started with, and what it last wrote to stderr,
+    /// for a report if it never answers.
+    #[cfg(unix)]
+    Pipe {
+        pipe: DevToolsPipe,
+        stderr: StderrTail,
+    },
+}
+
 /// Result of synchronous browser preparation. Until the child is transferred
 /// to `Transport`, dropping this value kills Chrome and reclaims its profile.
 /// `child` is `None` when we attached to an already-running Chrome instead
 /// of spawning one (see `try_attach_existing`).
 pub(super) struct PreparedBrowserLaunch {
     pub(super) child: Option<Child>,
-    pub(super) ws_url: String,
+    pub(super) endpoint: Option<Endpoint>,
     pub(super) fingerprint: Option<Fingerprint>,
     pub(super) runtime: Option<RuntimeDirectory>,
 }
@@ -246,6 +261,13 @@ pub(super) fn prepare_browser_launch(
     if cancelled.load(Ordering::Acquire) {
         return Err(Error::Launch("Browser launch was cancelled".into()));
     }
+    #[cfg(not(unix))]
+    if config.pipe {
+        return Err(Error::Launch(
+            "StealthConfig::pipe needs Unix (Linux or macOS); leave it off to use a DevTools port"
+                .into(),
+        ));
+    }
     crate::cdp::types::EmulationSetDeviceMetricsOverride::new(
         config.viewport_width,
         config.viewport_height,
@@ -280,7 +302,7 @@ pub(super) fn prepare_browser_launch(
             )?;
             return Ok(PreparedBrowserLaunch {
                 child: None,
-                ws_url,
+                endpoint: Some(Endpoint::WebSocket(ws_url)),
                 fingerprint: Some(fingerprint),
                 runtime: None,
             });
@@ -318,6 +340,17 @@ pub(super) fn prepare_browser_launch(
     args.push(format!("--user-data-dir={}", profile.path.display()));
 
     tracing::info!("Launching Chrome from {:?}", chrome_path);
+    #[cfg(unix)]
+    if config.pipe {
+        let (child, pipe, stderr) =
+            launch_chrome_with_pipe(&chrome_path, &args, runtime.path(), &cancelled)?;
+        return Ok(PreparedBrowserLaunch {
+            child: Some(child),
+            endpoint: Some(Endpoint::Pipe { pipe, stderr }),
+            fingerprint: Some(fingerprint),
+            runtime: Some(runtime),
+        });
+    }
     let (child, ws_url) = launch_chrome_with_profile_dir(
         &chrome_path,
         &args,
@@ -328,7 +361,7 @@ pub(super) fn prepare_browser_launch(
     )?;
     Ok(PreparedBrowserLaunch {
         child: Some(child),
-        ws_url,
+        endpoint: Some(Endpoint::WebSocket(ws_url)),
         fingerprint: Some(fingerprint),
         runtime: Some(runtime),
     })
@@ -368,7 +401,15 @@ fn validate_executable(path: &Path) -> Result<PathBuf> {
             error
         ))
     })?;
-    Ok(std::fs::canonicalize(path)?)
+    let canonical = std::fs::canonicalize(path)?;
+    // `/snap/bin/chromium` links to the `snap` binary, which starts Chromium
+    // only when run under the link's name.
+    if canonical.file_name() == Some(std::ffi::OsStr::new("snap"))
+        && path.file_name() != canonical.file_name()
+    {
+        return Ok(path.to_path_buf());
+    }
+    Ok(canonical)
 }
 
 fn validate_sandbox_args(config: &StealthConfig) -> Result<()> {

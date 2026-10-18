@@ -1,7 +1,15 @@
 use super::*;
 
-async fn blocked_reader_write_fails_native_completion(trigger: Message) {
-    let (transport, mut peer) = test_peer_with_proxy_credentials().await;
+/// What makes the reader write on its own.
+enum Trigger {
+    /// A WebSocket ping, answered with a pong.
+    Ping,
+    /// An event answered with a CDP command.
+    Event(Value),
+}
+
+async fn blocked_reader_write_fails_native_completion(kind: Kind, trigger: Trigger) {
+    let (transport, mut peer) = test_peer_with_proxy_credentials(kind).await;
     let session: Arc<str> = "blocked-reader".into();
     let dispatch = CommandDispatch::new();
     let (written, response) = transport
@@ -9,9 +17,16 @@ async fn blocked_reader_write_fails_native_completion(trigger: Message) {
         .await
         .unwrap();
     written.unwrap();
-    peer.next().await.unwrap().unwrap();
+    peer.recv_text().await;
     let writer = transport.writer.lock().await;
-    peer.send(trigger).await.unwrap();
+    match trigger {
+        Trigger::Ping => peer
+            .websocket()
+            .send(Message::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap(),
+        Trigger::Event(event) => peer.send_json(event).await,
+    }
     let result = tokio::time::timeout(
         transport.cmd_timeout + Duration::from_secs(1),
         response.wait(),
@@ -36,21 +51,29 @@ async fn blocked_reader_write_fails_native_completion(trigger: Message) {
 // before the kernel delivers the frame that starts the reader's write deadline.
 #[tokio::test]
 async fn pong_writer_contention_cannot_strand_native_completion() {
-    blocked_reader_write_fails_native_completion(Message::Ping(vec![1, 2, 3].into())).await;
+    blocked_reader_write_fails_native_completion(Kind::WebSocket, Trigger::Ping).await;
 }
 
-#[tokio::test]
-async fn fetch_writer_contention_cannot_strand_native_completion() {
-    blocked_reader_write_fails_native_completion(Message::Text(
-        json!({"method":"Fetch.requestPaused","sessionId":"paused-session","params":{"requestId":"paused-request","request":{"headers":{}}}}).to_string().into(),
-    )).await;
+over_both_links!(
+    fetch_writer_contention_cannot_strand_native_completion,
+    auth_writer_contention_cannot_strand_native_completion,
+    automatic_reply_backpressure_cannot_strand_native_completion,
+);
+
+async fn fetch_writer_contention_cannot_strand_native_completion(kind: Kind) {
+    blocked_reader_write_fails_native_completion(
+        kind,
+        Trigger::Event(json!({"method":"Fetch.requestPaused","sessionId":"paused-session","params":{"requestId":"paused-request","request":{"headers":{}}}})),
+    )
+    .await;
 }
 
-#[tokio::test]
-async fn auth_writer_contention_cannot_strand_native_completion() {
-    blocked_reader_write_fails_native_completion(Message::Text(
-        json!({"method":"Fetch.authRequired","sessionId":"auth-session","params":{"requestId":"auth-request","authChallenge":{"source":"Proxy"}}}).to_string().into(),
-    )).await;
+async fn auth_writer_contention_cannot_strand_native_completion(kind: Kind) {
+    blocked_reader_write_fails_native_completion(
+        kind,
+        Trigger::Event(json!({"method":"Fetch.authRequired","sessionId":"auth-session","params":{"requestId":"auth-request","authChallenge":{"source":"Proxy"}}})),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -73,8 +96,18 @@ async fn silent_websocket_upgrade_obeys_connection_deadline() {
     );
 }
 
-#[tokio::test]
-async fn automatic_reply_socket_backpressure_cannot_strand_native_completion() {
+/// A transport whose automatic replies the peer never reads: a WebSocket
+/// over a TCP connection with small buffers, or the pipe, whose buffer the
+/// kernel bounds.
+async fn backpressure_peer(kind: Kind) -> (Transport, Peer) {
+    match kind {
+        Kind::WebSocket => small_buffer_websocket_peer().await,
+        #[cfg(unix)]
+        Kind::Pipe => test_peer(kind, None, 1, true).await,
+    }
+}
+
+async fn small_buffer_websocket_peer() -> (Transport, Peer) {
     let listener = tokio::net::TcpSocket::new_v4().unwrap();
     // Bound the advertised receive window before the handshake. A small sender
     // buffer alone does not bound buffering on every platform.
@@ -93,8 +126,20 @@ async fn automatic_reply_socket_backpressure_cannot_strand_native_completion() {
         tokio_tungstenite::client_async(format!("ws://{address}"), MaybeTlsStream::Plain(socket))
             .await
             .unwrap();
-    let transport = Transport::build(None, stream, None, 1, false, true).unwrap();
-    let mut peer = server.await.unwrap();
+    let transport = Transport::build(
+        None,
+        Link::WebSocket(Box::new(stream)),
+        None,
+        1,
+        false,
+        true,
+    )
+    .unwrap();
+    (transport, Peer::WebSocket(server.await.unwrap()))
+}
+
+async fn automatic_reply_backpressure_cannot_strand_native_completion(kind: Kind) {
+    let (transport, mut peer) = backpressure_peer(kind).await;
     let session: Arc<str> = "backpressure".into();
     let dispatch = CommandDispatch::new();
     let (written, response) = transport
@@ -102,24 +147,21 @@ async fn automatic_reply_socket_backpressure_cannot_strand_native_completion() {
         .await
         .unwrap();
     written.unwrap();
-    peer.next().await.unwrap().unwrap();
+    peer.recv_text().await;
     // A single write can exceed SO_SNDBUF on Windows, and a brief stall can
     // recover after a delayed ACK on macOS. Keep requesting automatic replies
     // without reading them, up to 64 MiB, under one outer deadline. This lets the
     // reader's own write deadline detect sustained socket backpressure.
-    let pause = Message::Text(
-        json!({
-            "method":"Fetch.requestPaused", "sessionId":"backpressure",
-            "params":{"requestId":"blocked", "request":{"headers":{
-                "X-Client-Data":"remove", "Large":"x".repeat(1024 * 1024)
-            }}}
-        })
-        .to_string()
-        .into(),
-    );
+    let pause = json!({
+        "method":"Fetch.requestPaused", "sessionId":"backpressure",
+        "params":{"requestId":"blocked", "request":{"headers":{
+            "X-Client-Data":"remove", "Large":"x".repeat(1024 * 1024)
+        }}}
+    })
+    .to_string();
     let produce = async {
         for _ in 0..64 {
-            if peer.send(pause.clone()).await.is_err() {
+            if peer.send_text(pause.clone()).await.is_err() {
                 break;
             }
         }

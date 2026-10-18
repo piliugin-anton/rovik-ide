@@ -1,13 +1,14 @@
-//! WebSocket framing, command replies and event dispatch.
+//! Reading CDP messages: command replies and event dispatch.
 
 use super::interception::{EventAction, FetchInterceptor};
+use super::link::{Automatic, Reader};
 use super::*;
 
 impl Transport {
     /// Deliver command replies, route private monitoring and Fetch events, then
     /// broadcast remaining events. A failed write closes every pending command.
     pub(super) async fn reader_loop(
-        mut source: WsSource,
+        mut source: Reader,
         pending: Arc<PendingMap>,
         completion_state: ReaderCompletionState,
         event_tx: broadcast::Sender<CdpMessage>,
@@ -27,40 +28,21 @@ impl Transport {
         // within int32: DevTools silently drops commands with ids outside it.
         let mut auth_cmd_id: u64 = 1_000_000_000;
 
+        let lost = source.lost();
+
         loop {
-            let message = match source.next().await {
-                Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => message,
-                Some(Ok(Message::Ping(payload))) => {
-                    // Split streams don't auto-pong; reply via the shared sink.
-                    if let Err(error) =
-                        write_automatic(&writer, Message::Pong(payload), write_timeout).await
-                    {
-                        exit_reason = format!("WebSocket pong write failed: {}", error);
-                        tracing::debug!("{}", exit_reason);
-                        break;
-                    }
-                    continue;
-                }
-                Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => continue,
-                Some(Ok(Message::Close(_))) => {
-                    exit_reason = "WebSocket closed by server".to_string();
-                    tracing::debug!("{}", exit_reason);
-                    break;
-                }
-                Some(Err(e)) => {
-                    exit_reason = format!("WebSocket read error: {}", e);
-                    tracing::debug!("{}", exit_reason);
-                    break;
-                }
-                None => {
-                    exit_reason = "WebSocket stream ended".to_string();
+            // WebSocket pings are answered inside `next`.
+            let message = match source.next(&writer, write_timeout).await {
+                Ok(message) => message,
+                Err(reason) => {
+                    exit_reason = reason;
                     tracing::debug!("{}", exit_reason);
                     break;
                 }
             };
-            let text = match message.to_text() {
-                Ok(text) => text,
-                Err(_) => {
+            let text = match message.text() {
+                Some(text) => text,
+                None => {
                     exit_reason = "Invalid UTF-8 in CDP message".to_string();
                     tracing::warn!(
                         bytes = message.len(),
@@ -157,7 +139,7 @@ impl Transport {
                         })
                         .expect("CDP automatic reply contains only serializable JSON values");
                         if let Err(error) =
-                            write_automatic(&writer, Message::Text(response.into()), write_timeout)
+                            write_automatic(&writer, Automatic::Command(response), write_timeout)
                                 .await
                         {
                             exit_reason = format!("Automatic {method} write failed: {error}");
@@ -184,7 +166,7 @@ impl Transport {
         // Drain all pending requests so callers fail immediately instead of
         // hanging until the per-command timeout fires.
         network_idle::disconnect(&idle_routes);
-        let context = format!("WebSocket connection lost: {}", exit_reason);
+        let context = format!("{}: {}", lost, exit_reason);
         let n = fail_pending(&pending, &context);
         if n > 0 {
             tracing::error!(
@@ -198,13 +180,18 @@ impl Transport {
 }
 
 /// Automatic replies run on the reader itself. Bound both writer admission and
-/// socket flushing so backpressure cannot stop delivery of unrelated replies or
-/// teardown events forever.
-async fn write_automatic(writer: &SharedSink, message: Message, timeout: Duration) -> Result<()> {
-    tokio::time::timeout(timeout, async { writer.lock().await.send(message).await })
-        .await
-        .map_err(|_| Error::Timeout("Automatic CDP write exceeded its deadline".into()))?
-        .map_err(|error| Error::transport(format!("WebSocket write failed: {error}")))
+/// socket or pipe flushing so backpressure cannot stop delivery of unrelated
+/// replies or teardown events forever.
+pub(super) async fn write_automatic(
+    writer: &SharedSink,
+    reply: Automatic,
+    timeout: Duration,
+) -> Result<()> {
+    tokio::time::timeout(timeout, async {
+        writer.lock().await.send_automatic(reply).await
+    })
+    .await
+    .map_err(|_| Error::Timeout("Automatic CDP write exceeded its deadline".into()))?
 }
 
 /// Chrome can serialize binary postData as ill-formed UTF-16 escapes. Repair

@@ -139,6 +139,16 @@ pub struct StealthConfig {
     /// Enable Chrome's sandbox. Defaults to false for existing callers.
     /// Unsupported sandbox environments fail without an unsandboxed retry.
     pub sandbox: bool,
+    /// Drive a Chrome this crate starts over a pipe
+    /// (`--remote-debugging-pipe`) instead of a DevTools port. A port listens
+    /// on `127.0.0.1` without a password, so any user or process on the
+    /// machine can connect to it and drive the browser. Only this process
+    /// holds the pipe, and no port is opened unless `extra_args` asks for one.
+    /// Nothing else can attach to a browser started this way: not
+    /// `Browser::connect*`, nor a later launch on the same `user_data_dir`.
+    /// Attaching to a running Chrome still uses its port. Unix only: a launch
+    /// with it fails elsewhere. Defaults to false.
+    pub pipe: bool,
     /// Patch Chrome binary to bypass detection
     pub patch_binary: bool,
     /// Viewport width in CSS pixels.
@@ -230,6 +240,7 @@ impl Default for StealthConfig {
             chrome_path: None,
             runtime_dir: None,
             sandbox: false,
+            pipe: false,
             patch_binary: true,
             viewport_width: 1920,
             viewport_height: 1080,

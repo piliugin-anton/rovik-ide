@@ -48,8 +48,9 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["h
 libc = "0.2"
 windows = "0.62"
 
-# eoka as published (crates/eoka), the base for the pipe transport the
-# agent's Chrome needs (D18, H08).
+# The agent's Chrome is driven over a pipe, not a DevTools port (D18,
+# H08): eoka with a pipe transport, until a release of eoka has one.
+# crates/eoka/FORK.md says what differs and how to drop the fork.
 [patch.crates-io]
 eoka = { path = "crates/eoka" }
 

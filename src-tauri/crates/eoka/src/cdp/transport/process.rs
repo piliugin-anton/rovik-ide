@@ -1,6 +1,11 @@
 //! Chrome child ownership, launch and DevTools endpoint discovery.
 
 use crate::{Error, Result};
+#[cfg(unix)]
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 use std::{
     io::{BufRead, BufReader},
     path::Path,
@@ -184,6 +189,104 @@ fn launch_chrome_impl(
     tracing::info!("Chrome DevTools URL: {}", ws_url);
 
     Ok((guard.take()?, ws_url))
+}
+
+/// Starts Chrome with `--remote-debugging-pipe`, its fds 3 and 4 the
+/// pipes whose other ends are returned. Chrome opens no DevTools port
+/// unless `args` ask for one. It isn't waited for: the first command's
+/// reply on the pipe is its readiness.
+#[cfg(unix)]
+pub(crate) fn launch_chrome_with_pipe(
+    path: &Path,
+    args: &[String],
+    runtime: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(Child, super::DevToolsPipe, StderrTail)> {
+    use std::process::Command;
+
+    let mut cmd = Command::new(path);
+    cmd.args(args);
+    if !args
+        .iter()
+        .any(|arg| arg == "--remote-debugging-pipe" || arg.starts_with("--remote-debugging-pipe="))
+    {
+        cmd.arg("--remote-debugging-pipe");
+    }
+    cmd.env("TMPDIR", runtime)
+        .env("TMP", runtime)
+        .env("TEMP", runtime)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        // Kept for reports when Chrome doesn't answer.
+        .stderr(Stdio::piped());
+    let (pipe, chrome_ends) = super::pipe::devtools_pipes()
+        .map_err(|e| Error::Launch(format!("Failed to create the DevTools pipe: {}", e)))?;
+    chrome_ends.hand_to(&mut cmd);
+
+    if cancelled.load(Ordering::Acquire) {
+        return Err(Error::Launch("Browser launch was cancelled".into()));
+    }
+    let mut guard = ChildCleanupGuard::new(
+        cmd.spawn()
+            .map_err(|e| Error::Launch(format!("Failed to launch Chrome: {}", e)))?,
+    );
+    // Chrome has its own copies now. Ours must close, or Chrome's exit would
+    // never reach the reader as EOF.
+    drop(chrome_ends);
+    let stderr = guard
+        .child
+        .as_mut()
+        .expect("new child guard owns its process")
+        .stderr
+        .take()
+        .ok_or(Error::Launch("No stderr from Chrome".into()))?;
+    let tail = StderrTail::default();
+    let lines = tail.clone();
+    std::thread::spawn(move || lines.drain(BufReader::new(stderr)));
+
+    tracing::info!("Chrome started with a DevTools pipe");
+    Ok((guard.take()?, pipe, tail))
+}
+
+/// The last lines Chrome wrote to stderr. Chrome's stderr is read to its end,
+/// so Chrome never blocks writing it.
+#[cfg(unix)]
+#[derive(Clone, Default)]
+pub(crate) struct StderrTail(Arc<Mutex<VecDeque<String>>>);
+
+#[cfg(unix)]
+impl StderrTail {
+    const LINES: usize = 20;
+
+    fn drain(&self, reader: impl BufRead) {
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    tracing::trace!("Chrome stderr: {}", line);
+                    let mut lines = self.0.lock().unwrap_or_else(|e| e.into_inner());
+                    if lines.len() == Self::LINES {
+                        lines.pop_front();
+                    }
+                    lines.push_back(line);
+                }
+                Err(error) => {
+                    tracing::warn!("Chrome stderr reader failed: {error}");
+                    return;
+                }
+            }
+        }
+    }
+
+    /// For an error message: what Chrome last wrote to stderr.
+    pub(crate) fn describe(&self) -> String {
+        let lines = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if lines.is_empty() {
+            "Chrome wrote nothing to stderr".to_string()
+        } else {
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            format!("stderr:\n{}", lines.join("\n"))
+        }
+    }
 }
 
 fn drain_chrome_stderr(

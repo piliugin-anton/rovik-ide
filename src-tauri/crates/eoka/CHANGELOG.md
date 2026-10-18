@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `StealthConfig::pipe` (Unix): start Chrome with `--remote-debugging-pipe` and
+  drive it over its fds 3 and 4 instead of a DevTools port, which any local
+  user or process can connect to. Messages are NUL-delimited JSON, queued whole
+  and written cancel-safe; shutdown closes the pipe without the writer lock.
+  The first `Browser.getVersion` reply is readiness; a Chrome that never
+  answers is reported with its exit status and stderr. Off by default; a
+  launch with it fails on other systems.
+- `Browser::process_id` for the owned Chrome process.
+
+### Fixed
+
+- An explicit `/snap/bin/<app>` path is kept as given: it links to the `snap`
+  binary, which starts the app only under the link's name.
+
 ## [0.7.2] - Unreleased
 
 ### Fixed

@@ -5,7 +5,7 @@
 mod geo;
 mod launch;
 
-use launch::{discover_browser_ws, prepare_browser_launch, LaunchCancellation};
+use launch::{discover_browser_ws, prepare_browser_launch, Endpoint, LaunchCancellation};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -93,6 +93,12 @@ impl Browser {
         !self.reused
     }
 
+    /// The process id of the Chrome this handle started; `None` for a
+    /// borrowed browser.
+    pub fn process_id(&self) -> Option<u32> {
+        self.connection.transport().process_id()
+    }
+
     /// Reserve native download settings and subscribe before triggering a download.
     /// Only supported for owned processes. The directory must already exist.
     pub async fn watch_downloads(&self, directory: &Path) -> Result<crate::DownloadWatch> {
@@ -154,15 +160,22 @@ impl Browser {
             config.filter_cdp = false;
             config.strip_x_client_data = false;
         }
-        let transport = match prepared.child.take() {
-            Some(child) => {
-                let proxy_auth = match (&config.proxy_username, &config.proxy_password) {
-                    (Some(username), Some(password)) => Some((username.clone(), password.clone())),
-                    _ => None,
-                };
+        let proxy_auth = match (&config.proxy_username, &config.proxy_password) {
+            (Some(username), Some(password)) => Some((username.clone(), password.clone())),
+            _ => None,
+        };
+        let endpoint = prepared
+            .endpoint
+            .take()
+            .ok_or_else(|| Error::Launch("Browser launch lost its DevTools endpoint".into()))?;
+        // Chrome's stderr, for a report if it never answers on its pipe.
+        #[cfg(unix)]
+        let mut pipe_stderr = None;
+        let transport = match (prepared.child.take(), endpoint) {
+            (Some(child), Endpoint::WebSocket(ws_url)) => {
                 Transport::new_with_runtime_options(
                     child,
-                    &prepared.ws_url,
+                    &ws_url,
                     proxy_auth,
                     config.cdp_timeout,
                     config.strip_x_client_data,
@@ -170,19 +183,46 @@ impl Browser {
                 )
                 .await?
             }
-            None => {
+            #[cfg(unix)]
+            (Some(child), Endpoint::Pipe { pipe, stderr }) => {
+                pipe_stderr = Some(stderr);
+                Transport::new_with_pipe(
+                    child,
+                    pipe,
+                    proxy_auth,
+                    config.cdp_timeout,
+                    config.strip_x_client_data,
+                    prepared.runtime.take(),
+                )?
+            }
+            (None, Endpoint::WebSocket(ws_url)) => {
                 Transport::connect_with_options(
-                    &prepared.ws_url,
+                    &ws_url,
                     config.cdp_timeout,
                     config.filter_cdp,
                     config.strip_x_client_data,
                 )
                 .await?
             }
+            #[cfg(unix)]
+            (None, Endpoint::Pipe { .. }) => {
+                return Err(Error::Launch(
+                    "A DevTools pipe needs the Chrome started with it".into(),
+                ))
+            }
         };
         let connection = Connection::new(transport);
 
-        let version = connection.version().await?;
+        // Over a pipe, this first reply is Chrome's readiness.
+        let version = match connection.version().await {
+            Ok(version) => version,
+            #[cfg(unix)]
+            Err(error) if pipe_stderr.is_some() => {
+                let stderr = pipe_stderr.as_ref().expect("checked by the guard");
+                return Err(pipe_startup_failure(&connection, stderr, error).await);
+            }
+            Err(error) => return Err(error),
+        };
         tracing::info!("Connected to Chrome: {}", version.product);
 
         let fingerprint = prepared
@@ -425,6 +465,30 @@ impl Browser {
     pub async fn disconnect(self) -> Result<()> {
         self.connection.disconnect().await
     }
+}
+
+/// Why a Chrome started with a pipe never answered on it: the error, its
+/// exit status and the end of its stderr. Dropping `connection` afterwards
+/// stops Chrome and removes its runtime.
+#[cfg(unix)]
+async fn pipe_startup_failure(
+    connection: &Connection,
+    stderr: &crate::cdp::transport::StderrTail,
+    error: Error,
+) -> Error {
+    // A Chrome that is exiting gets a moment to finish, so its status and
+    // last words are known.
+    let transport = connection.transport();
+    let _ = transport
+        .wait_for_owned_exit(std::time::Duration::from_millis(500))
+        .await;
+    let status = transport
+        .owned_exit_status()
+        .map_or_else(|| "still running".to_string(), |status| status.to_string());
+    Error::Launch(format!(
+        "Chrome did not answer on its DevTools pipe: {error}; process {status}; {}",
+        stderr.describe()
+    ))
 }
 
 impl Drop for Browser {

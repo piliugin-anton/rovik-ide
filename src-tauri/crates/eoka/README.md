@@ -471,6 +471,27 @@ Explicit debugging ports are preserved; live launches default to a nonzero port.
 `close()` gives owned browsers up to five seconds to flush state before termination.
 Attached browsers are only disconnected, regardless of live-mode configuration.
 
+### DevTools over a pipe
+
+A DevTools port listens on `127.0.0.1` without a password: any user or process on
+the machine can connect and drive the browser, which runs as you. On Unix, set
+`pipe` to start Chrome with `--remote-debugging-pipe` instead. CDP then travels
+over two pipes only this process holds (Chrome's fds 3 and 4, NUL-delimited
+JSON), and no port is opened unless `extra_args` asks for one. Sessions, events,
+interception and stealth work as over the port; the first `Browser.getVersion`
+reply is Chrome's readiness, and a Chrome that never answers is reported with
+its exit status and stderr.
+
+```rust
+let browser = Browser::launch_with(|config| config.pipe = true).await?;
+println!("Chrome pid {:?}", browser.process_id());
+browser.close().await?;
+```
+
+Nothing else can attach to a browser started this way, `Browser::connect*` and
+later launches on the same `user_data_dir` included. Attaching to a running
+Chrome still uses its port. On other systems a launch with `pipe` fails.
+
 ### Connect to an existing Chrome
 
 Attach to a browser you already launched with `--remote-debugging-port` instead of

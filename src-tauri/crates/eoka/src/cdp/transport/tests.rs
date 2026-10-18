@@ -1,60 +1,259 @@
 use super::*;
 
+/// The link a test transport runs over.
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    WebSocket,
+    #[cfg(unix)]
+    Pipe,
+}
+
+/// Runs each `async fn name(kind: Kind)` over both links, as
+/// `name::websocket` and (Unix) `name::pipe`.
+macro_rules! over_both_links {
+    ($($name:ident),+ $(,)?) => {$(
+        mod $name {
+            #[tokio::test]
+            async fn websocket() {
+                super::$name(super::Kind::WebSocket).await;
+            }
+
+            #[cfg(unix)]
+            #[tokio::test]
+            async fn pipe() {
+                super::$name(super::Kind::Pipe).await;
+            }
+        }
+    )+};
+}
+
 mod malformed_frames;
 mod reader_writes;
 mod stream_shutdown;
 
-async fn pending_test_peer() -> (Transport, WebSocketStream<TcpStream>) {
-    test_peer_with_header_policy(false).await
+/// The far end of a test transport: a WebSocket server, or Chrome's ends
+/// of the pipes.
+enum Peer {
+    WebSocket(WebSocketStream<TcpStream>),
+    #[cfg(unix)]
+    Pipe {
+        /// Reads what the transport writes (Chrome's fd 3).
+        commands: pipe::PipeReader,
+        /// Writes what the transport reads (Chrome's fd 4).
+        replies: tokio::net::unix::pipe::Sender,
+    },
 }
 
-async fn test_peer_with_proxy_credentials() -> (Transport, WebSocketStream<TcpStream>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        tokio_tungstenite::accept_async(socket).await.unwrap()
-    });
-    let stream = Transport::ws_connect(&url, Duration::from_secs(30))
-        .await
-        .unwrap();
-    let transport = Transport::build(
-        None,
-        stream,
+impl Peer {
+    /// Sends one message as a text frame (WebSocket) or NUL-ended (pipe).
+    async fn send_text(&mut self, text: impl Into<String>) -> std::result::Result<(), String> {
+        self.send_frame(false, text.into().into_bytes()).await
+    }
+
+    /// Sends one message, as a binary frame when `binary` (WebSocket). A
+    /// pipe has only bytes.
+    async fn send_frame(
+        &mut self,
+        binary: bool,
+        bytes: Vec<u8>,
+    ) -> std::result::Result<(), String> {
+        match self {
+            Self::WebSocket(peer) => {
+                let message = if binary {
+                    Message::Binary(bytes.into())
+                } else {
+                    Message::Text(
+                        String::from_utf8(bytes)
+                            .expect("text frames are UTF-8")
+                            .into(),
+                    )
+                };
+                peer.send(message).await.map_err(|error| error.to_string())
+            }
+            #[cfg(unix)]
+            Self::Pipe { replies, .. } => {
+                use tokio::io::AsyncWriteExt;
+                let framed = [bytes.as_slice(), b"\0"].concat();
+                replies
+                    .write_all(&framed)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    async fn send_json(&mut self, message: Value) {
+        self.send_text(message.to_string()).await.unwrap();
+    }
+
+    /// The next message the transport sent, as text.
+    async fn recv_text(&mut self) -> String {
+        match self {
+            Self::WebSocket(peer) => {
+                let message = peer.next().await.unwrap().unwrap();
+                message.to_text().unwrap().to_owned()
+            }
+            #[cfg(unix)]
+            Self::Pipe { commands, .. } => String::from_utf8(commands.next().await.unwrap())
+                .expect("the transport writes UTF-8"),
+        }
+    }
+
+    async fn recv_json(&mut self) -> Value {
+        serde_json::from_str(&self.recv_text().await).unwrap()
+    }
+
+    /// The next message, failing the test after two seconds.
+    async fn recv_json_soon(&mut self) -> Value {
+        tokio::time::timeout(Duration::from_secs(2), self.recv_json())
+            .await
+            .expect("the transport must send promptly")
+    }
+
+    /// Nothing more arrives within `wait`.
+    async fn assert_silent(&mut self, wait: Duration) {
+        let next = async {
+            match self {
+                Self::WebSocket(peer) => drop(peer.next().await),
+                #[cfg(unix)]
+                Self::Pipe { commands, .. } => drop(commands.next().await),
+            }
+        };
+        assert!(tokio::time::timeout(wait, next).await.is_err());
+    }
+
+    /// The WebSocket itself, for frames a pipe has no counterpart for.
+    fn websocket(&mut self) -> &mut WebSocketStream<TcpStream> {
+        match self {
+            Self::WebSocket(peer) => peer,
+            #[cfg(unix)]
+            Self::Pipe { .. } => panic!("not a WebSocket peer"),
+        }
+    }
+}
+
+async fn test_peer(
+    kind: Kind,
+    proxy_auth: Option<(String, String)>,
+    cdp_timeout_secs: u64,
+    strip: bool,
+) -> (Transport, Peer) {
+    match kind {
+        Kind::WebSocket => {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                tokio_tungstenite::accept_async(socket).await.unwrap()
+            });
+            let stream = Transport::ws_connect(&url, Duration::from_secs(30))
+                .await
+                .unwrap();
+            let transport = Transport::build(
+                None,
+                Link::WebSocket(Box::new(stream)),
+                proxy_auth,
+                cdp_timeout_secs,
+                false,
+                strip,
+            )
+            .unwrap();
+            (transport, Peer::WebSocket(server.await.unwrap()))
+        }
+        #[cfg(unix)]
+        Kind::Pipe => {
+            let (ours, chrome) = pipe::devtools_pipes().unwrap();
+            let (read, write) = chrome.into_fds();
+            let transport = Transport::build(
+                None,
+                Link::Pipe(ours),
+                proxy_auth,
+                cdp_timeout_secs,
+                false,
+                strip,
+            )
+            .unwrap();
+            let peer = Peer::Pipe {
+                commands: pipe::PipeReader::new(
+                    tokio::net::unix::pipe::Receiver::from_owned_fd(read).unwrap(),
+                ),
+                replies: tokio::net::unix::pipe::Sender::from_owned_fd(write).unwrap(),
+            };
+            (transport, peer)
+        }
+    }
+}
+
+async fn pending_test_peer(kind: Kind) -> (Transport, Peer) {
+    test_peer_with_header_policy(kind, false).await
+}
+
+async fn test_peer_with_proxy_credentials(kind: Kind) -> (Transport, Peer) {
+    test_peer(
+        kind,
         Some(("fixture-user".into(), "fixture-password".into())),
         2,
         false,
-        false,
     )
-    .unwrap();
-    (transport, server.await.unwrap())
+    .await
 }
 
-#[tokio::test]
-async fn proxy_credentials_only_answer_explicit_proxy_challenges() {
-    let (transport, mut peer) = test_peer_with_proxy_credentials().await;
+async fn test_peer_with_header_policy(kind: Kind, strip: bool) -> (Transport, Peer) {
+    test_peer(kind, None, 30, strip).await
+}
+
+/// The peer sees the connection end: EOF, a close frame or an error, after
+/// whatever was already sent.
+async fn assert_peer_terminated(peer: &mut Peer) {
+    // Shutdown preserves bytes already accepted by the OS. Drain buffered
+    // frames, then require termination within one deadline without logging data.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        match peer {
+            Peer::WebSocket(peer) => {
+                while let Some(Ok(message)) = peer.next().await {
+                    if matches!(message, Message::Close(_)) {
+                        break;
+                    }
+                }
+            }
+            #[cfg(unix)]
+            Peer::Pipe { commands, .. } => while commands.next().await.is_ok() {},
+        }
+    })
+    .await
+    .expect("peer must observe termination while Transport is retained");
+}
+
+over_both_links!(
+    proxy_credentials_only_answer_explicit_proxy_challenges,
+    auth_without_proxy_credentials_is_left_to_the_caller,
+    owned_request_pauses_resolve_once_and_fallback_preserves_header_policy,
+    pending_registration_cleans_cancelled_writer_and_reply_waits,
+    pending_registration_cleans_internal_timeout_and_write_failure,
+    command_dispatch_is_one_shot_and_distinguishes_cancelled_writer_wait,
+    command_dispatch_stays_ambiguous_after_lost_reply_error_and_timeout,
+    completion_receipt_preserves_late_reply_after_caller_deadline,
+    completion_receipt_is_released_by_target_session_detachment,
+    pending_completion_owner_does_not_retain_browser_transport,
+    closing_transport_is_visible_before_writer_and_reader_finish,
+    closing_transport_times_out_writer_and_cleans_owned_runtime,
+    binary_frames_preserve_event_payloads_and_command_replies,
+);
+
+async fn proxy_credentials_only_answer_explicit_proxy_challenges(kind: Kind) {
+    let (transport, mut peer) = test_peer_with_proxy_credentials(kind).await;
     for source in [Some("Server"), None, Some("Unknown"), Some("Proxy")] {
         let mut challenge =
             json!({"origin":"http://fixture.invalid", "scheme":"basic", "realm":"fixture"});
         if let Some(source) = source {
             challenge["source"] = json!(source);
         }
-        peer.send(Message::Text(
-            json!({
-                "method":"Fetch.authRequired", "sessionId":"challenged-session",
-                "params":{"requestId":"challenged-request", "authChallenge":challenge}
-            })
-            .to_string()
-            .into(),
-        ))
-        .await
-        .unwrap();
-        let reply = tokio::time::timeout(Duration::from_secs(2), peer.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let reply: Value = serde_json::from_str(reply.to_text().unwrap()).unwrap();
+        peer.send_json(json!({
+            "method":"Fetch.authRequired", "sessionId":"challenged-session",
+            "params":{"requestId":"challenged-request", "authChallenge":challenge}
+        }))
+        .await;
+        let reply = peer.recv_json_soon().await;
         assert_eq!(reply["sessionId"], "challenged-session");
         assert_eq!(reply["method"], "Fetch.continueWithAuth");
         assert_eq!(reply["params"]["requestId"], "challenged-request");
@@ -68,20 +267,14 @@ async fn proxy_credentials_only_answer_explicit_proxy_challenges() {
     transport.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn auth_without_proxy_credentials_is_left_to_the_caller() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn auth_without_proxy_credentials_is_left_to_the_caller(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let mut events = transport.subscribe();
-    peer.send(Message::Text(
-        json!({
-            "method":"Fetch.authRequired", "sessionId":"caller",
-            "params":{"requestId":"request", "authChallenge":{"source":"Server"}}
-        })
-        .to_string()
-        .into(),
-    ))
-    .await
-    .unwrap();
+    peer.send_json(json!({
+        "method":"Fetch.authRequired", "sessionId":"caller",
+        "params":{"requestId":"request", "authChallenge":{"source":"Server"}}
+    }))
+    .await;
     let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
         .await
         .unwrap()
@@ -90,51 +283,16 @@ async fn auth_without_proxy_credentials_is_left_to_the_caller() {
     transport.close().await.unwrap();
 }
 
-async fn test_peer_with_header_policy(strip: bool) -> (Transport, WebSocketStream<TcpStream>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        tokio_tungstenite::accept_async(socket).await.unwrap()
-    });
-    let stream = Transport::ws_connect(&url, Duration::from_secs(30))
-        .await
-        .unwrap();
-    (
-        Transport::build(None, stream, None, 30, false, strip).unwrap(),
-        server.await.unwrap(),
-    )
-}
-
-async fn assert_peer_terminated(peer: &mut WebSocketStream<TcpStream>) {
-    // Shutdown preserves bytes already accepted by the OS. Drain buffered
-    // frames, then require termination within one deadline without logging data.
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while let Some(Ok(message)) = peer.next().await {
-            if matches!(message, Message::Close(_)) {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("peer must observe socket termination while Transport is retained");
-}
-
-#[tokio::test]
-async fn owned_request_pauses_resolve_once_and_fallback_preserves_header_policy() {
-    async fn pause(peer: &mut WebSocketStream<TcpStream>, id: &str) {
-        peer.send(Message::Text(json!({
+async fn owned_request_pauses_resolve_once_and_fallback_preserves_header_policy(kind: Kind) {
+    async fn pause(peer: &mut Peer, id: &str) {
+        peer.send_json(json!({
             "method":"Fetch.requestPaused", "sessionId":"owned",
             "params":{"requestId":id,"request":{"headers":{"X-Client-Data":"remove","Other":"keep"}}},
-        }).to_string().into())).await.unwrap();
+        }))
+        .await;
     }
-    async fn continuation(peer: &mut WebSocketStream<TcpStream>, id: &str) -> Value {
-        let message = tokio::time::timeout(Duration::from_secs(2), peer.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+    async fn continuation(peer: &mut Peer, id: &str) -> Value {
+        let command = peer.recv_json_soon().await;
         assert_eq!(command["method"], "Fetch.continueRequest");
         assert_eq!(command["sessionId"], "owned");
         assert_eq!(
@@ -143,7 +301,7 @@ async fn owned_request_pauses_resolve_once_and_fallback_preserves_header_policy(
         );
         command
     }
-    let (transport, mut peer) = test_peer_with_header_policy(true).await;
+    let (transport, mut peer) = test_peer_with_header_policy(kind, true).await;
     let (sender, mut receiver) = mpsc::channel(1);
     let dropped = Arc::new(AtomicU64::new(0));
     transport
@@ -162,11 +320,8 @@ async fn owned_request_pauses_resolve_once_and_fallback_preserves_header_policy(
     let dispatch = CommandDispatch::new();
     let reply = async {
         let command = continuation(&mut peer, "queued").await;
-        peer.send(Message::Text(
-            json!({"id":command["id"],"result":{}}).to_string().into(),
-        ))
-        .await
-        .unwrap();
+        peer.send_json(json!({"id":command["id"],"result":{}}))
+            .await;
     };
     let (result, ()) = tokio::join!(
         delivered.continue_request_with_dispatch(&transport, &dispatch),
@@ -185,9 +340,7 @@ async fn owned_request_pauses_resolve_once_and_fallback_preserves_header_policy(
     pause(&mut peer, "closed").await;
     continuation(&mut peer, "closed").await;
     assert_eq!(dropped.load(Ordering::Relaxed), 2);
-    assert!(tokio::time::timeout(Duration::from_millis(10), peer.next())
-        .await
-        .is_err());
+    peer.assert_silent(Duration::from_millis(10)).await;
 }
 
 mod unicode_post_data {
@@ -208,13 +361,7 @@ mod unicode_post_data {
         ),
     ];
 
-    async fn pause(
-        peer: &mut WebSocketStream<TcpStream>,
-        session: &str,
-        id: &str,
-        post_data: &str,
-        response: bool,
-    ) {
+    async fn pause(peer: &mut Peer, session: &str, id: &str, post_data: &str, response: bool) {
         let session = json!(session);
         let id = json!(id);
         let response = if response {
@@ -222,33 +369,26 @@ mod unicode_post_data {
         } else {
             ""
         };
-        peer.send(Message::Text(
-            format!(
-                r#"{{"method":"Fetch.requestPaused","sessionId":{session},"params":{{"request":{{"method":"POST","headers":{{"X-Client-Data":"remove","Other":"keep"}},"postData":"{post_data}"}},"requestId":{id}{response}}}}}"#
-            )
-            .into(),
+        peer.send_text(format!(
+            r#"{{"method":"Fetch.requestPaused","sessionId":{session},"params":{{"request":{{"method":"POST","headers":{{"X-Client-Data":"remove","Other":"keep"}},"postData":"{post_data}"}},"requestId":{id}{response}}}}}"#
         ))
         .await
         .unwrap();
     }
 
-    async fn command(peer: &mut WebSocketStream<TcpStream>) -> Value {
-        let message = tokio::time::timeout(Duration::from_secs(2), peer.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        serde_json::from_str(message.to_text().unwrap()).unwrap()
-    }
+    over_both_links!(
+        repaired_unowned_pauses_preserve_session_and_header_policy,
+        repaired_request_pauses_remain_owned_and_deliver_repaired_post_data,
+        repaired_response_pauses_keep_response_route_ownership,
+    );
 
-    #[tokio::test]
-    async fn repaired_unowned_pauses_preserve_session_and_header_policy() {
+    async fn repaired_unowned_pauses_preserve_session_and_header_policy(kind: Kind) {
         for strip in [false, true] {
-            let (transport, mut peer) = test_peer_with_header_policy(strip).await;
+            let (transport, mut peer) = test_peer_with_header_policy(kind, strip).await;
             for (index, (raw, _)) in CASES.iter().enumerate() {
                 let id = format!("binary-{index}-\"quoted\"");
                 pause(&mut peer, "unowned-binary", &id, raw, false).await;
-                let reply = command(&mut peer).await;
+                let reply = peer.recv_json_soon().await;
                 assert_eq!(reply["method"], "Fetch.continueRequest");
                 assert_eq!(reply["sessionId"], "unowned-binary");
                 let mut expected = json!({"requestId":id});
@@ -261,9 +401,8 @@ mod unicode_post_data {
         }
     }
 
-    #[tokio::test]
-    async fn repaired_request_pauses_remain_owned_and_deliver_repaired_post_data() {
-        let (transport, mut peer) = test_peer_with_header_policy(true).await;
+    async fn repaired_request_pauses_remain_owned_and_deliver_repaired_post_data(kind: Kind) {
+        let (transport, mut peer) = test_peer_with_header_policy(kind, true).await;
         let (sender, mut receiver) = mpsc::channel(1);
         let dropped = Arc::new(AtomicU64::new(0));
         transport
@@ -283,24 +422,17 @@ mod unicode_post_data {
                 delivered.params["request"]["headers"],
                 json!({"X-Client-Data":"remove","Other":"keep"})
             );
-            assert!(tokio::time::timeout(Duration::from_millis(10), peer.next())
-                .await
-                .is_err());
+            peer.assert_silent(Duration::from_millis(10)).await;
             let reply = async {
-                let continuation = command(&mut peer).await;
+                let continuation = peer.recv_json_soon().await;
                 assert_eq!(continuation["method"], "Fetch.continueRequest");
                 assert_eq!(continuation["sessionId"], "owned-binary");
                 assert_eq!(
                     continuation["params"],
                     json!({"requestId":id,"headers":[{"name":"Other","value":"keep"}]})
                 );
-                peer.send(Message::Text(
-                    json!({"id":continuation["id"],"result":{}})
-                        .to_string()
-                        .into(),
-                ))
-                .await
-                .unwrap();
+                peer.send_json(json!({"id":continuation["id"],"result":{}}))
+                    .await;
             };
             let (result, ()) = tokio::join!(delivered.continue_request(&transport), reply);
             result.unwrap();
@@ -309,9 +441,8 @@ mod unicode_post_data {
         transport.close().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn repaired_response_pauses_keep_response_route_ownership() {
-        let (transport, mut peer) = test_peer_with_header_policy(true).await;
+    async fn repaired_response_pauses_keep_response_route_ownership(kind: Kind) {
+        let (transport, mut peer) = test_peer_with_header_policy(kind, true).await;
         let (response_sender, mut responses) = mpsc::channel(1);
         let (request_sender, mut requests) = mpsc::channel(1);
         let dropped = Arc::new(AtomicU64::new(0));
@@ -338,9 +469,7 @@ mod unicode_post_data {
             requests.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
-        assert!(tokio::time::timeout(Duration::from_millis(10), peer.next())
-            .await
-            .is_err());
+        peer.assert_silent(Duration::from_millis(10)).await;
         transport.remove_response_route("response-binary");
         pause(
             &mut peer,
@@ -350,7 +479,7 @@ mod unicode_post_data {
             true,
         )
         .await;
-        let continuation = command(&mut peer).await;
+        let continuation = peer.recv_json_soon().await;
         assert_eq!(continuation["method"], "Fetch.continueRequest");
         assert_eq!(continuation["sessionId"], "response-binary");
         assert_eq!(
@@ -369,31 +498,18 @@ mod unicode_post_data {
 mod repaired_adjacent_messages {
     use super::*;
 
-    fn frame(binary: bool, text: String) -> Message {
-        if binary {
-            Message::Binary(text.into_bytes().into())
-        } else {
-            Message::Text(text.into())
-        }
-    }
+    over_both_links!(
+        repaired_success_and_error_replies_complete_text_and_binary_commands,
+        repaired_auth_metadata_preserves_proxy_credentials_and_challenge_routing,
+    );
 
-    async fn command(peer: &mut WebSocketStream<TcpStream>) -> Value {
-        let message = tokio::time::timeout(Duration::from_secs(2), peer.next())
-            .await
-            .expect("transport must promptly answer repaired messages")
-            .unwrap()
-            .unwrap();
-        serde_json::from_str(message.to_text().unwrap()).unwrap()
-    }
-
-    #[tokio::test]
-    async fn repaired_success_and_error_replies_complete_text_and_binary_commands() {
-        let (transport, mut peer) = pending_test_peer().await;
+    async fn repaired_success_and_error_replies_complete_text_and_binary_commands(kind: Kind) {
+        let (transport, mut peer) = pending_test_peer(kind).await;
         for binary in [false, true] {
             for surrogate in [r"\uD800", r"\uDC00"] {
                 for error in [false, true] {
                     let reply = async {
-                        let sent = command(&mut peer).await;
+                        let sent = peer.recv_json_soon().await;
                         assert_eq!(sent["method"], "Fixture.repaired");
                         assert_eq!(sent["sessionId"], "reply-session");
                         let id = &sent["id"];
@@ -406,7 +522,7 @@ mod repaired_adjacent_messages {
                                 r#"{{"id":{id},"result":{{"value":"{surrogate}","literal":"\\uD800","valid":"\uD83D\uDE80","count":7}}}}"#
                             )
                         };
-                        peer.send(frame(binary, text)).await.unwrap();
+                        peer.send_frame(binary, text.into_bytes()).await.unwrap();
                     };
                     let params = json!({});
                     let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
@@ -441,9 +557,8 @@ mod repaired_adjacent_messages {
         transport.close().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn repaired_auth_metadata_preserves_proxy_credentials_and_challenge_routing() {
-        let (transport, mut peer) = test_peer_with_proxy_credentials().await;
+    async fn repaired_auth_metadata_preserves_proxy_credentials_and_challenge_routing(kind: Kind) {
+        let (transport, mut peer) = test_peer_with_proxy_credentials(kind).await;
         for binary in [false, true] {
             for (index, source) in [Some("Proxy"), Some("Server"), None, Some("Unknown")]
                 .into_iter()
@@ -461,8 +576,8 @@ mod repaired_adjacent_messages {
                     json!(session),
                     json!(request)
                 );
-                peer.send(frame(binary, text)).await.unwrap();
-                let reply = command(&mut peer).await;
+                peer.send_frame(binary, text.into_bytes()).await.unwrap();
+                let reply = peer.recv_json_soon().await;
                 assert_eq!(reply["method"], "Fetch.continueWithAuth");
                 assert_eq!(reply["sessionId"], session);
                 let expected = if source == Some("Proxy") {
@@ -480,9 +595,8 @@ mod repaired_adjacent_messages {
     }
 }
 
-#[tokio::test]
-async fn pending_registration_cleans_cancelled_writer_and_reply_waits() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn pending_registration_cleans_cancelled_writer_and_reply_waits(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let writer = transport.writer.lock().await;
     let (unrelated, _receiver) = oneshot::channel();
     lock_pending(&transport.pending).insert(9999, unrelated);
@@ -505,19 +619,13 @@ async fn pending_registration_cleans_cancelled_writer_and_reply_waits() {
         .await
         .is_err());
         assert_eq!(lock_pending(&transport.pending).len(), 1);
-        assert!(peer.next().await.unwrap().is_ok());
+        peer.recv_text().await;
     }
     assert!(!transport.reader_handle.as_ref().unwrap().is_finished());
     let reply = async {
-        let message = peer.next().await.unwrap().unwrap();
-        let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
-        peer.send(Message::Text(
-            json!({"id":command["id"], "result":{"ok":true}})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
+        let command = peer.recv_json().await;
+        peer.send_json(json!({"id":command["id"], "result":{"ok":true}}))
+            .await;
     };
     let params = json!({});
     let (response, ()) = tokio::join!(transport.send::<_, Value>("Fixture.normal", &params), reply);
@@ -525,9 +633,8 @@ async fn pending_registration_cleans_cancelled_writer_and_reply_waits() {
     assert_eq!(lock_pending(&transport.pending).len(), 1);
 }
 
-#[tokio::test]
-async fn pending_registration_cleans_internal_timeout_and_write_failure() {
-    let (mut transport, _peer) = pending_test_peer().await;
+async fn pending_registration_cleans_internal_timeout_and_write_failure(kind: Kind) {
+    let (mut transport, _peer) = pending_test_peer(kind).await;
     transport.cmd_timeout = Duration::from_millis(10);
     assert!(transport
         .send::<_, Value>("Fixture.wait", &json!({}))
@@ -542,9 +649,8 @@ async fn pending_registration_cleans_internal_timeout_and_write_failure() {
     assert!(lock_pending(&transport.pending).is_empty());
 }
 
-#[tokio::test]
-async fn command_dispatch_is_one_shot_and_distinguishes_cancelled_writer_wait() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn command_dispatch_is_one_shot_and_distinguishes_cancelled_writer_wait(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let writer = transport.writer.lock().await;
     let dispatch = CommandDispatch::new();
     let params = json!({"requestId":"pause"});
@@ -576,14 +682,10 @@ async fn command_dispatch_is_one_shot_and_distinguishes_cancelled_writer_wait() 
     drop(writer);
     let fallback = CommandDispatch::new();
     let response = async {
-        let text = peer.next().await.unwrap().unwrap();
-        let command: Value = serde_json::from_str(text.to_text().unwrap()).unwrap();
+        let command = peer.recv_json().await;
         assert_eq!(command["method"], "Fetch.continueRequest");
-        peer.send(Message::Text(
-            json!({"id":command["id"],"result":{}}).to_string().into(),
-        ))
-        .await
-        .unwrap();
+        peer.send_json(json!({"id":command["id"],"result":{}}))
+            .await;
     };
     let (result, ()) = tokio::join!(
         transport.send_to_session_with_dispatch::<_, Value>(
@@ -605,14 +707,11 @@ async fn command_dispatch_is_one_shot_and_distinguishes_cancelled_writer_wait() 
         )
         .await
         .is_err());
-    assert!(tokio::time::timeout(Duration::from_millis(10), peer.next())
-        .await
-        .is_err());
+    peer.assert_silent(Duration::from_millis(10)).await;
 }
 
-#[tokio::test]
-async fn command_dispatch_stays_ambiguous_after_lost_reply_error_and_timeout() {
-    let (mut transport, mut peer) = pending_test_peer().await;
+async fn command_dispatch_stays_ambiguous_after_lost_reply_error_and_timeout(kind: Kind) {
+    let (mut transport, mut peer) = pending_test_peer(kind).await;
     let params = json!({"requestId":"pause"});
     let cancelled = CommandDispatch::new();
     {
@@ -625,7 +724,7 @@ async fn command_dispatch_stays_ambiguous_after_lost_reply_error_and_timeout() {
         tokio::pin!(send);
         tokio::select! {
             _ = &mut send => panic!("reply was withheld"),
-            message = peer.next() => { assert!(message.unwrap().is_ok()); }
+            _ = peer.recv_text() => {}
         }
     }
     assert!(cancelled.may_have_been_sent());
@@ -642,18 +741,14 @@ async fn command_dispatch_stays_ambiguous_after_lost_reply_error_and_timeout() {
         .await
         .is_err());
     assert!(timed_out.may_have_been_sent());
-    peer.next().await.unwrap().unwrap();
+    peer.recv_text().await;
     let failed = CommandDispatch::new();
     let response = async {
-        let message = peer.next().await.unwrap().unwrap();
-        let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
-        peer.send(Message::Text(
-            json!({"id":command["id"],"error":{"code":-32000,"message":"unknown result"}})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
+        let command = peer.recv_json().await;
+        peer.send_json(
+            json!({"id":command["id"],"error":{"code":-32000,"message":"unknown result"}}),
+        )
+        .await;
     };
     let (result, ()) = tokio::join!(
         transport.send_to_session_with_dispatch::<_, Value>(
@@ -681,9 +776,8 @@ async fn command_dispatch_stays_ambiguous_after_lost_reply_error_and_timeout() {
     assert!(lock_pending(&transport.pending).is_empty());
 }
 
-#[tokio::test]
-async fn completion_receipt_preserves_late_reply_after_caller_deadline() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn completion_receipt_preserves_late_reply_after_caller_deadline(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let session: Arc<str> = "capture-session".into();
     let dispatch = CommandDispatch::new();
     let (written, response) = transport
@@ -692,8 +786,7 @@ async fn completion_receipt_preserves_late_reply_after_caller_deadline() {
         .unwrap();
     written.unwrap();
     assert!(dispatch.may_have_been_sent());
-    let command = peer.next().await.unwrap().unwrap();
-    let command: Value = serde_json::from_str(command.to_text().unwrap()).unwrap();
+    let command = peer.recv_json().await;
     let id = command["id"].as_u64().unwrap();
     let mut owner = tokio::spawn(response.wait());
     assert!(tokio::time::timeout(Duration::from_millis(10), &mut owner)
@@ -704,13 +797,8 @@ async fn completion_receipt_preserves_late_reply_after_caller_deadline() {
         lock_completions(&transport.completion_routes).get(session.as_ref()),
         Some(&id)
     );
-    peer.send(Message::Text(
-        json!({"id":id,"result":{"data":"native-completion"}})
-            .to_string()
-            .into(),
-    ))
-    .await
-    .unwrap();
+    peer.send_json(json!({"id":id,"result":{"data":"native-completion"}}))
+        .await;
     assert_eq!(
         owner.await.unwrap().unwrap(),
         json!({"data":"native-completion"})
@@ -720,9 +808,8 @@ async fn completion_receipt_preserves_late_reply_after_caller_deadline() {
     transport.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn completion_receipt_is_released_by_target_session_detachment() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn completion_receipt_is_released_by_target_session_detachment(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let session: Arc<str> = "detached-capture-session".into();
     let dispatch = CommandDispatch::new();
     let (written, response) = transport
@@ -730,17 +817,12 @@ async fn completion_receipt_is_released_by_target_session_detachment() {
         .await
         .unwrap();
     written.unwrap();
-    peer.next().await.unwrap().unwrap();
-    peer.send(Message::Text(
-        json!({
-            "method":"Target.detachedFromTarget",
-            "params":{"sessionId":session.as_ref(),"targetId":"closed-tab"}
-        })
-        .to_string()
-        .into(),
-    ))
-    .await
-    .unwrap();
+    peer.recv_text().await;
+    peer.send_json(json!({
+        "method":"Target.detachedFromTarget",
+        "params":{"sessionId":session.as_ref(),"targetId":"closed-tab"}
+    }))
+    .await;
     let result = tokio::time::timeout(Duration::from_secs(2), response.wait())
         .await
         .unwrap();
@@ -750,9 +832,8 @@ async fn completion_receipt_is_released_by_target_session_detachment() {
     transport.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn pending_completion_owner_does_not_retain_browser_transport() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn pending_completion_owner_does_not_retain_browser_transport(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let transport = Arc::new(transport);
     let weak = Arc::downgrade(&transport);
     let session: Arc<str> = "owned-completion-session".into();
@@ -762,7 +843,7 @@ async fn pending_completion_owner_does_not_retain_browser_transport() {
         .await
         .unwrap();
     written.unwrap();
-    peer.next().await.unwrap().unwrap();
+    peer.recv_text().await;
     let owner = tokio::spawn(response.wait());
     drop(transport);
     assert!(weak.upgrade().is_none());
@@ -773,9 +854,8 @@ async fn pending_completion_owner_does_not_retain_browser_transport() {
     assert!(matches!(result, Err(Error::Transport { .. })));
 }
 
-#[tokio::test]
-async fn closing_transport_is_visible_before_writer_and_reader_finish() {
-    let (transport, _peer) = pending_test_peer().await;
+async fn closing_transport_is_visible_before_writer_and_reader_finish(kind: Kind) {
+    let (transport, _peer) = pending_test_peer(kind).await;
     let writer = transport.writer.lock().await;
     let mut closing = Box::pin(transport.close());
     assert!(
@@ -792,9 +872,8 @@ async fn closing_transport_is_visible_before_writer_and_reader_finish() {
     closing.await.unwrap();
 }
 
-#[tokio::test]
-async fn closing_transport_times_out_writer_and_cleans_owned_runtime() {
-    let (mut transport, _peer) = pending_test_peer().await;
+async fn closing_transport_times_out_writer_and_cleans_owned_runtime(kind: Kind) {
+    let (mut transport, _peer) = pending_test_peer(kind).await;
     transport.cmd_timeout = Duration::from_secs(1);
     let runtime = RuntimeDirectory::create(None).unwrap();
     let runtime_path = runtime.path().to_owned();
@@ -825,20 +904,19 @@ async fn closing_transport_times_out_writer_and_cleans_owned_runtime() {
     drop(writer);
 }
 
-#[tokio::test]
-async fn binary_frames_preserve_event_payloads_and_command_replies() {
-    let (transport, mut peer) = pending_test_peer().await;
+async fn binary_frames_preserve_event_payloads_and_command_replies(kind: Kind) {
+    let (transport, mut peer) = pending_test_peer(kind).await;
     let mut events = transport.subscribe();
     let params = json!({"nested":{"text":"quoted \"Unicode: λ\"","values":[null,true,42]}});
-    peer.send(Message::Binary(
+    peer.send_frame(
+        true,
         serde_json::to_vec(&json!({
             "method":"Fixture.binary",
             "sessionId":"binary-session",
             "params":params,
         }))
-        .unwrap()
-        .into(),
-    ))
+        .unwrap(),
+    )
     .await
     .unwrap();
     let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
@@ -858,13 +936,11 @@ async fn binary_frames_preserve_event_payloads_and_command_replies() {
         _ => panic!("expected binary event"),
     }
     let reply = async {
-        let command = peer.next().await.unwrap().unwrap();
-        let command: Value = serde_json::from_str(command.to_text().unwrap()).unwrap();
-        peer.send(Message::Binary(
-            serde_json::to_vec(&json!({"id":command["id"],"result":params}))
-                .unwrap()
-                .into(),
-        ))
+        let command = peer.recv_json().await;
+        peer.send_frame(
+            true,
+            serde_json::to_vec(&json!({"id":command["id"],"result":params})).unwrap(),
+        )
         .await
         .unwrap();
     };
