@@ -1190,8 +1190,11 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
         Reply::Text("All done."),
     ])
     .await;
+    // Allowed, so that it waits for its approval (Windows' `dir` isn't
+    // among the default commands).
     let permissions = Permissions {
         tool_call_checkpoint: Some(2),
+        allowed_commands: vec![list("")],
         ..ask_approval("commands")
     };
     h.start(h.request(&url, Harness::send("Run it"), permissions.clone()))
