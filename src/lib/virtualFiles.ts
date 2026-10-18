@@ -69,6 +69,25 @@ export interface Revision {
   source: 'process' | 'app';
 }
 
+/**
+ * One line for the Settings menu: whether the volume is there, and what
+ * that means for chats (isolated chats and CLM mode need it).
+ */
+export function vfsSummary(status: VfsStatus): { text: string; warning: boolean } {
+  if (status.mountpoint) {
+    return {
+      text: `Mounted at ${status.mountpoint}: chats work in isolation`,
+      warning: false,
+    };
+  }
+  const without = 'chats work in the project folder directly';
+  if (!status.driver.installed) {
+    return { text: `${status.driver.driver} isn’t installed: ${without}`, warning: true };
+  }
+  if (status.problem) return { text: `${status.problem.title}: ${without}`, warning: true };
+  return { text: `Mounts at ${status.defaultMountpoint} when first used`, warning: false };
+}
+
 export type InstallOutcome =
   | { status: 'installed'; version: string | null }
   | { status: 'needsRestart'; message: string }

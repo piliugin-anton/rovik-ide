@@ -2986,6 +2986,44 @@ async fn a_projects_dependencies_are_installed_first() {
     );
 }
 
+/// S03: a project that commits no lockfile, as a server's copy of it has
+/// it, with nothing installed: the Prepare stage installs what its
+/// package.json names with npm, which writes no lockfile, and the checks
+/// pass on their first round.
+#[tokio::test]
+async fn a_project_without_a_lockfile_is_installed_first() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = uninstalled_project().await;
+    std::fs::remove_file(h.project.join("package-lock.json")).unwrap();
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script_with_plan(plan_reading("vendor/vitest/bin.js")),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let mut expected = BALANCED_OK.to_vec();
+    expected[2] = (Stage::Prepare, Status::Done);
+    assert_eq!(names(&records), expected);
+    assert_eq!(
+        records[2].summary.as_deref(),
+        Some("Installed: `npm install --no-package-lock --no-audit --no-fund`")
+    );
+    assert_eq!(records[4].outcome.as_deref(), Some("verified"));
+    assert!(h.project.join("node_modules/.bin/vitest").exists());
+    assert!(
+        !h.project.join("package-lock.json").exists(),
+        "no lockfile the change didn't make"
+    );
+    let messages = h.messages().await;
+    let rounds = verifications(&messages);
+    assert_eq!(rounds.len(), 1, "{rounds:#?}");
+    assert!(rounds[0].get("environment").is_none());
+}
+
 /// V03 (D12): the check fails on its environment ("vitest: not found"),
 /// not on the change: the dependencies the lockfile names are installed,
 /// the checks run again at once, and the round isn't counted. The task is

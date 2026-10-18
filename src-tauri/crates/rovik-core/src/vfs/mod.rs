@@ -136,26 +136,30 @@ pub fn platform_mount(
 }
 
 /// Where the volume is mounted unless told otherwise: a per-user folder
-/// without spaces, so paths can be pasted into commands unquoted.
+/// without spaces, so paths can be pasted into commands unquoted. Each of
+/// Rovik's processes has its own (`vfs`, `vfs-2`…: os_lock.rs's slots), or
+/// one would mount over another's.
 pub fn default_mountpoint() -> PathBuf {
+    let vfs = crate::os_lock::slotted("vfs");
     #[cfg(target_os = "linux")]
     {
         match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| Path::new(d).is_dir()) {
-            Some(dir) => PathBuf::from(dir).join("rovik-ide").join("vfs"),
+            Some(dir) => PathBuf::from(dir).join("rovik-ide").join(vfs),
             None => std::env::temp_dir()
                 .join(format!("rovik-ide-{}", unsafe { libc::getuid() }))
-                .join("vfs"),
+                .join(vfs),
         }
     }
     #[cfg(target_os = "macos")]
     {
         // /Volumes/RovikVirtualFiles with FSKit, else under $TMPDIR (per user).
+        let _ = vfs;
         macfuse::plan(None).mountpoint
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         // Windows: %TEMP% is per user.
-        std::env::temp_dir().join("rovik-ide-vfs")
+        std::env::temp_dir().join(format!("rovik-ide-{vfs}"))
     }
 }
 

@@ -31,11 +31,22 @@ import { confirmDialog } from './ConfirmDialog';
 import { ConflictResolver } from './ConflictResolver';
 import { PullStrategyDialog, type PullStrategyPick } from './PullStrategyDialog';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
+import {
+  COMMIT_LABELS,
+  commitAction,
+  publishHint,
+  publishQuestion,
+  unpublished,
+} from '../lib/gitPublish';
 
 const GIT_ROW_HEIGHT = 22;
 
 /** Commit messages being written, by project: the panel goes while another sidebar tab is shown. */
 const commitDrafts = new Map<string, string>();
+
+/** The branches whose publishing the user put off after a commit ("Not now"),
+ *  by project: not asked about again while the app runs. Publish still does it. */
+const publishPutOff = new Set<string>();
 
 interface GitPanelProps {
   /** Absolute path to the currently open project/workspace. */
@@ -187,6 +198,21 @@ function IconHistory() {
       <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
       <path d="M3 3v5h5" />
       <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+/** A commit moved up onto the tip of another line of commits. */
+function IconRebase() {
+  return (
+    <svg {...iconProps}>
+      <circle cx="6" cy="18" r="2" />
+      <circle cx="6" cy="6" r="2" />
+      <line x1="6" y1="8" x2="6" y2="16" />
+      <line x1="8" y1="6" x2="16" y2="6" />
+      <circle cx="18" cy="6" r="2" />
+      <path d="M18 19v-8" />
+      <path d="m15.5 13.5 2.5-2.5 2.5 2.5" />
     </svg>
   );
 }
@@ -723,10 +749,10 @@ export function GitPanel(props: GitPanelProps) {
       const hasChanges = st.files.length > 0;
 
       // Retry / push-only: no message but commits waiting to be pushed
-      // (e.g. a previous push failed with an SSH/network error). There is
-      // nothing to commit, so just push.
+      // (e.g. a previous push failed with an SSH/network error), or a
+      // branch to publish. There is nothing to commit, so just push.
       if (!msg || !hasChanges) {
-        if (st.ahead <= 0) return;
+        if (st.ahead <= 0 && !unpublished(st)) return;
         try {
           await push();
         } finally {
@@ -742,11 +768,24 @@ export function GitPanel(props: GitPanelProps) {
       const updated = await refreshStatus();
       try {
         if (updated && updated.ahead > 0) await push();
+        else if (unpublished(updated)) await publishAfterCommit(updated);
       } finally {
         await refreshStatus();
         refreshHistoryIfOpen();
       }
     });
+
+  /** A commit on a branch with no remote branch yet wasn't pushed: asks to
+   *  publish the branch, whose push makes its remote branch and tracks it. */
+  const publishAfterCommit = async (st: GitStatus) => {
+    const key = `${props.projectPath}\n${st.branch}`;
+    if (publishPutOff.has(key)) return;
+    if (!(await confirmDialog(publishQuestion(st)))) {
+      publishPutOff.add(key);
+      return;
+    }
+    await push();
+  };
 
   const switchBranch = (branch: string) =>
     withBusy(async () => {
@@ -783,7 +822,7 @@ export function GitPanel(props: GitPanelProps) {
   // branches, reverting one file — stays where it is.
   // -------------------------------------------------------------------------
 
-  type MoreView = 'menu' | 'new-branch' | 'delete-branch' | 'stash-save' | 'stash-list';
+  type MoreView = 'menu' | 'new-branch' | 'rebase' | 'delete-branch' | 'stash-save' | 'stash-list';
 
   const [moreOpen, setMoreOpen] = createSignal(false);
   const [moreView, setMoreView] = createSignal<MoreView>('menu');
@@ -792,6 +831,11 @@ export function GitPanel(props: GitPanelProps) {
   // when the view opens; only a name that's actually in the branch list is
   // sent (anything else — detached HEAD, still loading — means HEAD).
   const [newBranchFrom, setNewBranchFrom] = createSignal('');
+  // Rebase: the search over the branches to rebase onto, the row the arrow
+  // keys are on, and what a pick said when it had nothing to do.
+  const [rebaseQuery, setRebaseQuery] = createSignal('');
+  const [rebaseCursor, setRebaseCursor] = createSignal(0);
+  const [rebaseNote, setRebaseNote] = createSignal<string | null>(null);
   const [stashMessage, setStashMessage] = createSignal('');
   const [stashes, setStashes] = createSignal<GitStashEntry[]>([]);
   const [stashesLoading, setStashesLoading] = createSignal(false);
@@ -897,8 +941,118 @@ export function GitPanel(props: GitPanelProps) {
       setNewBranchFrom(status()?.branch ?? '');
       void loadBranches();
     }
+    if (view === 'rebase') {
+      setRebaseQuery('');
+      setRebaseCursor(0);
+      setRebaseNote(null);
+      void loadBranches();
+    }
     if (view === 'delete-branch') void loadBranches();
     if (view === 'stash-list') void loadStashes();
+  };
+
+  /** Why the current branch can't be rebased now; null when it can. */
+  const rebaseBlocked = () => {
+    const op = operation();
+    if (op) return `A ${op.kind} is in progress: finish or abort it first`;
+    const branch = status()?.branch ?? '';
+    if (branch === 'unborn') return 'There are no commits to rebase yet';
+    if (!branch || branch.startsWith('detached@')) return 'Check out a branch to rebase it';
+    return null;
+  };
+
+  /** The branches the current one can be rebased onto, local ones first,
+   *  that have every word of the search in their name. */
+  const rebaseTargets = createMemo(() => {
+    const current = status()?.branch;
+    const words = rebaseQuery().toLowerCase().split(/\s+/).filter(Boolean);
+    return branches().filter(
+      (b) =>
+        (b.is_remote || b.name !== current) && words.every((w) => b.name.toLowerCase().includes(w))
+    );
+  });
+
+  /** Rebases the current branch onto `b`, asking first when that rewrites
+   *  commits already pushed (Rovik doesn't force a push). Conflicts open
+   *  the resolver, as a pull's do. */
+  const rebaseOnto = (b: GitBranch) => {
+    if (busy()) return;
+    return withBusy(async () => {
+      const branch = status()?.branch ?? 'This branch';
+      const args = { path: props.projectPath, onto: b.name, remote: b.is_remote };
+      let out = await invoke<GitPullOutcome>('git_rebase', args);
+      if (out.result === 'rewrites-pushed') {
+        const upstream = status()?.upstream ?? 'its remote branch';
+        const ok = await confirmDialog({
+          title: `Rebase ${branch} onto ${b.name}?`,
+          message: `Some of ${branch}’s commits are on ${upstream} already. The rebase rewrites them, and the remote then turns down a push of the rewritten ones unless it’s forced (git push --force-with-lease, in a terminal): Rovik doesn’t force a push.`,
+          confirmLabel: 'Rebase anyway',
+        });
+        if (!ok) return;
+        out = await invoke<GitPullOutcome>('git_rebase', { ...args, rewritePushed: true });
+      }
+      if (out.result === 'up-to-date') {
+        setRebaseNote(`${branch} already has everything on ${b.name}: nothing to rebase.`);
+        return;
+      }
+      closeMore();
+      await refreshStatus();
+      props.onFilesChangedOnDisk?.();
+      refreshHistoryIfOpen();
+      if (out.result === 'conflicts') setResolver({ file: out.conflicts[0] });
+    });
+  };
+
+  /** The search's keys: arrows move along the list, Enter rebases onto the
+   *  row they're on, Escape clears the search (then closes the menu). */
+  const onRebaseSearchKey = (e: KeyboardEvent) => {
+    const targets = rebaseTargets();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const by = e.key === 'ArrowDown' ? 1 : -1;
+      setRebaseCursor((i) => Math.max(0, Math.min(targets.length - 1, i + by)));
+      queueMicrotask(() =>
+        document
+          .querySelector('.git-more-dropdown .git-menu-cursor')
+          ?.scrollIntoView({ block: 'nearest' })
+      );
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const pick = targets[Math.min(rebaseCursor(), targets.length - 1)];
+      if (pick) void rebaseOnto(pick);
+    } else if (e.key === 'Escape' && rebaseQuery() !== '') {
+      e.stopPropagation();
+      setRebaseQuery('');
+      setRebaseCursor(0);
+    }
+  };
+
+  /** The rebase view's local or remote branches, under their label. */
+  const rebaseSection = (remote: boolean) => {
+    const rows = () => rebaseTargets().filter((b) => b.is_remote === remote);
+    // Rows are counted across both sections, local ones first.
+    const first = () => (remote ? rebaseTargets().filter((b) => !b.is_remote).length : 0);
+    return (
+      <Show when={rows().length > 0}>
+        <div class="git-menu-section-label">{remote ? 'Remote' : 'Local'}</div>
+        <ul class="context-menu-list">
+          <For each={rows()}>
+            {(b, i) => (
+              <li
+                class="context-menu-item"
+                classList={{ 'git-menu-cursor': first() + i() === rebaseCursor() }}
+                title={`Rebase ${status()?.branch ?? 'this branch'} onto ${b.name}`}
+                onMouseMove={() => setRebaseCursor(first() + i())}
+                onClick={() => void rebaseOnto(b)}
+              >
+                <IconBranch />
+                <span>{b.name}</span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+    );
   };
 
   const sameStashes = (a: GitStashEntry[], b: GitStashEntry[]) =>
@@ -1230,13 +1384,15 @@ export function GitPanel(props: GitPanelProps) {
     if (!s || busy()) return false;
     // A merge / rebase in progress is finished from its banner, not here.
     if (s.operation) return false;
-    if (s.ahead > 0) return true;
+    // Push, or Publish a branch with no remote branch yet (lib/gitPublish.ts).
+    if (commitAction(s, commitMessage()) !== 'commit') return true;
     return !!commitMessage().trim() && s.files.length > 0;
   });
-  const commitButtonText = createMemo(() => {
+  const commitButtonAction = createMemo(() => {
     const s = status();
-    return s && s.ahead > 0 ? 'Push' : 'Commit';
+    return s ? commitAction(s, commitMessage()) : 'commit';
   });
+  const commitButtonText = () => COMMIT_LABELS[commitButtonAction()];
 
   /*
    * Git's own activity (a commit, a checkout, also from a terminal) and
@@ -1486,6 +1642,21 @@ export function GitPanel(props: GitPanelProps) {
                     <IconBranch />
                     <span>New branch…</span>
                   </li>
+                  <li
+                    class="context-menu-item"
+                    classList={{ 'git-menu-disabled': rebaseBlocked() !== null }}
+                    aria-disabled={rebaseBlocked() !== null}
+                    title={
+                      rebaseBlocked() ??
+                      `Replay ${status()?.branch}’s commits on top of another branch`
+                    }
+                    onClick={() => {
+                      if (rebaseBlocked() === null) openMoreView('rebase');
+                    }}
+                  >
+                    <IconRebase />
+                    <span>Rebase…</span>
+                  </li>
                   <li class="context-menu-item" onClick={() => openMoreView('delete-branch')}>
                     <IconTrash />
                     <span>Delete branch…</span>
@@ -1633,6 +1804,69 @@ export function GitPanel(props: GitPanelProps) {
                     </button>
                   </div>
                 </div>
+              </Show>
+
+              {/* Rebase: onto which branch, found by searching */}
+              <Show when={moreView() === 'rebase'}>
+                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
+                  <IconBack />
+                  <span>Rebase {status()?.branch} onto</span>
+                </button>
+                <div class="git-history-search-row">
+                  <div class="git-history-search-wrap">
+                    <input
+                      ref={(el) => queueMicrotask(() => el.focus())}
+                      class="tree-row-input git-more-input git-history-search"
+                      placeholder="Search branches"
+                      value={rebaseQuery()}
+                      spellcheck={false}
+                      autocomplete="off"
+                      aria-label="Search branches to rebase onto"
+                      onInput={(e) => {
+                        setRebaseQuery(e.currentTarget.value);
+                        setRebaseCursor(0);
+                        setRebaseNote(null);
+                      }}
+                      onKeyDown={onRebaseSearchKey}
+                      disabled={busy()}
+                    />
+                    <Show when={rebaseQuery() !== ''}>
+                      <button
+                        type="button"
+                        class="git-history-clear"
+                        title="Clear search"
+                        aria-label="Clear branch search"
+                        onClick={() => {
+                          setRebaseQuery('');
+                          setRebaseCursor(0);
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </Show>
+                  </div>
+                </div>
+                <Show when={rebaseNote()}>
+                  <div class="git-more-note git-rebase-note">{rebaseNote()}</div>
+                </Show>
+                <Show when={branchesLoading() && branches().length === 0}>
+                  <div class="context-menu-item context-menu-loading">
+                    <IconSpinner /> <span>Loading branches...</span>
+                  </div>
+                </Show>
+                <Show
+                  when={
+                    !(branchesLoading() && branches().length === 0) && rebaseTargets().length === 0
+                  }
+                >
+                  <div class="git-more-note">
+                    {rebaseQuery().trim()
+                      ? 'No branch matches.'
+                      : 'No other branches to rebase onto.'}
+                  </div>
+                </Show>
+                {rebaseSection(false)}
+                {rebaseSection(true)}
               </Show>
 
               {/* Delete branch */}
@@ -2383,9 +2617,12 @@ export function GitPanel(props: GitPanelProps) {
             class="git-commit-button primary icon-button"
             disabled={!canCommit()}
             onClick={commitAndMaybePush}
+            title={
+              commitButtonAction() === 'publish' && status() ? publishHint(status()!) : undefined
+            }
           >
             <Show when={!busy()} fallback={<IconSpinner />}>
-              <Show when={commitButtonText() === 'Push'} fallback={<IconCheck />}>
+              <Show when={commitButtonAction() !== 'commit'} fallback={<IconCheck />}>
                 <IconArrowUp />
               </Show>
             </Show>

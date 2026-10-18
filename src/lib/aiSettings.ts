@@ -1,5 +1,6 @@
 import { settingOf } from './reasoning';
 import { invoke } from '@tauri-apps/api/core';
+import { plural } from './textUtils';
 import type { ModelProfile, ModelSelection, Provider, ProviderModel } from '../types';
 import { DEFAULT_PERMISSIONS, normalizePermissions, type AgentPermissions } from './permissions';
 import {
@@ -53,9 +54,21 @@ export async function loadAiSettings(): Promise<PersistedAiSettings> {
   }
 }
 
-export async function saveAiSettings(settings: PersistedAiSettings): Promise<void> {
+/**
+ * Saves the settings. `base`: the settings they were made of, as loaded:
+ * the backend saves them onto the settings as they are now, which another
+ * window may have saved meanwhile, so only what changed here changes
+ * (ProviderKeys::save_onto).
+ */
+export async function saveAiSettings(
+  settings: PersistedAiSettings,
+  base?: PersistedAiSettings
+): Promise<void> {
   const { loadFailed: _, ...saved } = settings;
-  await invoke<void>('save_ai_settings', { json: JSON.stringify(saved) });
+  await invoke<void>('save_ai_settings', {
+    json: JSON.stringify(saved),
+    base: base ? JSON.stringify(base) : null,
+  });
 }
 
 /**
@@ -69,8 +82,9 @@ export async function saveKeepingSubagents(
   subagentsUnknown: boolean,
   io: {
     load: () => Promise<PersistedAiSettings>;
-    save: (settings: PersistedAiSettings) => Promise<void>;
-  } = { load: loadAiSettings, save: saveAiSettings }
+    save: (settings: PersistedAiSettings, base?: PersistedAiSettings) => Promise<void>;
+  } = { load: loadAiSettings, save: saveAiSettings },
+  base?: PersistedAiSettings
 ): Promise<SubagentSettings | null> {
   let subagents = settings.subagents;
   if (subagentsUnknown) {
@@ -78,7 +92,7 @@ export async function saveKeepingSubagents(
     if (saved.loadFailed) return null;
     subagents = saved.subagents;
   }
-  await io.save({ ...settings, version: 2, subagents });
+  await io.save({ ...settings, version: 2, subagents }, base);
   return subagents;
 }
 
@@ -100,6 +114,10 @@ export function createAiSettingsHolder(
   io?: Parameters<typeof saveKeepingSubagents>[2]
 ) {
   let unknown = false;
+  // What this copy was made of, as loaded or saved last: a save goes onto
+  // the settings as they are now with only what changed here
+  // (saveAiSettings).
+  let base: PersistedAiSettings | undefined;
   return {
     /** Takes loaded settings in; `active` is the caller's own. */
     apply(settings: PersistedAiSettings) {
@@ -107,16 +125,18 @@ export function createAiSettingsHolder(
       targets.setPermissions(settings.permissions);
       targets.setSubagents(settings.subagents);
       unknown = !!settings.loadFailed;
+      base = settings.loadFailed ? undefined : settings;
     },
     /** Saves; false (and a console error) when nothing could be saved. */
     async save(settings: Omit<PersistedAiSettings, 'version' | 'loadFailed'>): Promise<boolean> {
       // Read before the await: a load may land meanwhile.
       const wasUnknown = unknown;
-      const saved = await saveKeepingSubagents(settings, wasUnknown, io);
+      const saved = await saveKeepingSubagents(settings, wasUnknown, io, base);
       if (!saved) {
         console.error('AI settings not saved: the saved ones couldn’t be read.');
         return false;
       }
+      base = { ...settings, version: 2, subagents: saved };
       if (wasUnknown) {
         unknown = false;
         targets.setSubagents(saved);
@@ -124,6 +144,13 @@ export function createAiSettingsHolder(
       return true;
     },
   };
+}
+
+/** One line for the Settings menu: how many providers and models there are to pick from. */
+export function providersSummary(providers: Provider[]): string {
+  if (providers.length === 0) return 'No providers yet: add one to chat';
+  const models = providers.reduce((n, p) => n + p.models.filter((m) => m.enabled).length, 0);
+  return `${plural(providers.length, 'provider')}, ${plural(models, 'model')} enabled`;
 }
 
 /*

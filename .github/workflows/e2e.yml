@@ -267,7 +267,17 @@ jobs:
       # package, the check fails and the agent's changes don't land).
       - run: npm install -g typescript
       - name: Build the app
-        run: npx tauri build --bundles app
+        run: |
+          npx tauri build --bundles app
+          # The build as it ships, kept for the scenarios' other Rovik
+          # windows: the disk image's build takes it out of the bundle
+          # folder, the bridge build replaces it, and a page with the
+          # bridge would take the run's commands.
+          shipped=$(ls -d src-tauri/target/release/bundle/macos/*.app | head -1)
+          mkdir -p "$RUNNER_TEMP/shipped"
+          cp -R "$shipped" "$RUNNER_TEMP/shipped/"
+          kept=$(ls -d "$RUNNER_TEMP"/shipped/*.app | head -1)
+          echo "SECOND_APP=$kept/Contents/MacOS/$(ls "$kept/Contents/MacOS" | head -1)" >> "$GITHUB_ENV"
       - name: Package it as a disk image
         id: dmg
         continue-on-error: true
@@ -308,7 +318,7 @@ jobs:
           exe=$(ls "$app/Contents/MacOS/" | head -1)
           echo "APP=$app/Contents/MacOS/$exe" >> "$GITHUB_ENV"
       - name: Run the scenarios
-        run: node scripts/e2e/run.mjs --app "$APP" --out e2e-out --driver bridge
+        run: node scripts/e2e/run.mjs --app "$APP" --out e2e-out --driver bridge --second-app "$SECOND_APP"
       - name: Logs of a failed run
         if: failure()
         run: |

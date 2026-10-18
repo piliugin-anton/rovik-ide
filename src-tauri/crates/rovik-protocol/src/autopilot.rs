@@ -309,7 +309,7 @@ pub const DEFAULT_AUTOPILOT_DENYLIST: &[&str] = &[
     "dd",
 ];
 
-/// The Autopilot section of Settings → Subagents (3.5). The effort shapes
+/// Settings → Autopilot (autopilot-plan 3.5). The effort shapes
 /// the pipeline (`next_stage`); the budget (U04), the prepare stage (S03)
 /// and the denylist (U01) are read by the tasks that build them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

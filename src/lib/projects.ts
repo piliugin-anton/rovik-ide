@@ -8,14 +8,23 @@
 // asked once, in a notification; the answer is remembered there.
 import { createSignal } from 'solid-js';
 import { chatApi, type ProjectInfo, type ProjectSummary } from './chatApi';
+import { claimNoProject } from './instances';
 import { notify } from './notifications';
 
 /** undefined: not resolved yet; null: no folder open. */
 const [current, setCurrent] = createSignal<ProjectInfo | null | undefined>(undefined);
 const [all, setAll] = createSignal<ProjectSummary[]>([]);
+/**
+ * Why the chat panel shows no chats here, if it doesn't: the chats without
+ * a project are another window's (lib/instances.ts), or the folder's
+ * couldn't be opened.
+ */
+export type ChatsBlocked = { kind: 'no-project-elsewhere' } | { kind: 'failed'; error: string };
+const [blocked, setBlocked] = createSignal<ChatsBlocked | null>(null);
 
 export const currentProject = current;
 export const projectList = all;
+export const chatsBlocked = blocked;
 
 export async function refreshProjects() {
   try {
@@ -51,10 +60,15 @@ let resolving = 0;
 export async function resolveProject(root: string | null) {
   const run = ++resolving;
   if (!root) {
+    // The chats without a project, if no other window has them.
+    const ours = await claimNoProject();
+    if (run !== resolving) return;
+    setBlocked(ours ? null : { kind: 'no-project-elsewhere' });
     setCurrent(null);
     void refreshProjects(); // for the recent projects in the empty Files tab
     return;
   }
+  setBlocked(null);
   setCurrent(undefined);
   try {
     const opened = await chatApi.openProject(root);
@@ -66,7 +80,11 @@ export async function resolveProject(root: string | null) {
     else if (s?.kind === 'moved') askAboutMoved(root, opened.project, s.candidates);
   } catch (err) {
     console.error('Opening the project failed:', err);
-    if (run === resolving) setCurrent(null);
+    // Not the chats without a project instead: another window's, maybe.
+    if (run === resolving) {
+      setBlocked({ kind: 'failed', error: String(err) });
+      setCurrent(null);
+    }
   }
 }
 

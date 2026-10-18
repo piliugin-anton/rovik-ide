@@ -144,6 +144,8 @@ jobs:
         env:
           VERSION: ${{ steps.choose.outputs.version }}
           BUMP: ${{ steps.choose.outputs.bump }}
+          # Whether the checkout, and so the push, took RELEASE_TOKEN.
+          HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
         run: |
           if [ "$BUMP" = true ]; then
             scripts/set-version.sh "$VERSION"
@@ -155,7 +157,11 @@ jobs:
                 echo "::notice::$GITHUB_REF_NAME moved on meanwhile: a newer run releases this commit with it."
                 exit 0
               fi
-              echo "::error::The version's commit couldn't be pushed to $GITHUB_REF_NAME: a protected branch takes it with RELEASE_TOKEN (README, Releases)."
+              if [ "$HAS_RELEASE_TOKEN" = true ]; then
+                echo "::error::$GITHUB_REF_NAME's rules refused the version's commit from RELEASE_TOKEN: the token's owner must be on the ruleset's bypass list (Repository admin, Always allow), and the token must write the repository's contents (README, Protecting master)."
+              else
+                echo "::error::$GITHUB_REF_NAME's rules refused the version's commit: RELEASE_TOKEN, a token of someone who may push past them, isn't in the repository's secrets (README, Protecting master)."
+              fi
               exit 1
             fi
           fi

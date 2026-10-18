@@ -526,6 +526,12 @@ export type GitStatus = {
   workdir: string;
   /** A merge / rebase in progress (src-tauri/src/git_sync.rs). */
   operation?: GitOperation | null;
+  /** The branch's upstream ("origin/feature"); none for a branch with no
+   *  remote branch yet, and off a branch. */
+  upstream?: string | null;
+  /** The remote the branch pushes to, where publishing it makes it; none
+   *  with no remote, and off a branch. */
+  push_remote?: string | null;
 };
 
 /** A merge / rebase / … in progress (src-tauri/src/git_sync.rs). */
@@ -556,7 +562,15 @@ export interface GitPullConfig {
 }
 
 export interface GitPullOutcome {
-  result: 'up-to-date' | 'fast-forward' | 'merged' | 'rebased' | 'conflicts' | 'needs-strategy';
+  result:
+    | 'up-to-date'
+    | 'fast-forward'
+    | 'merged'
+    | 'rebased'
+    | 'conflicts'
+    | 'needs-strategy'
+    /** A rebase onto a branch would rewrite commits already pushed (git_rebase). */
+    | 'rewrites-pushed';
   conflicts: string[];
 }
 

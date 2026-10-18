@@ -366,6 +366,14 @@ fn spawn_pty(
         .openpty(size)
         .map_err(|e| e.to_string())?;
 
+    // The user's environment, run from an AppImage, not the AppImage's: a
+    // login shell's profile runs flatpak, python…
+    for (key, value) in rovik_core::process::child_env() {
+        match value {
+            Some(value) => cmd.env(key, value),
+            None => cmd.env_remove(key),
+        }
+    }
     // Launched from a desktop entry, the app may have no TERM at all, and
     // shells then fall back to a dumb terminal.
     cmd.env("TERM", TERM);

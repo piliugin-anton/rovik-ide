@@ -16,24 +16,52 @@
 
 pub mod classify;
 pub mod history;
+pub mod machine;
 pub mod queue;
 mod tracker;
 
 pub use queue::{begin, set_focus, set_manual_slots, set_slot_cap, JobKind, Waited};
 
-/// Points history at the app's data folder, and applies the slots the
-/// user set (Settings → Builds & checks), if they set any.
+/// Points history at the app's data folder, the slots at the folder they
+/// share with the other windows (machine.rs), and applies the slots the
+/// user set (Settings → Heavy commands), if they set any.
 pub fn init(data_dir: &std::path::Path) {
     history::init(data_dir);
-    let file = data_dir.join("workload-settings.json");
-    if let Some(slots) = std::fs::read(&file)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Saved>(&b).ok())
-        .and_then(|s| s.slots)
+    machine::init(data_dir.join("heavy-slots"));
+    *SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(data_dir.join("workload-settings.json"));
+    follow_settings();
+}
+
+/// When the settings file was read last.
+static SETTINGS_SEEN: std::sync::Mutex<Option<std::time::SystemTime>> = std::sync::Mutex::new(None);
+
+/// Applies the slots the settings file sets, when it changed since it was
+/// read: another window's Settings → Heavy commands may have saved it.
+pub(super) fn follow_settings() {
+    let Some(file) = SETTINGS_FILE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    else {
+        return;
+    };
+    let Ok(modified) = std::fs::metadata(&file).and_then(|m| m.modified()) else {
+        return;
+    };
     {
-        queue::set_manual_slots(Some(slots.clamp(1, MAX_SLOTS)));
+        let mut seen = SETTINGS_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if *seen == Some(modified) {
+            return;
+        }
+        *seen = Some(modified);
     }
-    *SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
+    let saved = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Saved>(&b).ok());
+    if let Some(saved) = saved {
+        queue::set_manual_slots(saved.slots.map(|n| n.clamp(1, MAX_SLOTS)));
+    }
 }
 
 /// At exit: paused commands resume, and history is written.
@@ -94,6 +122,9 @@ pub fn workload_set_slots(slots: Option<usize>) -> Result<(), String> {
     if let Some(file) = file {
         let bytes = serde_json::to_vec(&Saved { slots }).map_err(|e| e.to_string())?;
         crate::atomic_file::write_atomic(&file, &bytes).map_err(|e| e.to_string())?;
+        // Its own save isn't another window's.
+        *SETTINGS_SEEN.lock().unwrap_or_else(|e| e.into_inner()) =
+            std::fs::metadata(&file).and_then(|m| m.modified()).ok();
     }
     queue::set_manual_slots(slots);
     Ok(())
@@ -114,7 +145,7 @@ pub struct WorkloadStatus {
     pub memory_gb: u64,
 }
 
-/// For Settings → Builds & checks.
+/// For Settings → Heavy commands.
 pub fn workload_status() -> WorkloadStatus {
     let s = queue::slots();
     let cores = if s.cores > 0 {

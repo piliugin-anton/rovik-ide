@@ -32,7 +32,13 @@ pub use languages::language_for;
 /// Larger files aren't parsed.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 /// Time allowed for parsing, and again for finding the declarations.
+#[cfg(not(test))]
 const TIME_LIMIT: Duration = Duration::from_secs(2);
+/// Tests check what's found, not the editor's patience: built unoptimized
+/// and run a few hundred at once, a big file's parse took a slow CI
+/// machine past 2 s, and the outline was none.
+#[cfg(test)]
+const TIME_LIMIT: Duration = Duration::from_secs(30);
 /// More declarations than this aren't collected.
 const MAX_SYMBOLS: usize = 50_000;
 /// The most characters of a signature.

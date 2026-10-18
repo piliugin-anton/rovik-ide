@@ -737,16 +737,18 @@ fn invalidate_path_forgets_one_cached_file() {
         ("a.rs", "pub fn alpha_one() {}\n"),
         ("b.rs", "pub fn bee_two() {}\n"),
     ]);
-    let _ = map(&p, Focus::default()).unwrap();
     let abs = p.0.join("a.rs");
-    {
+    // The cache keeps a couple of roots, and the tests beside this one map
+    // theirs (or clear it) meanwhile: mapped again until this root is seen
+    // in it, and asserted with the cache let go.
+    let cached = (0..100).any(|_| {
+        let _ = map(&p, Focus::default()).unwrap();
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let (_, files) = cache
+        cache
             .iter()
-            .find(|(r, _)| r == &p.0)
-            .expect("this root is cached");
-        assert!(files.contains_key(&abs), "a.rs is cached");
-    }
+            .any(|(r, files)| r == &p.0 && files.contains_key(&abs))
+    });
+    assert!(cached, "a.rs is cached");
     invalidate_path(&p.0, &abs);
     {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());

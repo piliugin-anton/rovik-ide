@@ -605,3 +605,38 @@ export function describeToolCall(name: string, argsJson: string): string {
       return `${name}(${argsJson.slice(0, 200)})`;
   }
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * One line each for the Settings menu
+ * ---------------------------------------------------------------------------
+ */
+
+/** "no approval", "your approval" or "AI approval". */
+export function describeRule(rule: ApprovalRule): string {
+  return !rule.required ? 'no approval' : rule.by === 'ai' ? 'AI approval' : 'your approval';
+}
+
+/** The Permissions & approval page in one line. */
+export function permissionsSummary(p: AgentPermissions): string {
+  const commands = p.allowAnyCommand ? 'any' : `${p.allowedCommands.length} listed`;
+  return `Commands: ${commands}, ${describeRule(p.commandApproval)} · Edits: ${describeRule(
+    p.editApproval
+  )} · Other tools: ${describeRule(p.toolApproval)}`;
+}
+
+const CHECKLIST_SUMMARY: Record<ChecklistMode, string> = {
+  auto: 'checklist when needed',
+  always: 'checklist always',
+  off: 'no checklist',
+};
+
+/** The Agent runs page in one line. */
+export function agentRunsSummary(p: AgentPermissions): string {
+  const pause =
+    p.toolCallCheckpoint === null
+      ? 'Never pauses on count'
+      : `Pauses every ${p.toolCallCheckpoint} tool calls`;
+  const checks = p.verifyChanges ? 'checks changes when a run finishes' : 'no checks after a run';
+  return `${pause} · ${CHECKLIST_SUMMARY[p.checklist]} · ${checks}`;
+}

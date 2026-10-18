@@ -789,7 +789,7 @@ fn format_text(
             }
         })
         .collect();
-    let mut cmd = Command::new(&f.program);
+    let mut cmd = rovik_core::process::command(&f.program);
     cmd.args(&args).current_dir(&f.cwd).env("PATH", search_path);
     // An empty file has nothing to format, and some tools reject it.
     if content.trim().is_empty() {

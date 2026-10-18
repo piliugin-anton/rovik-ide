@@ -1,8 +1,9 @@
 // EditorSettings.tsx
 //
-// The Settings → Editor page: theme, indentation, display and formatting.
-// Changes apply live (components/Editor.tsx follows the same store) and
-// persist to localStorage via lib/editorSettings.ts.
+// Settings → Editor: theme, indentation, display and formatting. Changes
+// apply live (components/Editor.tsx follows the same store) and persist to
+// localStorage via lib/editorSettings.ts. What the editor does with the
+// agent's edits is on Settings → Agent runs.
 
 import { For } from 'solid-js';
 import {
@@ -12,6 +13,7 @@ import {
   type EditorThemeId,
 } from '../lib/editorSettings';
 import { BUILTIN_DARK_THEMES, COMMUNITY_DARK_THEMES, preloadTheme } from '../lib/monacoThemes';
+import { Segmented } from './SettingsControls';
 
 export default function EditorSettings() {
   const s = () => editorSettings();
@@ -21,8 +23,9 @@ export default function EditorSettings() {
   return (
     <div class="permissions-settings editor-settings">
       <p class="settings-hint">
-        How the editor looks and formats text. Applies right away to every open file; a project's
-        .editorconfig takes precedence over the indentation set here.
+        How code looks and is formatted in the editor, on this computer. Changes apply right away to
+        every open file. The theme colors the Markdown preview too; a project’s .editorconfig takes
+        precedence over the indentation set here.
       </p>
 
       <div class="settings-section">
@@ -83,24 +86,15 @@ export default function EditorSettings() {
         <div class="setting-row">
           <span class="setting-row-label">Indent</span>
           <div class="setting-row-control">
-            <div class="segmented" role="group" aria-label="Indentation">
-              <button
-                type="button"
-                class="segmented-option"
-                classList={{ selected: s().insertSpaces }}
-                onClick={() => updateEditorSettings({ insertSpaces: true })}
-              >
-                Spaces
-              </button>
-              <button
-                type="button"
-                class="segmented-option"
-                classList={{ selected: !s().insertSpaces }}
-                onClick={() => updateEditorSettings({ insertSpaces: false })}
-              >
-                Tabs
-              </button>
-            </div>
+            <Segmented
+              label="Indentation"
+              value={s().insertSpaces ? 'spaces' : 'tabs'}
+              options={[
+                { value: 'spaces', label: 'Spaces' },
+                { value: 'tabs', label: 'Tabs' },
+              ]}
+              onChange={(v) => updateEditorSettings({ insertSpaces: v === 'spaces' })}
+            />
           </div>
         </div>
         <div class="setting-row">
@@ -142,32 +136,20 @@ export default function EditorSettings() {
         <div class="setting-row">
           <span class="setting-row-label">Whitespace</span>
           <div class="setting-row-control">
-            <div class="segmented" role="group" aria-label="Render whitespace">
-              <button
-                type="button"
-                class="segmented-option"
-                classList={{ selected: s().renderWhitespace === 'none' }}
-                onClick={() => updateEditorSettings({ renderWhitespace: 'none' })}
-              >
-                Hidden
-              </button>
-              <button
-                type="button"
-                class="segmented-option"
-                classList={{ selected: s().renderWhitespace === 'boundary' }}
-                onClick={() => updateEditorSettings({ renderWhitespace: 'boundary' })}
-              >
-                Boundary
-              </button>
-              <button
-                type="button"
-                class="segmented-option"
-                classList={{ selected: s().renderWhitespace === 'all' }}
-                onClick={() => updateEditorSettings({ renderWhitespace: 'all' })}
-              >
-                All
-              </button>
-            </div>
+            <Segmented
+              label="Render whitespace"
+              value={s().renderWhitespace}
+              options={[
+                { value: 'none', label: 'Hidden', title: 'Spaces and tabs aren’t drawn' },
+                {
+                  value: 'boundary',
+                  label: 'Boundary',
+                  title: 'Drawn where several are in a row, not between words',
+                },
+                { value: 'all', label: 'All', title: 'Every space and tab is drawn' },
+              ]}
+              onChange={(renderWhitespace) => updateEditorSettings({ renderWhitespace })}
+            />
           </div>
         </div>
         <label class="setting-checkbox">
@@ -226,25 +208,6 @@ export default function EditorSettings() {
               clang-format, …), its own copy first, or the language's standard formatter when it's
               installed. Off: only the editor's built-in formatters (TypeScript, JavaScript, JSON,
               CSS, HTML) and language servers.
-            </span>
-          </span>
-        </label>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-title">Agent</div>
-        <label class="setting-checkbox">
-          <input
-            type="checkbox"
-            checked={s().openFilesAfterAgentEdits}
-            onChange={(e) =>
-              updateEditorSettings({ openFilesAfterAgentEdits: e.currentTarget.checked })
-            }
-          />
-          <span>
-            Open files after agent edits
-            <span class="setting-checkbox-sub">
-              Automatically open a file the agent edited so you can review it.
             </span>
           </span>
         </label>

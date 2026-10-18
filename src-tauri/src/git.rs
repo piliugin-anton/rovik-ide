@@ -50,6 +50,16 @@ pub struct GitStatus {
     /// A merge / rebase in progress (conflicts to resolve, or to continue).
     #[serde(default)]
     pub operation: Option<crate::git_sync::GitOperation>,
+    /// The branch's upstream ("origin/feature"). None for a branch with no
+    /// remote branch yet (new, never pushed, or its remote branch gone),
+    /// and off a branch.
+    #[serde(default)]
+    pub upstream: Option<String>,
+    /// The remote the branch pushes to (`git push`'s): where publishing a
+    /// branch with no upstream makes it. None with no remote, and off a
+    /// branch.
+    #[serde(default)]
+    pub push_remote: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,16 +145,9 @@ fn make_callbacks<'a>() -> RemoteCallbacks<'a> {
 
         if allowed_types.contains(CredentialType::USER_PASS_PLAINTEXT) && !tried_helper {
             tried_helper = true;
-            if let Ok(config) = git2::Config::open_default() {
-                let mut helper = CredentialHelper::new(url);
-                helper.config(&config);
-                if let Some(username) = username_from_url {
-                    helper.username(Some(username));
-                }
-                if let Some((username, password)) = helper.execute() {
-                    if let Ok(cred) = Cred::userpass_plaintext(&username, &password) {
-                        return Ok(cred);
-                    }
+            if let Some((username, password)) = remembered_credential(url, username_from_url) {
+                if let Ok(cred) = Cred::userpass_plaintext(&username, &password) {
+                    return Ok(cred);
                 }
             }
         }
@@ -158,6 +161,70 @@ fn make_callbacks<'a>() -> RemoteCallbacks<'a> {
         ))
     });
     callbacks
+}
+
+/// The username and password git remembers for `url`: what `git credential
+/// fill` answers, from the helpers git is set up with, without a prompt.
+/// git is started as every program the app starts is: run from an
+/// AppImage, a helper such as libsecret's would load the AppImage's
+/// libraries if git2 started it (it can't be told the environment). Where
+/// git isn't installed, git2 asks the helpers itself.
+fn remembered_credential(url: &str, username: Option<&str>) -> Option<(String, String)> {
+    if let Some(answer) = credential_fill(rovik_core::process::command("git"), url, username) {
+        return answer;
+    }
+    let config = git2::Config::open_default().ok()?;
+    let mut helper = CredentialHelper::new(url);
+    helper.config(&config);
+    if let Some(username) = username {
+        helper.username(Some(username));
+    }
+    helper.execute()
+}
+
+/// `git credential fill` for `url`, run with `git`: its username and
+/// password (None when it has none), or None when git couldn't be started.
+fn credential_fill(
+    mut git: std::process::Command,
+    url: &str,
+    username: Option<&str>,
+) -> Option<Option<(String, String)>> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = rovik_core::process::no_window(&mut git)
+        .args(["credential", "fill"])
+        // No terminal prompt and no askpass dialog: an empty GIT_ASKPASS
+        // keeps git from core.askPass and SSH_ASKPASS too.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut input = format!("url={url}\n");
+    if let Some(username) = username {
+        input.push_str(&format!("username={username}\n"));
+    }
+    input.push('\n');
+    if let Some(mut stdin) = child.stdin.take() {
+        // git, done early, closed the pipe: its answer is read all the same.
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    let answer = child
+        .wait_with_output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let field = |key: &str| {
+                text.lines()
+                    .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+                    .map(str::to_string)
+            };
+            field("username").zip(field("password"))
+        });
+    Some(answer)
 }
 
 fn default_remote_name(repo: &Repository) -> Result<String, String> {
@@ -313,6 +380,23 @@ fn workdir_line_stats(repo: &Repository) -> std::collections::HashMap<String, (u
     merged
 }
 
+/// The checked-out branch's upstream ("origin/feature") and the remote
+/// its push goes to: (None, None) off a branch.
+fn branch_remotes(repo: &Repository) -> (Option<String>, Option<String>) {
+    let Ok(head) = repo.head() else {
+        return (None, None);
+    };
+    let Some(name) = head.is_branch().then(|| head.shorthand().ok()).flatten() else {
+        return (None, None);
+    };
+    let upstream = repo
+        .find_branch(name, BranchType::Local)
+        .ok()
+        .and_then(|b| b.upstream().ok())
+        .and_then(|u| u.name().ok().flatten().map(str::to_string));
+    (upstream, push_remote_name(repo, name).ok())
+}
+
 fn compute_ahead_behind(repo: &Repository) -> Option<(usize, usize)> {
     let head = repo.head().ok()?;
     if !head.is_branch() {
@@ -356,6 +440,7 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
     };
 
     let (ahead, behind) = compute_ahead_behind(&repo).unwrap_or((0, 0));
+    let (upstream, push_remote) = branch_remotes(&repo);
 
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
@@ -416,6 +501,8 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
             })
             .unwrap_or_default(),
         operation,
+        upstream,
+        push_remote,
     })
 }
 
@@ -3251,6 +3338,40 @@ mod branch_tests {
         assert_eq!(upstream_of(&repo, "mine").as_deref(), Some("origin/mine"));
     }
 
+    /// A new branch has no remote branch until its first push, which makes
+    /// one and tracks it: the panel asks to publish it then (GitPanel.tsx).
+    #[test]
+    fn a_new_branch_has_no_upstream_until_its_first_push() {
+        let (dir, repo, remote) = repo_with_origin("publish");
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(status.push_remote.as_deref(), Some("origin"));
+
+        git_create_branch_blocking(p(&dir), "topic".into(), true, None).unwrap();
+        fs::write(dir.join("f.txt"), "topic\n").unwrap();
+        commit_all(&repo, "topic");
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!(status.branch, "topic");
+        assert_eq!(status.upstream, None);
+        assert_eq!(status.push_remote.as_deref(), Some("origin"));
+        assert_eq!(status.ahead, 0, "nothing to be ahead of");
+
+        assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!(status.upstream.as_deref(), Some("origin/topic"));
+        assert_eq!((status.ahead, status.behind), (0, 0));
+        let origin = Repository::open_bare(&remote).unwrap();
+        assert_eq!(
+            tip(&origin, "refs/heads/topic"),
+            tip(&repo, "refs/heads/topic")
+        );
+
+        // No remote: nowhere to publish it.
+        repo.remote_delete("origin").unwrap();
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!((status.upstream, status.push_remote), (None, None));
+    }
+
     #[test]
     fn a_branch_in_the_list_beats_a_tag_of_the_same_name() {
         let (dir, repo) = repo_on_main("branch-vs-tag");
@@ -3402,5 +3523,49 @@ mod branch_tests {
         assert_eq!(tip(&repo, "refs/remotes/fork/main"), after);
         assert_eq!(tip(&repo, "refs/remotes/origin/main"), before);
         assert_eq!(compute_ahead_behind(&repo), Some((0, 0)));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod credential_tests {
+    use super::credential_fill;
+    use std::path::Path;
+    use std::process::Command;
+
+    /// git with `config` for its only settings, outside any repository.
+    fn git(config: &Path) -> Command {
+        let mut git = Command::new("git");
+        git.env("GIT_CONFIG_GLOBAL", config)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .current_dir(config.parent().unwrap());
+        git
+    }
+
+    #[test]
+    fn a_remembered_credential_is_what_git_answers() {
+        let dir = std::env::temp_dir().join(format!("git-credential-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("helper.gitconfig");
+        std::fs::write(
+            &helper,
+            "[credential]\n\thelper = \"!f() { echo username=ann; echo password=s3cret; }; f\"\n",
+        )
+        .unwrap();
+        let nothing = dir.join("nothing.gitconfig");
+        std::fs::write(&nothing, "").unwrap();
+        let url = "https://git.example.com/team/app.git";
+
+        assert_eq!(
+            credential_fill(git(&helper), url, None),
+            Some(Some(("ann".to_string(), "s3cret".to_string())))
+        );
+        // Nothing remembered: no answer, and no prompt waiting for one.
+        assert_eq!(credential_fill(git(&nothing), url, Some("ann")), Some(None));
+        // No git: git2 asks the helpers instead.
+        assert_eq!(
+            credential_fill(Command::new("/nonexistent/git"), url, None),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

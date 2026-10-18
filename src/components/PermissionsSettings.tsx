@@ -1,25 +1,34 @@
-import { createMemo, createSignal, For, Show, type JSX } from 'solid-js';
+// PermissionsSettings.tsx
+//
+// Settings → Permissions & approval (lib/permissions.ts): what the agent
+// may do in every chat on this computer, and what waits for an approval
+// first. Commands are restricted by an allowed list (or "any command");
+// commands, file edits and the other tool calls each have an approval
+// rule: none, by you, or by the AI reviewer model chosen at the end of the
+// page. The backend enforces them (agent_run/permissions.rs). What happens
+// while a run goes and when it ends is on Settings → Agent runs.
+import { createMemo, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
+import type { SettingsPage } from '../lib/appSettings';
 import { formatModelLabel } from '../lib/aiSettings';
 import { APPROVE_AT, isJevModel, REJECT_AT } from '../lib/aiApproval';
 import {
   DEFAULT_ALLOWED_COMMANDS,
-  TOOL_CALL_CHECKPOINT_CHOICES,
   sameModel,
   splitWords,
   usesAiReview,
   type AgentPermissions,
   type ApprovalRule,
-  type ChecklistMode,
 } from '../lib/permissions';
+import { Segmented, SettingRow } from './SettingsControls';
+import { createSignal } from 'solid-js';
 
 interface PermissionsSettingsProps {
   permissions: AgentPermissions;
-  /** The providers as currently edited in the settings modal. */
+  /** The providers as currently edited in the settings dialog. */
   providers: Provider[];
   onChange: (permissions: AgentPermissions) => void;
-  /** Jumps to the Model providers page (from the "no models" message). */
-  onOpenProviders: () => void;
+  onOpenPage: (page: SettingsPage) => void;
 }
 
 interface ModelOption {
@@ -31,49 +40,6 @@ interface ModelOption {
 }
 
 const keyOf = (sel: ModelSelection) => `${sel.providerId}::${sel.modelId}`;
-
-/*
- * ---------------------------------------------------------------------------
- * Small building blocks
- * ---------------------------------------------------------------------------
- */
-
-function Segmented<T extends string>(props: {
-  label: string;
-  value: T;
-  options: { value: T; label: string; title: string }[];
-  onChange: (value: T) => void;
-}) {
-  return (
-    <div class="segmented" role="radiogroup" aria-label={props.label}>
-      <For each={props.options}>
-        {(option) => (
-          <button
-            type="button"
-            class="segmented-option"
-            role="radio"
-            aria-checked={props.value === option.value}
-            classList={{ selected: props.value === option.value }}
-            title={option.title}
-            onClick={() => props.onChange(option.value)}
-          >
-            {option.label}
-          </button>
-        )}
-      </For>
-    </div>
-  );
-}
-
-/** One "Label  [control]" line. */
-function SettingRow(props: { label: string; children: JSX.Element }) {
-  return (
-    <div class="setting-row">
-      <span class="setting-row-label">{props.label}</span>
-      <div class="setting-row-control">{props.children}</div>
-    </div>
-  );
-}
 
 type ApprovalChoice = 'off' | 'user' | 'ai';
 
@@ -231,10 +197,26 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
 
   return (
     <div class="permissions-settings">
+      <p class="settings-hint">
+        What the agent may do in every chat on this computer, and what waits for an approval first.
+        An approval by you shows in the chat and the editor; on a cloud host, who answers while
+        you’re away is set per host (
+        <button class="link-button" onClick={() => props.onOpenPage('hosts')}>
+          Cloud hosts
+        </button>
+        ). Autopilot’s tasks follow their own command rule and ask the AI reviewer instead of you (
+        <button class="link-button" onClick={() => props.onOpenPage('autopilot')}>
+          Autopilot
+        </button>
+        ).
+      </p>
+
       {/* Commands */}
       <section class="settings-section">
         <div class="settings-section-title">Commands</div>
-        <p class="settings-hint">Shell commands the agent runs in the project folder.</p>
+        <p class="settings-hint">
+          Shell commands the agent runs in the project folder, and the project’s checks after a run.
+        </p>
 
         <SettingRow label="Can run">
           <Segmented
@@ -337,78 +319,14 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
         />
       </section>
 
-      {/* Long runs */}
-      <section class="settings-section">
-        <div class="settings-section-title">Long runs</div>
-        <p class="settings-hint">
-          The agent stops and asks before going on. It also pauses when it seems stuck (repeating
-          the same call, failing again and again, undoing its own edits), whatever this is set to.
-        </p>
-        <SettingRow label="Pause every">
-          <select
-            class="settings-select"
-            value={String(p().toolCallCheckpoint ?? 'never')}
-            onChange={(e) => {
-              const value = e.currentTarget.value;
-              patch({ toolCallCheckpoint: value === 'never' ? null : Number(value) });
-            }}
-          >
-            <For each={TOOL_CALL_CHECKPOINT_CHOICES}>
-              {(n) => (
-                <option value={String(n ?? 'never')}>
-                  {n === null ? 'Never' : `${n} tool calls`}
-                </option>
-              )}
-            </For>
-          </select>
-        </SettingRow>
-        <SettingRow label="Checklist">
-          <select
-            class="settings-select"
-            value={p().checklist}
-            onChange={(e) => patch({ checklist: e.currentTarget.value as ChecklistMode })}
-          >
-            <option value="auto">When needed</option>
-            <option value="always">Always</option>
-            <option value="off">Off</option>
-          </select>
-        </SettingRow>
-        <p class="settings-hint">
-          When needed: the agent keeps a checklist for tasks of three or more steps, and is asked
-          for one once if a task outgrows that without it. Always: every request starts with a
-          checklist. Off: never asked (implementing a plan still starts with one).
-        </p>
-      </section>
-
-      {/* Isolated chats */}
-      <section class="settings-section">
-        <div class="settings-section-title">Isolated chats</div>
-        <SettingRow label="Conflicts">
-          <select
-            class="settings-select"
-            value={p().chatResolvesConflicts ? 'chat' : 'me'}
-            onChange={(e) => patch({ chatResolvesConflicts: e.currentTarget.value === 'chat' })}
-          >
-            <option value="chat">The running chat resolves them</option>
-            <option value="me">Ask me</option>
-          </select>
-        </SettingRow>
-        <p class="settings-hint">
-          When a chat’s changes conflict with the project’s while it’s still running (another chat
-          landed, or you edited the same lines), the chat gets conflict markers in its files and
-          combines both changes before it finishes. Ask me: the conflicts wait above the message box
-          for you to resolve. A chat that isn’t running always waits for you.
-        </p>
-      </section>
-
       {/* AI reviewer: only when something is approved by AI */}
       <Show when={usesAiReview(p())}>
         <section class="settings-section">
           <div class="settings-section-title">AI reviewer</div>
           <p class="settings-hint">
-            Allows or rejects actions set to “By AI reviewer”. Its decision and reason show on each
-            tool call. If it can’t decide, you’re asked instead. Pushing, deleting, deploying and
-            touching secret files always ask you.
+            Allows or rejects the actions set to “By AI reviewer”. Its decision and reason show on
+            each tool call. If it can’t decide, you’re asked instead. Pushing, deleting, deploying
+            and touching secret files always ask you.
           </p>
 
           <Show
@@ -416,7 +334,7 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
             fallback={
               <div class="command-list-empty">
                 No models enabled. Add or enable models in{' '}
-                <button class="link-button" onClick={() => props.onOpenProviders()}>
+                <button class="link-button" onClick={() => props.onOpenPage('providers')}>
                   Model providers
                 </button>
                 , then select one here.
@@ -443,42 +361,6 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
                 </For>
               </select>
             </SettingRow>
-
-            <label class="setting-checkbox">
-              <input
-                type="checkbox"
-                checked={p().approvalTypedInput}
-                onChange={(e) => patch({ approvalTypedInput: e.currentTarget.checked })}
-              />
-              <span>
-                Use typed input
-                <span class="setting-checkbox-sub">
-                  For TypeSafe Jev. Sends the action as structured data with yes/no checks (TypeSafe
-                  System One API) instead of a chat prompt. Approves when every check is at least{' '}
-                  {Math.round(APPROVE_AT * 100)}% yes, rejects when any is{' '}
-                  {Math.round(REJECT_AT * 100)}% or less, and asks you in between.
-                </span>
-              </span>
-            </label>
-
-            <Show
-              when={
-                reviewer() && isJevModel(reviewer()!.selection.modelId) && !p().approvalTypedInput
-              }
-            >
-              <p class="settings-hint setting-explain warning">
-                Jev doesn’t answer chat prompts. Turn on typed input to use it as the reviewer.
-              </p>
-            </Show>
-            <Show
-              when={
-                reviewer() && !isJevModel(reviewer()!.selection.modelId) && p().approvalTypedInput
-              }
-            >
-              <p class="settings-hint setting-explain warning">
-                Typed input needs a Jev model; this one probably only answers chat prompts.
-              </p>
-            </Show>
 
             <Show when={reviewer() && !reviewer()!.enabled}>
               <p class="settings-hint setting-explain warning">
@@ -548,9 +430,56 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
                 </p>
               </Show>
             </Show>
+
+            <label class="setting-checkbox">
+              <input
+                type="checkbox"
+                checked={p().approvalTypedInput}
+                onChange={(e) => patch({ approvalTypedInput: e.currentTarget.checked })}
+              />
+              <span>
+                Ask with typed checks instead of a prompt
+                <span class="setting-checkbox-sub">
+                  Only for TypeSafe’s Jev reviewer models, which don’t answer chat prompts: the
+                  action goes as structured data with named yes/no checks, and the model answers a
+                  probability for each. Approved when every check is at least{' '}
+                  {Math.round(APPROVE_AT * 100)}% yes, rejected when any is{' '}
+                  {Math.round(REJECT_AT * 100)}% or less; in between, you’re asked. Leave it off for
+                  ordinary chat models.
+                </span>
+              </span>
+            </label>
+
+            <Show
+              when={
+                reviewer() && isJevModel(reviewer()!.selection.modelId) && !p().approvalTypedInput
+              }
+            >
+              <p class="settings-hint setting-explain warning">
+                Jev doesn’t answer chat prompts. Turn on typed checks to use it as the reviewer.
+              </p>
+            </Show>
+            <Show
+              when={
+                reviewer() && !isJevModel(reviewer()!.selection.modelId) && p().approvalTypedInput
+              }
+            >
+              <p class="settings-hint setting-explain warning">
+                Typed checks need a Jev model; this one probably only answers chat prompts.
+              </p>
+            </Show>
           </Show>
         </section>
       </Show>
+
+      <p class="settings-hint">
+        What happens while the agent works and when it finishes (pauses, its checklist, the checks
+        on its changes) is set in{' '}
+        <button class="link-button" onClick={() => props.onOpenPage('agent')}>
+          Agent runs
+        </button>
+        .
+      </p>
     </div>
   );
 }

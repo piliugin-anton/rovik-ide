@@ -1576,15 +1576,28 @@ pub async fn load_ai_settings(keys: State<'_, Arc<ProviderKeys>>) -> Result<Stri
         .map_err(|e| e.to_string())?
 }
 
+/// When the AI settings were last saved, by any window (ProviderKeys::stamp).
+#[tauri::command]
+pub fn ai_settings_stamp(keys: State<'_, Arc<ProviderKeys>>) -> u64 {
+    keys.stamp()
+}
+
+/// `base`: the settings the frontend made `json` of, as it loaded them:
+/// saved onto the settings as they are now, which another window may have
+/// saved meanwhile (ProviderKeys::save_onto).
 #[tauri::command]
 pub async fn save_ai_settings(
     keys: State<'_, Arc<ProviderKeys>>,
     json: String,
+    base: Option<String>,
 ) -> Result<(), String> {
     let keys = Arc::clone(&keys);
-    rovik_core::rt::spawn_blocking(move || keys.save(&json))
-        .await
-        .map_err(|e| e.to_string())?
+    rovik_core::rt::spawn_blocking(move || match base {
+        Some(base) => keys.save_onto(&json, &base),
+        None => keys.save(&json),
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Deserialize)]

@@ -695,7 +695,7 @@ test('works on its own: the third choice shows its block, which an other choice 
   const block = root.querySelector('.host-autonomy')!;
   assert.ok(block, 'its block shows');
   // Its defaults: this computer's effort and budget, the result kept on the server.
-  assert.ok(field(block, 'As in Settings → Subagents')!.checked);
+  assert.ok(field(block, 'As in Settings → Autopilot')!.checked);
   assert.ok(field(block, 'Keep the result on the server')!.checked);
   assert.match(block.textContent!, /The AI reviewer decides\. What it can’t approve is refused/);
   assert.equal(field(block, 'Deploy key on the server'), undefined, 'no key to push with');

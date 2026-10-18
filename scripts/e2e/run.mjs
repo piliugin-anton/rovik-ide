@@ -6,6 +6,7 @@
 //
 //   node scripts/e2e/run.mjs --app <binary> --out <dir> [--driver webdriver|bridge]
 //        [--tauri-driver <path>] [--native-driver <path>] [--only <regex>]
+//        [--second-app <binary>]
 //
 // webdriver (Linux, Windows): starts tauri-driver, which starts the app
 // through WebKitWebDriver or msedgedriver. bridge (macOS, where WKWebView
@@ -41,6 +42,15 @@ const MODEL_PORT = Number(args['model-port'] ?? 18080);
 const ONLY = args.only ? new RegExp(args.only, 'i') : null;
 const DRIVER = args.driver ?? (PLATFORM === 'darwin' ? 'bridge' : 'webdriver');
 const APP = resolve(args.app ?? '');
+const APPIMAGE = /\.AppImage$/i.test(APP);
+// Other Rovik windows, started beside the driven one as a person would
+// (`rovik-ide <folder>`): the same build, but through the bridge (macOS) a
+// build without it, whose page would take the run's commands.
+const SECOND_APP = args['second-app']
+  ? resolve(args['second-app'])
+  : DRIVER === 'webdriver'
+    ? APP
+    : null;
 
 function parseArgs(list) {
   const out = {};
@@ -171,6 +181,85 @@ function startChild(cmd, argv, opts = {}) {
   return child;
 }
 
+/** Another Rovik on `argv`, with the driven one's data (Linux: its XDG folders). */
+function launchRovik(argv, name, env = {}) {
+  const own = {};
+  // Windows: msedgedriver started the driven one's WebView2 with options of
+  // its own (a debugging port), and WebView2 won't open a second one with
+  // other options on the same data: these get a folder of their own.
+  if (PLATFORM === 'win32') own.WEBVIEW2_USER_DATA_FOLDER = join(WORK, 'webview2-other');
+  if (PLATFORM === 'linux') {
+    for (const [key, dir] of [
+      ['XDG_CONFIG_HOME', 'config'],
+      ['XDG_DATA_HOME', 'data'],
+      ['XDG_CACHE_HOME', 'cache'],
+    ]) {
+      own[key] = join(WORK, 'app', dir);
+    }
+  }
+  return startChild(SECOND_APP, argv, { name, env: { ...own, ...env } });
+}
+
+/** `child`'s exit code, once it ends; fails after `timeout` ms. */
+function exited(child, timeout) {
+  return new Promise((done, fail) => {
+    if (child.exitCode !== null || child.signalCode !== null) return done(child.exitCode);
+    const timer = setTimeout(() => fail(new Error(`still running after ${timeout} ms`)), timeout);
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      done(code);
+    });
+  });
+}
+
+/** X: the main window of the process `pid` (its largest), if it has one. */
+function xWindowOf(pid) {
+  try {
+    const ids = execFileSync('xdotool', ['search', '--pid', String(pid)], { encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean);
+    const sized = ids.map((id) => {
+      const geometry = execFileSync('xdotool', ['getwindowgeometry', id], { encoding: 'utf8' });
+      const [, w, h] = geometry.match(/Geometry: (\d+)x(\d+)/) ?? [];
+      return { id, area: Number(w) * Number(h) || 0 };
+    });
+    return sized.sort((a, b) => b.area - a.area)[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** X: a picture of the process `pid`'s window, among the run's screenshots. */
+function xShot(pid, name) {
+  const id = xWindowOf(pid);
+  if (!id) return null;
+  const file = join(SHOTS, `${name}.png`);
+  try {
+    execFileSync('import', ['-window', id, file]);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/** X: the windows of the process `pid` moved off the screen, from over the
+ *  driven one, which the run's real clicks would hit otherwise. */
+function moveAside(pid) {
+  if (!X) return;
+  try {
+    const ids = execFileSync('xdotool', ['search', '--pid', String(pid)], { encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean);
+    for (const id of ids) execFileSync('xdotool', ['windowmove', id, '2000', '0']);
+  } catch {}
+}
+
+/** How often a Rovik's log says another one asked it to the front. */
+function askedToFront(logFile) {
+  const text = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+  return text.split('asked this one to come to the front').length - 1;
+}
+
 /** The first line a child prints (the scripted model's base URL). */
 function firstLine(child, timeout = 15_000) {
   return new Promise((done, fail) => {
@@ -215,8 +304,9 @@ const MOD = PLATFORM === 'darwin' ? Keys.META : Keys.CTRL;
 
 /** A leftover instance would take the new launch (single instance) and the session would hang. */
 function killApp() {
-  // By the launched binary's name: an installed build's may differ.
-  const name = basename(APP) || 'rovik-ide';
+  // By the launched binary's name: an installed build's may differ. An
+  // AppImage's is the binary inside it.
+  const name = APPIMAGE ? 'rovik-ide' : basename(APP) || 'rovik-ide';
   try {
     if (PLATFORM === 'win32') spawnSync('taskkill', ['/IM', name, '/F'], { stdio: 'ignore' });
     else spawnSync('pkill', ['-x', name.slice(0, 15)], { stdio: 'ignore' });
@@ -519,6 +609,63 @@ async function treeOpen(title) {
   await sleep(400);
 }
 
+/**
+ * The terminal panel opened, its shell started: its prompt shown and the
+ * panel quiet a moment, as what's typed before (zsh, cmd.exe starting) is
+ * dropped.
+ */
+/** Whether the terminal panel is open, as its toggle says. */
+const terminalOpen = () =>
+  d.exec(
+    `return document.querySelector('.terminal-toggle-button')?.getAttribute('aria-expanded') === 'true'`
+  );
+
+async function openTerminal() {
+  if (!(await terminalOpen())) await click('.terminal-toggle-button');
+  await waitFor(terminalOpen, 'the terminal open');
+  // On screen: its panel grows into view. A closed one's text stays in the
+  // page, out of sight, so the text alone doesn't say it's open.
+  await waitFor(
+    () =>
+      d.exec(`const screen = document.querySelector('.terminal-instance:not(.hidden) .xterm-screen');
+        const body = document.querySelector('.terminal-panel-body');
+        if (!screen || !body) return false;
+        const height = screen.getBoundingClientRect().height;
+        return height > 0 && body.getBoundingClientRect().height >= height;`),
+    'the terminal on screen',
+    15_000
+  );
+  let last = null;
+  let since = Date.now();
+  await waitFor(
+    async () => {
+      const now = (await panelText('.xterm-rows')).trim();
+      if (now !== last) {
+        last = now;
+        since = Date.now();
+        return false;
+      }
+      return now.length > 0 && Date.now() - since >= 1000;
+    },
+    'the shell to start',
+    20_000
+  );
+}
+
+async function closeTerminal() {
+  if (await terminalOpen()) await click('.terminal-toggle-button');
+  await waitFor(async () => !(await terminalOpen()), 'the terminal closed');
+}
+
+/** The terminal's lines that are `text` alone: a command's output, not
+ *  the line it was typed on. */
+async function terminalLines(text) {
+  return (await panelText('.xterm-rows'))
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l === text);
+}
+
 async function sidebar(tab) {
   await click(await buttonByText(tab, '.sidebar-tabs'));
   await sleep(500);
@@ -793,6 +940,150 @@ async function run() {
     );
   });
 
+  // Rovik runs as several windows, a project open in one of them only
+  // (src-tauri/src/instances.rs): the chats each changes are its own.
+  if (SECOND_APP) {
+    await step(
+      'instances: Rovik started on the open project brings this window to the front',
+      async () => {
+        const before = askedToFront(join(OUT, 'app.log'));
+        const second = launchRovik([DEMO], 'second-on-demo');
+        const code = await exited(second, 60_000);
+        assert(code === 0, `the second Rovik ended with ${code}`);
+        await waitFor(
+          async () => askedToFront(join(OUT, 'app.log')) > before,
+          'this window to be asked to the front',
+          10_000
+        );
+      }
+    );
+
+    await step(
+      'instances: another project opens in a window of its own, and only there',
+      async () => {
+        const side = join(PROJECTS, 'side');
+        write(join(side, 'side.txt'), 'a project of its own\n');
+        const sideLog = join(OUT, 'app-side.log');
+        const second = launchRovik([side], 'second-on-side', { ROVIK_LOG_FILE: sideLog });
+        await sleep(8000);
+        assert(second.exitCode === null, `the window on side ended: ${second.exitCode}`);
+        moveAside(second.pid);
+        try {
+          // A third on it: the second comes to the front, and the third ends.
+          const third = launchRovik([side], 'third-on-side');
+          assert((await exited(third, 60_000)) === 0, 'the third Rovik ended');
+          await waitFor(
+            async () => askedToFront(sideLog) > 0,
+            'the window on side to be asked to the front',
+            10_000
+          );
+          // Nor does this one open it: it says where it is.
+          await click('.project-switcher-trigger');
+          await click(await buttonByText('New project…'));
+          await waitFor(() => d.exists('#new-project-root'), 'the New project dialog');
+          await setInput('#new-project-root', PROJECTS);
+          await click('#new-project-name');
+          await typeKeys('side');
+          await waitFor(() => d.exists('.new-project-open-existing'), '"Open existing"');
+          await click('.new-project-open-existing');
+          await waitFor(
+            async () => (await d.bodyText()).includes('side is open in another window'),
+            'the notice that side is open elsewhere',
+            15_000
+          );
+          assert(
+            (await panelText('.project-switcher-name')).includes('demo'),
+            'this window is still on demo'
+          );
+          assert(askedToFront(sideLog) > 1, 'the window on side asked to the front again');
+        } finally {
+          second.kill();
+          await exited(second, 15_000).catch(() => {});
+        }
+      }
+    );
+
+    // Linux, where "New window" starts this same build with no driver of
+    // its own: each window it opens starts without a project, and the
+    // chats without one are the first such window's alone.
+    if (X) {
+      await step(
+        'instances: New window starts without a project; the chats without one stay in the first',
+        async () => {
+          const claims = join(WORK, 'app', 'data', 'rovik-ide', 'open-projects');
+          const heldBy = (pid) =>
+            readdirSync(claims)
+              .filter((f) => f.endsWith('.json'))
+              .map((f) => {
+                try {
+                  return JSON.parse(readFileSync(join(claims, f), 'utf8'));
+                } catch {
+                  return null;
+                }
+              })
+              .filter((holder) => holder?.pid === pid);
+          const newWindows = () => {
+            try {
+              return execFileSync('pgrep', ['-f', 'rovik-ide --new-window'], { encoding: 'utf8' })
+                .split('\n')
+                .filter(Boolean)
+                .map(Number);
+            } catch {
+              return [];
+            }
+          };
+          // Where this window's Chat tab is: the new ones are laid out alike.
+          const chatTab = await d.exec(
+            `const tab = [...document.querySelectorAll('.sidebar-tabs button')].find((b) => b.textContent.includes('Chat'));
+             const r = tab.getBoundingClientRect();
+             return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)];`
+          );
+          const opened = [];
+          try {
+            for (const n of [1, 2]) {
+              await click('.project-switcher-trigger');
+              await click(await buttonByText('New window'));
+              const pid = await waitFor(
+                async () => newWindows().find((p) => !opened.includes(p)),
+                `new window ${n} to start`,
+                20_000
+              );
+              opened.push(pid);
+              await waitFor(async () => xWindowOf(pid), `new window ${n}'s window`, 30_000);
+              await sleep(8000);
+              const id = xWindowOf(pid);
+              // Its chat panel, by a real click on its Chat tab.
+              xdo('mousemove', '--window', id, chatTab[0], chatTab[1]);
+              await sleep(60);
+              xdo('click', 1);
+              await sleep(1500);
+              xShot(pid, `instances-new-window-${n}`);
+              moveAside(pid);
+            }
+            const [first, second] = opened;
+            const firstHolds = heldBy(first);
+            assert(
+              firstHolds.length === 1 && firstHolds[0].path === '',
+              `the first new window holds only the chats without a project: ${JSON.stringify(firstHolds)}`
+            );
+            assert(heldBy(second).length === 0, 'the second new window holds nothing');
+            // This window still has demo, and only demo.
+            assert(
+              (await panelText('.project-switcher-name')).includes('demo'),
+              'this window is still on demo'
+            );
+          } finally {
+            for (const pid of opened) {
+              try {
+                process.kill(pid);
+              } catch {}
+            }
+          }
+        }
+      );
+    }
+  }
+
   await step('tree: expand a folder and open a file', async () => {
     await treeOpen('src');
     await click(row('main.ts'));
@@ -1021,19 +1312,121 @@ async function run() {
   });
 
   await step('terminal: run a command', async () => {
-    await click('.terminal-toggle-button');
-    await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
-    await sleep(2500);
+    await openTerminal();
     await click('.xterm-screen');
     await typeKeys('echo e2e-hello');
     await keys(Keys.ENTER);
+    // Its output, a line of its own: not the typed line, nor an error that
+    // names it (a command typed without its space).
     await waitFor(
-      async () => ((await panelText('.xterm-rows')).match(/e2e-hello/g) ?? []).length >= 2,
+      async () => (await terminalLines('e2e-hello')).length > 0,
       'the command’s output',
       20_000
     );
-    await click('.terminal-toggle-button');
+    await closeTerminal();
   });
+
+  // Run from an AppImage, what the terminal starts gets the system's
+  // environment, not the AppImage's: with its libraries first
+  // (LD_LIBRARY_PATH), the flatpak a login shell's profile runs stopped
+  // with a symbol lookup error, and python3 didn't start (PYTHONHOME).
+  if (APPIMAGE) {
+    await step(
+      'appimage: the terminal gets the system’s environment, not the AppImage’s',
+      async () => {
+        await openTerminal();
+        await sleep(1500);
+        const start = await panelText('.xterm-rows');
+        assert(
+          !/symbol lookup error|error while loading shared libraries/.test(start),
+          `the shell's start: ${start.trim()}`
+        );
+        await click('.xterm-screen');
+        await typeKeys(
+          "env | grep -c -e '^APPIMAGE=' -e '^APPDIR=' -e '/\\.mount_' | sed 's/^/appimage-vars=/'"
+        );
+        await keys(Keys.ENTER);
+        let count = null;
+        await waitFor(async () => {
+          const found = (await panelText('.xterm-rows')).match(/appimage-vars=(\d+)/);
+          count = found && Number(found[1]);
+          return found !== null;
+        }, 'the count of variables naming the AppImage');
+        assert(count === 0, `${count} of the shell's variables name the AppImage`);
+        await closeTerminal();
+      }
+    );
+  }
+
+  // A key press the webview acts on too, as a person's is (xdotool's on
+  // X, or WebDriver's): Linux's and Windows' webviews paste on
+  // Ctrl+Shift+V themselves. Not through the bridge (macOS, or Windows
+  // when WebDriver can't start the app): its keys are the page's own
+  // events, which the webview doesn't act on.
+  if (DRIVER !== 'bridge') {
+    await step('terminal: Ctrl+Shift+V pastes the clipboard once', async () => {
+      const marker = `e2e-paste-${process.pid}`;
+      await openTerminal();
+      await click('.xterm-screen');
+      const copied = await d.exec(
+        'return navigator.clipboard.writeText(arguments[0]).then(() => true, (e) => String(e));',
+        marker
+      );
+      assert(copied === true, `the clipboard holds the text: ${copied}`);
+      await typeKeys('echo ');
+      if (X) xdo('key', 'ctrl+shift+v');
+      else await keys([Keys.CTRL, Keys.SHIFT, 'v']);
+      await sleep(500);
+      await keys(Keys.ENTER);
+      // The echo's line: the text once (twice when pasted twice).
+      const echoed = async () =>
+        (await panelText('.xterm-rows'))
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith(marker));
+      await waitFor(async () => (await echoed()).length > 0, 'the pasted command’s output', 20_000);
+      const [line] = await echoed();
+      assert(line === marker, `pasted once: the echo is ${JSON.stringify(line)}`);
+      await closeTerminal();
+    });
+  }
+
+  // On the chat tab the panel can take the whole window, and give it back.
+  // Folding back, the terminal widened from nothing; fitted on every frame,
+  // the shell was resized to 2 columns, then 14, 59… and redrew its prompt
+  // at each, which pushed its output away and left the prompt in pieces.
+  await step(
+    'sidebar: the chat over the whole window and back, the terminal keeps its text',
+    async () => {
+      await openTerminal();
+      await click('.xterm-screen');
+      // Six lines, by a loop: the line typed doesn't hold what's looked for.
+      await typeKeys(
+        PLATFORM === 'win32'
+          ? 'cls & for /L %i in (1,1,6) do @echo e2e-fold %i: the quick brown fox jumps over the lazy dog'
+          : 'clear; for i in 1 2 3 4 5 6; do echo "e2e-fold $i: the quick brown fox jumps over the lazy dog"; done'
+      );
+      await keys(Keys.ENTER);
+      await waitFor(
+        async () => (await panelText('.xterm-rows')).includes('e2e-fold 6: the quick'),
+        'the lines'
+      );
+      await sleep(500);
+      const before = await panelText('.xterm-rows');
+      await sidebar('AI Chat');
+      await click('.sidebar-expand-button');
+      await waitFor(() => d.exists('.app.sidebar-expanded'), 'the chat over the whole window');
+      await sleep(500);
+      await click('.sidebar-expand-button');
+      await waitFor(async () => !(await d.exists('.app.sidebar-expanded')), 'the panel back');
+      // Its transition, then the terminal's settling.
+      await sleep(1000);
+      const after = await panelText('.xterm-rows');
+      assert(after === before, `the terminal's text changed:\n${after.trim()}`);
+      await sidebar('Files');
+      await closeTerminal();
+    }
+  );
 
   await step('git: changes listed, commit', async () => {
     await sidebar('Git');
@@ -1102,6 +1495,74 @@ async function run() {
     await waitFor(() => git(DEMO, 'stash', 'list') === '', 'the stash popped');
     await keys(Keys.ESC);
     git(DEMO, 'checkout', '-q', '--', '.');
+    await click('.git-branch-button');
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.git-branch-dropdown li.context-menu-item')].find((e) => e.textContent.trim() === 'main');`,
+        'main'
+      )
+    );
+    await waitFor(() => git(DEMO, 'branch', '--show-current') === 'main', 'back on main');
+  });
+
+  await step('git: a new branch is published when asked, then pushes on its own', async () => {
+    const remote = join(WORK, 'remote.git');
+    const remoteTip = () => {
+      try {
+        return git(remote, 'rev-parse', '--verify', '-q', 'refs/heads/feature/publish');
+      } catch {
+        return '';
+      }
+    };
+    const commit = async (file, text, message) => {
+      writeFileSync(join(DEMO, 'src', file), text);
+      await waitFor(
+        async () => (await panelText('.git-panel')).includes(file),
+        `${file} listed`,
+        20_000
+      );
+      await click('textarea[placeholder="Commit message"], input[placeholder="Commit message"]');
+      await typeKeys(message);
+      await click(await buttonByText('Commit'));
+      await waitFor(
+        () => git(DEMO, 'log', '-1', '--format=%s') === message,
+        `the commit ${message}`
+      );
+    };
+    await moreActions();
+    await click(await buttonByText('New branch…'));
+    await click('input[placeholder="Branch name"]');
+    await typeKeys('feature/publish');
+    await keys(Keys.ENTER);
+    await waitFor(() => git(DEMO, 'branch', '--show-current') === 'feature/publish', 'the branch');
+    // Not on the remote, nothing to commit: the button publishes it.
+    await waitFor(
+      async () => (await panelText('.git-commit-button')).trim() === 'Publish',
+      'the Publish button',
+      20_000
+    );
+    await commit('published.txt', 'published\n', 'Publish me');
+    // The remote has no branch to push the commit to: asked first.
+    await waitFor(
+      async () => (await d.bodyText()).includes('Publish feature/publish?'),
+      'the question to publish it',
+      20_000
+    );
+    assert(remoteTip() === '', 'nothing pushed before the answer');
+    await click(await buttonByText('Publish branch'));
+    await waitFor(
+      () => remoteTip() === git(DEMO, 'rev-parse', 'HEAD'),
+      'the branch published',
+      30_000
+    );
+    assert(
+      git(DEMO, 'rev-parse', '--abbrev-ref', 'feature/publish@{upstream}') ===
+        'origin/feature/publish',
+      'it tracks its remote branch'
+    );
+    // Tracked now: the next commit is pushed with no question.
+    await commit('published.txt', 'published twice\n', 'Pushed on its own');
+    await waitFor(() => remoteTip() === git(DEMO, 'rev-parse', 'HEAD'), 'the push', 30_000);
     await click('.git-branch-button');
     await click(
       await mark(
@@ -1189,14 +1650,192 @@ async function run() {
     );
   });
 
+  await step('git: a conflict settled line by line', async () => {
+    // Yours changes lines 2 and 4, incoming line 3: one conflict, which git
+    // can't split. Each line is ticked on the side that changed it.
+    const lines = (...l) => l.join('\n') + '\n';
+    const head = 'function total(items) {';
+    const merged = lines(
+      head,
+      '  let sum = 0; // running total',
+      '  for (const item of items) sum += item.price * item.qty;',
+      '  return Math.round(sum);',
+      '}'
+    );
+    if (git(DEMO, 'branch', '--show-current') !== 'main') git(DEMO, 'checkout', '-qf', 'main');
+    write(
+      join(DEMO, 'total.js'),
+      lines(
+        head,
+        '  let sum = 0;',
+        '  for (const item of items) sum += item.price;',
+        '  return sum;',
+        '}'
+      )
+    );
+    git(DEMO, 'add', 'total.js');
+    git(DEMO, 'commit', '-qm', 'Add total.js');
+    git(DEMO, 'push', '-q');
+    const other = join(WORK, 'other');
+    git(other, 'pull', '-q');
+    writeFileSync(
+      join(other, 'total.js'),
+      lines(
+        head,
+        '  let sum = 0;',
+        '  for (const item of items) sum += item.price * item.qty;',
+        '  return sum;',
+        '}'
+      )
+    );
+    git(other, 'commit', '-qam', 'Count quantities');
+    git(other, 'push', '-q');
+    writeFileSync(
+      join(DEMO, 'total.js'),
+      lines(
+        head,
+        '  let sum = 0; // running total',
+        '  for (const item of items) sum += item.price;',
+        '  return Math.round(sum);',
+        '}'
+      )
+    );
+    git(DEMO, 'commit', '-qam', 'Round the total');
+    await sleep(1000);
+    const pulled = async () =>
+      (await d.exists('.cr-pick')) || (await d.bodyText()).includes('Merge or rebase?');
+    await click('[title="Pull"]');
+    await waitFor(pulled, 'the pull to ask or conflict', 30_000);
+    if (!(await d.exists('.cr-pick'))) {
+      await click(
+        await mark(
+          `return [...document.querySelectorAll('button, [role=button]')].find((b) => b.textContent.trim().startsWith('Merge') && b.offsetParent);`,
+          'merge'
+        )
+      );
+    }
+    await waitFor(() => d.exists('.cr-pick'), 'the conflict resolver', 30_000);
+    const tick = async (side, code) =>
+      click(
+        await mark(
+          `return [...document.querySelectorAll('.cr-${side} .cr-line')].find((l) => l.textContent.includes(arguments[0]))?.querySelector('.cr-pick');`,
+          'tick',
+          code
+        )
+      );
+    await tick('ours', 'running total');
+    await tick('theirs', 'item.qty');
+    await tick('ours', 'Math.round');
+    const result = await d.exec(
+      `return [...document.querySelectorAll('.cr-result .cr-line .cr-code')].map((e) => e.textContent).join('\\n')`
+    );
+    assert(result === merged.split('\n').slice(1, 4).join('\n'), `the result: ${result}`);
+    await click(await buttonByText('Mark resolved'));
+    await sleep(800);
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Commit merge' && b.offsetParent).pop();`,
+        'commit-merge'
+      )
+    );
+    await waitFor(
+      () => git(DEMO, 'log', '-1', '--format=%p').split(' ').length === 2,
+      'the merge commit',
+      20_000
+    );
+    const written = readFileSync(join(DEMO, 'total.js'), 'utf8');
+    assert(written === merged, `total.js: ${written}`);
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('button')].find((b) => b.textContent.trim().endsWith('Push') && b.offsetParent);`,
+        'push'
+      )
+    );
+    await waitFor(
+      () =>
+        git(join(WORK, 'remote.git'), 'log', '-1', '--format=%H') ===
+        git(DEMO, 'rev-parse', 'HEAD'),
+      'the push',
+      30_000
+    );
+  });
+
+  await step('git: rebase onto a branch found by searching', async () => {
+    // e2e-base and e2e-topic both start at main, a commit each. The topic
+    // is rebased onto the base from the menu: its commit then sits on the
+    // base's.
+    if (git(DEMO, 'branch', '--show-current') !== 'main') git(DEMO, 'checkout', '-qf', 'main');
+    git(DEMO, 'checkout', '-qb', 'e2e-base');
+    write(join(DEMO, 'docs', 'base.md'), '# Base\n');
+    git(DEMO, 'add', '-A');
+    git(DEMO, 'commit', '-qm', 'Base work');
+    const base = git(DEMO, 'rev-parse', 'HEAD');
+    git(DEMO, 'checkout', '-q', 'main');
+    git(DEMO, 'checkout', '-qb', 'e2e-topic');
+    write(join(DEMO, 'docs', 'topic.md'), '# Topic\n');
+    git(DEMO, 'add', '-A');
+    git(DEMO, 'commit', '-qm', 'Topic work');
+    await sidebar('Git');
+    // The panel catches up with the branch made on the command line first,
+    // drawing its header again meanwhile: a button found before is gone.
+    await waitFor(
+      async () => (await panelText('.git-branch-name')) === 'e2e-topic',
+      'the panel on e2e-topic',
+      20_000
+    );
+    const fetchIdle = () =>
+      d.exec(`return document.querySelector('[title="Fetch"]')?.disabled === false`);
+    await waitFor(fetchIdle, 'Fetch to be enabled', 30_000);
+    await click('[title="Fetch"]');
+    await waitFor(fetchIdle, 'the fetch to end', 30_000);
+    await moreActions();
+    // WebKit's snapshot is of the last frame it painted.
+    await sleep(400);
+    await d.screenshot('git-rebase-menu');
+    await click(await buttonByText('Rebase…'));
+    const search = '.git-more-dropdown input[aria-label="Search branches to rebase onto"]';
+    await waitFor(() => d.exists(search), 'the branch search');
+    const listed = () =>
+      d.exec(
+        'return [...document.querySelectorAll(".git-more-dropdown .context-menu-list .context-menu-item")].map((e) => e.textContent.trim())'
+      );
+    // Local and remote branches, e2e-topic itself left out.
+    const all = await listed();
+    for (const b of ['main', 'e2e-base', 'origin/main']) {
+      assert(all.includes(b), `${b} listed: ${all.join(', ')}`);
+    }
+    assert(!all.includes('e2e-topic'), `the branch itself is left out: ${all.join(', ')}`);
+    await sleep(400);
+    await d.screenshot('git-rebase-branches');
+    await click(search);
+    await typeKeys('e2e ba');
+    await waitFor(
+      async () => (await listed()).join() === 'e2e-base',
+      'the search to leave e2e-base'
+    );
+    await sleep(400);
+    await d.screenshot('git-rebase-search');
+    await keys(Keys.ENTER);
+    await waitFor(
+      () => git(DEMO, 'log', '-1', '--format=%P') === base,
+      'the topic’s commit on the base’s',
+      20_000
+    );
+    assert(git(DEMO, 'log', '-1', '--format=%s') === 'Topic work', 'the topic’s commit');
+    assert(git(DEMO, 'branch', '--show-current') === 'e2e-topic', 'still on e2e-topic');
+    git(DEMO, 'checkout', '-q', 'main');
+  });
+
   await step('settings: every page opens', async () => {
     const pages = [
       'Editor',
       'Model providers',
-      'Project checks',
       'Permissions',
+      'Agent runs',
       'Subagents',
-      'Builds',
+      'Autopilot',
+      'Project checks',
+      'Heavy commands',
       'Virtual files',
       'Cloud hosts',
     ];

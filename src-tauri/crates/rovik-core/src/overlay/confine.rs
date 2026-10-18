@@ -59,14 +59,14 @@ fn command_with(way: Way, c: &Confine, program: &str, args: &[&str]) -> Command 
             // The whole file system as it is, devices too, but for the
             // project's path: the chat's view. The user stays itself, and
             // the working folder is kept (found again in the namespace).
-            let mut cmd = Command::new("bwrap");
+            let mut cmd = crate::process::command("bwrap");
             cmd.arg("--dev-bind").args(["/", "/"]);
             cmd.arg("--bind").arg(&c.view).arg(&c.project);
             cmd.arg("--").arg(program).args(args);
             cmd
         }
         Way::Unshare => {
-            let mut cmd = Command::new(program);
+            let mut cmd = crate::process::command(program);
             cmd.args(args);
             #[cfg(target_os = "linux")]
             let _ = linux::apply(&mut cmd, c);
@@ -203,7 +203,7 @@ pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
     match way(c) {
         Some(way) => command_with(way, c, program, args),
         None => {
-            let mut cmd = Command::new(program);
+            let mut cmd = crate::process::command(program);
             cmd.args(args);
             cmd
         }

@@ -3,11 +3,14 @@
 // Resolves the conflicts a merge or rebase left: the files git couldn't
 // merge on the left, and for the one picked three columns side by side —
 // your version, the result, the incoming version. Each conflict is settled
-// by taking one side, both (in the order taken), or by editing the result
-// by hand; any choice can be changed again, also after the file is saved,
-// until the merge is committed or the rebase continued. The choices and
-// the file they make are in src/lib/conflictMerge.ts; reading and writing
-// the files, and continuing or aborting, in src-tauri/src/git_sync.rs.
+// by taking one side, both (in the order taken), by ticking lines of either
+// side, or by editing the result by hand; any choice can be changed again,
+// also after the file is saved, until the merge is committed or the rebase
+// continued. The conflicts are the ones git wrote in the file. In each,
+// the two sides' lines are lined up, and where a line's versions differ
+// the part that differs is marked. The choices and the file they make are
+// in src/lib/conflictMerge.ts; reading and writing the files, and
+// continuing or aborting, in src-tauri/src/git_sync.rs.
 //
 // An isolated chat's conflicts with the project (IsolationBar.tsx) use the
 // same dialog through `source`: the project's version on the left, the
@@ -30,8 +33,12 @@ import {
   allTo,
   composeResult,
   conflictsOf,
+  differingParts,
   hunkText,
+  isPicked,
   isResolved,
+  rowsOf,
+  toggleLine,
   toggleSide,
   type HunkChoice,
   type Side,
@@ -108,6 +115,93 @@ function CodeLines(props: { text: string; start: number; empty?: string }) {
             <span class="cr-code">{line || ' '}</span>
           </div>
         )}
+      </For>
+    </Show>
+  );
+}
+
+type Conflict = Extract<GitMergeSegment, { kind: 'conflict' }>;
+
+const otherSide = (side: Side): Side => (side === 'ours' ? 'theirs' : 'ours');
+
+/** One side of a conflict, its lines lined up with the other side's
+ *  (`rowsOf`: a gap where only the other side has a line), each with a box
+ *  that picks it into the result. A line both sides have is dimmed; where
+ *  the other side's version of a line differs, the part that differs is
+ *  marked; a line only this side has is marked whole. */
+function PickLines(props: {
+  conflict: Conflict;
+  side: Side;
+  start: number;
+  empty: string;
+  /** The side's name, for each box's label. */
+  label: string;
+  picked: (index: number) => boolean;
+  /** Lines are being picked one by one: the ones left out are dimmed. */
+  picking: boolean;
+  onToggle: (index: number) => void;
+}) {
+  const lines = createMemo(() => linesOf(props.conflict[props.side]));
+  const others = createMemo(() => linesOf(props.conflict[otherSide(props.side)]));
+  return (
+    <Show when={lines().length > 0} fallback={<div class="cr-empty-lines">{props.empty}</div>}>
+      <For each={rowsOf(props.conflict)}>
+        {(row) => {
+          const index = row[props.side];
+          if (index === null) {
+            return (
+              <div class="cr-line cr-gap" aria-hidden="true">
+                <span class="cr-ln" />
+                <span class="cr-code"> </span>
+              </div>
+            );
+          }
+          const text = () => lines()[index] ?? '';
+          const counterpart = row[otherSide(props.side)];
+          // Where this version differs from the other side's.
+          const changed = () => {
+            if (row.same || counterpart === null) return null;
+            const ours = props.side === 'ours' ? text() : (others()[counterpart] ?? '');
+            const theirs = props.side === 'ours' ? (others()[counterpart] ?? '') : text();
+            const [from, to] = differingParts(ours, theirs)[props.side];
+            return from < to ? ([from, to] as const) : null;
+          };
+          return (
+            <div
+              class="cr-line cr-pickable"
+              classList={{
+                'cr-same': row.same,
+                'cr-alone': !row.same && counterpart === null,
+                'cr-picked': props.picked(index),
+                'cr-left-out': props.picking && !props.picked(index),
+              }}
+            >
+              <span class="cr-ln">{props.start + index}</span>
+              <input
+                type="checkbox"
+                class="cr-pick"
+                checked={props.picked(index)}
+                aria-label={`${props.label}, line ${props.start + index}`}
+                title={props.picked(index) ? 'Leave this line out' : 'Pick this line'}
+                onChange={(e) => {
+                  props.onToggle(index);
+                  e.currentTarget.checked = props.picked(index);
+                }}
+              />
+              <span class="cr-code">
+                <Show when={changed()} fallback={text() || ' '}>
+                  {(range) => (
+                    <>
+                      {text().slice(0, range()[0])}
+                      <mark class="cr-change">{text().slice(range()[0], range()[1])}</mark>
+                      {text().slice(range()[1])}
+                    </>
+                  )}
+                </Show>
+              </span>
+            </div>
+          );
+        }}
       </For>
     </Show>
   );
@@ -400,7 +494,11 @@ export function ConflictResolver(props: ConflictResolverProps) {
     start: number
   ) => {
     const choice = () => choices()[index];
-    const taken = () => choice()?.custom === undefined && (choice()?.sides.includes(side) ?? false);
+    const taken = () =>
+      choice()?.custom === undefined &&
+      !choice()?.lines &&
+      (choice()?.sides.includes(side) ?? false);
+    const picking = () => choice()?.custom === undefined && !!choice()?.lines;
     const order = () =>
       choice()?.sides.length === 2 && taken() ? choice()!.sides.indexOf(side) + 1 : null;
     const deleted = () => data()?.[side] === null;
@@ -408,7 +506,10 @@ export function ConflictResolver(props: ConflictResolverProps) {
     return (
       <div
         class={`cr-cell cr-side cr-${side}`}
-        classList={{ 'cr-taken': taken(), 'cr-dropped': isResolved(choice()) && !taken() }}
+        classList={{
+          'cr-taken': taken(),
+          'cr-dropped': isResolved(choice()) && !taken() && !picking(),
+        }}
       >
         <div class="cr-hunk-bar">
           <button
@@ -419,7 +520,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
             title={
               taken()
                 ? `Drop ${label().toLowerCase()} from the result`
-                : isResolved(choice()) && choice()?.custom === undefined
+                : isResolved(choice()) && choice()?.custom === undefined && !picking()
                   ? `Add ${label().toLowerCase()} to the result, after what's there`
                   : `Use ${label().toLowerCase()}`
             }
@@ -450,10 +551,18 @@ export function ConflictResolver(props: ConflictResolverProps) {
             Only this
           </button>
         </div>
-        <CodeLines
-          text={seg[side]}
+        <PickLines
+          conflict={seg}
+          side={side}
           start={start}
           empty={deleted() ? 'Deleted in this version' : 'No lines here'}
+          label={label()}
+          picking={picking()}
+          picked={(line) => isPicked(choice(), side, line)}
+          onToggle={(line) => {
+            setEditing(null);
+            choose(index, toggleLine(seg, choice(), side, line));
+          }}
         />
       </div>
     );
@@ -469,6 +578,9 @@ export function ConflictResolver(props: ConflictResolverProps) {
       const c = choice();
       if (!isResolved(c)) return 'Unresolved';
       if (c!.custom !== undefined) return 'Edited';
+      const lines = c!.lines;
+      if (lines)
+        return `Lines picked: ${lines.ours.length} ${lower('ours')}, ${lines.theirs.length} ${lower('theirs')}`;
       return c!.sides.map(sideName).join(' + ');
     };
     return (
@@ -509,7 +621,7 @@ export function ConflictResolver(props: ConflictResolverProps) {
               when={isResolved(choice())}
               fallback={
                 <div class="cr-empty-lines">
-                  Accept {lower('ours')}, {lower('theirs')}, or both — or edit
+                  Accept {lower('ours')}, {lower('theirs')} or both, tick lines, or edit
                 </div>
               }
             >

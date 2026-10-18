@@ -13,7 +13,9 @@
 //! ([`undo`]). The writes happen under each file's lock (file_guard.rs),
 //! after checking that no file changed since the merge.
 //!
-//! Only one landing per project at a time.
+//! Only one landing per project at a time. A landing being written holds
+//! a lock in its folder (`APPLYING`), so another of Rovik's processes,
+//! starting meanwhile, doesn't take it for one a crash interrupted.
 
 use super::fs::{DeletedBase, OverlayChange};
 use crate::vfs::store::Kind;
@@ -737,10 +739,16 @@ fn is_content(project: &Path, rel: &str, content: &Content) -> bool {
     }
 }
 
+/// The lock a landing holds while it's written (`apply`, `recover_where`).
+pub(super) const APPLYING: &str = "applying.lock";
+
 fn apply(data_dir: &Path, dialog_id: &str, project: &Path, plan: &Plan) -> Result<Landed, String> {
     let id = landing_id();
     let dir = landings_dir(data_dir, dialog_id).join(&id);
     fs::create_dir_all(dir.join("old")).map_err(|e| e.to_string())?;
+    // A new folder: free. Without it (a lock that couldn't be made), the
+    // landing goes on as before.
+    let _applying = crate::os_lock::try_hold(&dir.join(APPLYING)).ok().flatten();
     // Which project, for recovery and undo after the overlay is gone.
     fs::write(
         landings_dir(data_dir, dialog_id).join("project.txt"),
@@ -908,6 +916,13 @@ fn recover_where(data_dir: &Path, wanted: impl Fn(&str, &Path) -> Option<PathBuf
             if journal.state != "applying" {
                 continue;
             }
+            // Still being written, by another of Rovik's processes: not
+            // interrupted. Held while it's finished here.
+            let _finishing = match crate::os_lock::try_hold(&dir.join(APPLYING)) {
+                Ok(None) => continue,
+                Ok(Some(lock)) => Some(lock),
+                Err(_) => None,
+            };
             // Only paths still as the landing found them, or already as it
             // left them: anything else changed after the crash and stays.
             // A path can have two entries (a file replaced by a folder: its

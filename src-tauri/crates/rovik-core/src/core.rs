@@ -137,9 +137,10 @@ mod tests {
         assert!(data.join("chats.db").is_file());
         assert_eq!(crate::overlay::chats::data_dir(), Some(data.clone()));
         assert_eq!(core.paths.log_dir, data);
-        assert!(data.join("chats.db.running").is_file());
+        let marker = || std::fs::read_to_string(data.join("chats.db.running")).unwrap();
+        assert_eq!(marker(), "running");
         crate::rt::block_on(core.shutdown());
-        assert!(!data.join("chats.db.running").exists(), "a clean exit");
+        assert_eq!(marker(), "clean", "a clean exit");
     }
 
     #[test]

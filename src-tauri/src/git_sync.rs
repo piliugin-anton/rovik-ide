@@ -5,7 +5,8 @@
 // (branch.<name>.rebase, pull.rebase, pull.ff), a conflicted file is
 // resolved from its two sides, and the merge or rebase is then continued
 // or aborted. The Git panel's pull, a push the remote rejected, and the
-// conflict resolver (src/components/ConflictResolver.tsx) all end up here.
+// conflict resolver (src/components/ConflictResolver.tsx) all end up here,
+// and so does a rebase onto a branch picked in the Git menu.
 //
 // Merges and rebases are libgit2's on-disk ones: the state lives in .git
 // (MERGE_HEAD, rebase-merge/) like git's own, so a terminal sees it too.
@@ -15,7 +16,7 @@ use git2::{
     build::CheckoutBuilder, BranchType, ErrorCode, Oid, RebaseOptions, Reference, Repository,
     RepositoryState, ResetType, Status, StatusOptions,
 };
-use rovik_core::merge::{is_binary, parse_merged, ConflictFile, MergeSegment};
+use rovik_core::merge::{is_binary, ConflictFile, MergeSegment};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 
@@ -141,7 +142,9 @@ pub async fn git_pull_config(path: String) -> Result<PullConfig, String> {
 #[serde(rename_all = "camelCase")]
 pub struct PullOutcome {
     /// "up-to-date" | "fast-forward" | "merged" | "rebased" | "conflicts"
-    /// | "needs-strategy" (diverged, and the config doesn't say how to pull).
+    /// | "needs-strategy" (diverged, and the config doesn't say how to pull)
+    /// | "rewrites-pushed" (a rebase onto a branch would rewrite commits
+    /// already pushed: asked about first).
     pub result: &'static str,
     /// For "conflicts": the files that need resolving.
     pub conflicts: Vec<String>,
@@ -217,7 +220,8 @@ pub fn conflicted_paths(repo: &Repository) -> Result<Vec<String>, String> {
 
 /// A merge or rebase rewrites tracked files; changes not yet committed to
 /// them could be lost or mixed into the result, so it waits for them.
-fn ensure_clean(repo: &Repository) -> Result<(), String> {
+/// `what` is the action, to try again: "pull", "rebase".
+fn ensure_clean(repo: &Repository, what: &str) -> Result<(), String> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(false).include_ignored(false);
     let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
@@ -225,10 +229,9 @@ fn ensure_clean(repo: &Repository) -> Result<(), String> {
         .iter()
         .any(|e| e.status() != Status::CURRENT && !e.status().is_ignored());
     if dirty {
-        return Err(
-            "You have uncommitted changes. Commit or stash them first, then pull again."
-                .to_string(),
-        );
+        return Err(format!(
+            "You have uncommitted changes. Commit or stash them first, then {what} again."
+        ));
     }
     Ok(())
 }
@@ -320,7 +323,7 @@ pub fn integrate_upstream(
              Pull with merge or rebase instead."
         )),
         Some(PullStrategy::Merge) => {
-            ensure_clean(repo)?;
+            ensure_clean(repo, "pull")?;
             let mut checkout = checkout_for_merge(repo);
             repo.merge(&[&incoming], None, Some(&mut checkout)).map_err(|e| format!("Merge failed: {e}"))?;
             let conflicts = conflicted_paths(repo)?;
@@ -331,7 +334,7 @@ pub fn integrate_upstream(
             Ok(PullOutcome::done("merged"))
         }
         Some(PullStrategy::Rebase) => {
-            ensure_clean(repo)?;
+            ensure_clean(repo, "pull")?;
             let mut opts = rebase_options(repo);
             let mut rebase = repo
                 .rebase(None, Some(&incoming), None, Some(&mut opts))
@@ -339,6 +342,108 @@ pub fn integrate_upstream(
             drive_rebase(repo, &mut rebase)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rebase onto a branch (the Git menu's Rebase…)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn git_rebase(
+    path: String,
+    onto: String,
+    remote: bool,
+    rewrite_pushed: Option<bool>,
+) -> Result<PullOutcome, String> {
+    // Isolated chats on the project wait while the working tree is rewritten.
+    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
+    off_main_thread(move || {
+        git_rebase_blocking(path, onto, remote, rewrite_pushed.unwrap_or(false))
+    })
+    .await
+}
+
+/// Rebases the current branch onto the branch `onto` (a remote-tracking one
+/// when `remote`): the branch's commits that `onto` doesn't have are
+/// replayed on top of it. "up-to-date" when the branch has all of `onto`
+/// already. "rewrites-pushed", with nothing done, when some of the commits
+/// are on the branch's upstream and `rewrite_pushed` isn't set: rewritten,
+/// they could only be pushed by force. A step with conflicts stops it
+/// ("conflicts"), to continue or abort as a pull's rebase.
+pub fn git_rebase_blocking(
+    path: String,
+    onto: String,
+    remote: bool,
+    rewrite_pushed: bool,
+) -> Result<PullOutcome, String> {
+    let repo = open_repo(&path)?;
+    if let Some(op) = state_name(repo.state()) {
+        return Err(format!("A {op} is in progress: finish or abort it first."));
+    }
+    let head = repo
+        .head()
+        .map_err(|_| "There are no commits to rebase yet.".to_string())?;
+    if !head.is_branch() {
+        return Err("Check out a branch to rebase it.".to_string());
+    }
+    let branch = head.shorthand().unwrap_or("HEAD").to_string();
+    if !remote && onto == branch {
+        return Err(format!("{branch} can't be rebased onto itself."));
+    }
+    let kind = if remote {
+        BranchType::Remote
+    } else {
+        BranchType::Local
+    };
+    let target = repo
+        .find_branch(&onto, kind)
+        .map_err(|_| format!("There's no branch {onto}."))?;
+    let head_id = head.peel_to_commit().map_err(|e| e.to_string())?.id();
+    let onto_id = target
+        .get()
+        .peel_to_commit()
+        .map_err(|e| e.to_string())?
+        .id();
+    let has_it = repo
+        .graph_descendant_of(head_id, onto_id)
+        .map_err(|e| e.to_string())?;
+    if head_id == onto_id || has_it {
+        return Ok(PullOutcome::done("up-to-date"));
+    }
+    ensure_clean(&repo, "rebase")?;
+    if !rewrite_pushed && replays_pushed(&repo, &branch, head_id, onto_id)? {
+        return Ok(PullOutcome::done("rewrites-pushed"));
+    }
+    let incoming = repo
+        .reference_to_annotated_commit(target.get())
+        .map_err(|e| e.to_string())?;
+    let mut opts = rebase_options(&repo);
+    let mut rebase = repo
+        .rebase(None, Some(&incoming), None, Some(&mut opts))
+        .map_err(|e| format!("Rebase failed: {e}"))?;
+    drive_rebase(&repo, &mut rebase)
+}
+
+/// Whether rebasing `branch` (at `head`) onto `onto` replays a commit its
+/// upstream has: one that's been pushed.
+fn replays_pushed(repo: &Repository, branch: &str, head: Oid, onto: Oid) -> Result<bool, String> {
+    let upstream = repo
+        .find_branch(branch, BranchType::Local)
+        .ok()
+        .and_then(|b| b.upstream().ok())
+        .and_then(|u| u.get().target());
+    let Some(upstream) = upstream else {
+        return Ok(false);
+    };
+    // The commits on `tip` that `onto` doesn't have.
+    let own = |tip: Oid| -> Result<std::collections::HashSet<Oid>, String> {
+        let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
+        walk.push(tip).map_err(|e| e.to_string())?;
+        walk.hide(onto).map_err(|e| e.to_string())?;
+        walk.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    };
+    let pushed = own(upstream)?;
+    Ok(own(head)?.iter().any(|c| pushed.contains(c)))
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +642,19 @@ fn upstream_name(repo: &Repository, branch: &str) -> Option<String> {
     up.name().ok().flatten().map(str::to_string)
 }
 
+/// The branch a rebase replays onto, as libgit2 noted it when it started
+/// the rebase ("main", "refs/remotes/origin/main"): from the Git menu, any
+/// branch, not the upstream. git's own rebases don't note it.
+fn rebase_onto_name(repo: &Repository) -> Option<String> {
+    let noted = std::fs::read_to_string(repo.path().join("rebase-merge/onto_name")).ok()?;
+    let name = noted.trim();
+    let name = name
+        .strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/remotes/"))
+        .unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 pub fn current_operation(repo: &Repository) -> Option<GitOperation> {
     let kind = state_name(repo.state())?;
     let conflicts = conflicted_paths(repo).unwrap_or_default();
@@ -568,7 +686,8 @@ pub fn current_operation(repo: &Repository) -> Option<GitOperation> {
         } else {
             op.can_continue = false;
         }
-        op.incoming = op.branch.as_deref().and_then(|b| upstream_name(repo, b));
+        op.incoming = rebase_onto_name(repo)
+            .or_else(|| op.branch.as_deref().and_then(|b| upstream_name(repo, b)));
     } else {
         op.branch = repo
             .head()
@@ -705,8 +824,8 @@ pub fn git_conflict_file_blocking(path: String, file: String) -> Result<Conflict
     let segments = if binary {
         Vec::new()
     } else if let (Some(o), Some(t)) = (&ours, &theirs) {
-        let merged = rovik_core::merge::merge3_raw(base.as_deref().unwrap_or(&[]), o, t)?;
-        parse_merged(&String::from_utf8_lossy(&merged.content))
+        // Cut as git cut them: the conflicts its markers show in the file.
+        rovik_core::merge::conflict_segments(base.as_deref().unwrap_or(&[]), o, t)?
     } else {
         // One side deleted the file: it's all one conflict.
         vec![MergeSegment::Conflict {

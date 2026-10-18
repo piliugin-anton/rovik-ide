@@ -24,6 +24,13 @@ export interface MessageRow {
   createdAt: number;
 }
 
+/** A message the user sent that no reply settled (chat_db::store). */
+export interface UnsettledSend {
+  dialogId: string;
+  messageId: string;
+  content: string;
+}
+
 export interface MessagePage {
   messages: ChatMessage[];
   hasOlder: boolean;
@@ -152,6 +159,13 @@ export const chatApi = {
 
   messagesAnswered: (messageIds: string[]) =>
     invoke<string[]>('chat_messages_answered', { messageIds }),
+
+  /**
+   * The sends of a project's chats (null: the chats with no project) that a
+   * window which ended left unanswered: no run anywhere is at work on them.
+   */
+  unsettledSends: (projectId: string | null) =>
+    invoke<UnsettledSend[]>('chat_unsettled_sends', { projectId }),
 
   /**
    * Stores an image or a PDF attached in the chat input (the file's bytes,

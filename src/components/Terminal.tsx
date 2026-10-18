@@ -30,6 +30,9 @@ interface TerminalProps {
   isPanelShortcut?: (e: KeyboardEvent) => boolean;
 }
 
+/** How long the terminal's size has to hold still before it's fitted to. */
+const SETTLE_MS = 150;
+
 /** Ctrl with these keys, by physical key: the control characters of `[`, `\` and `]`. */
 const CONTROL_PUNCTUATION: Record<string, string> = {
   BracketLeft: '\x1b',
@@ -172,6 +175,18 @@ export default function Terminal(props: TerminalProps) {
     fitAddon?.fit();
   }
 
+  // A size still changing is fitted to once it holds still. The chat panel
+  // folding back from the whole window widens the terminal from nothing
+  // over a third of a second: fitted on every frame, the shell was resized
+  // to 2 columns, then 14, 59… back to 100, and redrew its prompt at each,
+  // which pushed the output away and left the prompt in pieces.
+  let settling: ReturnType<typeof setTimeout> | undefined;
+  function fitWhenSettled() {
+    clearTimeout(settling);
+    settling = setTimeout(fit, SETTLE_MS);
+  }
+  onCleanup(() => clearTimeout(settling));
+
   // Dismiss the menu on any outside press, scroll, resize, blur, or Escape —
   // the same triggers App uses for the file-tree menu.
   createEffect(() => {
@@ -233,6 +248,11 @@ export default function Terminal(props: TerminalProps) {
         return false;
       }
       if (isPasteKey(e)) {
+        // Linux's and Windows' webviews paste on Ctrl+Shift+V too, once the
+        // key is handled (WebKitGTK's "paste as plain text", Chromium's
+        // "paste and match style"), and xterm would take that paste as
+        // well: the text went in twice.
+        e.preventDefault();
         void pasteFromClipboard();
         return false;
       }
@@ -316,7 +336,7 @@ export default function Terminal(props: TerminalProps) {
 
     // Refit whenever the container changes size: panel expand, sidebar
     // resize, window resize, or this terminal becoming the visible one.
-    const resizeObserver = new ResizeObserver(fit);
+    const resizeObserver = new ResizeObserver(fitWhenSettled);
     resizeObserver.observe(containerEl);
     onCleanup(() => resizeObserver.disconnect());
   });
@@ -332,7 +352,7 @@ export default function Terminal(props: TerminalProps) {
     if (!props.active) return;
     requestAnimationFrame(() => {
       if (disposed || !props.active) return;
-      fit();
+      fitWhenSettled();
       xterm?.focus();
     });
   });
