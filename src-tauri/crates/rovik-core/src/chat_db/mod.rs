@@ -117,7 +117,11 @@ impl DbState {
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let job: Job = Box::new(move |conn| {
-            let _ = tx.send(f(conn));
+            let done = match newer_schema(conn) {
+                Some(why) => Err(why),
+                None => f(conn),
+            };
+            let _ = tx.send(done);
         });
         self.0
             .writer
@@ -136,7 +140,11 @@ impl DbState {
         F: FnOnce(&mut Connection) -> Result<(), String> + Send + 'static,
     {
         let job: Job = Box::new(move |conn| {
-            if let Err(e) = f(conn) {
+            let done = match newer_schema(conn) {
+                Some(why) => Err(why),
+                None => f(conn),
+            };
+            if let Err(e) = done {
                 eprintln!("chat_db: {e}");
             }
         });
@@ -203,6 +211,24 @@ impl DbState {
         }
         Ok(())
     }
+}
+
+/// Why this process no longer writes: a newer Rovik's window updated the
+/// database since this one opened it (an update installed while it ran).
+/// Its schema has what this build doesn't know (a chat's location, say),
+/// which a write could go around, as `schema::migrate` says at the start.
+/// Reads go on.
+fn newer_schema(conn: &Connection) -> Option<String> {
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .ok()?;
+    (version > schema::VERSION).then(|| {
+        format!(
+            "A newer version of Rovik updated the chat database (schema {version}; this window \
+             reads {}): close this window and open Rovik again.",
+            schema::VERSION
+        )
+    })
 }
 
 /// That the database is open, kept in `RUNNING_MARKER` by each of Rovik's

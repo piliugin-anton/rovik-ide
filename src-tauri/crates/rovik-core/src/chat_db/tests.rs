@@ -1284,6 +1284,46 @@ fn history_sends_a_user_message_as_it_was_first_sent() {
 /// an image as a PNG fitted into 768×768, once however often it's attached,
 /// and a PDF as it is, with its pages. A damaged image and other types are
 /// refused. (How its bytes come over the IPC is the app's command's test.)
+/// A window open while a newer Rovik's updated the database (an update
+/// installed while it ran) stops writing: what the newer schema added, it
+/// would write around. Reads go on.
+#[tokio::test]
+async fn a_window_older_than_the_database_stops_writing() {
+    let dir = shared_folder("newer");
+    let old = super::DbState::open(&dir).unwrap();
+    old.write(|c| {
+        dialog(c, "d1", "Kept", 0);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    // The newer window's migration.
+    let newer = rusqlite::Connection::open(dir.join("chats.db")).unwrap();
+    newer
+        .pragma_update(None, "user_version", schema::VERSION + 1)
+        .unwrap();
+    let refused = old
+        .write(|c| {
+            dialog(c, "d2", "Not written", 0);
+            Ok(())
+        })
+        .await;
+    assert!(refused
+        .unwrap_err()
+        .contains("A newer version of Rovik updated the chat database"));
+    let titles: Vec<String> = old
+        .read(|c| {
+            let mut s = c
+                .prepare("SELECT title FROM dialogs ORDER BY title")
+                .unwrap();
+            let rows = s.query_map([], |r| r.get(0)).unwrap();
+            Ok(rows.map(Result::unwrap).collect())
+        })
+        .await
+        .unwrap();
+    assert_eq!(titles, ["Kept"]);
+}
+
 #[tokio::test]
 async fn attachments_are_stored_as_pngs_and_pdfs() {
     let dir = std::env::temp_dir().join(format!("chat-db-attach-{}", std::process::id()));

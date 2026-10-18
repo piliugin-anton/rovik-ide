@@ -72,12 +72,32 @@ pub fn held_elsewhere(path: &Path) -> bool {
 /// This process's slot: its number among the Rovik processes running on
 /// this computer (the lowest free), and the lock that keeps it.
 static SLOT: OnceLock<(usize, Option<File>)> = OnceLock::new();
+/// Where the slots are kept.
+static SLOTS: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 /// Takes this process's slot among those kept in `dir`: 1 for the first
 /// process, 2 for one started while it runs, and so on. Taken once; what's
 /// asked after that is the slot taken first.
 pub fn take_slot(dir: &Path) -> usize {
+    let _ = SLOTS.set(dir.to_path_buf());
     SLOT.get_or_init(|| first_free(dir)).0
+}
+
+/// Whether no other Rovik process runs now (none holds a slot): what they
+/// all share, and one may still use, can be cleaned up then. True for a
+/// process that took no slot (the daemon, tests).
+pub fn alone() -> bool {
+    let (Some(dir), Some((mine, _))) = (SLOTS.get(), SLOT.get()) else {
+        return true;
+    };
+    alone_in(dir, *mine)
+}
+
+/// Whether no process but the one with slot `mine` holds a slot in `dir`.
+fn alone_in(dir: &Path, mine: usize) -> bool {
+    !(1..=64)
+        .filter(|n| *n != mine)
+        .any(|n| held_elsewhere(&dir.join(format!("slot-{n}.lock"))))
 }
 
 /// The lowest slot in `dir` no process holds, held.
@@ -172,6 +192,17 @@ mod tests {
         drop(a);
         assert_eq!(first_free(&dir).0, 1);
         drop(b);
+    }
+
+    #[test]
+    fn a_process_is_alone_once_the_others_end() {
+        let dir = temp_dir("alone");
+        let (mine, _held) = first_free(&dir);
+        assert!(alone_in(&dir, mine));
+        let (_, other) = first_free(&dir);
+        assert!(!alone_in(&dir, mine), "another window runs");
+        drop(other);
+        assert!(alone_in(&dir, mine));
     }
 
     #[test]

@@ -126,8 +126,13 @@ fn system_binary() -> Option<RaBinary> {
 }
 
 /// Old versions left from earlier updates. One that's still running (Windows)
-/// can't be deleted yet; that's fine, the next look tries again.
+/// can't be deleted yet; that's fine, the next look tries again. Not while
+/// another Rovik window runs: its server may run an older one, which its
+/// Restart starts again.
 fn prune(app: &AppHandle, keep: &str) {
+    if !rovik_core::os_lock::alone() {
+        return;
+    }
     let Ok(dir) = managed_dir(app) else { return };
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
@@ -332,7 +337,8 @@ pub async fn ra_install(
     let tag = release.tag.clone();
     let asset = release.asset.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<RaBinary, String> {
-        let staging = dir.join(format!(".staging-{tag}"));
+        // This process's own: another window may install at the same time.
+        let staging = dir.join(format!(".staging-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&staging);
         fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
         let exe_path = staging.join(EXE);
@@ -350,8 +356,13 @@ pub async fn ra_install(
             .ok_or("the downloaded rust-analyzer doesn't run on this system")?;
 
         let final_dir = dir.join(&tag);
-        let _ = fs::remove_dir_all(&final_dir);
-        fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
+        if version_of(&final_dir.join(EXE)).is_some() {
+            // Installed meanwhile (another window), and maybe running: kept.
+            let _ = fs::remove_dir_all(&staging);
+        } else {
+            let _ = fs::remove_dir_all(&final_dir);
+            fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
+        }
         let current =
             serde_json::to_string(&Current { tag: tag.clone() }).map_err(|e| e.to_string())?;
         rovik_core::atomic_file::write_atomic(&dir.join("current.json"), current.as_bytes())
