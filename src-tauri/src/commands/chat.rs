@@ -355,6 +355,16 @@ pub async fn chat_search(
     api::chat_search(&core.db, query, project_id, limit).await
 }
 
+/// The sends of the project's chats a window that ended left unanswered:
+/// this window judges them as it would its own after a restart.
+#[tauri::command]
+pub async fn chat_unsettled_sends(
+    core: State<'_, Core>,
+    project_id: Option<String>,
+) -> Result<Vec<rovik_core::chat_db::store::UnsettledSend>, String> {
+    api::chat_unsettled_sends(&core.db, project_id).await
+}
+
 #[tauri::command]
 pub async fn chat_messages_answered(
     core: State<'_, Core>,

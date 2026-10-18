@@ -402,6 +402,144 @@ fn rename_replaces_the_title_row() {
     assert_eq!(search(&conn, "fresh", None, 10).unwrap().len(), 1);
 }
 
+/// The sends a window that ended left unsettled: each chat's latest from
+/// the user with no finished reply after it, in the chats of the project
+/// owned here; not a failed one, not the app's own notes, not a subagent's
+/// chat, a chat on a host or one of another project.
+#[test]
+fn unsettled_sends_are_the_chats_latest_unanswered() {
+    let mut conn = db();
+    for (id, path) in [("p", "/p"), ("q", "/q")] {
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at, last_opened_at)
+             VALUES (?1, ?1, ?2, 0, 0)",
+            rusqlite::params![id, path],
+        )
+        .unwrap();
+    }
+    let chat = |conn: &mut Connection, id: &str, project: Option<&str>, messages| {
+        create_dialog(
+            conn,
+            &NewDialog {
+                id: id.into(),
+                title: id.into(),
+                created_at: now_ms(),
+                updated_at: now_ms(),
+                project_id: project.map(str::to_string),
+            },
+        )
+        .unwrap();
+        add(conn, id, messages);
+    };
+    let partial = |id: &str| {
+        let mut m = message(id, "assistant", "Echo of your");
+        m.finalized = false;
+        m
+    };
+    let failed = |id: &str| {
+        let mut m = message(id, "user", "failed already");
+        m.failed = true;
+        m
+    };
+    let harness = |id: &str| {
+        let mut m = message(id, "user", "the app's own");
+        m.meta = Some(serde_json::json!({ "harness": "autopilot" }));
+        m
+    };
+    chat(
+        &mut conn,
+        "answered",
+        Some("p"),
+        vec![
+            message("a-u", "user", "hi"),
+            message("a-a", "assistant", "hello"),
+        ],
+    );
+    chat(
+        &mut conn,
+        "nothing-back",
+        Some("p"),
+        vec![message("n-u", "user", "anyone?")],
+    );
+    chat(
+        &mut conn,
+        "cut-mid-reply",
+        Some("p"),
+        vec![
+            message("c-u1", "user", "first"),
+            message("c-a1", "assistant", "done"),
+            message("c-u2", "user", "Crash me"),
+            partial("c-a2"),
+        ],
+    );
+    chat(&mut conn, "failed", Some("p"), vec![failed("f-u")]);
+    chat(
+        &mut conn,
+        "harness-only",
+        Some("p"),
+        vec![
+            message("h-u", "user", "hi"),
+            message("h-a", "assistant", "hello"),
+            harness("h-h"),
+        ],
+    );
+    chat(
+        &mut conn,
+        "other-project",
+        Some("q"),
+        vec![message("o-u", "user", "elsewhere")],
+    );
+    chat(
+        &mut conn,
+        "no-project",
+        None,
+        vec![message("x-u", "user", "loose")],
+    );
+    chat(
+        &mut conn,
+        "on-a-host",
+        Some("p"),
+        vec![message("r-u", "user", "far away")],
+    );
+    conn.execute(
+        "UPDATE dialogs SET location = 'host:h1' WHERE id = 'on-a-host'",
+        [],
+    )
+    .unwrap();
+    chat(
+        &mut conn,
+        "subagent",
+        Some("p"),
+        vec![message("s-u", "user", "a lead's ask")],
+    );
+    conn.execute(
+        "UPDATE dialogs SET parent_id = 'answered' WHERE id = 'subagent'",
+        [],
+    )
+    .unwrap();
+
+    let mut sends = unsettled_sends(&conn, Some("p")).unwrap();
+    sends.sort_by(|a, b| a.dialog_id.cmp(&b.dialog_id));
+    assert_eq!(
+        sends,
+        [
+            UnsettledSend {
+                dialog_id: "cut-mid-reply".into(),
+                message_id: "c-u2".into(),
+                content: "Crash me".into(),
+            },
+            UnsettledSend {
+                dialog_id: "nothing-back".into(),
+                message_id: "n-u".into(),
+                content: "anyone?".into(),
+            },
+        ]
+    );
+    let loose = unsettled_sends(&conn, None).unwrap();
+    assert_eq!(loose.len(), 1);
+    assert_eq!(loose[0].message_id, "x-u");
+}
+
 #[test]
 fn answered_and_around() {
     let mut conn = db();

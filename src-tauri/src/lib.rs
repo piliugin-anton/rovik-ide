@@ -175,6 +175,7 @@ pub fn run() {
             commands::chat::chat_list_dialogs,
             commands::chat::chat_open_project,
             commands::chat::chats_at_work_elsewhere,
+            commands::chat::chat_unsettled_sends,
             commands::chat::chat_read_plan,
             commands::chat::chat_answer_copy,
             commands::chat::chat_answer_moved,
