@@ -268,6 +268,18 @@ pub(super) fn prepare_browser_launch(
                 .into(),
         ));
     }
+    if config.pipe {
+        if let Some(arg) = config
+            .extra_args
+            .iter()
+            .find(|arg| arg.split('=').next() == Some("--remote-debugging-port"))
+        {
+            return Err(Error::Launch(format!(
+                "StealthConfig::pipe opens no DevTools port: remove {arg} from extra_args, \
+                 or leave pipe off"
+            )));
+        }
+    }
     crate::cdp::types::EmulationSetDeviceMetricsOverride::new(
         config.viewport_width,
         config.viewport_height,
@@ -285,12 +297,17 @@ pub(super) fn prepare_browser_launch(
     // Only a durable, user-owned profile can already have a live Chrome on
     // it — ephemeral profiles are freshly created above and can't collide.
     if !profile.owned {
-        if (config.chrome_path.is_some() || config.runtime_dir.is_some() || config.sandbox)
+        // A pipe reaches only a Chrome started with it, never one already
+        // running, which could only be reached through a DevTools port.
+        if (config.chrome_path.is_some()
+            || config.runtime_dir.is_some()
+            || config.sandbox
+            || config.pipe)
             && crate::cdp::discover::read_singleton_lock(&profile.path)
                 .is_some_and(crate::cdp::discover::pid_is_alive)
         {
             return Err(Error::Launch(
-                "A Chrome instance is already running on this profile; explicit executable, runtime or sandbox policy requires a new process".into(),
+                "A Chrome instance is already running on this profile; explicit executable, runtime, sandbox or pipe policy requires a new process".into(),
             ));
         }
         if let Some(ws_url) = try_attach_existing(&profile.path, config.headless)? {
@@ -651,5 +668,91 @@ mod try_attach_existing_tests {
                 .contains("if (navigator.keyboard && navigator.keyboard.getLayoutMap && null)"),
             "Linux keyboard spoof must be inert"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pipe_launch_tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "eoka-pipe-launch-{}-{}-{}",
+            std::process::id(),
+            name,
+            fastrand::u64(..)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn prepare(config: StealthConfig) -> Result<PreparedBrowserLaunch> {
+        prepare_browser_launch(Arc::new(config), Arc::new(AtomicBool::new(false)))
+    }
+
+    #[test]
+    fn a_pipe_launch_refuses_a_debugging_port() {
+        let runtime = temp_dir("runtime");
+        for arg in [
+            "--remote-debugging-port=9222",
+            "--remote-debugging-port=0",
+            "--remote-debugging-port",
+        ] {
+            let Err(error) = prepare(StealthConfig {
+                pipe: true,
+                runtime_dir: Some(runtime.to_string_lossy().into_owned()),
+                extra_args: vec![arg.into()],
+                ..Default::default()
+            }) else {
+                panic!("{arg} was accepted with the pipe");
+            };
+            let error = error.to_string();
+            assert!(
+                error.contains("opens no DevTools port") && error.contains(arg),
+                "{error}"
+            );
+        }
+        // Refused before anything was made for the launch.
+        assert_eq!(std::fs::read_dir(&runtime).unwrap().count(), 0);
+        std::fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn a_flag_that_only_starts_like_the_port_is_left_alone() {
+        let Err(error) = prepare(StealthConfig {
+            pipe: true,
+            chrome_path: Some("/nonexistent/eoka-chrome".into()),
+            extra_args: vec!["--remote-debugging-portability=1".into()],
+            ..Default::default()
+        }) else {
+            panic!("a missing Chrome was accepted");
+        };
+        // The launch went on as far as the executable.
+        let error = error.to_string();
+        assert!(error.contains("Invalid Chrome executable"), "{error}");
+    }
+
+    #[test]
+    fn a_pipe_launch_never_attaches_to_a_running_chrome() {
+        let profile = temp_dir("profile");
+        // A live process, this one, holds the profile's lock.
+        std::os::unix::fs::symlink(
+            format!("some-host-{}", std::process::id()),
+            profile.join("SingletonLock"),
+        )
+        .unwrap();
+        let Err(error) = prepare(StealthConfig {
+            pipe: true,
+            user_data_dir: Some(profile.to_string_lossy().into_owned()),
+            ..Default::default()
+        }) else {
+            panic!("a pipe launch attached to a running Chrome");
+        };
+        let error = error.to_string();
+        assert!(
+            error.contains("pipe policy requires a new process"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(&profile).unwrap();
     }
 }

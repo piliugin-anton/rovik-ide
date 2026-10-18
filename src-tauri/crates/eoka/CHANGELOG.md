@@ -12,7 +12,9 @@ All notable changes to this project will be documented in this file.
   and written cancel-safe; shutdown closes the pipe without the writer lock.
   The first `Browser.getVersion` reply is readiness; a Chrome that never
   answers is reported with its exit status and stderr. Off by default; a
-  launch with it fails on other systems.
+  launch with it fails on other systems. It never comes with a port: a launch
+  with `--remote-debugging-port` in `extra_args` fails, as does one on a
+  profile a running Chrome holds, rather than attach to it over its port.
 - `Browser::process_id` for the owned Chrome process.
 
 ### Fixed

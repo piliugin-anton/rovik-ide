@@ -26,7 +26,10 @@ on Linux and macOS (`rovik-core/src/browser_tools.rs`).
   either link; `launch_chrome_with_pipe`.
 - `src/browser.rs`, `src/browser/launch.rs`: `StealthConfig::pipe`,
   readiness from the first `Browser.getVersion` reply, and
-  `Browser::process_id`.
+  `Browser::process_id`. With `pipe`, a launch fails rather than open a
+  port: one with `--remote-debugging-port` in `extra_args`, and one on a
+  profile a running Chrome holds, which it would otherwise attach to over
+  that Chrome's port.
 - `src/browser/launch.rs`: an explicit `/snap/bin/<app>` path is kept as
   given. Resolving it gives `/usr/bin/snap`, which starts the app only
   under the link's name.
