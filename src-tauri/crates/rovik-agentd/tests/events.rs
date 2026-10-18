@@ -172,7 +172,11 @@ async fn a_client_back_with_its_since_gets_the_gap() {
     let since = (client.boot(), first.last().unwrap().0);
     drop(client);
 
-    // A second run while it's away.
+    // A second run while it's away, to its end, which another of the
+    // computer's clients hears of: a run is no longer listed as running a
+    // moment before its end is told.
+    let mut watching = daemon.session().await;
+    watching.subscribe(None).await;
     let mut away = daemon.session().await;
     let mut second = start;
     second.start = rovik_core::agent_run::StartKind::Send {
@@ -186,22 +190,21 @@ async fn a_client_back_with_its_since_gets_the_gap() {
     away.call(Request::AgentStart(Box::new(second)))
         .await
         .unwrap();
-    for _ in 0..400 {
-        match away.call(Request::AgentStatus).await {
-            Ok(Response::AgentStatus(s)) if s.runs.is_empty() => break,
-            _ => tokio::time::sleep(Duration::from_millis(25)).await,
-        }
-    }
+    watching.events_until(ended).await;
 
+    // What it missed comes first, all of it: the second run to its end.
     let mut back = daemon.session().await;
     let (replayed, complete) = back.subscribe(Some(since.clone())).await;
     assert!(complete);
-    let missed = back.events_until(ended).await;
-    assert_eq!(missed.len() as u64, replayed);
+    let mut missed = Vec::new();
+    for _ in 0..replayed {
+        missed.extend(back.events_until(|_| true).await);
+    }
     assert!(missed.iter().all(|(seq, _)| *seq > since.1));
     assert!(missed
         .iter()
         .any(|(_, e)| e["type"] == "messagesAdded" && e["messages"][0]["id"] == "u2"));
+    assert!(missed.iter().any(|(_, e)| ended(e)), "{missed:?}");
 
     let mut stale = daemon.session().await;
     assert_eq!(
