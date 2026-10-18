@@ -1,5 +1,6 @@
 import { settingOf } from './reasoning';
 import { invoke } from '@tauri-apps/api/core';
+import { plural } from './textUtils';
 import type { ModelProfile, ModelSelection, Provider, ProviderModel } from '../types';
 import { DEFAULT_PERMISSIONS, normalizePermissions, type AgentPermissions } from './permissions';
 import {
@@ -143,6 +144,13 @@ export function createAiSettingsHolder(
       return true;
     },
   };
+}
+
+/** One line for the Settings menu: how many providers and models there are to pick from. */
+export function providersSummary(providers: Provider[]): string {
+  if (providers.length === 0) return 'No providers yet: add one to chat';
+  const models = providers.reduce((n, p) => n + p.models.filter((m) => m.enabled).length, 0);
+  return `${plural(providers.length, 'provider')}, ${plural(models, 'model')} enabled`;
 }
 
 /*

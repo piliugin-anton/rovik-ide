@@ -98,10 +98,14 @@ export default function VirtualFilesSettings() {
   return (
     <div class="permissions-settings virtual-files-settings">
       <section class="settings-section">
-        <div class="settings-section-title">Virtual files</div>
+        <div class="settings-section-title">What it enables</div>
         <p class="settings-hint">
-          Files the app keeps in memory that commands the agent runs can read, write and execute
-          like any other file. They need the system’s user-space filesystem driver.
+          A filesystem driver (FUSE on Linux, macFUSE on macOS, WinFsp on Windows) lets the app hold
+          files in memory that every program sees as real files. With it, each chat works on its own
+          copy of your changes (isolated chats), the agent can manage its own context (the CLMs
+          context mode), and the agent’s commands in isolated chats run faster. Without it, chats
+          work in the project folder directly, only one at a time can run commands that change
+          files, and a chat set to CLMs uses Trimming instead.
         </p>
       </section>
 

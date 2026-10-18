@@ -94,6 +94,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   can redo the group one step at a time. A test writer can write tests
   from the request and the plan without reading the new code. Turn them
   on, and pick their models, in Settings → Subagents.
+- **Autopilot (optional).** A chat in Autopilot mode carries out a whole
+  task from one message without asking: it plans, reviews, implements,
+  checks and delivers, and writes down what it couldn't decide. How
+  thorough it is, when a task stops, and the commands it may never run are
+  set in Settings → Autopilot.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
 - Attach images, PDFs and text files to a message: paste them (Ctrl+V, or
@@ -173,7 +178,7 @@ faster in isolated chats.
 1. **Open a project:** choose a folder. It appears in the file tree.
 2. **Add a model:** open **Settings → Model providers**, paste the
    provider's base URL and your API key, and choose the models you want.
-3. **Review permissions:** in **Settings → Permissions & Approval**, choose
+3. **Review permissions:** in **Settings → Permissions & approval**, choose
    which commands the agent may run and what needs your approval. By
    default the agent may only run a short list of safe commands (`ls`,
    `cat`, `cargo clippy`, …), and it edits files without asking. Turn
@@ -184,15 +189,25 @@ faster in isolated chats.
    message box. Open one to compare it with the project version, then
    **Land** the changes or **Discard** them.
 
-Other settings pages:
+Every setting applies as soon as you change it, and the Settings menu
+shows each page's state: what's set, and whether it has an effect on this
+computer right now. The pages:
 
-| Page            | What it's for                                                      |
-| --------------- | ------------------------------------------------------------------ |
-| Editor          | Theme and editor options                                           |
-| Project checks  | Fix the type-check / lint / test commands the IDE detected         |
-| Builds & checks | How many heavy builds may run at once, so the machine stays usable |
-| Virtual files   | Driver status, installation and troubleshooting                    |
-| Cloud hosts     | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))    |
+| Page                   | What it affects                                                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Editor                 | How code looks and is formatted in the editor: theme, font, indentation, wrapping, formatters                         |
+| Model providers        | The models chats can use, with your API keys; the AI reviewer and the subagents pick theirs here too                  |
+| Permissions & approval | What the agent may run and change in every chat, and what waits for your approval, or an AI reviewer's, first         |
+| Agent runs             | While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats |
+| Subagents              | The helpers the agent can send, their models and limits                                                               |
+| Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                         |
+| Project checks         | The type-check / lint / test / build commands of the open project, as detected or as you fix them                     |
+| Heavy commands         | How many builds and tests run at once on this computer, so it stays responsive                                        |
+| Virtual files          | The driver that isolates chats and lets the agent manage its own context: status, installation, troubleshooting       |
+| Cloud hosts            | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))                                                       |
+
+The model, the mode (Agent, Plan or Autopilot), the reasoning effort and
+the context mode are chosen per chat, above its message box.
 
 When the agent runs commands from the IDE, they get the same `PATH` as your
 login shell, so tools like `npm`, `cargo` and Homebrew packages are found
@@ -534,7 +549,7 @@ What one process must not do to another's work is guarded the same way:
 - AI settings are saved onto the file as it is now: a window only changes
   what it changed itself, so an older copy in another window never drops a
   provider or a key saved meanwhile.
-- The heavy-build slots (Settings → Builds & checks) are the machine's: a
+- The heavy-build slots (Settings → Heavy commands) are the machine's: a
   slot one window's build holds is taken in every window, by a lock in
   `<data>/heavy-slots`, and a busy terminal counts in all of them too. The
   number of slots set in one window applies in the others.

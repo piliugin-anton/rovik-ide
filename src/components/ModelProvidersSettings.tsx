@@ -13,7 +13,7 @@ export interface ProvidersSettingsController {
 
 interface ModelProvidersSettingsProps {
   providers: Provider[];
-  /** Every change to the list (saved form, deletion); stored when the modal closes. */
+  /** Every change to the list (saved form, deletion), saved at once. */
   onChange: (providers: Provider[]) => void;
   controller?: (api: ProvidersSettingsController) => void;
 }
@@ -52,12 +52,10 @@ const emptyDraft = (): Provider => ({
 });
 
 export default function ModelProvidersSettings(props: ModelProvidersSettingsProps) {
-  const [providers, setProvidersSignal] = createSignal<Provider[]>(props.providers);
-  const setProviders = (fn: (prev: Provider[]) => Provider[]) => {
-    const next = fn(providers());
-    setProvidersSignal(next);
-    props.onChange(next);
-  };
+  // The list is the dialog's state (lib/aiSettingsStore.ts): every change
+  // goes up and comes back down, saved.
+  const providers = () => props.providers;
+  const setProviders = (fn: (prev: Provider[]) => Provider[]) => props.onChange(fn(providers()));
   const [draft, setDraft] = createSignal<Provider | null>(null);
   const [nameTouched, setNameTouched] = createSignal(false);
   const [test, setTest] = createSignal<TestState>({ kind: 'idle' });
@@ -304,6 +302,13 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
       when={draft()}
       fallback={
         <>
+          <p class="settings-hint">
+            Each provider is an OpenAI-compatible endpoint with your API key, on this computer. The
+            models you enable show in the chat’s model picker and can be chosen for the AI reviewer
+            and the subagents. A model’s flags say what it takes: images (Vision) and PDFs attached
+            in the chat go only to models marked for them, Tools off sends it no tools, and
+            Reasoning on lets the chat choose an effort.
+          </p>
           <For
             each={providers()}
             fallback={<div class="empty-state">No providers yet. Add one to start chatting.</div>}

@@ -4,9 +4,8 @@ import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
-import { createSignal } from 'solid-js';
 import SubagentSettings from './SubagentSettings';
-import { AUTOPILOT_KINDS, DEFAULT_AUTOPILOT_DENYLIST } from '../lib/autopilotSettings';
+import { AUTOPILOT_KINDS } from '../lib/autopilotSettings';
 import { SUBAGENT_KINDS } from '../lib/subagentSettings';
 import type { Provider } from '../types';
 import {
@@ -39,6 +38,7 @@ async function settingsPage(): Promise<HTMLElement> {
         providers={[]}
         chatModel={null}
         onChange={() => {}}
+        onOpenPage={() => {}}
       />
     ),
     root
@@ -54,7 +54,7 @@ const checkbox = (root: HTMLElement, label: string) =>
     .querySelector('input') as HTMLInputElement;
 
 const noVfsHint = (root: HTMLElement) =>
-  [...root.querySelectorAll('.settings-hint')].find((p) =>
+  [...root.querySelectorAll('.settings-status')].find((p) =>
     p.textContent?.includes('virtual files aren’t mounted')
   );
 
@@ -77,7 +77,10 @@ test('subagent settings: no virtual files mounted turns off what needs isolated 
     assert.equal(input.disabled, true, label);
     assert.match(input.title, /virtual files aren’t mounted/, label);
   }
-  assert.ok(noVfsHint(root));
+  const hint = noVfsHint(root);
+  assert.ok(hint, 'says why they have no effect');
+  assert.match(hint!.textContent!, /^No effect now/);
+  assert.ok(hint!.querySelector('button'), 'and links to Virtual files');
 });
 
 test('subagent settings: mounted, the isolated options are on offer; no token limit by default', async () => {
@@ -85,66 +88,46 @@ test('subagent settings: mounted, the isolated options are on offer; no token li
   const root = await settingsPage();
   for (const label of ISOLATED) assert.equal(checkbox(root, label).disabled, false, label);
   assert.equal(noVfsHint(root), undefined);
-  const tokens = [...root.querySelectorAll('label.subagent-limit')]
+  const tokens = [...root.querySelectorAll('label.setting-number-field')]
     .find((l) => l.textContent?.includes('Tokens per run'))!
     .querySelector('input') as HTMLInputElement;
   assert.equal(tokens.placeholder, 'no limit');
   assert.equal(tokens.value, '');
 });
 
-/** The Autopilot section's radios, by label. */
-const effortRadio = (root: HTMLElement, label: string) =>
-  [...root.querySelectorAll('label.setting-checkbox')]
-    .find((l) => l.textContent?.startsWith(label))!
-    .querySelector('input[type="radio"]') as HTMLInputElement;
-
-test('subagent settings: Autopilot’s effort, Balanced by default, whatever the master switch', () => {
+test('subagent settings: the page is the master switch, the default model, the kinds and the limits', () => {
   const root = container();
-  const saved: Settings[] = [];
-  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
   render(
     () => (
       <SubagentSettings
-        settings={settings()}
+        settings={DEFAULT_SUBAGENT_SETTINGS}
         providers={[]}
         chatModel={null}
-        onChange={(next) => {
-          saved.push(next);
-          setSettings(next);
-        }}
+        onChange={() => {}}
+        onOpenPage={() => {}}
       />
     ),
     root
   );
-  const title = [...root.querySelectorAll('.settings-section-title')].map((t) => t.textContent);
-  assert.deepEqual(title.slice(0, 3), ['Default model', 'Autopilot', 'Kinds'], 'above the kinds');
-  const balanced = effortRadio(root, 'Balanced');
-  const thorough = effortRadio(root, 'Thorough');
-  assert.equal(balanced.checked, true);
-  assert.equal(thorough.checked, false);
-  // Subagents are off: Autopilot's setting is still there to set.
-  assert.equal(balanced.disabled, false);
-  assert.equal(thorough.disabled, false);
-  assert.match(
-    balanced.closest('label')!.textContent!,
-    /Each stage once, with the subagents below\./
+  const titles = [...root.querySelectorAll('.settings-section-title')].map((t) => t.textContent);
+  assert.deepEqual(titles, ['Default model', 'Kinds']);
+  // Autopilot has a page of its own: nothing of it is set here.
+  assert.equal(root.querySelector('input[name="autopilot-effort"]'), null);
+  assert.equal(
+    [...root.querySelectorAll('label')].find((l) =>
+      l.textContent?.includes('Prepare dependencies')
+    ),
+    undefined
   );
-  assert.match(
-    thorough.closest('label')!.textContent!,
-    /Several candidates, a second model for every judgment, an adversarial tester; takes longer and costs more\./
+  // The kinds say where Autopilot's settings are.
+  const kinds = [...root.querySelectorAll('.settings-section')].find((section) =>
+    section.querySelector('.settings-section-title')?.textContent?.startsWith('Kinds')
+  )!;
+  assert.match(kinds.textContent!, /also run in Autopilot’s chats/);
+  assert.ok(
+    [...kinds.querySelectorAll('button')].some((b) => b.textContent === 'Autopilot'),
+    'with a link to its page'
   );
-  const notBuilt = () =>
-    [...root.querySelectorAll('.settings-hint')].find((p) =>
-      p.textContent?.includes('aren’t built yet')
-    );
-  assert.equal(notBuilt(), undefined);
-
-  thorough.click();
-  assert.equal(saved.length, 1);
-  assert.deepEqual(saved[0], { ...DEFAULT_SUBAGENT_SETTINGS, autopilot: { effort: 'thorough' } });
-  assert.equal(effortRadio(root, 'Thorough').checked, true);
-  // Thorough's stages are built: nothing says otherwise any more.
-  assert.equal(notBuilt(), undefined);
 });
 
 test('subagent settings: the kinds Autopilot uses say so, and where their code goes (D17)', () => {
@@ -184,6 +167,7 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
         providers={providers}
         chatModel={{ providerId: 'a', modelId: 'm' }}
         onChange={() => {}}
+        onOpenPage={() => {}}
       />
     ),
     root
@@ -235,131 +219,4 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
     controls.every((c) => !c.disabled),
     'and on'
   );
-});
-
-test('subagent settings: the commands Autopilot may never run, the defaults until changed (U01)', () => {
-  const root = container();
-  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
-  render(
-    () => (
-      <SubagentSettings
-        settings={settings()}
-        providers={[]}
-        chatModel={null}
-        onChange={setSettings}
-      />
-    ),
-    root
-  );
-  const shown = () =>
-    [...root.querySelectorAll('.command-row-text')].map((c) => c.textContent ?? '');
-  const reset = () =>
-    [...root.querySelectorAll('button')].find((b) => b.textContent === 'Reset list');
-  assert.deepEqual(shown(), DEFAULT_AUTOPILOT_DENYLIST);
-  assert.equal(reset(), undefined, 'nothing to reset');
-
-  const input = root.querySelector(
-    'input[aria-label="A command Autopilot may never run"]'
-  ) as HTMLInputElement;
-  const add = input.parentElement!.querySelector('button') as HTMLButtonElement;
-  input.value = '  npm   publish ';
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  add.click();
-  assert.deepEqual(settings().autopilot.deniedCommands, [
-    ...DEFAULT_AUTOPILOT_DENYLIST,
-    'npm publish',
-  ]);
-  assert.deepEqual(shown().slice(-1), ['npm publish']);
-  assert.equal(input.value, '', 'the input is cleared');
-
-  const remove = root.querySelector('button[aria-label="Remove git push"]') as HTMLButtonElement;
-  remove.click();
-  assert.ok(!settings().autopilot.deniedCommands!.includes('git push'));
-  assert.ok(reset(), 'a changed list can be reset');
-  reset()!.click();
-  assert.equal(settings().autopilot.deniedCommands, undefined);
-  assert.deepEqual(shown(), DEFAULT_AUTOPILOT_DENYLIST);
-});
-
-test('subagent settings: a task’s budget, its effort’s defaults until set (U04)', () => {
-  const root = container();
-  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
-  render(
-    () => (
-      <SubagentSettings
-        settings={settings()}
-        providers={[]}
-        chatModel={null}
-        onChange={setSettings}
-      />
-    ),
-    root
-  );
-  const field = (label: string) =>
-    [...root.querySelectorAll('label.subagent-limit')]
-      .find((l) => l.textContent?.startsWith(label))!
-      .querySelector('input') as HTMLInputElement;
-  const hours = () => field('Stop a task after (hours)');
-  const cost = () => field('or once it cost');
-  const tokens = () => field('or used (million tokens)');
-  // Balanced: 2 hours and 5, no token limit.
-  assert.equal(hours().value, '2');
-  assert.equal(cost().value, '5');
-  assert.equal(tokens().value, '');
-  // Thorough: 6 hours, while it's not set.
-  effortRadio(root, 'Thorough').click();
-  assert.equal(hours().value, '6');
-  assert.equal(cost().placeholder, 'no limit');
-  assert.equal(settings().autopilot.budget, undefined);
-  // Set: kept, whatever the effort.
-  hours().value = '1.5';
-  hours().dispatchEvent(new Event('change', { bubbles: true }));
-  assert.deepEqual(settings().autopilot.budget, { maxHours: 1.5, maxCost: null });
-  effortRadio(root, 'Balanced').click();
-  assert.equal(hours().value, '1.5');
-  assert.equal(cost().value, '');
-  // Emptied back to the effort's own: it follows the effort again.
-  hours().value = '2';
-  hours().dispatchEvent(new Event('change', { bubbles: true }));
-  cost().value = '5';
-  cost().dispatchEvent(new Event('change', { bubbles: true }));
-  assert.equal(settings().autopilot.budget, undefined);
-  // Tokens, in millions on the page, kept in tokens.
-  tokens().value = '2.5';
-  tokens().dispatchEvent(new Event('change', { bubbles: true }));
-  assert.deepEqual(settings().autopilot.budget, {
-    maxHours: 2,
-    maxCost: 5,
-    maxTokens: 2_500_000,
-  });
-  assert.equal(tokens().value, '2.5');
-  tokens().value = '';
-  tokens().dispatchEvent(new Event('change', { bubbles: true }));
-  assert.equal(settings().autopilot.budget, undefined);
-});
-
-test('subagent settings: Prepare before the first check, on until turned off (S03)', () => {
-  const root = container();
-  const [settings, setSettings] = createSignal<Settings>(DEFAULT_SUBAGENT_SETTINGS);
-  render(
-    () => (
-      <SubagentSettings
-        settings={settings()}
-        providers={[]}
-        chatModel={null}
-        onChange={setSettings}
-      />
-    ),
-    root
-  );
-  const prepare = () => checkbox(root, 'Prepare dependencies before the first check');
-  assert.equal(prepare().checked, true);
-  assert.equal(prepare().disabled, false, 'Autopilot’s, whatever “Use subagents” says');
-  prepare().click();
-  assert.equal(settings().autopilot.prepare, false);
-  assert.equal(prepare().checked, false);
-  // Back on: the default again, kept as nothing.
-  prepare().click();
-  assert.equal(settings().autopilot.prepare, undefined);
-  assert.equal(prepare().checked, true);
 });

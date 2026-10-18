@@ -1,10 +1,15 @@
 // ProjectChecksSettings.tsx
 //
-// Settings page for the open project's checks: what the verification gate
-// runs when the agent finishes a change (src-tauri/src/agent_run/verify.rs).
-// Shows what was detected and lets the user correct it; the corrected list
-// is saved per project right away and wins over detection from then on.
+// Settings → Project checks: the open project's checks, what the
+// verification gate runs when the agent finishes a change
+// (src-tauri/crates/rovik-core/src/agent_run/verify.rs). Shows what was
+// detected and lets the user correct it; the corrected list is saved per
+// project right away and wins over detection from then on. Whether the
+// checks run at all is set for every project on Settings → Agent runs;
+// this page says what that setting is.
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
+import type { SettingsPage } from '../lib/appSettings';
+import { SettingStatus } from './SettingsControls';
 import {
   CHECK_KINDS,
   CHECK_LABEL,
@@ -26,7 +31,9 @@ import { checkCommand, type AgentPermissions } from '../lib/permissions';
 export default function ProjectChecksSettings(props: {
   root: string;
   permissions: AgentPermissions;
+  /** "Allow it" adds a check's command to the allowed commands. */
   onPermissionsChange: (next: AgentPermissions) => void;
+  onOpenPage: (page: SettingsPage) => void;
 }) {
   const [profile, setProfile] = createSignal<ProjectProfile | null>(null);
   const [checks, setChecks] = createSignal<ProjectCheck[]>([]);
@@ -140,24 +147,15 @@ export default function ProjectChecksSettings(props: {
   return (
     <div class="permissions-settings project-checks">
       <section class="settings-section">
-        <div class="settings-section-title">Checking changes</div>
-        <label class="setting-checkbox">
-          <input
-            type="checkbox"
-            checked={p().verifyChanges}
-            onChange={(e) =>
-              props.onPermissionsChange({ ...p(), verifyChanges: e.currentTarget.checked })
-            }
-          />
-          <span>
-            Check the agent’s changes when it finishes
-            <span class="setting-checkbox-sub">
-              After a task that changed files, the checks below run. Failures go back to the agent
-              to fix, up to 3 times. Checks follow your command settings: one that isn’t allowed is
-              skipped, and with command approval on you start them yourself.
-            </span>
-          </span>
-        </label>
+        <div class="settings-section-title">When they run</div>
+        <SettingStatus warning={!p().verifyChanges}>
+          {p().verifyChanges
+            ? 'After a run in which the agent changed files, these checks run; a failure goes back to the agent to fix.'
+            : 'Checking is off: these checks don’t run after the agent’s changes.'}{' '}
+          <button class="link-button" onClick={() => props.onOpenPage('agent')}>
+            Agent runs
+          </button>
+        </SettingStatus>
       </section>
 
       <section class="settings-section">
@@ -167,7 +165,8 @@ export default function ProjectChecksSettings(props: {
             {customized()
               ? 'Your list for this project.'
               : 'Found in the project’s files. Edit them to make the list yours.'}{' '}
-            They run in this order: type check, lint, tests, build.
+            They run in this order: type check, lint, tests, build. A check’s command must be among
+            the agent’s allowed commands, or it’s skipped.
             <Show when={customized()}>
               {' '}
               <button class="link-button" onClick={resetToDetected}>

@@ -132,3 +132,10 @@ export function updateEditorSettings(patch: Partial<EditorSettings>): void {
   // Only what changed: the others may be another window's newer ones.
   void saved.set(patch);
 }
+
+/** One line for the Settings menu. */
+export function editorSummary(s: EditorSettings): string {
+  const theme = EDITOR_THEMES.find((t) => t.id === s.theme)?.label ?? s.theme;
+  const indent = s.insertSpaces ? `spaces (${s.tabSize})` : 'tabs';
+  return `${theme} · ${s.fontSize} px · ${indent}${s.formatOnSave ? ' · format on save' : ''}`;
+}
