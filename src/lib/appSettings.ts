@@ -1,23 +1,52 @@
 // appSettings.ts
 //
-// The app-wide Settings dialog (owned by App.tsx, opened from the gear
-// button next to the project selector). ChatPanel used to own its own
-// "AI Chat settings" modal; it now routes through here so settings stay
-// open whichever sidebar tab is active.
+// The app-wide Settings dialog (components/SettingsDialog.tsx, owned by
+// App.tsx, opened from the gear button next to the project selector): which
+// page is open, and the signal that tells the chat panel when the AI
+// settings were saved. ChatPanel used to own its own "AI Chat settings"
+// modal; it now routes through here so settings stay open whichever
+// sidebar tab is active.
 
 import { createSignal } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import type { AiSettingsPage } from '../components/AiSettingsModal';
 
-const [page, setPage] = createSignal<AiSettingsPage | null>(null);
+/** The dialog's pages: the menu, and one page per thing to set. */
+export type SettingsPage =
+  | 'menu'
+  | 'editor'
+  | 'providers'
+  | 'permissions'
+  | 'agent'
+  | 'subagents'
+  | 'autopilot'
+  | 'project'
+  | 'workload'
+  | 'vfs'
+  | 'hosts';
 
-/** The open settings page, or null when the dialog is closed. */
-export function appSettingsPage(): AiSettingsPage | null {
+export const PAGE_TITLE: Record<SettingsPage, string> = {
+  menu: 'Settings',
+  editor: 'Editor',
+  providers: 'Model providers',
+  permissions: 'Permissions & approval',
+  agent: 'Agent runs',
+  subagents: 'Subagents',
+  autopilot: 'Autopilot',
+  project: 'Project checks',
+  workload: 'Heavy commands',
+  vfs: 'Virtual files',
+  hosts: 'Cloud hosts',
+};
+
+const [page, setPage] = createSignal<SettingsPage | null>(null);
+
+/** The page the dialog was opened on, or null when it's closed. */
+export function appSettingsPage(): SettingsPage | null {
   return page();
 }
 
 /** Open the Settings dialog on a page (default: the menu). */
-export function openAppSettings(next: AiSettingsPage = 'menu'): void {
+export function openAppSettings(next: SettingsPage = 'menu'): void {
   setPage(next);
 }
 
@@ -25,9 +54,10 @@ export function closeAppSettings(): void {
   setPage(null);
 }
 
-// The AI settings (providers, permissions) still live in ChatPanel and are
-// persisted from there. When the app-wide dialog saves them, it bumps this
-// counter so ChatPanel reloads its copy.
+// The AI settings (providers, permissions, subagents) are edited through
+// lib/aiSettingsStore.ts and saved at once; ChatPanel keeps its own copy
+// for its runs. Each save bumps this counter so ChatPanel reads the file
+// again.
 const [aiRevision, setAiRevision] = createSignal(0);
 
 export function aiSettingsRevision(): number {

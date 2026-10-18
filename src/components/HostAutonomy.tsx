@@ -2,9 +2,9 @@
 //
 // Settings → Cloud hosts → While nobody is there → Works on its own
 // (autopilot-plan 3.5, H01): what the host's Autopilot tasks follow over
-// this computer's settings, and where their results go. Each change is
-// saved at once (`hosts_set_autonomy`) and checked there; the hosts list
-// then loads again with what was kept.
+// this computer's Settings → Autopilot, and where their results go. Each
+// change is saved at once (`hosts_set_autonomy`) and checked there; the
+// hosts list then loads again with what was kept.
 import { createSignal, Show } from 'solid-js';
 import {
   autonomyOf,
@@ -15,7 +15,7 @@ import {
   type DeliveryTest,
   type Host,
 } from '../lib/hosts';
-import { numberFieldValue } from '../lib/subagentSettings';
+import { NumberField } from './SettingsControls';
 
 type PushBranch = Extract<Delivery, { kind: 'pushBranch' }>;
 
@@ -92,7 +92,7 @@ export default function HostAutonomy(props: {
   // The token limit shows in millions; it's kept in tokens.
   const tokensMillions = () => {
     const tokens = block().budget?.maxTokens;
-    return tokens ? tokens / 1_000_000 : '';
+    return tokens ? tokens / 1_000_000 : undefined;
   };
 
   const effortRadio = (label: string, effort: AutonomySettings['effort']) => (
@@ -112,7 +112,7 @@ export default function HostAutonomy(props: {
     <div class="host-autonomy">
       <div class="autopilot-subtitle">Effort</div>
       <div role="radiogroup" aria-label="Effort on this server">
-        {effortRadio('As in Settings → Subagents', undefined)}
+        {effortRadio('As in Settings → Autopilot', undefined)}
         {effortRadio('Balanced', 'balanced')}
         {effortRadio('Thorough', 'thorough')}
       </div>
@@ -214,61 +214,44 @@ export default function HostAutonomy(props: {
       </Show>
 
       <div class="autopilot-subtitle">Budget</div>
-      <div class="subagent-limits host-autonomy-budget">
-        <label class="subagent-limit">
-          <span>Stop a task after (hours)</span>
-          <input
-            type="number"
-            class="subagent-number"
-            min={0.25}
-            max={1000}
-            step={0.25}
-            value={block().budget?.maxHours ?? ''}
-            placeholder="as set"
-            disabled={saving()}
-            onChange={(e) =>
-              setLimit('maxHours', numberFieldValue(e.currentTarget.value, 0.25, 1000, 0.25))
-            }
-          />
-        </label>
-        <label class="subagent-limit">
-          <span>or once it cost</span>
-          <input
-            type="number"
-            class="subagent-number"
-            min={0.01}
-            max={100_000}
-            step={0.01}
-            value={block().budget?.maxCost ?? ''}
-            placeholder="as set"
-            disabled={saving()}
-            onChange={(e) =>
-              setLimit('maxCost', numberFieldValue(e.currentTarget.value, 0.01, 100_000, 0.01))
-            }
-          />
-        </label>
-        <label class="subagent-limit">
-          <span>or used (million tokens)</span>
-          <input
-            type="number"
-            class="subagent-number"
-            min={0.1}
-            max={100_000}
-            step={0.1}
-            value={tokensMillions()}
-            placeholder="as set"
-            disabled={saving()}
-            onChange={(e) => {
-              const millions = numberFieldValue(e.currentTarget.value, 0.1, 100_000, 0.1);
-              setLimit(
-                'maxTokens',
-                millions === undefined ? undefined : Math.round(millions * 1_000_000)
-              );
-            }}
-          />
-        </label>
+      <div class="setting-fields host-autonomy-budget">
+        <NumberField
+          label="Stop a task after (hours)"
+          value={block().budget?.maxHours ?? undefined}
+          placeholder="as set"
+          min={0.25}
+          max={1000}
+          step={0.25}
+          disabled={saving()}
+          onChange={(v) => setLimit('maxHours', v)}
+        />
+        <NumberField
+          label="or once it cost"
+          value={block().budget?.maxCost ?? undefined}
+          placeholder="as set"
+          min={0.01}
+          max={100_000}
+          step={0.01}
+          disabled={saving()}
+          onChange={(v) => setLimit('maxCost', v)}
+        />
+        <NumberField
+          label="or used (million tokens)"
+          value={tokensMillions()}
+          placeholder="as set"
+          min={0.1}
+          max={100_000}
+          step={0.1}
+          disabled={saving()}
+          onChange={(millions) =>
+            setLimit(
+              'maxTokens',
+              millions === undefined ? undefined : Math.round(millions * 1_000_000)
+            )
+          }
+        />
       </div>
-      <p class="settings-hint host-autonomy-note">Empty: as in Settings → Subagents.</p>
+      <p class="settings-hint host-autonomy-note">Empty: as in Settings → Autopilot.</p>
 
       <div class="autopilot-subtitle">Notify</div>
       <label class="host-autonomy-field">

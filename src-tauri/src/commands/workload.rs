@@ -29,7 +29,7 @@ pub fn workload_set_slots(slots: Option<usize>) -> Result<(), String> {
     workload::workload_set_slots(slots)
 }
 
-/// For Settings → Builds & checks.
+/// For Settings → Heavy commands.
 #[tauri::command]
 pub fn workload_status() -> WorkloadStatus {
     workload::workload_status()

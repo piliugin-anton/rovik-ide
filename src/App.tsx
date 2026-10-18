@@ -114,19 +114,14 @@ import {
 } from './lib/virtualFilesStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
 import { cloud, hostName, initCloud } from './lib/cloud';
-import AiSettingsModal from './components/AiSettingsModal';
+import SettingsDialog from './components/SettingsDialog';
 import {
   appSettingsPage,
   closeAppSettings,
-  aiSettingsRevision,
-  notifyAiSettingsSaved,
   openAppSettings,
   rereadAiSettingsOnFocus,
 } from './lib/appSettings';
-import { createAiSettingsHolder, loadAiSettings, reconcileSelection } from './lib/aiSettings';
-import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './lib/subagentSettings';
-import { DEFAULT_PERMISSIONS, type AgentPermissions } from './lib/permissions';
-import type { ModelSelection, Provider } from './types';
+import { followAiSettingsRevision, reloadAiSettings } from './lib/aiSettingsStore';
 import { dismissBootSplash } from './lib/bootSplash';
 
 let unlistenFSChanges: (() => void) | undefined;
@@ -202,91 +197,12 @@ export default function App() {
     clearVfsSettingsRequest();
     openAppSettings('vfs');
   });
-  // The Settings dialog's copy of the AI settings, loaded once at startup
-  // (ChatPanel keeps its own copy and reloads when the dialog saves).
-  const [settingsProviders, setSettingsProviders] = createSignal<Provider[]>([]);
-  const [settingsPermissions, setSettingsPermissions] =
-    createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
-  const [settingsSubagents, setSettingsSubagents] =
-    createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
-  const [settingsChatModel, setSettingsChatModel] = createSignal<ModelSelection | null>(null);
-  // P5.7: after a failed load, the subagent settings here are defaults, not what's saved.
-  const aiSettings = createAiSettingsHolder({
-    setProviders: setSettingsProviders,
-    setPermissions: setSettingsPermissions,
-    setSubagents: setSettingsSubagents,
-  });
-  onMount(async () => {
-    try {
-      const settings = await loadAiSettings();
-      aiSettings.apply(settings);
-      setSettingsChatModel(reconcileSelection(settings.providers, settings.active));
-    } catch (err) {
-      console.error('Failed to load AI settings for Settings dialog:', err);
-    }
-  });
-  // Read again when another window may have saved them (this one came to
-  // the front): the dialog opens with them. Not under an open dialog.
-  createEffect(
-    on(
-      aiSettingsRevision,
-      () => {
-        if (appSettingsPage() !== null) return;
-        loadAiSettings()
-          .then((settings) => {
-            if (!settings.loadFailed && appSettingsPage() === null) aiSettings.apply(settings);
-          })
-          .catch((err) => console.error('Failed to reload the AI settings:', err));
-      },
-      { defer: true }
-    )
-  );
-  // The chat's model may have been switched since, and another window may
-  // have saved the settings: read them again each time the dialog opens
-  // (the "code will also be sent to …" warning uses the model).
-  createEffect(
-    on(
-      () => appSettingsPage() !== null,
-      (open) => {
-        if (!open) return;
-        loadAiSettings()
-          .then((settings) => {
-            if (!settings.loadFailed) aiSettings.apply(settings);
-            setSettingsChatModel(reconcileSelection(settings.providers, settings.active));
-          })
-          .catch((err) => console.error('Failed to reload the chat model for Settings:', err));
-      }
-    )
-  );
-  function handleAppSettingsSaved(changes: {
-    providers: Provider[];
-    permissions: AgentPermissions;
-    subagents: SubagentSettings;
-  }) {
-    setSettingsProviders(changes.providers);
-    setSettingsPermissions(changes.permissions);
-    setSettingsSubagents(changes.subagents);
-    // Keep the chat's current model choice: only the providers/permissions
-    // changed here, so reconcile against the saved selection.
-    void loadAiSettings()
-      .catch(() => null)
-      .then(async (current) => {
-        const active: ModelSelection | null = reconcileSelection(
-          changes.providers,
-          current?.active ?? null
-        );
-        setSettingsChatModel(active);
-        // P5.7: never the defaults a failed load left over the saved ones.
-        const saved = await aiSettings.save({
-          providers: changes.providers,
-          active,
-          permissions: changes.permissions,
-          subagents: changes.subagents,
-        });
-        if (saved) notifyAiSettingsSaved();
-      })
-      .catch((err) => console.error('Failed to save AI settings:', err));
-  }
+  // The Settings dialog's AI settings (lib/aiSettingsStore.ts): read once
+  // now, so the dialog opens on them, again each time it opens, and again
+  // when another window may have saved them (this one came to the front:
+  // rereadAiSettingsOnFocus, below).
+  onMount(() => void reloadAiSettings().catch((err) => console.error(err)));
+  followAiSettingsRevision();
   const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);
 
   const [contextMenuVisible, setContextMenuVisible] = createSignal(false);
@@ -2367,16 +2283,7 @@ export default function App() {
       <NotificationHost />
       <Show when={appSettingsPage()} keyed>
         {(page) => (
-          <AiSettingsModal
-            providers={settingsProviders()}
-            permissions={settingsPermissions()}
-            subagents={settingsSubagents()}
-            chatModel={settingsChatModel()}
-            initialPage={page}
-            rootPath={rootPath()}
-            onSave={handleAppSettingsSaved}
-            onClose={closeAppSettings}
-          />
+          <SettingsDialog initialPage={page} rootPath={rootPath()} onClose={closeAppSettings} />
         )}
       </Show>
     </div>

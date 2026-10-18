@@ -24,7 +24,7 @@ pub use queue::{begin, set_focus, set_manual_slots, set_slot_cap, JobKind, Waite
 
 /// Points history at the app's data folder, the slots at the folder they
 /// share with the other windows (machine.rs), and applies the slots the
-/// user set (Settings → Builds & checks), if they set any.
+/// user set (Settings → Heavy commands), if they set any.
 pub fn init(data_dir: &std::path::Path) {
     history::init(data_dir);
     machine::init(data_dir.join("heavy-slots"));
@@ -37,7 +37,7 @@ pub fn init(data_dir: &std::path::Path) {
 static SETTINGS_SEEN: std::sync::Mutex<Option<std::time::SystemTime>> = std::sync::Mutex::new(None);
 
 /// Applies the slots the settings file sets, when it changed since it was
-/// read: another window's Settings → Builds & checks may have saved it.
+/// read: another window's Settings → Heavy commands may have saved it.
 pub(super) fn follow_settings() {
     let Some(file) = SETTINGS_FILE
         .lock()
@@ -145,7 +145,7 @@ pub struct WorkloadStatus {
     pub memory_gb: u64,
 }
 
-/// For Settings → Builds & checks.
+/// For Settings → Heavy commands.
 pub fn workload_status() -> WorkloadStatus {
     let s = queue::slots();
     let cores = if s.cores > 0 {

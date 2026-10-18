@@ -1830,10 +1830,12 @@ async function run() {
     const pages = [
       'Editor',
       'Model providers',
-      'Project checks',
       'Permissions',
+      'Agent runs',
       'Subagents',
-      'Builds',
+      'Autopilot',
+      'Project checks',
+      'Heavy commands',
       'Virtual files',
       'Cloud hosts',
     ];
