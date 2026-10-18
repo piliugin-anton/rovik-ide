@@ -19,6 +19,7 @@ mod lsp;
 mod open_url;
 mod project_files;
 mod remote_chats;
+mod shared_state;
 mod terminal;
 mod typings;
 
@@ -250,6 +251,9 @@ pub fn run() {
             commands::chat::chat_get_model,
             filesystem::load_last_project,
             filesystem::save_last_project,
+            shared_state::shared_state_read,
+            shared_state::shared_state_start,
+            shared_state::shared_state_merge,
             filesystem::get_path_id,
             filesystem::create_file,
             filesystem::create_dir,

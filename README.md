@@ -560,6 +560,15 @@ What one process must not do to another's work is guarded the same way:
   installed while it ran) stops writing to it: close it and open Rovik
   again. rust-analyzer's old versions are cleaned up only while no other
   window runs, as one may still run them.
+- What a window used to keep in its own browser storage, and so wrote back
+  whole over what other windows had saved, is shared in `<data>/shared`: a
+  file each for the projects' tabs, the editor settings, the reasoning
+  effort per model, rust-analyzer's choices and the chats' unread marks. A
+  save changes only the entries it changed, one window at a time, and a
+  window reads them again as it comes to the front. So a project closed
+  with its window opens with its tabs in another, and a setting changed in
+  one window isn't undone by another's. A window's unread dots are for its
+  own project's chats.
 - A lock is unlocked as it's let go, not only closed: a program another
   thread starts at that moment shares the open file until its exec, which
   kept a lock let go held meanwhile.

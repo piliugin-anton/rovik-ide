@@ -55,10 +55,11 @@ import ContextControls from './ContextControls';
 import { contextModeFor, ensureContextMode } from '../lib/contextMode';
 import {
   formatsToSend,
+  followEfforts,
   loadEfforts,
   mergeLearned,
   reasoningStatus,
-  saveEfforts,
+  saveEffort,
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
@@ -236,10 +237,10 @@ export default function ChatPanel(props: ChatProps) {
     ...store.state.driving,
     ...Object.fromEntries(Object.keys(store.state.starting).map((id) => [id, true as const])),
   }));
-  /** A background chat (not the open one) finished with unseen messages. */
+  /** A background chat of the list (not the open one) finished with unseen messages. */
   const hasBackgroundUnread = createMemo(() => {
     const active = activeDialogId();
-    return Object.keys(store.state.unread).some((id) => id !== active);
+    return store.state.list.items.some((d) => d.id !== active && store.state.unread[d.id]);
   });
   const [loadingHistory, setLoadingHistory] = createSignal(true);
   /** Set when the chat database couldn't be read at startup. */
@@ -377,14 +378,14 @@ export default function ChatPanel(props: ChatProps) {
    * the replies and kept with the model in the settings.
    */
   const [efforts, setEfforts] = createSignal<Record<string, Effort>>(loadEfforts());
+  onCleanup(followEfforts(setEfforts));
   const effortFor = (profileId: string | undefined): Effort =>
     (profileId && efforts()[profileId]) || 'default';
   function setEffort(effort: Effort) {
     const profile = activeProfile();
     if (!profile) return;
-    const next = { ...efforts(), [profile.id]: effort };
-    setEfforts(next);
-    saveEfforts(next);
+    setEfforts({ ...efforts(), [profile.id]: effort });
+    saveEffort(profile.id, effort);
     // Runs with this model follow it; this chat's, if stuck, right away.
     setRunEffort(profile.id, reasoningOptions(profile), activeDialogId());
     saveChatModel(activeDialogId());

@@ -58,7 +58,12 @@ import {
   type ConfirmOptions,
 } from './components/ConfirmDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { projectSession, rememberProjectSession, type SessionFile } from './lib/projectSessions';
+import {
+  rememberProjectSession,
+  savedProjectSession,
+  type ProjectSession,
+  type SessionFile,
+} from './lib/projectSessions';
 import NotificationHost from './components/NotificationHost';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import NewProjectDialog from './components/NewProjectDialog';
@@ -130,6 +135,9 @@ export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
   /** Until the last project is restored, the Files tab shows no empty state. */
   const [restoringProject, setRestoringProject] = createSignal(true);
+  /** The project whose tabs are being opened again: until they are, the
+   *  tabs shown aren't kept as its (showWithTabs). */
+  const [tabsComing, setTabsComing] = createSignal<string | null>(null);
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
@@ -152,7 +160,7 @@ export default function App() {
       const asked = startup.folder;
       const projectData = await getLastProject(asked ?? undefined);
       if (!projectData) {
-        if (asked) setRootPath(asked);
+        if (asked) await openWithItsTabs(asked);
         return;
       }
       const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
@@ -448,6 +456,8 @@ export default function App() {
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
         if (!(await settleUnsavedTabs('app'))) event.preventDefault();
+        // Its tabs, for opening it again here or in another window.
+        else await keepTabsNow();
       })
       .then((unlisten) => (gone ? unlisten() : (stop = unlisten)))
       .catch((err) => console.error('No close guard:', err));
@@ -473,38 +483,46 @@ export default function App() {
     if (!(await settleUnsavedTabs('project'))) return;
     // Chosen meanwhile (the dialog was open), or the same one again.
     if (folder === rootPath()) return;
+    // Its tabs as the window that had it last left them, this one or
+    // another (checked above: none has it now).
+    const session = await savedProjectSession(folder);
     // Claimed elsewhere since the check, if it came to that.
     if (!(await claimProject(folder))) return;
     // The project left keeps its tabs for coming back to it.
-    const left = rootPath();
-    if (left) {
-      rememberProjectSession(left, {
-        files: openFiles()
-          .filter((f) => !f.readOnly)
-          .map(({ id, path, name, language }) => ({ id, path, name, language })),
-        active: activePath(),
-        expanded: [...tree.expanded()],
-      });
-    }
-    const session = projectSession(folder);
-    if (session) tree.presetExpanded(folder, session.expanded);
+    void keepTabsNow();
     for (const m of monaco.editor.getModels()) m.dispose();
     // The old project's change marks; its tabs close below.
     for (const { absPath } of markedFiles()) clearGitBase(absPath);
-    setRootPath(folder);
-    setOpenFiles([]);
-    setActivePath(null);
     setSelectedFileIds(new Set<string>());
     setLastSelectedId(null);
-    if (!session?.files.length) return;
-    // Its own tabs, as it was left.
-    const files = await reopenFiles(session.files);
-    // Another project chosen since, or a file opened meanwhile: leave it.
-    if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
-    setOpenFiles(files);
-    setActivePath(
-      files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
-    );
+    await showWithTabs(folder, session);
+  }
+
+  /** `folder` becomes the project shown, its tabs as they were left, if kept. */
+  async function showWithTabs(folder: string, session: ProjectSession | null) {
+    // Not kept until they're back: the tabs shown meanwhile aren't its.
+    setTabsComing(folder);
+    try {
+      if (session) tree.presetExpanded(folder, session.expanded);
+      setRootPath(folder);
+      setOpenFiles([]);
+      setActivePath(null);
+      if (!session?.files.length) return;
+      const files = await reopenFiles(session.files);
+      // Another project chosen since, or a file opened meanwhile: leave it.
+      if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
+      setOpenFiles(files);
+      setActivePath(
+        files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
+      );
+    } finally {
+      if (tabsComing() === folder) setTabsComing(null);
+    }
+  }
+
+  /** A folder asked for at the start that wasn't the last project: its own tabs. */
+  async function openWithItsTabs(folder: string) {
+    await showWithTabs(folder, await savedProjectSession(folder).catch(() => null));
   }
 
   // Which project the open folder is, and so whose chats are shown: once
@@ -1919,6 +1937,38 @@ export default function App() {
       console.error('Failed to save last project:', err);
     });
   });
+
+  /** The project's tabs shown now, as kept for coming back to it; none
+   *  while they're being opened. Text: it changes when they do, not as
+   *  their files are typed in. */
+  const tabsNow = createMemo((): string | null => {
+    const root = rootPath();
+    if (!root || restoringProject() || tabsComing() === root) return null;
+    const files: SessionFile[] = openFiles()
+      .filter((f) => !f.readOnly)
+      .map(({ id, path, name, language }) => ({ id, path, name, language }));
+    return JSON.stringify({ root, files, active: activePath(), expanded: [...tree.expanded()] });
+  });
+  let tabsTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Keeps the tabs shown now as their project's (lib/projectSessions.ts). */
+  function keepTabsNow(): Promise<void> {
+    clearTimeout(tabsTimer);
+    tabsTimer = undefined;
+    const now = tabsNow();
+    if (!now) return Promise.resolve();
+    const { root, ...session } = JSON.parse(now) as ProjectSession & { root: string };
+    return rememberProjectSession(root, session);
+  }
+  // Kept as they change, a moment after: the project opens with them again
+  // here or in another window, this one closed or not (last-project.json
+  // has one project's, whichever window wrote last).
+  createEffect(
+    on(tabsNow, (now) => {
+      clearTimeout(tabsTimer);
+      tabsTimer = now ? setTimeout(() => void keepTabsNow(), 500) : undefined;
+    })
+  );
+  onCleanup(() => clearTimeout(tabsTimer));
 
   createEffect(async () => {
     const currentPath = rootPath();
