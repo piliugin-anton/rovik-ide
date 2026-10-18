@@ -538,6 +538,7 @@ mod tests {
     #[cfg(unix)]
     use super::super::queue::{self, test_reset, test_support::SERIAL, JobKind};
     use super::*;
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
 
     #[test]
@@ -566,18 +567,17 @@ mod tests {
         assert!(busy.heavy, "a compiler at work is heavy at once");
     }
 
+    #[cfg(unix)]
     fn busy_loop() -> std::process::Child {
+        use std::os::unix::process::CommandExt;
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "while :; do :; done"])
-            .stdout(Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
+            .stdout(Stdio::null())
+            .process_group(0);
         cmd.spawn().unwrap()
     }
 
+    #[cfg(unix)]
     fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
         for _ in 0..120 {
             if cond() {
@@ -588,6 +588,7 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
+    #[cfg(unix)]
     fn sampling<T>(job_root: u32, f: impl Fn(&Sampling) -> T) -> T {
         let state = lock();
         let job = state

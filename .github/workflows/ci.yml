@@ -42,11 +42,13 @@ jobs:
           - name: Linux
             runner: ubuntu-latest
             args: ''
+          # The daemon runs on Linux servers only (D16), and its tests are
+          # the server's (sudo, systemd, Linux's users and FUSE): they run on
+          # Linux. On macOS it builds, for development, and so do its tests;
+          # on Windows it's a stub that says so.
           - name: macOS
             runner: macos-latest
-            args: ''
-          # The daemon runs on Linux servers only (D16): on Windows it's a
-          # stub that says so, and its tests aren't built.
+            args: --exclude rovik-agentd
           - name: Windows
             runner: windows-latest
             args: --exclude rovik-agentd
@@ -104,6 +106,10 @@ jobs:
       - name: cargo test --workspace
         working-directory: src-tauri
         run: cargo test --workspace --no-fail-fast ${{ matrix.args }}
+      - name: The daemon and its tests build
+        if: runner.os == 'macOS' && !cancelled()
+        working-directory: src-tauri
+        run: cargo test -p rovik-agentd --no-run
       - name: The evaluation's dry run
         if: runner.os == 'Linux'
         run: node scripts/eval/eval.mjs dry-run

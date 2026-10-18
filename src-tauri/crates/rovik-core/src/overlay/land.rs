@@ -506,11 +506,10 @@ pub fn land_checked(
         if plan.is_empty() {
             return Ok(None);
         }
-        // Every touched file locked (in order: no deadlock), then checked.
-        let mut paths: Vec<PathBuf> = plan.actions.iter().map(|a| abs(project, &a.path)).collect();
-        paths.sort();
-        paths.dedup();
-        let _locks: Vec<_> = paths.iter().map(|p| crate::file_guard::lock(p)).collect();
+        // Every touched file locked (each once, in order: no deadlock), then
+        // checked.
+        let paths: Vec<PathBuf> = plan.actions.iter().map(|a| abs(project, &a.path)).collect();
+        let _locks = crate::file_guard::lock_all(paths.iter().map(PathBuf::as_path));
         let unchanged = plan
             .actions
             .iter()
