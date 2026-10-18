@@ -1,8 +1,7 @@
-# A release, started by hand from the Actions tab with its version
-# (Run workflow, on the branch to release from). It sets that version in
-# the sources and commits and tags it, then builds the app for each
-# platform and the daemon for each CPU, signs them with the release key
-# and publishes them on the tag's GitHub release:
+# A release of every merge to master. The checks run on the merge first
+# (CI: the tests on Linux, macOS and Windows); then the version is chosen,
+# the app is built for each platform and the daemon for each CPU, signed
+# with the release key and published on the version's GitHub release:
 #
 # - the app's bundles (tauri-action), with the updater's latest.json once
 #   tauri.conf.json makes updater artifacts (bundle.createUpdaterArtifacts);
@@ -12,76 +11,175 @@
 #   .sig: what the app downloads for a deploy and its install check reads
 #   (B02).
 #
+# rovik-ide.dev needs nothing more: its download buttons ask GitHub for the
+# latest release in the visitor's browser.
+#
+# The version is the sources' own while no release has it: the first
+# release, or one a pull request set with scripts/set-version.sh. Otherwise
+# its last number goes up by one, 1.2.3 to 1.2.4 (1.2.3-4 to 1.2.3-5 for a
+# pre-release), committed to master as "Release 1.2.4 [skip ci]", a commit
+# that starts no run of its own. Run by hand from the Actions tab (Run
+# workflow), a version typed in is taken as it is, on the run's branch; left
+# empty, it's chosen as for a merge.
+#
+# Nothing is published until every build is on the release: it's a draft
+# until then, and its tag is made when it's published. A run that fails
+# leaves only its draft, which the next run replaces: the next merge, Re-run
+# failed jobs, or Run workflow publishes the version it couldn't. A merge
+# that master has moved past when its run starts is left to the newer
+# merge's run, which holds it.
+#
 # It needs, in the repository's secrets, the key `npx tauri signer
 # generate` made: TAURI_SIGNING_PRIVATE_KEY, and its password in
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD. The public half goes in
-# src-tauri/release-key.pub (and the updater's pubkey). If the branch is
-# protected, RELEASE_TOKEN, a token that may push to it, pushes the
-# version's commit and tag. The release stays a draft until every file is
-# on it; a version such as 1.2.3-4 is published as a pre-release, which
-# GitHub's latest release, and an updater that reads it, skips.
+# src-tauri/release-key.pub (and the updater's pubkey). Once master is
+# protected, RELEASE_TOKEN, a token of someone who may push to it past its
+# rules, pushes the version's commit. A version such as 1.2.3-4 is
+# published as a pre-release, which GitHub's latest release, and an updater
+# that reads it, skips.
 name: Release
 
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version, as 1.2.3 (a Windows installer takes only numbers: 1.2.3-4 for a pre-release)'
-        required: true
+        description: 'Version, as 1.2.3 (a Windows installer takes only numbers: 1.2.3-4 for a pre-release). Empty: the next one, as for a merge'
+        required: false
 
 permissions:
   contents: write
 
+# One release at a time, each to its end. Of the merges waiting, the latest
+# one runs: it holds those before it.
 concurrency:
   group: release
   cancel-in-progress: false
 
-env:
-  # Scripts take the version from here, as the text it is: never from an
-  # expression written into them.
-  VERSION: ${{ inputs.version }}
-  TAG: v${{ inputs.version }}
-
 jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   version:
-    name: Set the version, commit and tag
+    name: Choose the version, and draft the release
+    needs: checks
     runs-on: ubuntu-latest
     outputs:
+      version: ${{ steps.choose.outputs.version }}
+      tag: ${{ steps.choose.outputs.tag }}
+      sha: ${{ steps.commit.outputs.sha }}
+      # Empty when no release is due: the jobs after this one skip.
       release: ${{ steps.draft.outputs.id }}
     steps:
-      - name: Check where it runs
+      - name: Check where it runs, and the release key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           if [ "$GITHUB_REF_TYPE" != branch ]; then
-            echo "Run the workflow on a branch, not on $GITHUB_REF_TYPE $GITHUB_REF_NAME." >&2
+            echo "::error::Run the workflow on a branch, not on $GITHUB_REF_TYPE $GITHUB_REF_NAME."
             exit 1
           fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY isn't in the repository's secrets (README, Releases)."
+            exit 1
+          fi
+      # The tags too: they say which versions are released.
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - name: Choose the version
+        id: choose
+        env:
+          # Taken as the text it is: never written into the script.
+          TYPED: ${{ inputs.version }}
+        run: |
+          head=$(git ls-remote origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::$GITHUB_REF_NAME has moved on to ${head:0:7}: a newer run releases this commit with it (or Run workflow does)."
+            exit 0
+          fi
+          released() { git rev-parse -q --verify "refs/tags/v$1" >/dev/null; }
+          current=$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml)
+          if [ -n "$TYPED" ]; then
+            version=$TYPED
+          elif ! released "$current"; then
+            version=$current
+          elif [ "$(git rev-parse "v$current^{commit}")" = "$GITHUB_SHA" ]; then
+            echo "::notice::Nothing new since v$current."
+            exit 0
+          else
+            case "$current" in
+              *-*) version="${current%-*}-$((${current##*-} + 1))" ;;
+              *) version="${current%.*}.$((${current##*.} + 1))" ;;
+            esac
+          fi
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$ ]]; then
+            echo "::error::'$version' isn't a version a Windows installer takes: 1.2.3, or 1.2.3-4 for a pre-release."
+            exit 1
+          fi
+          if released "$version"; then
+            echo "::error::v$version is released already."
+            exit 1
+          fi
+          echo "Releasing $version (the sources have $current)."
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "bump=$([ "$version" = "$current" ] && echo false || echo true)"
+          } >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.choose.outputs.bump == 'true'
       - uses: actions/setup-node@v4
+        if: steps.choose.outputs.bump == 'true'
         with:
           node-version: 22
-      - name: Set the version
-        run: scripts/set-version.sh "$VERSION"
-      - name: Commit and tag
+      - name: Set the version, and commit it
+        id: commit
+        if: steps.choose.outputs.version != ''
+        env:
+          VERSION: ${{ steps.choose.outputs.version }}
+          BUMP: ${{ steps.choose.outputs.bump }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Nothing to commit when the sources have that version already.
-          git diff --quiet || git commit -am "Release $VERSION"
-          git tag "$TAG"
-          # Both or neither: a tag that's taken leaves the branch as it was.
-          git push --atomic origin "HEAD:$GITHUB_REF_NAME" "$TAG"
+          if [ "$BUMP" = true ]; then
+            scripts/set-version.sh "$VERSION"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -qam "Release $VERSION [skip ci]"
+            if ! git push origin "HEAD:$GITHUB_REF_NAME"; then
+              if [ "$(git ls-remote origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)" != "$GITHUB_SHA" ]; then
+                echo "::notice::$GITHUB_REF_NAME moved on meanwhile: a newer run releases this commit with it."
+                exit 0
+              fi
+              echo "::error::The version's commit couldn't be pushed to $GITHUB_REF_NAME: a protected branch takes it with RELEASE_TOKEN (README, Releases)."
+              exit 1
+            fi
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Draft the release
         id: draft
+        if: steps.commit.outputs.sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.choose.outputs.version }}
+          TAG: ${{ steps.choose.outputs.tag }}
+          SHA: ${{ steps.commit.outputs.sha }}
         run: |
+          # A draft of this version that a failed run left goes first.
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.draft and .tag_name == env.TAG) | .id' |
+            while read -r stale; do
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$stale"
+            done
           prerelease=false
           case "$VERSION" in *-*) prerelease=true ;; esac
+          # The tag is made on that commit when the release is published.
           id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
-            -f tag_name="$TAG" -f name="Rovik $VERSION" \
+            -f tag_name="$TAG" -f target_commitish="$SHA" -f name="Rovik $VERSION" \
             -F draft=true -F prerelease=$prerelease -F generate_release_notes=true \
             --jq .id)
           echo "id=$id" >> "$GITHUB_OUTPUT"
@@ -89,6 +187,7 @@ jobs:
   daemon:
     name: Daemon (${{ matrix.cpu }})
     needs: version
+    if: needs.version.outputs.release != ''
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -96,7 +195,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.cpu }}-unknown-linux-musl
@@ -116,6 +215,7 @@ jobs:
   app:
     name: App (${{ matrix.name }})
     needs: version
+    if: needs.version.outputs.release != ''
     strategy:
       fail-fast: false
       matrix:
@@ -136,7 +236,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
       - name: Install the system's packages
         if: runner.os == 'Linux'
         run: |
@@ -162,17 +262,20 @@ jobs:
           # The draft the version job made, so that the platforms don't each
           # make one; the tag names the updater's download links.
           releaseId: ${{ needs.version.outputs.release }}
-          tagName: ${{ env.TAG }}
+          tagName: ${{ needs.version.outputs.tag }}
           args: ${{ matrix.args }}
 
   publish:
     name: Sign the daemon, and publish
-    needs: [daemon, app]
+    needs: [version, daemon, app]
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      RELEASE: ${{ needs.version.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -188,7 +291,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "TAURI_SIGNING_PRIVATE_KEY isn't set"; exit 1; }
           cd agentd
           chmod 755 rovik-agentd-*
           sha256sum rovik-agentd-* > SHA256SUMS
@@ -197,7 +299,8 @@ jobs:
           for file in rovik-agentd-* SHA256SUMS; do
             npx tauri signer sign "$file"
           done
-          for build in $(ls rovik-agentd-* | grep -v '\.sig$'); do
+          for build in rovik-agentd-*; do
+            case "$build" in *.sig) continue ;; esac
             gzip -9 "$build"
           done
           ls -l
@@ -206,4 +309,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$TAG" agentd/*.gz agentd/*.sig agentd/SHA256SUMS --clobber
-          gh release edit "$TAG" --draft=false
+          # Published, it makes its tag on the commit it was built from.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE" -F draft=false --jq .html_url

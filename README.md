@@ -343,16 +343,30 @@ app with `ROVIK_AGENTD_BINARY` set to its path.
 
 ### Releases
 
-A release is made from GitHub: in the repository's **Actions** tab, choose
-the **Release** workflow, then **Run workflow**, pick the branch and type
-the version, such as `1.2.3`. The workflow (`.github/workflows/release.yml`)
-does the rest:
+Every merge to master is released. The **Release** workflow
+(`.github/workflows/release.yml`) runs on each one:
 
-1. It sets that version in the sources with `scripts/set-version.sh`, then
-   commits it and tags it `v1.2.3`.
-2. It builds the app for Linux, macOS and Windows, and the daemon for
-   x86_64 and aarch64 Linux servers.
-3. It signs the builds and publishes them on the tag's GitHub release.
+1. It runs the checks first, the CI workflow's: the tests on Linux, macOS
+   and Windows. A merge that fails them isn't released.
+2. It chooses the version: the one in the sources while no release has it
+   (the first release, or one a pull request set with
+   `scripts/set-version.sh 1.3.0`), otherwise the sources' version with
+   its last number raised, `1.2.3` to `1.2.4`, which it commits to master
+   as `Release 1.2.4 [skip ci]`.
+3. It builds the app for Linux (AppImage, .deb, .rpm), macOS (a disk
+   image each for Apple silicon and Intel) and Windows (installer and MSI
+   package), and the daemon for x86_64 and aarch64 Linux servers.
+4. It signs the builds and publishes them on the version's GitHub
+   release, tagged `v1.2.4`. The download buttons on
+   [rovik-ide.dev](https://rovik-ide.dev) show it at once: they ask GitHub
+   for the latest release.
+
+Nothing is published until every build is on the release, so a run that
+fails leaves the latest release as it was. The next merge publishes the
+version it couldn't; so do **Re-run failed jobs** on its run and **Run
+workflow** (in the **Actions** tab, under **Release**) with the version
+left empty. **Run workflow** with a version, such as `2.0.0`, releases
+that version from the branch you pick.
 
 The app downloads the daemon for a server from its own version's release,
 and checks it against the release key before it goes to the server. The
@@ -376,9 +390,42 @@ Versions have numbers only, such as `1.2.3`, or `1.2.3-4` for a
 pre-release, which GitHub publishes as one: a Windows installer refuses
 anything else. The version is written in `src-tauri/Cargo.toml`
 (`[workspace.package]`) and `package.json`; to change it by hand, run
-`scripts/set-version.sh 1.2.3`. If the branch is protected, add a
-`RELEASE_TOKEN` secret, a token that may push to it, for the version's
-commit and tag.
+`scripts/set-version.sh 1.2.3`. After a pre-release such as `1.2.3-4`,
+merges release `1.2.3-5`, `1.2.3-6`… until a pull request sets the next
+version, or **Run workflow** releases one.
+
+#### Protecting master
+
+GitHub can refuse to merge a pull request until its checks pass. In the
+repository's **Settings → Rules → Rulesets**, choose **New ruleset → New
+branch ruleset**:
+
+1. Name it (`master`) and set **Enforcement status** to **Active**.
+2. Under **Bypass list**, add **Repository admin**, set to **Always
+   allow**: the release's commit of the version is pushed past the rules
+   with your token (below). You can still merge past them on purpose.
+3. Under **Target branches**, choose **Add target → Include default
+   branch**.
+4. Tick **Require a pull request before merging** and **Require status
+   checks to pass**. Under **Add checks**, add the four checks (GitHub
+   suggests a check once it has run in the past week):
+   - `Rust tests (Linux)`
+   - `Rust tests (macOS)`
+   - `Rust tests (Windows)`
+   - `Frontend tests, types and formatting`
+
+   **Require branches to be up to date before merging** has the checks
+   run on the code as it will be once merged.
+
+5. Choose **Create**.
+
+Then give the release a token that may push past the rules. Make a
+fine-grained token (**your GitHub settings → Developer settings → Personal
+access tokens → Fine-grained tokens**) for this repository only, with
+**Contents: Read and write**, and add it to the repository's **Settings →
+Secrets and variables → Actions** as `RELEASE_TOKEN`. Without it, a
+protected master refuses the release's commit of the version, and the
+release stops there.
 
 To debug model requests, set `ROVIK_API_LOG=1`. Every request and response
 is then logged to `<temp dir>/rovik-api-log.jsonl`; set it to a file path
