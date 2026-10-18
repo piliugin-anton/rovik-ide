@@ -8298,6 +8298,72 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg);
 }
 
+/* A conflict's lines, picked one by one (ConflictResolver.tsx, PickLines). */
+.cr-pick {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin: 3px 6px 0 -4px;
+  cursor: pointer;
+}
+
+.cr-ours .cr-pick {
+  accent-color: var(--cr-ours);
+}
+
+.cr-theirs .cr-pick {
+  accent-color: var(--cr-theirs);
+}
+
+/* A line both sides have. */
+.cr-line.cr-same .cr-code {
+  color: var(--fg-muted);
+}
+
+/* A line only this side has. */
+.cr-ours .cr-line.cr-alone {
+  box-shadow: inset 2px 0 0 var(--cr-ours);
+}
+
+.cr-theirs .cr-line.cr-alone {
+  box-shadow: inset 2px 0 0 var(--cr-theirs);
+}
+
+/* The part of a line that differs from the other side's version. */
+.cr-change {
+  border-radius: 2px;
+  color: inherit;
+}
+
+.cr-ours .cr-change {
+  background: color-mix(in srgb, var(--cr-ours) 38%, transparent);
+}
+
+.cr-theirs .cr-change {
+  background: color-mix(in srgb, var(--cr-theirs) 38%, transparent);
+}
+
+.cr-ours .cr-line.cr-picked {
+  background: color-mix(in srgb, var(--cr-ours) 16%, transparent);
+}
+
+.cr-theirs .cr-line.cr-picked {
+  background: color-mix(in srgb, var(--cr-theirs) 16%, transparent);
+}
+
+.cr-line.cr-left-out {
+  opacity: 0.45;
+}
+
+/* Where only the other side has a line: keeps the rows level. */
+.cr-line.cr-gap {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--fg-dim) 14%, transparent) 5px 6px
+  );
+}
+
 .cr-empty-lines {
   padding: 2px 8px 4px 52px;
   color: var(--fg-dim);

@@ -39,7 +39,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - A built-in terminal that uses your own shell, on this computer or on a
   connected [cloud host](#a-terminal-on-a-cloud-host).
 - A Git panel: commit, branches, stash, history, pull and push. Merge
-  conflicts are resolved in a side-by-side conflict resolver.
+  conflicts are resolved in a side-by-side conflict resolver: the
+  conflicts git wrote in the file, each settled with one side, both,
+  lines ticked from either side, or an edit by hand.
 
 **AI agent**
 

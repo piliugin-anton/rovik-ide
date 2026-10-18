@@ -1291,6 +1291,116 @@ async function run() {
     );
   });
 
+  await step('git: a conflict settled line by line', async () => {
+    // Yours changes lines 2 and 4, incoming line 3: one conflict, which git
+    // can't split. Each line is ticked on the side that changed it.
+    const lines = (...l) => l.join('\n') + '\n';
+    const head = 'function total(items) {';
+    const merged = lines(
+      head,
+      '  let sum = 0; // running total',
+      '  for (const item of items) sum += item.price * item.qty;',
+      '  return Math.round(sum);',
+      '}'
+    );
+    if (git(DEMO, 'branch', '--show-current') !== 'main') git(DEMO, 'checkout', '-qf', 'main');
+    write(
+      join(DEMO, 'total.js'),
+      lines(
+        head,
+        '  let sum = 0;',
+        '  for (const item of items) sum += item.price;',
+        '  return sum;',
+        '}'
+      )
+    );
+    git(DEMO, 'add', 'total.js');
+    git(DEMO, 'commit', '-qm', 'Add total.js');
+    git(DEMO, 'push', '-q');
+    const other = join(WORK, 'other');
+    git(other, 'pull', '-q');
+    writeFileSync(
+      join(other, 'total.js'),
+      lines(
+        head,
+        '  let sum = 0;',
+        '  for (const item of items) sum += item.price * item.qty;',
+        '  return sum;',
+        '}'
+      )
+    );
+    git(other, 'commit', '-qam', 'Count quantities');
+    git(other, 'push', '-q');
+    writeFileSync(
+      join(DEMO, 'total.js'),
+      lines(
+        head,
+        '  let sum = 0; // running total',
+        '  for (const item of items) sum += item.price;',
+        '  return Math.round(sum);',
+        '}'
+      )
+    );
+    git(DEMO, 'commit', '-qam', 'Round the total');
+    await sleep(1000);
+    const pulled = async () =>
+      (await d.exists('.cr-pick')) || (await d.bodyText()).includes('Merge or rebase?');
+    await click('[title="Pull"]');
+    await waitFor(pulled, 'the pull to ask or conflict', 30_000);
+    if (!(await d.exists('.cr-pick'))) {
+      await click(
+        await mark(
+          `return [...document.querySelectorAll('button, [role=button]')].find((b) => b.textContent.trim().startsWith('Merge') && b.offsetParent);`,
+          'merge'
+        )
+      );
+    }
+    await waitFor(() => d.exists('.cr-pick'), 'the conflict resolver', 30_000);
+    const tick = async (side, code) =>
+      click(
+        await mark(
+          `return [...document.querySelectorAll('.cr-${side} .cr-line')].find((l) => l.textContent.includes(arguments[0]))?.querySelector('.cr-pick');`,
+          'tick',
+          code
+        )
+      );
+    await tick('ours', 'running total');
+    await tick('theirs', 'item.qty');
+    await tick('ours', 'Math.round');
+    const result = await d.exec(
+      `return [...document.querySelectorAll('.cr-result .cr-line .cr-code')].map((e) => e.textContent).join('\\n')`
+    );
+    assert(result === merged.split('\n').slice(1, 4).join('\n'), `the result: ${result}`);
+    await click(await buttonByText('Mark resolved'));
+    await sleep(800);
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Commit merge' && b.offsetParent).pop();`,
+        'commit-merge'
+      )
+    );
+    await waitFor(
+      () => git(DEMO, 'log', '-1', '--format=%p').split(' ').length === 2,
+      'the merge commit',
+      20_000
+    );
+    const written = readFileSync(join(DEMO, 'total.js'), 'utf8');
+    assert(written === merged, `total.js: ${written}`);
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('button')].find((b) => b.textContent.trim().endsWith('Push') && b.offsetParent);`,
+        'push'
+      )
+    );
+    await waitFor(
+      () =>
+        git(join(WORK, 'remote.git'), 'log', '-1', '--format=%H') ===
+        git(DEMO, 'rev-parse', 'HEAD'),
+      'the push',
+      30_000
+    );
+  });
+
   await step('settings: every page opens', async () => {
     const pages = [
       'Editor',
