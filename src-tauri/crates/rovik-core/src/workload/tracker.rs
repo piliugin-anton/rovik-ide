@@ -21,6 +21,7 @@
 //! isn't raised again when a slot frees up (an unprivileged process can't
 //! raise its priority on Unix anyway); a pause is undone at once.
 
+use super::machine;
 use super::queue::{lock, JobKind, JobState, State, IDLE_RELEASE, SHARED};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Once;
@@ -343,8 +344,11 @@ fn sample(sys: &mut System) {
     let (procs, children) = snapshot(sys);
     sys.refresh_memory();
     sys.refresh_cpu_usage();
+    // The other windows' slots, looked at before the queue is held.
+    let elsewhere = machine::held_elsewhere();
     let now = Instant::now();
     let mut state = lock();
+    state.elsewhere = elsewhere;
     let mut tracked_cores = 0.0;
     let groups = state
         .jobs
@@ -393,12 +397,28 @@ fn sample(sys: &mut System) {
 /// The queue's rules after a sample (see the module comment).
 pub(super) fn apply_rules(state: &mut State) {
     // Idle slots are freed.
-    for job in state.jobs.values_mut() {
+    for (id, job) in state.jobs.iter_mut() {
         if job.has_slot && job.root_pid.is_some() && job.sampling.idle_for(IDLE_RELEASE) {
             job.has_slot = false;
+            machine::release(*id);
         }
     }
-    // The terminal took a slot that was in use: chat work gives it up.
+    // A busy terminal holds a slot in every window's count, beyond the
+    // slots there are if it must; an idle one lets go of it.
+    for (id, job) in state.jobs.iter() {
+        if job.kind != JobKind::Terminal {
+            continue;
+        }
+        match (job.terminal_busy(), machine::holds(*id)) {
+            (true, false) => {
+                machine::take(*id, machine::ANY);
+            }
+            (false, true) => machine::release(*id),
+            _ => {}
+        }
+    }
+    // The terminal took a slot that was in use (here or in another
+    // window): chat work gives it up.
     let demote = state.holders_to_demote();
     let mut over = -state.available();
     for id in demote {
@@ -406,6 +426,7 @@ pub(super) fn apply_rules(state: &mut State) {
             break;
         }
         state.jobs.get_mut(&id).unwrap().has_slot = false;
+        machine::release(id);
         over -= 1;
     }
     // Chat work that turned heavy: a slot if it may, otherwise slowed down.
@@ -422,7 +443,7 @@ pub(super) fn apply_rules(state: &mut State) {
         .map(|(id, _)| *id)
         .collect();
     for id in running {
-        if state.may_take_slot(id) {
+        if state.may_take_slot(id) && machine::take(id, state.capacity()) {
             state.jobs.get_mut(&id).unwrap().has_slot = true;
         }
     }

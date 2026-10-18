@@ -8,12 +8,14 @@
 //! rules in classify.rs.
 //!
 //! Kept in one small JSON file in the app's data folder (not the chat
-//! database: it's about the machine and the project, not a chat).
+//! database: it's about the machine and the project, not a chat). Each
+//! window, a process of its own, saves onto the file as it is: the
+//! projects it ran nothing in are kept as another window saved them.
 
 use super::classify::Class;
 use crate::agent_run::permissions::parse_command;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -55,6 +57,9 @@ struct History {
     store: Option<Store>,
     /// When it was last written: at most every SAVE_EVERY.
     saved_at: Option<std::time::Instant>,
+    /// The projects run in here since the last save: the others are as the
+    /// file has them (another window's).
+    changed: HashSet<String>,
 }
 
 static HISTORY: LazyLock<Mutex<History>> = LazyLock::new(|| {
@@ -62,6 +67,7 @@ static HISTORY: LazyLock<Mutex<History>> = LazyLock::new(|| {
         file: None,
         store: None,
         saved_at: None,
+        changed: HashSet::new(),
     })
 });
 
@@ -78,15 +84,17 @@ pub fn init(data_dir: &Path) {
 }
 
 impl History {
+    fn read(&self) -> Option<Store> {
+        self.file
+            .as_ref()
+            .and_then(|f| std::fs::read(f).ok())
+            .and_then(|bytes| serde_json::from_slice::<Store>(&bytes).ok())
+            .filter(|s| s.version == 1)
+    }
+
     fn store(&mut self) -> &mut Store {
         if self.store.is_none() {
-            let loaded = self
-                .file
-                .as_ref()
-                .and_then(|f| std::fs::read(f).ok())
-                .and_then(|bytes| serde_json::from_slice::<Store>(&bytes).ok())
-                .filter(|s| s.version == 1);
-            self.store = Some(loaded.unwrap_or(Store {
+            self.store = Some(self.read().unwrap_or(Store {
                 version: 1,
                 ..Default::default()
             }));
@@ -94,8 +102,20 @@ impl History {
         self.store.as_mut().unwrap()
     }
 
+    /// Writes this window's projects onto the file as it is now: the other
+    /// projects are as another window saved them.
     fn save(&mut self) {
-        if let (Some(file), Some(store)) = (&self.file, &self.store) {
+        let theirs = self.read();
+        let changed = std::mem::take(&mut self.changed);
+        if let (Some(file), Some(store)) = (&self.file, &mut self.store) {
+            if let Some(theirs) = theirs {
+                store.tick = store.tick.max(theirs.tick);
+                for (project, entries) in theirs.projects {
+                    if !changed.contains(&project) {
+                        store.projects.insert(project, entries);
+                    }
+                }
+            }
             if let Ok(bytes) = serde_json::to_vec(store) {
                 let _ = crate::atomic_file::write_atomic(file, &bytes);
             }
@@ -163,41 +183,50 @@ pub fn record(project: &str, fingerprint: &str, sample: Sample) {
     if fingerprint.is_empty() {
         return;
     }
-    let mut h = HISTORY.lock().unwrap_or_else(|e| e.into_inner());
-    let store = h.store();
-    store.tick += 1;
-    let tick = store.tick;
-    let entries = store.projects.entry(project.to_string()).or_default();
-    let entry = entries.entry(fingerprint.to_string()).or_default();
-    entry.samples.push_back(sample);
-    while entry.samples.len() > SAMPLES {
-        entry.samples.pop_front();
-    }
-    entry.last_used = tick;
-    if entries.len() > PER_PROJECT {
-        if let Some(oldest) = entries
-            .iter()
-            .min_by_key(|(_, e)| e.last_used)
-            .map(|(k, _)| k.clone())
-        {
-            entries.remove(&oldest);
+    HISTORY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .record(project, fingerprint, sample);
+}
+
+impl History {
+    fn record(&mut self, project: &str, fingerprint: &str, sample: Sample) {
+        self.changed.insert(project.to_string());
+        let store = self.store();
+        store.tick += 1;
+        let tick = store.tick;
+        let entries = store.projects.entry(project.to_string()).or_default();
+        let entry = entries.entry(fingerprint.to_string()).or_default();
+        entry.samples.push_back(sample);
+        while entry.samples.len() > SAMPLES {
+            entry.samples.pop_front();
         }
-    }
-    if store.projects.len() > PROJECTS {
-        let last_used = |entries: &HashMap<String, Entry>| {
-            entries.values().map(|e| e.last_used).max().unwrap_or(0)
-        };
-        if let Some(oldest) = store
-            .projects
-            .iter()
-            .min_by_key(|(_, e)| last_used(e))
-            .map(|(k, _)| k.clone())
-        {
-            store.projects.remove(&oldest);
+        entry.last_used = tick;
+        if entries.len() > PER_PROJECT {
+            if let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| k.clone())
+            {
+                entries.remove(&oldest);
+            }
         }
-    }
-    if h.saved_at.is_none_or(|t| t.elapsed() >= SAVE_EVERY) {
-        h.save();
+        if store.projects.len() > PROJECTS {
+            let last_used = |entries: &HashMap<String, Entry>| {
+                entries.values().map(|e| e.last_used).max().unwrap_or(0)
+            };
+            if let Some(oldest) = store
+                .projects
+                .iter()
+                .min_by_key(|(_, e)| last_used(e))
+                .map(|(k, _)| k.clone())
+            {
+                store.projects.remove(&oldest);
+            }
+        }
+        if self.saved_at.is_none_or(|t| t.elapsed() >= SAVE_EVERY) {
+            self.save();
+        }
     }
 }
 
@@ -244,6 +273,52 @@ pub fn predict(project: &str, fingerprint: &str) -> Option<Prediction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A window's history: two in one test process stand for two windows,
+    /// each saving onto the one file.
+    fn window(file: &std::path::Path) -> History {
+        History {
+            file: Some(file.to_path_buf()),
+            store: None,
+            saved_at: None,
+            changed: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_window_saving_keeps_what_another_saved_meanwhile() {
+        let dir = std::env::temp_dir().join(format!("workload-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("workload-history.json");
+        let sample = Sample {
+            cpu_ms: 20_000,
+            peak_memory: 1 << 20,
+            wall_ms: 9_000,
+        };
+        // Both read the file before either wrote it.
+        let mut a = window(&file);
+        let mut b = window(&file);
+        a.store();
+        b.store();
+        a.record("/a", "cargo build", sample);
+        b.record("/b", "npm test", sample);
+        a.record("/a", "cargo build", sample);
+        a.save();
+        let saved = window(&file).read().unwrap();
+        assert_eq!(saved.projects["/a"]["cargo build"].samples.len(), 2);
+        assert_eq!(
+            saved.projects["/b"]["npm test"].samples.len(),
+            1,
+            "b's run is kept"
+        );
+        // And b's next save keeps a's.
+        b.record("/b", "npm test", sample);
+        b.save();
+        let saved = window(&file).read().unwrap();
+        assert_eq!(saved.projects["/a"]["cargo build"].samples.len(), 2);
+        assert_eq!(saved.projects["/b"]["npm test"].samples.len(), 2);
+    }
 
     #[test]
     fn fingerprints_drop_what_changes_between_runs() {
