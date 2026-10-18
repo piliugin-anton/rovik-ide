@@ -1345,9 +1345,14 @@ async function run() {
     async () => {
       await click('.terminal-toggle-button');
       await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
+      // Its shell starting (zsh, cmd.exe), which would drop what's typed.
+      await sleep(2500);
       await click('.xterm-screen');
+      // Six lines, by a loop: the line typed doesn't hold what's looked for.
       await typeKeys(
-        'clear; for i in 1 2 3 4 5 6; do echo "e2e-fold $i: the quick brown fox jumps over the lazy dog"; done'
+        PLATFORM === 'win32'
+          ? 'cls & for /L %i in (1,1,6) do @echo e2e-fold %i: the quick brown fox jumps over the lazy dog'
+          : 'clear; for i in 1 2 3 4 5 6; do echo "e2e-fold $i: the quick brown fox jumps over the lazy dog"; done'
       );
       await keys(Keys.ENTER);
       await waitFor(
@@ -1719,6 +1724,12 @@ async function run() {
     git(DEMO, 'add', '-A');
     git(DEMO, 'commit', '-qm', 'Topic work');
     await sidebar('Git');
+    // Not while the panel is busy: the button is redrawn then (its spinner).
+    await waitFor(
+      () => d.exec(`return document.querySelector('[title="Fetch"]')?.disabled === false`),
+      'Fetch to be enabled',
+      30_000
+    );
     await click('[title="Fetch"]');
     await waitFor(
       async () => (await panelText('.git-branch-name')) === 'e2e-topic',
