@@ -497,6 +497,13 @@ lands on its own. Anything else (conflicts, failing checks) is shown in the
 bar above the chat's message box, where you can resolve conflicts, land
 anyway, discard, or undo a landing.
 
+On Linux, the commands a chat runs see its overlay at the project's own
+path too, so one that names the project by its full path still stays in
+the chat. They run under bubblewrap (`bwrap`, which the .deb and .rpm
+packages recommend), or, without it, in a namespace the app makes itself.
+Where neither is allowed, and on macOS and Windows, a command that names
+the project's full path is refused instead.
+
 Limits: 512 MiB of changed files per chat (warning at 80%). Build output and
 dependency folders don't count toward it. Heavy commands such as builds and
 tests share a small number of CPU "slots" (one by default) so that several

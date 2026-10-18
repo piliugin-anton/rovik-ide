@@ -78,7 +78,9 @@ jobs:
           fetch-depth: 0
       # The app's own crate builds against WebKitGTK; fuse3 gives the
       # overlay tests a mount (they skip themselves without one, as they do
-      # on macOS without macFUSE and on Windows without WinFsp).
+      # on macOS without macFUSE and on Windows without WinFsp), and
+      # bubblewrap confines an isolated chat's commands, as the app's
+      # packages recommend.
       - name: Install the system's packages
         if: runner.os == 'Linux'
         run: |
@@ -86,7 +88,7 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libssl-dev \
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libgtk-3-dev \
             librsvg2-dev libayatana-appindicator3-dev libsoup-3.0-dev libxdo-dev \
-            fuse3
+            fuse3 bubblewrap
       # Tests commit with the git command, as a developer's machine does.
       - name: Give git a name
         run: |

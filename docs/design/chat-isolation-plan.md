@@ -936,11 +936,16 @@ once; they touch different files. Everything else is sequential.
     of a landing) run, on Linux, in a mount namespace of their own in which
     the project's path is the chat's view (`overlay/confine.rs`): a
     command naming the project by its full path reaches the chat's files.
-    It needs no privileges (a user namespace mapping the user to itself);
-    it's tried once, and where the kernel or AppArmor forbids it (or
-    `ROVIK_CONFINE_COMMANDS=0`), and on macOS and Windows, such commands
-    are refused by the textual check as before. The user's own terminal
-    isn't confined.
+    Bubblewrap makes it where it's installed and may
+    (`bwrap --dev-bind / / --bind <view> <project>`; Ubuntu 24.04's
+    AppArmor, which forbids unprivileged user namespaces to other
+    programs, has a profile that lets bwrap make them), and the app's own
+    way otherwise: a user namespace mapping the user to itself, which
+    needs no privileges. The way is found once, in that order; where
+    neither works (or `ROVIK_CONFINE_COMMANDS=0`; `bwrap` or `unshare`
+    picks one), and on macOS and Windows, such commands are refused by the
+    textual check as before. The .deb and .rpm packages recommend
+    `bubblewrap`. The user's own terminal isn't confined.
   - Settings → Builds & checks sets how many heavy commands run at once:
     Auto (one, or two on a big machine with room) or a fixed number from
     1 to 8, kept in the app's data folder (`workload-settings.json`) and

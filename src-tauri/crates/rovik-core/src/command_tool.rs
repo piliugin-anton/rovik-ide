@@ -65,7 +65,7 @@ pub struct Queued {
 }
 
 #[cfg(windows)]
-fn shell_command(command: &str) -> Command {
+fn shell_command(command: &str, _confine: Option<&crate::overlay::confine::Confine>) -> Command {
     use std::os::windows::process::CommandExt;
     let shell = std::env::var("COMSPEC")
         .ok()
@@ -81,15 +81,22 @@ fn shell_command(command: &str) -> Command {
 
 /// The user's shell when it's a POSIX one (the commands are POSIX shell, as
 /// models write them and the permission checks read them); `/bin/sh` when
-/// it's fish, nu or another shell with a syntax of its own.
+/// it's fish, nu or another shell with a syntax of its own. An isolated
+/// chat's runs `confine`d: the project's path shows the chat's view.
 #[cfg(not(windows))]
-fn shell_command(command: &str) -> Command {
+fn shell_command(command: &str, confine: Option<&crate::overlay::confine::Confine>) -> Command {
     use crate::process::{shell_kind, user_shell, ShellKind};
     let shell = user_shell()
         .filter(|s| shell_kind(s) == ShellKind::Posix)
         .unwrap_or_else(|| "/bin/sh".to_string());
-    let mut cmd = Command::new(shell);
-    cmd.args(["-c", command]);
+    let mut cmd = match confine {
+        Some(c) => crate::overlay::confine::command(c, &shell, &["-c", command]),
+        None => {
+            let mut cmd = Command::new(shell);
+            cmd.args(["-c", command]);
+            cmd
+        }
+    };
     crate::process::ordinary_oom_score(&mut cmd);
     cmd
 }
@@ -275,7 +282,7 @@ fn run_blocking(
     }
 
     let started = Instant::now();
-    let mut cmd = shell_command(command);
+    let mut cmd = shell_command(command, queued.and_then(|q| q.confine.as_ref()));
     crate::process::no_window(&mut cmd)
         .current_dir(root)
         .stdin(Stdio::null())
@@ -294,9 +301,6 @@ fn run_blocking(
     }
     for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
         cmd.env(key, value);
-    }
-    if let Some(c) = queued.and_then(|q| q.confine.as_ref()) {
-        crate::overlay::confine::apply(&mut cmd, c);
     }
     // Its own process group, so a timeout can take down everything the
     // shell started (a `node server.js`), not just the shell.
@@ -425,10 +429,25 @@ mod tests {
         if std::fs::write(own, "-500").is_err() {
             return;
         }
-        let out = shell_command("cat /proc/self/oom_score_adj").output();
+        let out = shell_command("cat /proc/self/oom_score_adj", None).output();
+        // An isolated chat's too, whichever way it's confined.
+        let dir = std::env::temp_dir().join(format!("oom-confined-{}", std::process::id()));
+        let c = crate::overlay::confine::Confine {
+            view: dir.join("view"),
+            project: dir.join("project"),
+        };
+        std::fs::create_dir_all(&c.view).unwrap();
+        std::fs::create_dir_all(&c.project).unwrap();
+        let confined = crate::overlay::confine::available(&c)
+            .then(|| shell_command("cat /proc/self/oom_score_adj", Some(&c)).output());
         let _ = std::fs::write(own, "0");
+        let _ = std::fs::remove_dir_all(&dir);
         let out = out.unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0");
+        if let Some(out) = confined {
+            let out = out.unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0", "confined");
+        }
     }
 
     #[cfg(not(windows))]
