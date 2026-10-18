@@ -8,6 +8,9 @@
 
 use crate::core::Core;
 use serde_json::{Map, Value};
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 pub fn write(core: &Core, entry: Value) {
     let mut line = Map::new();
@@ -16,10 +19,42 @@ pub fn write(core: &Core, entry: Value) {
         line.extend(fields);
     }
     let text = Value::Object(line).to_string();
-    let dir = core.paths.log_dir.clone();
-    crate::rt::spawn_blocking(move || {
+    let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    queue.lines.push_back((core.paths.log_dir.clone(), text));
+    if !queue.writing {
+        queue.writing = true;
+        crate::rt::spawn_blocking(append_queued);
+    }
+}
+
+/// The lines not written yet, in the order they came, and whether a writer
+/// is at work on them: one at a time, so they reach the log in that order
+/// whichever threads wrote them.
+struct Queue {
+    lines: VecDeque<(PathBuf, String)>,
+    writing: bool,
+}
+
+static QUEUE: Mutex<Queue> = Mutex::new(Queue {
+    lines: VecDeque::new(),
+    writing: false,
+});
+
+/// Appends the queued lines, oldest first, until none is left.
+fn append_queued() {
+    loop {
+        let (dir, text) = {
+            let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+            match queue.lines.pop_front() {
+                Some(line) => line,
+                None => {
+                    queue.writing = false;
+                    return;
+                }
+            }
+        };
         let _ = crate::project_profile::append_agent_log(&dir, &text);
-    });
+    }
 }
 
 /// A token count in a reply's usage: a whole number, as some proxies send
@@ -87,6 +122,31 @@ pub fn utc_date() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lines reach the log in the order they're written, whichever of the
+    /// runtime's threads appends them.
+    #[test]
+    fn lines_reach_the_log_in_their_order() {
+        let test = crate::testing::TestCore::new();
+        let log = test.core.paths.log_dir.join("agent-log.jsonl");
+        for n in 0..300 {
+            write(&test.core, serde_json::json!({ "event": "order", "n": n }));
+        }
+        let mut seen = Vec::new();
+        for _ in 0..500 {
+            seen = std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter_map(|l| l["n"].as_u64())
+                .collect();
+            if seen.len() == 300 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(seen, (0..300).collect::<Vec<u64>>());
+    }
 
     #[test]
     fn formats_utc_times() {
