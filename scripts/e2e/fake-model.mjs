@@ -216,6 +216,13 @@ const server = createServer((req, res) => {
       res.end('not found');
       return;
     }
+    // A provider without the Responses API, which the app tries first: it
+    // goes on to chat completions (chat_request/responses.rs `wrong_route`).
+    if (req.url.endsWith('/responses')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: `Invalid URL (POST ${req.url})` } }));
+      return;
+    }
     const r = plan(body);
     if (r.error) {
       res.writeHead(r.error.status, { 'Content-Type': 'application/json' });

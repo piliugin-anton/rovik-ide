@@ -583,6 +583,17 @@ async function addProvider(name, url, models) {
   await closeModal();
 }
 
+/** Picks, in the chat, the first model whose name has `provider` in it. */
+async function pickModel(provider) {
+  await click('.model-picker-trigger');
+  await click(
+    await mark(
+      `return [...document.querySelectorAll('.model-picker-option')].find((o) => o.title.includes(${JSON.stringify(provider)}));`,
+      'model'
+    )
+  );
+}
+
 async function composer(text) {
   await click('.chat-input-contenteditable');
   const lines = text.split('\n');
@@ -1489,6 +1500,17 @@ async function run() {
   );
 
   await step('autopilot: a task runs to its delivery, each stage shown as it goes', async () => {
+    try {
+      await autopilotTask();
+    } finally {
+      // The next steps chat as before: in Agent mode, with the first
+      // provider's model.
+      await click(await buttonByText('Agent', '.mode-selector')).catch(() => {});
+      await pickModel('Fake').catch(() => {});
+    }
+  });
+
+  async function autopilotTask() {
     // The evaluation's scripted model (scripts/eval/fake-model.mjs, its
     // autopilot mode) answers each stage's brief: the plan, the reviews,
     // the change as writes, the acceptance check and the report.
@@ -1507,13 +1529,7 @@ async function run() {
     await sidebar('AI Chat');
     await click('.chat-history-button');
     await click(await buttonByText('New chat'));
-    await click('.model-picker-trigger');
-    await click(
-      await mark(
-        `return [...document.querySelectorAll('.model-picker-option')].find((o) => o.title.includes('Autopilot'));`,
-        'model'
-      )
-    );
+    await pickModel('Autopilot');
     await click(
       await mark(
         `return [...document.querySelectorAll('.mode-option')].find((b) => b.textContent.trim() === 'Autopilot');`,
@@ -1633,7 +1649,7 @@ async function run() {
       })
     );
     assert(back.length === 0, `stages that went back: ${back.join('; ')}`);
-  });
+  }
 
   await step('chat: the reading place is kept while another sidebar tab is shown', async () => {
     const where = () =>
