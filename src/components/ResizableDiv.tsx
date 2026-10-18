@@ -122,7 +122,9 @@ export default function Resizable(props: ResizableProps) {
       >
         {props.children}
 
-        {/* Floating full-window toggle, at the panel's right edge */}
+        {/* Floating full-window toggle: at the panel's right edge while
+            collapsed, just outside the chat column's right border while
+            expanded (placed by CSS, see .sidebar-expand-button.expanded) */}
         <Show when={props.showFloatingButton}>
           <button
             type="button"

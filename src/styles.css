@@ -4120,7 +4120,9 @@ body.is-resizing * {
 }
 
 /* The full-window toggle: a small square button floating over the panel's
-   content at its right edge, faint until it is hovered or focused. */
+   content — at the panel's right edge while collapsed, just outside the chat
+   column's right border (8px clear) while expanded — faint until it is
+   hovered or focused. */
 .sidebar-expand-button {
   position: absolute;
   right: 6px;
@@ -4143,6 +4145,20 @@ body.is-resizing * {
     opacity 0.15s,
     color 0.15s,
     background 0.15s;
+}
+
+/* Expanded, the panel is the window and the Chat tab's content is a centered
+   column of at most 768px (see `.app.sidebar-expanded .chat-panel`), so the
+   window's right edge is far from the box this button collapses. It leaves
+   that edge and sits just outside the column instead: the column's right
+   border is 768px / 2 right of the window's middle, and the button's left edge
+   is 8px past it. The `min()` keeps the button inside a window too narrow for
+   that gap — 22px wide plus the collapsed state's 6px inset. `top: 50%` and
+   the half-height lift come from the base rule, so the vertical centre stays
+   where it was. */
+.sidebar-expand-button.expanded {
+  right: auto;
+  left: min(calc(50% + 768px / 2 + 8px), calc(100% - 28px));
 }
 
 .sidebar-expand-button:hover,
