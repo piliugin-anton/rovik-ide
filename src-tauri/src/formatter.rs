@@ -680,6 +680,7 @@ fn run(
 ) -> Result<String, String> {
     use rovik_core::command_tool::{shell_exited, ProcessTree};
 
+    rovik_core::process::no_window(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

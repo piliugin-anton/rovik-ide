@@ -12,14 +12,14 @@ use std::process::Command;
 #[cfg(target_os = "linux")]
 mod appimage;
 
-/// A command for `program` with what every program the app starts needs:
-/// no console window, and run from an AppImage, the user's environment
-/// ([`child_env`]) and the folder the AppImage was started from, not the
-/// AppImage's. What's set on it afterwards (`env`, `current_dir`) comes on
-/// top.
+/// A command for `program`. When the app runs from an AppImage, it starts
+/// with the user's environment ([`child_env`]) and in the folder the
+/// AppImage was started from, not the AppImage's; anywhere else, as
+/// `Command::new` does. What's set on it afterwards (`env`, `current_dir`)
+/// comes on top. A console window on Windows is each caller's to hide
+/// ([`no_window`]): the user's ssh asks for a password in one.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut cmd = Command::new(program);
-    no_window(&mut cmd);
     for (key, value) in child_env() {
         match value {
             Some(value) => cmd.env(key, value),

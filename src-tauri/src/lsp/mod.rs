@@ -155,7 +155,8 @@ pub fn lsp_start(
     on_event: Channel<LspEvent>,
 ) -> Result<String, String> {
     let path = tool_path();
-    let mut child = rovik_core::process::command(find_program(&command, &path))
+    let mut cmd = rovik_core::process::command(find_program(&command, &path));
+    let mut child = rovik_core::process::no_window(&mut cmd)
         .args(&args)
         .current_dir(&cwd)
         .env("PATH", &path)

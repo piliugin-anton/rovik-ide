@@ -191,7 +191,7 @@ fn credential_fill(
 ) -> Option<Option<(String, String)>> {
     use std::io::Write;
     use std::process::Stdio;
-    let mut child = git
+    let mut child = rovik_core::process::no_window(&mut git)
         .args(["credential", "fill"])
         // No terminal prompt and no askpass dialog: an empty GIT_ASKPASS
         // keeps git from core.askPass and SSH_ASKPASS too.
