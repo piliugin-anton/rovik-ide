@@ -177,10 +177,16 @@ jobs:
             done
           prerelease=false
           case "$VERSION" in *-*) prerelease=true ;; esac
+          # GitHub's notes, a mention in a pull request's title kept as text
+          # (scripts/release-notes.mjs): a title's "@context" isn't a user,
+          # to be listed among the release's contributors.
+          notes=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" -f target_commitish="$SHA" --jq .body |
+            node scripts/release-notes.mjs)
           # The tag is made on that commit when the release is published.
           id=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
             -f tag_name="$TAG" -f target_commitish="$SHA" -f name="Rovik $VERSION" \
-            -F draft=true -F prerelease=$prerelease -F generate_release_notes=true \
+            -f body="$notes" -F draft=true -F prerelease=$prerelease \
             --jq .id)
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
