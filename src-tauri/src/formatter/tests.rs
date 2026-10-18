@@ -326,3 +326,38 @@ fn a_hanging_cmd_wrapper_is_killed_with_everything_it_started() {
     std::thread::sleep(Duration::from_secs(5));
     assert!(!marker.exists(), "the wrapper's child outlived the timeout");
 }
+
+/// A wrapper that has exited, leaving a child at work that holds its
+/// output: the timeout ends the child too. (Given the wrapper's process,
+/// gone by then, taskkill found nothing to end; the child is in its job.)
+#[cfg(windows)]
+#[test]
+fn a_child_a_wrapper_left_holding_its_output_is_killed_at_the_timeout() {
+    let p = Project::new("win-left");
+    let marker = p.0.join("still-running");
+    let child = p.file(
+        "child.cmd",
+        &format!(
+            "@echo off\r\n%SystemRoot%\\System32\\PING.EXE -n 4 127.0.0.1 >nul\r\necho x > \"{}\"\r\n",
+            marker.display()
+        ),
+    );
+    let tool = p.file(
+        "left.cmd",
+        &format!(
+            "@echo off\r\nstart \"\" /b cmd /c \"{}\"\r\n",
+            child.display()
+        ),
+    );
+    let start = Instant::now();
+    let out = run(
+        Command::new(&tool),
+        "x".into(),
+        &[0],
+        Duration::from_secs(1),
+    );
+    assert_eq!(out, Err("timed out after 1 s".into()));
+    assert!(start.elapsed() < Duration::from_secs(3));
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(!marker.exists(), "the wrapper's child outlived the timeout");
+}
