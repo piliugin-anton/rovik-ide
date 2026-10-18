@@ -29,11 +29,14 @@ fn tool_names(request: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The agent log's lines of `event`, once there is one: the log is written
-/// off the run's thread, a moment after the run ends.
+/// The agent log's lines of `event`, once there is one, with every line
+/// written by then: the log is written off the run's thread, a moment after
+/// what wrote the line, and a slow machine may not have it in yet when the
+/// run has ended.
 async fn log_lines(h: &Harness, event: &str) -> Vec<Value> {
     let path = h.core.paths.log_dir.join("agent-log.jsonl");
     for _ in 0..200 {
+        crate::agent_run::log::flushed().await;
         let lines: Vec<Value> = std::fs::read_to_string(&path)
             .unwrap_or_default()
             .lines()

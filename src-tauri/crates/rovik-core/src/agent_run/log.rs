@@ -21,6 +21,7 @@ pub fn write(core: &Core, entry: Value) {
     let text = Value::Object(line).to_string();
     let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     queue.lines.push_back((core.paths.log_dir.clone(), text));
+    queue.written += 1;
     if !queue.writing {
         queue.writing = true;
         crate::rt::spawn_blocking(append_queued);
@@ -33,11 +34,17 @@ pub fn write(core: &Core, entry: Value) {
 struct Queue {
     lines: VecDeque<(PathBuf, String)>,
     writing: bool,
+    /// How many lines were written, and how many of them, the first, are
+    /// in the log.
+    written: u64,
+    appended: u64,
 }
 
 static QUEUE: Mutex<Queue> = Mutex::new(Queue {
     lines: VecDeque::new(),
     writing: false,
+    written: 0,
+    appended: 0,
 });
 
 /// Appends the queued lines, oldest first, until none is left.
@@ -54,6 +61,20 @@ fn append_queued() {
             }
         };
         let _ = crate::project_profile::append_agent_log(&dir, &text);
+        QUEUE.lock().unwrap_or_else(|e| e.into_inner()).appended += 1;
+    }
+}
+
+/// Waits until the lines written so far are in the log (5 s at most):
+/// tests read it right after what they wait for wrote its lines.
+#[cfg(test)]
+pub(crate) async fn flushed() {
+    let written = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).written;
+    for _ in 0..1000 {
+        if QUEUE.lock().unwrap_or_else(|e| e.into_inner()).appended >= written {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 }
 
