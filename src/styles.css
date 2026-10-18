@@ -8298,20 +8298,23 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg);
 }
 
-/* A conflict's lines, picked one by one (ConflictResolver.tsx, PickLines). */
-.cr-pick {
+/* A conflict's lines, picked one by one (ConflictResolver.tsx, PickLines).
+   Over the dialogs' own checkboxes (.modal input[type='checkbox']). */
+.conflict-resolver input.cr-pick {
   flex-shrink: 0;
+  align-self: center;
   width: 12px;
   height: 12px;
-  margin: 3px 6px 0 -4px;
+  /* WebKitGTK draws the box a little wider than its 12px. */
+  margin: 0 10px 0 0;
   cursor: pointer;
 }
 
-.cr-ours .cr-pick {
+.conflict-resolver .cr-ours input.cr-pick {
   accent-color: var(--cr-ours);
 }
 
-.cr-theirs .cr-pick {
+.conflict-resolver .cr-theirs input.cr-pick {
   accent-color: var(--cr-theirs);
 }
 
