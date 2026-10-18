@@ -276,4 +276,8 @@ pub struct AgentStatus {
     pub subagents: Vec<RunningSubagent>,
     pub approvals: Vec<ApprovalRequest>,
     pub questions: Vec<QuestionsRequest>,
+    /// The chats whose Autopilot driver is at work (`TaskDriving`). Absent
+    /// when none is, as from a daemon before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub driving: Vec<String>,
 }

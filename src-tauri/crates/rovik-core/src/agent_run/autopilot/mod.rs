@@ -56,7 +56,8 @@ pub use delivery::{
     ReportFacts,
 };
 pub(super) use driver::{
-    after_run, drive_lock, driver_turn, go_on_boxed, not_started_why, try_drive_lock,
+    after_run, drive_lock, driver_turn, go_on_boxed, not_started_why, starts_task, try_drive_lock,
+    AtWork,
 };
 #[cfg(test)]
 pub(super) use driver::{crash_at, crash_due, crashes, Crash};

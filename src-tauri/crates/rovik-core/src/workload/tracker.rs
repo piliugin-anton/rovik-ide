@@ -194,18 +194,22 @@ fn snapshot(sys: &mut System) -> (HashMap<u32, Proc>, HashMap<u32, Vec<u32>>) {
 }
 
 /// Processes by process group, looked up once per sample for all jobs.
+#[cfg(unix)]
 fn groups(procs: &HashMap<u32, Proc>) -> HashMap<u32, Vec<u32>> {
     let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
-    #[cfg(unix)]
     for pid in procs.keys() {
         let pgid = unsafe { libc::getpgid(*pid as libc::pid_t) };
         if pgid > 0 {
             out.entry(pgid as u32).or_default().push(*pid);
         }
     }
-    #[cfg(not(unix))]
-    let _ = procs;
     out
+}
+
+/// Windows has no process groups.
+#[cfg(not(unix))]
+fn groups(_procs: &HashMap<u32, Proc>) -> HashMap<u32, Vec<u32>> {
+    HashMap::new()
 }
 
 /// `root` and everything it started; on Unix also its process group.
@@ -531,8 +535,10 @@ fn pause(_pid: u32, _stop: bool) {}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::super::queue::{self, test_reset, test_support::SERIAL, JobKind};
     use super::*;
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
 
     #[test]
@@ -561,18 +567,17 @@ mod tests {
         assert!(busy.heavy, "a compiler at work is heavy at once");
     }
 
+    #[cfg(unix)]
     fn busy_loop() -> std::process::Child {
+        use std::os::unix::process::CommandExt;
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "while :; do :; done"])
-            .stdout(Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
+            .stdout(Stdio::null())
+            .process_group(0);
         cmd.spawn().unwrap()
     }
 
+    #[cfg(unix)]
     fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
         for _ in 0..120 {
             if cond() {
@@ -583,6 +588,7 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
+    #[cfg(unix)]
     fn sampling<T>(job_root: u32, f: impl Fn(&Sampling) -> T) -> T {
         let state = lock();
         let job = state

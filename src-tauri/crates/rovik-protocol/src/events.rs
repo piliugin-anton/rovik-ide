@@ -186,6 +186,15 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stage: Option<String>,
     },
+    /// The chat's Autopilot driver is at work on its task (`driving`), or
+    /// no longer is: starting a stage's run, between two stages, or in a
+    /// stage the IDE carries out itself (a delivery), when no run of the
+    /// chat's may be going. Meanwhile the task's running stage is running,
+    /// not cut short (a crash, a closed app).
+    TaskDriving {
+        dialog_id: String,
+        driving: bool,
+    },
     /// Stored, in this order, at the end of the chat.
     MessagesAdded {
         dialog_id: String,
@@ -317,6 +326,7 @@ impl AgentEvent {
             AgentEvent::ReasoningLearned { .. } | AgentEvent::ApiRouteLearned { .. } => None,
             AgentEvent::RunStarted { dialog_id, .. }
             | AgentEvent::RunEnded { dialog_id, .. }
+            | AgentEvent::TaskDriving { dialog_id, .. }
             | AgentEvent::MessagesAdded { dialog_id, .. }
             | AgentEvent::MessagePatched { dialog_id, .. }
             | AgentEvent::ApprovalSettled { dialog_id, .. }

@@ -1036,6 +1036,20 @@ fn is_same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// The OS error a Win32 call failed with: its HRESULT carries the Win32
+/// code (0x8007xxxx), which std maps to a kind (ERROR_ALREADY_EXISTS is
+/// AlreadyExists); the HRESULT itself would be an uncategorized error.
+#[cfg(windows)]
+fn win32_error(e: windows::core::Error) -> std::io::Error {
+    let hr = e.code().0 as u32;
+    let code = if hr & 0xFFFF_0000 == 0x8007_0000 {
+        hr & 0xFFFF
+    } else {
+        hr
+    };
+    std::io::Error::from_raw_os_error(code as i32)
+}
+
 /// Renames without ever silently replacing an existing destination.
 /// `std::fs::rename` maps to `rename(2)` / `MoveFileExW` *with* replace, so
 /// a plain check-then-rename has a TOCTOU hole: a file created between the
@@ -1102,7 +1116,7 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
                 MOVEFILE_WRITE_THROUGH,
             )
         }
-        .map_err(|e| std::io::Error::from_raw_os_error(e.code().0));
+        .map_err(win32_error);
     }
     #[cfg(target_os = "macos")]
     {
@@ -1249,6 +1263,23 @@ pub fn create_dir(
 /// can offer to delete permanently instead (lib/commands.ts).
 const TRASH_UNAVAILABLE: &str = "trash-unavailable: ";
 
+/// Moves `path` to the system's trash. On macOS through NSFileManager, as
+/// other editors do, not the trash crate's default of asking Finder, which
+/// may first ask leave to control Finder, plays its sound, and leaves a
+/// `.DS_Store` in each folder it touched: Git then lists those as new files.
+pub(crate) fn to_trash(path: &Path) -> Result<(), trash::Error> {
+    #[cfg(target_os = "macos")]
+    let ctx = {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut ctx = trash::TrashContext::default();
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+        ctx
+    };
+    #[cfg(not(target_os = "macos"))]
+    let ctx = trash::TrashContext::default();
+    ctx.delete(path)
+}
+
 /// Deletes a file or folder by moving it to the system trash (Windows'
 /// Recycle Bin, the macOS Trash, the freedesktop.org trash on Linux), so it
 /// can be restored from there. Where there's no trash (some network drives,
@@ -1270,7 +1301,7 @@ pub fn delete_path(
         };
         result.map_err(|e| format!("{}: {e}", p.display()))?;
     } else {
-        trash::delete(&p).map_err(|e| format!("{TRASH_UNAVAILABLE}{}: {e}", p.display()))?;
+        to_trash(&p).map_err(|e| format!("{TRASH_UNAVAILABLE}{}: {e}", p.display()))?;
     }
     state.id_to_path.lock().unwrap().remove(&id);
     Ok(())
@@ -1761,7 +1792,9 @@ mod watch_tests {
         let skipped = watch_recursive_lenient(&mut watcher, &dir).expect("watch succeeds");
         // Rooted at `locked` when we can't read it (non-root users); root
         // itself always stays watched, so the project keeps live updates.
-        if fs::read_dir(dir.join("locked")).is_err() {
+        // Only inotify (Linux) needs a watch per folder: FSEvents and
+        // Windows watch the whole tree in one, with nothing to skip.
+        if cfg!(target_os = "linux") && fs::read_dir(dir.join("locked")).is_err() {
             assert!(skipped.iter().any(|p| p.starts_with(dir.join("locked"))));
         }
         #[cfg(unix)]
@@ -1897,14 +1930,15 @@ mod rename_tests {
         let out = rename_case_only(&state, &id, &from, &to).unwrap();
         assert_eq!(Path::new(&out), to);
         assert_eq!(std::fs::read_to_string(&to).unwrap(), "data");
-        assert!(!from.exists());
         assert_eq!(resolve_id(&state, &id).unwrap(), to);
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        // The folder has the new spelling alone: no old one, no temp file.
+        // (Where case doesn't count, `from.exists()` is the new file's.)
+        let names: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".rename-"))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(leftovers.is_empty(), "no temp files left behind");
+        assert_eq!(names, ["mixed.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1948,10 +1982,9 @@ mod rename_tests {
         std::os::unix::fs::symlink(dir.join("nowhere"), &link).unwrap();
         #[cfg(not(unix))]
         std::fs::write(&link, "x").unwrap();
-        let state = watcher();
         // Symlinks must never be "moved" by copying their target's bytes.
         #[cfg(unix)]
-        assert!(move_cross_device(&state, "id", &link, &dir.join("out")).is_err());
+        assert!(move_cross_device(&watcher(), "id", &link, &dir.join("out")).is_err());
         assert!(fs::symlink_metadata(&link).is_ok(), "source kept");
         let _ = std::fs::remove_dir_all(&dir);
     }

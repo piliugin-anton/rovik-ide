@@ -378,6 +378,35 @@ fn links_are_written_as_links() {
     assert_eq!(target("m"), Path::new("a.txt"));
 }
 
+/// A link and the file it points at, changed together, land: they're one
+/// file's lock (the lock follows the link), taken once, as two spellings of
+/// a name are where case doesn't count (`a_rename_of_case_alone_lands`).
+#[cfg(unix)]
+#[test]
+fn a_link_and_its_file_changed_together_land() {
+    let mut f = fixture(&[("a.txt", "a\n")], false);
+    std::os::unix::fs::symlink("a.txt", f.project.join("l")).unwrap();
+    f.base = commit_all(&f.repo);
+    let result = f.result(&[("a.txt", Some("A\n"), TEXT), ("l", None, TEXT)]);
+    f.import(result).unwrap();
+
+    let (done, landed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let landed = land_by_itself(CHAT).map(|l| l.map(|l| l.paths.len()));
+        let _ = done.send(landed.map_err(|e| e.to_string()));
+    });
+    let landed = landed
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the landing waits for a lock it holds");
+
+    assert_eq!(landed, Ok(Some(2)));
+    assert_eq!(f.read("a.txt"), "A\n");
+    assert!(
+        fs::symlink_metadata(f.project.join("l")).is_err(),
+        "the link went"
+    );
+}
+
 /// R04: where names that differ only in case are one file, a path the
 /// result writes that would be one file with another stays on the server,
 /// listed: two it adds, and one beside the project's file of its name but

@@ -178,6 +178,9 @@ struct State {
     /// The remote runs the frontend was told of: a host that comes back
     /// without one ended it meanwhile.
     running: HashMap<String, String>,
+    /// The remote chats whose Autopilot driver the frontend was told is at
+    /// work (`TaskDriving`): one a host comes back without is done.
+    driving: HashSet<String>,
     /// Each mirrored chat's pulls (remote/mirror.rs).
     pulls: HashMap<String, mirror::Pulls>,
     /// The chats whose move there or back goes now, and those of them
@@ -784,6 +787,7 @@ impl Remote {
                         .approvals
                         .extend(theirs.approvals.into_iter().map(mark_remote));
                     status.questions.extend(theirs.questions);
+                    status.driving.extend(theirs.driving);
                 }
                 Err(fail) => log::warn!("{host}'s status: {fail}"),
             }
@@ -1011,6 +1015,13 @@ impl Remote {
                 self.lock().running.remove(dialog_id);
                 self.pull_later(host, dialog_id, Duration::ZERO);
             }
+            AgentEvent::TaskDriving { dialog_id, driving } => {
+                let mut state = self.lock();
+                match driving {
+                    true => state.driving.insert(dialog_id.clone()),
+                    false => state.driving.remove(dialog_id),
+                };
+            }
             _ => {}
         }
         self.core.emit(event);
@@ -1085,6 +1096,23 @@ impl Remote {
                 self.agent_event(host, started).await;
             }
         }
+        // Its drivers at work now are told of first, and those done since
+        // last: between the two, its tasks' stages never show as cut short.
+        let driving: HashSet<String> = std::mem::take(&mut status.driving).into_iter().collect();
+        for dialog_id in &driving {
+            let event = AgentEvent::TaskDriving {
+                dialog_id: dialog_id.clone(),
+                driving: true,
+            };
+            self.agent_event(host, event).await;
+        }
+        let done: Vec<String> = self
+            .lock()
+            .driving
+            .iter()
+            .filter(|chat| !driving.contains(*chat))
+            .cloned()
+            .collect();
         let runs = std::mem::take(&mut status.runs);
         let now: HashSet<&str> = runs.iter().map(|r| r.dialog_id.as_str()).collect();
         let ended: Vec<(String, String)> = self
@@ -1113,6 +1141,15 @@ impl Remote {
                 run_id: run.run_id,
             };
             self.agent_event(host, event).await;
+        }
+        for dialog_id in done {
+            if self.host_of(&dialog_id).as_deref() == Some(host) {
+                let event = AgentEvent::TaskDriving {
+                    dialog_id,
+                    driving: false,
+                };
+                self.agent_event(host, event).await;
+            }
         }
         self.waiting(host, status, None).await;
     }

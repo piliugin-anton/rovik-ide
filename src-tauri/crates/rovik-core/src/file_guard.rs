@@ -112,7 +112,21 @@ impl Drop for PathLock {
 
 /// Waits until no one else holds `path`'s lock, then takes it.
 pub fn lock(path: &Path) -> PathLock {
-    let key = key(path);
+    lock_key(key(path))
+}
+
+/// [`lock`] for each file of `paths`, once, in the order of their keys, so
+/// that two callers never wait for each other: two paths of one file (a
+/// link and its target; names that differ only in case on macOS and
+/// Windows) are one lock, which a second `lock` would wait for forever.
+pub fn lock_all<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Vec<PathLock> {
+    let mut keys: Vec<PathBuf> = paths.into_iter().map(key).collect();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter().map(lock_key).collect()
+}
+
+fn lock_key(key: PathBuf) -> PathLock {
     let mut held = LOCKS.held.lock().unwrap_or_else(|e| e.into_inner());
     while held.contains(&key) {
         held = LOCKS.freed.wait(held).unwrap_or_else(|e| e.into_inner());
@@ -364,6 +378,32 @@ mod tests {
         let c = key(&dir.join("sub").join("..").join("sub").join("f.txt"));
         assert_eq!(a, b);
         assert_eq!(a, c);
+    }
+
+    /// Each file's lock once, whatever paths name it: a second lock of a
+    /// file this thread holds would wait for itself.
+    #[test]
+    fn lock_all_takes_each_files_lock_once() {
+        let dir = temp_dir();
+        let file = dir.join("f.txt");
+        fs::write(&file, "f").unwrap();
+        let mut paths = vec![file.clone(), dir.join(".").join("f.txt"), dir.join("g.txt")];
+        #[cfg(unix)]
+        {
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            paths.push(link);
+        }
+        if cfg!(any(target_os = "macos", windows)) {
+            paths.push(dir.join("F.TXT"));
+        }
+        let (done, taken) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let locks = lock_all(paths.iter().map(PathBuf::as_path));
+            let _ = done.send(locks.len());
+        });
+        let taken = taken.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(taken, Ok(2), "f.txt's lock and g.txt's");
     }
 
     #[test]

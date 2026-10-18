@@ -47,6 +47,12 @@ interface ChatState {
   error: string | null;
   /** Chats with an agent run going on: never evicted, never switched away from. */
   running: Record<string, true>;
+  /**
+   * Chats whose Autopilot driver is at work on their task (`taskDriving`):
+   * between two of its stages, or in one the IDE carries out itself, no run
+   * goes, but the task does. They count as running.
+   */
+  driving: Record<string, true>;
   /** Chats whose run is being started (until the backend answers). */
   starting: Record<string, number>;
   /** Chats with agent messages the user hasn't seen yet (dot indicator). */
@@ -107,6 +113,7 @@ export function createChatStore() {
     active: null,
     error: null,
     running: {},
+    driving: {},
     starting: {},
     unread: loadPersistedUnread(),
     chatVisible: false,
@@ -364,14 +371,20 @@ export function createChatStore() {
     return newer.length;
   }
 
+  /** The chat's flag in `running` or `driving`, set or cleared. */
+  const flag = (dialogId: string, on: boolean) =>
+    produce((flags: Record<string, true>) => {
+      if (on) flags[dialogId] = true;
+      else delete flags[dialogId];
+    });
+
   function setRunning(dialogId: string, running: boolean) {
-    setState(
-      'running',
-      produce((r) => {
-        if (running) r[dialogId] = true;
-        else delete r[dialogId];
-      })
-    );
+    setState('running', flag(dialogId, running));
+  }
+
+  /** The chat's Autopilot driver is at work on its task, or no longer is. */
+  function setDriving(dialogId: string, driving: boolean) {
+    setState('driving', flag(dialogId, driving));
   }
 
   /** A run is being started in the chat (counted: starts can overlap). */
@@ -386,8 +399,12 @@ export function createChatStore() {
     );
   }
 
-  /** A run is going on in the chat, or being started. */
-  const isRunning = (dialogId: string) => !!state.running[dialogId] || !!state.starting[dialogId];
+  /**
+   * A run is going on in the chat, or being started, or its Autopilot
+   * task's driver is at work between two runs.
+   */
+  const isRunning = (dialogId: string) =>
+    !!state.running[dialogId] || !!state.starting[dialogId] || !!state.driving[dialogId];
 
   /*
    * -------------------------------------------------------------------------
@@ -429,7 +446,9 @@ export function createChatStore() {
 
   /** Any chat with an agent run going on (drives the tab spinner). */
   const hasAnyRunning = () =>
-    Object.keys(state.running).length > 0 || Object.keys(state.starting).length > 0;
+    Object.keys(state.running).length > 0 ||
+    Object.keys(state.starting).length > 0 ||
+    Object.keys(state.driving).length > 0;
 
   /*
    * -------------------------------------------------------------------------
@@ -612,6 +631,7 @@ export function createChatStore() {
     loadOlder,
     loadNewer,
     setRunning,
+    setDriving,
     setStarting,
     isRunning,
     createDialog,

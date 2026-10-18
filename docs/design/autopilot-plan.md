@@ -773,6 +773,17 @@ T05 depends most on the environment it meets.
   opening the chat resumes it (the daemon resumes its own at its start).
   Only the current task's latest record is at work while a run goes: one
   a new request took over from stays "didn't finish".
+- **Between two runs the task's driver is at work** (`TaskDriving`): it
+  writes the next stage's record before that stage's run starts, takes
+  over from a run before the run's end is told, and carries out a
+  delivery with no run at all. It says when its work starts and when its
+  last turn of it ends, and the app counts the chat as running meanwhile
+  (`AgentStatus.driving` after a reload, a host's after a reconnect): the
+  strip and the records show the stage running, the chat list spins, Stop
+  shows, and opening the chat doesn't resume the task. Without it each
+  step from one stage to the next showed "didn't finish" for a moment,
+  and a delivery for as long as it took. A Stop meanwhile stops the stage
+  the driver starts, once its turn is over.
 - **In the chat** each record is one line where its stage began: the
   stage, its round when it ran more than once, its status, and its
   summary. A click on the strip scrolls to it, loading the page around
@@ -782,7 +793,10 @@ T05 depends most on the environment it meets.
   styles, at a side panel's width): the app itself and a same-machine
   daemon couldn't be run in the sandbox this was built in. The daemon's
   test (`rovik-agentd/tests/autopilot.rs`) checks the rows a remote
-  chat's mirror gets.
+  chat's mirror gets. The app's end-to-end run (`scripts/e2e/run.mjs`, on
+  Linux under Xvfb) since sends a task to the evaluation's scripted model
+  (`scripts/eval/fake-model.mjs autopilot`) and follows it to its
+  delivery: it fails if a stage shows as cut short at any moment.
 
 ### A06: the effort setting
 
@@ -1923,14 +1937,30 @@ T05 depends most on the environment it meets.
 
 ### G01: checks on every pull request
 
-- **Two jobs** (`.github/workflows/ci.yml`, on pull requests and by
-  hand): the Rust workspace's tests, then the evaluation's dry run, in
-  one; the frontend's tests, the eval harness's own (`npm run test:eval`,
-  beside the row's list), the type check and the formatting in the
-  other. The Rust job installs WebKitGTK for the app's crate and fuse3 so
-  the overlay tests get a mount, gives git a name for the tests that
-  commit, and checks out the whole history, which the evaluation's tasks
-  on this repository start from.
+- **The jobs** (`.github/workflows/ci.yml`, on pull requests, by hand,
+  and from the release workflow before it builds a merge): the Rust
+  workspace's tests on each system the app ships for, a job each ("Rust
+  tests (Linux)", "(macOS)", "(Windows)"), then on Linux the evaluation's
+  dry run; the frontend's tests, the eval harness's own
+  (`npm run test:eval`, beside the row's list), the type check and the
+  formatting in another, on Linux (they run in Node, alike on each
+  system). The Linux job installs WebKitGTK for the app's crate and fuse3
+  so the overlay tests get a mount; each gives git a name for the tests
+  that commit and checks out the whole history, which the evaluation's
+  tasks on this repository start from. Windows builds everything but the
+  daemon, which runs on Linux servers only, and keeps the line ends as
+  committed. Every test binary runs (`--no-fail-fast`), so one run shows
+  each one that fails.
+- **What the other systems found**, on their first run: on Windows, two
+  subagent tests set a script's mode bits through Unix's API (`runnable`
+  does it on Unix only), and imports only Unix-only tests use; on macOS,
+  mktemp makes its files in the user's own temporary folder before
+  TMPDIR's, so the daemon's test checks TMPDIR itself and, there, that
+  the file is out of the shared /tmp; on Ubuntu 24.04, AppArmor forbids
+  the user namespaces that confine an isolated chat's commands, so a
+  command naming the project's own path is refused there, as it's meant
+  to be where commands can't be confined, and the isolated chat's test
+  checks whichever applies.
 - **The dry run had been failing** since chat requests try the Responses
   API first: the eval's fake model answered `/responses` with a chat
   completions stream, which reads as an empty reply. It answers 404

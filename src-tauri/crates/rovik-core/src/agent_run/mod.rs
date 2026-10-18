@@ -239,6 +239,9 @@ struct Inner {
     candidates: HashMap<String, Candidacy>,
     /// T05: where a server's candidates implement (its sibling worktrees).
     copies: Option<Arc<dyn candidates::Copies>>,
+    /// The chats whose Autopilot driver is at work, by how many of its
+    /// turns are (autopilot::AtWork).
+    driving: HashMap<String, usize>,
 }
 
 /// T05: what a candidate's chat implements for.
@@ -672,6 +675,29 @@ impl AgentState {
             .values()
             .filter(|r| r.parent.as_deref() == Some(dialog_id))
             .count()
+    }
+
+    /// One more of the chat's Autopilot driver's turns at work (`more`),
+    /// or one fewer: whether the chat's driving starts (true) or ends
+    /// (false) with it; None while it goes on as it was.
+    pub(super) fn turn_driving(&self, dialog_id: &str, more: bool) -> Option<bool> {
+        let mut inner = self.lock();
+        let turns = inner.driving.entry(dialog_id.to_string()).or_default();
+        let was = *turns > 0;
+        *turns = match more {
+            true => *turns + 1,
+            false => turns.saturating_sub(1),
+        };
+        let is = *turns > 0;
+        if !is {
+            inner.driving.remove(dialog_id);
+        }
+        (was != is).then_some(is)
+    }
+
+    /// Whether the chat's Autopilot driver is at work (`turn_driving`).
+    pub fn is_driving(&self, dialog_id: &str) -> bool {
+        self.lock().driving.contains_key(dialog_id)
     }
 
     /// Whether the chat has a run going (a lead's subagents count as its own).
@@ -1156,6 +1182,15 @@ pub(super) async fn start_run(
     }
     let dialog_id = request.dialog_id.clone();
     check_project(db, &dialog_id, request.root.as_deref()).await?;
+    // A message that starts an Autopilot task: its plan's record is written
+    // before its run's start is told (`Run::prepare`), the driver at work
+    // meanwhile.
+    let _at_work = match &request.start {
+        StartKind::Send { message } if autopilot::starts_task(message) => {
+            Some(autopilot::AtWork::start(core, &dialog_id))
+        }
+        _ => None,
+    };
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
         check_attachments(db, message).await?;
@@ -1262,9 +1297,13 @@ pub(super) async fn start_run(
         };
         // An Autopilot stage's run: the driver's turn is taken before its
         // end is told, and the task goes on from here, its landing decided
-        // (D2, A03).
+        // (D2, A03); at work from before the end too, so its stage never
+        // shows as cut short between the two.
         let driving = match &stage {
-            Some(_) => Some(autopilot::drive_lock(&dialog_id).await),
+            Some(_) => Some((
+                autopilot::drive_lock(&dialog_id).await,
+                autopilot::AtWork::start(&core, &dialog_id),
+            )),
             None => None,
         };
         // What it spent, for its task's budget (U04), and whether it was an
@@ -1389,7 +1428,23 @@ pub async fn waits_for_results(core: &Core, dialog_id: &str) -> Result<bool, Str
 /// stage of its Autopilot task that waits out the provider's rate limit
 /// ends stopped (H07). Whether there was either.
 pub async fn agent_stop(core: &Core, dialog_id: String) -> bool {
-    core.agents.stop(core, &dialog_id) || autopilot::stop_waiting(core, &dialog_id).await
+    if stop_now(core, &dialog_id).await {
+        return true;
+    }
+    // The chat's Autopilot driver at work between two of its task's stages,
+    // when nothing runs: the stage it starts is stopped once its turn is
+    // over. A task it delivers meanwhile has nothing left to stop.
+    if !core.agents.is_driving(&dialog_id) {
+        return false;
+    }
+    drop(autopilot::drive_lock(&dialog_id).await);
+    stop_now(core, &dialog_id).await
+}
+
+/// Stops the chat's run, or its task's stage that waits out the provider's
+/// rate limit: whether either was there to stop.
+async fn stop_now(core: &Core, dialog_id: &str) -> bool {
+    core.agents.stop(core, dialog_id) || autopilot::stop_waiting(core, dialog_id).await
 }
 
 pub fn agent_resolve_approval(
@@ -1459,6 +1514,13 @@ pub fn agent_status(core: &Core) -> AgentStatus {
             .questions
             .values()
             .map(|w| w.request.clone())
+            .collect(),
+        // As with the runs: a candidate's chat isn't one in the list.
+        driving: inner
+            .driving
+            .keys()
+            .filter(|dialog_id| !inner.candidates.contains_key(*dialog_id))
+            .cloned()
             .collect(),
     }
 }

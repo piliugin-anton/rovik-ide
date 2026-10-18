@@ -1239,7 +1239,7 @@ pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
             }
             let abs = workdir.join(rel);
             if abs.is_file() {
-                trash::delete(&abs)
+                crate::filesystem::to_trash(&abs)
                     .map_err(|e| format!("{rel}: couldn't move it to the trash: {e}"))?;
             }
         }
@@ -2205,7 +2205,7 @@ fn revert_in(
             index.write().map_err(|e| e.to_string())?;
         }
         if abs.exists() {
-            trash::delete(&abs)
+            crate::filesystem::to_trash(&abs)
                 .map_err(|e| format!("{file}: couldn't move it to the trash: {e}"))?;
         }
         return Ok(RevertOutcome {
@@ -2219,7 +2219,7 @@ fn revert_in(
     if abs.is_file() {
         let copy = backup_name(&abs);
         std::fs::copy(&abs, &copy).map_err(|e| format!("{file}: couldn't keep a copy: {e}"))?;
-        match trash::delete(&copy) {
+        match crate::filesystem::to_trash(&copy) {
             Ok(()) => backed_up = true,
             Err(e) => {
                 let _ = std::fs::remove_file(&copy);
@@ -2509,7 +2509,14 @@ mod revert_tests {
         let (dir, _repo) = repo_with_commit();
         fs::write(dir.join("b.txt"), "changed\n").unwrap();
         let st = git_status_blocking(path(&dir.join("src"))).unwrap();
-        assert_eq!(st.workdir, path(&dir).trim_end_matches(['/', '\\']));
+        // The repository's folder, however it's spelled there (macOS's /var
+        // is /private/var; Windows' temporary folder has a short 8.3 name).
+        let canonical = |p: &std::path::Path| fs::canonicalize(p).unwrap();
+        assert_eq!(
+            canonical(std::path::Path::new(&st.workdir)),
+            canonical(&dir)
+        );
+        assert!(!st.workdir.ends_with(['/', '\\']), "{}", st.workdir);
         let b = st.files.iter().find(|f| f.path == "b.txt").unwrap();
         assert!(b.unstaged && !b.staged);
     }

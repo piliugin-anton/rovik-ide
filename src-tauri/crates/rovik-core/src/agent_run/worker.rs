@@ -754,8 +754,9 @@ pub fn writer_command_problem(
         let ok = if is_check_tool(seg) {
             true
         } else if test_writer {
-            // Names, not contents: what list_dir shows too.
-            matches!(program_name(head).as_str(), "ls" | "pwd" | "which") && super::permissions::segment_is_read_only(seg)
+            // Names, not contents: what list_dir shows too (Windows' `dir`
+            // and `where` as well).
+            matches!(program_name(head).as_str(), "ls" | "dir" | "pwd" | "which" | "where") && super::permissions::segment_is_read_only(seg)
                 ||
             // `cargo test 2>&1 | tail -50`, not `cat src/lib.rs`.
             !first && FILTERS.contains(&program_name(head).as_str()) && program_name(head) != "tee" && !names_file(seg) && !expands
@@ -1077,9 +1078,10 @@ mod tests {
             plan_head(PLAN),
             ("Add users".into(), "Serve users from the API.".into())
         );
+        let named = Path::new("/p").join(".rovik/plans/a.md");
         assert_eq!(
             plan_file_named("Implement the plan in `.rovik/plans/a.md`.", Some("/p")).as_deref(),
-            Some("/p/.rovik/plans/a.md")
+            Some(named.to_string_lossy().as_ref())
         );
         assert_eq!(
             plan_file_named("Implement the plan above.", Some("/p")),
@@ -1312,6 +1314,7 @@ mod tests {
             "npm test 2>&1 | tail -40",
             "npx vitest run src/a.test.ts | grep FAIL",
             "ls src",
+            "dir /b src",
         ] {
             assert_eq!(tw(ok), None, "{ok}");
         }

@@ -367,7 +367,8 @@ async fn stages(h: &Harness) -> Vec<StageRecord> {
         .collect()
 }
 
-/// The stage records once `done` says they're as awaited.
+/// The stage records once `done` says they're as awaited; once the task is
+/// over (`delivered`), its chat quiet too (`quiet`).
 async fn stages_until(
     h: &Harness,
     what: &str,
@@ -376,11 +377,28 @@ async fn stages_until(
     for _ in 0..1200 {
         let records = stages(h).await;
         if done(&records) {
+            if delivered(&records) {
+                quiet(h).await;
+            }
             return records;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("{what}: {:#?}", stages(h).await);
+}
+
+/// Waits until nothing goes on in the chat: no run, its driver not at
+/// work. A delivery's record ends inside its run, before that run's own end
+/// (its line in the log, `runEnded`), and the driver's turn ends after it.
+async fn quiet(h: &Harness) {
+    let agents = &h.core.agents;
+    for _ in 0..1200 {
+        if !agents.is_running(&h.dialog_id) && !agents.is_driving(&h.dialog_id) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the chat never went quiet: {:#?}", stages(h).await);
 }
 
 /// Over: delivered (or ended), nothing running.
@@ -416,6 +434,86 @@ fn implement_messages(messages: &[MessageRow]) -> Vec<&MessageRow> {
             m.role == "user" && m.meta.as_ref().is_some_and(|x| x["harness"] == "autopilot")
         })
         .collect()
+}
+
+/// What the frontend follows of a task, from its message to its delivery:
+/// whenever a stage's record is running, a run of the chat goes or its
+/// driver is at work (`taskDriving`), so no stage shows as cut short. The
+/// next stage's record is written before its run starts, the delivery is
+/// the IDE's own, and a run's end is told before the driver goes on. Once
+/// the task is over, nothing is at work.
+#[tokio::test]
+async fn a_running_stage_always_has_its_run_or_its_driver_at_work() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        task_script(),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    stages_until(&h, "the delivery", delivered).await;
+    let chat = json!(h.dialog_id);
+    let last_driving = || {
+        let events = h.events.lock().unwrap();
+        events
+            .iter()
+            .rev()
+            .find(|e| e["type"] == "taskDriving" && e["dialogId"] == chat)
+            .map(|e| e["driving"] == true)
+    };
+    for _ in 0..200 {
+        if last_driving() == Some(false) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        last_driving(),
+        Some(false),
+        "the driver's work is told, and its end"
+    );
+
+    let events = h.events.lock().unwrap().clone();
+    let (mut running, mut driving) = (false, false);
+    // Each stage record's status, by its row, as the events tell it.
+    let mut records = std::collections::HashMap::new();
+    let stage_of =
+        |records: &mut std::collections::HashMap<String, String>, id: &Value, meta: &Value| {
+            if let Some(status) = meta["stage"]["status"].as_str() {
+                records.insert(id.as_str().unwrap().to_string(), status.to_string());
+            }
+        };
+    for (i, e) in events.iter().enumerate() {
+        if e["dialogId"] != chat {
+            continue;
+        }
+        match e["type"].as_str().unwrap() {
+            "runStarted" => running = true,
+            "runEnded" => running = false,
+            "taskDriving" => driving = e["driving"] == true,
+            "messagesAdded" => {
+                for m in e["messages"].as_array().unwrap() {
+                    stage_of(&mut records, &m["id"], &m["meta"]);
+                }
+            }
+            "messagePatched" => stage_of(&mut records, &e["messageId"], &e["patch"]["meta"]),
+            _ => {}
+        }
+        let open = records.values().any(|status| status == "running");
+        assert!(
+            !open || running || driving,
+            "after event {i}, {e}: a stage runs, nothing at work"
+        );
+    }
+    assert!(
+        records.values().all(|status| status != "running"),
+        "{records:#?}"
+    );
+    assert!(!running && !driving, "over: nothing at work");
 }
 
 /// A03: one message runs the task to its delivery: the plan run (its
@@ -6161,6 +6259,7 @@ async fn delivered_slowly(h: &Harness) -> Vec<StageRecord> {
     for _ in 0..3000 {
         let records = stages(h).await;
         if delivered(&records) {
+            quiet(h).await;
             return records;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;

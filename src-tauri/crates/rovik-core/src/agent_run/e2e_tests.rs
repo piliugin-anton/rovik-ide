@@ -163,6 +163,23 @@ impl Harness {
     }
 }
 
+/// A command that lists `dir` ("" for the working folder), a name a line,
+/// in the system's shell: `ls`, or cmd's `dir /b` on Windows.
+fn list(dir: &str) -> String {
+    let list = if cfg!(windows) { "dir /b" } else { "ls" };
+    format!("{list} {dir}").trim_end().to_string()
+}
+
+/// A path in the project as the app writes it to the model here: with the
+/// system's separators (`plan::relative_plan_path`).
+fn shown(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('/', "\\")
+    } else {
+        path.to_string()
+    }
+}
+
 fn quiet_permissions() -> Permissions {
     Permissions {
         verify_changes: false,
@@ -729,7 +746,8 @@ async fn an_isolated_chat_changes_only_its_overlay() {
         Reply::Call { id: "w1", name: "write", args: json!({ "path": "src/a.txt", "old_text": "one", "content": "ONE" }) },
         Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sed -i 's/hi/hello/' README.md && cat README.md && echo new > new.txt" }) },
         Reply::Call { id: "b2", name: "bash", args: json!({ "command": "git commit -am x" }) },
-        // The project's own path: the chat's view, not the project.
+        // The project's own path: the chat's view to a confined command,
+        // refused to one that isn't.
         Reply::Call { id: "b3", name: "bash", args: json!({ "command": format!("echo leak > {}/leak.txt && ls {}", h.project.display(), h.project.display()) }) },
         Reply::Text("Done."),
     ])
@@ -746,6 +764,13 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     h.start(request).await;
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
+    // Commands are confined where bwrap or the app may make a namespace
+    // (Ubuntu 24.04's AppArmor forbids the app's own, and bwrap may not be
+    // installed): found out once, by the run's first command, and kept.
+    let confined = crate::overlay::confine::available(&crate::overlay::confine::Confine {
+        view: h.project.clone(),
+        project: h.project.clone(),
+    });
     assert!(
         result_of(&messages, "b1").content.contains("hello"),
         "{}",
@@ -755,10 +780,17 @@ async fn an_isolated_chat_changes_only_its_overlay() {
         .content
         .starts_with("Error: `git commit` changes the repository"));
     let b3 = &result_of(&messages, "b3").content;
-    assert!(
-        b3.contains("new.txt"),
-        "the listing is the chat's view: {b3}"
-    );
+    if confined {
+        assert!(
+            b3.contains("new.txt"),
+            "the listing is the chat's view: {b3}"
+        );
+    } else {
+        assert!(
+            b3.starts_with("Error: this chat works in its own view of the project"),
+            "{b3}"
+        );
+    }
     // The run finished cleanly: its changes landed, and the overlay is gone.
     assert_eq!(h.file("src/a.txt").as_deref(), Some("ONE\ntwo\n"));
     assert_eq!(h.file("README.md").as_deref(), Some("hello\n"));
@@ -770,9 +802,14 @@ async fn an_isolated_chat_changes_only_its_overlay() {
         h.events_of("notice")
     );
     let last = crate::overlay::chats::last_landing(&h.dialog_id).unwrap();
-    // leak.txt came through the chat's view, so it landed with the rest.
-    assert_eq!(last.paths.len(), 4, "{:?}", last.paths);
-    assert_eq!(h.file("leak.txt").as_deref(), Some("leak\n"));
+    if confined {
+        // leak.txt came through the chat's view, so it landed with the rest.
+        assert_eq!(last.paths.len(), 4, "{:?}", last.paths);
+        assert_eq!(h.file("leak.txt").as_deref(), Some("leak\n"));
+    } else {
+        assert_eq!(last.paths.len(), 3, "{:?}", last.paths);
+        assert_eq!(h.file("leak.txt"), None);
+    }
 }
 
 /// Changes that conflict with the project's own wait for the user.
@@ -1143,7 +1180,7 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
         Reply::Call {
             id: "r1",
             name: "bash",
-            args: json!({ "command": "ls" }),
+            args: json!({ "command": list("") }),
         },
         Reply::Call {
             id: "r2",
@@ -1153,8 +1190,11 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
         Reply::Text("All done."),
     ])
     .await;
+    // Allowed, so that it waits for its approval (Windows' `dir` isn't
+    // among the default commands).
     let permissions = Permissions {
         tool_call_checkpoint: Some(2),
+        allowed_commands: vec![list("")],
         ..ask_approval("commands")
     };
     h.start(h.request(&url, Harness::send("Run it"), permissions.clone()))
@@ -1255,10 +1295,15 @@ async fn a_drain_pauses_every_run_for_the_next_binary_to_continue() {
     // Each command goes on until the test lets it end, once the drain was
     // asked of both runs. Each chat works in a folder of its own: in the
     // same one, only one chat at a time runs commands that write.
+    let wait_for_go = if cfg!(windows) {
+        r#"echo ran> started && %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "while (!(Test-Path go)) { Start-Sleep -Milliseconds 50 }""#
+    } else {
+        "echo ran > started; while [ ! -e go ]; do sleep 0.05; done"
+    };
     let (url, seen) = model(vec![Reply::Call {
         id: "r1",
         name: "bash",
-        args: json!({ "command": "echo ran > started; while [ ! -e go ]; do sleep 0.05; done" }),
+        args: json!({ "command": wait_for_go }),
     }])
     .await;
     let unattended = || Permissions {
@@ -5437,7 +5482,7 @@ async fn every_finished_tool_call_leaves_a_tool_line() {
         Reply::Call {
             id: "b1",
             name: "bash",
-            args: json!({ "command": "sh -c 'exit 3'" }),
+            args: json!({ "command": "exit 3" }),
         },
         Reply::Call {
             id: "b2",

@@ -267,7 +267,9 @@ fn is_typing_entry(name: &OsStr, is_dir: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typings::test_support::{relative, relative_paths, temp_project};
+    #[cfg(unix)]
+    use crate::typings::test_support::relative;
+    use crate::typings::test_support::{relative_paths, temp_project};
 
     fn closure_from(dir: &Path, from: &str, specifiers: &[&str]) -> LoadedTypings {
         let mut closure = Closure::new(std::iter::empty());

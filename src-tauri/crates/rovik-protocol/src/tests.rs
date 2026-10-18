@@ -642,6 +642,7 @@ fn every_response_round_trips() {
         ],
         approvals: vec![approval()],
         questions: vec![questions()],
+        driving: vec!["d".into()],
     };
     covers(
         "t",
@@ -867,6 +868,10 @@ fn every_event_round_trips() {
             Event::Agent(AgentEvent::RunStarted {
                 dialog_id: "d".into(),
                 run_id: "r".into(),
+            }),
+            Event::Agent(AgentEvent::TaskDriving {
+                dialog_id: "d".into(),
+                driving: true,
             }),
             Event::ResultReady(result(None)),
             Event::ChatChanged {

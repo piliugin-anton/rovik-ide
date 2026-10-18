@@ -4833,6 +4833,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "uuid",
+ "winfsp",
  "zeroize",
 ]
 

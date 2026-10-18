@@ -2279,11 +2279,20 @@ mod tests {
             meta: Some(meta),
             attachments: Vec::new(),
         };
-        let expected = implementation_request("# P\n\nThe plan.\n", Some(".rovik/plans/p.md"));
-        for path in [
-            file.to_string_lossy().into_owned(),
-            ".rovik/plans/p.md".into(),
+        // A relative path is joined to the root with the system's
+        // separators; an absolute one's rest is as it's written.
+        let joined = Path::new(".rovik").join("plans").join("p.md");
+        for (path, shown) in [
+            (
+                file.to_string_lossy().into_owned(),
+                ".rovik/plans/p.md".into(),
+            ),
+            (
+                ".rovik/plans/p.md".into(),
+                joined.to_string_lossy().into_owned(),
+            ),
         ] {
+            let expected = implementation_request("# P\n\nThe plan.\n", Some(&shown));
             let mut m =
                 message(json!({ "mode": "agent", "implementsPlan": true, "planPath": path }));
             expand_implementation(&mut m, Some(&root)).unwrap();

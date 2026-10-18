@@ -586,9 +586,11 @@ it came, with these exceptions:
   daemon already filters by computer; this is a second guard.
 
 When a host connects, the client sends events that bring the frontend up
-to date: `runStarted`, `approvalRequested` and `questionsAsked` for the
-host's current state, and `runEnded` for runs that ended while it was
-away.
+to date: `taskDriving`, `runStarted`, `approvalRequested` and
+`questionsAsked` for the host's current state, and `runEnded` for runs
+that ended while it was away, then `taskDriving` for Autopilot drivers
+that finished meanwhile (the order keeps a task's stage from showing as
+cut short in between).
 
 ### 6.2 A remote start, on the daemon
 
@@ -2918,15 +2920,21 @@ Tasks add notes here when reality differs from the plan.
     refuses a version a Windows installer wouldn't take: numbers only,
     `1.2.3`, or `1.2.3-4` for a pre-release.
   - B02's workflow is `.github/workflows/release.yml`, not `agentd.yml` on
-    `v*` tags: it's started by hand with the version (Actions, Release,
-    Run workflow), sets it, commits it and tags it `v<version>` itself, so
-    a tag can't name another version than its sources. Then it drafts the
+    `v*` tags: it chooses the version and commits it itself, so a tag
+    can't name another version than its sources. Then it drafts the
     release, builds the app on each platform into that draft with
     `tauri-action`, and the daemon for both CPUs with
     `scripts/build-agentd.sh`, signs each build and `SHA256SUMS` with
     `tauri signer sign` (`.sig`, not `.minisig`, as the key is tauri's),
     gzips the builds, attaches them and publishes the release, a
     pre-release for `1.2.3-4`.
+  - It runs on every merge to master, after CI's checks (on Linux, macOS
+    and Windows, `workflow_call`): the sources' version while no release
+    has it, else its last number plus one, committed as
+    `Release <version> [skip ci]`; by hand (Run workflow), a version typed
+    in, or the next one when left empty. The draft's tag is made when it's
+    published, on the commit it was built from, so a run that fails leaves
+    no tag, and the next run replaces its draft and publishes that version.
   - The key is the developer's to make, once (README, Releases). The
     updater's own files, `latest.json` and the bundles' signatures, come
     once `bundle.createUpdaterArtifacts` is on, with the updater plugin.

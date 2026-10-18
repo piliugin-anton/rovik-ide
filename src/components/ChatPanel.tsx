@@ -224,11 +224,15 @@ export default function ChatPanel(props: ChatProps) {
   const [historyQuery, setHistoryQuery] = createSignal('');
   /** Lags historyQuery slightly so fast typing doesn't search on every key. */
   const [searchQuery, setSearchQuery] = createSignal('');
-  /** The open chat's agent run is going on (it runs in the backend). */
+  /**
+   * The open chat's agent run is going on (it runs in the backend), or its
+   * Autopilot task's driver is at work between two of its runs.
+   */
   const sending = () => isRunning(activeDialogId());
-  /** Chats with a run going on or being started (spinner in the chat list). */
+  /** Chats with a run going on, being started, or their task's driver at work (spinner in the chat list). */
   const runningListIds = createMemo(() => ({
     ...store.state.running,
+    ...store.state.driving,
     ...Object.fromEntries(Object.keys(store.state.starting).map((id) => [id, true as const])),
   }));
   /** A background chat (not the open one) finished with unseen messages. */

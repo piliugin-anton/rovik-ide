@@ -333,7 +333,8 @@ async fn a_group_readable_folder_stops_the_daemon_with_a_message() {
 }
 
 /// H07 (K13): the agent's commands keep their temporary files in the
-/// daemon's own folder, out of the server's shared /tmp.
+/// daemon's own folder, out of the server's shared /tmp: TMPDIR is that
+/// folder.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_commands_temporary_files_stay_out_of_tmp() {
     let daemon = Daemon::start(&["--same-machine"]).await;
@@ -343,7 +344,7 @@ async fn a_commands_temporary_files_stay_out_of_tmp() {
         Reply::Call {
             id: "c1",
             name: "bash",
-            args: json!({ "command": "mktemp > made.txt" }),
+            args: json!({ "command": "printf %s \"$TMPDIR\" > tmpdir.txt && mktemp > made.txt" }),
         },
         Reply::Text("Done."),
     ])
@@ -367,11 +368,27 @@ async fn a_commands_temporary_files_stay_out_of_tmp() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let path = std::path::PathBuf::from(path.trim());
-    assert!(
-        path.starts_with(daemon.data.join("tmp")),
-        "{path:?}\n{}",
+    let tmpdir = std::fs::read_to_string(project.join("tmpdir.txt")).unwrap();
+    assert_eq!(
+        std::path::Path::new(&tmpdir),
+        daemon.data.join("tmp"),
+        "{}",
         daemon.output()
     );
+    // macOS's mktemp makes its files in the user's own temporary folder
+    // (_CS_DARWIN_USER_TEMP_DIR) before TMPDIR's: never a shared one either.
+    if cfg!(target_os = "macos") {
+        assert!(
+            !path.starts_with("/tmp") && !path.starts_with("/private/tmp"),
+            "{path:?}"
+        );
+    } else {
+        assert!(
+            path.starts_with(daemon.data.join("tmp")),
+            "{path:?}\n{}",
+            daemon.output()
+        );
+    }
 }
 
 /// U01: the Host group's keys and storage. A key that came with this
