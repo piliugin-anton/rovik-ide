@@ -281,14 +281,17 @@ impl Presence {
         }
     }
 
-    /// The last to leave says it left cleanly.
+    /// The last to leave says it left cleanly. Let go of at once: a
+    /// process starting meanwhile doesn't wait for this one to end, and
+    /// Windows lets no one else read a file while it's locked.
     fn leave(&mut self) {
-        let Some(file) = self.file.as_mut() else {
+        let Some(mut file) = self.file.take() else {
             return;
         };
         let _ = file.unlock();
         if file.try_lock().is_ok() {
-            write_marker(file, CLEAN);
+            write_marker(&mut file, CLEAN);
+            let _ = file.unlock();
         }
     }
 }

@@ -1270,9 +1270,11 @@ fn the_marker_knows_when_others_still_have_the_database_open() {
     a.leave();
     drop(a);
     assert_eq!(read(), "running");
+    // Read while B is still about: let go of at its leaving (Windows
+    // lets no one read a locked file).
     b.leave();
-    drop(b);
     assert_eq!(read(), "clean");
+    drop(b);
 
     let mut c = super::Presence::start(&marker);
     assert!(c.alone && !c.unclean);
