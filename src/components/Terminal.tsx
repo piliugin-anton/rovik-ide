@@ -233,6 +233,11 @@ export default function Terminal(props: TerminalProps) {
         return false;
       }
       if (isPasteKey(e)) {
+        // Linux's and Windows' webviews paste on Ctrl+Shift+V too, once the
+        // key is handled (WebKitGTK's "paste as plain text", Chromium's
+        // "paste and match style"), and xterm would take that paste as
+        // well: the text went in twice.
+        e.preventDefault();
         void pasteFromClipboard();
         return false;
       }
