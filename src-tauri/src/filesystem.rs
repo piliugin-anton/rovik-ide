@@ -1948,10 +1948,9 @@ mod rename_tests {
         std::os::unix::fs::symlink(dir.join("nowhere"), &link).unwrap();
         #[cfg(not(unix))]
         std::fs::write(&link, "x").unwrap();
-        let state = watcher();
         // Symlinks must never be "moved" by copying their target's bytes.
         #[cfg(unix)]
-        assert!(move_cross_device(&state, "id", &link, &dir.join("out")).is_err());
+        assert!(move_cross_device(&watcher(), "id", &link, &dir.join("out")).is_err());
         assert!(fs::symlink_metadata(&link).is_ok(), "source kept");
         let _ = std::fs::remove_dir_all(&dir);
     }

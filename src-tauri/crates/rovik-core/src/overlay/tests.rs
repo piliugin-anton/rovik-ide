@@ -2,7 +2,7 @@ use super::fs::{OverlayChange, OverlayFs};
 use crate::vfs::backend::Backend;
 use crate::vfs::store::{Kind, RenameMode, SetAttr, VfsError, ROOT};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 struct Dirs {
     root: PathBuf,
@@ -343,6 +343,7 @@ fn a_file_unlinked_while_open_stays_readable_until_released() {
 #[cfg(target_os = "linux")]
 mod mounted {
     use super::*;
+    use std::path::Path;
     use std::sync::Arc;
 
     fn mount(d: &Dirs) -> Option<(crate::vfs::Mount, PathBuf, Arc<OverlayFs>)> {

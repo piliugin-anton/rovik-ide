@@ -72,6 +72,7 @@ fn runnable(script: &Path) {
     panic!("{} stayed busy", script.display());
 }
 
+#[cfg(unix)]
 fn found(p: &Project, file: &Path, language: &str) -> Option<(String, bool, PathBuf)> {
     let r = resolve(file, language, Some(&p.0), &p.path_env());
     r.found

@@ -100,9 +100,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Every test binary runs, so one run shows each that fails.
       - name: cargo test --workspace
         working-directory: src-tauri
-        run: cargo test --workspace ${{ matrix.args }}
+        run: cargo test --workspace --no-fail-fast ${{ matrix.args }}
       - name: The evaluation's dry run
         if: runner.os == 'Linux'
         run: node scripts/eval/eval.mjs dry-run

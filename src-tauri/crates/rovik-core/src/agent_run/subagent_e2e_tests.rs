@@ -4487,11 +4487,7 @@ async fn a_side_effect_outside_a_workers_scope_doesnt_land() {
         ("scripts/side.js", "x\n"),
     ])
     .await;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let bin = h.project.join("node_modules/.bin/eslint");
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    runnable(&h.project.join("node_modules/.bin/eslint"));
     let (url, _) = model_routed(
         vec![
             (
@@ -9413,6 +9409,18 @@ fn in_view(h: &Harness, path: &str) -> Option<String> {
     std::fs::read_to_string(view.join(path)).ok()
 }
 
+/// A script the test wrote, made a program: Unix's mode bits (Windows has
+/// none to set).
+fn runnable(script: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = script;
+}
+
 /// A group harness whose `npx eslint` runs `script` (a side effect).
 async fn group_harness_with_side_effect(
     plan: &'static str,
@@ -9429,11 +9437,7 @@ async fn group_harness_with_side_effect(
     ];
     files.extend_from_slice(extra);
     let mut h = harness(&files).await;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let bin = h.project.join("node_modules/.bin/eslint");
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    runnable(&h.project.join("node_modules/.bin/eslint"));
     h.isolate().await;
     h
 }

@@ -729,7 +729,8 @@ async fn an_isolated_chat_changes_only_its_overlay() {
         Reply::Call { id: "w1", name: "write", args: json!({ "path": "src/a.txt", "old_text": "one", "content": "ONE" }) },
         Reply::Call { id: "b1", name: "bash", args: json!({ "command": "sed -i 's/hi/hello/' README.md && cat README.md && echo new > new.txt" }) },
         Reply::Call { id: "b2", name: "bash", args: json!({ "command": "git commit -am x" }) },
-        // The project's own path: the chat's view, not the project.
+        // The project's own path: the chat's view to a confined command,
+        // refused to one that isn't.
         Reply::Call { id: "b3", name: "bash", args: json!({ "command": format!("echo leak > {}/leak.txt && ls {}", h.project.display(), h.project.display()) }) },
         Reply::Text("Done."),
     ])
@@ -746,6 +747,13 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     h.start(request).await;
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
+    // Commands are confined where the system allows user namespaces, not
+    // where AppArmor forbids them (Ubuntu 24.04): found out once, by the
+    // run's first command, and kept.
+    let confined = crate::overlay::confine::available(&crate::overlay::confine::Confine {
+        view: h.project.clone(),
+        project: h.project.clone(),
+    });
     assert!(
         result_of(&messages, "b1").content.contains("hello"),
         "{}",
@@ -755,10 +763,17 @@ async fn an_isolated_chat_changes_only_its_overlay() {
         .content
         .starts_with("Error: `git commit` changes the repository"));
     let b3 = &result_of(&messages, "b3").content;
-    assert!(
-        b3.contains("new.txt"),
-        "the listing is the chat's view: {b3}"
-    );
+    if confined {
+        assert!(
+            b3.contains("new.txt"),
+            "the listing is the chat's view: {b3}"
+        );
+    } else {
+        assert!(
+            b3.starts_with("Error: this chat works in its own view of the project"),
+            "{b3}"
+        );
+    }
     // The run finished cleanly: its changes landed, and the overlay is gone.
     assert_eq!(h.file("src/a.txt").as_deref(), Some("ONE\ntwo\n"));
     assert_eq!(h.file("README.md").as_deref(), Some("hello\n"));
@@ -770,9 +785,14 @@ async fn an_isolated_chat_changes_only_its_overlay() {
         h.events_of("notice")
     );
     let last = crate::overlay::chats::last_landing(&h.dialog_id).unwrap();
-    // leak.txt came through the chat's view, so it landed with the rest.
-    assert_eq!(last.paths.len(), 4, "{:?}", last.paths);
-    assert_eq!(h.file("leak.txt").as_deref(), Some("leak\n"));
+    if confined {
+        // leak.txt came through the chat's view, so it landed with the rest.
+        assert_eq!(last.paths.len(), 4, "{:?}", last.paths);
+        assert_eq!(h.file("leak.txt").as_deref(), Some("leak\n"));
+    } else {
+        assert_eq!(last.paths.len(), 3, "{:?}", last.paths);
+        assert_eq!(h.file("leak.txt"), None);
+    }
 }
 
 /// Changes that conflict with the project's own wait for the user.
