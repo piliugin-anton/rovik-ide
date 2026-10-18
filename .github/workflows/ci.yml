@@ -54,9 +54,8 @@ jobs:
             args: --exclude rovik-agentd
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    defaults:
-      run:
-        shell: bash
+    # Each system's own shell (PowerShell on Windows), so the tests run in
+    # the environment a developer's have.
     steps:
       # The runner's own toolchains this build doesn't use: room for the
       # test binaries.

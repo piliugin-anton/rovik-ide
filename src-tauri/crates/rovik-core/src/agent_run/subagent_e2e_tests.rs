@@ -2319,7 +2319,7 @@ async fn plan_findings_hold_the_plan_until_the_agent_fixes_it() {
     assert!(
         second
             .content
-            .starts_with("Saved the plan to .rovik/plans/"),
+            .starts_with(&format!("Saved the plan to {}", shown(".rovik/plans/"))),
         "{}",
         second.content
     );
@@ -4096,7 +4096,7 @@ async fn the_test_writer_writes_tests_only_and_sees_outlines_only() {
                 write_call("w1", "src/greet.ts", "hacked\n"),
                 write_call("w2", "src/greet.test.ts", "test('greets', () => {});\n"),
                 Reply::Call { id: "b1", name: "bash", args: json!({ "command": "cargo build" }) },
-                Reply::Call { id: "b2", name: "bash", args: json!({ "command": "ls src" }) },
+                Reply::Call { id: "b2", name: "bash", args: json!({ "command": list("src") }) },
                 // Bash can't read the code under test, or write a non-test file.
                 Reply::Call { id: "b3", name: "bash", args: json!({ "command": "cat src/greet.ts" }) },
                 Reply::Call { id: "b4", name: "bash", args: json!({ "command": "sed -i s/Hello/Bye/ src/greet.ts" }) },
@@ -4340,7 +4340,7 @@ async fn a_group_runs_in_parallel_and_joins_into_the_chat_not_the_project() {
                 vec![
                     Reply::Calls(vec![
                         ("b1", "bash", json!({ "command": "cargo build" })),
-                        ("b2", "bash", json!({ "command": "ls src" })),
+                        ("b2", "bash", json!({ "command": list("src") })),
                         (
                             "e1",
                             "extend_scope",
@@ -6539,8 +6539,8 @@ async fn the_fix_after_a_review_after_green_is_protected() {
 }
 
 /// Round 2, P3.6: findings after green answered with a command alone
-/// (`sed -i`, no write): the checks run again on the changed code before
-/// the run is verified.
+/// (no write): the checks run again on the changed code before the run is
+/// verified.
 #[tokio::test]
 async fn a_bash_only_fix_after_green_reruns_the_checks() {
     if std::process::Command::new("npm")
@@ -6572,11 +6572,12 @@ async fn a_bash_only_fix_after_green_reruns_the_checks() {
             Reply::Text("Done."),
             write_call("w2", "a.txt", "ok\n"),
             Reply::Text("Fixed."),
-            // The findings' fix, by command only: it breaks the check.
+            // The findings' fix, by command only: it breaks the check. (Not
+            // `sed -i`, whose argument macOS's sed reads as a suffix.)
             Reply::Call {
                 id: "b1",
                 name: "bash",
-                args: json!({ "command": "sed -i 's/ok/ok broken/' a.txt" }),
+                args: json!({ "command": "printf 'ok broken\\n' > a.txt" }),
             },
             Reply::Text("1: fixed."),
             Reply::Text("I'll leave it."),
@@ -10318,7 +10319,10 @@ async fn budget_used_record_shape() {
     let third = result_of(&messages, "p3");
     assert_eq!(
         third.content,
-        "Saved the plan to .rovik/plans/2026-10-06-add-users.md. Review skipped: this run's 2 plan reviews are used."
+        format!(
+            "Saved the plan to {}. Review skipped: this run's 2 plan reviews are used.",
+            shown(".rovik/plans/2026-10-06-add-users.md")
+        )
     );
     assert_eq!(
         third.meta.as_ref().unwrap(),
@@ -10597,7 +10601,7 @@ async fn hold_then_silent_revision_drops_a_repeat() {
     assert!(
         fourth
             .content
-            .starts_with("Saved the plan to .rovik/plans/"),
+            .starts_with(&format!("Saved the plan to {}", shown(".rovik/plans/"))),
         "{}",
         fourth.content
     );

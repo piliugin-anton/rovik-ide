@@ -1077,9 +1077,10 @@ mod tests {
             plan_head(PLAN),
             ("Add users".into(), "Serve users from the API.".into())
         );
+        let named = Path::new("/p").join(".rovik/plans/a.md");
         assert_eq!(
             plan_file_named("Implement the plan in `.rovik/plans/a.md`.", Some("/p")).as_deref(),
-            Some("/p/.rovik/plans/a.md")
+            Some(named.to_string_lossy().as_ref())
         );
         assert_eq!(
             plan_file_named("Implement the plan above.", Some("/p")),

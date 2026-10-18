@@ -612,8 +612,11 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
     // Closed first: Windows won't remove an open database's folder. The
     // core holds its copy of the database (round 3), so it goes before the
-    // database can be the last handle and close.
+    // database can be the last handle and close; in tests, so does the
+    // copy of the core TEST_RUN keeps.
     drop(core);
+    #[cfg(test)]
+    drop(_test_run);
     // The run's tasks let go of theirs as they wind down.
     for _ in 0..40 {
         if db.handles() == 1 {

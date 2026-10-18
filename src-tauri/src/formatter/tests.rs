@@ -310,7 +310,7 @@ fn a_hanging_cmd_wrapper_is_killed_with_everything_it_started() {
     let tool = p.file(
         "hang.cmd",
         &format!(
-            "@echo off\r\ncmd /c \"ping -n 4 127.0.0.1 >nul & echo x > \"{}\"\"\r\n",
+            "@echo off\r\ncmd /c \"%SystemRoot%\\System32\\PING.EXE -n 4 127.0.0.1 >nul & echo x > \"{}\"\"\r\n",
             marker.display()
         ),
     );

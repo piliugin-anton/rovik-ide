@@ -728,28 +728,34 @@ mod tests {
 
     #[test]
     fn a_path_on_a_folder_mounted_volume_is_canonical_up_to_its_folder() {
-        // As on Windows: the volume mounted on /data/chats/c1 can't be
-        // canonicalized; the folders it's mounted in can (here, /data is
-        // really /mnt/disk).
+        // As on Windows: the volume mounted on <data>/chats/c1 can't be
+        // canonicalized; the folders it's mounted in can (here, <data> is
+        // really <disk>). Both absolute where the test runs.
+        let (data, disk) = if cfg!(windows) {
+            (Path::new(r"C:\data"), Path::new(r"C:\mnt\disk"))
+        } else {
+            (Path::new("/data"), Path::new("/mnt/disk"))
+        };
+        let volume = data.join("chats").join("c1");
         let unrecognized = || std::io::Error::from_raw_os_error(1005);
         let canonicalize = |p: &Path| {
-            if p.starts_with("/data/chats/c1") {
+            if p.starts_with(&volume) {
                 Err(unrecognized())
             } else {
-                Ok(Path::new("/mnt/disk").join(p.strip_prefix("/data").unwrap()))
+                Ok(disk.join(p.strip_prefix(data).unwrap()))
             }
         };
         let is = |e: &std::io::Error| e.raw_os_error() == Some(1005);
-        let canonical = |p: &str| canonical_with(Path::new(p), canonicalize, is).unwrap();
+        let canonical = |p: &Path| canonical_with(p, canonicalize, is).unwrap();
         assert_eq!(
-            canonical("/data/chats/c1/src/main.ts"),
-            Path::new("/mnt/disk/chats/c1/src/main.ts")
+            canonical(&volume.join("src").join("main.ts")),
+            disk.join("chats").join("c1").join("src").join("main.ts")
         );
-        assert_eq!(canonical("/data/chats/c1"), Path::new("/mnt/disk/chats/c1"));
-        assert_eq!(canonical("/data/project"), Path::new("/mnt/disk/project"));
+        assert_eq!(canonical(&volume), disk.join("chats").join("c1"));
+        assert_eq!(canonical(&data.join("project")), disk.join("project"));
         // Any other error is the error.
         let missing = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(canonical_with(Path::new("/data/x"), missing, is).is_err());
+        assert!(canonical_with(&data.join("x"), missing, is).is_err());
     }
 
     #[test]
