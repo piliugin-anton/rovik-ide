@@ -1471,6 +1471,66 @@ async function run() {
     );
   });
 
+  await step('git: rebase onto a branch found by searching', async () => {
+    // e2e-base and e2e-topic both start at main, a commit each. The topic
+    // is rebased onto the base from the menu: its commit then sits on the
+    // base's.
+    if (git(DEMO, 'branch', '--show-current') !== 'main') git(DEMO, 'checkout', '-qf', 'main');
+    git(DEMO, 'checkout', '-qb', 'e2e-base');
+    write(join(DEMO, 'docs', 'base.md'), '# Base\n');
+    git(DEMO, 'add', '-A');
+    git(DEMO, 'commit', '-qm', 'Base work');
+    const base = git(DEMO, 'rev-parse', 'HEAD');
+    git(DEMO, 'checkout', '-q', 'main');
+    git(DEMO, 'checkout', '-qb', 'e2e-topic');
+    write(join(DEMO, 'docs', 'topic.md'), '# Topic\n');
+    git(DEMO, 'add', '-A');
+    git(DEMO, 'commit', '-qm', 'Topic work');
+    await sidebar('Git');
+    await click('[title="Fetch"]');
+    await waitFor(
+      async () => (await panelText('.git-branch-name')) === 'e2e-topic',
+      'the panel on e2e-topic',
+      20_000
+    );
+    await moreActions();
+    // WebKit's snapshot is of the last frame it painted.
+    await sleep(400);
+    await d.screenshot('git-rebase-menu');
+    await click(await buttonByText('Rebase…'));
+    const search = '.git-more-dropdown input[aria-label="Search branches to rebase onto"]';
+    await waitFor(() => d.exists(search), 'the branch search');
+    const listed = () =>
+      d.exec(
+        'return [...document.querySelectorAll(".git-more-dropdown .context-menu-list .context-menu-item")].map((e) => e.textContent.trim())'
+      );
+    // Local and remote branches, e2e-topic itself left out.
+    const all = await listed();
+    for (const b of ['main', 'e2e-base', 'origin/main']) {
+      assert(all.includes(b), `${b} listed: ${all.join(', ')}`);
+    }
+    assert(!all.includes('e2e-topic'), `the branch itself is left out: ${all.join(', ')}`);
+    await sleep(400);
+    await d.screenshot('git-rebase-branches');
+    await click(search);
+    await typeKeys('e2e ba');
+    await waitFor(
+      async () => (await listed()).join() === 'e2e-base',
+      'the search to leave e2e-base'
+    );
+    await sleep(400);
+    await d.screenshot('git-rebase-search');
+    await keys(Keys.ENTER);
+    await waitFor(
+      () => git(DEMO, 'log', '-1', '--format=%P') === base,
+      'the topic’s commit on the base’s',
+      20_000
+    );
+    assert(git(DEMO, 'log', '-1', '--format=%s') === 'Topic work', 'the topic’s commit');
+    assert(git(DEMO, 'branch', '--show-current') === 'e2e-topic', 'still on e2e-topic');
+    git(DEMO, 'checkout', '-q', 'main');
+  });
+
   await step('settings: every page opens', async () => {
     const pages = [
       'Editor',

@@ -38,7 +38,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - Project-wide text search powered by ripgrep's engine.
 - A built-in terminal that uses your own shell, on this computer or on a
   connected [cloud host](#a-terminal-on-a-cloud-host).
-- A Git panel: commit, branches, stash, history, pull and push. Merge
+- A Git panel: commit, branches, stash, history, pull and push, and a
+  rebase onto any local or remote branch, found by searching. Merge
   conflicts are resolved in a side-by-side conflict resolver: the
   conflicts git wrote in the file, each settled with one side, both,
   lines ticked from either side, or an edit by hand.

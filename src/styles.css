@@ -4289,6 +4289,11 @@ body.is-resizing * {
   cursor: default;
 }
 
+/* The row the arrow keys are on (Rebase's branch list). */
+.git-branch-dropdown .context-menu-item.git-menu-cursor {
+  background: var(--hover-strong);
+}
+
 .git-branch-dropdown .context-menu-item.git-menu-disabled {
   cursor: default;
   opacity: 0.4;

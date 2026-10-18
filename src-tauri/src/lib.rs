@@ -197,6 +197,7 @@ pub fn run() {
             git_sync::git_pull_config,
             git_sync::git_operation_continue,
             git_sync::git_operation_abort,
+            git_sync::git_rebase,
             git_sync::git_conflict_file,
             git_sync::git_conflict_resolve,
             git::git_commit,
