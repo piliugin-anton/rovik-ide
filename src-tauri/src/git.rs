@@ -2512,7 +2512,10 @@ mod revert_tests {
         // The repository's folder, however it's spelled there (macOS's /var
         // is /private/var; Windows' temporary folder has a short 8.3 name).
         let canonical = |p: &std::path::Path| fs::canonicalize(p).unwrap();
-        assert_eq!(canonical(std::path::Path::new(&st.workdir)), canonical(&dir));
+        assert_eq!(
+            canonical(std::path::Path::new(&st.workdir)),
+            canonical(&dir)
+        );
         assert!(!st.workdir.ends_with(['/', '\\']), "{}", st.workdir);
         let b = st.files.iter().find(|f| f.path == "b.txt").unwrap();
         assert!(b.unstaged && !b.staged);
