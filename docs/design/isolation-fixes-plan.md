@@ -512,8 +512,9 @@ This finds it when the second chat's change is written.
 - **"Text edits interleave instead of conflicting."**
   `update_for_chat` re-reads the file under the lock and fails when
   `old_text` isn't there any more. A clash is refused, not interleaved.
-- **"Two app instances can land at once."** The app runs as a single
-  instance (`tauri-plugin-single-instance`).
+- **"Two app instances can land at once."** A project is open in one
+  window at a time (`src-tauri/src/instances.rs`; the app was
+  single-instance when this was written).
 - **"Lossy UTF-8 conversion can hide conflicts."** Files that aren't
   UTF-8 are rejected before the conversion.
 - **"Builds and installs keep the project busy."** Busy is set only for

@@ -138,9 +138,10 @@ pub fn run() {
             // it refuses without this; WebView2 asks for permission. The
             // input's own menu reads text that way too. macOS allows it.
             if let Some(main) = app.config().app.windows.iter().find(|w| w.label == "main") {
-                tauri::WebviewWindowBuilder::from_config(app.handle(), main)?
+                let window = tauri::WebviewWindowBuilder::from_config(app.handle(), main)?
                     .enable_clipboard_access()
                     .build()?;
+                cascade(&window, rovik_core::os_lock::slot());
             }
             Ok(())
         })
@@ -367,6 +368,32 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Every window restores the one place saved (window-state): one started
+/// while others run (its slot, 2 for the second) steps down from it, as
+/// new windows do, instead of opening exactly over the window it came
+/// from, which looked as if that one's project had closed.
+fn cascade(window: &tauri::WebviewWindow, slot: usize) {
+    if slot <= 1 || window.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(at), Ok(scale)) = (window.outer_position(), window.scale_factor()) else {
+        return;
+    };
+    let step = (32.0 * scale) as i32 * ((slot - 1) % 8) as i32;
+    let (mut x, mut y) = (at.x + step, at.y + step);
+    // Still on its screen: back to its corner otherwise.
+    if let (Ok(Some(screen)), Ok(size)) = (window.current_monitor(), window.outer_size()) {
+        let (origin, room) = (screen.position(), screen.size());
+        if x + size.width as i32 > origin.x + room.width as i32 {
+            x = origin.x + step / 2;
+        }
+        if y + size.height as i32 > origin.y + room.height as i32 {
+            y = origin.y + step / 2;
+        }
+    }
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 /// How this window was started: the folder given on the command line

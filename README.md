@@ -534,6 +534,16 @@ What one process must not do to another's work is guarded the same way:
 - AI settings are saved onto the file as it is now: a window only changes
   what it changed itself, so an older copy in another window never drops a
   provider or a key saved meanwhile.
+- The heavy-build slots (Settings → Builds & checks) are the machine's: a
+  slot one window's build holds is taken in every window, by a lock in
+  `<data>/heavy-slots`, and a busy terminal counts in all of them too. The
+  number of slots set in one window applies in the others.
+- A window that crashed mid-reply leaves its chat's message unanswered, and
+  its own drafts are its own (each window's browser storage is): the window
+  that opens that project next marks the message failed and puts its text
+  back in the input, as the crashed window would have at its restart.
+- Every window opens where the last one was left; a window started while
+  others run steps down from there, so it doesn't hide the one it came from.
 
 ### Chat isolation
 

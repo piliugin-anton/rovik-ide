@@ -91,8 +91,6 @@ pub fn path_key(path: &Path) -> String {
     s
 }
 
-/// The project ID a folder's ID file names, if it has one: the folders
-/// with the same ID share their chats.
 /// Whether one of `chats` is a lead chat (not a subagent's) of the project
 /// `project`; None: of the chats without a project.
 pub fn has_lead_chat(conn: &Connection, chats: &[String], project: Option<&str>) -> DbResult<bool> {
@@ -111,6 +109,8 @@ pub fn has_lead_chat(conn: &Connection, chats: &[String], project: Option<&str>)
     Ok(false)
 }
 
+/// The project ID a folder's ID file names, if it has one: the folders
+/// with the same ID share their chats.
 pub fn folder_project_id(root: &Path) -> Option<String> {
     read_id(root)
 }

@@ -775,8 +775,10 @@ once; they touch different files. Everything else is sequential.
     an unprivileged process can't raise its priority again on Unix. It
     only matters while something else wants the CPU, so it isn't undone.
     Pausing under low memory is Unix only (`SIGSTOP`/`SIGCONT`).
-  - No lock files for slots: the app is single-instance
-    (tauri-plugin-single-instance), so the slots live in one process.
+  - Each window is a process with a queue of its own, and a slot held in
+    one counts in all: an OS lock per slot in `<data>/heavy-slots`
+    (`workload/machine.rs`; the app was single-instance when this was
+    first written).
   - History is a JSON file in the app's data folder
     (`workload-history.json`), not a chat database table: it describes
     the machine and the project, not a chat.
@@ -859,8 +861,9 @@ once; they touch different files. Everything else is sequential.
     content of every touched path; an interrupted landing is finished at
     start; Undo restores each path unless it changed since (those are
     named and left alone). Deleted folders are kept whole in the journal.
-  - No OS lock file between app instances: the app is single-instance.
-    Landings into one project take turns in-process, and writes take each
+  - A project is open in one window (a process) at a time
+    (`src-tauri/src/instances.rs`), and a landing being written holds a
+    lock in its journal's folder. Landings into one project take turns in-process, and writes take each
     file's lock from phase 0, checking nothing changed since the merge
     (replanning up to three times).
   - After a landing the chat's overlay is discarded; its next run starts
