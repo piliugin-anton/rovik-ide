@@ -609,6 +609,40 @@ async function treeOpen(title) {
   await sleep(400);
 }
 
+/**
+ * The terminal panel opened, its shell started: its prompt shown and the
+ * panel quiet a moment, as what's typed before (zsh, cmd.exe starting) is
+ * dropped.
+ */
+async function openTerminal() {
+  await click('.terminal-toggle-button');
+  await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
+  let last = null;
+  let since = Date.now();
+  await waitFor(
+    async () => {
+      const now = (await panelText('.xterm-rows')).trim();
+      if (now !== last) {
+        last = now;
+        since = Date.now();
+        return false;
+      }
+      return now.length > 0 && Date.now() - since >= 1000;
+    },
+    'the shell to start',
+    20_000
+  );
+}
+
+/** The terminal's lines that are `text` alone: a command's output, not
+ *  the line it was typed on. */
+async function terminalLines(text) {
+  return (await panelText('.xterm-rows'))
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l === text);
+}
+
 async function sidebar(tab) {
   await click(await buttonByText(tab, '.sidebar-tabs'));
   await sleep(500);
@@ -1255,14 +1289,14 @@ async function run() {
   });
 
   await step('terminal: run a command', async () => {
-    await click('.terminal-toggle-button');
-    await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
-    await sleep(2500);
+    await openTerminal();
     await click('.xterm-screen');
     await typeKeys('echo e2e-hello');
     await keys(Keys.ENTER);
+    // Its output, a line of its own: not the typed line, nor an error that
+    // names it (a command typed without its space).
     await waitFor(
-      async () => ((await panelText('.xterm-rows')).match(/e2e-hello/g) ?? []).length >= 2,
+      async () => (await terminalLines('e2e-hello')).length > 0,
       'the command’s output',
       20_000
     );
@@ -1310,8 +1344,7 @@ async function run() {
   if (DRIVER !== 'bridge') {
     await step('terminal: Ctrl+Shift+V pastes the clipboard once', async () => {
       const marker = `e2e-paste-${process.pid}`;
-      await click('.terminal-toggle-button');
-      await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
+      await openTerminal();
       await click('.xterm-screen');
       const copied = await d.exec(
         'return navigator.clipboard.writeText(arguments[0]).then(() => true, (e) => String(e));',
@@ -1343,10 +1376,7 @@ async function run() {
   await step(
     'sidebar: the chat over the whole window and back, the terminal keeps its text',
     async () => {
-      await click('.terminal-toggle-button');
-      await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
-      // Its shell starting (zsh, cmd.exe), which would drop what's typed.
-      await sleep(2500);
+      await openTerminal();
       await click('.xterm-screen');
       // Six lines, by a loop: the line typed doesn't hold what's looked for.
       await typeKeys(
@@ -1724,18 +1754,18 @@ async function run() {
     git(DEMO, 'add', '-A');
     git(DEMO, 'commit', '-qm', 'Topic work');
     await sidebar('Git');
-    // Not while the panel is busy: the button is redrawn then (its spinner).
-    await waitFor(
-      () => d.exec(`return document.querySelector('[title="Fetch"]')?.disabled === false`),
-      'Fetch to be enabled',
-      30_000
-    );
-    await click('[title="Fetch"]');
+    // The panel catches up with the branch made on the command line first,
+    // drawing its header again meanwhile: a button found before is gone.
     await waitFor(
       async () => (await panelText('.git-branch-name')) === 'e2e-topic',
       'the panel on e2e-topic',
       20_000
     );
+    const fetchIdle = () =>
+      d.exec(`return document.querySelector('[title="Fetch"]')?.disabled === false`);
+    await waitFor(fetchIdle, 'Fetch to be enabled', 30_000);
+    await click('[title="Fetch"]');
+    await waitFor(fetchIdle, 'the fetch to end', 30_000);
     await moreActions();
     // WebKit's snapshot is of the last frame it painted.
     await sleep(400);

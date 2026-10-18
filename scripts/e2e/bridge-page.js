@@ -97,10 +97,14 @@
       view: window,
       ...init,
     });
-    // Monaco reads the legacy keyCode of key events.
+    // Monaco reads the legacy keyCode of key events, xterm a keypress's
+    // charCode.
     if (init && init.keyCode !== undefined) {
       Object.defineProperty(event, 'keyCode', { get: () => init.keyCode });
       Object.defineProperty(event, 'which', { get: () => init.keyCode });
+    }
+    if (init && init.charCode !== undefined) {
+      Object.defineProperty(event, 'charCode', { get: () => init.charCode });
     }
     return target.dispatchEvent(event);
   }
@@ -122,8 +126,18 @@
    * or nowhere when the pressed one left the page meanwhile (redrawn).
    */
   async function click(el, { button = 0, mods = {}, count = 1, hold = 0 } = {}) {
+    // Drawn again since it was found: as WebDriver's stale element, which
+    // the runner finds again. Its center would be the page's corner.
+    if (!el.isConnected) return 'a stale element (drawn again since it was found)';
     const { x, y } = center(el);
     const target = document.elementFromPoint(x, y) || el;
+    // Whether it lands on the element, judged before it's pressed, as
+    // WebDriver does: what the click does may draw it again (a button's
+    // icon becomes a spinner), and the icon pressed is gone after.
+    const landed =
+      target === el || el.contains(target)
+        ? null
+        : `${target.tagName.toLowerCase()}.${String(target.className)}`;
     const buttons = button === 2 ? 2 : 1;
     const base = { clientX: x, clientY: y, screenX: x, screenY: y, button, ...mods };
     const pointer = { pointerId: 1, pointerType: 'mouse', isPrimary: true };
@@ -147,9 +161,7 @@
       if (button === 0 && clicked) fire(clicked, 'click', { ...base, buttons: 0, detail: i });
     }
     if (count === 2) fire(target, 'dblclick', { ...base, buttons: 0, detail: 2 });
-    return target === el || el.contains(target)
-      ? null
-      : `${target.tagName.toLowerCase()}.${String(target.className)}`;
+    return landed;
   }
 
   function caretToEnd(el) {
@@ -281,8 +293,14 @@
     const [name, code, keyCode] = keyInfo(key);
     const target = document.activeElement || document.body;
     const init = { key: name, code, keyCode, ...mods };
-    const allowed = fire(target, 'keydown', init);
+    let allowed = fire(target, 'keydown', init);
     const plain = !mods.ctrlKey && !mods.metaKey && !mods.altKey;
+    // A character's keypress, as a browser sends it after a keydown nobody
+    // took: xterm types a space from it (letters, from their keydown).
+    if (allowed && plain && name.length === 1) {
+      const charCode = name.charCodeAt(0);
+      allowed = fire(target, 'keypress', { ...init, keyCode: charCode, charCode });
+    }
     if (allowed && plain && target.editContext)
       typeIntoEditContext(target, target.editContext, name);
     else if (allowed && plain && editable(target)) {
