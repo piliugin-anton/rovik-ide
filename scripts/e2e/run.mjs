@@ -614,9 +614,27 @@ async function treeOpen(title) {
  * panel quiet a moment, as what's typed before (zsh, cmd.exe starting) is
  * dropped.
  */
+/** Whether the terminal panel is open, as its toggle says. */
+const terminalOpen = () =>
+  d.exec(
+    `return document.querySelector('.terminal-toggle-button')?.getAttribute('aria-expanded') === 'true'`
+  );
+
 async function openTerminal() {
-  await click('.terminal-toggle-button');
-  await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
+  if (!(await terminalOpen())) await click('.terminal-toggle-button');
+  await waitFor(terminalOpen, 'the terminal open');
+  // On screen: its panel grows into view. A closed one's text stays in the
+  // page, out of sight, so the text alone doesn't say it's open.
+  await waitFor(
+    () =>
+      d.exec(`const screen = document.querySelector('.terminal-instance:not(.hidden) .xterm-screen');
+        const body = document.querySelector('.terminal-panel-body');
+        if (!screen || !body) return false;
+        const height = screen.getBoundingClientRect().height;
+        return height > 0 && body.getBoundingClientRect().height >= height;`),
+    'the terminal on screen',
+    15_000
+  );
   let last = null;
   let since = Date.now();
   await waitFor(
@@ -632,6 +650,11 @@ async function openTerminal() {
     'the shell to start',
     20_000
   );
+}
+
+async function closeTerminal() {
+  if (await terminalOpen()) await click('.terminal-toggle-button');
+  await waitFor(async () => !(await terminalOpen()), 'the terminal closed');
 }
 
 /** The terminal's lines that are `text` alone: a command's output, not
@@ -1300,7 +1323,7 @@ async function run() {
       'the command’s output',
       20_000
     );
-    await click('.terminal-toggle-button');
+    await closeTerminal();
   });
 
   // Run from an AppImage, what the terminal starts gets the system's
@@ -1311,9 +1334,8 @@ async function run() {
     await step(
       'appimage: the terminal gets the system’s environment, not the AppImage’s',
       async () => {
-        await click('.terminal-toggle-button');
-        await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
-        await sleep(2500);
+        await openTerminal();
+        await sleep(1500);
         const start = await panelText('.xterm-rows');
         assert(
           !/symbol lookup error|error while loading shared libraries/.test(start),
@@ -1331,7 +1353,7 @@ async function run() {
           return found !== null;
         }, 'the count of variables naming the AppImage');
         assert(count === 0, `${count} of the shell's variables name the AppImage`);
-        await click('.terminal-toggle-button');
+        await closeTerminal();
       }
     );
   }
@@ -1365,7 +1387,7 @@ async function run() {
       await waitFor(async () => (await echoed()).length > 0, 'the pasted command’s output', 20_000);
       const [line] = await echoed();
       assert(line === marker, `pasted once: the echo is ${JSON.stringify(line)}`);
-      await click('.terminal-toggle-button');
+      await closeTerminal();
     });
   }
 
@@ -1402,7 +1424,7 @@ async function run() {
       const after = await panelText('.xterm-rows');
       assert(after === before, `the terminal's text changed:\n${after.trim()}`);
       await sidebar('Files');
-      await click('.terminal-toggle-button');
+      await closeTerminal();
     }
   );
 
