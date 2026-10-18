@@ -30,8 +30,9 @@ pub struct Confine {
     pub project: PathBuf,
 }
 
-/// How a command gets its namespace.
+/// How a command gets its namespace. Only Linux has one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum Way {
     /// `bwrap` makes it and runs the command in it.
     Bwrap,
@@ -41,6 +42,7 @@ enum Way {
 
 /// The ways to try, in order: bwrap's first, the app's own if bwrap isn't
 /// there or can't.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ways() -> &'static [Way] {
     match std::env::var("ROVIK_CONFINE_COMMANDS").as_deref() {
         Ok("0") => &[],
@@ -74,6 +76,7 @@ fn command_with(way: Way, c: &Confine, program: &str, args: &[&str]) -> Command 
 }
 
 /// Whether `way` confines a command here: one that does nothing, run.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn works(way: Way, c: &Confine) -> bool {
     let mut cmd = command_with(way, c, "/bin/sh", &["-c", "true"]);
     cmd.stdin(Stdio::null())
