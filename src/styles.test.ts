@@ -169,6 +169,20 @@ test('the expanded panel: a 333ms width, the hidden right pane and a 768px chat 
   assert.match(button, /translateY\(\s*-50%\s*\)/);
 });
 
+test('a chat record card wraps what it holds instead of spilling out of it', () => {
+  // A report's facts (ReportFacts.tsx) carry paths, commands, branch names and
+  // pull-request URLs. A token too long for the card breaks inside it: the
+  // grid's second column may shrink (min-width: 0) and the record wraps.
+  assert.ok(
+    bodiesOf('.chat-verify').some((b) => /overflow-wrap:\s*anywhere/.test(b)),
+    '.chat-verify breaks a token too long for the card'
+  );
+  assert.ok(
+    bodiesOf('.chat-report-facts dd').some((b) => /min-width:\s*0/.test(b)),
+    'a fact may be narrower than its longest token'
+  );
+});
+
 test('criterion 2: App owns the expanded state and marks its root with sidebar-expanded', () => {
   const app = readFileSync('src/App.tsx', 'utf8');
   assert.match(app, /sidebar-expanded/, 'the root .app element gets the sidebar-expanded class');

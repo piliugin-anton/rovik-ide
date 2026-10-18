@@ -4018,6 +4018,10 @@ body.is-resizing * {
   cursor: col-resize !important;
 }
 
+.sidebar-expanded {
+  height: calc(100% - 24px);
+}
+
 .sidebar-expanded .chat-panel {
   border: 1px solid var(--border);
 }
@@ -4040,8 +4044,8 @@ body.is-resizing * {
   margin-inline: auto;
 }
 
-/* The full-window toggle: floating over the panel's content at its right
-   edge, faint until it is hovered or focused. */
+/* The full-window toggle: a small square button floating over the panel's
+   content at its right edge, faint until it is hovered or focused. */
 .sidebar-expand-button {
   position: absolute;
   right: 6px;
@@ -4055,7 +4059,7 @@ body.is-resizing * {
   height: 22px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 50%;
+  border-radius: 4px;
   background: var(--bg-control);
   color: var(--fg-dim);
   opacity: 0.55;
@@ -5102,6 +5106,10 @@ body.is-resizing * {
   flex-direction: column;
   gap: 6px;
   max-width: 90%;
+  /* A record's text wraps: a path, command or URL too long for the card
+     breaks inside it instead of spilling past its border (a narrower pane
+     must not push the facts out of the block). */
+  overflow-wrap: anywhere;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--fg-dim);
