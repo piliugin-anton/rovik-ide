@@ -1923,14 +1923,30 @@ T05 depends most on the environment it meets.
 
 ### G01: checks on every pull request
 
-- **Two jobs** (`.github/workflows/ci.yml`, on pull requests and by
-  hand): the Rust workspace's tests, then the evaluation's dry run, in
-  one; the frontend's tests, the eval harness's own (`npm run test:eval`,
-  beside the row's list), the type check and the formatting in the
-  other. The Rust job installs WebKitGTK for the app's crate and fuse3 so
-  the overlay tests get a mount, gives git a name for the tests that
-  commit, and checks out the whole history, which the evaluation's tasks
-  on this repository start from.
+- **The jobs** (`.github/workflows/ci.yml`, on pull requests, by hand,
+  and from the release workflow before it builds a merge): the Rust
+  workspace's tests on each system the app ships for, a job each ("Rust
+  tests (Linux)", "(macOS)", "(Windows)"), then on Linux the evaluation's
+  dry run; the frontend's tests, the eval harness's own
+  (`npm run test:eval`, beside the row's list), the type check and the
+  formatting in another, on Linux (they run in Node, alike on each
+  system). The Linux job installs WebKitGTK for the app's crate and fuse3
+  so the overlay tests get a mount; each gives git a name for the tests
+  that commit and checks out the whole history, which the evaluation's
+  tasks on this repository start from. Windows builds everything but the
+  daemon, which runs on Linux servers only, and keeps the line ends as
+  committed. Every test binary runs (`--no-fail-fast`), so one run shows
+  each one that fails.
+- **What the other systems found**, on their first run: on Windows, two
+  subagent tests set a script's mode bits through Unix's API (`runnable`
+  does it on Unix only), and imports only Unix-only tests use; on macOS,
+  mktemp makes its files in the user's own temporary folder before
+  TMPDIR's, so the daemon's test checks TMPDIR itself and, there, that
+  the file is out of the shared /tmp; on Ubuntu 24.04, AppArmor forbids
+  the user namespaces that confine an isolated chat's commands, so a
+  command naming the project's own path is refused there, as it's meant
+  to be where commands can't be confined, and the isolated chat's test
+  checks whichever applies.
 - **The dry run had been failing** since chat requests try the Responses
   API first: the eval's fake model answered `/responses` with a chat
   completions stream, which reads as an empty reply. It answers 404

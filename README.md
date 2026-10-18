@@ -414,8 +414,9 @@ branch ruleset**:
    - `Rust tests (Windows)`
    - `Frontend tests, types and formatting`
 
-   **Require branches to be up to date before merging** has the checks
-   run on the code as it will be once merged.
+   Leave **Require branches to be up to date before merging** off: the
+   release's commit of the version after each merge would put every open
+   pull request behind. The release runs the checks on each merge anyway.
 
 5. Choose **Create**.
 

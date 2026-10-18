@@ -2928,11 +2928,11 @@ Tasks add notes here when reality differs from the plan.
     pre-release for `1.2.3-4`.
   - It runs on every merge to master, after CI's checks (on Linux, macOS
     and Windows, `workflow_call`): the sources' version while no release
-    has it, else its last number plus one, committed as `Release <version>
-    [skip ci]`; by hand (Run workflow), a version typed in, or the next one
-    when left empty. The draft's tag is made when it's published, on the
-    commit it was built from, so a run that fails leaves no tag, and the
-    next run replaces its draft and publishes that version.
+    has it, else its last number plus one, committed as
+    `Release <version> [skip ci]`; by hand (Run workflow), a version typed
+    in, or the next one when left empty. The draft's tag is made when it's
+    published, on the commit it was built from, so a run that fails leaves
+    no tag, and the next run replaces its draft and publishes that version.
   - The key is the developer's to make, once (README, Releases). The
     updater's own files, `latest.json` and the bundles' signatures, come
     once `bundle.createUpdaterArtifacts` is on, with the updater plugin.
