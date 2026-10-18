@@ -385,7 +385,8 @@ jobs:
           done
           echo "=== what the agent's tools returned"
           node scripts/e2e/model-log.mjs e2e-out/fake-model.jsonl | tail -n 40
-          log="$HOME/.local/share/rovik-ide/agent-log.jsonl"
+          # The app's data is the run's own (run.mjs: its XDG folders).
+          log="e2e-out/work/app/data/rovik-ide/agent-log.jsonl"
           [ -f "$log" ] && { echo "=== agent-log.jsonl"; tail -n 15 "$log" | cut -c1-400; }
           true
       - name: Report

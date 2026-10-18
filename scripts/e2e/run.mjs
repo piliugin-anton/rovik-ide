@@ -171,6 +171,22 @@ function startChild(cmd, argv, opts = {}) {
   return child;
 }
 
+/** The first line a child prints (the scripted model's base URL). */
+function firstLine(child, timeout = 15_000) {
+  return new Promise((done, fail) => {
+    let text = '';
+    const timer = setTimeout(() => fail(new Error('the child printed nothing')), timeout);
+    child.stdout.on('data', (chunk) => {
+      text += chunk;
+      const end = text.indexOf('\n');
+      if (end >= 0) {
+        clearTimeout(timer);
+        done(text.slice(0, end).trim());
+      }
+    });
+  });
+}
+
 async function waitHttp(url, timeout = 30_000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
@@ -529,6 +545,44 @@ async function contextMenu(target, item) {
   await sleep(400);
 }
 
+/** Adds a provider in Settings: its URL, a key, its name; `models` it lists. */
+async function addProvider(name, url, models) {
+  await click('.sidebar-settings-button');
+  await click(
+    await mark(
+      `return [...document.querySelectorAll('.settings-menu-item')].find((b) => b.innerText.trim().startsWith('Model providers'));`,
+      'page'
+    )
+  );
+  await click(await buttonByText('+ Add provider'));
+  await click('input[placeholder="https://api.openai.com/v1"]');
+  await typeKeys(url);
+  await click('input[type=password]');
+  await typeKeys('sk-e2e-key');
+  await click('input[placeholder="e.g. OpenRouter"]');
+  await keys([MOD, 'a']);
+  await typeKeys(name);
+  await click(
+    await mark(
+      `return [...document.querySelectorAll('.modal button')].find((b) => /^Test/.test(b.textContent.trim()));`,
+      'test'
+    )
+  );
+  // The page says "models" for one too.
+  const listed = `${models} models`;
+  await waitFor(
+    async () => (await panelText('.modal')).includes(`Connected, ${listed}`),
+    'the models',
+    15_000
+  );
+  await click(await buttonByText('Save', '.modal'));
+  await waitFor(
+    async () => (await panelText('.modal')).includes(`${models} of ${listed} enabled`),
+    'the provider listed'
+  );
+  await closeModal();
+}
+
 async function composer(text) {
   await click('.chat-input-contenteditable');
   const lines = text.split('\n');
@@ -665,7 +719,21 @@ async function run() {
     const tdArgs = ['--port', '4444'];
     if (args['native-driver']) tdArgs.push('--native-driver', args['native-driver']);
     // The app's log: a Windows release build has no stderr to read.
-    startChild(td, tdArgs, { name: 'tauri-driver', env: { ROVIK_LOG_FILE: join(OUT, 'app.log') } });
+    const env = { ROVIK_LOG_FILE: join(OUT, 'app.log') };
+    // On Linux the app's settings, chats and caches are the run's own (its
+    // XDG folders): each run starts as a fresh install does, and leaves a
+    // developer's own alone.
+    if (PLATFORM === 'linux') {
+      for (const [name, dir] of [
+        ['XDG_CONFIG_HOME', 'config'],
+        ['XDG_DATA_HOME', 'data'],
+        ['XDG_CACHE_HOME', 'cache'],
+      ]) {
+        env[name] = join(WORK, 'app', dir);
+        mkdirSync(env[name], { recursive: true });
+      }
+    }
+    startChild(td, tdArgs, { name: 'tauri-driver', env });
     await waitHttp('http://127.0.0.1:4444/status');
   }
 
@@ -1139,40 +1207,9 @@ async function run() {
     }
   });
 
-  await step('settings: add a model provider', async () => {
-    await click('.sidebar-settings-button');
-    await click(
-      await mark(
-        `return [...document.querySelectorAll('.settings-menu-item')].find((b) => b.innerText.trim().startsWith('Model providers'));`,
-        'page'
-      )
-    );
-    await click(await buttonByText('+ Add provider'));
-    await click('input[placeholder="https://api.openai.com/v1"]');
-    await typeKeys(`http://127.0.0.1:${MODEL_PORT}/v1`);
-    await click('input[type=password]');
-    await typeKeys('sk-e2e-key');
-    await click('input[placeholder="e.g. OpenRouter"]');
-    await keys([MOD, 'a']);
-    await typeKeys('Fake');
-    await click(
-      await mark(
-        `return [...document.querySelectorAll('.modal button')].find((b) => /^Test/.test(b.textContent.trim()));`,
-        'test'
-      )
-    );
-    await waitFor(
-      async () => (await panelText('.modal')).includes('Connected, 2 models'),
-      'the models',
-      15_000
-    );
-    await click(await buttonByText('Save', '.modal'));
-    await waitFor(
-      async () => (await panelText('.modal')).includes('2 of 2 models enabled'),
-      'the provider listed'
-    );
-    await closeModal();
-  });
+  await step('settings: add a model provider', () =>
+    addProvider('Fake', `http://127.0.0.1:${MODEL_PORT}/v1`, 2)
+  );
 
   await step('chat: a reply streams in', async () => {
     await sidebar('AI Chat');
@@ -1450,6 +1487,153 @@ async function run() {
       );
     }
   );
+
+  await step('autopilot: a task runs to its delivery, each stage shown as it goes', async () => {
+    // The evaluation's scripted model (scripts/eval/fake-model.mjs, its
+    // autopilot mode) answers each stage's brief: the plan, the reviews,
+    // the change as writes, the acceptance check and the report.
+    const math = join(DEMO, 'src', 'lib', 'math.ts');
+    const changed =
+      readFileSync(math, 'utf8') +
+      '\n/** n to the third power. */\nexport function cube(n: number): number {\n  return n * n * n;\n}\n';
+    const files = join(OUT, 'autopilot-files.json');
+    write(files, JSON.stringify({ 'src/lib/math.ts': changed }));
+    const model = startChild(
+      process.execPath,
+      [join(HERE, '..', 'eval', 'fake-model.mjs'), 'autopilot', files],
+      { name: 'autopilot-model', env: { FAKE_MODEL_LOG: join(OUT, 'autopilot-model.jsonl') } }
+    );
+    await addProvider('Autopilot', await firstLine(model), 1);
+    await sidebar('AI Chat');
+    await click('.chat-history-button');
+    await click(await buttonByText('New chat'));
+    await click('.model-picker-trigger');
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.model-picker-option')].find((o) => o.title.includes('Autopilot'));`,
+        'model'
+      )
+    );
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.mode-option')].find((b) => b.textContent.trim() === 'Autopilot');`,
+        'mode'
+      )
+    );
+    // Each moment a stage shows as cut short, or the task as waiting to go
+    // on, while it goes, and each state of the strip: seen by the page
+    // itself, however brief.
+    await d.exec(`
+      const seen = (window.__autopilotCut = []);
+      const states = (window.__autopilotStates = []);
+      const look = () => {
+        const strip = document.querySelector('.autopilot-strip');
+        const line = strip?.querySelector('.autopilot-strip-line')?.innerText.trim() ?? '';
+        const cut = [
+          ...document.querySelectorAll(
+            '.autopilot-stage.stopped .autopilot-stage-label, .chat-stage.stopped .chat-stage-name'
+          ),
+        ].map((el) => el.innerText.trim());
+        if (cut.length || /didn’t finish|waiting to go on/.test(line))
+          seen.push({ at: Date.now(), line, cut });
+        const stages = [...(strip?.querySelectorAll('.autopilot-stage') ?? [])].map((s) => [
+          s.querySelector('.autopilot-stage-label')?.innerText.trim(),
+          s.className.replace('autopilot-stage', '').trim(),
+        ]);
+        const key = JSON.stringify([line, stages]);
+        if (key !== states.at(-1)?.key) states.push({ at: Date.now(), key, line, stages });
+      };
+      new MutationObserver(look).observe(document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['class'],
+      });`);
+    await send('Add a function cube(n) to src/lib/math.ts that returns n cubed.');
+
+    // What the strip and the chat's stage records show, at each change.
+    const shown = () =>
+      d.exec(`
+        const strip = document.querySelector('.autopilot-strip');
+        const word = (el, css) => (el.querySelector(css)?.innerText ?? '').trim();
+        return {
+          running: !!document.querySelector('.chat-send-button.stop'),
+          line: strip ? word(strip, '.autopilot-strip-line') : null,
+          strip: strip
+            ? [...strip.querySelectorAll('.autopilot-stage')].map(
+                (s) => word(s, '.autopilot-stage-label') + ' ' + s.className.replace('autopilot-stage', '').trim()
+              )
+            : [],
+          records: [...document.querySelectorAll('.chat-stage')].map(
+            (r) => word(r, '.chat-stage-name').replace('Autopilot · ', '') + ': ' + word(r, '.chat-stage-status')
+          ),
+        };`);
+    const timeline = [];
+    const started = Date.now();
+    let last = '';
+    let quiet = 0;
+    while (Date.now() - started < 300_000) {
+      const now = await shown();
+      const key = JSON.stringify(now);
+      if (key !== last) {
+        const ms = Date.now() - started;
+        timeline.push({ ms, ...now });
+        log(
+          `   autopilot ${(ms / 1000).toFixed(1)}s: ${now.line ?? '(no strip)'}${now.running ? ' [running]' : ''} | ${now.strip.join(', ')}`
+        );
+        await d
+          .screenshot(`autopilot-${String(timeline.length).padStart(3, '0')}`)
+          .catch(() => null);
+        last = key;
+        quiet = 0;
+      } else quiet++;
+      // Over: nothing runs, and the line has said so for a few seconds.
+      if (!now.running && /delivered|not delivered|stopped/.test(now.line ?? '') && quiet >= 6)
+        break;
+      await sleep(500);
+    }
+    write(join(OUT, 'autopilot-timeline.json'), JSON.stringify(timeline, null, 2));
+    const end = timeline.at(-1);
+    note(`autopilot: ${end.line}; ${end.strip.join(', ')}`);
+    assert(
+      /delivered/.test(end.line ?? '') && !/not delivered/.test(end.line),
+      `the task: ${end.line}`
+    );
+    // Nothing shows as going on once the task is over.
+    const stuck = [...end.strip, ...end.records].filter((s) =>
+      /running|stopped|waiting|didn’t finish/.test(s)
+    );
+    assert(stuck.length === 0, `still showing as going on: ${stuck.join('; ')}`);
+    // Nor as cut short while it went: from one stage to the next, and in
+    // the delivery, the task's driver is at work.
+    const cut = (await d.exec('return window.__autopilotCut')) ?? [];
+    write(join(OUT, 'autopilot-cut.json'), JSON.stringify(cut, null, 2));
+    assert(
+      cut.length === 0,
+      `shown as cut short ${cut.length} times while it went, first: ${JSON.stringify(cut.slice(0, 3))}`
+    );
+    // And no stage went back: one done stays done (no Retry here).
+    const states = (await d.exec('return window.__autopilotStates')) ?? [];
+    write(
+      join(OUT, 'autopilot-states.json'),
+      JSON.stringify(
+        states.map(({ at, line, stages }) => ({ ms: at - states[0].at, line, stages })),
+        null,
+        2
+      )
+    );
+    const rank = (status) => (/pending/.test(status) ? 0 : /running|waiting/.test(status) ? 1 : 2);
+    const back = [];
+    states.forEach((state, i) =>
+      state.stages.forEach(([name, status], at) => {
+        const before = states[i - 1]?.stages[at];
+        if (before && rank(status) < rank(before[1]))
+          back.push(`${name}: ${before[1]} → ${status} at ${state.at - states[0].at} ms`);
+      })
+    );
+    assert(back.length === 0, `stages that went back: ${back.join('; ')}`);
+  });
 
   await step('chat: the reading place is kept while another sidebar tab is shown', async () => {
     const where = () =>
