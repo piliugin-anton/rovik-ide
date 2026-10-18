@@ -239,6 +239,52 @@ test('criterion 4: a mousedown on the handle while expanded starts no drag', () 
   }
 });
 
+test('criterion 2: the expanded button carries the expanded class the stylesheet places it by', () => {
+  // The stylesheet puts the expanded button 8px right of the chat column with a
+  // rule on `.sidebar-expand-button.expanded`: the class is the hook, so the
+  // button itself must carry it.
+  const root = container();
+  const [expanded, setExpanded] = createSignal(false);
+  const dispose = render(
+    () => (
+      <Resizable
+        showFloatingButton
+        expanded={expanded()}
+        onExpandedChange={setExpanded}
+        maxWidth={800}
+      >
+        <div class="panel-content">files</div>
+      </Resizable>
+    ),
+    root
+  );
+  try {
+    assert.equal(
+      button(root)!.classList.contains('expanded'),
+      false,
+      'collapsed, the button relies on the base rule (the panel right edge)'
+    );
+    press(button(root)!);
+    assert.equal(expanded(), true);
+    const b = button(root)!;
+    assert.ok(b.classList.contains('expanded'), 'expanded, the button marks itself expanded');
+    assert.equal(b.classList.contains('sidebar-expand-button'), true, 'and stays the same button');
+    // The placement is CSS only: nothing is measured or set inline on it.
+    assert.equal(b.style.left, '', 'no inline left offset is written');
+    assert.equal(b.style.right, '', 'no inline right offset is written');
+    assert.equal(b.style.top, '', 'no inline vertical offset is written');
+    press(b);
+    assert.equal(expanded(), false);
+    assert.equal(
+      button(root)!.classList.contains('expanded'),
+      false,
+      'collapsed again, the base rule has it back'
+    );
+  } finally {
+    dispose();
+  }
+});
+
 test('criterion 6: collapsing returns the panel to the width it had before expanding', () => {
   const root = container();
   const [expanded, setExpanded] = createSignal(false);
