@@ -7644,6 +7644,15 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   background: var(--bg-control-hover);
 }
 
+/* The chat panel when this window can't show chats (lib/projects.ts) */
+
+.chats-blocked-text {
+  margin: 0 0 4px;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 /* New project dialog (components/NewProjectDialog.tsx) */
 
 .modal.confirm-dialog.new-project-dialog {

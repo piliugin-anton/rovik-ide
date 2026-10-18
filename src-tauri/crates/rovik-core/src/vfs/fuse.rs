@@ -884,21 +884,25 @@ impl Drop for FuseMount {
 }
 
 /// Clears a mount left by a crashed run ("Transport endpoint is not
-/// connected"), which would make the folder unusable.
+/// connected"), which would make the folder unusable. Each unmount takes
+/// one off: older Rovik processes mounted on one another's folder, and
+/// crashed, left several.
 #[cfg(target_os = "linux")]
 fn clear_stale_mount(mountpoint: &Path) {
-    let stale =
-        matches!(std::fs::metadata(mountpoint), Err(e) if e.raw_os_error() == Some(libc::ENOTCONN));
-    if stale {
-        for helper in ["fusermount3", "fusermount"] {
-            let ok = crate::process::command(helper)
+    let stale = || matches!(std::fs::metadata(mountpoint), Err(e) if e.raw_os_error() == Some(libc::ENOTCONN));
+    for _ in 0..8 {
+        if !stale() {
+            return;
+        }
+        let unmounted = ["fusermount3", "fusermount"].iter().any(|helper| {
+            crate::process::command(helper)
                 .args(["-u", "-z"])
                 .arg(mountpoint)
                 .output()
-                .is_ok_and(|o| o.status.success());
-            if ok {
-                break;
-            }
+                .is_ok_and(|o| o.status.success())
+        });
+        if !unmounted {
+            return;
         }
     }
 }

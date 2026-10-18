@@ -6,6 +6,7 @@
 // open whichever sidebar tab is active.
 
 import { createSignal } from 'solid-js';
+import { invoke } from '@tauri-apps/api/core';
 import type { AiSettingsPage } from '../components/AiSettingsModal';
 
 const [page, setPage] = createSignal<AiSettingsPage | null>(null);
@@ -35,4 +36,29 @@ export function aiSettingsRevision(): number {
 
 export function notifyAiSettingsSaved(): void {
   setAiRevision((n) => n + 1);
+}
+
+/**
+ * Another of Rovik's windows may have saved the AI settings meanwhile: when
+ * this one comes to the front and the file was written since it last
+ * looked, its copies are read again. The look doesn't touch the keychain,
+ * which reading the settings does.
+ */
+export function rereadAiSettingsOnFocus(
+  stamp: () => Promise<number> = () => invoke<number>('ai_settings_stamp')
+): () => void {
+  let seen: number | null = null;
+  const look = async () => {
+    try {
+      const now = await stamp();
+      if (seen !== null && now !== seen) notifyAiSettingsSaved();
+      seen = now;
+    } catch {
+      // Not known: read when this window saves, as before.
+    }
+  };
+  void look();
+  const onFocus = () => void look();
+  window.addEventListener('focus', onFocus);
+  return () => window.removeEventListener('focus', onFocus);
 }

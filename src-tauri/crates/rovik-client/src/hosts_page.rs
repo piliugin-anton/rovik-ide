@@ -319,13 +319,15 @@ impl HostsPage {
         Ok(())
     }
 
-    /// Where the user's own ssh forwards a host's daemon here.
+    /// Where the user's own ssh forwards a host's daemon here: each of
+    /// Rovik's processes its own socket, as ssh takes the path over.
     fn local(&self, host: &Host) -> Result<Local, String> {
         #[cfg(unix)]
         {
-            Ok(Local::Socket(
-                self.sockets.join(format!("{}.sock", host.id)),
-            ))
+            Ok(Local::Socket(self.sockets.join(format!(
+                "{}.sock",
+                rovik_core::os_lock::slotted(&host.id)
+            ))))
         }
         #[cfg(not(unix))]
         {

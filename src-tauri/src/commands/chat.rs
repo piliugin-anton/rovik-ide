@@ -3,6 +3,7 @@
 //! mirror here, and written to on the host (6.1).
 
 use super::answer;
+use crate::instances::Instances;
 use rovik_client::Remote;
 use rovik_core::agent_run::autopilot::{self, StageRow};
 use rovik_core::agent_run::StartRequest;
@@ -16,7 +17,7 @@ use rovik_protocol::Request;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::ipc::InvokeBody;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
 pub async fn chat_list_dialogs(
@@ -43,14 +44,58 @@ pub async fn chat_get_dialog(
 /// results land by themselves only there (6.5).
 #[tauri::command]
 pub async fn chat_open_project(
+    app: AppHandle,
     core: State<'_, Core>,
     remote: State<'_, Arc<Remote>>,
     root: String,
 ) -> Result<projects::Opened, String> {
     let opened = api::chat_open_project(&core.db, root.clone()).await?;
+    reclaim(&app, &root, &opened.project.id);
     let open = (opened.project.id.clone(), PathBuf::from(root));
     remote.set_open_project(Some(open));
     Ok(opened)
+}
+
+/// The window's claim on its folder again (instances.rs), now that the
+/// folder's project ID may be new: a new project's, a copy's own history,
+/// or the project it was merged into. `project`: the folder's project.
+fn reclaim(app: &AppHandle, root: &str, project: &str) {
+    if let Some(instances) = app.try_state::<Instances>() {
+        let claim = instances.claim(Some(Path::new(root)), false, false);
+        if claim.open_elsewhere {
+            log::warn!("{root}'s chats are open in another window too");
+        }
+        instances.opened(Some(project.to_string()));
+    }
+}
+
+/// The chats among `dialog_ids` another of Rovik's windows is at work on
+/// (rovik_core::chat_hold): their unanswered messages are its to judge.
+#[tauri::command]
+pub fn chats_at_work_elsewhere(dialog_ids: Vec<String>) -> Vec<String> {
+    dialog_ids
+        .into_iter()
+        .filter(|id| rovik_core::chat_hold::elsewhere(id))
+        .collect()
+}
+
+/// Refuses to change the chats of a project another window has open (by
+/// its ID, or a folder it would go to).
+fn not_open_elsewhere(
+    app: &AppHandle,
+    id: &str,
+    folder: Option<&str>,
+    what: &str,
+) -> Result<(), String> {
+    let elsewhere = app
+        .try_state::<Instances>()
+        .and_then(|i| i.open_elsewhere(Some(id), folder.map(Path::new)));
+    match elsewhere {
+        Some(folder) => Err(format!(
+            "{folder} is open in another window: close it there first, then {what}."
+        )),
+        None => Ok(()),
+    }
 }
 
 /// A chat's plan (`meta.planFile`): a local chat's file, or a remote one's
@@ -70,13 +115,18 @@ pub async fn chat_read_plan(
 /// "Looks like a copy": share the chats, or a separate history.
 #[tauri::command]
 pub async fn chat_answer_copy(
+    app: AppHandle,
     core: State<'_, Core>,
     remote: State<'_, Arc<Remote>>,
     root: String,
     original_id: String,
     share: bool,
 ) -> Result<projects::ProjectInfo, String> {
+    if share {
+        not_open_elsewhere(&app, &original_id, None, "share its chats")?;
+    }
     let project = api::chat_answer_copy(&core.db, root.clone(), original_id, share).await?;
+    reclaim(&app, &root, &project.id);
     remote.folder_answered(Path::new(&root), &project.id);
     Ok(project)
 }
@@ -85,14 +135,17 @@ pub async fn chat_answer_copy(
 /// folder's project into that one.
 #[tauri::command]
 pub async fn chat_answer_moved(
+    app: AppHandle,
     core: State<'_, Core>,
     remote: State<'_, Arc<Remote>>,
     root: String,
     current_id: String,
     target_id: String,
 ) -> Result<projects::ProjectInfo, String> {
+    not_open_elsewhere(&app, &target_id, None, "use its chats here")?;
     remote.keep_project(&current_id, "merging it").await?;
     let project = api::chat_answer_moved(&core.db, root.clone(), current_id, target_id).await?;
+    reclaim(&app, &root, &project.id);
     remote.folder_answered(Path::new(&root), &project.id);
     Ok(project)
 }
@@ -119,12 +172,14 @@ pub async fn chat_list_projects(
 /// project already and `merge` is set).
 #[tauri::command]
 pub async fn chat_relink_project(
+    app: AppHandle,
     core: State<'_, Core>,
     remote: State<'_, Arc<Remote>>,
     project_id: String,
     root: String,
     merge: bool,
 ) -> Result<projects::Relinked, String> {
+    not_open_elsewhere(&app, &project_id, Some(&root), "move its chats")?;
     if merge {
         remote.keep_project(&project_id, "merging it").await?;
     }
@@ -134,10 +189,12 @@ pub async fn chat_relink_project(
 /// A project and all its chats.
 #[tauri::command]
 pub async fn chat_delete_project(
+    app: AppHandle,
     core: State<'_, Core>,
     remote: State<'_, Arc<Remote>>,
     project_id: String,
 ) -> Result<(), String> {
+    not_open_elsewhere(&app, &project_id, None, "delete it")?;
     remote.keep_project(&project_id, "deleting it").await?;
     api::chat_delete_project(&core, project_id).await
 }

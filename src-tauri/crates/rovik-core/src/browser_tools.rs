@@ -225,7 +225,8 @@ fn snap_profile_dir(chrome: &Path) -> Option<PathBuf> {
         return None;
     }
     let common = PathBuf::from(std::env::var_os("HOME")?).join("snap/chromium/common");
-    let dir = common.join("rovik-ide-browser");
+    // Each of Rovik's processes its own: one wipes it at each launch.
+    let dir = common.join(crate::os_lock::slotted("rovik-ide-browser"));
     // The folder's name before the app was renamed: moved over once, so the
     // browser keeps its cookies and logins.
     let legacy = common.join("tauri-ide-browser");

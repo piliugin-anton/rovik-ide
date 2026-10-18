@@ -1202,3 +1202,89 @@ async fn attachments_are_stored_as_pngs_and_pdfs() {
     drop(db);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Two of Rovik's processes on one data folder: two databases opened on it
+/// here, each with its own writer and its own hold on the marker.
+fn shared_folder(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("chat-db-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_processes_writing_one_chat_both_get_their_messages_in() {
+    let dir = shared_folder("writers");
+    let a = super::DbState::open(&dir).unwrap();
+    let b = super::DbState::open(&dir).unwrap();
+    a.write(|c| {
+        dialog(c, "d1", "Shared", 0);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    // Each append reads the chat's last seq, then writes after it: begun
+    // as a read, a commit by the other writer between the two would fail it.
+    let mut writes = Vec::new();
+    for n in 0..40 {
+        let db = if n % 2 == 0 { a.clone() } else { b.clone() };
+        writes.push(tokio::spawn(async move {
+            let m = message(&format!("m{n}"), "user", "hi");
+            db.write(move |c| append_messages(c, "d1", &[m]).map_err(|e| e.to_string()))
+                .await
+        }));
+    }
+    for w in writes {
+        w.await.unwrap().expect("no write fails for the other's");
+    }
+    let seqs: Vec<i64> = a
+        .read(|c| {
+            let mut s = c
+                .prepare("SELECT seq FROM messages WHERE dialog_id = 'd1' ORDER BY seq")
+                .unwrap();
+            let rows = s.query_map([], |r| r.get(0)).unwrap();
+            Ok(rows.map(Result::unwrap).collect())
+        })
+        .await
+        .unwrap();
+    // Each after the one before, none written over.
+    assert_eq!(seqs.len(), 40);
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
+    drop((a, b));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_marker_knows_when_others_still_have_the_database_open() {
+    let dir = shared_folder("marker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("chats.db.running");
+    let read = || std::fs::read_to_string(&marker).unwrap();
+
+    let mut a = super::Presence::start(&marker);
+    assert!(a.alone && !a.unclean, "a first start");
+    a.settle();
+    assert_eq!(read(), "running");
+    let mut b = super::Presence::start(&marker);
+    assert!(!b.alone && !b.unclean, "A runs: not B's to judge");
+    // A leaves first: B still runs.
+    a.leave();
+    drop(a);
+    assert_eq!(read(), "running");
+    b.leave();
+    drop(b);
+    assert_eq!(read(), "clean");
+
+    let mut c = super::Presence::start(&marker);
+    assert!(c.alone && !c.unclean);
+    c.settle();
+    // C crashes: never leaves.
+    drop(c);
+    let d = super::Presence::start(&marker);
+    assert!(d.alone && d.unclean);
+    drop(d);
+
+    // An older Rovik's crash: its empty marker.
+    std::fs::write(&marker, "").unwrap();
+    assert!(super::Presence::start(&marker).unclean);
+    let _ = std::fs::remove_dir_all(&dir);
+}

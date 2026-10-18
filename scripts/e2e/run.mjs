@@ -6,6 +6,7 @@
 //
 //   node scripts/e2e/run.mjs --app <binary> --out <dir> [--driver webdriver|bridge]
 //        [--tauri-driver <path>] [--native-driver <path>] [--only <regex>]
+//        [--second-app <binary>]
 //
 // webdriver (Linux, Windows): starts tauri-driver, which starts the app
 // through WebKitWebDriver or msedgedriver. bridge (macOS, where WKWebView
@@ -42,6 +43,14 @@ const ONLY = args.only ? new RegExp(args.only, 'i') : null;
 const DRIVER = args.driver ?? (PLATFORM === 'darwin' ? 'bridge' : 'webdriver');
 const APP = resolve(args.app ?? '');
 const APPIMAGE = /\.AppImage$/i.test(APP);
+// Other Rovik windows, started beside the driven one as a person would
+// (`rovik-ide <folder>`): the same build, but through the bridge (macOS) a
+// build without it, whose page would take the run's commands.
+const SECOND_APP = args['second-app']
+  ? resolve(args['second-app'])
+  : DRIVER === 'webdriver'
+    ? APP
+    : null;
 
 function parseArgs(list) {
   const out = {};
@@ -170,6 +179,85 @@ function startChild(cmd, argv, opts = {}) {
   child.stderr.on('data', (c) => appendFileSync(logFile, c));
   children.push(child);
   return child;
+}
+
+/** Another Rovik on `argv`, with the driven one's data (Linux: its XDG folders). */
+function launchRovik(argv, name, env = {}) {
+  const own = {};
+  // Windows: msedgedriver started the driven one's WebView2 with options of
+  // its own (a debugging port), and WebView2 won't open a second one with
+  // other options on the same data: these get a folder of their own.
+  if (PLATFORM === 'win32') own.WEBVIEW2_USER_DATA_FOLDER = join(WORK, 'webview2-other');
+  if (PLATFORM === 'linux') {
+    for (const [key, dir] of [
+      ['XDG_CONFIG_HOME', 'config'],
+      ['XDG_DATA_HOME', 'data'],
+      ['XDG_CACHE_HOME', 'cache'],
+    ]) {
+      own[key] = join(WORK, 'app', dir);
+    }
+  }
+  return startChild(SECOND_APP, argv, { name, env: { ...own, ...env } });
+}
+
+/** `child`'s exit code, once it ends; fails after `timeout` ms. */
+function exited(child, timeout) {
+  return new Promise((done, fail) => {
+    if (child.exitCode !== null || child.signalCode !== null) return done(child.exitCode);
+    const timer = setTimeout(() => fail(new Error(`still running after ${timeout} ms`)), timeout);
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      done(code);
+    });
+  });
+}
+
+/** X: the main window of the process `pid` (its largest), if it has one. */
+function xWindowOf(pid) {
+  try {
+    const ids = execFileSync('xdotool', ['search', '--pid', String(pid)], { encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean);
+    const sized = ids.map((id) => {
+      const geometry = execFileSync('xdotool', ['getwindowgeometry', id], { encoding: 'utf8' });
+      const [, w, h] = geometry.match(/Geometry: (\d+)x(\d+)/) ?? [];
+      return { id, area: Number(w) * Number(h) || 0 };
+    });
+    return sized.sort((a, b) => b.area - a.area)[0]?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** X: a picture of the process `pid`'s window, among the run's screenshots. */
+function xShot(pid, name) {
+  const id = xWindowOf(pid);
+  if (!id) return null;
+  const file = join(SHOTS, `${name}.png`);
+  try {
+    execFileSync('import', ['-window', id, file]);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/** X: the windows of the process `pid` moved off the screen, from over the
+ *  driven one, which the run's real clicks would hit otherwise. */
+function moveAside(pid) {
+  if (!X) return;
+  try {
+    const ids = execFileSync('xdotool', ['search', '--pid', String(pid)], { encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean);
+    for (const id of ids) execFileSync('xdotool', ['windowmove', id, '2000', '0']);
+  } catch {}
+}
+
+/** How often a Rovik's log says another one asked it to the front. */
+function askedToFront(logFile) {
+  const text = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+  return text.split('asked this one to come to the front').length - 1;
 }
 
 /** The first line a child prints (the scripted model's base URL). */
@@ -794,6 +882,150 @@ async function run() {
       'the project switcher to name demo'
     );
   });
+
+  // Rovik runs as several windows, a project open in one of them only
+  // (src-tauri/src/instances.rs): the chats each changes are its own.
+  if (SECOND_APP) {
+    await step(
+      'instances: Rovik started on the open project brings this window to the front',
+      async () => {
+        const before = askedToFront(join(OUT, 'app.log'));
+        const second = launchRovik([DEMO], 'second-on-demo');
+        const code = await exited(second, 60_000);
+        assert(code === 0, `the second Rovik ended with ${code}`);
+        await waitFor(
+          async () => askedToFront(join(OUT, 'app.log')) > before,
+          'this window to be asked to the front',
+          10_000
+        );
+      }
+    );
+
+    await step(
+      'instances: another project opens in a window of its own, and only there',
+      async () => {
+        const side = join(PROJECTS, 'side');
+        write(join(side, 'side.txt'), 'a project of its own\n');
+        const sideLog = join(OUT, 'app-side.log');
+        const second = launchRovik([side], 'second-on-side', { ROVIK_LOG_FILE: sideLog });
+        await sleep(8000);
+        assert(second.exitCode === null, `the window on side ended: ${second.exitCode}`);
+        moveAside(second.pid);
+        try {
+          // A third on it: the second comes to the front, and the third ends.
+          const third = launchRovik([side], 'third-on-side');
+          assert((await exited(third, 60_000)) === 0, 'the third Rovik ended');
+          await waitFor(
+            async () => askedToFront(sideLog) > 0,
+            'the window on side to be asked to the front',
+            10_000
+          );
+          // Nor does this one open it: it says where it is.
+          await click('.project-switcher-trigger');
+          await click(await buttonByText('New project…'));
+          await waitFor(() => d.exists('#new-project-root'), 'the New project dialog');
+          await setInput('#new-project-root', PROJECTS);
+          await click('#new-project-name');
+          await typeKeys('side');
+          await waitFor(() => d.exists('.new-project-open-existing'), '"Open existing"');
+          await click('.new-project-open-existing');
+          await waitFor(
+            async () => (await d.bodyText()).includes('side is open in another window'),
+            'the notice that side is open elsewhere',
+            15_000
+          );
+          assert(
+            (await panelText('.project-switcher-name')).includes('demo'),
+            'this window is still on demo'
+          );
+          assert(askedToFront(sideLog) > 1, 'the window on side asked to the front again');
+        } finally {
+          second.kill();
+          await exited(second, 15_000).catch(() => {});
+        }
+      }
+    );
+
+    // Linux, where "New window" starts this same build with no driver of
+    // its own: each window it opens starts without a project, and the
+    // chats without one are the first such window's alone.
+    if (X) {
+      await step(
+        'instances: New window starts without a project; the chats without one stay in the first',
+        async () => {
+          const claims = join(WORK, 'app', 'data', 'rovik-ide', 'open-projects');
+          const heldBy = (pid) =>
+            readdirSync(claims)
+              .filter((f) => f.endsWith('.json'))
+              .map((f) => {
+                try {
+                  return JSON.parse(readFileSync(join(claims, f), 'utf8'));
+                } catch {
+                  return null;
+                }
+              })
+              .filter((holder) => holder?.pid === pid);
+          const newWindows = () => {
+            try {
+              return execFileSync('pgrep', ['-f', 'rovik-ide --new-window'], { encoding: 'utf8' })
+                .split('\n')
+                .filter(Boolean)
+                .map(Number);
+            } catch {
+              return [];
+            }
+          };
+          // Where this window's Chat tab is: the new ones are laid out alike.
+          const chatTab = await d.exec(
+            `const tab = [...document.querySelectorAll('.sidebar-tabs button')].find((b) => b.textContent.includes('Chat'));
+             const r = tab.getBoundingClientRect();
+             return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)];`
+          );
+          const opened = [];
+          try {
+            for (const n of [1, 2]) {
+              await click('.project-switcher-trigger');
+              await click(await buttonByText('New window'));
+              const pid = await waitFor(
+                async () => newWindows().find((p) => !opened.includes(p)),
+                `new window ${n} to start`,
+                20_000
+              );
+              opened.push(pid);
+              await waitFor(async () => xWindowOf(pid), `new window ${n}'s window`, 30_000);
+              await sleep(8000);
+              const id = xWindowOf(pid);
+              // Its chat panel, by a real click on its Chat tab.
+              xdo('mousemove', '--window', id, chatTab[0], chatTab[1]);
+              await sleep(60);
+              xdo('click', 1);
+              await sleep(1500);
+              xShot(pid, `instances-new-window-${n}`);
+              moveAside(pid);
+            }
+            const [first, second] = opened;
+            const firstHolds = heldBy(first);
+            assert(
+              firstHolds.length === 1 && firstHolds[0].path === '',
+              `the first new window holds only the chats without a project: ${JSON.stringify(firstHolds)}`
+            );
+            assert(heldBy(second).length === 0, 'the second new window holds nothing');
+            // This window still has demo, and only demo.
+            assert(
+              (await panelText('.project-switcher-name')).includes('demo'),
+              'this window is still on demo'
+            );
+          } finally {
+            for (const pid of opened) {
+              try {
+                process.kill(pid);
+              } catch {}
+            }
+          }
+        }
+      );
+    }
+  }
 
   await step('tree: expand a folder and open a file', async () => {
     await treeOpen('src');

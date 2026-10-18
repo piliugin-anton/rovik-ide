@@ -91,6 +91,30 @@ pub fn path_key(path: &Path) -> String {
     s
 }
 
+/// The project ID a folder's ID file names, if it has one: the folders
+/// with the same ID share their chats.
+/// Whether one of `chats` is a lead chat (not a subagent's) of the project
+/// `project`; None: of the chats without a project.
+pub fn has_lead_chat(conn: &Connection, chats: &[String], project: Option<&str>) -> DbResult<bool> {
+    let mut find = conn
+        .prepare_cached("SELECT project_id FROM dialogs WHERE id = ?1 AND parent_id IS NULL")
+        .map_err(err)?;
+    for chat in chats {
+        let found: Option<Option<String>> = find
+            .query_row(params![chat], |r| r.get(0))
+            .optional()
+            .map_err(err)?;
+        if found.is_some_and(|of| of.as_deref() == project) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub fn folder_project_id(root: &Path) -> Option<String> {
+    read_id(root)
+}
+
 fn read_id(root: &Path) -> Option<String> {
     let text = fs::read_to_string(root.join(ID_FILE)).ok()?;
     let parsed: IdFile = serde_json::from_str(&text).ok()?;

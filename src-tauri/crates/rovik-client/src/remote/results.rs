@@ -160,7 +160,7 @@ impl Remote {
     async fn work(&self, job: Job) {
         match job {
             // Its move back brings its result.
-            Job::Import { result, .. } if self.lock().moving.contains(&result.dialog_id) => {}
+            Job::Import { result, .. } if self.lock().moving.contains_key(&result.dialog_id) => {}
             Job::Import { host, result } => {
                 let chat = result.dialog_id.clone();
                 if let Err(e) = self.import(&host, result).await {
@@ -244,6 +244,11 @@ impl Remote {
         if self.host_of(&chat).as_deref() != Some(host) {
             return Ok(());
         }
+        // Each of Rovik's processes is told of every result: the one that
+        // holds the chat first imports it, and the others find it imported.
+        let Some(_importing) = rovik_core::chat_hold::take(&chat) else {
+            return Ok(());
+        };
         let mirrored = self.mirror_state(&chat).await?.unwrap_or_default();
         let seen = mirrored.imported_seq;
         if passed_over(seen, result.seq) {

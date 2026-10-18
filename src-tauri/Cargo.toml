@@ -83,7 +83,6 @@ uuid.workspace = true
 git2 = { workspace = true, features = ["https", "ssh"] }
 sha2.workspace = true
 log.workspace = true
-tauri-plugin-single-instance = "2.5.3"
 regex.workspace = true
 # Deleting moves to the system trash (Recycle Bin, macOS Trash, freedesktop.org trash).
 trash = "5"

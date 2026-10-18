@@ -183,9 +183,10 @@ struct State {
     driving: HashSet<String>,
     /// Each mirrored chat's pulls (remote/mirror.rs).
     pulls: HashMap<String, mirror::Pulls>,
-    /// The chats whose move there or back goes now, and those of them
-    /// asked to cancel (remote/moving.rs, remote/back.rs).
-    moving: HashSet<String>,
+    /// The chats whose move there or back goes now, each held for this
+    /// process meanwhile (chat_hold.rs), and those of them asked to cancel
+    /// (remote/moving.rs, remote/back.rs).
+    moving: HashMap<String, rovik_core::chat_hold::Hold>,
     cancels: HashSet<String>,
     /// The chats moving back, their subagents' chats with them, by their
     /// lead's chat: what would change them is refused.

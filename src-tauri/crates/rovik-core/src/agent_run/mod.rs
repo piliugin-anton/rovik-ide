@@ -175,6 +175,8 @@ struct RunControl {
     /// An Autopilot lead's (U04, R03): one of its subagents found the task
     /// past its budget and stopped the run, which ends `budget`: why.
     budget_cut: Option<String>,
+    /// The chat held for this process while the run goes (chat_hold.rs).
+    _hold: crate::chat_hold::Hold,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -524,6 +526,8 @@ impl AgentState {
         profile_id: &str,
         options: Option<OpenAIChatOptions>,
     ) -> Option<Controls> {
+        // Held first: another process at work on the chat keeps it.
+        let hold = crate::chat_hold::take(dialog_id)?;
         let mut inner = self.lock();
         if inner.runs.contains_key(dialog_id) {
             return None;
@@ -551,6 +555,7 @@ impl AgentState {
                 spent: budget::Spent::default(),
                 spent_before: budget::Spent::default(),
                 budget_cut: None,
+                _hold: hold,
             },
         );
         Some(Controls {
@@ -1199,6 +1204,9 @@ pub(super) async fn start_run(
     }
     if state.draining() {
         return Err(RESTARTING.into());
+    }
+    if crate::chat_hold::elsewhere(&dialog_id) {
+        return Err(crate::chat_hold::AT_WORK_ELSEWHERE.into());
     }
     let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone())
     else {

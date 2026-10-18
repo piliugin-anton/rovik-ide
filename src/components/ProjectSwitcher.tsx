@@ -11,6 +11,8 @@ const isMac = navigator.platform.toUpperCase().includes('MAC');
 export default function ProjectSwitcher(props: {
   onOpenFolder: () => void;
   onNewProject: () => void;
+  /** Another Rovik window, for another project. */
+  onNewWindow: () => void;
   onOpen: (p: ProjectSummary) => void;
   onRelink: (p: ProjectSummary) => void;
   onDelete: (p: ProjectSummary) => void;
@@ -138,6 +140,17 @@ export default function ProjectSwitcher(props: {
             }}
           >
             New project…
+          </button>
+          <button
+            type="button"
+            class="project-switcher-open project-switcher-new-window"
+            title="Another Rovik window, for another project"
+            onClick={() => {
+              close();
+              props.onNewWindow();
+            }}
+          >
+            New window
           </button>
         </div>
       </Show>

@@ -1,0 +1,185 @@
+//! OS file locks shared by Rovik's processes. Several can run at once on
+//! the same app data, one window each: a lock says one of them is at work
+//! on something (a chat, an overlay, a landing) until it lets go or ends.
+//! A crash lets go too, as the OS releases a dead process's locks, so
+//! nothing stays stuck. The lock belongs to the open file, not to the
+//! process: each is held through one open file, as a second of the
+//! process's own would find it taken.
+
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io;
+use std::path::Path;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+/// A lock found taken is tried again this often, this far apart: a
+/// process only looking at it (`held_elsewhere`) shares it for a moment.
+const TRIES: u32 = 6;
+const APART: Duration = Duration::from_millis(15);
+
+fn open(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+}
+
+fn try_lock(file: &File) -> io::Result<bool> {
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) => Ok(false),
+        Err(TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// Holds the lock at `path`, the file made if missing; None while another
+/// process holds it.
+pub fn try_hold(path: &Path) -> io::Result<Option<File>> {
+    let file = open(path)?;
+    for attempt in 0..TRIES {
+        if attempt > 0 {
+            std::thread::sleep(APART);
+        }
+        if try_lock(&file)? {
+            return Ok(Some(file));
+        }
+    }
+    Ok(None)
+}
+
+/// Holds the lock at `path`, once whoever has it lets go.
+pub fn hold(path: &Path) -> io::Result<File> {
+    let file = open(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+/// Whether another process holds the lock at `path`: looked at without
+/// taking it from anyone, as a shared lock for a moment. Only for a lock
+/// this process doesn't hold, as its own would look taken.
+pub fn held_elsewhere(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    matches!(file.try_lock_shared(), Err(TryLockError::WouldBlock))
+}
+
+/// This process's slot: its number among the Rovik processes running on
+/// this computer (the lowest free), and the lock that keeps it.
+static SLOT: OnceLock<(usize, Option<File>)> = OnceLock::new();
+
+/// Takes this process's slot among those kept in `dir`: 1 for the first
+/// process, 2 for one started while it runs, and so on. Taken once; what's
+/// asked after that is the slot taken first.
+pub fn take_slot(dir: &Path) -> usize {
+    SLOT.get_or_init(|| first_free(dir)).0
+}
+
+/// The lowest slot in `dir` no process holds, held.
+fn first_free(dir: &Path) -> (usize, Option<File>) {
+    for n in 1..=64 {
+        let taken = open(&dir.join(format!("slot-{n}.lock")))
+            .and_then(|file| Ok(try_lock(&file)?.then_some(file)));
+        match taken {
+            Ok(Some(file)) => return (n, Some(file)),
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("slots: {e}");
+                break;
+            }
+        }
+    }
+    // None to be had: one no other process has, unkept.
+    (64 + std::process::id() as usize, None)
+}
+
+/// This process's slot: 1 until one is taken (a process on its own).
+pub fn slot() -> usize {
+    SLOT.get().map_or(1, |(n, _)| *n)
+}
+
+/// `name` for something only one process at a time can have (a mount
+/// point, a socket): as it is for the first, `name-2` for the second.
+pub fn slotted(name: &str) -> String {
+    slotted_as(name, slot())
+}
+
+fn slotted_as(name: &str, slot: usize) -> String {
+    match slot {
+        1 => name.to_string(),
+        n => format!("{name}-{n}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("os-lock-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // Two open files in one test process stand for two processes: the lock
+    // is the open file's.
+    #[test]
+    fn a_held_lock_is_another_processs_until_it_lets_go() {
+        let dir = temp_dir("held");
+        let path = dir.join("sub/chat.lock");
+        assert!(!held_elsewhere(&path), "no file: no one's");
+        let mine = try_hold(&path).unwrap().expect("free");
+        assert!(held_elsewhere(&path));
+        assert!(try_hold(&path).unwrap().is_none());
+        drop(mine);
+        assert!(!held_elsewhere(&path));
+        let theirs = try_hold(&path).unwrap().expect("free again");
+        drop(theirs);
+    }
+
+    #[test]
+    fn looking_at_a_lock_doesnt_keep_it_from_a_process_taking_it() {
+        let dir = temp_dir("look");
+        let path = dir.join("chat.lock");
+        let looking = File::open({
+            drop(try_hold(&path).unwrap());
+            &path
+        })
+        .unwrap();
+        looking.try_lock_shared().unwrap();
+        // Taken while another looks: tried again once it's done looking.
+        let looker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            drop(looking);
+        });
+        assert!(try_hold(&path).unwrap().is_some());
+        looker.join().unwrap();
+    }
+
+    #[test]
+    fn each_process_takes_the_lowest_slot_free() {
+        let dir = temp_dir("slots");
+        let (first, a) = first_free(&dir);
+        let (second, b) = first_free(&dir);
+        assert_eq!((first, second), (1, 2));
+        // The first ends: the next one started takes its slot.
+        drop(a);
+        assert_eq!(first_free(&dir).0, 1);
+        drop(b);
+    }
+
+    #[test]
+    fn names_carry_the_slot_after_the_first() {
+        // The test process took none: it's a process on its own.
+        assert_eq!(slot(), 1);
+        assert_eq!(slotted("vfs"), "vfs");
+        assert_eq!(slotted_as("vfs", 2), "vfs-2");
+        assert_eq!(slotted_as("RovikVirtualFiles", 3), "RovikVirtualFiles-3");
+    }
+}

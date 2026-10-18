@@ -753,6 +753,33 @@ mod landing {
         assert_eq!(done, vec!["a.txt"]);
         assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n"));
     }
+
+    /// Another of Rovik's processes, starting while one writes a landing,
+    /// finds its journal "applying": not one a crash cut, and not its own
+    /// to finish while that one holds it.
+    #[test]
+    fn a_landing_another_process_is_writing_isnt_finished_at_its_start() {
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "ONE\n");
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
+        fs::write(d.project().join("a.txt"), "one\n").unwrap();
+        let (id, _, _) = land::latest(&data(&d), "chat").unwrap();
+        let dir = data(&d).join("landings").join("chat").join(&id);
+        let text = fs::read_to_string(dir.join("journal.json"))
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        fs::write(dir.join("journal.json"), text).unwrap();
+        let writing = crate::os_lock::try_hold(&dir.join(land::APPLYING))
+            .unwrap()
+            .unwrap();
+        assert!(land::recover(&data(&d)).is_empty());
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("one\n"));
+        // That process crashed: it's interrupted now.
+        drop(writing);
+        assert_eq!(land::recover(&data(&d)), vec!["a.txt"]);
+        assert_eq!(project_file(&d, "a.txt").as_deref(), Some("ONE\n"));
+    }
 }
 
 #[test]

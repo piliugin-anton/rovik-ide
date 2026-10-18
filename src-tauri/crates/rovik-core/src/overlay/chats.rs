@@ -30,6 +30,8 @@ pub struct ChatOverlay {
     /// The overlay's own folder (changes, build output of its commands).
     pub store: PathBuf,
     mount: Mutex<Option<crate::vfs::Mount>>,
+    /// The store's lock while it's open here (`hold_store`).
+    held: Mutex<Option<std::fs::File>>,
 }
 
 impl ChatOverlay {
@@ -95,6 +97,8 @@ impl ChatOverlay {
         if let Some(m) = self.mount.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = m.unmount();
         }
+        // Last: the store is anyone's again.
+        self.held.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 }
 
@@ -386,9 +390,10 @@ pub fn open(
         Err(_) => std::fs::write(&marker, project.to_string_lossy().as_bytes())
             .map_err(|e| e.to_string())?,
     }
+    let held = hold_store(&store)?;
     let fs = Arc::new(OverlayFs::open(project, &store, DEFAULT_LIMIT).map_err(|e| e.to_string())?);
     // Files a crash left behind: only here, where nothing else has the
-    // chat's changes open (its gate is held).
+    // chat's changes open (its gate is held, and its store's lock).
     fs.sweep_orphans();
     fs.on_warn(on_warn);
     let at = mountpoint(dialog_id);
@@ -400,6 +405,7 @@ pub fn open(
         view,
         store,
         mount: Mutex::new(Some(mount)),
+        held: Mutex::new(held),
     });
     OPEN.lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -472,6 +478,9 @@ pub fn close(dialog_id: &str) {
 
 /// Throws the chat's changes away.
 pub fn discard(dialog_id: &str) -> Result<(), String> {
+    if open_elsewhere(dialog_id) {
+        return Err(OPEN_ELSEWHERE.into());
+    }
     let_go(dialog_id);
     match store_dir(dialog_id) {
         // Gone already (discarded twice at once): nothing to do.
@@ -503,11 +512,13 @@ pub(super) fn let_go(dialog_id: &str) {
     }
 }
 
-/// A deleted chat: its overlay and its landings' journals go.
+/// A deleted chat: its overlay and its landings' journals go, and the lock
+/// it held while at work (chat_hold.rs).
 pub fn forget(dialog_id: &str) {
     if !valid_id(dialog_id) {
         return;
     }
+    crate::chat_hold::forget(dialog_id);
     let _ = discard(dialog_id);
     if let Some(data) = data_dir() {
         let _ = std::fs::remove_dir_all(data.join("landings").join(dialog_id));
@@ -634,7 +645,8 @@ pub const SCRATCH_PREFIX: &str = "red-";
 /// The file that marks a scratch overlay's store (never a chat's).
 const SCRATCH_MARK: &str = "scratch.txt";
 
-/// Scratch overlays a crash left: none is open at start.
+/// Scratch overlays a crash left: none is open at start, but in another of
+/// Rovik's processes, whose stay.
 fn sweep_scratch(data_dir: &Path) {
     let Ok(dirs) = std::fs::read_dir(data_dir.join("overlays")) else {
         return;
@@ -642,10 +654,38 @@ fn sweep_scratch(data_dir: &Path) {
     for d in dirs.flatten() {
         // Marked, or named as one (a chat's id is a bare uuid).
         let named = d.file_name().to_string_lossy().starts_with(SCRATCH_PREFIX);
-        if named || d.path().join(SCRATCH_MARK).is_file() {
+        let scratch = named || d.path().join(SCRATCH_MARK).is_file();
+        if scratch && !crate::os_lock::held_elsewhere(&d.path().join(MOUNTED)) {
             let _ = std::fs::remove_dir_all(d.path());
         }
     }
+}
+
+/// The lock in an overlay's store, held by the process that has it open:
+/// its view mounted, or its changes open for a moment (`with_fs`).
+const MOUNTED: &str = "mounted.lock";
+
+/// Why a chat's changes can't be opened here.
+pub const OPEN_ELSEWHERE: &str = "this chat's changes are open in another Rovik window";
+
+/// The lock of the overlay store `store`, for opening it here: never in
+/// two processes at once, which would each change its files unaware of
+/// the other. None: the lock couldn't be made, and the store opens anyway.
+fn hold_store(store: &Path) -> Result<Option<std::fs::File>, String> {
+    match crate::os_lock::try_hold(&store.join(MOUNTED)) {
+        Ok(Some(lock)) => Ok(Some(lock)),
+        Ok(None) => Err(OPEN_ELSEWHERE.into()),
+        Err(e) => {
+            eprintln!("overlay: {}: {e}", store.display());
+            Ok(None)
+        }
+    }
+}
+
+/// Whether another of Rovik's processes has the chat's changes open.
+pub fn open_elsewhere(dialog_id: &str) -> bool {
+    get(dialog_id).is_none()
+        && store_dir(dialog_id).is_some_and(|s| crate::os_lock::held_elsewhere(&s.join(MOUNTED)))
 }
 
 /// An overlay of `base`, mounted, registered as open.
@@ -662,6 +702,7 @@ fn mount_on(
     }
     std::fs::write(store.join("project.txt"), base.to_string_lossy().as_bytes())
         .map_err(|e| e.to_string())?;
+    let held = hold_store(&store)?;
     let fs = Arc::new(OverlayFs::open(base, &store, limit).map_err(|e| e.to_string())?);
     fs.sweep_orphans();
     let at = mountpoint(id);
@@ -673,6 +714,7 @@ fn mount_on(
         view,
         store,
         mount: Mutex::new(Some(mount)),
+        held: Mutex::new(held),
     });
     OPEN.lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -2190,9 +2232,11 @@ fn with_fs<T>(dialog_id: &str, f: impl FnOnce(&OverlayFs) -> T) -> Result<T, Str
         .filter(|s| s.join("manifest.json").is_file())
         .ok_or("this chat has no isolated changes")?;
     let project = saved_project(dialog_id).ok_or("this chat has no isolated changes")?;
+    let lock = hold_store(&store)?;
     let fs = OverlayFs::open(&project, &store, DEFAULT_LIMIT).map_err(|e| e.to_string())?;
     let out = f(&fs);
     fs.flush();
+    drop(lock);
     drop(held);
     Ok(out)
 }
@@ -4317,6 +4361,54 @@ mod child_tests {
         let _data = test_data(&root.join("data"));
         assert!(!unmarked.exists() && !marked.exists());
         assert!(chat.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Another of Rovik's processes has a scratch overlay open (its red
+    /// check runs there): the sweep at this one's start leaves it.
+    #[test]
+    fn a_scratch_overlay_open_in_another_process_isnt_swept() {
+        let root = std::env::temp_dir().join(format!("sweep-{}", uuid::Uuid::new_v4()));
+        let overlays = root.join("data").join("overlays");
+        let live = overlays.join(format!("{SCRATCH_PREFIX}{}", uuid::Uuid::new_v4()));
+        let left = overlays.join(format!("{SCRATCH_PREFIX}{}", uuid::Uuid::new_v4()));
+        for dir in [&live, &left] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(SCRATCH_MARK), "").unwrap();
+        }
+        let theirs = crate::os_lock::try_hold(&live.join(MOUNTED))
+            .unwrap()
+            .unwrap();
+        let _data = test_data(&root.join("data"));
+        assert!(live.join(SCRATCH_MARK).is_file());
+        assert!(!left.exists());
+        drop(theirs);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A chat's changes open in another of Rovik's processes aren't opened
+    /// here as well, nor thrown away: each would change its files unaware
+    /// of the other.
+    #[test]
+    fn a_chats_changes_open_in_another_process_stay_its_own() {
+        let root = std::env::temp_dir().join(format!("elsewhere-{}", uuid::Uuid::new_v4()));
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let data = root.join("data");
+        let _data = test_data(&data);
+        let chat = uuid::Uuid::new_v4().to_string();
+        let store = data.join("overlays").join(&chat);
+        std::fs::create_dir_all(&store).unwrap();
+        let theirs = crate::os_lock::try_hold(&store.join(MOUNTED))
+            .unwrap()
+            .unwrap();
+        assert!(open_elsewhere(&chat));
+        let opened = open(&chat, &project, Box::new(|_, _| {}));
+        assert_eq!(opened.err().as_deref(), Some(OPEN_ELSEWHERE));
+        assert_eq!(discard(&chat).err().as_deref(), Some(OPEN_ELSEWHERE));
+        assert!(store.is_dir());
+        drop(theirs);
+        assert!(!open_elsewhere(&chat));
         let _ = std::fs::remove_dir_all(&root);
     }
 

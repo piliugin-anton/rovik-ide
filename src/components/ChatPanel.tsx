@@ -111,6 +111,7 @@ import {
 } from '../lib/agentRuns';
 import type { ShowTarget } from '../lib/remoteNotices';
 import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
+import { chatsAtWorkElsewhere } from '../lib/instances';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
 import ChatList, { type ChatListRow } from './ChatList';
@@ -2475,9 +2476,11 @@ export default function ChatPanel(props: ChatProps) {
     const drafts = draftsToJudge ?? listPendingDrafts();
     if (drafts.length === 0) return;
     try {
+      // Another window's run may answer its chat's yet (lib/instances.ts).
+      const elsewhere = await chatsAtWorkElsewhere(drafts.map((d) => d.dialogId));
       // A running chat's and a remote chat's wait (lib/remoteGuards.ts).
       draftsToJudge = await recoverDrafts(drafts, {
-        isRunning: (id) => store.isRunning(id),
+        isRunning: (id) => store.isRunning(id) || elsewhere.has(id),
         placeOf: async (id) => {
           const known = store.summaryOf(id);
           return known ? known.place : (await chatApi.getDialog(id).catch(() => null))?.place;
