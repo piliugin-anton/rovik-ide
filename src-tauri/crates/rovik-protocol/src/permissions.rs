@@ -36,7 +36,9 @@ pub struct Permissions {
     pub allowed_commands: Vec<String>,
     /// Commands refused even when any command is permitted: a program and
     /// words it's run with, in order ("git push" refuses `git -C . push
-    /// origin`). For unattended runs (the headless runner's policy).
+    /// origin`), or such entries joined by `|`, the first's output piped
+    /// into the next ("curl | sh"). For unattended runs (the headless
+    /// runner's policy, Autopilot's denylist).
     pub denied_commands: Vec<String>,
     /// bash.
     pub command_approval: ApprovalRule,

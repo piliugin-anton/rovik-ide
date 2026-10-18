@@ -199,17 +199,21 @@ pub async fn model(replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
 /// The script a request is answered from: the first route whose marker is
 /// in the request's first message after the system prompt (a subagent's
 /// brief, or the user's request), else the default script (K05: parallel
-/// runs each get their own replies, in their own order).
+/// runs each get their own replies, in their own order). A marker that
+/// starts with `last:` is looked for in the request's last message instead
+/// (a turn the IDE asks for at the end of a chat, as a task's report).
 pub fn route_of(body: &Value, markers: &[&str]) -> Option<usize> {
-    let first = body["messages"]
-        .as_array()?
-        .iter()
-        .find(|m| m["role"] != "system")?;
-    let text = match &first["content"] {
+    let messages = body["messages"].as_array()?;
+    let text_of = |m: &Value| match &m["content"] {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    markers.iter().position(|m| text.contains(m))
+    let first = text_of(messages.iter().find(|m| m["role"] != "system")?);
+    let last = messages.last().map(text_of).unwrap_or_default();
+    markers.iter().position(|m| match m.strip_prefix("last:") {
+        Some(marker) => last.contains(marker),
+        None => first.contains(m),
+    })
 }
 
 /// `model`, with one script per run: `routes` pairs a marker (found in the
@@ -228,8 +232,9 @@ pub async fn model_routed(
         replies.iter().map(|r| (r.pieces(), r.hangs())).collect()
     };
     let markers: Vec<&'static str> = routes.iter().map(|(m, _)| *m).collect();
-    let mut scripts: Vec<Vec<(Vec<(Duration, String)>, bool)>> =
-        routes.iter().map(|(_, r)| script(r)).collect();
+    // Each route's replies, each in its pieces, and whether it hangs.
+    type Script = Vec<(Vec<(Duration, String)>, bool)>;
+    let mut scripts: Vec<Script> = routes.iter().map(|(_, r)| script(r)).collect();
     scripts.push(script(&default));
     let next = Arc::new(Mutex::new(vec![0usize; scripts.len()]));
     let scripts = Arc::new(scripts);
@@ -269,6 +274,43 @@ pub async fn model_routed(
                     drop(socket);
                     return;
                 }
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    (url, seen)
+}
+
+/// A System One endpoint (`system_one.rs`, the typed AI reviewer) that
+/// answers every question it's asked with the probability `noul`: 0.5
+/// leaves the reviewer unsure (review.rs `decide`). The requests it got
+/// are kept.
+pub async fn system_one(noul: f64) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let log = log.clone();
+            tokio::spawn(async move {
+                let (_, body) = read_request(&mut socket).await;
+                let answers: serde_json::Map<String, Value> = body["questions"]
+                    .as_object()
+                    .map(|asked| {
+                        asked
+                            .keys()
+                            .map(|key| (key.clone(), json!({ "noul": noul })))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                log.lock().unwrap().push(body);
+                let text = json!({ "answers": answers }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.shutdown().await;
             });
         }

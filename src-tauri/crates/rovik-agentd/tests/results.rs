@@ -13,8 +13,8 @@ use git2::{
     Delta, ObjectType, Oid, Repository, Status, StatusOptions, TreeWalkMode, TreeWalkResult,
 };
 use rovik_client::Incoming;
-use rovik_core::agent_run::pending_reason;
-use rovik_core::testing::{model, Reply};
+use rovik_core::agent_run::{pending_reason, StartKind, UserMessage};
+use rovik_core::testing::{model, model_routed, Reply};
 use rovik_protocol::events::AgentEvent;
 use rovik_protocol::work::ChatResult;
 use rovik_protocol::{Event, Request};
@@ -145,7 +145,7 @@ async fn a_result_is_the_worktree_without_what_is_ignored() {
     assert_eq!(result.pending, pending_reason("unknown"));
 
     let results: Vec<ChatResult> = setup.client.request(Request::WorkResults).await.unwrap();
-    assert_eq!(results, [result.clone()]);
+    assert_eq!(results, std::slice::from_ref(&result));
     let again: ChatResult = (setup.client)
         .request(Request::WorkResult {
             dialog_id: CHAT.into(),
@@ -178,7 +178,7 @@ async fn a_runs_end_brings_its_result() {
     let first = start(&setup, &url, unattended());
     setup
         .client
-        .request::<Option<String>>(Request::AgentStart(first))
+        .request::<Option<String>>(Request::AgentStart(Box::new(first)))
         .await
         .unwrap();
     let (result, outcome) = next_result(&mut heard).await;
@@ -200,7 +200,7 @@ async fn a_runs_end_brings_its_result() {
     };
     setup
         .client
-        .request::<Option<String>>(Request::AgentStart(second))
+        .request::<Option<String>>(Request::AgentStart(Box::new(second)))
         .await
         .unwrap();
     let stop = Request::AgentStop {
@@ -218,4 +218,114 @@ async fn a_runs_end_brings_its_result() {
         stopped.commit, result.commit,
         "the worktree is as the first run left it"
     );
+}
+
+/// V02 (D7): an Autopilot task's implementation on the server, in a
+/// project with no checks and a plan with nothing to run: its result
+/// doesn't land on the computer on its own, and says why. Its plan's run,
+/// which changed nothing, brings an ordinary result first.
+#[tokio::test]
+async fn an_autopilot_tasks_unchecked_result_waits() {
+    let setup = Setup::new().await;
+    let (root, _) = worktree(&setup).await;
+    let (_listener, mut heard) = listening(&setup.daemon).await;
+    let plan = "# Say hello\n\nmain prints hello.\n\n## Criteria\n\n1. Running `main` prints `hello`.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+        1. **Say hello**\n   - Files: `src/main.rs`\n   - Change `main` in `src/main.rs` to print `hello` with `println!`.\n\
+        2. **Check**\n   - Files: `src/main.rs` (read)\n   - Read `src/main.rs` to confirm `main` prints `hello`; it keeps its signature.\n\n\
+        ## Validation\n- Run it by hand: it prints hello.\n";
+    let (url, _) = model_routed(
+        vec![
+            ("# Review this plan", vec![Reply::Text("## Findings\n\nNone.")]),
+            // The Tests stage's writer (S04) finds nothing to test.
+            (
+                "# Write the tests before the change",
+                vec![Reply::Text("## Blocked\n\nNothing to test here.")],
+            ),
+        ],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": plan }),
+            },
+            Reply::Text("Saved the plan."),
+            Reply::Call {
+                id: "t1",
+                name: "todo",
+                args: json!({ "items": [
+                    { "title": "Say hello", "status": "in_progress" },
+                    { "title": "Check", "status": "pending" },
+                ] }),
+            },
+            Reply::Call {
+                id: "w1",
+                name: "write",
+                args: json!({ "path": "src/main.rs", "content": "fn main() { println!(\"hello\"); }\n" }),
+            },
+            Reply::Call {
+                id: "t2",
+                name: "todo",
+                args: json!({ "items": [
+                    { "title": "Say hello", "status": "done" },
+                    { "title": "Check", "status": "done" },
+                ] }),
+            },
+            Reply::Text("Done: main says hello."),
+        ],
+    )
+    .await;
+    let mut request = start(&setup, &url, unattended());
+    request.start = StartKind::Send {
+        message: UserMessage {
+            id: "u1".into(),
+            content: "Make main say hello".into(),
+            meta: Some(json!({ "mode": "autopilot" })),
+            attachments: Vec::new(),
+        },
+    };
+    request.mode = Some("autopilot".into());
+    setup
+        .client
+        .request::<Option<String>>(Request::AgentStart(Box::new(request)))
+        .await
+        .unwrap();
+    let (planned, outcome) = next_result(&mut heard).await;
+    assert_eq!(outcome.as_deref(), Some("done"), "the plan's run");
+    assert_eq!(planned.pending, None);
+    // The Prepare and Tests stages' runs between them are the IDE's own:
+    // they bring no result (S03, S04), so the next is the implementation's.
+    let (implemented, outcome) = next_result(&mut heard).await;
+    assert_eq!(outcome.as_deref(), Some("unverified"));
+    assert_eq!(
+        implemented.pending.as_deref(),
+        Some("Not landed: no check ran on it, and Autopilot lands only what's checked.")
+    );
+    assert!(std::fs::read_to_string(root.join("src/main.rs"))
+        .unwrap()
+        .contains("hello"));
+
+    // D7: once the task is delivered, its result committed again (as a
+    // move back asks for it) still waits, and says why: the delivery's own
+    // run, which brings no result, doesn't make it landable.
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(60), heard.recv()).await;
+        let delivered = matches!(
+            next.expect("the delivery's run's end").expect("the client went"),
+            Incoming::Event {
+                event: Event::Agent(AgentEvent::RunEnded { stage: Some(stage), .. }),
+                ..
+            } if stage == "deliver"
+        );
+        if delivered {
+            break;
+        }
+    }
+    let again: ChatResult = (setup.client)
+        .request(Request::WorkResult {
+            dialog_id: CHAT.into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(again.outcome, "unverified");
+    assert_eq!(again.pending, implemented.pending);
 }

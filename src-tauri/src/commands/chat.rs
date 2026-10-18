@@ -4,6 +4,7 @@
 
 use super::answer;
 use rovik_client::Remote;
+use rovik_core::agent_run::autopilot::{self, StageRow};
 use rovik_core::agent_run::StartRequest;
 use rovik_core::chat_db::search::SearchHit;
 use rovik_core::chat_db::store::{
@@ -149,6 +150,16 @@ pub async fn chat_get_messages(
     limit: Option<usize>,
 ) -> Result<MessagePage, String> {
     api::chat_get_messages(&core.db, dialog_id, before_seq, limit).await
+}
+
+/// The chat's current Autopilot task's stage records, from its rows (a
+/// remote chat's mirror's), for the strip above the input.
+#[tauri::command]
+pub async fn chat_task_stages(
+    core: State<'_, Core>,
+    dialog_id: String,
+) -> Result<Option<Vec<StageRow>>, String> {
+    autopilot::task_stages(&core, &dialog_id).await
 }
 
 #[tauri::command]

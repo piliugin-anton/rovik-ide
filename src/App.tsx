@@ -163,6 +163,10 @@ export default function App() {
   const [searchActive, setSearchActive] = createSignal(false);
   const [revealRequest, setRevealRequest] = createSignal<RevealRequest | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
+  // The panel's full-window mode: the floating toggle in Resizable sets it,
+  // and the `sidebar-expanded` class on `.app` hides the right pane.
+  const [sidebarExpanded, setSidebarExpanded] = createSignal(false);
+
   // App-wide Settings (the gear next to the project selector): a virtual
   // files notification's "Show steps" opens its page directly.
   createEffect(() => {
@@ -1171,15 +1175,15 @@ export default function App() {
   }
 
   /**
-   * "Implement this plan" over a plan file: saves it, then hands its text to
-   * the chat, which starts the run in Agent mode (lib/plans.ts).
+   * "Implement this plan" over a plan file: saves it, then hands it to the
+   * chat, which starts the run in Agent mode (lib/plans.ts).
    */
   async function implementOpenPlan() {
     const file = activeFile();
     if (!file || !isPlanFile(file.path)) return;
     if (file.dirty) await saveActiveFile();
     setSidebarTab('chat');
-    requestImplementPlan({ path: file.path, content: file.content });
+    requestImplementPlan({ path: file.path });
   }
 
   /** A reverted file: its tab shows the restored text (unless it has unsaved edits). */
@@ -1938,8 +1942,20 @@ export default function App() {
   });
 
   return (
-    <div class="app" onContextMenu={handleContextMenu}>
-      <Resizable class="sidebar" initialWidth={380} minWidth={320} maxWidth={480}>
+    <div
+      class="app"
+      classList={{ 'sidebar-expanded': sidebarExpanded() }}
+      onContextMenu={handleContextMenu}
+    >
+      <Resizable
+        class="sidebar"
+        initialWidth={380}
+        minWidth={320}
+        maxWidth={480}
+        expanded={sidebarExpanded()}
+        onExpandedChange={setSidebarExpanded}
+        showFloatingButton={sidebarTab() === 'chat'}
+      >
         <div class="sidebar-topbar">
           <ProjectSwitcher
             onOpenFolder={() => void handlePickFolder()}
@@ -1957,45 +1973,47 @@ export default function App() {
             ⚙
           </button>
         </div>
-        <div class="sidebar-tabs">
-          <button
-            classList={{ active: sidebarTab() === 'files' }}
-            onClick={() => setSidebarTab('files')}
-          >
-            Files
-          </button>
-          <button
-            classList={{ active: sidebarTab() === 'chat' }}
-            onClick={() => setSidebarTab('chat')}
-          >
-            AI Chat
-            <Show
-              when={chatStore.hasAnyRunning()}
-              fallback={
-                <Show when={chatStore.hasAnyUnread()}>
-                  <span
-                    class="sidebar-tab-dot"
-                    title="New messages from the agent"
-                    aria-label="New messages from the agent"
-                  />
-                </Show>
-              }
+        <Show when={!sidebarExpanded()}>
+          <div class="sidebar-tabs">
+            <button
+              classList={{ active: sidebarTab() === 'files' }}
+              onClick={() => setSidebarTab('files')}
             >
-              <span
-                class="sidebar-tab-spinner"
-                title="The agent is working"
-                aria-label="The agent is working"
-                role="status"
-              />
-            </Show>
-          </button>
-          <button
-            classList={{ active: sidebarTab() === 'git' }}
-            onClick={() => setSidebarTab('git')}
-          >
-            Git
-          </button>
-        </div>
+              Files
+            </button>
+            <button
+              classList={{ active: sidebarTab() === 'chat' }}
+              onClick={() => setSidebarTab('chat')}
+            >
+              AI Chat
+              <Show
+                when={chatStore.hasAnyRunning()}
+                fallback={
+                  <Show when={chatStore.hasAnyUnread()}>
+                    <span
+                      class="sidebar-tab-dot"
+                      title="New messages from the agent"
+                      aria-label="New messages from the agent"
+                    />
+                  </Show>
+                }
+              >
+                <span
+                  class="sidebar-tab-spinner"
+                  title="The agent is working"
+                  aria-label="The agent is working"
+                  role="status"
+                />
+              </Show>
+            </button>
+            <button
+              classList={{ active: sidebarTab() === 'git' }}
+              onClick={() => setSidebarTab('git')}
+            >
+              Git
+            </button>
+          </div>
+        </Show>
 
         <Show when={sidebarTab() === 'files'}>
           <Show

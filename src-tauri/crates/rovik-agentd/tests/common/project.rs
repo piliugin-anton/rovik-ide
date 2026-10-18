@@ -32,7 +32,11 @@ pub struct Setup {
 
 impl Setup {
     pub async fn new() -> Setup {
-        let daemon = Daemon::start(&[]).await;
+        Setup::on(Daemon::start(&[]).await).await
+    }
+
+    /// A setup on `daemon`.
+    pub async fn on(daemon: Daemon) -> Setup {
         let project = daemon.dir.0.join("project");
         write(&project.join("src/main.rs"), "fn main() {}\n");
         // What the desktop wrote when it first opened the folder.
@@ -72,6 +76,7 @@ impl Setup {
             },
             settings: Some(json!({ "checks": ["cargo test"] })),
             excludes: vec!["*.mine".into()],
+            remote: None,
         };
         self.client.request::<()>(ensure).await.unwrap();
     }

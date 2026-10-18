@@ -4,12 +4,18 @@
 //!
 //! The harness, not the lead, writes its brief from the plan file: the
 //! plan's title and summary, its Decisions, the step, one line on each
-//! step done so far, and the current diff of the step's files (D03). It
-//! writes only within its scope, the step's files and new files in their
-//! folders (D7); `extend_scope` asks for more, granted at once to a
-//! sequential worker (D07). After it, the files it really changed are
-//! compared with its report (D04), and a worker that failed or was stopped
-//! has its changes rolled back through the R02 checkpoint (D06).
+//! step done so far with the decisions its worker made, and the current
+//! diff of the step's files (D03). It writes only within its scope, the
+//! step's files and new files in their folders (D7); `extend_scope` asks
+//! for more, granted at once to a sequential worker (D07). After it, the
+//! files it really changed are compared with its report (D04), and a
+//! worker that failed or was stopped has its changes rolled back through
+//! the R02 checkpoint (D06).
+//!
+//! A worker's report says what it decided that the plan didn't (a name, a
+//! signature, a format, an edge case), so the steps after it build on the
+//! same choices: a worker sees only its step, and a choice made in one
+//! step and not passed on is one the next step makes again, differently.
 
 use super::diff;
 use super::paths;
@@ -23,12 +29,16 @@ use std::time::Duration;
 /// The diff of the step's files in the brief, at most.
 const MAX_DIFF_CHARS: usize = 8_000;
 const MAX_SUMMARY_CHARS: usize = 4_000;
+/// A step's decisions kept for the steps after it, and each one's length,
+/// at most: a brief lists every earlier step's.
+const MAX_STEP_DECISIONS: usize = 8;
+const MAX_DECISION_CHARS: usize = 300;
 
 const WORKER_PROMPT: &str = r###"You are a step worker: a helper of a coding agent (the "lead") that is implementing a plan in the user's project. You carry out ONE step of the plan, given below, and nothing else. Only your final reply reaches the lead, so put everything that matters there.
 
 ## Rules
 
-- Do your step completely: read what you need, make the changes, and check them with diagnostics (and light commands where useful). Follow the plan's decisions and the project's existing patterns.
+- Do your step completely: read what you need, make the changes, and check them with diagnostics (and light commands where useful). Follow the plan's decisions, those of the steps done before yours, and the project's existing patterns.
 - You may write only your step's files, and new files in their folders. To change another file the step really needs, call extend_scope with the paths and the reason first. Don't do other steps' work: the lead gives those to other workers.
 - Earlier steps' changes are already in the project: build on them; don't redo them.
 - You can't ask the user anything. If the step can't be done as planned (a file or function it relies on doesn't exist, the plan contradicts the code), stop and say so under "## Blocked".
@@ -44,6 +54,9 @@ What you did, in two or three sentences.
 
 ## Changed files
 - `path`: what changed
+
+## Decisions
+- What you decided that the plan doesn't say and the later steps must follow: a name, a signature, a format, how an edge case is handled. One per line, or "None".
 
 ## Open questions
 What's left, or something the lead must decide or check, or "None".
@@ -68,7 +81,7 @@ pub static WORKER: KindSpec = KindSpec {
         tool_calls: 60,
         wall: Duration::from_secs(900),
     },
-    sections: &["Summary", "Changed files", "Open questions"],
+    sections: &["Summary", "Changed files", "Decisions", "Open questions"],
     required: 1,
     format: Format::Sections,
     prompt: WORKER_PROMPT,
@@ -255,6 +268,49 @@ pub struct DoneStep {
     pub number: usize,
     pub title: String,
     pub summary: String,
+    /// What its worker decided that the plan didn't (`step_decisions`),
+    /// for the steps after it to follow.
+    pub decisions: Vec<String>,
+    /// S05: what the light check of its files found as it ended
+    /// (Autopilot), for the steps after it.
+    pub light: Option<String>,
+}
+
+/// The decisions a worker's report lists under "## Decisions", one a line,
+/// their bullets or numbers off; none for "None" or no such section. At
+/// most `MAX_STEP_DECISIONS`, each cut to `MAX_DECISION_CHARS`.
+pub fn step_decisions(report: &str) -> Vec<String> {
+    let s = subagent::sections(report);
+    let Some(body) = s.get("Decisions") else {
+        return Vec::new();
+    };
+    body.lines()
+        .map(|l| {
+            let l = l.trim().trim_start_matches(['-', '*', '•']).trim_start();
+            // "1. " or "1) ": a numbered list's marker.
+            let digits = l.chars().take_while(char::is_ascii_digit).count();
+            match l[digits..].strip_prefix(['.', ')']) {
+                Some(rest) if digits > 0 => rest.trim_start(),
+                _ => l,
+            }
+        })
+        .filter(|l| !l.is_empty() && !says_none(l))
+        .take(MAX_STEP_DECISIONS)
+        .map(|l| crate::chat_db::store::char_prefix(l, MAX_DECISION_CHARS).to_string())
+        .collect()
+}
+
+/// Whether a line says there's nothing: "None", "None.", "N/A", "None: the
+/// plan settled it all". "None of the callers change" is a decision.
+fn says_none(line: &str) -> bool {
+    let l = line.to_lowercase();
+    let word = l.trim_end_matches(['.', '!']);
+    matches!(word, "none" | "n/a" | "nothing")
+        || [
+            "none:", "none -", "none —", "none –", "none (", "none,", "none.",
+        ]
+        .iter()
+        .any(|p| l.starts_with(p))
 }
 
 /// The plan's title and its summary (the text before its first `## `).
@@ -356,6 +412,16 @@ pub fn brief(p: &BriefParts) -> String {
                 "- Step {}. {}: {}\n",
                 d.number, d.title, d.summary
             ));
+            // What its worker decided: this step follows it too.
+            for decision in &d.decisions {
+                out.push_str(&format!("  - Decided: {decision}\n"));
+            }
+            // S05: what it left broken, for this step to know of.
+            if let Some(light) = d.light.as_deref().filter(|l| !l.trim().is_empty()) {
+                for line in light.trim().lines() {
+                    out.push_str(&format!("  {line}\n").replace("  \n", "\n"));
+                }
+            }
         }
     }
     out.push_str(&format!(
@@ -769,6 +835,11 @@ mod tests {
                 number: 1,
                 title: "Table".into(),
                 summary: "Added the users table.".into(),
+                decisions: vec![
+                    "Users are keyed by email, lowercased.".into(),
+                    "`User::id` is a `u64`.".into(),
+                ],
+                light: None,
             }],
             diff: &d,
             scope: &scope,
@@ -780,10 +851,93 @@ mod tests {
         assert!(text.contains("## The plan's decisions\n\n- SQLite."));
         assert!(text.contains("## Your step\n\n2. **API**"));
         assert!(!text.contains("**Pages**"), "only its step");
-        assert!(text.contains("- Step 1. Table: Added the users table."));
+        // The decisions its worker made, under its step, for this one.
+        assert!(
+            text.contains("- Step 1. Table: Added the users table.\n  - Decided: Users are keyed by email, lowercased.\n  - Decided: `User::id` is a `u64`.\n"),
+            "{text}"
+        );
         assert!(text.contains("+pub mod b;"), "{text}");
         assert!(text.contains("## From the lead\n\nKeep the route under /api."));
         assert!(text.contains("## Your write scope"));
+
+        // S05: what a step's light check found, under it, for the next.
+        let broken = brief(&BriefParts {
+            plan_path: ".rovik/plans/users.md",
+            plan: PLAN,
+            step: &steps[1],
+            done: &[DoneStep {
+                number: 1,
+                title: "Table".into(),
+                summary: "Added the users table.".into(),
+                decisions: Vec::new(),
+                light: Some("The light check after step 1 found problems in its files:\n\n`src/db.rs` doesn't parse:\n- src/db.rs:3:1: syntax error".into()),
+            }],
+            diff: &d,
+            scope: &scope,
+            note: None,
+        });
+        assert!(
+            broken.contains("- Step 1. Table: Added the users table.\n  The light check after step 1 found problems in its files:\n\n  `src/db.rs` doesn't parse:\n  - src/db.rs:3:1: syntax error\n"),
+            "{broken}"
+        );
+    }
+
+    /// A worker's decisions, one a line under "## Decisions", for the
+    /// steps after it: bullets and numbers off, "None" none.
+    #[test]
+    fn a_workers_decisions_come_from_its_report() {
+        let report = |decisions: &str| {
+            format!("## Summary\nDone.\n\n## Changed files\n- `a.rs`: new\n\n## Decisions\n{decisions}\n\n## Open questions\nNone")
+        };
+        assert_eq!(
+            step_decisions(&report(
+                "- `parse` returns `Result<Ast, ParseError>`.\n* Empty input is an error.\n2) Tabs count as one column.\n\n• Keys are lowercased."
+            )),
+            [
+                "`parse` returns `Result<Ast, ParseError>`.",
+                "Empty input is an error.",
+                "Tabs count as one column.",
+                "Keys are lowercased.",
+            ]
+        );
+        for none in [
+            "None",
+            "None.",
+            "- None",
+            "n/a",
+            "None: the plan settled it all.",
+            "Nothing.",
+        ] {
+            assert!(step_decisions(&report(none)).is_empty(), "{none}");
+        }
+        // A decision may start with the word.
+        assert_eq!(
+            step_decisions(&report("None of the callers change.")),
+            ["None of the callers change."]
+        );
+        // No section (an older report): none; never more than the cap.
+        assert!(step_decisions("## Summary\nDone.").is_empty());
+        let many = (1..=20)
+            .map(|i| format!("- Choice {i}."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let kept = step_decisions(&report(&many));
+        assert_eq!(kept.len(), MAX_STEP_DECISIONS);
+        assert_eq!(kept[0], "Choice 1.");
+        let long = format!("- {}", "x".repeat(1_000));
+        assert_eq!(
+            step_decisions(&report(&long))[0].chars().count(),
+            MAX_DECISION_CHARS
+        );
+        // The report asks for them, optional, and the rules say to follow
+        // the earlier steps' too.
+        assert_eq!(
+            WORKER.sections,
+            ["Summary", "Changed files", "Decisions", "Open questions"]
+        );
+        assert_eq!(WORKER.required, 1, "a report without them is still one");
+        assert!(WORKER_PROMPT.contains("\n## Decisions\n"));
+        assert!(WORKER_PROMPT.contains("those of the steps done before yours"));
     }
 
     #[test]

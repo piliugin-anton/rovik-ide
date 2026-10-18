@@ -252,6 +252,26 @@ export interface ToolMeta {
   paused?: RunPause;
   /** The verification gate's record of a round of checks (lib/verification.ts). */
   verification?: import('./lib/verification').VerificationMeta;
+  /** An empty assistant message: an Autopilot task's stage (lib/autopilot.ts). */
+  stage?: import('./lib/autopilot').StageMeta;
+  /** An empty assistant message: the installs of a task's Prepare stage (lib/verification.ts). */
+  prepare?: import('./lib/verification').PrepareMeta;
+  /** An empty assistant message: the tests a task's Tests stage wrote first (lib/autopilot.ts). */
+  tests?: import('./lib/autopilot').TestsMeta;
+  /** An empty assistant message: an acceptance check of a task's change (lib/autopilot.ts). */
+  acceptance?: import('./lib/autopilot').AcceptanceMeta;
+  /** Autopilot, Thorough: one of the task's planners and its plan (T01). */
+  planner?: import('./lib/autopilot').PlannerMeta;
+  /** Autopilot, Thorough: the judge of the planners' plans (T02). */
+  judge?: import('./lib/autopilot').JudgeMeta;
+  /** Autopilot, Thorough: the adversarial tester's tests (T04). */
+  breaker?: import('./lib/autopilot').BreakerMeta;
+  /** Autopilot, Thorough: the task's two implementers, each in its own copy (T05). */
+  candidates?: import('./lib/autopilot').CandidatesMeta;
+  /** Autopilot, Thorough: the pick of the better candidate (T06). */
+  pick?: import('./lib/autopilot').PickMeta;
+  /** A task's report, its final message: the facts it was written from (lib/autopilot.ts). */
+  report?: import('./lib/autopilot').ReportMeta;
   /**
    * A user-role message the IDE wrote (check failures for the agent). Not
    * shown as a user message, and never mistaken for the user's request.
@@ -269,7 +289,17 @@ export interface ToolMeta {
     | 'integrity'
     | 'review'
     /** The saved plan's problems, found when it's implemented (B07b). */
-    | 'planCheck';
+    | 'planCheck'
+    /** An Autopilot stage's run: its request, which the IDE wrote. */
+    | 'autopilot'
+    /** Autopilot: a loop the run goes on from, told to change approach (U03). */
+    | 'loop'
+    /** Autopilot: criteria an acceptance check found unmet (S08). */
+    | 'acceptance'
+    /** Autopilot, Thorough: the planners' plan submitted for the run, or why none was (T01). */
+    | 'thoroughPlan'
+    /** Autopilot: what the task's report is written from (S09). */
+    | 'report';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */
@@ -291,6 +321,8 @@ export interface ToolMeta {
   pdfs?: import('./lib/composerAttachments').ComposerPdf[];
   /** Agent message implementing a saved plan: the first turn forces the `todo` tool. */
   implementsPlan?: boolean;
+  /** Its plan's file: the backend sends the model the plan from it (lib/plans.ts). */
+  planPath?: string;
   /** The change reviewer's record (lib/changeReview.ts). */
   review?: import('./lib/changeReview').ReviewMeta;
   /** The plan checker's problems with a plan Agent mode was asked to implement (B07b). */

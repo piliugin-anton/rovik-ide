@@ -353,7 +353,7 @@ pub fn is_chat_view(path: &Path) -> bool {
 pub fn open(
     dialog_id: &str,
     project: &Path,
-    on_warn: Box<dyn Fn(u64, u64) + Send + Sync>,
+    on_warn: super::fs::OnWarn,
 ) -> Result<Arc<ChatOverlay>, String> {
     // One spelling of the folder (symlinks, `/private` on macOS, case on
     // Windows): the watcher and later runs may use another.
@@ -816,18 +816,28 @@ fn content_hash(path: &Path) -> String {
 }
 
 /// Round 2, P1.2: a kept copy of `parent`'s, opened again after the app
-/// closed (it was registered in memory only), so a follow-up goes on in it.
-/// None: `child` has no copy kept for `parent`.
-pub fn reopen_child(parent: &str, child: &str) -> Option<Arc<ChatOverlay>> {
+/// closed (it was registered in memory only), so a follow-up goes on in it;
+/// one of `parts` reopened together, which share the room (R03). None:
+/// `child` has no copy kept for `parent`.
+pub fn reopen_child(parent: &str, child: &str, parts: usize) -> Option<Arc<ChatOverlay>> {
     if let Some(o) = get(child) {
         return (parent_of(child).as_deref() == Some(parent)).then_some(o);
     }
-    let store = store_dir(child)?;
-    let saved = std::fs::read_to_string(store.join("parent.txt")).ok()?;
-    if saved.trim() != parent {
+    if !child_kept(parent, child) {
         return None;
     }
-    open_child_shared(parent, child, 1).ok()
+    open_child_shared(parent, child, parts).ok()
+}
+
+/// Whether `child`'s overlay of `parent` is still there: open, or its store
+/// kept on disk (neither landed nor discarded).
+pub fn child_kept(parent: &str, child: &str) -> bool {
+    if get(child).is_some() {
+        return parent_of(child).as_deref() == Some(parent);
+    }
+    store_dir(child)
+        .and_then(|store| std::fs::read_to_string(store.join("parent.txt")).ok())
+        .is_some_and(|saved| saved.trim() == parent)
 }
 
 /// What an app restart does to an open child: unmounted, and its parent
@@ -1285,9 +1295,12 @@ pub struct PeerConflict {
 type PeerRows = HashMap<String, BTreeMap<String, (BTreeSet<String>, bool)>>;
 static PEERS: LazyLock<Mutex<PeerRows>> = LazyLock::new(Default::default);
 
+/// Each open chat's generation, by its id.
+type Generations = Vec<(String, u64)>;
+
 /// Per project, each open chat's generation when its chats were last
 /// compared.
-static LAST_COMPARED: LazyLock<Mutex<HashMap<PathBuf, Vec<(String, u64)>>>> =
+static LAST_COMPARED: LazyLock<Mutex<HashMap<PathBuf, Generations>>> =
     LazyLock::new(Default::default);
 
 /// Which (path, other chat) pairs a chat's model already heard about.
@@ -2264,13 +2277,16 @@ fn current_version(dialog_id: &str, path: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// A chat's conflicted files as the resolver showed them: the project's
+/// version of each, by path (None: not in the project then).
+type ShownFiles = HashMap<String, Option<Vec<u8>>>;
+
 /// The project's version of a conflicted file as the resolver last showed
 /// it, per chat and path (None: not in the project then). A resolution is
 /// made against it, so it's what the resolved file is merged against when
 /// landing: if the project changed the file again meanwhile, that change
 /// is merged in or reported as a new conflict, not dropped.
-static SHOWN: LazyLock<Mutex<HashMap<String, HashMap<String, Option<Vec<u8>>>>>> =
-    LazyLock::new(Default::default);
+static SHOWN: LazyLock<Mutex<HashMap<String, ShownFiles>>> = LazyLock::new(Default::default);
 
 fn note_shown(dialog_id: &str, path: &str, project: Option<&[u8]>) {
     SHOWN
@@ -2673,8 +2689,11 @@ fn note_written(dialog_id: &str, path: &str, bytes: &[u8]) {
     }
 }
 
+/// A file's two kept versions: the chat's, and its base (None: none).
+type KeptVersions = (Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// The kept version of `path`, if there is one: (the chat's, its base).
-fn kept_versions(dialog_id: &str, path: &str) -> Option<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+fn kept_versions(dialog_id: &str, path: &str) -> Option<KeptVersions> {
     let dir = pre_merge_dir(dialog_id)?;
     let entry = load_pre_merge(dialog_id).files.remove(path)?;
     let read = |name: Option<String>| name.and_then(|n| std::fs::read(dir.join(n)).ok());
@@ -4472,8 +4491,19 @@ mod child_tests {
         let (l1, l2) = (s1.fs.used().1, s2.fs.used().1);
         assert!(l1 + l2 <= limit - used, "{l1} + {l2} > {}", limit - used);
         assert!(l1.abs_diff(l2) <= 1, "{l1} vs {l2}");
+        // Reopened together after a restart (R03), they share it again: the
+        // first one reopened doesn't take it all.
+        forget_child_as_if_restarted("kids-s1");
+        forget_child_as_if_restarted("kids-s2");
+        assert!(child_kept("kids-parent", "kids-s1"));
+        assert!(!child_kept("kids-other", "kids-s1"), "another's");
+        let r1 = reopen_child("kids-parent", "kids-s1", 2).unwrap();
+        let r2 = reopen_child("kids-parent", "kids-s2", 2).unwrap();
+        let (l1, l2) = (r1.fs.used().1, r2.fs.used().1);
+        assert!(l1.abs_diff(l2) <= 1, "{l1} vs {l2}");
         discard_child("kids-s1");
         discard_child("kids-s2");
+        assert!(!child_kept("kids-parent", "kids-s1"), "gone");
 
         // Discarding the parent takes any child with it.
         open_child("kids-parent", "kids-w5").unwrap();

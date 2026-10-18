@@ -11,6 +11,7 @@
 //! wire can't drift from it.
 
 pub mod agent;
+pub mod autopilot;
 pub mod chat;
 pub mod clm;
 pub mod diff;
@@ -65,6 +66,9 @@ pub mod features {
     pub const HOST: &str = "host";
     /// "Clean up now" on the hosts page (R01): `CleanUp`.
     pub const CLEAN_UP: &str = "clean-up";
+    /// A server that works on its own (autopilot-plan H02):
+    /// `AutonomyConfigure`.
+    pub const AUTONOMY: &str = "autonomy";
 }
 
 #[cfg(test)]

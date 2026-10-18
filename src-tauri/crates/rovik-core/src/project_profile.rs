@@ -14,7 +14,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
-mod workspaces;
+pub(crate) mod workspaces;
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +71,9 @@ pub struct ProjectProfile {
     pub package_manager: Option<String>,
 }
 
-/// Agent instruction files, first found wins. README is the fallback.
+/// Agent instruction files, first found wins. A README is no fallback: an
+/// overview of the repository, which costs every request and, measured,
+/// doesn't help (arXiv 2602.11988, "Evaluating AGENTS.md").
 const INSTRUCTION_FILES: &[&str] = &[
     "AGENTS.md",
     "CLAUDE.md",
@@ -79,7 +81,6 @@ const INSTRUCTION_FILES: &[&str] = &[
     ".cursorrules",
 ];
 const INSTRUCTIONS_MAX_CHARS: usize = 6_000;
-const README_MAX_CHARS: usize = 1_500;
 
 pub fn detect(root: &Path) -> ProjectProfile {
     let mut profile = ProjectProfile::default();
@@ -92,6 +93,52 @@ pub fn detect(root: &Path) -> ProjectProfile {
     profile.workspaces.sort_by(|a, b| a.path.cmp(&b.path));
     profile.workspaces.dedup_by(|a, b| a.path == b.path);
     profile
+}
+
+/// Folders one level down that are never a package of the project's own:
+/// installed, built, vendored or cached files.
+pub(crate) const NOT_PACKAGES: &[&str] = &[
+    "node_modules",
+    "target",
+    "vendor",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    "venv",
+    "__pycache__",
+];
+
+/// V09 (autopilot-plan): the stacks one folder down, a monorepo's `api/`
+/// and `web/`, each detected as a project is, with the checks it has. Left
+/// out: folders the project's own workspace covers (`profile.workspaces`,
+/// whose checks are the project's), hidden ones, and installed, built or
+/// vendored ones. By name.
+pub fn detect_below(root: &Path, profile: &ProjectProfile) -> Vec<(String, ProjectProfile)> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let covered = |name: &str| {
+        profile
+            .workspaces
+            .iter()
+            .any(|w| w.path == name || w.path.starts_with(&format!("{name}/")))
+    };
+    let mut folders: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| !name.starts_with('.') && !NOT_PACKAGES.contains(&name.as_str()))
+        .filter(|name| !covered(name))
+        .collect();
+    folders.sort();
+    folders
+        .into_iter()
+        .filter_map(|folder| {
+            let found = detect(&root.join(&folder));
+            (!found.checks.is_empty()).then_some((folder, found))
+        })
+        .collect()
 }
 
 fn push_check(profile: &mut ProjectProfile, kind: &str, command: String, source: String) {
@@ -605,21 +652,12 @@ fn detect_make(root: &Path, profile: &mut ProjectProfile) {
  * ------------------------------------------------------------------------- */
 
 fn read_instructions(root: &Path) -> Option<ProjectInstructions> {
-    let found = INSTRUCTION_FILES
-        .iter()
-        .find_map(|f| {
-            fs::read_to_string(root.join(f))
-                .ok()
-                .map(|t| (f.to_string(), t, INSTRUCTIONS_MAX_CHARS))
-        })
-        .or_else(|| {
-            ["README.md", "README", "readme.md"].iter().find_map(|f| {
-                fs::read_to_string(root.join(f))
-                    .ok()
-                    .map(|t| (f.to_string(), t, README_MAX_CHARS))
-            })
-        })?;
-    let (file, text, max) = found;
+    let (file, text) = INSTRUCTION_FILES.iter().find_map(|f| {
+        fs::read_to_string(root.join(f))
+            .ok()
+            .map(|t| (f.to_string(), t))
+    })?;
+    let max = INSTRUCTIONS_MAX_CHARS;
     let text = text.trim();
     if text.is_empty() {
         return None;
@@ -865,8 +903,8 @@ mod tests {
             ]
         );
         assert!(!p.checks[1].default_enabled, "builds are off by default");
-        let notes = p.instructions.unwrap();
-        assert_eq!(notes.file, "README.md");
+        // A README isn't instructions for agents.
+        assert!(p.instructions.is_none());
     }
 
     #[test]
@@ -917,13 +955,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_instructions_win_over_readme_and_are_cut_on_a_line() {
+    fn agent_instructions_are_cut_on_a_line_and_a_readme_is_none() {
         let long = "rule\n".repeat(3_000);
         let dir = project(&[("README.md", "readme"), ("AGENTS.md", &long)]);
         let notes = detect(&dir).instructions.unwrap();
         assert_eq!(notes.file, "AGENTS.md");
         assert!(notes.truncated);
         assert!(notes.text.len() <= INSTRUCTIONS_MAX_CHARS && notes.text.ends_with("rule"));
+        // An overview of the repository costs every request and doesn't
+        // help: without an instructions file, there are none.
+        for readme in ["README.md", "README", "readme.md"] {
+            let dir = project(&[(readme, "# A project\n\nWhat it does.")]);
+            assert!(detect(&dir).instructions.is_none(), "{readme}");
+        }
     }
 
     #[test]
@@ -1100,6 +1144,83 @@ mod tests {
             fs::read_to_string(dir.join("agent-log.jsonl")).unwrap(),
             "{\"n\":1}\n{\"n\":2}\n"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// V09: a monorepo's stacks one folder down, each with its checks; the
+    /// root's own workspace members, hidden folders and installed ones
+    /// aren't stacks of their own.
+    #[test]
+    fn stacks_one_folder_down_are_found() {
+        let dir = project(&[
+            ("api/go.mod", "module example.com/api\n\ngo 1.22\n"),
+            (
+                "web/package.json",
+                r#"{"scripts":{"test":"vitest run","lint":"eslint ."}}"#,
+            ),
+            ("docs/README.md", "# Docs"),
+            (".github/package.json", r#"{"scripts":{"test":"x"}}"#),
+            ("node_modules/x/package.json", r#"{"scripts":{"test":"x"}}"#),
+        ]);
+        let root = detect(&dir);
+        assert!(root.checks.is_empty(), "nothing at the root");
+        let below: Vec<(String, Vec<String>)> = detect_below(&dir, &root)
+            .iter()
+            .map(|(folder, p)| (folder.clone(), commands(p)))
+            .collect();
+        assert_eq!(
+            below,
+            [
+                (
+                    "api".to_string(),
+                    vec![
+                        "typecheck: go build ./...".to_string(),
+                        "lint: go vet ./...".to_string(),
+                        "test: go test ./...".to_string(),
+                    ]
+                ),
+                (
+                    "web".to_string(),
+                    vec![
+                        "lint: npm run lint".to_string(),
+                        "test: npm test".to_string()
+                    ]
+                ),
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// V09: a workspace's members are the root's (its workspace-wide
+    /// checks), not stacks of their own; a folder with nothing is none.
+    #[test]
+    fn a_workspaces_members_arent_stacks_below() {
+        let dir = project(&[
+            (
+                "package.json",
+                r#"{"private":true,"workspaces":["packages/*","app"],"scripts":{"test":"npm test --workspaces"}}"#,
+            ),
+            (
+                "packages/ui/package.json",
+                r#"{"name":"ui","scripts":{"test":"vitest"}}"#,
+            ),
+            (
+                "app/package.json",
+                r#"{"name":"app","scripts":{"test":"jest"}}"#,
+            ),
+            (
+                "tools/package.json",
+                r#"{"name":"tools","scripts":{"test":"node t.js"}}"#,
+            ),
+            ("empty/notes.txt", "nothing"),
+        ]);
+        let root = detect(&dir);
+        let below: Vec<String> = detect_below(&dir, &root)
+            .into_iter()
+            .map(|(f, _)| f)
+            .collect();
+        assert_eq!(below, ["tools"]);
+        assert!(detect_below(&dir.join("missing"), &root).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }

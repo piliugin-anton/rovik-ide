@@ -3,6 +3,7 @@
 //! own calls and the daemon's are one list of operations (D3).
 
 use crate::agent::{AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest};
+use crate::autopilot::{AutonomyConfig, ChatTask, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::host::{HostInfo, KeyInfo, Storage};
@@ -17,7 +18,9 @@ use serde_json::Value;
 #[serde(tag = "t", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Request {
     // Agent: runs, and what they wait on.
-    AgentStart(StartRequest),
+    /// Boxed: a start is far bigger than any other request, and every
+    /// request would take its size.
+    AgentStart(Box<StartRequest>),
     AgentStop {
         dialog_id: String,
     },
@@ -43,6 +46,20 @@ pub enum Request {
     },
     AgentStatus,
     AgentConfigure(AgentConfig),
+    /// Beside `AgentConfigure`: what a server that works on its own keeps
+    /// of this computer's settings for runs that go on without it (H02).
+    /// Served with `features::AUTONOMY`.
+    AutonomyConfigure(AutonomyConfig),
+    /// "Test delivery" (H05): pushes an empty branch `rovik/test-<date>`
+    /// to `remote` as a task's result would go, with this computer's
+    /// deploy key, and deletes it. Served with `features::AUTONOMY`.
+    DeliveryTest {
+        remote: String,
+    },
+    /// This computer's chats on the server, each with its latest Autopilot
+    /// task (H08), as `rovik-agentd status` lists them. Served with
+    /// `features::AUTONOMY`.
+    TaskStatus,
     AgentSetEffort {
         profile_id: String,
         options: Option<OpenAIChatOptions>,
@@ -149,6 +166,11 @@ pub enum Request {
         settings: Option<Value>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         excludes: Vec<String>,
+        /// Where a server that pushes its results pushes them (D15, H04):
+        /// the project's `origin` as an SSH address, without credentials
+        /// (`autopilot::push_url`). Sent to such a server only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote: Option<String>,
     },
     /// Brings the chat's worktree to a snapshot pushed before it (6.7). A
     /// chat without one gets it there, on its own branch (6.4), with
@@ -316,6 +338,9 @@ impl Request {
             }
             Request::AgentStatus
             | Request::AgentConfigure(_)
+            | Request::AutonomyConfigure(_)
+            | Request::DeliveryTest { .. }
+            | Request::TaskStatus
             | Request::AgentSetEffort { .. }
             | Request::WorkloadFocus { .. }
             | Request::BlobsMissing { .. }
@@ -370,6 +395,10 @@ pub enum Response {
     /// `KeysList`.
     Keys(Vec<KeyInfo>),
     Storage(Storage),
+    /// `DeliveryTest`.
+    DeliveryTested(DeliveryTest),
+    /// `TaskStatus`.
+    Tasks(Vec<ChatTask>),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -425,4 +454,6 @@ replies! {
     Ownership => Option<Ownership>,
     Keys => Vec<KeyInfo>,
     Storage => Storage,
+    DeliveryTested => DeliveryTest,
+    Tasks => Vec<ChatTask>,
 }

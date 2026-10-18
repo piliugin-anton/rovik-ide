@@ -28,8 +28,25 @@ const MAX_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// Run outcomes after which changes may land without asking.
 const LANDS_AFTER: &[&str] = &["done", "verified", "unverified", "verify-unverified"];
 
-/// Outcomes that land without any check having run.
+/// Outcomes that land without any check having run (outside Autopilot).
 const UNCHECKED: &[&str] = &["unverified", "verify-unverified"];
+
+/// Why a run's changes don't land on their own, for a run of an Autopilot
+/// task or not: in one, a change no check ran on doesn't land either,
+/// with nobody there to read why (D7, V02). None when they may land.
+pub fn pending_reason_in(outcome: &str, autopilot: bool) -> Option<String> {
+    if autopilot && UNCHECKED.contains(&outcome) {
+        return Some(
+            "Not landed: no check ran on it, and Autopilot lands only what's checked.".into(),
+        );
+    }
+    pending_reason(outcome)
+}
+
+/// Whether a run's changes may land on their own after `outcome`.
+fn lands_after(outcome: &str, autopilot: bool) -> bool {
+    pending_reason_in(outcome, autopilot).is_none()
+}
 
 /// Why a run's changes don't land on their own after it ended with
 /// `outcome`: the reason the isolation bar shows, the same for a local
@@ -49,6 +66,12 @@ pub fn pending_reason(outcome: &str) -> Option<String> {
             "the checks pass, but whether the change weakens tests couldn't be checked (part of the run's saved state was lost): review it first"
         }
         "unfinished-checklist" => "the checklist isn't finished",
+        // An Autopilot task past the time or cost it may take (U04).
+        "budget" => "the task went over its budget",
+        // Its change review's last round still found a high problem (S06).
+        "review-open" => "the change review still finds a high problem in it",
+        // Its last acceptance check found a criterion unmet (S08).
+        "unmet" => "the acceptance check finds a criterion of the plan unmet",
         _ => "the run didn't finish",
     };
     Some(format!("Not landed: {reason}."))
@@ -82,11 +105,16 @@ impl Run {
     /// the log (None: nothing to land).
     async fn try_land(&mut self, outcome: &str) -> Option<(&'static str, usize)> {
         // Plan mode only reads: what the chat changed before waits as it was.
-        if self.root == self.project_root || self.plan_mode {
+        // An Autopilot task's own stages before its implementation (S03,
+        // S04) land nothing yet: what they did lands with it; a Thorough
+        // task's lands at its Pick, the winner's change taken (T06).
+        let lands_nothing = self.harness_stage() && !self.picks();
+        if self.root == self.project_root || self.plan_mode || lands_nothing {
             return None;
         }
         let overlay = chats::get(&self.dialog_id)?;
-        if LANDS_AFTER.contains(&outcome) {
+        let autopilot = self.in_autopilot();
+        if lands_after(outcome, autopilot) {
             self.wait_while_project_busy().await;
         }
         let dialog_id = self.dialog_id.clone();
@@ -117,7 +145,7 @@ impl Run {
             return None;
         }
         let count = changes.len();
-        if let Some(reason) = pending_reason(outcome) {
+        if let Some(reason) = pending_reason_in(outcome, autopilot) {
             chats::set_pending(
                 &dialog_id,
                 Some(&Pending {
@@ -180,9 +208,10 @@ impl Run {
         }
         let p = self.config().permissions;
         let has_checks = checks_would_run(&p, &self.checks);
-        if plan.merged && has_checks && p.command_approval.required {
+        if plan.merged && has_checks && p.command_approval.required && !self.in_autopilot() {
             // The merged result's checks are commands too: not without the
-            // user's go. Land (in the bar) lands it as it is.
+            // user's go. Land (in the bar) lands it as it is. In Autopilot
+            // nobody gives it: they run (D7).
             chats::set_pending(
                 &dialog_id,
                 Some(&Pending {
@@ -324,6 +353,7 @@ impl Run {
                     .map(|o| o.command_env())
                     .unwrap_or_default(),
                 confine: chats::get(&self.dialog_id).and_then(|o| o.confine()),
+                whole_output: false,
             };
             let out = crate::command_tool::run_command(
                 view.to_string_lossy().into_owned(),
@@ -350,7 +380,10 @@ impl Run {
         &mut self,
         outcome: &str,
     ) -> Result<Option<String>, String> {
-        if !LANDS_AFTER.contains(&outcome) || self.root == self.project_root || self.plan_mode {
+        if !lands_after(outcome, self.in_autopilot())
+            || self.root == self.project_root
+            || self.plan_mode
+        {
             return Ok(None);
         }
         let Some(overlay) = chats::get(&self.dialog_id) else {
@@ -459,7 +492,7 @@ impl Run {
 
 #[cfg(test)]
 mod tests {
-    use super::{checks_would_run, pending_reason, Permissions, ProjectCheck};
+    use super::{checks_would_run, pending_reason, pending_reason_in, Permissions, ProjectCheck};
 
     /// One table for both sides: a local chat's landing and a daemon's
     /// results give each outcome the same reason (6.5).
@@ -492,6 +525,29 @@ mod tests {
         assert!(flagged.contains("weakens tests"), "{flagged}");
         let unchecked = pending_reason("verify-unchecked").unwrap();
         assert!(unchecked.contains("couldn't be checked"), "{unchecked}");
+    }
+
+    /// V02 (D7): in Autopilot, a change no check ran on doesn't land, and
+    /// says so; every other outcome has its reason as outside it.
+    #[test]
+    fn in_autopilot_an_unchecked_change_doesnt_land() {
+        let why = "Not landed: no check ran on it, and Autopilot lands only what's checked.";
+        for outcome in ["unverified", "verify-unverified"] {
+            assert_eq!(pending_reason_in(outcome, false), None, "{outcome}");
+            assert_eq!(
+                pending_reason_in(outcome, true).as_deref(),
+                Some(why),
+                "{outcome}"
+            );
+        }
+        for outcome in ["done", "verified", "verify-gave-up", "budget", "stopped"] {
+            assert_eq!(
+                pending_reason_in(outcome, true),
+                pending_reason(outcome),
+                "{outcome}"
+            );
+            assert_eq!(pending_reason_in(outcome, false), pending_reason(outcome));
+        }
     }
 
     #[test]

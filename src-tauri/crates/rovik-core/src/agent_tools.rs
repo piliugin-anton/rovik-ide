@@ -104,7 +104,7 @@ pub fn project_relative(root: &str, path: &str) -> Option<String> {
 /// targets), where we can't canonicalize to catch a symlink escape anyway.
 /// For paths that *do* exist, we additionally canonicalize to catch the case
 /// where a path component is itself a symlink pointing outside root.
-fn resolve_within_root(root: &str, candidate: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_within_root(root: &str, candidate: &str) -> Result<PathBuf, String> {
     let root_canon = canonicalize_or_err(Path::new(root))?;
     let candidate_path = Path::new(candidate);
 
@@ -871,7 +871,7 @@ pub fn edit_file(
         crate::file_guard::update_for_chat(&target, seen, apply)?
     };
     Ok(EditOutcome {
-        summary: crate::edit_file::describe_edit(&path, &span),
+        summary: crate::edit_file::describe_edit(path, &span),
         content,
     })
 }
@@ -900,7 +900,7 @@ pub fn write_file(
         .ok()
         .map(|bytes| String::from_utf8(bytes).ok());
     if let Some(Some(current)) = &before {
-        if let Some(error) = empty_overwrite_error(&path, current, &content) {
+        if let Some(error) = empty_overwrite_error(path, current, content) {
             return Err(error);
         }
     }

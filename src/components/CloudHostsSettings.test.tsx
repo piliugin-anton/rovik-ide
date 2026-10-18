@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import CloudHostsSettings, { type HostsSettingsController } from './CloudHostsSettings';
+import { taskLine as hostTaskLine } from './HostTasks';
 import { ConfirmDialogHost } from './ConfirmDialog';
 import type { HostDetails, HostRow, HostsList, Step } from '../lib/hosts';
 
@@ -648,4 +649,257 @@ test('removing Rovik with chats on the server: they’re to move back first', as
     /2 chats are on this server: move them back or delete them first\./
   );
   assert.deepEqual(sent('hosts_removal'), [], 'nothing asked of the server');
+});
+
+/** The input in the label that reads `text`. */
+const field = (root: ParentNode, text: string) =>
+  [...root.querySelectorAll('label')]
+    .find((l) => l.textContent?.includes(text))
+    ?.querySelector('input') as HTMLInputElement | undefined;
+
+/** Ticks or fills `input` as the user would, ending in its change. */
+function change(input: HTMLInputElement, value?: string | boolean) {
+  if (typeof value === 'string') input.value = value;
+  else input.checked = value ?? true;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+/** A host page whose app keeps what the page saves (H01). */
+async function keepingHostPage(row: Partial<HostRow> = {}) {
+  let kept: HostRow = { ...HOST, ...row };
+  const page = await hostPage(hostsList(), {
+    hosts_list: () => ({ ...hostsList(), hosts: [kept] }),
+    hosts_set_policy: ({ policy }: { policy: HostRow['approvalPolicy'] }) => {
+      kept = { ...kept, approvalPolicy: policy };
+    },
+    hosts_set_autonomy: ({ autonomy }: { autonomy: HostRow['autonomy'] }) => {
+      if (autonomy?.notifyUrl?.startsWith('ftp:')) {
+        throw 'The notify URL is an http:// or https:// address.';
+      }
+      kept = { ...kept, autonomy };
+      return autonomy;
+    },
+  });
+  return { ...page, kept: () => kept };
+}
+
+test('works on its own: the third choice shows its block, which an other choice hides', async () => {
+  const { root, kept } = await keepingHostPage();
+  assert.equal(root.querySelector('.host-autonomy'), null, 'no block while it waits for me');
+  const own = field(root, 'Works on its own')!;
+  assert.match(own.closest('label')!.textContent!, /Chats on this server run in Autopilot/);
+  change(own);
+  await flush();
+  assert.deepEqual(sent('hosts_set_policy'), [{ id: 'h1', policy: 'autonomous' }]);
+  assert.equal(kept().approvalPolicy, 'autonomous');
+  const block = root.querySelector('.host-autonomy')!;
+  assert.ok(block, 'its block shows');
+  // Its defaults: this computer's effort and budget, the result kept on the server.
+  assert.ok(field(block, 'As in Settings → Subagents')!.checked);
+  assert.ok(field(block, 'Keep the result on the server')!.checked);
+  assert.match(block.textContent!, /The AI reviewer decides\. What it can’t approve is refused/);
+  assert.equal(field(block, 'Deploy key on the server'), undefined, 'no key to push with');
+  assert.deepEqual(sent('hosts_set_autonomy'), [], 'nothing saved by showing it');
+  change(field(root, 'Wait for me')!);
+  await flush();
+  assert.equal(root.querySelector('.host-autonomy'), null);
+});
+
+test('works on its own: each change is saved, the deploy key only once it’s in', async () => {
+  const { root, kept } = await keepingHostPage({ approvalPolicy: 'autonomous' });
+  const block = () => root.querySelector('.host-autonomy')!;
+  change(field(block(), 'Thorough')!);
+  await flush();
+  assert.deepEqual(sent('hosts_set_autonomy').at(-1), {
+    id: 'h1',
+    autonomy: { delivery: { kind: 'keepOnHost' }, effort: 'thorough' },
+  });
+  // Pushing: nothing goes until the key's path is in, the PR box off until then.
+  change(field(block(), 'Push to a branch')!);
+  await flush();
+  assert.equal(sent('hosts_set_autonomy').length, 1);
+  const key = field(block(), 'Deploy key on the server')!;
+  assert.ok(field(block(), 'Open a pull request')!.disabled);
+  assert.match(block().textContent!, /Its path on the server, never the key itself/);
+  change(key, '  ~/.ssh/rovik_deploy ');
+  await flush();
+  assert.deepEqual(kept().autonomy, {
+    delivery: { kind: 'pushBranch', deployKey: '~/.ssh/rovik_deploy', openPr: false },
+    effort: 'thorough',
+  });
+  change(field(block(), 'Open a pull request')!, true);
+  await flush();
+  assert.deepEqual(kept().autonomy!.delivery, {
+    kind: 'pushBranch',
+    deployKey: '~/.ssh/rovik_deploy',
+    openPr: true,
+  });
+  // A budget: one limit set, the other left as in Settings; then none.
+  change(field(block(), 'Stop a task after (hours)')!, '2');
+  await flush();
+  assert.deepEqual(kept().autonomy!.budget, { maxHours: 2, maxCost: null });
+  change(field(block(), 'Stop a task after (hours)')!, '');
+  await flush();
+  assert.equal(kept().autonomy!.budget, undefined);
+  // A token limit: millions on the page, tokens kept; emptied, none.
+  change(field(block(), 'or used (million tokens)')!, '1.5');
+  await flush();
+  assert.deepEqual(kept().autonomy!.budget, {
+    maxHours: null,
+    maxCost: null,
+    maxTokens: 1_500_000,
+  });
+  change(field(block(), 'or used (million tokens)')!, '');
+  await flush();
+  assert.equal(kept().autonomy!.budget, undefined);
+  // The notify URL: kept trimmed; one the app refuses says why, and isn't kept.
+  change(field(block(), 'Call this URL')!, ' https://ntfy.sh/rovik-abc ');
+  await flush();
+  assert.equal(kept().autonomy!.notifyUrl, 'https://ntfy.sh/rovik-abc');
+  change(field(block(), 'Call this URL')!, 'ftp://x');
+  await flush();
+  assert.match(block().querySelector('[role="alert"]')!.textContent!, /http:\/\/ or https:\/\//);
+  assert.equal(kept().autonomy!.notifyUrl, 'https://ntfy.sh/rovik-abc');
+  // Back to keeping the result on the server.
+  change(field(block(), 'Keep the result on the server')!);
+  await flush();
+  assert.deepEqual(kept().autonomy!.delivery, { kind: 'keepOnHost' });
+  assert.equal(field(block(), 'Deploy key on the server'), undefined);
+});
+
+test('works on its own: “Test delivery” says what the push found, or why it failed (H05)', async () => {
+  const push = {
+    delivery: { kind: 'pushBranch' as const, deployKey: '~/.ssh/rovik_deploy', openPr: true },
+  };
+  let answer: () => unknown = () => ({
+    remote: 'git@github.com:acme/app.git',
+    branch: 'rovik/test-20261017-095301',
+    pullRequests: '`gh` is logged in to github.com: pull requests open.',
+  });
+  const { root } = await keepingHostPage({ approvalPolicy: 'autonomous', autonomy: push });
+  backend.hosts_test_delivery = () => answer();
+  const run = () => button(root, 'Test delivery')!;
+  assert.ok(run(), 'offered once the push is set up');
+  run().click();
+  await flush();
+  assert.deepEqual(sent('hosts_test_delivery'), [{ id: 'h1' }]);
+  const shown = () => root.querySelector('.host-autonomy-tested')!;
+  assert.equal(
+    shown().textContent,
+    'Pushed rovik/test-20261017-095301 to git@github.com:acme/app.git and deleted it. `gh` is logged in to github.com: pull requests open.'
+  );
+  assert.ok(!shown().classList.contains('warning'));
+  answer = () => ({
+    remote: 'git@github.com:acme/app.git',
+    branch: 'rovik/test-20261017-095302',
+    problem: 'The push failed: Permission denied (publickey).',
+  });
+  run().click();
+  await flush();
+  assert.equal(shown().textContent, 'The push failed: Permission denied (publickey).');
+  assert.ok(shown().classList.contains('warning'));
+  answer = () => {
+    throw 'Open a project whose repository has an `origin` remote: the test pushes there.';
+  };
+  run().click();
+  await flush();
+  assert.equal(root.querySelector('.host-autonomy-tested'), null);
+  assert.match(root.querySelector('.host-autonomy [role="alert"]')!.textContent!, /Open a project/);
+});
+
+test('connected: the tasks of this computer’s chats there, each a line (H08)', async () => {
+  let tasks: unknown[] = [
+    {
+      chat: 'c1',
+      title: 'Make the test pass',
+      computer: 'laptop',
+      running: 'run-2',
+      task: {
+        id: 'u1',
+        stage: 'implement',
+        status: 'running',
+        summary: 'Step 2 of 3',
+        ms: 125_000,
+        cost: 0.4,
+        uncosted: 0,
+      },
+    },
+    {
+      chat: 'c2',
+      title: 'Fix the parser',
+      computer: 'laptop',
+      outcome: 'done',
+      task: {
+        id: 'u9',
+        stage: 'deliver',
+        status: 'done',
+        outcome: 'verified',
+        summary: 'Delivered: pushed to `rovik/fix-the-parser-u9`',
+        ms: 61_000,
+        cost: 0,
+        uncosted: 3,
+      },
+    },
+    { chat: 'c3', title: '', computer: 'laptop', outcome: 'stopped' },
+  ];
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => DETAILS,
+    hosts_tasks: () => tasks,
+  });
+  assert.deepEqual(sent('hosts_tasks'), [{ id: 'h1' }]);
+  const rows = () => [...root.querySelectorAll('.host-tasks-list li')];
+  assert.equal(rows().length, 3);
+  assert.equal(rows()[0].querySelector('.host-task-title')!.textContent, 'Make the test pass');
+  assert.equal(
+    rows()[0].querySelector('.host-task-line')!.textContent,
+    'Implement: running · 2 min, 0.40'
+  );
+  assert.ok(rows()[0].classList.contains('running'));
+  assert.equal(rows()[0].querySelector('.host-task-running')!.textContent, 'Running');
+  assert.match(rows()[0].textContent!, /Step 2 of 3/);
+  assert.equal(
+    rows()[1].querySelector('.host-task-line')!.textContent,
+    'Delivered (verified) · 1 min; no cost reported'
+  );
+  assert.equal(rows()[1].querySelector('.host-task-running'), null);
+  assert.equal(
+    rows()[1].querySelector('.host-task-summary code')?.textContent,
+    'rovik/fix-the-parser-u9'
+  );
+  assert.equal(rows()[2].querySelector('.host-task-title')!.textContent, 'c3', 'by its id');
+  assert.equal(
+    rows()[2].querySelector('.host-task-line')!.textContent,
+    'No task: its last run stopped'
+  );
+  // Refresh asks again.
+  tasks = [];
+  button(root, 'Refresh')!.click();
+  await flush();
+  assert.equal(sent('hosts_tasks').length, 2);
+  assert.match(
+    root.querySelector('.host-tasks')!.textContent!,
+    /No chats of this computer’s there/
+  );
+});
+
+test('a host’s task line names its stage as the strip does, and a partial delivery as one', () => {
+  const line = (stage: string, status: string, outcome?: string) =>
+    hostTaskLine({
+      chat: 'c',
+      title: '',
+      computer: 'laptop',
+      task: { id: 't', stage, status, outcome, ms: 0, cost: 0, uncosted: 0 },
+    });
+  assert.match(line('break', 'running'), /^Break: running · /);
+  assert.match(line('pick', 'done'), /^Pick: done · /);
+  assert.match(
+    line('review', 'failed', 'review-open'),
+    /^Change review: failed \(review-open\) · /
+  );
+  assert.match(line('deliver', 'done', 'verified'), /^Delivered \(verified\) · /);
+  assert.match(line('deliver', 'done', 'unmet'), /^Delivered as partial \(unmet\) · /);
+  assert.match(
+    line('deliver', 'failed', 'plan-blocked'),
+    /^Ended: not delivered \(plan-blocked\) · /
+  );
 });

@@ -17,9 +17,17 @@
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   change_review.rs  a fresh-context review of the change before the checks
 //!   tools.rs      tool schemas and running a tool
+//!   autopilot/    a task carried out with nobody there: its stages
+//!   candidates.rs Thorough's two implementers, each in its own copy, and
+//!                 the pick of the better
 //!   permissions.rs, plan.rs, project.rs, repetition.rs, diff.rs,
 //!   command_output.rs: the rules and text they use
 
+pub mod acceptance;
+pub mod autopilot;
+pub mod breaker;
+pub mod budget;
+pub mod candidates;
 pub mod causes;
 pub mod change_review;
 pub mod check_output;
@@ -32,18 +40,23 @@ mod execute;
 pub mod failure;
 pub mod group;
 pub mod guard;
+pub mod judge;
 mod landing;
 pub mod log;
+pub mod loops;
 mod parallel;
 pub mod paths;
 pub mod permissions;
 pub mod plan;
 pub mod plan_review;
+pub mod planning;
+pub mod prepare;
 pub mod project;
 pub mod recovery;
 pub mod repair;
 mod repair_run;
 pub mod repetition;
+pub mod report;
 pub mod review;
 mod run;
 pub mod server;
@@ -65,7 +78,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 
-pub use landing::{checks_would_run, pending_reason};
+pub use landing::{checks_would_run, pending_reason, pending_reason_in};
 pub use rovik_protocol::agent::{
     AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
     RunningSubagent, StartKind, StartRequest, UserMessage,
@@ -150,6 +163,18 @@ struct RunControl {
     effort: watch::Sender<EffortPick>,
     /// A subagent's: what its block shows, for a page reloaded mid-run (P1.5).
     child: Option<ChildInfo>,
+    /// A lead's that carries out an Autopilot task's stage, with the task's
+    /// effort: it and its subagents follow the configuration with the
+    /// kinds the pipeline needs on (D17, `autopilot::subagent_config`).
+    autopilot: Option<autopilot::Effort>,
+    /// An Autopilot lead's (U04): when it started, what its replies and its
+    /// subagents' cost so far, and what the task spent before it.
+    started: std::time::Instant,
+    spent: budget::Spent,
+    spent_before: budget::Spent,
+    /// An Autopilot lead's (U04, R03): one of its subagents found the task
+    /// past its budget and stopped the run, which ends `budget`: why.
+    budget_cut: Option<String>,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -194,6 +219,8 @@ struct Inner {
     markers: Option<MarkersResolver>,
     /// The runs work in a server's worktrees (D8, server.rs).
     on_server: bool,
+    /// What the server does with a task's result it delivers (D15, H04).
+    deliverer: Option<Arc<dyn autopilot::Deliverer>>,
     runs: HashMap<String, RunControl>,
     /// Keyed by chat and tool call: providers number calls per reply
     /// (Gemini: "function-call-1"), so two chats can wait on the same id.
@@ -204,7 +231,32 @@ struct Inner {
     carries: HashMap<String, verify::VerifyCarry>,
     /// The daemon is stopping (R02): its runs pause, and no new one starts.
     draining: bool,
+    /// How long an Autopilot task's approval waits for an answer (U03);
+    /// None: `APPROVAL_DEADLINE`. Tests make it short.
+    approval_deadline: Option<std::time::Duration>,
+    /// T05: a Thorough task's candidates' chats, by chat: the chat whose
+    /// task each implements, whose configuration it follows, and its Stop.
+    candidates: HashMap<String, Candidacy>,
+    /// T05: where a server's candidates implement (its sibling worktrees).
+    copies: Option<Arc<dyn candidates::Copies>>,
 }
+
+/// T05: what a candidate's chat implements for.
+#[derive(Clone, Debug)]
+struct Candidacy {
+    /// The chat whose task it implements.
+    main: String,
+    /// That chat's project folder, whose settings its runs follow (its own
+    /// folder is a copy).
+    project: Option<String>,
+    /// The call id its events and transcript go by in that chat.
+    call: String,
+}
+
+/// How long an approval in an Autopilot task waits before it's denied
+/// (U03): one that reaches a person at all (U02 sends them all to the AI
+/// reviewer) would otherwise wait for someone who isn't there.
+pub const APPROVAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Why a run doesn't start while the daemon stops (R02).
 pub const RESTARTING: &str = "Rovik on the server is restarting: send it again in a minute.";
@@ -237,20 +289,119 @@ impl AgentState {
 
     /// The configuration the chat's runs follow: the resolver's for it,
     /// where one is set, else the one configuration. A subagent's chat
-    /// follows its lead's.
+    /// follows its lead's; an Autopilot task's run has the kinds its
+    /// pipeline needs on (D17).
     pub fn config_for(&self, dialog_id: &str) -> AgentConfig {
-        let (resolver, lead) = {
+        let (resolver, lead, effort) = {
             let inner = self.lock();
-            let mut chat = dialog_id;
-            while let Some(parent) = inner.runs.get(chat).and_then(|r| r.parent.as_deref()) {
-                chat = parent;
-            }
-            (inner.resolver.clone(), chat.to_string())
+            let lead = Self::lead_of(&inner, dialog_id);
+            let effort = inner.runs.get(lead).and_then(|r| r.autopilot);
+            // A candidate's chat follows the configuration of the chat whose
+            // task it implements (T05).
+            let owner = inner.candidates.get(lead).map_or(lead, |c| c.main.as_str());
+            (inner.resolver.clone(), owner.to_string(), effort)
         };
         // Asked without the lock: the resolver may take locks of its own.
-        resolver
+        let config = resolver
             .and_then(|resolve| resolve(&lead))
-            .unwrap_or_else(|| self.config())
+            .unwrap_or_else(|| self.config());
+        match effort {
+            Some(effort) => autopilot::run_config(config, effort),
+            None => config,
+        }
+    }
+
+    /// The chat whose run a chat's run is under: its lead's, for a
+    /// subagent's (and its own, for a lead's).
+    fn lead_of<'a>(inner: &'a Inner, dialog_id: &'a str) -> &'a str {
+        let mut chat = dialog_id;
+        while let Some(parent) = inner.runs.get(chat).and_then(|r| r.parent.as_deref()) {
+            chat = parent;
+        }
+        chat
+    }
+
+    /// The chat's run carries out a stage of an Autopilot task of this
+    /// effort, which spent `before` until it: from now on it and its
+    /// subagents follow `config_for`'s Autopilot configuration, and what
+    /// they spend counts against the task's budget.
+    pub(super) fn set_autopilot(
+        &self,
+        dialog_id: &str,
+        effort: autopilot::Effort,
+        before: budget::Spent,
+    ) {
+        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
+            run.autopilot = Some(effort);
+            run.spent_before = before;
+        }
+    }
+
+    /// A reply in the chat's run, or a subagent's of it: what it cost, for
+    /// its Autopilot task's budget (U04). Nothing for any other run.
+    pub(super) fn note_reply(&self, dialog_id: &str, usage: Option<&serde_json::Value>) {
+        let mut inner = self.lock();
+        let lead = Self::lead_of(&inner, dialog_id).to_string();
+        if let Some(run) = inner.runs.get_mut(&lead).filter(|r| r.autopilot.is_some()) {
+            run.spent.note_reply(usage);
+        }
+    }
+
+    /// What the chat's Autopilot run (its lead's) spent itself so far: its
+    /// time and its replies'; None: it's no task's.
+    pub(super) fn run_spent(&self, dialog_id: &str) -> Option<budget::Spent> {
+        let inner = self.lock();
+        let run = inner.runs.get(Self::lead_of(&inner, dialog_id))?;
+        run.autopilot?;
+        Some(budget::Spent {
+            ms: run.started.elapsed().as_millis() as u64,
+            ..run.spent
+        })
+    }
+
+    /// Why the chat's Autopilot task is past its budget, if it is: what it
+    /// spent before this run and what this run spent so far, against the
+    /// settings' limits.
+    pub(super) fn over_budget(&self, dialog_id: &str) -> Option<String> {
+        let spent = self.run_spent(dialog_id)?;
+        let before = {
+            let inner = self.lock();
+            inner
+                .runs
+                .get(Self::lead_of(&inner, dialog_id))?
+                .spent_before
+        };
+        let budget = self.config_for(dialog_id).autopilot.budget;
+        budget::over(&budget, &before.plus(spent))
+    }
+
+    /// U04 (R03): a subagent of the chat's Autopilot run found its task past
+    /// its budget at one of its replies: the lead's run stops, with its
+    /// subagents, and ends `budget` (`budget_cut_of`), as at one of its own.
+    pub(super) fn cut_for_budget(&self, core: &Core, dialog_id: &str, why: &str) {
+        let lead = {
+            let mut inner = self.lock();
+            let lead = Self::lead_of(&inner, dialog_id).to_string();
+            if let Some(run) = inner.runs.get_mut(&lead) {
+                run.budget_cut.get_or_insert_with(|| why.to_string());
+            }
+            lead
+        };
+        self.stop(core, &lead);
+    }
+
+    /// Why the chat's run was cut for its task's budget, if it was
+    /// (`cut_for_budget`).
+    pub(super) fn budget_cut_of(&self, dialog_id: &str) -> Option<String> {
+        self.lock().runs.get(dialog_id)?.budget_cut.clone()
+    }
+
+    /// The effort of the Autopilot task the chat's run, or its lead's,
+    /// carries out a stage of; None: it's no task's.
+    pub(super) fn autopilot_of(&self, dialog_id: &str) -> Option<autopilot::Effort> {
+        let inner = self.lock();
+        let lead = Self::lead_of(&inner, dialog_id);
+        inner.runs.get(lead).and_then(|r| r.autopilot)
     }
 
     /// Runs follow the resolver's configuration from now on (a daemon's).
@@ -276,6 +427,16 @@ impl AgentState {
 
     pub fn on_server(&self) -> bool {
         self.lock().on_server
+    }
+
+    /// A delivered task's result goes through `deliverer` from now on (D15,
+    /// H04): a daemon's, which pushes it when its computer asked.
+    pub fn set_deliverer(&self, deliverer: Arc<dyn autopilot::Deliverer>) {
+        self.lock().deliverer = Some(deliverer);
+    }
+
+    pub fn deliverer(&self) -> Option<Arc<dyn autopilot::Deliverer>> {
+        self.lock().deliverer.clone()
     }
 
     /// Keeps a run's fix-round state until the user starts its checks
@@ -382,6 +543,11 @@ impl AgentState {
                 pause: pause.clone(),
                 effort: effort_tx,
                 child: None,
+                autopilot: None,
+                started: std::time::Instant::now(),
+                spent: budget::Spent::default(),
+                spent_before: budget::Spent::default(),
+                budget_cut: None,
             },
         );
         Some(Controls {
@@ -511,11 +677,60 @@ impl AgentState {
     /// Whether the chat has a run going (a lead's subagents count as its own).
     pub fn is_running(&self, dialog_id: &str) -> bool {
         let inner = self.lock();
+        let candidate = |chat: &str| {
+            inner
+                .candidates
+                .get(chat)
+                .is_some_and(|c| c.main == dialog_id)
+        };
         inner.runs.contains_key(dialog_id)
-            || inner
-                .runs
-                .values()
-                .any(|r| r.parent.as_deref() == Some(dialog_id))
+            || inner.runs.iter().any(|(chat, r)| {
+                r.parent.as_deref() == Some(dialog_id)
+                    // T05: its task's candidates implement for it.
+                    || candidate(chat)
+                    || r.parent.as_deref().is_some_and(candidate)
+            })
+    }
+
+    /// T05: `candidate` is a chat implementing `main`'s task, in a copy of
+    /// `main`'s project folder `project`: it follows `main`'s configuration
+    /// and its Stop, and the project's settings; `call` is the id its
+    /// events go by in `main`.
+    pub(super) fn add_candidate(
+        &self,
+        candidate: &str,
+        main: &str,
+        project: Option<String>,
+        call: &str,
+    ) {
+        let candidacy = Candidacy {
+            main: main.to_string(),
+            project,
+            call: call.to_string(),
+        };
+        self.lock()
+            .candidates
+            .insert(candidate.to_string(), candidacy);
+    }
+
+    /// T05: the chat is no candidate's any more (its task picked).
+    pub(super) fn drop_candidate(&self, candidate: &str) {
+        self.lock().candidates.remove(candidate);
+    }
+
+    /// T05: the project folder whose settings a candidate's runs follow.
+    pub(super) fn candidate_project(&self, candidate: &str) -> Option<String> {
+        let inner = self.lock();
+        inner.candidates.get(candidate)?.project.clone()
+    }
+
+    /// T05: where a server's candidates implement, set by the daemon.
+    pub fn set_copies(&self, copies: Arc<dyn candidates::Copies>) {
+        self.lock().copies = Some(copies);
+    }
+
+    pub(super) fn copies(&self) -> Option<Arc<dyn candidates::Copies>> {
+        self.lock().copies.clone()
     }
 
     /// Whether the chat's run goes on only by waiting for the user: each
@@ -581,10 +796,17 @@ impl AgentState {
             } else {
                 false
             };
+            // T05: its task's candidates, and theirs, stop with it.
+            let candidates = inner.candidates.clone();
+            let candidate = |chat: &str| candidates.get(chat).is_some_and(|c| c.main == dialog_id);
             let children: Vec<String> = inner
                 .runs
                 .iter()
-                .filter(|(_, r)| r.parent.as_deref() == Some(dialog_id))
+                .filter(|(chat, r)| {
+                    r.parent.as_deref() == Some(dialog_id)
+                        || (itself
+                            && (candidate(chat) || r.parent.as_deref().is_some_and(candidate)))
+                })
                 .map(|(d, r)| {
                     r.stop.set();
                     d.clone()
@@ -642,8 +864,24 @@ impl AgentState {
         request: ApprovalRequest,
         stop: &StopSignal,
     ) -> ApprovalDecision {
+        self.wait_for_decision(core, request, stop).await.0
+    }
+
+    /// `wait_for_approval`, and whether the answer is the deadline's: an
+    /// Autopilot task's approval nobody answered in `APPROVAL_DEADLINE` is
+    /// denied (U03), which the log and a notice say.
+    pub(super) async fn wait_for_decision(
+        &self,
+        core: &Core,
+        request: ApprovalRequest,
+        stop: &StopSignal,
+    ) -> (ApprovalDecision, bool) {
         let (tx, rx) = oneshot::channel();
         let key = (request.dialog_id.clone(), request.tool_call_id.clone());
+        let tool = request.tool_name.clone();
+        let deadline = self
+            .autopilot_of(&request.dialog_id)
+            .map(|_| self.lock().approval_deadline.unwrap_or(APPROVAL_DEADLINE));
         self.lock().approvals.insert(
             key.clone(),
             Waiting {
@@ -656,7 +894,43 @@ impl AgentState {
         if stop.is_set() {
             self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Deny);
         }
-        rx.await.unwrap_or(ApprovalDecision::Deny)
+        let Some(limit) = deadline else {
+            return (rx.await.unwrap_or(ApprovalDecision::Deny), false);
+        };
+        match tokio::time::timeout(limit, rx).await {
+            Ok(decision) => (decision.unwrap_or(ApprovalDecision::Deny), false),
+            Err(_) => {
+                // Nobody answered: denied, and the request goes from the chat.
+                self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Deny);
+                log::write(
+                    core,
+                    serde_json::json!({
+                        "event": "approval",
+                        "dialogId": key.0,
+                        "toolCallId": key.1,
+                        "tool": tool,
+                        "outcome": "deadline",
+                        "waitedSeconds": limit.as_secs(),
+                    }),
+                );
+                core.emit(AgentEvent::Notice {
+                    dialog_id: Some(key.0.clone()),
+                    kind: "warning".into(),
+                    title: "An approval wasn't answered".into(),
+                    message: format!(
+                        "Autopilot denied a {tool} call after waiting {} for an answer: nobody was there.",
+                        crate::chat_request::human_duration(limit)
+                    ),
+                });
+                (ApprovalDecision::Deny, true)
+            }
+        }
+    }
+
+    /// An Autopilot task's approvals are denied after `limit` from now on.
+    #[cfg(test)]
+    pub(super) fn set_approval_deadline(&self, limit: std::time::Duration) {
+        self.lock().approval_deadline = Some(limit);
     }
 
     fn resolve_approval(
@@ -757,6 +1031,12 @@ pub async fn check_project(
     let id = dialog_id.to_string();
     let ok = db
         .read(move |c| {
+            // T05: a candidate's chat works in a copy the IDE made of its
+            // task chat's folder, which is no project's.
+            let child = store::child_dialog(c, &id)?;
+            if child.is_some_and(|(d, _)| d.kind == candidates::KIND) {
+                return Ok(true);
+            }
             let project = store::dialog_project(c, &id)?;
             crate::chat_db::projects::chat_may_use(
                 c,
@@ -826,9 +1106,50 @@ pub fn stored_message(message: &UserMessage) -> NewMessage {
     }
 }
 
+/// How long a start waits for the chat's Autopilot driver between two
+/// stages: a moment, but for a delivery that pushes the task's result.
+const DRIVER_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Starts a run in the chat. Returns its id, or None when there was nothing
-/// to do (a Resume with nothing left to run).
+/// to do (a Resume with nothing left to run). A Resume of a chat whose
+/// Autopilot task was cut goes on with the task (autopilot/).
 pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
+    if matches!(request.start, StartKind::Resume) {
+        if let Some(config) = request.config.clone() {
+            core.agents.set_config(config);
+        }
+        check_project(&core.db, &request.dialog_id, request.root.as_deref()).await?;
+        if core.agents.draining() {
+            return Err(RESTARTING.into());
+        }
+        // It takes the driver's turn itself, or finds it taken.
+        if let Some(started) = autopilot::resume(core, &request).await? {
+            return Ok(started);
+        }
+    }
+    // A03: the chat's driver may be between two of its task's stages; the
+    // start waits for its turn, so the two never interleave. The stage the
+    // driver started is running then, and the start finds it.
+    let _driving = autopilot::driver_turn(&request.dialog_id, DRIVER_WAIT).await?;
+    start_run(core, request).await
+}
+
+/// A start of a run, boxed (`start_run_boxed`).
+pub(super) type Starting<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send + 'a>,
+>;
+
+/// `start_run`, boxed: a run that starts runs of its own (T05's
+/// candidates) can't name its own future's type otherwise.
+pub(super) fn start_run_boxed(core: &Core, request: StartRequest) -> Starting<'_> {
+    Box::pin(start_run(core, request))
+}
+
+/// `agent_start`'s run, which the Autopilot driver starts its stages with.
+pub(super) async fn start_run(
+    core: &Core,
+    request: StartRequest,
+) -> Result<Option<String>, String> {
     let (state, db) = (&core.agents, &core.db);
     if let Some(config) = request.config.clone() {
         state.set_config(config);
@@ -838,6 +1159,8 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
     let mut request = request;
     if let StartKind::Send { message } = &mut request.start {
         check_attachments(db, message).await?;
+        // "Implement this plan": the plan's text, from its file (A04).
+        plan::expand_implementation(message, request.root.as_deref())?;
     }
     if state.draining() {
         return Err(RESTARTING.into());
@@ -869,10 +1192,16 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
         }
     }
 
+    // The user's message, which a run that can't start marks failed; the
+    // IDE's own (an Autopilot stage's) stays as it is.
     let sent = match &request.start {
-        StartKind::Send { message } => Some(message.id.clone()),
+        StartKind::Send { message } if !run::is_harness_meta(message.meta.as_ref()) => {
+            Some(message.id.clone())
+        }
         _ => None,
     };
+    // What a later stage of an Autopilot task starts its run with.
+    let settings = autopilot::Settings::of(&request);
     let prepared = match run::Run::prepare(core, request, controls).await {
         Ok(Some(prepared)) => prepared,
         Ok(None) => {
@@ -920,6 +1249,7 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
     let core = core.clone();
     crate::rt::spawn(async move {
         let (mut run, entry) = prepared;
+        let stage = run.stage.clone();
         // The run as a task of its own: should it panic, the chat is still
         // released and told, instead of reading "already working" until
         // the app restarts.
@@ -930,12 +1260,28 @@ pub async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<St
                 "error".to_string()
             }
         };
+        // An Autopilot stage's run: the driver's turn is taken before its
+        // end is told, and the task goes on from here, its landing decided
+        // (D2, A03).
+        let driving = match &stage {
+            Some(_) => Some(autopilot::drive_lock(&dialog_id).await),
+            None => None,
+        };
+        // What it spent, for its task's budget (U04), and whether it was an
+        // Autopilot task's run: told before it's gone.
+        let spent = core.agents.run_spent(&dialog_id).unwrap_or_default();
+        let autopilot = core.agents.autopilot_of(&dialog_id).is_some();
         core.agents.unregister(&dialog_id, &id);
         core.emit(AgentEvent::RunEnded {
-            dialog_id,
+            dialog_id: dialog_id.clone(),
             run_id: id,
-            outcome,
+            outcome: outcome.clone(),
+            autopilot,
+            stage: stage.as_ref().map(|s| s.stage.id().to_string()),
         });
+        if let (Some(stage), Some(driving)) = (stage, driving) {
+            autopilot::after_run(core, dialog_id, stage, outcome, spent, settings, driving).await;
+        }
     });
     Ok(Some(run_id))
 }
@@ -1039,8 +1385,11 @@ pub async fn waits_for_results(core: &Core, dialog_id: &str) -> Result<bool, Str
 
 /// Stop: ends the chat's run as soon as it can (its request is cancelled;
 /// what it waits on is answered "no").
-pub fn agent_stop(core: &Core, dialog_id: String) -> bool {
-    core.agents.stop(core, &dialog_id)
+/// Stop: the chat's run ends as soon as it can. With no run to stop, the
+/// stage of its Autopilot task that waits out the provider's rate limit
+/// ends stopped (H07). Whether there was either.
+pub async fn agent_stop(core: &Core, dialog_id: String) -> bool {
+    core.agents.stop(core, &dialog_id) || autopilot::stop_waiting(core, &dialog_id).await
 }
 
 pub fn agent_resolve_approval(
@@ -1068,11 +1417,14 @@ pub fn agent_status(core: &Core) -> AgentStatus {
     let inner = core.agents.lock();
     AgentStatus {
         // A subagent's chat isn't a chat in the list: its lead's run stands
-        // for it (its blocks show it running).
+        // for it (its blocks show it running). Nor is a candidate's (T05),
+        // whose task chat's run stands for it.
         runs: inner
             .runs
             .iter()
-            .filter(|(_, r)| r.parent.is_none())
+            .filter(|(dialog_id, r)| {
+                r.parent.is_none() && !inner.candidates.contains_key(*dialog_id)
+            })
             .map(|(dialog_id, r)| RunningRun {
                 dialog_id: dialog_id.clone(),
                 run_id: r.run_id.clone(),
@@ -1082,6 +1434,14 @@ pub fn agent_status(core: &Core) -> AgentStatus {
             .runs
             .iter()
             .filter_map(|(dialog_id, r)| {
+                if let Some(c) = inner.candidates.get(dialog_id) {
+                    return Some(RunningSubagent {
+                        dialog_id: dialog_id.clone(),
+                        parent_dialog_id: c.main.clone(),
+                        parent_call_id: c.call.clone(),
+                        info: None,
+                    });
+                }
                 Some(RunningSubagent {
                     dialog_id: dialog_id.clone(),
                     parent_dialog_id: r.parent.clone()?,

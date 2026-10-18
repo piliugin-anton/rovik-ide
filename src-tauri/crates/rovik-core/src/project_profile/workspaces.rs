@@ -82,13 +82,7 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
     true
 }
 
-fn expand_parts(
-    root: &Path,
-    dir: &Path,
-    parts: &[&str],
-    manifest: &str,
-    out: &mut Vec<std::path::PathBuf>,
-) {
+fn expand_parts(dir: &Path, parts: &[&str], manifest: &str, out: &mut Vec<std::path::PathBuf>) {
     if out.len() >= MAX_WORKSPACE_MEMBERS {
         return;
     }
@@ -100,7 +94,7 @@ fn expand_parts(
     }
     let (head, tail) = (parts[0], &parts[1..]);
     if head == "**" {
-        expand_parts(root, dir, tail, manifest, out);
+        expand_parts(dir, tail, manifest, out);
         if let Ok(entries) = fs::read_dir(dir) {
             let mut dirs: Vec<_> = entries
                 .flatten()
@@ -116,7 +110,7 @@ fn expand_parts(
                 if out.len() >= MAX_WORKSPACE_MEMBERS {
                     return;
                 }
-                expand_parts(root, &e.path(), parts, manifest, out);
+                expand_parts(&e.path(), parts, manifest, out);
             }
         }
         return;
@@ -132,7 +126,7 @@ fn expand_parts(
                 if !segment_matches(head, &name) || !e.path().is_dir() || name.starts_with('.') {
                     continue;
                 }
-                expand_parts(root, &e.path(), tail, manifest, out);
+                expand_parts(&e.path(), tail, manifest, out);
                 if out.len() >= MAX_WORKSPACE_MEMBERS {
                     return;
                 }
@@ -145,7 +139,7 @@ fn expand_parts(
     }
     let next = dir.join(head);
     if next.is_dir() {
-        expand_parts(root, &next, tail, manifest, out);
+        expand_parts(&next, tail, manifest, out);
     }
 }
 
@@ -164,7 +158,7 @@ pub fn expand_member_dirs(root: &Path, patterns: &[String], manifest: &str) -> V
         }
         let parts: Vec<&str> = clean.split('/').collect();
         let mut found = Vec::new();
-        expand_parts(root, root, &parts, manifest, &mut found);
+        expand_parts(root, &parts, manifest, &mut found);
         for path in found {
             let rel = path
                 .strip_prefix(root)

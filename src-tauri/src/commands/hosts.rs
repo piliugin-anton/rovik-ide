@@ -104,7 +104,35 @@ pub async fn hosts_set_policy(
     id: String,
     policy: ApprovalPolicy,
 ) -> Result<(), String> {
-    page.set_policy(&id, policy)
+    page.set_policy(&id, policy).await
+}
+
+/// What the host's tasks follow while it works on its own (H01), as kept.
+#[tauri::command]
+pub async fn hosts_set_autonomy(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+    autonomy: rovik_protocol::autopilot::AutonomySettings,
+) -> Result<rovik_protocol::autopilot::AutonomySettings, String> {
+    page.set_autonomy(&id, autonomy).await
+}
+
+/// This computer's chats on the host and their tasks (autopilot-plan H08).
+#[tauri::command]
+pub async fn hosts_tasks(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+) -> Result<Vec<rovik_protocol::autopilot::ChatTask>, String> {
+    page.tasks(&id).await
+}
+
+/// "Test delivery" (autopilot-plan H05): what the host's push found.
+#[tauri::command]
+pub async fn hosts_test_delivery(
+    page: State<'_, Arc<HostsPage>>,
+    id: String,
+) -> Result<rovik_protocol::autopilot::DeliveryTest, String> {
+    page.test_delivery(&id).await
 }
 
 /// Deploys Rovik for this user; `sudo_password` when sudo asked for one.

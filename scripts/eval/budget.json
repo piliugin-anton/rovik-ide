@@ -1,5 +1,8 @@
 {
-  "perRun": { "maxTokens": 1500000, "timeoutSeconds": 1800 },
+  "perRun": {
+    "maxTokens": 1500000,
+    "timeoutSeconds": 1800
+  },
   "pilot": {
     "tasks": [
       "self-chat-title-markers",
@@ -11,6 +14,32 @@
     "repeats": 1,
     "capUsd": 5
   },
-  "baseline": { "repeats": 3, "capUsd": 75 },
-  "variants": { "repeats": 3, "capUsd": 75, "costRatioMax": { "default": 2 } }
+  "baseline": {
+    "repeats": 3,
+    "capUsd": 75
+  },
+  "variants": {
+    "repeats": 3,
+    "capUsd": 75,
+    "costRatioMax": {
+      "default": 2
+    }
+  },
+  "autopilot": {
+    "repeats": 3,
+    "efforts": {
+      "balanced": {
+        "maxHours": 1.5,
+        "maxTokens": 4500000,
+        "costRatioMax": 3,
+        "capUsd": 225
+      },
+      "thorough": {
+        "maxHours": 4,
+        "maxTokens": 15000000,
+        "costRatioMax": 10,
+        "capUsd": 750
+      }
+    }
+  }
 }

@@ -191,11 +191,13 @@ async fn launch() -> Result<Live, String> {
             .to_string()
     })?;
 
-    let mut config = StealthConfig::default();
-    config.headless = true;
-    config.viewport_width = VIEWPORT.0;
-    config.viewport_height = VIEWPORT.1;
-    config.chrome_path = Some(chrome.to_string_lossy().into_owned());
+    let mut config = StealthConfig {
+        headless: true,
+        viewport_width: VIEWPORT.0,
+        viewport_height: VIEWPORT.1,
+        chrome_path: Some(chrome.to_string_lossy().into_owned()),
+        ..StealthConfig::default()
+    };
 
     // eoka puts its throwaway profile in /tmp and reads Chrome's DevTools
     // port from a file inside it. Snap Chromium has a private /tmp, so that
@@ -707,7 +709,7 @@ pub(crate) async fn browser_screenshot_inner(
         )
         .await?;
 
-    let attachment_id = crate::chat_db::attachments::store(&db, bytes, "image/jpeg").await?;
+    let attachment_id = crate::chat_db::attachments::store(db, bytes, "image/jpeg").await?;
     Ok(BrowserScreenshot {
         url: current,
         title,

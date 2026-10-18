@@ -83,7 +83,7 @@ impl Remote {
         let mut preflight = MovePreflight::default();
 
         let mut config = self.core.agents.config();
-        self.policy(host).apply(&mut config);
+        self.apply_policy(host, &mut config);
         let p = &config.permissions;
         for (rule, what) in [
             (p.command_approval, "Commands"),
@@ -576,6 +576,10 @@ impl Remote {
         let lead = self.core.db.read(move |c| store::lead_chat(c, &id)).await;
         if lead.map_err(internal)? != dialog_id {
             return Err(refused("A subagent's chat moves with its lead's."));
+        }
+        let candidates = agent_run::candidates::awaiting_pick(&self.core, dialog_id).await;
+        if candidates.map_err(internal)? {
+            return Err(refused(agent_run::candidates::MOVE_AWAITS_PICK));
         }
         let place = self.project_of(dialog_id).await.map_err(internal)?;
         let place = place.ok_or_else(|| {

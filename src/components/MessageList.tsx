@@ -39,7 +39,18 @@ import MessageContent from './MessageContent';
 import ToolCallBlock from './ToolCallBlock';
 import ToolCallGroup from './ToolCallGroup';
 import VerificationRecord from './VerificationRecord';
+import PrepareRecord from './PrepareRecord';
+import TestsRecord from './TestsRecord';
+import AcceptanceRecord from './AcceptanceRecord';
+import PlannerRecord from './PlannerRecord';
+import JudgeRecord from './JudgeRecord';
+import BreakerRecord from './BreakerRecord';
+import CandidatesRecord from './CandidatesRecord';
+import PickRecord from './PickRecord';
+import ReportFacts from './ReportFacts';
 import ReviewRecord from './ReviewRecord';
+import StageRecord from './StageRecord';
+import { currentTask, stageOf } from '../lib/autopilot';
 import { liveSubagent } from '../lib/subagents';
 import { indexToolResults } from '../lib/toolResults';
 import type { ReviewMeta } from '../lib/changeReview';
@@ -101,6 +112,12 @@ export default function MessageList(props: {
   dialogId: string | null;
   chat: OpenChat | undefined;
   sending: boolean;
+  /**
+   * The record of the stage the task's run carries out now, from the task
+   * as stored: the page held may not be the newest (R03). Without it, the
+   * newest page's latest record, while the chat runs.
+   */
+  liveStageId?: string | null;
   /** Message to scroll to and highlight (a search hit). */
   focusMessageId: string | null;
   onLoadOlder: () => Promise<number>;
@@ -153,6 +170,14 @@ export default function MessageList(props: {
     const list = messages();
     return !props.sending && !props.readOnly && list[list.length - 1]?.id === m.id;
   };
+  // T01: a task's planners run at once, their records side by side at the
+  // chat's end: each is live while a run goes and nothing but planners follow it.
+  const plannerLive = (m: ChatMessage) => {
+    if (!props.sending) return false;
+    const list = messages();
+    const at = list.findIndex((x) => x.id === m.id);
+    return at >= 0 && list.slice(at + 1).every((x) => !!x.meta?.planner);
+  };
   const requestUndelivered = () => {
     const list = messages();
     for (let i = list.length - 1; i >= 0; i--) {
@@ -173,6 +198,19 @@ export default function MessageList(props: {
     const left = status.until - now();
     return left > 500 ? `${status.text} in ${formatDuration(left)}…` : `${status.text}…`;
   };
+
+  /**
+   * The stage record a run going now carries out: the latest of the chat's
+   * current task. Another recorded running was cut and never went on (a
+   * new request took over), whatever runs now.
+   */
+  const liveStage = createMemo(() => {
+    if (!props.sending) return null;
+    if (props.liveStageId !== undefined) return props.liveStageId;
+    if (props.chat?.hasNewer) return null;
+    const task = currentTask(messages());
+    return task ? task[task.length - 1].id : null;
+  });
 
   /** Each call's result, by the call itself (P5.8: ids can repeat). */
   const toolIndex = createMemo(() => indexToolResults(messages()));
@@ -1452,6 +1490,11 @@ export default function MessageList(props: {
                   )}
                 </Show>
 
+                {/* An Autopilot stage: where it began, and how it ended. */}
+                <Show when={stageOf(m)}>
+                  {(stage) => <StageRecord stage={stage()} live={liveStage() === m.id} />}
+                </Show>
+
                 <Show when={m.meta?.review}>
                   {(r) => (
                     <ReviewRecord
@@ -1493,6 +1536,89 @@ export default function MessageList(props: {
                     </Show>
                   )}
                 </For>
+
+                <Show when={m.role === 'assistant' && m.meta?.report}>
+                  {(r) => <ReportFacts meta={r()} />}
+                </Show>
+
+                <Show when={m.meta?.planner}>
+                  {(p) => (
+                    <PlannerRecord
+                      meta={p()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={plannerLive(m)}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.judge}>
+                  {(j) => (
+                    <JudgeRecord
+                      meta={j()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.candidates}>
+                  {(c) => (
+                    <CandidatesRecord
+                      meta={c()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.pick}>
+                  {(p) => <PickRecord meta={p()} live={props.sending} />}
+                </Show>
+
+                <Show when={m.meta?.breaker}>
+                  {(b) => (
+                    <BreakerRecord
+                      meta={b()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.acceptance}>
+                  {(a) => (
+                    <AcceptanceRecord
+                      meta={a()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.tests}>
+                  {(t) => (
+                    <TestsRecord
+                      meta={t()}
+                      dialogId={props.dialogId}
+                      recordId={m.id}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                    />
+                  )}
+                </Show>
+
+                <Show when={m.meta?.prepare}>
+                  {(p) => (
+                    <PrepareRecord
+                      meta={p()}
+                      live={props.sending && messages()[messages().length - 1]?.id === m.id}
+                    />
+                  )}
+                </Show>
 
                 <Show when={m.meta?.verification}>
                   {(v) => (

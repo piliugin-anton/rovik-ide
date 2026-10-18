@@ -12,6 +12,8 @@
 //!     test), the same when only line numbers moved, so the verification
 //!     gate can tell progress from churn between rounds (repair.rs).
 //!   - `tests_ran`: how many tests a test run ran, from its summary.
+//!   - `environment_failure`: a failed check that says its environment
+//!     failed (a program or a module that isn't installed), not the code.
 //!
 //! Plain text heuristics that work across tsc, eslint, cargo, rustc, jest,
 //! vitest, pytest and go test, without parsing any one tool's format.
@@ -480,7 +482,8 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
 }
 
 /// How many tests a run ran, from its summary lines (cargo, vitest, jest,
-/// pytest); None when it doesn't say.
+/// pytest) or, for `go test -v`, its result lines; None when it doesn't
+/// say.
 pub fn tests_ran(output: &str) -> Option<u32> {
     static CARGO: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"test result: \w+\. (\d+) passed; (\d+) failed").unwrap());
@@ -515,7 +518,109 @@ pub fn tests_ran(output: &str) -> Option<u32> {
             .sum();
         return Some(sum);
     }
-    None
+    go_tests_ran(&clean)
+}
+
+/// V08: `go test -v` prints no total, but a line per test and subtest it
+/// ran (`--- PASS: TestAdd (0.00s)`, `    --- FAIL: TestX/case (0.00s)`):
+/// those count, skipped ones not. Only verbose output says what ran: without
+/// `-v`, go prints just the failures, which aren't the count.
+fn go_tests_ran(clean: &str) -> Option<u32> {
+    static RUN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^=== RUN\s+\S").unwrap());
+    static RESULT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*--- (?:PASS|FAIL): \S+ \(").unwrap());
+    if !RUN.is_match(clean) {
+        return None;
+    }
+    Some(RESULT.find_iter(clean).count() as u32)
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Environment failures (V03, D12)
+ * ---------------------------------------------------------------------------
+ */
+
+/// A shell that didn't find a program: `sh: 1: vitest: not found`,
+/// `/bin/bash: line 1: jest: command not found`, `zsh: command not found:
+/// tsc`, and cmd's `'vitest' is not recognized as an internal or external
+/// command`.
+static SHELL_NOT_FOUND: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:(?:/[\w./-]*/)?(?:sh|bash|dash|zsh|ksh|ash)(?:\.exe)?:\s*(?:\d+:\s*|line \d+:\s*)?)?(?:command not found:\s*\S+|\S+: command not found|\S+: not found)\s*$|is not recognized as an internal or external command",
+    )
+    .unwrap()
+});
+/// A bare `X: not found` is a shell's only from one: with exit code 127,
+/// or a shell's name first. A test's own `user: not found` isn't.
+static SHELL_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:/[\w./-]*/)?(?:sh|bash|dash|zsh|ksh|ash)(?:\.exe)?:|command not found|is not recognized").unwrap()
+});
+/// make's line for a recipe whose program wasn't found.
+static MAKE_127: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\S*make(?:\[\d+\])?: \*\*\* .*Error 127\s*$").unwrap());
+/// Node and TypeScript: a module or a package that isn't installed.
+/// `Cannot find module './util'` is the code's: only a package's name
+/// (`vitest`, `@scope/pkg`, `pkg/sub`) is the environment's.
+static NODE_MISSING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"Cannot find (?:module|package) ['"](?P<name>[^'"]+)['"]"#).unwrap()
+});
+/// Python: `ModuleNotFoundError: No module named 'requests'`, and
+/// `python3: No module named pytest` (`python -m pytest` without it).
+static PYTHON_MISSING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"No module named ['"]?[A-Za-z_][\w.]*['"]?"#).unwrap());
+/// cargo run where there's no crate.
+static NO_CARGO_TOML: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"could not find `Cargo\.toml`").unwrap());
+
+/// Longest line kept to say what failed.
+const ENVIRONMENT_LINE_CHARS: usize = 200;
+
+/// Whether a module a failure names is a package (`vitest`, `@scope/x`,
+/// `lodash/fp`), not a path (`./util`, `/abs`, `C:\x`) or Node's own
+/// (`node:fs`).
+fn is_package_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.starts_with('/')
+        && !name.starts_with('\\')
+        && !name.starts_with("node:")
+        && name.as_bytes().get(1) != Some(&b':')
+}
+
+/// Whether a failed check's output (with its exit code) says its
+/// environment failed, not the code: a program that isn't installed (exit
+/// code 127, "command not found"), a package that isn't (Node's "Cannot
+/// find module" of a package, Python's "No module named"), no
+/// `Cargo.toml` where it ran. The line that says so, or for exit code 127
+/// with none, what that code means. None: the code's failure, as far as
+/// the output tells.
+pub fn environment_failure(exit_code: Option<i32>, output: &str) -> Option<String> {
+    let clean = clean_output(output);
+    let line_of = |line: &str| {
+        crate::chat_db::store::char_prefix(line.trim(), ENVIRONMENT_LINE_CHARS).to_string()
+    };
+    for line in clean.lines() {
+        let trimmed = line.trim();
+        if SHELL_NOT_FOUND.is_match(trimmed)
+            && (exit_code == Some(127) || SHELL_PREFIX.is_match(trimmed))
+        {
+            return Some(line_of(trimmed));
+        }
+        if MAKE_127.is_match(trimmed) || NO_CARGO_TOML.is_match(trimmed) {
+            return Some(line_of(trimmed));
+        }
+        if let Some(c) = NODE_MISSING.captures(trimmed) {
+            if is_package_name(&c["name"]) {
+                return Some(line_of(trimmed));
+            }
+        }
+        if PYTHON_MISSING.is_match(trimmed) {
+            return Some(line_of(trimmed));
+        }
+    }
+    (exit_code == Some(127)).then(|| "exit code 127: a program it runs wasn't found".to_string())
 }
 
 #[cfg(test)]
@@ -876,6 +981,30 @@ mod tests {
         assert_eq!(tests_ran("nothing to see"), None);
     }
 
+    /// V08: `go test -v` counts its tests and subtests that ran; a skipped
+    /// one doesn't count, and output without `-v` says no count.
+    #[test]
+    fn go_test_verbose_output_says_how_many_ran() {
+        let verbose = "=== RUN   TestAdd\n--- PASS: TestAdd (0.00s)\n=== RUN   TestTable\n=== RUN   TestTable/zero\n\
+            === RUN   TestTable/one\n    table_test.go:12: got 2, want 1\n--- FAIL: TestTable (0.00s)\n\
+            \x20   --- PASS: TestTable/zero (0.00s)\n    --- FAIL: TestTable/one (0.00s)\n\
+            === RUN   TestSlow\n    slow_test.go:5: skipping in short mode\n--- SKIP: TestSlow (0.00s)\n\
+            FAIL\nFAIL\texample.com/m\t0.004s\n=== RUN   TestOther\n--- PASS: TestOther (0.00s)\nPASS\nok  \texample.com/m/other\t0.002s\n";
+        assert_eq!(tests_ran(verbose), Some(5));
+        // A package with no tests.
+        assert_eq!(
+            tests_ran("=== RUN   TestNothing\n--- SKIP: TestNothing (0.00s)\nok  \tm\t0.001s"),
+            Some(0)
+        );
+        // Without -v: the failures alone, no count.
+        let quiet = "--- FAIL: TestTable (0.00s)\n    --- FAIL: TestTable/one (0.00s)\nFAIL\nFAIL\tm\t0.004s";
+        assert_eq!(tests_ran(quiet), None);
+        assert_eq!(tests_ran("ok  \texample.com/m\t0.002s"), None);
+        // Garbage, and a line that only looks like one.
+        assert_eq!(tests_ran("=== RUNNING nothing\n--- PASS: \n"), None);
+        assert_eq!(tests_ran("\u{0}\u{1} --- PASS"), None);
+    }
+
     #[test]
     fn a_failure_with_nothing_recognizable_is_the_check_alone() {
         assert_eq!(
@@ -887,5 +1016,81 @@ mod tests {
         let keys = failure_keys("test", &many, false);
         assert_eq!(keys.len(), MAX_KEYS);
         assert!(keys.last().unwrap().ends_with("and 31 more"));
+    }
+
+    /// V03 (D12): what a failed check says when its environment failed,
+    /// from each tool's own words.
+    #[test]
+    fn an_environment_failure_is_told_from_the_codes() {
+        let cases: &[(Option<i32>, &str, &str)] = &[
+            (Some(127), "> t@1 test\n> vitest\n\nsh: 1: vitest: not found\n", "sh: 1: vitest: not found"),
+            (Some(127), "/bin/bash: line 1: jest: command not found", "/bin/bash: line 1: jest: command not found"),
+            (Some(1), "zsh: command not found: tsc", "zsh: command not found: tsc"),
+            (Some(1), "bash: pytest: command not found", "bash: pytest: command not found"),
+            (Some(1), "'vitest' is not recognized as an internal or external command,", "'vitest' is not recognized as an internal or external command,"),
+            (Some(2), "make: vitest: No such file or directory\nmake: *** [Makefile:2: test] Error 127", "make: *** [Makefile:2: test] Error 127"),
+            (Some(1), "Error: Cannot find module 'vitest/config'\nRequire stack:\n- /p/vite.config.js", "Error: Cannot find module 'vitest/config'"),
+            (Some(1), "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@acme/ui' imported from /p/src/a.js", "Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@acme/ui' imported from /p/src/a.js"),
+            (Some(2), "src/a.ts(1,20): error TS2307: Cannot find module 'react' or its corresponding type declarations.", "src/a.ts(1,20): error TS2307: Cannot find module 'react' or its corresponding type declarations."),
+            (Some(2), "E   ModuleNotFoundError: No module named 'requests'", "E   ModuleNotFoundError: No module named 'requests'"),
+            (Some(1), "/usr/bin/python3: No module named pytest", "/usr/bin/python3: No module named pytest"),
+            (Some(101), "error: could not find `Cargo.toml` in `/p` or any parent directory", "error: could not find `Cargo.toml` in `/p` or any parent directory"),
+        ];
+        for (code, output, line) in cases {
+            assert_eq!(
+                environment_failure(*code, output).as_deref(),
+                Some(*line),
+                "{output}"
+            );
+        }
+        // Color codes and CRLF don't hide it.
+        assert_eq!(
+            environment_failure(Some(127), "\x1b[31msh: 1: vitest: not found\x1b[0m\r\n")
+                .as_deref(),
+            Some("sh: 1: vitest: not found")
+        );
+        // Exit code 127 with nothing to say what wasn't found.
+        assert_eq!(
+            environment_failure(Some(127), "").as_deref(),
+            Some("exit code 127: a program it runs wasn't found")
+        );
+    }
+
+    /// V03: the code's own failures aren't the environment's: a relative
+    /// import, Node's own modules, a test that prints "not found", and
+    /// output that says nothing of the kind.
+    #[test]
+    fn the_codes_failures_arent_the_environments() {
+        let cases: &[(Option<i32>, &str)] = &[
+            (
+                Some(1),
+                "Error: Cannot find module './util'\nRequire stack:",
+            ),
+            (Some(1), "Error: Cannot find module '../lib/x.js'"),
+            (Some(1), "Error: Cannot find module '/abs/x'"),
+            (Some(1), "Error: Cannot find module 'node:fs'"),
+            (
+                Some(1),
+                "expected 'user: not found' to equal 'ok'\nuser: not found",
+            ),
+            (
+                Some(1),
+                "FAIL src/a.test.ts > finds users\nAssertionError: expected 1 to be 2",
+            ),
+            (
+                Some(2),
+                "src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.",
+            ),
+            (Some(1), ""),
+            (None, "killed"),
+            (
+                Some(1),
+                "\u{0}\u{1}\u{2} garbage \u{fffd}\u{fffd} Cannot find",
+            ),
+            (Some(1), "Cannot find module"),
+        ];
+        for (code, output) in cases {
+            assert_eq!(environment_failure(*code, output), None, "{output:?}");
+        }
     }
 }

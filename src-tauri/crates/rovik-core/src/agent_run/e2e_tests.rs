@@ -24,6 +24,10 @@ mod repair_tests;
 #[path = "context_e2e_tests.rs"]
 mod context_tests;
 
+#[cfg(test)]
+#[path = "autopilot_e2e_tests.rs"]
+mod autopilot_tests;
+
 /*
  * The operations, as the app and the daemon call them: through `dispatch`.
  * These stand in for agent_run's functions of the same names, so every
@@ -41,7 +45,7 @@ where
 }
 
 async fn agent_start(core: &Core, request: StartRequest) -> Result<Option<String>, String> {
-    through(core, Request::AgentStart(request)).await
+    through(core, Request::AgentStart(Box::new(request))).await
 }
 
 async fn agent_stop(core: &Core, dialog_id: String) -> bool {
@@ -195,6 +199,7 @@ impl Harness {
                 permissions,
                 approval_profiles: Vec::new(),
                 subagents: Default::default(),
+                autopilot: Default::default(),
             }),
             isolate: Some(false),
             project_settings: None,
@@ -650,7 +655,10 @@ async fn an_approved_edit_overlapping_a_new_change_is_reviewed_again() {
     assert_eq!(h.file("a.txt").as_deref(), Some("uno\ntwo\n"));
 }
 
+/// The workload queue is the process's: its lock keeps the tests that
+/// set it up apart, for the whole test.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn a_heavy_command_waits_for_a_cpu_slot_with_a_note() {
     let _serial = crate::workload::queue::test_support::SERIAL
         .lock()
@@ -5385,4 +5393,98 @@ async fn two_chats_waiting_on_the_same_call_id_are_answered_apart() {
         .await
     );
     assert!(matches!(b.await.unwrap(), ApprovalDecision::Deny));
+}
+
+/// The agent log's `tool` lines of the harness's chat, once there are
+/// `n`: the log is written off the run's thread.
+async fn tool_lines(h: &Harness, n: usize) -> Vec<Value> {
+    let path = h.core.paths.log_dir.join("agent-log.jsonl");
+    let mut lines = Vec::new();
+    for _ in 0..200 {
+        lines = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|l| l["event"] == "tool" && l["dialogId"] == h.dialog_id.as_str())
+            .collect();
+        if lines.len() >= n {
+            return lines;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{} tool lines, not {n}: {lines:#?}", lines.len());
+}
+
+/// G02 (autopilot-plan): every finished tool call leaves one `tool` line
+/// in the agent log, whatever path it took (a parallel batch, a call run
+/// alone, one refused by the user's denied commands, the checklist):
+/// its tool, whether it failed and its error's class, its time, and a
+/// command's exit code. A command that ran and failed didn't fail as a
+/// call.
+#[tokio::test]
+async fn every_finished_tool_call_leaves_a_tool_line() {
+    let h = harness(&[("a.txt", "one\ntwo\n")]).await;
+    let (url, _) = model(vec![
+        Reply::Calls(vec![
+            ("r1", "read", json!({ "path": "a.txt" })),
+            ("r2", "read", json!({ "path": "missing.txt" })),
+        ]),
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "a.txt", "old_text": "three", "content": "3" }),
+        },
+        Reply::Call {
+            id: "b1",
+            name: "bash",
+            args: json!({ "command": "sh -c 'exit 3'" }),
+        },
+        Reply::Call {
+            id: "b2",
+            name: "bash",
+            args: json!({ "command": "git push origin main" }),
+        },
+        Reply::Call {
+            id: "t1",
+            name: "todo",
+            args: json!({ "items": [{ "title": "Look", "status": "done" }] }),
+        },
+        Reply::Text("Done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        denied_commands: vec!["git push".into()],
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Look at a.txt"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let lines = tool_lines(&h, 6).await;
+    let got: Vec<(&str, bool, Option<&str>)> = lines
+        .iter()
+        .map(|l| {
+            (
+                l["tool"].as_str().unwrap(),
+                l["failed"].as_bool().unwrap(),
+                l["error"].as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("read", false, None),
+            ("read", true, Some("no such file")),
+            ("write", true, Some("old_text not found")),
+            ("bash", false, None),
+            ("bash", true, Some("denied")),
+            ("todo", false, None),
+        ],
+        "{lines:#?}"
+    );
+    assert!(lines.iter().all(|l| l["ms"].is_u64() && l["model"] == "m"));
+    assert_eq!(lines[3]["exitCode"], 3, "the command ran, and failed");
+    assert!(lines[4].get("exitCode").is_none(), "it never ran");
+    assert!(lines.iter().all(|l| l.get("role").is_none()), "the lead's");
 }

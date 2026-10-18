@@ -179,7 +179,7 @@ fn starts(fake: &Fake) -> Vec<StartRequest> {
     requests
         .iter()
         .filter_map(|r| match r {
-            Request::AgentStart(start) => Some(start.clone()),
+            Request::AgentStart(start) => Some((**start).clone()),
             _ => None,
         })
         .collect()
@@ -458,6 +458,123 @@ async fn a_project_chats_start_names_no_local_folder() {
     assert_eq!(starts(&fake)[0].root.as_deref(), Some("/home/me/project"));
 }
 
+/// H04: a host that pushes its results is told the project's remote with
+/// the project, as an SSH address without the credentials its `origin`
+/// has; once it keeps them for the computer, the next sync tells it no
+/// remote.
+#[tokio::test]
+async fn a_host_that_pushes_is_told_the_projects_remote() {
+    use rovik_protocol::autopilot::Delivery;
+    let app = App::new();
+    let root = app.dir.0.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo = git2::Repository::init(&root).unwrap();
+    repo.remote("origin", "https://me:secret@github.com/acme/app.git")
+        .unwrap();
+    std::fs::write(root.join("a.txt"), "a\n").unwrap();
+    let at = root.clone();
+    app.core
+        .db
+        .write(move |c| rovik_core::chat_db::projects::ensure(c, "p1", "project", &at))
+        .await
+        .unwrap();
+    app.chat("chat", Some("p1"), Vec::new()).await;
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::PROJECTS.into(), features::AUTONOMY.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    remote.place("chat", HOST);
+    remote.set_policy(HOST, ApprovalPolicy::Autonomous);
+    remote.set_autonomy(
+        HOST,
+        AutonomySettings {
+            delivery: Delivery::PushBranch {
+                deploy_key: "~/.ssh/rovik_deploy".into(),
+                open_pr: false,
+            },
+            ..Default::default()
+        },
+    );
+    let ensured = |fake: &Fake| -> Vec<Option<String>> {
+        let requests = fake.requests.lock().unwrap();
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::ProjectEnsure { remote, .. } => Some(remote.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let send = |id: &str| {
+        let mut request = start(
+            "chat",
+            StartKind::Send {
+                message: UserMessage {
+                    id: id.into(),
+                    content: "Go".into(),
+                    meta: None,
+                    attachments: Vec::new(),
+                },
+            },
+            None,
+        );
+        request.root = Some(root.to_string_lossy().into_owned());
+        request
+    };
+    remote.start(send("u1")).await.unwrap();
+    assert_eq!(
+        ensured(&fake),
+        [Some("git@github.com:acme/app.git".to_string())]
+    );
+    let shown = format!("{:?}", fake.requests.lock().unwrap());
+    assert!(!shown.contains("secret"), "no credentials go: {shown}");
+
+    remote.set_policy(HOST, ApprovalPolicy::AiReviewerThenMe);
+    std::fs::write(root.join("a.txt"), "b\n").unwrap();
+    remote.start(send("u2")).await.unwrap();
+    assert_eq!(
+        ensured(&fake),
+        [Some("git@github.com:acme/app.git".to_string()), None],
+        "the project again, with no remote"
+    );
+}
+
+/// H05: "Test delivery" asks the host to push to the open project's
+/// remote, as the host would push a result there: an SSH address without
+/// the credentials its `origin` has. With no such project open, or a
+/// daemon too old for it, it says what's missing.
+#[tokio::test]
+async fn a_delivery_test_goes_to_the_open_projects_remote() {
+    let app = App::new();
+    let root = app.dir.0.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo = git2::Repository::init(&root).unwrap();
+    repo.remote("origin", "https://me:secret@github.com/acme/app.git")
+        .unwrap();
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::AUTONOMY.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    let none = remote.test_delivery(HOST).await.unwrap_err();
+    assert!(
+        none.starts_with("Open a project whose repository has an `origin`"),
+        "{none}"
+    );
+    remote.set_open_project(Some(("p1".into(), root.clone())));
+    let report = remote.test_delivery(HOST).await.unwrap();
+    assert_eq!(report.remote, "git@github.com:acme/app.git");
+    assert!(fake
+        .requests
+        .lock()
+        .unwrap()
+        .contains(&Request::DeliveryTest {
+            remote: "git@github.com:acme/app.git".into()
+        }));
+
+    let (old, _) = connected(&app).await;
+    old.set_open_project(Some(("p1".into(), root)));
+    let too_old = old.test_delivery(HOST).await.unwrap_err();
+    assert!(too_old.contains("too old"), "{too_old}");
+}
+
 /// K50: a Continue doesn't send the request's text again when it's the
 /// stored one, local paths or not; other text still goes.
 #[tokio::test]
@@ -542,8 +659,10 @@ async fn the_open_project_follows_what_the_user_says_its_folder_is() {
 async fn a_configuration_goes_to_every_host_without_its_keys() {
     let app = App::new();
     let (remote, fake) = connected(&app).await;
-    let mut config = AgentConfig::default();
-    config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
+    let config = AgentConfig {
+        approval_profiles: vec![start("c", StartKind::Retry, None).profile],
+        ..AgentConfig::default()
+    };
     let reply = remote
         .everywhere(Request::AgentConfigure(config.clone()))
         .await;
@@ -572,8 +691,10 @@ async fn requests_once_caught_up(fake: &Fake) -> Vec<Request> {
 async fn a_host_connecting_after_the_settings_were_applied_gets_them() {
     let app = App::new();
     let remote = Remote::new(app.core.clone());
-    let mut config = AgentConfig::default();
-    config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
+    let config = AgentConfig {
+        approval_profiles: vec![start("c", StartKind::Retry, None).profile],
+        ..AgentConfig::default()
+    };
     // Applied with no host connected: nowhere to send it yet.
     let reply = remote
         .everywhere(Request::AgentConfigure(config.clone()))
@@ -622,17 +743,116 @@ fn a_hosts_policy_sends_what_waits_for_the_user_to_the_ai_reviewer() {
     };
     // Without an AI reviewer, it waits for the user whatever the policy.
     let mut alone = config.clone();
-    ApprovalPolicy::AiReviewerThenMe.apply(&mut alone);
+    ApprovalPolicy::AiReviewerThenMe.apply(&AutonomySettings::default(), &mut alone);
     assert_eq!(alone, config);
     config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
     let mut waiting = config.clone();
-    ApprovalPolicy::WaitForMe.apply(&mut waiting);
+    ApprovalPolicy::WaitForMe.apply(&AutonomySettings::default(), &mut waiting);
     assert_eq!(waiting, config);
-    ApprovalPolicy::AiReviewerThenMe.apply(&mut config);
+    ApprovalPolicy::AiReviewerThenMe.apply(&AutonomySettings::default(), &mut config);
     assert_eq!(config.permissions.command_approval.by, Approver::Ai);
     assert!(
         !config.permissions.edit_approval.required,
         "what needs no approval still doesn't"
+    );
+}
+
+/// H02: the configuration a host that works on its own gets: what would
+/// wait for the user goes to the AI reviewer, and the block's effort and
+/// budget, each where it sets one, are over the computer's. A message that
+/// names no mode runs in Autopilot there; one that names another keeps
+/// it. The host keeps the block's delivery and notify URL, sent on
+/// connecting and at each change, and forgets them once it no longer works
+/// on its own.
+#[tokio::test]
+async fn a_host_that_works_on_its_own_gets_its_block() {
+    use rovik_protocol::autopilot::{AutonomyConfig, Budget, Delivery, Effort};
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let mut config = AgentConfig::default();
+    config.permissions.command_approval = ApprovalRule {
+        required: true,
+        by: Approver::User,
+    };
+    config.approval_profiles = vec![start("c", StartKind::Retry, None).profile];
+    config.autopilot.budget = Budget {
+        max_hours: Some(2.0),
+        max_cost: Some(5.0),
+        max_tokens: Some(3_000_000),
+    };
+    let block = AutonomySettings {
+        effort: Some(Effort::Thorough),
+        budget: Some(Budget {
+            max_hours: Some(8.0),
+            max_cost: None,
+            max_tokens: None,
+        }),
+        delivery: Delivery::PushBranch {
+            deploy_key: "~/.ssh/rovik_deploy".into(),
+            open_pr: true,
+        },
+        notify_url: Some("https://ntfy.sh/rovik-topic".into()),
+    };
+    let remote = Remote::new(app.core.clone());
+    remote.set_policy(HOST, ApprovalPolicy::Autonomous);
+    remote.set_autonomy(HOST, block.clone());
+    remote
+        .everywhere(Request::AgentConfigure(config.clone()))
+        .await
+        .unwrap();
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::AUTONOMY.into()];
+    remote.connect(HOST, fake.clone(), identity(HOST));
+    let requests = requests_once_caught_up(&fake).await;
+
+    // On connecting: the configuration, then what the host keeps.
+    let Request::AgentConfigure(received) = &requests[0] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(received.permissions.command_approval.by, Approver::Ai);
+    assert_eq!(received.autopilot.effort, Effort::Thorough);
+    assert_eq!(
+        received.autopilot.budget,
+        Budget {
+            max_hours: Some(8.0),
+            max_cost: Some(5.0),
+            max_tokens: Some(3_000_000),
+        },
+        "the host's hours, the computer's cost and tokens"
+    );
+    let mut rest = received.clone();
+    rest.permissions.command_approval.by = Approver::User;
+    rest.autopilot = config.autopilot.clone();
+    assert_eq!(rest, config.without_keys(), "the rest is the computer's");
+    assert_eq!(requests[1], Request::AutonomyConfigure(block.config()));
+
+    // A start: under the same configuration, in Autopilot unless it says.
+    remote.place("chat", HOST);
+    let mut request = start("chat", StartKind::Retry, None);
+    request.mode = None;
+    request.config = Some(config.clone());
+    remote.start(request.clone()).await.unwrap();
+    request.mode = Some("plan".into());
+    remote.start(request).await.unwrap();
+    let started = starts(&fake);
+    assert_eq!(started[0].mode.as_deref(), Some("autopilot"));
+    assert_eq!(started[1].mode.as_deref(), Some("plan"), "what it named");
+    // With its keys, which a start carries (D11).
+    let start_config = started[0].config.as_ref().map(AgentConfig::without_keys);
+    assert_eq!(start_config.as_ref(), Some(received));
+
+    // A change reaches it at once; "Wait for me" forgets the block there.
+    fake.requests.lock().unwrap().clear();
+    remote.set_policy(HOST, ApprovalPolicy::WaitForMe);
+    remote.reconfigure(HOST).await;
+    let requests = fake.requests.lock().unwrap().clone();
+    let Request::AgentConfigure(waiting) = &requests[0] else {
+        panic!("{requests:?}");
+    };
+    assert_eq!(waiting, &config.without_keys(), "the computer's, as it is");
+    assert_eq!(
+        requests[1],
+        Request::AutonomyConfigure(AutonomyConfig::default())
     );
 }
 
@@ -670,6 +890,57 @@ async fn messages_name_a_host_as_its_settings_do() {
             "Build server runs an older Rovik, which can't take chats: it needs an upgrade first."
         )
     );
+}
+
+/// R03, T05: a chat whose task's candidates implement it, or wait for
+/// their Pick, doesn't move: their working copies can't go with it.
+#[tokio::test]
+async fn a_chat_whose_candidates_await_their_pick_doesnt_move() {
+    use rovik_core::agent_run::autopilot::{add_stage, end_stage, Stage, StageRecord, Status};
+    use rovik_core::agent_run::candidates::MOVE_AWAITS_PICK;
+    use rovik_protocol::autopilot::Effort;
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    // A host that takes chats.
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::MIRROR.into()];
+    let (remote, _fake) = connected_to(&app, fake).await;
+    let core = &app.core;
+    let done = |name| StageRecord::ended("task", name, 1, Effort::Thorough, Status::Done);
+    for name in [Stage::Plan, Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        add_stage(core, "chat", &done(name)).await.unwrap();
+    }
+    let implementing = StageRecord {
+        candidates: vec!["a".into(), "b".into()],
+        ..StageRecord::running("task", Stage::Implement, 1, Effort::Thorough)
+    };
+    let implement = add_stage(core, "chat", &implementing).await.unwrap();
+    let blocked = || async { remote.move_preflight("chat", HOST).await.unwrap().blocked };
+    assert_eq!(blocked().await.as_deref(), Some(MOVE_AWAITS_PICK));
+    // Implemented, and their Pick under way: still.
+    end_stage(core, "chat", &implement, |r| r.status = Status::Done)
+        .await
+        .unwrap();
+    let picking = StageRecord::running("task", Stage::Pick, 1, Effort::Thorough);
+    let pick = add_stage(core, "chat", &picking).await.unwrap();
+    assert_eq!(blocked().await.as_deref(), Some(MOVE_AWAITS_PICK));
+    let moved = remote.move_chat("chat", HOST, None).await.unwrap_err();
+    assert_eq!(moved.message, MOVE_AWAITS_PICK);
+    // Picked: the copies are done with, and it moves as any chat would.
+    end_stage(core, "chat", &pick, |r| r.status = Status::Done)
+        .await
+        .unwrap();
+    assert_ne!(blocked().await.as_deref(), Some(MOVE_AWAITS_PICK));
+
+    // Nor back from a server, its mirror's task's candidates at work there.
+    app.chat("there", None, Vec::new()).await;
+    remote.place("there", HOST);
+    for name in [Stage::Plan, Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        add_stage(core, "there", &done(name)).await.unwrap();
+    }
+    add_stage(core, "there", &implementing).await.unwrap();
+    let back = remote.move_back("there", None).await.unwrap_err();
+    assert_eq!(back.message, MOVE_AWAITS_PICK);
 }
 
 /// R02, 4.5: a host whose Rovik is too old to take chats blocks the move.
@@ -754,7 +1025,7 @@ async fn a_file_the_host_cant_send_leaves_its_row_without_it() {
     };
     remote.receive(HOST, event(added)).await;
     let rows = app.rows("chat").await;
-    assert_eq!(rows[0].attachments, [lost.clone()]);
+    assert_eq!(rows[0].attachments, std::slice::from_ref(&lost));
     let data = app.core.db.data_dir().to_path_buf();
     assert!(attachments::file_for(&data, &lost).is_none());
     assert_eq!(*app.witnessed.lock().unwrap(), [("t1".to_string(), true)]);

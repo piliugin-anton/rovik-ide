@@ -106,18 +106,44 @@ impl Daemon {
             Request::Storage => Ok(Response::Storage(host::storage(self).await)),
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
-            Request::AgentStart(start) => self.start(computer, start).await,
+            Request::AgentStart(start) => self.start(computer, *start).await,
             // Only this computer's configuration changes (D16).
             Request::AgentConfigure(config) => self
                 .store
                 .configure(computer, config)
                 .map(|()| Response::Done)
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
+            Request::AutonomyConfigure(config) => self
+                .store
+                .set_autonomy(computer, config)
+                .map(|()| Response::Done)
+                .map_err(|e| Fail::new(FailCode::Internal, e)),
+            // H08: this computer's chats, as `status` lists them.
+            Request::TaskStatus => {
+                let chats = self.store.chats_of(computer);
+                let listed = self.core.db.read(move |c| {
+                    let all = chats.iter().map(|(id, chat)| (id, chat));
+                    Ok(crate::status::chat_tasks(Some(c), all))
+                });
+                listed
+                    .await
+                    .map(Response::Tasks)
+                    .map_err(|e| Fail::new(FailCode::Internal, e))
+            }
+            // H05: with this computer's delivery settings.
+            Request::DeliveryTest { remote } => {
+                let delivery = self.store.computer_autonomy(computer).delivery;
+                crate::deliver::test(&delivery, &remote)
+                    .await
+                    .map(Response::DeliveryTested)
+                    .map_err(|e| Fail::new(FailCode::BadRequest, e))
+            }
             Request::ProjectEnsure {
                 project,
                 settings,
                 excludes,
-            } => work::ensure_project(self, project, settings, excludes).await,
+                remote,
+            } => work::ensure_project(self, project, settings, excludes, remote).await,
             Request::WorkSync {
                 dialog_id,
                 project,
@@ -131,9 +157,7 @@ impl Daemon {
             }
             Request::WorkResult { dialog_id } => {
                 self.store.check_owner(computer, &dialog_id)?;
-                let outcome = self.store.outcome_of(&dialog_id);
-                let outcome = outcome.as_deref().unwrap_or("unknown");
-                let result = self.results.commit(&dialog_id, outcome).await?;
+                let result = self.results.recommit(&dialog_id).await?;
                 Ok(Response::ChatResult(result))
             }
             Request::WorkResults => Ok(Response::ChatResults(self.store.results_of(computer))),
@@ -322,7 +346,7 @@ impl Daemon {
         }
         self.keep_project_settings(&mut start)?;
         self.ensure_chat(&start.dialog_id, None).await?;
-        rovik_core::dispatch(&self.core, Request::AgentStart(start)).await
+        rovik_core::dispatch(&self.core, Request::AgentStart(Box::new(start))).await
     }
 
     /// The project's settings the start brought, kept for the folder its

@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, JSX } from 'solid-js';
+import { createSignal, onCleanup, JSX, Show } from 'solid-js';
 
 interface ResizableProps {
   children: JSX.Element;
@@ -6,6 +6,11 @@ interface ResizableProps {
   initialWidth?: number;
   minWidth?: number;
   maxWidth?: number;
+  /** The panel fills the window; the right pane is hidden by `.sidebar-expanded`. */
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+  /** Whether the floating expand toggle shows: App's to say (on the Chat tab). */
+  showFloatingButton: boolean;
 }
 
 // The left panel is chrome: tabs, pickers, rows, toolbars, chat messages.
@@ -41,6 +46,10 @@ export default function Resizable(props: ResizableProps) {
   const [width, setWidth] = createSignal(props.initialWidth ?? 300);
   const [isResizing, setIsResizing] = createSignal(false);
 
+  // `100vw` is a length, so the browser interpolates it from the dragged
+  // pixel width when `.resizable-inner` transitions its width.
+  const innerWidth = () => (props.expanded ? '100vw' : `${width()}px`);
+
   let rootEl: HTMLDivElement | undefined;
 
   // CSS `user-select: none` alone doesn't stop every drag-select (a drag
@@ -73,6 +82,9 @@ export default function Resizable(props: ResizableProps) {
   });
 
   const startResize = (e: MouseEvent) => {
+    // Expanded, the divider is hidden and the panel's width is the window's:
+    // a drag would have nothing to move.
+    if (props.expanded) return;
     e.preventDefault();
     // A resize drag must never leave a text selection behind: drop any
     // existing one and suppress selection globally until mouseup.
@@ -103,8 +115,36 @@ export default function Resizable(props: ResizableProps) {
 
   return (
     <div class="resizable-root" ref={attachGuards}>
-      <div class={`${props.class ?? ''} resizable-inner`} style={{ width: `${width()}px` }}>
+      <div
+        class={`${props.class ?? ''} resizable-inner`}
+        classList={{ expanded: !!props.expanded, resizing: isResizing() }}
+        style={{ width: innerWidth() }}
+      >
         {props.children}
+
+        {/* Floating full-window toggle, at the panel's right edge */}
+        <Show when={props.showFloatingButton}>
+          <button
+            type="button"
+            class="sidebar-expand-button"
+            classList={{ expanded: !!props.expanded }}
+            aria-pressed={!!props.expanded}
+            title={props.expanded ? 'Collapse panel' : 'Expand panel'}
+            aria-label={props.expanded ? 'Collapse panel' : 'Expand panel'}
+            onClick={() => props.onExpandedChange?.(!props.expanded)}
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path
+                d={props.expanded ? 'M10 3 5 8l5 5' : 'M6 3l5 5-5 5'}
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </Show>
       </div>
 
       {/* Resize Handle */}

@@ -13,6 +13,7 @@ import {
   type KeepInput,
 } from './remoteGuards';
 import { clearPendingDraft, listPendingDrafts, savePendingDraft } from './pendingDraft';
+import { stageRows } from './autopilot';
 import type { DraftSegment } from './composerSegments';
 import type { PendingDraft } from './pendingDraft';
 import type { ChatMessage, ChatPlace } from '../types';
@@ -50,6 +51,35 @@ test('a remote chat with unanswered calls starts no resume: its daemon picks it 
   assert.equal(resumesHere(unanswered, { kind: 'moving', host: 'h1' }), false);
   const answered = [...unanswered, { id: 't2', role: 'tool', content: 'ok', tool_call_id: 'c2' }];
   assert.equal(resumesHere(answered as ChatMessage[], undefined), false, 'nothing to pick up');
+});
+
+test('a local chat whose Autopilot task is unfinished resumes; a remote one’s daemon does', () => {
+  const record = (name: string, status: string) => ({
+    id: `s-${name}-${status}`,
+    role: 'assistant',
+    content: '',
+    meta: { stage: { task: 'u1', name, status, round: 1, effort: 'balanced' } },
+  });
+  const task = [
+    { id: 'u1', role: 'user', content: 'Do it', meta: { mode: 'autopilot' } },
+    record('plan', 'done'),
+  ] as ChatMessage[];
+  assert.equal(resumesHere(task, undefined), true, 'cut between two stages');
+  assert.equal(resumesHere(task, ON_BUILD), false);
+  const delivered = [...task, record('deliver', 'done')] as ChatMessage[];
+  assert.equal(resumesHere(delivered, undefined), false, 'over');
+  // R03: the page held shows none of its records (a long run since), the
+  // task as stored does.
+  const page = [{ id: 'a1', role: 'assistant', content: 'Working.' }] as ChatMessage[];
+  const stored = stageRows([
+    record('plan', 'done'),
+    record('implement', 'running'),
+  ] as ChatMessage[]);
+  assert.equal(resumesHere(page, undefined), false, 'nothing held says so');
+  assert.equal(resumesHere(page, undefined, stored), true, 'cut in a long run');
+  assert.equal(resumesHere(page, ON_BUILD, stored), false);
+  const over = stageRows([record('plan', 'done'), record('deliver', 'done')] as ChatMessage[]);
+  assert.equal(resumesHere(page, undefined, over), false, 'over');
 });
 
 test('a remote chat’s draft waits until its host has caught up; a moving chat’s always', () => {

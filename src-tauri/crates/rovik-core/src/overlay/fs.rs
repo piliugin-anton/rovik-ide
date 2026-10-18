@@ -321,6 +321,10 @@ pub(super) fn write_manifest(
     crate::atomic_file::write_atomic(&store.join("manifest.json"), &bytes)
 }
 
+/// What a chat's overlay calls as its changes near their limit: the bytes
+/// used, and the limit.
+pub type OnWarn = Box<dyn Fn(u64, u64) + Send + Sync>;
+
 pub struct OverlayFs {
     base: PathBuf,
     store: PathBuf,
@@ -330,7 +334,7 @@ pub struct OverlayFs {
     gid: u32,
     inner: Mutex<Inner>,
     listener: Mutex<Option<Listener>>,
-    on_warn: Mutex<Option<Box<dyn Fn(u64, u64) + Send + Sync>>>,
+    on_warn: Mutex<Option<OnWarn>>,
     /// One save at a time, so an older list is never written after a
     /// newer one.
     saving: Mutex<()>,
@@ -496,7 +500,7 @@ impl OverlayFs {
 
     /// Called once when the chat's changes pass WARN_AT of its limit:
     /// (used, limit).
-    pub fn on_warn(&self, f: Box<dyn Fn(u64, u64) + Send + Sync>) {
+    pub fn on_warn(&self, f: OnWarn) {
         *self.on_warn.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
@@ -1929,7 +1933,7 @@ impl Backend for OverlayFs {
                 .find(|(_, i)| **i == ino)
                 .map(|(n, _)| n.clone())
         };
-        let src_name = stored(&*inner, parent, src).unwrap_or_else(|| name.to_string());
+        let src_name = stored(&inner, parent, src).unwrap_or_else(|| name.to_string());
         if dst == Some(src) {
             // The same entry: only a change of case (`a` → `A`) renames it.
             if parent == new_parent && src_name != new_name {
@@ -1942,7 +1946,7 @@ impl Backend for OverlayFs {
             return Ok(());
         }
         let dst_name = dst
-            .and_then(|d| stored(&*inner, new_parent, d))
+            .and_then(|d| stored(&inner, new_parent, d))
             .unwrap_or_else(|| new_name.to_string());
         // A folder can't move into itself.
         if inner.nodes[&src].is_dir() {

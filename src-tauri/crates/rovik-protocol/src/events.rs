@@ -176,6 +176,15 @@ pub enum AgentEvent {
         dialog_id: String,
         run_id: String,
         outcome: String,
+        /// It carried out a stage of an Autopilot task: its result lands
+        /// only once checked (D7, V02). Absent: false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        autopilot: bool,
+        /// Which stage (`plan`, `prepare`, `tests`, `implement`): the IDE's
+        /// own stages change nothing that's a result yet (S03). Absent:
+        /// none, or a peer from before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stage: Option<String>,
     },
     /// Stored, in this order, at the end of the chat.
     MessagesAdded {

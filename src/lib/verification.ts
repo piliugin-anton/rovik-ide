@@ -9,7 +9,9 @@ import type { CheckKind } from './projectProfile';
 import type { SubagentUsage } from './subagents';
 import { plural } from './textUtils';
 
-export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+/** slow: the whole suite timed out, and the tests of the changed files ran
+ * in its place (Autopilot, V06). */
+export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'slow';
 
 export interface CheckResult {
   kind: CheckKind;
@@ -32,6 +34,64 @@ export interface CheckResult {
   testsRan?: number;
   /** failed, with more output than `output`: where the whole is saved (`@checks/…`). */
   savedOutput?: string;
+  /** Autopilot, failed: the line saying the environment, not the code, failed
+   * (a program or a module that isn't installed, V03). */
+  environment?: string;
+}
+
+/** An install Autopilot ran after a check failed on the environment (V03). */
+export interface InstallResult {
+  command: string;
+  /** Where it ran, from the project's folder; '' for the folder itself. */
+  folder: string;
+  /** pending and running while its record is live. */
+  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+  exitCode?: number | null;
+  timedOut?: boolean;
+  durationMs?: number;
+  /** failed: the end of its output. */
+  output?: string;
+  /** Where the whole of it is saved (`@checks/…`). */
+  savedOutput?: string;
+}
+
+/** A round that failed on the environment, not the code: not counted (V03). */
+export interface EnvironmentMeta {
+  /** The line that says so (`sh: 1: vitest: not found`). */
+  failure: string;
+  /** The check it came from. */
+  command: string;
+  /** The installs it ran; none: nothing to install was found. */
+  installs: InstallResult[];
+}
+
+/**
+ * An Autopilot task's Prepare stage (S03, agent_run/prepare.rs): the
+ * installs its lockfiles imply, run before the code is written. stopped:
+ * the user stopped the task while they ran.
+ */
+export interface PrepareMeta {
+  status: 'running' | 'passed' | 'failed' | 'stopped';
+  installs: InstallResult[];
+}
+
+/** The headline of a Prepare record; `interrupted`: saved as running, but nothing runs it. */
+export function prepareHeadline(meta: PrepareMeta, interrupted: boolean): string {
+  const n = meta.installs.length;
+  const failed = meta.installs.filter((i) => i.status === 'failed').length;
+  if (interrupted) return 'Installing the dependencies didn’t finish: the run ended meanwhile.';
+  switch (meta.status) {
+    case 'running':
+      return 'Installing the dependencies the lockfiles name…';
+    case 'passed':
+      return 'Installed the dependencies the lockfiles name.';
+    case 'stopped':
+      return 'Stopped while the dependencies were installed.';
+    default:
+      return failed === n
+        ? 'Installing the dependencies failed; the checks will say what’s missing.'
+        : `${failed} of ${n} installs failed; the checks will say what’s missing.`;
+  }
 }
 
 /** What a failure triage found (src-tauri/src/agent_run/triage.rs). */
@@ -108,6 +168,9 @@ export interface RolledBack {
   /** The failures the fix brought in. */
   broke: string[];
   diff: string;
+  /** Changed in the fix and kept: only the files behind what broke went
+   * back, and the checks ran again (V05). */
+  kept?: string[];
 }
 
 /** Who fixes a cause (src-tauri/src/agent_run/causes.rs). */
@@ -184,6 +247,37 @@ export interface VerificationMeta {
   /** False: what the files were before the run was lost, so whether the
    * change weakens tests couldn't be checked (P3.9). */
   integrityChecked?: boolean;
+  /** Autopilot: the checks are the plan's validation commands, the project
+   * having none set up (V02). */
+  fromPlan?: boolean;
+  /** Autopilot: the rounds end after two in a row without progress, not at
+   * `maxRounds` (V03). */
+  byProgress?: boolean;
+  /** gave-up: the last two rounds made no progress (V03). */
+  noProgress?: boolean;
+  /** failed: on the environment, not the code; the round isn't counted (V03). */
+  environment?: EnvironmentMeta;
+}
+
+/** A failed round's attempt: "attempt 2 of 3", or in Autopilot "attempt 2". */
+export function attemptText(meta: Pick<VerificationMeta, 'round' | 'maxRounds' | 'byProgress'>) {
+  return meta.byProgress ? `attempt ${meta.round}` : `attempt ${meta.round} of ${meta.maxRounds}`;
+}
+
+/** The headline of a round that failed on the environment (V03). */
+export function environmentHeadline(env: EnvironmentMeta): string {
+  const what = `Checks failed on the environment, not on the change (${env.failure})`;
+  const n = env.installs.length;
+  if (!n)
+    return `${what}: nothing to install was found, so it went to the agent. This attempt isn’t counted.`;
+  const failed = env.installs.filter((i) => i.status === 'failed').length;
+  const installed =
+    failed === 0
+      ? 'the dependencies were installed, and the checks run again'
+      : failed === n
+        ? 'installing the dependencies failed; the checks run again anyway'
+        : `the dependencies were installed (${failed} of ${n} installs failed), and the checks run again`;
+  return `${what}: ${installed}. This attempt isn’t counted.`;
 }
 
 /** The repair round's one-line summary. */

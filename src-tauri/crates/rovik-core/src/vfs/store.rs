@@ -598,6 +598,7 @@ impl VirtualFs {
     }
 
     /// Creates a file, directory or symlink (`target` for symlinks).
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
         parent: Ino,

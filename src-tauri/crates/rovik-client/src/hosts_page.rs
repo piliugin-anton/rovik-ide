@@ -19,6 +19,7 @@ use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
 use crate::system_ssh::{Local, SystemSsh, SystemSshConnector};
+use rovik_protocol::autopilot::{AutonomySettings, ChatTask, DeliveryTest};
 use rovik_protocol::host::{HostInfo, KeyInfo, Storage};
 use rovik_protocol::{features, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
@@ -128,6 +129,9 @@ pub struct HostSummary {
     /// setting names by its socket.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub terminal: bool,
+    /// It works on its own (H02): its chats start in Autopilot.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub autonomous: bool,
 }
 
 /// How a terminal reaches a host's shell (`HostsPage::shell_access`).
@@ -301,6 +305,7 @@ impl HostsPage {
             client: format!("Rovik {}", self.version),
         };
         self.remote.set_policy(&host.id, host.approval_policy);
+        self.remote.set_autonomy(&host.id, host.autonomy.clone());
         if host.auth == AuthKind::SystemSsh {
             let connector = SystemSshConnector::new(system_ssh(host), self.local(host)?);
             self.remote.connect(&host.id, connector, identity);
@@ -396,6 +401,7 @@ impl HostsPage {
                 deployed: matches!(host.deploy, DeployState::Deployed { .. }),
                 caught_up: self.remote.caught_up(&host.id),
                 terminal: true,
+                autonomous: host.approval_policy == ApprovalPolicy::Autonomous,
                 id: host.id,
                 name: host.name,
             })
@@ -411,6 +417,7 @@ impl HostsPage {
                 state: Some(*state),
                 caught_up: self.remote.caught_up(id),
                 terminal: false,
+                autonomous: false,
                 id: id.clone(),
             });
         }
@@ -488,10 +495,13 @@ impl HostsPage {
                     host.host_key = old.host_key.clone().filter(|_| same_server);
                     host.deploy = old.deploy.clone();
                     host.approval_policy = old.approval_policy;
+                    // Changed through `set_autonomy` only (H01).
+                    host.autonomy = old.autonomy.clone();
                 }
                 None => {
                     host.host_key = None;
                     host.deploy = DeployState::NotDeployed;
+                    host.autonomy = AutonomySettings::default();
                 }
             }
             settings.put(host.clone());
@@ -590,11 +600,46 @@ impl HostsPage {
         self.connect(&self.settings()?.computer, &host)
     }
 
-    /// Who approves on the host while nobody is there (6.9).
-    pub fn set_policy(&self, id: &str, policy: ApprovalPolicy) -> Result<(), String> {
+    /// Who approves on the host while nobody is there (6.9); a connected
+    /// host is told what follows at once (H02).
+    pub async fn set_policy(&self, id: &str, policy: ApprovalPolicy) -> Result<(), String> {
         self.change_host(id, |host| host.approval_policy = policy)?;
         self.remote.set_policy(id, policy);
+        self.remote.reconfigure(id).await;
         Ok(())
+    }
+
+    /// What the host's tasks follow while it works on its own (H01),
+    /// checked first (`AutonomySettings::checked`); a connected host is
+    /// told at once (H02). Returns them as kept.
+    pub async fn set_autonomy(
+        &self,
+        id: &str,
+        autonomy: AutonomySettings,
+    ) -> Result<AutonomySettings, String> {
+        let autonomy = autonomy.checked()?;
+        let kept = autonomy.clone();
+        self.change_host(id, |host| host.autonomy = kept)?;
+        self.remote.set_autonomy(id, autonomy.clone());
+        self.remote.reconfigure(id).await;
+        Ok(autonomy)
+    }
+
+    /// This computer's chats on the host, each with its latest Autopilot
+    /// task (autopilot-plan H08), as `rovik-agentd status` lists them.
+    pub async fn tasks(&self, id: &str) -> Result<Vec<ChatTask>, String> {
+        if !self.remote.serves(id, features::AUTONOMY) {
+            return Err("This server's Rovik is too old to list its tasks.".into());
+        }
+        let listed = self.remote.host_call(id, Request::TaskStatus).await;
+        let listed = listed.map_err(|fail| fail.message)?;
+        Vec::<ChatTask>::try_from(listed).map_err(|fail| fail.message)
+    }
+
+    /// "Test delivery" (autopilot-plan H05): the host pushes an empty
+    /// branch to the open project's remote and deletes it.
+    pub async fn test_delivery(&self, id: &str) -> Result<DeliveryTest, String> {
+        self.remote.test_delivery(id).await
     }
 
     /// Deploys Rovik for this user (H05), then connects the host. Returns
@@ -909,6 +954,7 @@ mod tests {
             key_path: None,
             host_key: None,
             approval_policy: ApprovalPolicy::default(),
+            autonomy: AutonomySettings::default(),
             deploy: DeployState::NotDeployed,
             setup_script: None,
         }
@@ -1031,6 +1077,7 @@ mod tests {
         setup
             .page
             .set_policy(&saved.id, ApprovalPolicy::AiReviewerThenMe)
+            .await
             .unwrap();
         let moved = Host {
             host: "other.example.com".into(),
@@ -1039,6 +1086,60 @@ mod tests {
         let moved = setup.page.save(moved, HostSecrets::default()).unwrap();
         assert_eq!(moved.host_key, None, "another server shows its own key");
         assert_eq!(moved.approval_policy, ApprovalPolicy::AiReviewerThenMe);
+    }
+
+    /// H01: the block a host works on its own with, checked and kept; the
+    /// host's form saved again leaves it as it was.
+    #[tokio::test]
+    async fn the_autonomy_block_is_checked_and_kept_by_the_hosts_page() {
+        use rovik_protocol::autopilot::Delivery;
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("pw")).unwrap();
+        setup
+            .page
+            .set_policy(&saved.id, ApprovalPolicy::Autonomous)
+            .await
+            .unwrap();
+        let bad = AutonomySettings {
+            notify_url: Some("mailto:me@example.com".into()),
+            ..Default::default()
+        };
+        assert!(setup.page.set_autonomy(&saved.id, bad).await.is_err());
+        let block = AutonomySettings {
+            delivery: Delivery::PushBranch {
+                deploy_key: " ~/.ssh/rovik_deploy ".into(),
+                open_pr: true,
+            },
+            notify_url: Some("https://ntfy.sh/t".into()),
+            ..Default::default()
+        };
+        let kept = setup.page.set_autonomy(&saved.id, block).await.unwrap();
+        assert_eq!(
+            kept.delivery,
+            Delivery::PushBranch {
+                deploy_key: "~/.ssh/rovik_deploy".into(),
+                open_pr: true
+            }
+        );
+        // The form, saved with the block it never had.
+        let form = Host {
+            name: "Renamed".into(),
+            autonomy: AutonomySettings::default(),
+            ..saved.clone()
+        };
+        let saved = setup.page.save(form, HostSecrets::default()).unwrap();
+        assert_eq!(saved.autonomy, kept);
+        assert_eq!(saved.approval_policy, ApprovalPolicy::Autonomous);
+        let listed = setup.page.list().await.unwrap();
+        assert_eq!(listed.hosts[0].host.autonomy, kept);
+        // H02: the chats are told it works on its own, and until when.
+        assert!(setup.page.summaries().unwrap()[0].autonomous);
+        setup
+            .page
+            .set_policy(&saved.id, ApprovalPolicy::WaitForMe)
+            .await
+            .unwrap();
+        assert!(!setup.page.summaries().unwrap()[0].autonomous);
     }
 
     #[tokio::test]
@@ -1121,6 +1222,7 @@ mod tests {
             key_path: Some("/home/ann/.ssh/id_ed25519".into()),
             host_key: None,
             approval_policy: ApprovalPolicy::default(),
+            autonomy: AutonomySettings::default(),
             deploy: DeployState::NotDeployed,
             setup_script: None,
         };

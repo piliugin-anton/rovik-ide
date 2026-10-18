@@ -58,6 +58,16 @@ pub enum Kind {
     Worker,
     /// Writes tests from the request and the plan (test_writer.rs).
     TestWriter,
+    /// Judges a finished change by the plan's criteria (acceptance.rs,
+    /// Autopilot only).
+    Acceptance,
+    /// Plans a Thorough task, one of several (planning.rs, Autopilot only).
+    Planner,
+    /// Picks or merges a Thorough task's plans (judge.rs, Autopilot only).
+    Judge,
+    /// Tries to break a Thorough task's change with tests (breaker.rs,
+    /// Autopilot only).
+    Breaker,
 }
 
 /// The repository map a kind gets (S18, K21): what it's about and its size.
@@ -75,10 +85,12 @@ impl Kind {
     pub fn map_scope(self) -> MapScope {
         match self {
             // A plan changes nothing yet: the whole project, ranked for it.
-            Kind::Scout | Kind::PlanReviewer => MapScope::Lead,
-            Kind::Reviewer | Kind::Triage | Kind::TestWriter => MapScope::Changed {
-                fraction_percent: 50,
-            },
+            Kind::Scout | Kind::PlanReviewer | Kind::Planner | Kind::Judge => MapScope::Lead,
+            Kind::Reviewer | Kind::Triage | Kind::TestWriter | Kind::Acceptance | Kind::Breaker => {
+                MapScope::Changed {
+                    fraction_percent: 50,
+                }
+            }
             // Around its step's files (and the run's changes so far).
             Kind::Worker => MapScope::Changed {
                 fraction_percent: 100,
@@ -93,6 +105,10 @@ impl Kind {
         Kind::PlanReviewer,
         Kind::Worker,
         Kind::TestWriter,
+        Kind::Acceptance,
+        Kind::Planner,
+        Kind::Judge,
+        Kind::Breaker,
     ];
 
     pub fn id(self) -> &'static str {
@@ -103,6 +119,10 @@ impl Kind {
             Kind::PlanReviewer => "planReviewer",
             Kind::Worker => "worker",
             Kind::TestWriter => "testWriter",
+            Kind::Acceptance => "acceptance",
+            Kind::Planner => "planner",
+            Kind::Judge => "judge",
+            Kind::Breaker => "breaker",
         }
     }
 
@@ -133,12 +153,16 @@ impl Kind {
             Kind::PlanReviewer => &super::plan_review::PLAN_REVIEWER,
             Kind::Worker => &super::worker::WORKER,
             Kind::TestWriter => &super::test_writer::TEST_WRITER,
+            Kind::Acceptance => &super::acceptance::ACCEPTANCE,
+            Kind::Planner => &super::planning::PLANNER,
+            Kind::Judge => &super::judge::JUDGE,
+            Kind::Breaker => &super::breaker::BREAKER,
         }
     }
 
     /// Kinds that change files: they get a write scope (D7).
     pub fn writes(self) -> bool {
-        matches!(self, Kind::Worker | Kind::TestWriter)
+        matches!(self, Kind::Worker | Kind::TestWriter | Kind::Breaker)
     }
 }
 
@@ -160,7 +184,8 @@ pub enum Skip {
 
 /// What an IDE-started subagent's outcome gives: its report, or not.
 pub enum SubOutcome {
-    Report(SubResult),
+    /// Boxed: a report is far bigger than the other outcomes.
+    Report(Box<SubResult>),
     /// The user stopped it.
     Stopped,
     Skipped(Skip),
@@ -213,7 +238,7 @@ pub fn outcome_of(
                 text: r.text.clone(),
             })
         }
-        SubStatus::Done | SubStatus::Partial => SubOutcome::Report(r),
+        SubStatus::Done | SubStatus::Partial => SubOutcome::Report(Box::new(r)),
     }
 }
 
@@ -221,8 +246,14 @@ pub fn outcome_of(
 pub enum Format {
     /// `## ` sections, the first `required` of them needed.
     Sections,
+    /// One of the `## ` sections, whichever the brief asks for: a Thorough
+    /// planner's plan or its criteria, a judge's choice or merged criteria
+    /// (T03). What it gave is read strictly where it's used.
+    OneOf,
     /// The reviewers' findings list (change_review.rs `parse_findings`).
     Findings,
+    /// The acceptance checker's verdicts (acceptance.rs `parse_verdicts`).
+    Verdicts,
 }
 
 /// What the harness fixes for a kind: the model can't widen any of it.
@@ -253,6 +284,26 @@ impl KindSpec {
             .replace("{minutes}", &budget.minutes_label())
     }
 
+    /// Its sections as headings, `"## A"`, joined by `sep`.
+    fn headings(&self, sep: &str) -> String {
+        self.sections
+            .iter()
+            .map(|s| format!("\"## {s}\""))
+            .collect::<Vec<_>>()
+            .join(sep)
+    }
+
+    /// How the turn that asks for a report again names its headings.
+    pub fn headings_note(&self) -> String {
+        match self.format {
+            Format::OneOf => format!(
+                "under the heading your brief asks for: {}",
+                self.headings(" or ")
+            ),
+            _ => format!("with the headings {}", self.headings(", ")),
+        }
+    }
+
     /// What the budget note asks of the report it cuts a subagent short
     /// for: where what it didn't get to goes. A reviewer has no section
     /// for it (its report is only its findings), and a scout's or worker's
@@ -261,6 +312,13 @@ impl KindSpec {
         match self.format {
             Format::Findings => String::from(
                 "Report under \"## Findings\" only what you could substantiate; with nothing to report, reply \"## Findings\" and then \"None.\".",
+            ),
+            Format::Verdicts => String::from(
+                "Give a verdict under \"## Verdicts\" for every criterion, by its number: one you couldn't check is unsatisfied, saying so.",
+            ),
+            Format::OneOf => format!(
+                "Write it under the heading your brief asks for ({}), and say in it what you didn't get to.",
+                self.headings(" or ")
             ),
             Format::Sections => {
                 let open = if self.sections.contains(&"Open questions") {
@@ -709,8 +767,21 @@ pub fn sections(text: &str) -> Sections {
 /// What's wrong with a report's format, for the repair turn (S13); None
 /// when it follows the format. A blocked report needs only its reason.
 pub fn format_problem(spec: &KindSpec, text: &str) -> Option<String> {
-    if let Format::Findings = spec.format {
-        return super::change_review::parse_findings(text).err();
+    match spec.format {
+        Format::Findings => return super::change_review::parse_findings(text).err(),
+        // A checker that says it's blocked gives no verdicts.
+        Format::Verdicts if is_blocked(text) => return None,
+        Format::Verdicts => return super::acceptance::parse_verdicts(text).err(),
+        Format::OneOf => {
+            let found = sections(text);
+            let given = spec
+                .sections
+                .iter()
+                .any(|s| found.get(s).is_some_and(|b| !b.is_empty()));
+            return (!given && !is_blocked(text))
+                .then(|| format!("it has no {} section", spec.headings(" or ")));
+        }
+        Format::Sections => {}
     }
     let found = sections(text);
     // Round 2: "## Blocked\nNone." isn't a block, so the report still
@@ -1730,6 +1801,10 @@ mod tests {
                 "triage" => Kind::Triage,
                 "reviewer" => Kind::Reviewer,
                 "plan reviewer" => Kind::PlanReviewer,
+                "acceptance" => Kind::Acceptance,
+                "planner" => Kind::Planner,
+                "judge" => Kind::Judge,
+                "breaker" => Kind::Breaker,
                 other => panic!("the table names a kind there isn't: {other}"),
             };
             // The `Name` list the cell starts with: `;` ends the required
@@ -1755,12 +1830,17 @@ mod tests {
             }
             let spec = kind.spec();
             assert_eq!(names, spec.sections, "{}: sections", kind.id());
-            assert_eq!(
-                required.unwrap_or(names.len()),
-                spec.required,
-                "{}: required",
-                kind.id()
-            );
+            if matches!(spec.format, Format::OneOf) {
+                // T03: whichever its brief asks for.
+                assert!(cells[1].contains("one of them"), "{}: one of", kind.id());
+            } else {
+                assert_eq!(
+                    required.unwrap_or(names.len()),
+                    spec.required,
+                    "{}: required",
+                    kind.id()
+                );
+            }
             assert_eq!(
                 cells[1].contains("list"),
                 matches!(spec.format, Format::Findings),

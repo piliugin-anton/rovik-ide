@@ -32,8 +32,10 @@ fn model(id: &str, base_url: &str, key: &str) -> ModelProfile {
 /// A configuration whose reviewer and scout, each of a provider of its
 /// own, carry keys (or not, with "").
 fn config(reviewer_key: &str, scout_key: &str) -> AgentConfig {
-    let mut config = AgentConfig::default();
-    config.approval_profiles = vec![model("other::reviewer", OTHER, reviewer_key)];
+    let mut config = AgentConfig {
+        approval_profiles: vec![model("other::reviewer", OTHER, reviewer_key)],
+        ..AgentConfig::default()
+    };
     config.subagents.kinds.insert(
         "scout".into(),
         KindConfig {
@@ -233,6 +235,47 @@ fn the_store_reads_back_what_it_kept() {
     );
 }
 
+/// H02: what a computer has the server keep for its runs that go on
+/// without it is its chats', read back after a restart; the default
+/// forgets it, and state.json, private, holds the notify URL whole.
+#[test]
+fn each_computers_autonomy_is_kept_and_read_back_after_a_restart() {
+    use rovik_protocol::autopilot::{AutonomyConfig, Delivery};
+    let dir = temp_dir();
+    let push = AutonomyConfig {
+        delivery: Delivery::PushBranch {
+            deploy_key: "~/.ssh/rovik_deploy".into(),
+            open_pr: true,
+        },
+        notify_url: Some("https://ntfy.sh/rovik-topic".into()),
+    };
+    {
+        let store = Store::open(&dir.0).unwrap();
+        store.started("laptop", &start("mine", "", None)).unwrap();
+        store.started("desk", &start("theirs", "", None)).unwrap();
+        store.set_autonomy("laptop", push.clone()).unwrap();
+        assert_eq!(store.autonomy_of("mine"), push);
+        assert!(store.autonomy_of("theirs").is_default(), "the desk's own");
+        assert!(store.autonomy_of("unknown").is_default());
+    }
+    let store = Store::open(&dir.0).unwrap();
+    assert_eq!(store.autonomy_of("mine"), push, "read back");
+    let file = fs::read_to_string(dir.0.join("state.json")).unwrap();
+    assert!(file.contains("https://ntfy.sh/rovik-topic"), "{file}");
+    let mode = fs::metadata(dir.0.join("state.json"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    store
+        .set_autonomy("laptop", AutonomyConfig::default())
+        .unwrap();
+    assert!(store.autonomy_of("mine").is_default());
+    let state: State =
+        serde_json::from_slice(&fs::read(dir.0.join("state.json")).unwrap()).unwrap();
+    assert!(state.autonomy.is_empty(), "forgotten");
+}
+
 /// 5.4: `running` goes from the run's `RunStarted` to its `RunEnded`, so a
 /// start that never made a run leaves nothing to restart.
 #[test]
@@ -309,6 +352,8 @@ fn results_are_numbered_and_the_same_one_keeps_its_number() {
         pending: None,
         marked: Vec::new(),
         unchecked: false,
+        branch: None,
+        pr: None,
     };
 
     assert_eq!(store.result_made("chat", result("c1", "done")).seq, 1);

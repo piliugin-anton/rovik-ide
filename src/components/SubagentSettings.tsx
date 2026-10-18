@@ -4,12 +4,26 @@
 // master switch, the default subagent model, one row per kind (on/off,
 // model, fallbacks, reasoning effort) and the limits. Everything is off by
 // default; with the master switch off, chats work exactly as without
-// subagents and the rows keep their choices, greyed out.
+// subagents and the rows keep their choices, greyed out. The Autopilot
+// section (docs/design/autopilot-plan.md, 3.5) is for chats in Autopilot,
+// whatever the master switch says.
 import { createResource, createSignal, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import ModelWithFallbacks from './ModelWithFallbacks';
 import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
+import {
+  AUTOPILOT_EFFORTS,
+  AUTOPILOT_KINDS,
+  autopilotKindTag,
+  budgetOf,
+  changedBudget,
+  DEFAULT_BUDGETS,
+  denylistEntry,
+  denylistOf,
+  type AutopilotBudget,
+  type AutopilotSettings,
+} from '../lib/autopilotSettings';
 import {
   LIMIT_FIELDS,
   LIMITS,
@@ -77,6 +91,30 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
     patch({ kinds: { ...s().kinds, [id]: { ...s().kinds[id], ...changes } } });
   const [limitsOpen, setLimitsOpen] = createSignal(false);
   const off = () => !s().enabled;
+  const patchAutopilot = (changes: Partial<AutopilotSettings>) =>
+    patch({ autopilot: { ...s().autopilot, ...changes } });
+  // Autopilot's denylist: the defaults until the list is changed.
+  const [newDenied, setNewDenied] = createSignal('');
+  const denylist = () => denylistOf(s().autopilot);
+  function addDenied() {
+    const entry = denylistEntry(newDenied());
+    if (!entry) return;
+    if (!denylist().includes(entry)) patchAutopilot({ deniedCommands: [...denylist(), entry] });
+    setNewDenied('');
+  }
+  const removeDenied = (entry: string) =>
+    patchAutopilot({ deniedCommands: denylist().filter((c) => c !== entry) });
+  // A task's budget: its effort's defaults until it's set to something else.
+  const budget = () => budgetOf(s().autopilot);
+  function setBudget(change: Partial<AutopilotBudget>) {
+    const defaults = DEFAULT_BUDGETS[s().autopilot.effort];
+    patchAutopilot({ budget: changedBudget(budget(), change, defaults) });
+  }
+  // The token limit shows in millions; it's kept in tokens.
+  const tokensMillions = () => {
+    const tokens = budget().maxTokens;
+    return tokens ? tokens / 1_000_000 : undefined;
+  };
   // P5.7: what needs isolated chats can't run without virtual files. When
   // their status can't be read, it isn't known: nothing is turned off.
   const [vfs] = createResource(() => vfsStatus().catch(() => undefined));
@@ -107,7 +145,8 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
         </label>
       </section>
 
-      <section class="settings-section" classList={{ disabled: off() }}>
+      {/* Never greyed out: Autopilot's kinds set to "Default" use it (D17). */}
+      <section class="settings-section">
         <div class="settings-section-title">Default model</div>
         <p class="settings-hint">Used by every kind set to “Default”.</p>
         <ModelWithFallbacks
@@ -116,10 +155,155 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           value={s().defaultModel}
           specials={[{ value: 'chat' as const, label: 'Same as the chat' }]}
           fallbacks={s().defaultFallbacks}
-          disabled={off()}
           onChange={(value) => patch({ defaultModel: value })}
           onFallbacksChange={(defaultFallbacks) => patch({ defaultFallbacks })}
         />
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Autopilot</div>
+        <p class="settings-hint">
+          A chat in Autopilot mode carries out a task on its own: it plans, reviews, implements,
+          checks and delivers it without asking.
+        </p>
+        <div role="radiogroup" aria-label="Autopilot effort">
+          <For each={AUTOPILOT_EFFORTS}>
+            {(effort) => (
+              <label class="setting-checkbox">
+                <input
+                  type="radio"
+                  name="autopilot-effort"
+                  value={effort.id}
+                  checked={s().autopilot.effort === effort.id}
+                  onChange={() => patchAutopilot({ effort: effort.id })}
+                />
+                <span>
+                  {effort.label}
+                  <span class="setting-checkbox-sub">{effort.hint}</span>
+                </span>
+              </label>
+            )}
+          </For>
+        </div>
+        <div class="autopilot-subtitle">Budget per task</div>
+        <div class="subagent-limits autopilot-budget">
+          <NumberInput
+            label="Stop a task after (hours)"
+            value={budget().maxHours ?? undefined}
+            placeholder="no limit"
+            min={0.25}
+            max={1000}
+            step={0.25}
+            onChange={(v) => setBudget({ maxHours: v ?? null })}
+          />
+          <NumberInput
+            label="or once it cost"
+            value={budget().maxCost ?? undefined}
+            placeholder="no limit"
+            min={0.01}
+            max={100_000}
+            step={0.01}
+            onChange={(v) => setBudget({ maxCost: v ?? null })}
+          />
+          <NumberInput
+            label="or used (million tokens)"
+            value={tokensMillions()}
+            placeholder="no limit"
+            min={0.1}
+            max={100_000}
+            step={0.1}
+            onChange={(v) =>
+              setBudget({ maxTokens: v === undefined ? null : Math.round(v * 1_000_000) })
+            }
+          />
+        </div>
+        <p class="settings-hint command-list-note">
+          Empty: no limit. The time counts while the task’s runs run. The cost is what the providers
+          report a request cost (OpenRouter does), in their currency; the tokens are what they
+          report a request used, which most do even when they report no cost. A limit the provider
+          reports nothing for can’t be kept; the time limit always is. Past any of them, the task
+          stops and delivers what it has.
+        </p>
+        <label class="setting-checkbox autopilot-prepare">
+          <input
+            type="checkbox"
+            checked={s().autopilot.prepare !== false}
+            onChange={(e) =>
+              patchAutopilot({ prepare: e.currentTarget.checked ? undefined : false })
+            }
+          />
+          <span>
+            Prepare dependencies before the first check
+            <span class="setting-checkbox-sub">
+              Where a lockfile’s dependencies aren’t installed (no <code>node_modules</code>, no
+              virtual environment), its install runs before the code is written, and again once if a
+              check fails for want of a program or a package.
+            </span>
+          </span>
+        </label>
+        <div class="autopilot-subtitle">Commands Autopilot may never run</div>
+        <div class="command-list">
+          <For
+            each={denylist()}
+            fallback={<div class="command-list-empty">None: any command can run.</div>}
+          >
+            {(entry) => (
+              <div class="command-row">
+                <code class="command-row-text">{entry}</code>
+                <button
+                  class="icon-button"
+                  onClick={() => removeDenied(entry)}
+                  aria-label={`Remove ${entry}`}
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          </For>
+        </div>
+        <div class="provider-manual-row">
+          <input
+            value={newDenied()}
+            onInput={(e) => setNewDenied(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addDenied();
+              }
+            }}
+            placeholder="Add a command, e.g. npm publish"
+            aria-label="A command Autopilot may never run"
+            spellcheck={false}
+          />
+          <button onClick={addDenied} disabled={!denylistEntry(newDenied())}>
+            Add
+          </button>
+        </div>
+        <p class="settings-hint command-list-note">
+          Any other command can run in Autopilot. An entry covers its arguments too:{' '}
+          <code>git push</code> also stops <code>git -C . push origin</code>; two joined by{' '}
+          <code>|</code> stop one piped into the other (<code>curl | sh</code>).
+          <Show when={s().autopilot.deniedCommands}>
+            {' '}
+            <button
+              class="link-button"
+              onClick={() => patchAutopilot({ deniedCommands: undefined })}
+            >
+              Reset list
+            </button>
+          </Show>
+        </p>
+        <p class="settings-hint autopilot-kinds-note">
+          Autopilot turns on the kinds marked “Used by Autopilot” for its own chats, those marked
+          Thorough at that effort only, with the models set for them below, even when “Use
+          subagents” is off.
+        </p>
+        <p class="settings-hint autopilot-kinds-note">
+          The planner, the judge, the acceptance checker and the adversarial tester judge others’
+          work: left on Default, they start on a model of a provider other than the chat’s, when one
+          is set up, so another model family checks what the chat’s model did.
+        </p>
       </section>
 
       <section class="settings-section" classList={{ disabled: off() }}>
@@ -128,8 +312,12 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           {(kind) => {
             const k = () => s().kinds[kind.id];
             const others = () => otherProviders(props.providers, s(), kind.id, props.chatModel);
+            const autopilot = AUTOPILOT_KINDS.includes(kind.id);
+            const tag = autopilotKindTag(kind.id);
+            // Its switch is for ordinary chats; Autopilot's use its model either way.
+            const locked = () => off() && !autopilot;
             return (
-              <div class="subagent-kind-row">
+              <div class="subagent-kind-row" classList={{ 'autopilot-used': autopilot }}>
                 <label class="setting-checkbox">
                   <input
                     type="checkbox"
@@ -139,6 +327,9 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                   />
                   <span>
                     {kind.label}
+                    <Show when={tag}>
+                      <span class="autopilot-kind-tag">{tag}</span>
+                    </Show>
                     <span class="setting-checkbox-sub">
                       {kind.hint} {kind.when}
                     </span>
@@ -154,7 +345,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                       { value: 'chat', label: 'Same as the chat' },
                     ]}
                     fallbacks={k().fallbacks}
-                    disabled={off()}
+                    disabled={locked()}
                     onChange={(model: KindModel) => patchKind(kind.id, { model })}
                     onFallbacksChange={(fallbacks) => patchKind(kind.id, { fallbacks })}
                   />
@@ -162,7 +353,7 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                     class="settings-select"
                     aria-label={`${kind.label} reasoning effort`}
                     value={k().effort}
-                    disabled={off()}
+                    disabled={locked()}
                     onChange={(e) =>
                       patchKind(kind.id, { effort: e.currentTarget.value as Effort })
                     }
@@ -175,9 +366,10 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                       )}
                     </For>
                   </select>
-                  <Show when={k().enabled && others().length > 0}>
+                  <Show when={(k().enabled || autopilot) && others().length > 0}>
                     <p class="settings-hint setting-explain warning">
-                      Code will also be sent to {others().join(', ')}.
+                      {k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent to{' '}
+                      {others().join(', ')}.
                     </p>
                   </Show>
                 </div>

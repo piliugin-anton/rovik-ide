@@ -175,13 +175,15 @@ impl Run {
         // CLM mode: the agent's context folder.
         let vfs = &self.core.vfs;
         let clm =
-            self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(&vfs).is_ok();
+            self.context_mode == crate::clm::MODE_CLM && crate::clm::availability(vfs).is_ok();
         let context_dir = if clm {
-            crate::clm::real_paths(&vfs, &self.dialog_id).map(|(_, dir)| dir)
+            crate::clm::real_paths(vfs, &self.dialog_id).map(|(_, dir)| dir)
         } else {
             None
         };
 
+        // G02: calls an earlier run made (a resume) are this run's now.
+        self.calls.made(calls);
         let mut rest = calls;
         while !rest.is_empty() {
             // P2.2: a subagent's time runs out within a reply too: what's
@@ -189,6 +191,7 @@ impl Run {
             if self.wall_left() == Some(std::time::Duration::ZERO) {
                 let wall = self.sub().map_or(0, |s| s.budget.wall.as_secs());
                 for tc in rest {
+                    self.calls.start(&tc.id);
                     let content = format!(
                         "Error: not run: it's past your time budget of about {wall} seconds. Write your report now with what you have."
                     );
@@ -204,6 +207,9 @@ impl Run {
                 0
             };
             if tasks > 0 {
+                for tc in &rest[..tasks] {
+                    self.calls.start(&tc.id);
+                }
                 self.execute_tasks(&rest[..tasks], resume_note.is_some())
                     .await?;
                 rest = &rest[tasks..];
@@ -216,9 +222,13 @@ impl Run {
                 self.runs_in_parallel(tc, resume_note, clm, context_dir.as_deref())
             });
             if n > 0 {
+                for tc in &rest[..n] {
+                    self.calls.start(&tc.id);
+                }
                 self.execute_parallel(&rest[..n], clm).await?;
                 rest = &rest[n..];
             } else {
+                self.calls.start(&rest[0].id);
                 self.execute_one(&rest[0], resume_note, clm, context_dir.as_deref())
                     .await?;
                 rest = &rest[1..];
@@ -288,21 +298,25 @@ impl Run {
                 let (name, args, stop) = (tc.name.clone(), tc.arguments.clone(), self.stop.clone());
                 let ctx = self.call_context(&tc.id);
                 async move {
-                    parallel::spawned(async move {
+                    // G02: its own time, from when its slot came.
+                    let started = std::time::Instant::now();
+                    let result = parallel::spawned(async move {
                         tools::execute(&app, root.as_deref(), &name, &args, &stop, &ctx).await
                     })
                     .await
                     .unwrap_or_else(|e| tools::ToolResult {
                         content: format!("Error: {e}"),
                         ..Default::default()
-                    })
+                    });
+                    (result, started.elapsed())
                 }
             })
             .collect();
         let mut results = InOrder::new(jobs, parallel::MAX_PARALLEL, self.stop.subscribe());
         for tc in calls {
             match results.next().await.flatten() {
-                Some(result) => {
+                Some((result, took)) => {
+                    self.calls.ran(&tc.id, took);
                     let run = Ran {
                         tool_name: tc.name.clone(),
                         args_json: tc.arguments.clone(),
@@ -329,7 +343,7 @@ impl Run {
     /// A call answered without running it (a subagent's refusal, a scope
     /// grant): it counts for the budget and the loop checks like any other
     /// (P2.1), so refusals can't go on for ever.
-    async fn answer_unrun(
+    pub(super) async fn answer_unrun(
         &mut self,
         tc: &ToolCall,
         mut content: String,
@@ -509,6 +523,13 @@ impl Run {
             "submit_plan" => {
                 return self.submit_plan(tc, &args).await;
             }
+            // S06: the answers to the change review's findings (Autopilot).
+            "answer_review" if self.autopilot && self.sub().is_none() => {
+                let content = self.answer_review(&args);
+                return self
+                    .add_tool_result(&tc.id, content, None, Vec::new())
+                    .await;
+            }
             // The checklist: shown in the panel, never asks, isn't work the
             // loop checks or the pause limit count.
             "todo" => {
@@ -519,11 +540,8 @@ impl Run {
                 // The previous checklist is what was current before this
                 // call: the history up to the message holding it.
                 if clm && !items.is_empty() && !content.starts_with("Error") {
-                    let previous: Option<Vec<plan::TodoItem>> = self
-                        .recent()
-                        .await
-                        .ok()
-                        .map(|recent| {
+                    let previous: Option<Vec<plan::TodoItem>> =
+                        self.recent().await.ok().and_then(|recent| {
                             let cut = recent
                                 .iter()
                                 .position(|m| {
@@ -533,8 +551,7 @@ impl Run {
                                 })
                                 .unwrap_or(recent.len());
                             plan::current_checklist(&recent[..cut]).map(|c| c.items)
-                        })
-                        .flatten();
+                        });
                     if let Some(before) = previous {
                         let settled_before = |title: &str| {
                             before
@@ -607,9 +624,14 @@ impl Run {
                 return self.ask_user(tc, &args).await;
             }
             name if self.plan_mode && plan::PLAN_BLOCKED_TOOLS.contains(&name) => {
+                // Autopilot's plan stage: the task implements its plan next.
+                let next = match self.autopilot {
+                    true => "Autopilot implements it next, once it's reviewed",
+                    false => "the user implements it in Agent mode",
+                };
                 let content = format!(
                     "Error: {name} isn't available in Plan mode, which doesn't change anything. \
-                     Finish the plan; the user implements it in Agent mode."
+                     Finish the plan; {next}."
                 );
                 return self
                     .add_tool_result(&tc.id, content, None, Vec::new())
@@ -660,6 +682,8 @@ impl Run {
         if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
             return self.stopped_result(tc).await;
         }
+        // G02: its time is its own from here, not its approval's wait.
+        self.calls.start(&tc.id);
         let mut args_json = auth
             .args_override
             .clone()
@@ -881,7 +905,7 @@ impl Run {
             // is a context edit for the CLM pressure (run.rs).
             if clm {
                 let vfs = &self.core.vfs;
-                if let Some((file, _)) = crate::clm::real_paths(&vfs, &self.dialog_id) {
+                if let Some((file, _)) = crate::clm::real_paths(vfs, &self.dialog_id) {
                     let command = permissions::str_arg(&args_json, "command").unwrap_or_default();
                     if (command.contains(&file) || command.contains("LIVE_CONTEXT.md"))
                         && permissions::command_modifies_files(&command)
@@ -951,7 +975,7 @@ impl Run {
             "read" => {
                 crate::clm::tool_read(
                     &db,
-                    &vfs,
+                    vfs,
                     &self.dialog_id,
                     path,
                     tools::line_arg(args.get("start_line")),
@@ -964,7 +988,7 @@ impl Run {
                     (None, _) => return "Error: \"old_text\" must be a string.".into(),
                     (_, None) => return "Error: \"content\" is required.".into(),
                     (Some(old), Some(new)) => crate::clm::tool_edit(
-                        &vfs,
+                        vfs,
                         &self.dialog_id,
                         path,
                         old,
@@ -976,11 +1000,11 @@ impl Run {
             }
             "write" => match text("content") {
                 None => return "Error: \"content\" is required.".into(),
-                Some(content) => crate::clm::tool_write(&vfs, &self.dialog_id, path, content),
+                Some(content) => crate::clm::tool_write(vfs, &self.dialog_id, path, content),
             },
-            "list_dir" => crate::clm::tool_list(&db, &vfs, &self.dialog_id, path).await,
+            "list_dir" => crate::clm::tool_list(&db, vfs, &self.dialog_id, path).await,
             "restore_context" => {
-                crate::clm::tool_restore(&db, &vfs, &self.dialog_id, args.get("revision")).await
+                crate::clm::tool_restore(&db, vfs, &self.dialog_id, args.get("revision")).await
             }
             _ => return format!("Error: {name} can't be used on your context folder."),
         };
@@ -999,6 +1023,12 @@ impl Run {
         let config = self.config();
         let p = &config.permissions;
         let daemon_folder = self.names_daemon_folder(tc);
+        // Nobody is there in Autopilot (D6): what would wait for the user
+        // is the AI reviewer's to decide, or refused (U02).
+        let unattended = self.in_autopilot();
+        if daemon_folder && unattended {
+            return rejected(super::autopilot::DAEMON_FOLDER_REFUSED);
+        }
         let approver = match permissions::check_tool_call(&tc.name, &tc.arguments, p) {
             ToolVerdict::Refused(reason) => {
                 return rejected(format!(
@@ -1006,11 +1036,13 @@ impl Run {
                 ))
             }
             // An interrupted call is always confirmed by the user, and so
-            // is a command that names a server's own folder.
+            // is a command that names a server's own folder. In Autopilot
+            // a resumed call goes by its rule, as a new one does.
             ToolVerdict::Permitted { approval } => match resume_note {
-                Some(_) => Approver::User,
-                None if daemon_folder => Approver::User,
-                None => match approval {
+                Some(_) if !unattended => Approver::User,
+                _ if daemon_folder => Approver::User,
+                _ => match approval {
+                    Some(_) if unattended => Approver::Ai,
                     Some(a) => a,
                     None => return Authorized::default(),
                 },
@@ -1052,6 +1084,10 @@ impl Run {
             current: p.current.clone(),
         });
 
+        // In Autopilot: why what the reviewer didn't approve isn't run,
+        // and whether the reviewer said so (it was unsure).
+        let mut unattended_why: Option<String> = None;
+        let mut reviewer_unsure = false;
         if approver == Approver::Ai {
             let models = &config.approval_profiles;
             let edit_path = if is_file_edit {
@@ -1069,15 +1105,27 @@ impl Run {
                     "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets always need your approval."
                         .into(),
                 );
+                unattended_why = Some(
+                    "Commands that push, delete, deploy, escalate privileges, run inline scripts or touch secrets need a person's approval, and nobody is there to give it in Autopilot."
+                        .into(),
+                );
             } else if edit_path
                 .as_deref()
                 .is_some_and(permissions::is_secret_path)
             {
                 manual_reason =
                     Some("Edits to credential or secret files always need your approval.".into());
+                unattended_why = Some(
+                    "Edits to credential or secret files need a person's approval, and nobody is there to give it in Autopilot."
+                        .into(),
+                );
             } else if models.is_empty() {
                 manual_reason =
                     Some("No AI reviewer model is set, so this needs your approval.".into());
+                unattended_why = Some(
+                    "It needs an approval, and no AI reviewer model is set to give it in Autopilot."
+                        .into(),
+                );
             } else {
                 self.tool_note(&tc.id, Some(format!("Reviewing with {}…", models[0].label)));
                 let input = ReviewInput {
@@ -1125,6 +1173,8 @@ impl Run {
                             Some(reason.clone()),
                             &checks,
                         );
+                        // Nobody to ask in Autopilot: another approach.
+                        let or_ask = if unattended { "" } else { " or ask the user" };
                         return if approved {
                             Authorized {
                                 approval: Some(approval),
@@ -1134,7 +1184,7 @@ impl Run {
                         } else {
                             Authorized {
                                 refusal: Some(format!(
-                                    "Error: rejected by the user's AI reviewer ({model}): {reason} Do not retry the same action; adjust the approach or ask the user."
+                                    "Error: rejected by the user's AI reviewer ({model}): {reason} Do not retry the same action; adjust the approach{or_ask}."
                                 )),
                                 approval: Some(approval),
                                 rejected: true,
@@ -1143,16 +1193,41 @@ impl Run {
                         };
                     }
                     ReviewResult::Unsure { reason } => {
-                        manual_reason = Some(format!("{reason} This needs your approval."))
+                        manual_reason = Some(format!("{reason} This needs your approval."));
+                        unattended_why =
+                            Some(format!("{reason} Nobody else can approve it in Autopilot."));
+                        reviewer_unsure = true;
                     }
                     ReviewResult::Failed { errors } => {
                         eprintln!("agent: AI approval gave no decision: {errors:?}");
                         manual_reason = Some(
                             "The AI reviewer couldn’t answer, so this needs your approval.".into(),
                         );
+                        unattended_why = Some(
+                            "The AI reviewer couldn't answer, and nobody else can approve it in Autopilot."
+                                .into(),
+                        );
                     }
                 }
             }
+        }
+
+        // Autopilot: what the reviewer didn't approve is refused, never
+        // left waiting (D6, U02).
+        if unattended {
+            let why = unattended_why.unwrap_or_else(|| {
+                "It needs an approval, and nobody is there to give it in Autopilot.".into()
+            });
+            return Authorized {
+                refusal: Some(format!(
+                    "Error: not run. {why} Do not retry it; do without it or take another approach."
+                )),
+                // The reviewer's verdict shows where it gave one.
+                approval: reviewer_unsure
+                    .then(|| approval_json(Approver::Ai, false, None, Some(why), &[])),
+                rejected: true,
+                ..Default::default()
+            };
         }
 
         // Manual: the request shows in the chat (and, for an edit of an
@@ -1180,10 +1255,10 @@ impl Run {
             remote: false,
         };
         let waiting = std::time::Instant::now();
-        let decision = self
+        let (decision, unanswered) = self
             .core
             .agents
-            .wait_for_approval(&self.core, request, &self.stop)
+            .wait_for_decision(&self.core, request, &self.stop)
             .await;
         // Waiting for the user isn't the subagent's time (K07).
         if let Some(sub) = self.sub() {
@@ -1194,6 +1269,22 @@ impl Run {
             ApprovalDecision::Allow => Authorized {
                 approval: Some(approval_json(Approver::User, true, None, None, &[])),
                 reviewed,
+                ..Default::default()
+            },
+            // Autopilot's deadline (U03): nobody answered.
+            ApprovalDecision::Deny if unanswered => Authorized {
+                refusal: Some(
+                    "Error: not run: nobody answered its approval in time, and nobody is there to answer it in Autopilot. Do not retry it; do without it or take another approach."
+                        .into(),
+                ),
+                approval: Some(approval_json(
+                    Approver::User,
+                    false,
+                    None,
+                    Some("Nobody answered in time.".into()),
+                    &[],
+                )),
+                rejected: true,
                 ..Default::default()
             },
             ApprovalDecision::Deny => Authorized {
@@ -1264,27 +1355,20 @@ impl Run {
             .await;
         match self.merge_into_current(tc, again) {
             Ok(auth) => auth,
-            Err(auth) => {
-                let path = auth
-                    .reviewed
-                    .as_ref()
-                    .map_or("the file", |r| r.rel_path.as_str())
-                    .to_string();
-                refused(format!(
-                    "Error: {path} kept changing while this edit waited for approval, and the changes overlap; the file was not modified. Read it again and redo the edit."
-                ))
-            }
+            Err(path) => refused(format!(
+                "Error: {path} kept changing while this edit waited for approval, and the changes overlap; the file was not modified. Read it again and redo the edit."
+            )),
         }
     }
 
     /// `Ok`: the call can run as authorized (adjusted to the merge when the
-    /// file changed). `Err`: the approved changes overlap the file's new
-    /// changes; it needs another review.
+    /// file changed). `Err` (the file's path): the approved changes overlap
+    /// the file's new changes; it needs another review.
     fn merge_into_current(
         &self,
         tc: &ToolCall,
         mut auth: Authorized,
-    ) -> Result<Authorized, Authorized> {
+    ) -> Result<Authorized, String> {
         let Some(reviewed) = auth.reviewed.clone() else {
             return Ok(auth);
         };
@@ -1313,7 +1397,7 @@ impl Run {
         // made binary): nothing to merge into, and writing over it would
         // lose that change. Another review.
         let Ok(now) = String::from_utf8(now) else {
-            return Err(auth);
+            return Err(reviewed.rel_path);
         };
         if now == reviewed.current {
             self.seen.record(abs, now.as_bytes());
@@ -1334,7 +1418,7 @@ impl Run {
                 });
                 Ok(auth)
             }
-            Ok(crate::merge::Merged::Conflict(_)) | Err(_) => Err(auth),
+            Ok(crate::merge::Merged::Conflict(_)) | Err(_) => Err(reviewed.rel_path),
         }
     }
 
@@ -1455,6 +1539,18 @@ impl Run {
                 }),
             );
         };
+        // D5: in Autopilot nobody answers; the plan says what it assumed.
+        if self.autopilot {
+            log_question(self, 0, vec!["autopilot".into()]);
+            return self
+                .add_tool_result(
+                    &tc.id,
+                    super::autopilot::NO_QUESTIONS.into(),
+                    None,
+                    Vec::new(),
+                )
+                .await;
+        }
         if !self.plan_mode {
             let content =
                 "Error: asking the user is only available in Plan mode. Decide yourself and say what you assumed.";
@@ -1607,11 +1703,22 @@ impl Run {
     /// submit_plan: the plan is checked and, if it holds up, saved to the
     /// chat's plan file (a revision replaces it). Problems go back to the
     /// model to fix. Only this changes the file: a reply never does.
-    async fn submit_plan(
+    pub(super) async fn submit_plan(
         &mut self,
         tc: &ToolCall,
         args: &Map<String, Value>,
     ) -> Result<(), String> {
+        // S02: blocked by its last review, the plan is never saved.
+        if self.plan_blocked {
+            return self
+                .add_tool_result(
+                    &tc.id,
+                    super::plan_review::BLOCKED_AGAIN.into(),
+                    None,
+                    Vec::new(),
+                )
+                .await;
+        }
         // Findings are the reviewer's: a "## Findings" section the agent
         // wrote (or the IDE's open findings from an earlier save) is left
         // out before the plan is checked, reviewed and saved.
@@ -1620,9 +1727,13 @@ impl Run {
         let plan_text = plan_text.as_str();
         // B12: the agent's answers to the findings that held the plan back.
         let responses = super::plan_review::parse_responses(args.get("responses"));
-        // B07: against the project too, as this chat sees it.
-        let mut problems =
-            plan::plan_problems_in(plan_text, self.root.as_deref().map(std::path::Path::new));
+        // B07: against the project too, as this chat sees it; S01: an
+        // Autopilot task's plan says what done means.
+        let mut problems = plan::plan_problems_for(
+            plan_text,
+            self.root.as_deref().map(std::path::Path::new),
+            self.in_autopilot(),
+        );
         // B12: a held finding left unanswered sends the plan back with the
         // checker's problems, before a review is spent on it.
         problems.extend(self.unanswered(&responses));

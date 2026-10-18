@@ -17,6 +17,7 @@
 //!     assumed: forks and templates share history too.
 //!   - **Missing folder.** A project none of whose folders exist anymore:
 //!     listed as missing, and can be relinked to a folder or deleted.
+//!
 //! Answers are remembered per folder (`project_decisions`).
 
 use super::store::{err, now_ms, DbResult};

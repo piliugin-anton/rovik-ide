@@ -332,9 +332,7 @@ export default function ProjectChecksSettings(props: {
             <p class="settings-hint">
               {found().stack.length ? `Stack: ${found().stack.join(', ')}. ` : ''}
               {found().instructions
-                ? found().instructions!.file.toLowerCase().startsWith('readme')
-                  ? `No agent instructions file; the start of ${found().instructions!.file} is included instead. Add an AGENTS.md to tell the agent how to work in this project.`
-                  : `Instructions for agents: ${found().instructions!.file}${found().instructions!.truncated ? ' (shortened)' : ''}.`
+                ? `Instructions for agents: ${found().instructions!.file}${found().instructions!.truncated ? ' (shortened)' : ''}.`
                 : 'No instructions found. Add an AGENTS.md to tell the agent how to work in this project.'}
             </p>
           </section>

@@ -116,6 +116,14 @@ pub struct Run {
     pub(super) options: Option<OpenAIChatOptions>,
     /// The mode of the message that started the run (Plan or Agent).
     pub(super) plan_mode: bool,
+    /// The run is part of an Autopilot task (autopilot/): its request was
+    /// sent in Autopilot mode.
+    pub(super) autopilot: bool,
+    /// The task's stage this run carries out, which its end hands on.
+    pub(super) stage: Option<super::autopilot::StageRun>,
+    /// Where its history starts (D2): an Autopilot stage's fresh context.
+    /// None: the chat's whole history.
+    pub(super) history_window: Option<crate::chat_db::history::Window>,
     pub(super) context_mode: String,
     pub(super) root: Option<String>,
     /// The project folder itself. Differs from `root` in an isolated chat,
@@ -140,6 +148,9 @@ pub struct Run {
     /// The project's checks and the system-prompt section about it. Fixed
     /// for the run: what changes (the repository map) is sent apart.
     pub(super) checks: Vec<ProjectCheck>,
+    /// The checks are the implemented plan's validation commands: the
+    /// project has none set up (Autopilot, V02).
+    pub(super) checks_from_plan: bool,
     pub(super) project_context: String,
     /// The current repository map text (the `## Repository map` section),
     /// if any. Every model turn sends it on the request's message
@@ -160,6 +171,16 @@ pub struct Run {
     pub(super) verify_rounds: u32,
     /// The last round failed and was sent back to the agent.
     pub(super) last_verify_failed: bool,
+    /// Autopilot's rounds in a row that made no progress: two end them
+    /// (V03, D12).
+    pub(super) stalled_rounds: u32,
+    /// A check failed on its environment and Prepare ran again: once a
+    /// run (V03).
+    pub(super) prepared_again: bool,
+    /// The last round put back only the files behind what it broke, and
+    /// its checks run again: should they still break it, everything goes
+    /// back (V05).
+    pub(super) after_partial_rollback: bool,
     /// Unfinished checklist steps were pointed out; at most MAX_CHECKLIST_NUDGES.
     pub(super) checklist_nudges: u32,
     /// Force the `todo` tool on the next model turn (plan implementation
@@ -168,6 +189,9 @@ pub struct Run {
     /// The checklist gate refused one call this run (small-task safety):
     /// everything after that is let through, repeats included.
     pub(super) checklist_gate_refused: bool,
+    /// Autopilot: the loop guard's pause went on once already this run
+    /// (U03); the next one ends the run.
+    pub(super) loop_resumed: bool,
     /// The run ended as unfinished-checklist with this many open steps
     /// (for the run's log line).
     pub(super) open_steps_at_end: Option<usize>,
@@ -278,6 +302,32 @@ pub struct Run {
     /// latest (its answers follow it).
     pub(super) review_findings: Vec<super::change_review::Finding>,
     pub(super) review_note_id: Option<String>,
+    /// S06, Autopilot's blocking review: the findings the last review sent,
+    /// numbered as the agent got them, which the next review follows up;
+    /// the agent's answers to them (`answer_review`), and the times it was
+    /// asked for missing ones.
+    pub(super) review_held: Vec<super::change_review::Finding>,
+    pub(super) review_answers: Vec<super::plan_review::Response>,
+    pub(super) review_answer_nudges: u32,
+    /// A high finding still open after the run's last review: the run ends
+    /// `review-open`.
+    pub(super) review_blocked: bool,
+    /// S07: the test writer ran for a change that had no test (once).
+    pub(super) tests_after_change: bool,
+    /// T04: the adversarial tester ran in this run (once a run).
+    pub(super) breaker_ran: bool,
+    /// T07: a Thorough task's loops, by their progress so far.
+    pub(super) plan_review_progress: super::loops::Progress,
+    pub(super) change_review_progress: super::loops::Progress,
+    pub(super) acceptance_progress: super::loops::Progress,
+    /// T04: its tests, until the gate's round that runs them is judged.
+    pub(super) breaker_round: Option<super::breaker::BreakerRound>,
+    /// S08: the acceptance checks this run had; the criteria the last
+    /// found unsatisfied, for the next; and whether the last check left
+    /// one unmet: the run ends `unmet`.
+    pub(super) acceptance_checks: u32,
+    pub(super) acceptance_unsatisfied: Vec<super::acceptance::Verdict>,
+    pub(super) acceptance_unmet: bool,
     /// What the last failure triage found, for the next one (triage.rs).
     pub(super) last_triage: Option<super::triage::Triage>,
     /// The running parallel group's extend_scope grants.
@@ -288,6 +338,9 @@ pub struct Run {
     /// a plan is saved), and the `submit_plan` call they answered
     /// (plan_review.rs).
     pub(super) plan_reviews: u32,
+    /// S02: an Autopilot task's last plan review blocked the plan: it's
+    /// never saved in this run.
+    pub(super) plan_blocked: bool,
     pub(super) plan_findings: Vec<super::change_review::Finding>,
     /// The plan as it was held with those findings (round 3): sent again
     /// unchanged with nothing said, every one stays open; the follow-up
@@ -313,6 +366,66 @@ pub struct Run {
     /// The last round asked the agent about changes that weaken the checks
     /// (R05): the next round's new failures aren't a regression.
     pub(super) asked_integrity: bool,
+    /// G02: the run's tool calls under way, for each one's `tool` line in
+    /// the agent log as its result is stored.
+    pub(super) calls: CallClock,
+}
+
+/// G02 (autopilot-plan): which tool each of a run's calls is and when it
+/// started, by id, from the reply that made it to its stored result.
+/// Behind a lock: the result is stored, and its line written, where the
+/// run is only borrowed.
+#[derive(Default)]
+pub(super) struct CallClock(Mutex<std::collections::HashMap<String, Clocked>>);
+
+struct Clocked {
+    tool: String,
+    started: Instant,
+    /// How long it ran, measured where it ran: a call of a parallel batch
+    /// is recorded once the ones before it are.
+    ran: Option<Duration>,
+}
+
+impl CallClock {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Clocked>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A reply's calls, made now; a call already known keeps its start.
+    pub(super) fn made(&self, calls: &[ToolCall]) {
+        let mut clock = self.lock();
+        for tc in calls {
+            clock.entry(tc.id.clone()).or_insert_with(|| Clocked {
+                tool: tc.name.clone(),
+                started: Instant::now(),
+                ran: None,
+            });
+        }
+    }
+
+    /// The call starts now: its turn came, or what it waited for (an
+    /// approval) did.
+    pub(super) fn start(&self, id: &str) {
+        if let Some(c) = self.lock().get_mut(id) {
+            c.started = Instant::now();
+            c.ran = None;
+        }
+    }
+
+    /// The call ran for `ran`, as measured where it ran.
+    pub(super) fn ran(&self, id: &str, ran: Duration) {
+        if let Some(c) = self.lock().get_mut(id) {
+            c.ran = Some(ran);
+        }
+    }
+
+    /// The call's tool and how long it took, its result just stored; None
+    /// for a call no reply of this run made.
+    fn finish(&self, id: &str) -> Option<(String, Duration)> {
+        self.lock()
+            .remove(id)
+            .map(|c| (c.tool, c.ran.unwrap_or_else(|| c.started.elapsed())))
+    }
 }
 
 /// Who a run works for.
@@ -336,6 +449,9 @@ pub(super) enum Entry {
     /// into, on the chat's server (6.6), with what the project changed in
     /// each.
     CheckMerged { files: Vec<(String, String)> },
+    /// An Autopilot stage the IDE does itself, with no model turn: its
+    /// installs (S03), its tests written first (S04).
+    Stage,
 }
 
 /// What one model turn produced.
@@ -370,6 +486,99 @@ impl Run {
         self.core.agents.config_for(&self.dialog_id)
     }
 
+    /// An Autopilot stage the IDE does itself (`StageRun::harness`).
+    pub(super) fn harness_stage(&self) -> bool {
+        self.stage.as_ref().is_some_and(|s| s.harness())
+    }
+
+    /// T06: the run is a Thorough task's Pick, whose winner's change lands
+    /// at its end as the winner's implementation's would.
+    pub(super) fn picks(&self) -> bool {
+        self.stage
+            .as_ref()
+            .is_some_and(|s| s.stage == super::autopilot::Stage::Pick)
+    }
+
+    /// The work of an Autopilot stage the IDE does itself; its outcome.
+    async fn harness_stage_work(&mut self) -> Result<String, String> {
+        if self.stage.as_ref().is_some_and(|s| s.candidates) {
+            return self.candidates_stage().await;
+        }
+        use super::autopilot::Stage;
+        let Some(stage) = self.stage.as_ref().map(|s| s.stage) else {
+            return Ok("done".into());
+        };
+        match stage {
+            Stage::Prepare => self.prepare_stage().await,
+            Stage::Tests => self.tests_stage().await,
+            Stage::Pick => self.pick_stage().await,
+            Stage::Deliver => self.deliver_stage().await,
+            // Not the IDE's work (`Stage::is_ide_work`): nothing to do here.
+            Stage::Plan
+            | Stage::PlanReview
+            | Stage::Implement
+            | Stage::Review
+            | Stage::Checks
+            | Stage::Break
+            | Stage::Acceptance => Ok("done".into()),
+        }
+    }
+
+    /// The run is an Autopilot task's, or a subagent of one: nobody waits
+    /// on it to answer anything (D6).
+    pub(super) fn in_autopilot(&self) -> bool {
+        self.core.agents.autopilot_of(&self.dialog_id).is_some()
+    }
+
+    /// Why the run's Autopilot task is past its budget, if it is (U04): the
+    /// lead's replies are where it's checked; a subagent's count for it.
+    fn over_task_budget(&self) -> Option<String> {
+        if self.sub().is_some() {
+            return None;
+        }
+        self.core.agents.over_budget(&self.dialog_id)
+    }
+
+    /// U04: what the run spent so far, kept in its stage's record as it
+    /// goes (`spending`), after each of its replies and each batch of the
+    /// IDE's subagents: a crash then keeps all of it but what the request
+    /// or the subagent it cut had used. Its end puts all it spent in the
+    /// record's `spent` instead. A failed write costs only what it would
+    /// have kept.
+    pub(super) async fn keep_spending(&self) {
+        if self.sub().is_some() {
+            return;
+        }
+        let Some(stage) = &self.stage else {
+            return;
+        };
+        let Some(so_far) = self.core.agents.run_spent(&self.dialog_id) else {
+            return;
+        };
+        let kept =
+            super::autopilot::keep_spending(&self.core, &self.dialog_id, &stage.record, so_far);
+        if let Err(e) = kept.await {
+            eprintln!(
+                "agent: chat {}: its spend so far wasn't kept: {e}",
+                self.dialog_id
+            );
+        }
+    }
+
+    /// Ends the run over its task's budget: the reply's calls get a result
+    /// each, so the chat's history is whole, and the log says why.
+    async fn end_over_budget(&mut self, calls: &[ToolCall], why: &str) -> Result<String, String> {
+        for tc in calls {
+            let content = format!("Error: not run: the task went over its budget ({why}).");
+            self.answer_unrun(tc, content, false, None).await?;
+        }
+        log::write(
+            &self.core,
+            json!({ "event": "budget", "dialogId": self.dialog_id, "reason": why }),
+        );
+        Ok("budget".into())
+    }
+
     /// Everything a run needs before its first step; None when there's
     /// nothing to do.
     pub(super) async fn prepare(
@@ -383,7 +592,41 @@ impl Run {
         let mode = run_mode_for(&recent)
             .or(request.mode.clone())
             .unwrap_or_else(|| "agent".into());
-        let plan_mode = mode == "plan";
+        // An Autopilot task's run carries out one of its stages: its plan
+        // in Plan mode, the stages after it in Agent mode.
+        let autopilot = mode == super::autopilot::MODE;
+        let stage = match autopilot {
+            true => {
+                let effort = config.autopilot.effort;
+                super::autopilot::stage_for(core, &dialog_id, &request.start, effort).await?
+            }
+            false => None,
+        };
+        // An Autopilot task's run follows Autopilot's configuration from
+        // here on, at the effort its task started with: the kinds its
+        // pipeline needs (A07), the rules of an unattended run (U01).
+        let config = match autopilot {
+            // T05: an implementation by candidates is their runs': its own
+            // run, which only waits for them, spends nothing of the task's.
+            true if stage.as_ref().is_some_and(|s| s.candidates) => config,
+            true => {
+                let effort = stage.as_ref().map_or(config.autopilot.effort, |s| s.effort);
+                // What a run a crash cut kept of its spend is its stage's
+                // (U04), before this run keeps its own.
+                if let Some(s) = &stage {
+                    super::autopilot::keep_cut_spending(core, &dialog_id, &s.record).await?;
+                }
+                // What its task spent before it counts against the budget (U04).
+                let before = super::autopilot::task_spent(core, &dialog_id).await?;
+                core.agents.set_autopilot(&dialog_id, effort, before);
+                core.agents.config_for(&dialog_id)
+            }
+            false => config,
+        };
+        let plan_mode = mode == "plan"
+            || stage
+                .as_ref()
+                .is_some_and(|s| s.stage == super::autopilot::Stage::Plan);
         let project_root = request.root.clone().filter(|r| !r.trim().is_empty());
         // An isolated chat works in its overlay: the project with its own
         // changes on top, mounted as a folder (src/overlay). Plan mode
@@ -438,6 +681,15 @@ impl Run {
         }
         let is_send = matches!(request.start, StartKind::Send { .. });
         let is_continue_run = matches!(request.start, StartKind::ContinueRun);
+        // A start that takes up a run where an earlier one ended: a Retry,
+        // a Continue, a resume after a crash.
+        let takes_up = matches!(
+            request.start,
+            StartKind::Retry
+                | StartKind::ContinueReply
+                | StartKind::ContinueRun
+                | StartKind::Resume
+        );
         // Plan-implementation first turn forces the `todo` tool (named
         // `tool_choice`): "Implement this plan" in Agent mode. Explicit
         // `meta.implementsPlan` wins; the `Implement the plan…` line is the
@@ -462,7 +714,11 @@ impl Run {
         let mut verify_rounds = 0;
         let entry = match request.start {
             StartKind::Send { message } => {
-                settle_message = Some(message.id);
+                // The IDE's own message (an Autopilot stage's) is nobody's
+                // to send again: it's never marked failed.
+                if !is_harness_meta(message.meta.as_ref()) {
+                    settle_message = Some(message.id);
+                }
                 Entry::Turn
             }
             StartKind::Retry => Entry::Turn,
@@ -513,6 +769,12 @@ impl Run {
                     files: files.into_iter().zip(diffs).collect(),
                 }
             }
+        };
+        // The IDE's own stages of a task do their work, whatever start
+        // took them up (the driver's, a resume's Retry).
+        let entry = match &stage {
+            Some(s) if s.harness() => Entry::Stage,
+            _ => entry,
         };
 
         // A new message with an unfinished checklist carried from earlier
@@ -632,17 +894,45 @@ impl Run {
 
         let (checks, project_context) = match &root {
             Some(r) => {
-                // Settings are kept by the project's folder, not the view's.
-                let settings_root = project_root.clone().unwrap_or_else(|| r.clone());
+                // Settings are kept by the project's folder, not the view's;
+                // a candidate's, by its task chat's (T05).
+                let settings_root = core
+                    .agents
+                    .candidate_project(&dialog_id)
+                    .or_else(|| project_root.clone())
+                    .unwrap_or_else(|| r.clone());
                 let config_dir = core.paths.config_dir.clone();
                 let (r, verify) = (r.clone(), config.permissions.verify_changes);
+                // V09: an Autopilot task's checks the stacks one folder down too.
                 crate::rt::spawn_blocking(move || {
-                    project::load(&config_dir, &r, &settings_root, verify)
+                    project::load_for(&config_dir, &r, &settings_root, verify, autopilot)
                 })
                 .await
                 .unwrap_or_default()
             }
             None => Default::default(),
+        };
+        // V02 (D7): an Autopilot implementation in a project with no checks
+        // set up is checked by its plan's validation commands.
+        let set_up = checks
+            .iter()
+            .any(|c| c.enabled && !c.command.trim().is_empty());
+        let from_plan = (autopilot && !plan_mode && !set_up)
+            .then(|| implemented_plan(&recent))
+            .flatten()
+            .map(|plan| plan::validation_commands(&plan))
+            .filter(|commands| !commands.is_empty());
+        let checks_from_plan = from_plan.is_some();
+        let checks = match from_plan {
+            Some(commands) => commands
+                .into_iter()
+                .map(|command| ProjectCheck {
+                    kind: plan::validation_kind(&command).into(),
+                    command,
+                    enabled: true,
+                })
+                .collect(),
+            None => checks,
         };
         let plan_context = if plan_mode {
             plan::current_plan_context(chat_plan_file(&recent).as_deref(), root.as_deref())
@@ -713,8 +1003,35 @@ impl Run {
                 _ => implements_plan && plan::current_checklist(&recent).is_none(),
             };
 
+        // D2: a stage's fresh context, from its own rows.
+        let history_window =
+            super::autopilot::history_window(core, &dialog_id, stage.as_ref()).await?;
+
+        // S04: the tests the task's Tests stage wrote are the
+        // implementation's to make pass, as the test writer's are (E03).
+        let test_writer_files = match &stage {
+            Some(s) if s.stage == super::autopilot::Stage::Implement => {
+                super::autopilot::task_tests(core, &dialog_id).await?.files
+            }
+            _ => Vec::new(),
+        };
+
+        // D7: an Autopilot implementation taken up again (after a failure,
+        // a wait for the provider's rate limit, a crash, a move) inherits
+        // what its stage's earlier runs wrote, which this run doesn't know as
+        // its own: its end reviews and checks them, as theirs would have,
+        // so nothing lands or is delivered that no check ran on.
+        let inherits_changes = takes_up
+            && stage
+                .as_ref()
+                .is_some_and(|s| s.stage == super::autopilot::Stage::Implement && !s.candidates);
+
         let run = Run {
             plan_mode,
+            autopilot,
+            stage,
+            history_window,
+            test_writer_files,
             context_mode: request
                 .context_mode
                 .unwrap_or_else(|| crate::clm::MODE_TRIMMING.into()),
@@ -724,10 +1041,12 @@ impl Run {
             local_date: request.local_date.unwrap_or_else(log::utc_date),
             guard: Guard::new(config.permissions.tool_call_checkpoint, start_at),
             checks,
+            checks_from_plan,
             project_context,
             repo_map,
             repo_map_chars,
-            writes_since_verify: !changed_files.is_empty(),
+            writes_since_verify: !changed_files.is_empty() || inherits_changes,
+            writes_since_review: inherits_changes,
             changed_files,
             verify_rounds,
             force_todo_next,
@@ -766,6 +1085,9 @@ impl Run {
             profile,
             options,
             plan_mode: false,
+            autopilot: false,
+            stage: None,
+            history_window: None,
             context_mode: crate::clm::MODE_TRIMMING.into(),
             root: None,
             project_root: None,
@@ -777,6 +1099,7 @@ impl Run {
             guard: Guard::new(None, 0),
             questions_asked: 0,
             checks: Vec::new(),
+            checks_from_plan: false,
             project_context: String::new(),
             repo_map: None,
             repo_map_chars: 0,
@@ -786,9 +1109,13 @@ impl Run {
             changed_files: Vec::new(),
             verify_rounds: 0,
             last_verify_failed: false,
+            stalled_rounds: 0,
+            prepared_again: false,
+            after_partial_rollback: false,
             checklist_nudges: 0,
             force_todo_next: false,
             checklist_gate_refused: false,
+            loop_resumed: false,
             open_steps_at_end: None,
             pending_step_compaction: None,
             clm_restricted: false,
@@ -839,10 +1166,24 @@ impl Run {
             reviews_in_row: 0,
             review_findings: Vec::new(),
             review_note_id: None,
+            review_held: Vec::new(),
+            review_answers: Vec::new(),
+            review_answer_nudges: 0,
+            review_blocked: false,
+            tests_after_change: false,
+            breaker_ran: false,
+            plan_review_progress: Default::default(),
+            change_review_progress: Default::default(),
+            acceptance_progress: Default::default(),
+            breaker_round: None,
+            acceptance_checks: 0,
+            acceptance_unsatisfied: Vec::new(),
+            acceptance_unmet: false,
             last_triage: None,
             cleaned_this_run: false,
             group_grants: Default::default(),
             plan_reviews: 0,
+            plan_blocked: false,
             plan_findings: Vec::new(),
             plan_held: None,
             plan_review_call: None,
@@ -855,6 +1196,7 @@ impl Run {
             rolled_back_attempts: Vec::new(),
             bonus_rounds: 0,
             asked_integrity: false,
+            calls: CallClock::default(),
         }
     }
 
@@ -984,6 +1326,18 @@ impl Run {
                 "error".to_string()
             }
         };
+        // U04 (R03): one of its subagents found the task past its budget and
+        // stopped the run: it ends over the budget, as at one of its replies.
+        let outcome = match self.core.agents.budget_cut_of(&self.dialog_id) {
+            Some(why) if matches!(outcome.as_str(), "stopped" | "verify-stopped") => {
+                log::write(
+                    &self.core,
+                    json!({ "event": "budget", "dialogId": self.dialog_id, "reason": why }),
+                );
+                "budget".to_string()
+            }
+            _ => outcome,
+        };
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
         if self.sub().is_none() && outcome != "verify-needs-approval" {
@@ -1007,6 +1361,12 @@ impl Run {
         if let Some(open) = self.open_steps_at_end {
             entry["openSteps"] = json!(open);
         }
+        if self.autopilot {
+            entry["autopilot"] = json!(true);
+        }
+        if let Some(stage) = &self.stage {
+            entry["stage"] = json!(stage.stage.id());
+        }
         log::write(&self.core, entry);
         outcome
     }
@@ -1018,6 +1378,14 @@ impl Run {
             self.supersede_waiting_checks().await;
         }
         match entry {
+            // T01: a Thorough task's plan stage plans with its planners
+            // first.
+            Entry::Turn if self.thorough_plan_due().await => {
+                self.thorough_planning().await?;
+                if self.stopped() {
+                    return Ok("stopped".into());
+                }
+            }
             Entry::Turn => {}
             Entry::Verify { record_id } => {
                 // What the last run's fix rounds knew (command approval on).
@@ -1061,6 +1429,7 @@ impl Run {
                     return Ok(outcome);
                 }
             }
+            Entry::Stage => return self.harness_stage_work().await,
         }
 
         loop {
@@ -1140,6 +1509,12 @@ impl Run {
             )
             .await?;
             self.settle(true).await;
+            self.keep_spending().await;
+            // Past its Autopilot task's budget (U04): the run ends at this
+            // reply, its calls answered as not run. A Stop goes first.
+            if let Some(why) = self.over_task_budget().filter(|_| !self.stopped()) {
+                return self.end_over_budget(&turn.tool_calls, &why).await;
+            }
             // Stopped meanwhile: a reply with tool calls goes on to
             // execute_tool_calls, which answers each with a "stopped" result
             // (a call left without one reads as interrupted, and the chat
@@ -1177,6 +1552,10 @@ impl Run {
                 // A fresh-context review of the change, before the checks.
                 if self.review_change().await? {
                     continue;
+                }
+                // S06: a high finding still open after the last review.
+                if self.review_blocked {
+                    return Ok("review-open".into());
                 }
                 if self.stopped() {
                     return Ok("stopped".into());
@@ -1235,6 +1614,21 @@ impl Run {
             // Every tool call has its result, so the chat can wait here as
             // long as it likes: Continue picks up with the next request.
             if let Some(pause) = self.guard.pause() {
+                // Autopilot: nobody would Continue. A loop's first pause
+                // goes on, the model told why; the next ends the run (U03).
+                if let (Some(reason), false) = (pause.reason.as_deref(), self.loop_resumed) {
+                    if self.in_autopilot() {
+                        self.loop_resumed = true;
+                        self.guard.resume_after_loop();
+                        let note = format!(
+                            "{IDE_NOTE}You repeated yourself: {reason}. Change approach: re-read the \
+                             relevant code and try something different. If it can't be done this \
+                             way, say what's blocking it and finish."
+                        );
+                        self.add_harness(note, "loop").await?;
+                        continue;
+                    }
+                }
                 if let Some(reason) = pause.reason.as_deref() {
                     if self.summarize_before_pause(reason).await? {
                         return Ok("stopped".into());
@@ -1356,6 +1750,13 @@ impl Run {
             clm,
             context_only,
         );
+        if self.autopilot {
+            super::autopilot::without_questions(&mut tools);
+            // S06: the answers to the change review's findings.
+            if !self.plan_mode && self.sub().is_none() && self.root.is_some() && !context_only {
+                tools.push(super::change_review::answer_review_schema());
+            }
+        }
         // A subagent gets its kind's tools only; a lead with subagents on,
         // the `task` tool (not on a turn restricted to context tools).
         let kinds = self.subagent_kinds();
@@ -1390,10 +1791,11 @@ impl Run {
             )
         };
         let group_rules = subagent::plan_group_rules(self.parallel_on());
+        let plan_instructions = plan::plan_mode_instructions(self.autopilot);
         let project_context = if self.plan_mode {
             [
                 self.project_context.as_str(),
-                plan::PLAN_MODE_INSTRUCTIONS,
+                plan_instructions.as_str(),
                 group_rules,
                 self.plan_context.as_str(),
             ]
@@ -1409,6 +1811,14 @@ impl Run {
             Some(section) => format!("{project_context}\n\n{section}"),
             None => project_context,
         };
+        // D5: Autopilot's lead decides what it would otherwise ask.
+        if self.autopilot && system_prompt.is_none() {
+            system_prompt = Some(crate::agent::lead_system_prompt(
+                !tools.is_empty(),
+                Some(&project_context),
+                true,
+            ));
+        }
         let continue_reply = std::mem::take(&mut self.continue_reply);
         let no_tool_calls = std::mem::take(&mut self.words_only);
         // Forced `todo` (plan-implementation first turn, second checklist
@@ -1477,6 +1887,7 @@ impl Run {
                 chat_id: None,
                 force_tool: force_tool.clone(),
                 checklist_note: checklist_note.clone(),
+                history_window: self.history_window.clone(),
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -1504,7 +1915,7 @@ impl Run {
                     self.log_tags(),
                     crate::agent::run_chat(
                         &self.core.db,
-                        &vfs,
+                        vfs,
                         params,
                         &mut cancel_rx,
                         &mut on_event,
@@ -1596,6 +2007,7 @@ impl Run {
                 if let Some(sub) = self.sub_mut() {
                     sub.note_usage(usage.as_ref());
                 }
+                self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
                 let mut entry = json!({
                     "event": "reply",
                     "dialogId": self.dialog_id,
@@ -1658,6 +2070,7 @@ impl Run {
             if let Some(sub) = self.sub_mut() {
                 sub.note_usage(usage.as_ref());
             }
+            self.core.agents.note_reply(&self.dialog_id, usage.as_ref());
             let mut entry = json!({
                 "event": "reply",
                 "dialogId": self.dialog_id,
@@ -2165,10 +2578,48 @@ impl Run {
         m.tool_call_id = Some(tool_call_id.to_string());
         m.meta = meta;
         m.attachments = attachments;
-        self.append(vec![m]).await
+        self.append(vec![m]).await?;
+        self.log_tool(tool_call_id, &content);
+        Ok(())
+    }
+
+    /// G02 (autopilot-plan): the agent log's line for a finished tool call,
+    /// as its result is stored, once whatever path the call took: its tool,
+    /// whether it failed and how (`tools::error_class`), how long it took
+    /// (from its turn, or its approval, to its result), and for a command
+    /// that ran, how it ended.
+    fn log_tool(&self, tool_call_id: &str, content: &str) {
+        let (tool, took) = self
+            .calls
+            .finish(tool_call_id)
+            .unwrap_or_else(|| ("unknown".into(), Duration::ZERO));
+        let class = tools::error_class(content);
+        let mut entry = json!({
+            "event": "tool",
+            "dialogId": self.dialog_id,
+            "model": self.profile.model,
+            "tool": tool,
+            "failed": class.is_some(),
+            "error": class,
+            "ms": took.as_millis() as u64,
+        });
+        if tool == "bash" {
+            if let Some((exit_code, timed_out)) = tools::command_end(content) {
+                entry["exitCode"] = json!(exit_code);
+                if timed_out {
+                    entry["timedOut"] = json!(true);
+                }
+            }
+        }
+        if let Some(stage) = &self.stage {
+            entry["stage"] = json!(stage.stage.id());
+        }
+        self.note_sub_fields(&mut entry);
+        log::write(&self.core, entry);
     }
 
     /// A reply's final content: stored (indexed for search), and shown.
+    /// Its calls are the run's from here (G02's `tool` lines).
     pub(super) async fn finalize(
         &self,
         message_id: &str,
@@ -2177,6 +2628,7 @@ impl Run {
         meta: Option<Value>,
         error: Option<String>,
     ) -> Result<(), String> {
+        self.calls.made(&tool_calls);
         finalize_message(
             &self.core,
             &self.dialog_id,
@@ -2259,7 +2711,7 @@ impl Run {
 
     /// The first answer to a sent message: on none, the message is marked
     /// failed (its draft comes back in the composer).
-    async fn settle(&mut self, ok: bool) {
+    pub(super) async fn settle(&mut self, ok: bool) {
         let Some(message_id) = self.settle_message.take() else {
             return;
         };
@@ -2300,12 +2752,34 @@ impl Run {
             return sub.parent_request.clone();
         }
         let recent = self.recent().await.unwrap_or_default();
-        recent
+        let own = recent
             .iter()
             .rev()
             .find(|m| m.role == "user" && !m.failed && !plan::is_harness(m))
-            .map(|m| sent_content(m).unwrap_or_else(|| m.content.clone()))
-            .unwrap_or_default()
+            .map(|m| sent_content(m).unwrap_or_else(|| m.content.clone()));
+        if let Some(request) = own {
+            return request;
+        }
+        // D8, T05: a candidate's chat holds no request of its own: its
+        // task's is the message that started the task, in the task's chat.
+        let Some(task) = self.stage.as_ref().map(|s| s.task.clone()) else {
+            return String::new();
+        };
+        let ids = vec![task.clone()];
+        let rows = (self.core.db)
+            .read(move |c| store::messages_by_id(c, &ids))
+            .await
+            .unwrap_or_default();
+        let Some(started) = rows.first() else {
+            return String::new();
+        };
+        match sent_content(started) {
+            Some(sent) => sent,
+            None => (self.core.db)
+                .read(move |c| store::get_message_body(c, &task))
+                .await
+                .unwrap_or_else(|_| started.content.clone()),
+        }
     }
 }
 
@@ -2889,6 +3363,11 @@ fn sent_content(m: &MessageRow) -> Option<String> {
     sent_text(m.meta.as_ref())
 }
 
+/// A message the IDE wrote (`meta.harness`), not the user.
+pub(super) fn is_harness_meta(meta: Option<&Value>) -> bool {
+    meta.is_some_and(|m| m.get("harness").is_some())
+}
+
 /// A user message's `meta.sentContent`: the text it sent with its editor
 /// context.
 pub(super) fn sent_text(meta: Option<&serde_json::Value>) -> Option<String> {
@@ -2937,6 +3416,26 @@ fn plan_check_at_start(
     let text = std::fs::read_to_string(&file).ok()?;
     let problems = plan::plan_problems_in(&text, root.map(std::path::Path::new));
     (!problems.is_empty()).then_some((file, problems))
+}
+
+/// The plan the run implements: the one in the latest request to
+/// implement one (`meta.implementsPlan`), as it was sent
+/// (`meta.sentContent`, else the message), between its `<plan>` tags.
+fn implemented_plan(messages: &[MessageRow]) -> Option<String> {
+    let request = messages.iter().rev().find(|m| {
+        m.role == "user"
+            && m.meta
+                .as_ref()
+                .is_some_and(|x| x["implementsPlan"] == serde_json::json!(true))
+    })?;
+    let sent = request
+        .meta
+        .as_ref()
+        .and_then(|x| x["sentContent"].as_str())
+        .unwrap_or(&request.content);
+    let start = sent.find("<plan>")? + "<plan>".len();
+    let end = sent[start..].rfind("</plan>")? + start;
+    Some(sent[start..end].trim().to_string())
 }
 
 /// The chat's plan file: the latest one a plan was saved to.

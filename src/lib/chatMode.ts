@@ -10,20 +10,33 @@
 //          decisions, validation). "Implement
 //          this plan" then hands it to Agent mode. A question asked in
 //          Plan mode is answered in the reply; no plan is written for it.
+//   Autopilot  one message is a whole task, done without asking: a plan,
+//          its review, the implementation, the checks, the delivery
+//          (docs/design/autopilot-plan.md). The backend drives its stages
+//          (src-tauri/crates/rovik-core/src/agent_run/autopilot/).
 //
 // A run keeps the mode of the message that started it, so switching the
 // selector mid-run (or before a Continue) doesn't change a run under way.
+// A chat on a host that works on its own starts in Autopilot: the selector
+// shows its own mode while it's open (`setOwnModeChat`).
 // What Plan mode tells the model and allows is in the backend
 // (src-tauri/src/agent_run/plan.rs).
 import { createSignal } from 'solid-js';
 
-export type ChatMode = 'agent' | 'plan';
+export type ChatMode = 'agent' | 'plan' | 'autopilot';
+
+const MODES: ChatMode[] = ['agent', 'plan', 'autopilot'];
 
 const KEY = 'rovik.chatMode';
 
+/** A saved mode, or Agent for anything else. */
+export function savedMode(saved: string | null): ChatMode {
+  return MODES.includes(saved as ChatMode) ? (saved as ChatMode) : 'agent';
+}
+
 function load(): ChatMode {
   try {
-    return localStorage.getItem(KEY) === 'plan' ? 'plan' : 'agent';
+    return savedMode(localStorage.getItem(KEY));
   } catch {
     return 'agent';
   }
@@ -31,10 +44,26 @@ function load(): ChatMode {
 
 const [mode, setModeSignal] = createSignal<ChatMode>(load());
 
+/**
+ * The open chat, when it's on a host that works on its own (autopilot-plan
+ * H02): its mode is its own, Autopilot until the user picks another for
+ * it; the selector's mode for the other chats stays as it was.
+ */
+const [ownChat, setOwnChat] = createSignal<string | null>(null);
+const [ownModes, setOwnModes] = createSignal<Record<string, ChatMode>>({});
+
 /** The mode the next message is sent in (the selector). */
-export const chatMode = mode;
+export const chatMode = (): ChatMode => {
+  const chat = ownChat();
+  return chat ? (ownModes()[chat] ?? 'autopilot') : mode();
+};
 
 export function setChatMode(next: ChatMode) {
+  const chat = ownChat();
+  if (chat) {
+    setOwnModes({ ...ownModes(), [chat]: next });
+    return;
+  }
   setModeSignal(next);
   try {
     localStorage.setItem(KEY, next);
@@ -43,27 +72,7 @@ export function setChatMode(next: ChatMode) {
   }
 }
 
-/** The text sent to implement a plan (Agent mode): the plan in full, kept in view for the whole run. */
-export function implementationRequest(plan: string, file?: string): string {
-  return [
-    file
-      ? `Implement this plan. It's saved in ${file}; the user may have edited it, and this is its current version.`
-      : 'Implement this plan.',
-    '',
-    '<plan>',
-    plan.trim(),
-    '</plan>',
-    '',
-    "First create your checklist with the todo tool from the plan's steps, with the first step in_progress, then work through them in order, " +
-      'one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, ' +
-      'do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. ' +
-      'For each step, read the files it names before changing them, and make ' +
-      'the changes it describes to the functions, types and settings it names. Follow the plan and its decisions. ' +
-      'If a step turns out wrong or unnecessary (a file or function isn’t where the plan says, or the change ' +
-      'doesn’t fit the code), mark it skipped or changed with the reason instead of silently doing something else. ' +
-      'When the steps are done, run the checks in the plan’s Validation section that you can run (build, ' +
-      'typecheck, tests, lint), add or update the tests it asks for, and fix what fails. In your final message, ' +
-      'say which checks passed, which you couldn’t run and why, what is left to check by hand, and why you changed ' +
-      'any files the plan doesn’t mention.',
-  ].join('\n');
+/** The open chat when its host works on its own; null for any other. */
+export function setOwnModeChat(dialogId: string | null) {
+  setOwnChat(dialogId);
 }

@@ -208,11 +208,7 @@ fn push_remote_name(repo: &Repository, branch: &str) -> Result<String, String> {
 fn diff_line_stats(diff: &git2::Diff) -> std::collections::HashMap<String, (usize, usize)> {
     let mut out = std::collections::HashMap::new();
     let mut i = 0;
-    loop {
-        let delta = match diff.get_delta(i) {
-            Some(d) => d,
-            None => break,
-        };
+    while let Some(delta) = diff.get_delta(i) {
         let rel = delta
             .new_file()
             .path()
@@ -1737,8 +1733,8 @@ fn git_log_scan(
     // and check for one more oid. Bounded to a single step.
     let mut has_more = !exhausted;
     if !has_more && entries.len() >= limit {
-        if let Some((probe_walk, _)) = history_walk(&repo, Some(&start.to_string()))? {
-            if probe_walk.skip(skip + scanned).next().is_some() {
+        if let Some((mut probe_walk, _)) = history_walk(&repo, Some(&start.to_string()))? {
+            if probe_walk.nth(skip + scanned).is_some() {
                 has_more = true;
             }
         }

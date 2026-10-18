@@ -306,6 +306,15 @@ impl Judgement {
         self
     }
 
+    /// The same round with nothing to compare it with, as a first round
+    /// (T04: the adversarial tester's tests, run for the first time: what
+    /// fails is what they found, and nothing but they changed).
+    pub fn as_first(mut self) -> Judgement {
+        self.verdict = Verdict::First;
+        self.broke.clear();
+        self
+    }
+
     /// The same round with nothing counted as broken.
     pub fn without_regression(mut self) -> Judgement {
         if self.verdict == Verdict::Regression {
@@ -777,6 +786,10 @@ pub struct Rollback {
     /// (P3.5). Their changes aren't known, so they weren't undone.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// V05: changed in the round and kept, the rollback putting back only
+    /// the files behind what broke. Empty: it put back everything.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
 }
 
 /// A path relative to the root, with forward slashes, whatever spelling the
@@ -905,7 +918,16 @@ impl Run {
     /// by someone other than this run since (direct mode: the user, another
     /// chat) is left as it is and listed (K15). None: no checkpoint to go
     /// back to.
-    pub(super) async fn roll_back(&mut self, broke: Vec<String>) -> Option<Rollback> {
+    ///
+    /// V05: `only`, the files behind what broke (`causes::files_behind`):
+    /// those go back, the round's other changes stay (`kept`), and the
+    /// checkpoint stays for a rollback of everything should the rest still
+    /// break it. When nothing else changed, it's a rollback of everything.
+    pub(super) async fn roll_back(
+        &mut self,
+        broke: Vec<String>,
+        only: Option<&[String]>,
+    ) -> Option<Rollback> {
         let root = self.root.clone()?;
         let cp = self.checkpoint.take().filter(|c| !c.too_big)?;
         let isolated = self.isolated();
@@ -921,14 +943,34 @@ impl Run {
                 slot.insert(original);
             }
         }
+        // V05: what the round changed and isn't behind what broke stays.
+        let differs = |key: &String, target: &Option<Vec<u8>>| {
+            read(Path::new(&tools::to_absolute_path(key, &root)))
+                .map_or(true, |current| current != *target)
+        };
+        let kept: Vec<String> = match only {
+            Some(only) => targets
+                .iter()
+                .filter(|(key, target)| !only.contains(key) && differs(key, target))
+                .map(|(key, _)| key.clone())
+                .collect(),
+            None => Vec::new(),
+        };
+        let partial = !kept.is_empty();
+        if partial {
+            targets.retain(|key, _| !kept.contains(key));
+        }
         let seen = self.seen.clone();
         let mut result = Rollback {
             broke,
-            commands: if isolated {
+            // A partial rollback undoes no command; a later rollback of
+            // everything still lists them.
+            commands: if isolated || partial {
                 Vec::new()
             } else {
                 std::mem::take(&mut self.round_commands)
             },
+            kept,
             ..Default::default()
         };
         let mut diffs: Vec<String> = Vec::new();
@@ -1023,15 +1065,20 @@ impl Run {
                 deleted,
             });
         }
-        // The run's list of changed files is what it was then, plus what
-        // couldn't be put back.
-        let mut changed = cp.changed_files.clone();
-        for key in &result.skipped {
-            if !changed.iter().any(|c| rel_key(&root, c) == *key) {
-                changed.push(key.clone());
+        if partial {
+            // The rest of the fix stays changed, and so does the checkpoint.
+            self.checkpoint = Some(cp);
+        } else {
+            // The run's list of changed files is what it was then, plus what
+            // couldn't be put back.
+            let mut changed = cp.changed_files.clone();
+            for key in &result.skipped {
+                if !changed.iter().any(|c| rel_key(&root, c) == *key) {
+                    changed.push(key.clone());
+                }
             }
+            self.changed_files = changed;
         }
-        self.changed_files = changed;
         let mut diff = diffs.join("\n");
         if diff.chars().count() > MAX_ROLLBACK_DIFF_CHARS {
             diff = format!(

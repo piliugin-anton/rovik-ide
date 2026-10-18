@@ -47,10 +47,13 @@ fn pdf_file() -> Vec<u8> {
         .to_vec()
 }
 
+/// Each step a move reported, and its message.
+type Steps = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
 /// The steps of moves the app reports on `cloud-event`, a move back's as
 /// "back <step>".
-fn moves_of(app: &App) -> Arc<Mutex<Vec<(String, Option<String>)>>> {
-    let steps: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::default();
+fn moves_of(app: &App) -> Steps {
+    let steps: Steps = Arc::default();
     let seen = Arc::clone(&steps);
     app.remote.on_cloud(Arc::new(move |event| match event {
         CloudEvent::Moving { step, message, .. } => seen.lock().unwrap().push((step, message)),
@@ -595,7 +598,7 @@ async fn a_move_back_cut_short_after_its_release_finishes_at_the_next_start() {
     // A turn there the app doesn't hear of.
     let app = app.restart(&setup).await;
     let (url, _) = model(vec![Reply::Text("Hello from there.")]).await;
-    let turn = Request::AgentStart(start(&setup, &url, unattended()));
+    let turn = Request::AgentStart(Box::new(start(&setup, &url, unattended())));
     setup.client.call(turn).await.unwrap();
     ended(&setup.client).await;
     // Cut short after the release.

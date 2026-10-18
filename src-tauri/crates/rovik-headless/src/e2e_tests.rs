@@ -19,6 +19,12 @@ async fn a_scripted_task_runs_headless_and_reports() {
             name: "bash",
             args: json!({ "command": "git push origin main" }),
         },
+        // G02: an edit whose text isn't in the file.
+        Reply::Call {
+            id: "e1",
+            name: "write",
+            args: json!({ "path": "a.txt", "old_text": "older", "content": "new" }),
+        },
         Reply::Call {
             id: "w1",
             name: "write",
@@ -78,8 +84,19 @@ async fn a_scripted_task_runs_headless_and_reports() {
 
     let report: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(report["outcome"], "done");
-    assert_eq!(report["toolCalls"], 2);
+    assert_eq!(report["toolCalls"], 3);
     assert_eq!(report["filesWritten"], json!(["a.txt"]));
+    // G02: from the run log's tool lines: the refused push and the edit
+    // that missed; no checks ran, and the run is no Autopilot task's.
+    assert_eq!(report["allToolCalls"], 3);
+    assert_eq!(report["toolErrors"], 2);
+    assert_eq!(
+        report["toolErrorClasses"],
+        json!({ "denied": 1, "old_text not found": 1 })
+    );
+    assert_eq!(report["editMisses"], 1);
+    assert_eq!(report["verifyRounds"], 0);
+    assert_eq!(report["stages"], Value::Null);
     // The policy's denied command is refused as the run asks for it,
     // before any approval.
     assert_eq!(report["approvals"], json!([]));
@@ -651,4 +668,159 @@ async fn an_asked_again_request_with_usage_counts_as_a_reply() {
         .unwrap()
         .iter()
         .any(|l| l["error"] == "asked-again" && l["usage"]["prompt_tokens"] == 500));
+}
+
+/// S10: a Balanced Autopilot task, end to end from the command line: the
+/// runner waits for the whole task, and its report lists the stages, the
+/// task's outcome and its report's facts.
+#[tokio::test]
+async fn an_autopilot_task_runs_headless_to_its_report() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let dir = temp_dir();
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    for (path, content) in [
+        ("package.json", r#"{ "name": "t", "scripts": { "test": "node check.js" } }"#),
+        (
+            "check.js",
+            "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("ok.txt", "no"),
+    ] {
+        std::fs::write(project.join(path), content).unwrap();
+    }
+    let plan = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Criteria\n\n1. `npm test` passes: `check.js` finds `ok.txt` saying ok.\n\n**Out of scope**: None.\n\n**Assumptions**: None.\n\n## Steps\n\n\
+        1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `check.js` checks.\n\
+        2. **Check**\n   - Files: `check.js` (read)\n   - Read `check.js` to confirm it checks `ok.txt`; it keeps its code.\n\n\
+        ## Validation\n- `npm test`\n";
+    let report_text = "## Assumptions\n\nNone.\n\n## What changed\n\n`ok.txt` says ok.\n\n## How it was verified\n\n`npm test` passes.\n\n## Open\n\nNothing.";
+    let (url, _) = model_routed(
+        vec![
+            ("# Review this plan", vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                "# Write the tests before the change",
+                vec![Reply::Text("## Blocked\n\nNothing to test here.")],
+            ),
+            (
+                "# Check this change against its criteria",
+                vec![Reply::Text("## Verdicts\n\n1. satisfied — `npm test` passes: check.js finds ok.txt saying ok.\n\n## Evidence\n\nRead ok.txt.\n\n## Unmet\n\nNone.")],
+            ),
+            ("last:# Write the task's report", vec![Reply::Text(report_text)]),
+        ],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": plan }),
+            },
+            Reply::Text("Saved the plan."),
+            Reply::Call {
+                id: "t1",
+                name: "todo",
+                args: json!({ "items": [
+                    { "title": "Write ok", "status": "in_progress" },
+                    { "title": "Check", "status": "pending" },
+                ] }),
+            },
+            Reply::Call {
+                id: "w1",
+                name: "write",
+                args: json!({ "path": "ok.txt", "content": "ok" }),
+            },
+            Reply::Call {
+                id: "t2",
+                name: "todo",
+                args: json!({ "items": [
+                    { "title": "Write ok", "status": "done" },
+                    { "title": "Check", "status": "done" },
+                ] }),
+            },
+            Reply::Text("Done: ok.txt says ok."),
+        ],
+    )
+    .await;
+    let settings = dir.0.join("settings.json");
+    std::fs::write(
+        &settings,
+        json!({
+            "profile": { "id": "p::m", "label": "Test/m", "model": "m", "baseUrl": url, "stream": true, "contextTokens": 100000 },
+            "apiKeyEnv": "ROVIK_HEADLESS_TEST_KEY",
+            "mode": "agent",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = dir.0.join("out").join("report.json");
+    let argv: Vec<String> = [
+        "--project",
+        project.to_str().unwrap(),
+        "--settings",
+        settings.to_str().unwrap(),
+        "--prompt",
+        "Make the test pass",
+        "--out",
+        out.to_str().unwrap(),
+        "--data",
+        dir.0.join("data").to_str().unwrap(),
+        "--timeout",
+        "120",
+        "--mode",
+        "autopilot",
+        "--effort",
+        "balanced",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let args = crate::parse_args(&argv).unwrap();
+    crate::run(&args).await.unwrap();
+
+    let report: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(report["mode"], "autopilot");
+    assert_eq!(report["effort"], "balanced");
+    assert_eq!(report["outcome"], "verified", "{report:#}");
+    // G02: the checks' rounds, and no failed call.
+    assert_eq!(report["verifyRounds"], 1, "{report:#}");
+    assert_eq!(report["toolErrors"], 0, "{report:#}");
+    assert_eq!(report["editMisses"], 0);
+    let stages: Vec<(String, String)> = report["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().unwrap().to_string(),
+                s["status"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("plan", "done"),
+        ("planReview", "done"),
+        ("prepare", "skipped"),
+        ("tests", "skipped"),
+        ("implement", "done"),
+        ("review", "skipped"),
+        ("checks", "done"),
+        ("acceptance", "done"),
+        ("deliver", "done"),
+    ]
+    .iter()
+    .map(|(n, s)| (n.to_string(), s.to_string()))
+    .collect();
+    assert_eq!(stages, expected, "{report:#}");
+    assert_eq!(report["report"]["outcome"], "verified");
+    assert_eq!(report["report"]["delivered"], true);
+    assert_eq!(report["finalMessage"], report_text);
+    assert_eq!(
+        std::fs::read_to_string(project.join("ok.txt")).unwrap(),
+        "ok"
+    );
 }

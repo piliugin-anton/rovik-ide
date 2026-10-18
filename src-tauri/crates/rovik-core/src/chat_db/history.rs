@@ -1063,8 +1063,9 @@ pub fn build_wire(
     gemini: bool,
     chars_per_token: f64,
     kept: Option<&Cut>,
+    window: Option<&Window>,
 ) -> DbResult<(Vec<Value>, FitInfo)> {
-    let mut messages = load_messages(conn, dialog_id, None)?;
+    let mut messages = load_messages_in(conn, dialog_id, None, window)?;
     attach_reasoning(conn, &mut messages, model)?;
     let cost = Cost {
         accepts,
@@ -1163,6 +1164,16 @@ pub fn load_bodies(conn: &Connection, messages: &mut [Msg]) -> DbResult<()> {
     Ok(())
 }
 
+/// Where a stored chat's history starts for a request (Autopilot's fresh
+/// contexts, D2): the chat's rows from `from_seq` on, and before them the
+/// row `keep` (the task's request), when it's the chat's. Without one, the
+/// whole chat.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Window {
+    pub from_seq: i64,
+    pub keep: Option<String>,
+}
+
 /// The chat's history as it can be sent, before any budget: what is never
 /// sent is left out, unanswered tool calls get a result, and the current
 /// request carries `current_user_content`. Long bodies may still need
@@ -1172,7 +1183,17 @@ pub fn load_messages(
     dialog_id: &str,
     current_user_content: Option<&str>,
 ) -> DbResult<Vec<Msg>> {
-    // Newest pages first, until the cap.
+    load_messages_in(conn, dialog_id, current_user_content, None)
+}
+
+/// `load_messages`, within `window` when one is given.
+pub fn load_messages_in(
+    conn: &Connection,
+    dialog_id: &str,
+    current_user_content: Option<&str>,
+    window: Option<&Window>,
+) -> DbResult<Vec<Msg>> {
+    // Newest pages first, until the cap, or the window's start.
     let mut rows = Vec::new();
     let mut before = None;
     loop {
@@ -1182,7 +1203,8 @@ pub fn load_messages(
         let mut batch = page.messages;
         batch.append(&mut rows);
         rows = batch;
-        if !has_older || rows.len() >= MAX_HISTORY_ROWS {
+        let past_start = window.is_some_and(|w| before.is_some_and(|b| b <= w.from_seq));
+        if !has_older || rows.len() >= MAX_HISTORY_ROWS || past_start {
             break;
         }
     }
@@ -1195,6 +1217,18 @@ pub fn load_messages(
             .position(|m| m.role != "tool")
             .unwrap_or(rows.len());
         rows.drain(..first_call);
+    }
+    // A window (D2): its rows, after the one it keeps before them.
+    if let Some(w) = window {
+        let kept = |m: &super::store::MessageRow| w.keep.as_deref() == Some(m.id.as_str());
+        rows.retain(|m| m.seq >= w.from_seq || kept(m));
+        if let Some(keep) = w.keep.as_ref().filter(|_| !rows.iter().any(kept)) {
+            let request: Vec<_> = super::store::messages_by_id(conn, std::slice::from_ref(keep))?
+                .into_iter()
+                .filter(|m| m.dialog_id == dialog_id && m.seq < w.from_seq)
+                .collect();
+            rows.splice(0..0, request);
+        }
     }
 
     // Backfill provider data (Gemini thought signatures) saved by the
@@ -1229,7 +1263,7 @@ pub fn load_messages(
         .filter(|m| {
             !(m.role == "assistant"
                 && m.content.trim().is_empty()
-                && m.tool_calls.as_ref().map_or(true, |t| t.is_empty()))
+                && m.tool_calls.as_ref().is_none_or(|t| t.is_empty()))
         })
         .map(|m| {
             // The stored content is what was typed (or its preview, for a

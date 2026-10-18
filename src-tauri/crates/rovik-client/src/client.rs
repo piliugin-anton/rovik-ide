@@ -81,6 +81,9 @@ pub struct DaemonInfo {
 }
 
 /// What a client hears from its daemon, in order.
+// Nearly all are events, each handed on as it comes: boxing them would
+// cost an allocation each and save nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Incoming {
     State(HostState),

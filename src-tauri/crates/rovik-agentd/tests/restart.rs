@@ -56,7 +56,9 @@ fn slow_command() -> Reply {
 }
 
 async fn started(daemon: &Daemon, start: StartRequest) {
-    let reply = daemon.post_call(1, Request::AgentStart(start)).await;
+    let reply = daemon
+        .post_call(1, Request::AgentStart(Box::new(start)))
+        .await;
     assert!(
         matches!(
             reply,

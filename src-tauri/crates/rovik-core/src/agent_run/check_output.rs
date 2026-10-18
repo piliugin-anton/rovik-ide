@@ -90,6 +90,33 @@ pub fn clean(dialog_id: &str) {
     }
 }
 
+/// Removes a chat's saved output but the files whose names start with
+/// `keep` (S03: a task's Prepare stage's, `prepare-…`).
+pub fn clean_except(dialog_id: &str, keep: &str) {
+    let Some(dir) = dir(dialog_id) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(keep) {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(e) = removed {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("rovik: couldn't remove {}: {e}", path.display());
+            }
+        }
+    }
+}
+
 fn remove(dir: &Path) {
     if let Err(e) = std::fs::remove_dir_all(dir) {
         if e.kind() != std::io::ErrorKind::NotFound {
@@ -136,6 +163,20 @@ mod tests {
         clean(&chat);
         assert!(resolve(&chat, &path).is_err());
         clean(&chat); // twice: harmless
+    }
+
+    #[test]
+    fn a_tasks_later_runs_keep_its_prepare_output() {
+        let chat = format!("checks-test-{}", uuid::Uuid::new_v4());
+        let prepare = save(&chat, "prepare", "1", "added 1 package").unwrap();
+        let round = save(&chat, "round-1", "test", "1 failed").unwrap();
+        clean_except(&chat, "prepare-");
+        assert!(resolve(&chat, &prepare).is_ok(), "kept");
+        assert!(resolve(&chat, &round).is_err(), "gone");
+        // A chat with no output: nothing to do.
+        clean_except(&format!("checks-test-{}", uuid::Uuid::new_v4()), "prepare-");
+        clean(&chat);
+        assert!(resolve(&chat, &prepare).is_err());
     }
 
     #[test]

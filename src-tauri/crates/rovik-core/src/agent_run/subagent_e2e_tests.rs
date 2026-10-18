@@ -3317,7 +3317,8 @@ async fn workers_carry_out_the_plan_step_by_step() {
                 "# Your step: 1.",
                 vec![
                     write_call("w1", "a.txt", "hello\n"),
-                    worker_report("Replaced the line with hello.", &["a.txt"]),
+                    // A choice the plan didn't make, for the steps after it.
+                    Reply::Text("## Summary\nReplaced the line with hello.\n\n## Changed files\n- `a.txt`: changed\n\n## Decisions\n- Greetings are lowercase, one a line.\n\n## Open questions\nNone"),
                 ],
             ),
             (
@@ -3367,8 +3368,17 @@ async fn workers_carry_out_the_plan_step_by_step() {
     let briefs = requests_with(&seen, "# Your step: 2.");
     let brief = briefs[0]["messages"][1]["content"].as_str().unwrap();
     assert!(
-        brief.contains("- Step 1. First greeting: Replaced the line with hello."),
-        "{brief}"
+        brief.contains("- Step 1. First greeting: Replaced the line with hello.\n  - Decided: Greetings are lowercase, one a line.\n"),
+        "the step and the decision its worker made: {brief}"
+    );
+    // Step 3's too: step 1's decision holds for every step after it.
+    let third = requests_with(&seen, "# Your step: 3.")[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        third.contains("  - Decided: Greetings are lowercase, one a line.\n"),
+        "{third}"
     );
     assert!(
         brief.contains("-old") && brief.contains("+hello"),
@@ -3397,6 +3407,10 @@ async fn workers_carry_out_the_plan_step_by_step() {
         .unwrap();
     let context = last_lead["messages"].to_string();
     assert!(context.contains("Added the second greeting"));
+    assert!(
+        context.contains("Greetings are lowercase"),
+        "the lead reads the decisions in the report"
+    );
     assert!(
         !context.contains("hello again\\\\n"),
         "the workers' write calls stay in their chats"

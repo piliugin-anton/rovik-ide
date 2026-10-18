@@ -488,6 +488,155 @@ pub fn is_error(result: &str) -> bool {
     result.trim_start().starts_with("Error:")
 }
 
+/// G02 (autopilot-plan): what kind of error a tool call's result is, for
+/// its `tool` line in the agent log and the evaluation's counts: one of
+/// the classes below, by the words the tools write, or "other". None: the
+/// call didn't fail. A command that ran and exited non-zero didn't fail as
+/// a call: its result is the command's (`command_end`).
+pub fn error_class(result: &str) -> Option<&'static str> {
+    if !is_error(result) {
+        return None;
+    }
+    let text = result.to_lowercase();
+    let class = ERROR_CLASSES
+        .iter()
+        .find(|(_, words)| words.iter().any(|w| text.contains(w)))
+        .map_or("other", |(class, _)| *class);
+    Some(class)
+}
+
+/// The classes of errors cut short by the run, not made by the model: a
+/// Stop, a closed app, a budget. The evaluation's error counts leave them
+/// out.
+pub const CUT_CLASSES: &[&str] = &["stopped", "interrupted", "not run"];
+
+/// The classes of an edit whose `old_text` didn't pick one place in the
+/// file: the evaluation's edit misses.
+pub const EDIT_MISS_CLASSES: &[&str] = &["old_text not found", "old_text not unique"];
+
+/// Each class with words only its results have (lowercase), the first
+/// match winning: the most specific first.
+const ERROR_CLASSES: &[(&str, &[&str])] = &[
+    (
+        "stopped",
+        &["stopped by the user", "the user stopped the task"],
+    ),
+    ("interrupted", &["interrupted: the app closed"]),
+    ("not run", &["error: not run"]),
+    // edit_file.rs: an edit whose text isn't in the file once.
+    ("old_text not found", &["old_text was not found"]),
+    ("old_text not unique", &["old_text matches"]),
+    (
+        "bad edit",
+        &[
+            "old_text must not be empty",
+            "nothing would change",
+            "invalid line range",
+            "is past the end of the file",
+        ],
+    ),
+    // file_guard.rs: someone else changed the file.
+    (
+        "file changed",
+        &[
+            "changed since you last read it",
+            "kept changing while this edit waited",
+        ],
+    ),
+    (
+        "no such file",
+        &[
+            "no such file",
+            ": not a file",
+            ": not a directory",
+            "does not exist",
+        ],
+    ),
+    ("no such symbol", &["no declaration named"]),
+    ("binary file", &["binary file"]),
+    (
+        "bad path",
+        &[
+            "path must not contain",
+            "path escapes project root",
+            "path must not be empty",
+            "needs an open project folder",
+        ],
+    ),
+    // The user's permissions and approvals, or an AI reviewer's.
+    (
+        "denied",
+        &[
+            "blocked by the user's permission settings",
+            "rejected by the user's ai reviewer",
+            "the user denied",
+            "the user rejected",
+            "need a person's approval",
+        ],
+    ),
+    // The harness's rules: a mode's or a subagent's tools, a writer's
+    // scope, the checklist first, the context's limits.
+    (
+        "not allowed",
+        &[
+            "isn't available",
+            "is only available",
+            "unknown tool",
+            "not granted",
+            "outside your write scope",
+            "isn't a test file",
+            "one of the files the change touches",
+            "heavy command",
+            "can't be told to be light",
+            "can't be checked",
+            "has no checklist",
+            "this turn offers only",
+            "can't be used on your context folder",
+            "nobody answers questions",
+        ],
+    ),
+    // submit_plan's: its problems follow, in any words.
+    (
+        "plan",
+        &[
+            "the plan wasn't saved",
+            "the plan couldn't be saved",
+            "the plan can't be saved",
+            "the plan is blocked",
+        ],
+    ),
+    ("subagent", &["subagent", "worker"]),
+    (
+        "bad arguments",
+        &[
+            "could not parse arguments",
+            "is required",
+            "must not be empty",
+            "give either",
+            "pass items",
+            "pass questions",
+        ],
+    ),
+];
+
+/// G02: how a command that ran ended, from its result's second line
+/// (`format_command_output`): its exit code (None when it didn't exit on
+/// its own), and whether it timed out. None: no command ran (a refusal,
+/// another tool's result).
+pub fn command_end(result: &str) -> Option<(Option<i64>, bool)> {
+    let mut lines = result.split('\n');
+    if !lines.next()?.starts_with("$ ") {
+        return None;
+    }
+    let status = lines.next()?;
+    if let Some(c) = EXIT_CODE.captures(status) {
+        return Some((c[1].parse::<i64>().ok(), false));
+    }
+    let timed_out = status.starts_with("timed out");
+    (timed_out || status.starts_with("stopped by the user") || status.starts_with("ended by"))
+        .then_some((None, timed_out))
+}
+
 fn num(args: &Map<String, Value>, key: &str) -> Option<f64> {
     args.get(key).and_then(|v| v.as_f64())
 }
@@ -579,6 +728,55 @@ pub fn apply_edit(
         end_line: edit.end_line,
     };
     crate::agent_tools::edit_file(root, &edit.path, &change, dry_run, seen)
+}
+
+/// A file before a write: None when there was none, Some(None) when it
+/// isn't text.
+type Before = Option<Option<String>>;
+
+fn text_before(root: &str, path: &str) -> Before {
+    let file = crate::agent_tools::resolve_within_root(root, path).ok()?;
+    let bytes = std::fs::read(file).ok()?;
+    Some(String::from_utf8(bytes).ok())
+}
+
+/// Syntax errors a write's result lists, at most.
+const SYNTAX_NOTE_ERRORS: usize = 10;
+
+/// V04 (autopilot-plan, for every chat): what a write broke, for its
+/// result: the syntax errors in the file as written (`outline::
+/// syntax_errors`), where its language is known and it parsed before the
+/// write (or is new). Nothing when it parses, when its language isn't
+/// known, or when it didn't parse before either: a grammar that misreads
+/// a file, or code broken already, says nothing new about this write.
+pub fn syntax_note(path: &str, before: &Before, after: &str) -> Option<String> {
+    let broken_before = match before {
+        None => false,
+        Some(None) => return None,
+        Some(Some(text)) => !crate::outline::syntax_errors(path, text)?.is_empty(),
+    };
+    if broken_before {
+        return None;
+    }
+    let errors = crate::outline::syntax_errors(path, after)?;
+    if errors.is_empty() {
+        return None;
+    }
+    let mut lines = vec![format!(
+        "The file doesn't parse now ({}):",
+        match errors.len() {
+            1 => "a syntax error".to_string(),
+            n => format!("{n} syntax errors"),
+        }
+    )];
+    for e in errors.iter().take(SYNTAX_NOTE_ERRORS) {
+        lines.push(format!("- {}:{}: {}", e.start_line, e.start_col, e.message));
+    }
+    if errors.len() > SYNTAX_NOTE_ERRORS {
+        lines.push(format!("- and {} more", errors.len() - SYNTAX_NOTE_ERRORS));
+    }
+    lines.push("Fix it before you go on.".into());
+    Some(lines.join("\n"))
 }
 
 /// What a tool call runs with besides its arguments.
@@ -770,15 +968,20 @@ async fn run(
             };
             // Off the async threads: a write may wait for a landing's locks.
             let (root_s, seen_arc) = (root.to_string(), ctx.seen.clone());
-            let (edit, outcome) = crate::rt::spawn_blocking(move || {
+            let (edit, outcome, before) = crate::rt::spawn_blocking(move || {
+                let before = text_before(&root_s, &edit.path);
                 let outcome = apply_edit(&root_s, &edit, false, Some(&seen_arc));
-                (edit, outcome)
+                (edit, outcome, before)
             })
             .await
             .map_err(|e| e.to_string())?;
             let outcome = outcome?;
+            let mut summary = outcome.summary;
+            if let Some(note) = syntax_note(&edit.path, &before, &outcome.content) {
+                summary = format!("{summary}\n\n{note}");
+            }
             return Ok(ToolResult {
-                content: outcome.summary,
+                content: summary,
                 written: Some((edit.path, outcome.content)),
                 ..Default::default()
             });
@@ -810,7 +1013,13 @@ async fn run(
                 ctx.seen.clone(),
             );
             crate::rt::spawn_blocking(move || {
-                crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc))
+                let before = text_before(&root_s, &path);
+                let wrote =
+                    crate::agent_tools::write_file(&root_s, &path, &content, Some(&seen_arc))?;
+                Ok::<String, String>(match syntax_note(&path, &before, &content) {
+                    Some(note) => format!("{wrote}\n\n{note}"),
+                    None => wrote,
+                })
             })
             .await
             .map_err(|e| e.to_string())??
@@ -858,6 +1067,7 @@ async fn run(
                     .map(|o| o.command_env())
                     .unwrap_or_default(),
                 confine: crate::overlay::chats::get(&ctx.owner).and_then(|o| o.confine()),
+                whole_output: false,
             };
             let out = crate::command_tool::run_command(
                 root_owned,
@@ -1232,8 +1442,9 @@ fn count_lines(text: &str) -> usize {
 static MATCH_COUNT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+) match").unwrap());
 static NUMBERED_HIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\. ").unwrap());
 static EXIT_CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^exit code (-?\d+)").unwrap());
+/// On the result's first line: a syntax check may follow (V04).
 static WRITE_CHANGES: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(\+(\d+) -(\d+) lines\)$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?m)\(\+(\d+) -(\d+) lines\)$").unwrap());
 static PAGE_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 
 /// Small summary of a tool's result, for the chat's tool block header.
@@ -1339,11 +1550,135 @@ mod tests {
             (json!(3), json!(1))
         );
         assert!(result_meta("write", "wrote 9 bytes to a.bin").is_none());
+        // V04: a syntax check after it.
+        let checked = result_meta(
+            "write",
+            "wrote 9 bytes to a.rs (+3 -1 lines)\n\nThe file doesn't parse now (a syntax error):\n- 1:1: missing `}`\nFix it before you go on.",
+        )
+        .unwrap();
+        assert_eq!(checked["added"], json!(3));
         assert!(result_meta(
             "write",
             "Edited a.ts: replaced lines 3-4 (2 → 2 lines), now 9."
         )
         .is_none());
+    }
+
+    /// V04: a write that breaks a file in a known language says so in its
+    /// result; one in a language with no grammar, one that parses, and one
+    /// broken already say nothing new.
+    #[test]
+    fn a_write_that_breaks_a_file_says_so() {
+        let fine = "fn main() {\n    let x = 1;\n}\n";
+        let broken = "fn main() {\n    let x = ;\n}\n";
+        let note = syntax_note("src/main.rs", &Some(Some(fine.into())), broken).unwrap();
+        assert!(note.starts_with("The file doesn't parse now ("), "{note}");
+        assert!(note.contains("\n- 2:11: syntax error: `=`\n"), "{note}");
+        assert!(note.ends_with("Fix it before you go on."), "{note}");
+        // A new file is checked too.
+        assert!(syntax_note("src/new.rs", &None, broken).is_some());
+        // Parses: nothing.
+        assert_eq!(
+            syntax_note("src/main.rs", &Some(Some(fine.into())), fine),
+            None
+        );
+        // No grammar for it: nothing.
+        assert_eq!(syntax_note("notes.xyz", &None, "fn main( {"), None);
+        assert_eq!(syntax_note("README", &None, "fn main( {"), None);
+        // Broken before, or not text before: nothing new to say.
+        assert_eq!(
+            syntax_note("src/main.rs", &Some(Some(broken.into())), broken),
+            None
+        );
+        assert_eq!(syntax_note("src/main.rs", &Some(None), broken), None);
+    }
+
+    /// V04, through the tool: the result says what the write broke, the
+    /// line counts stay on its first line, and a file of an unknown
+    /// language is written as before.
+    #[tokio::test]
+    async fn the_write_tool_reports_what_it_broke() {
+        let t = crate::testing::TestCore::new();
+        let root = t.dir.0.join("project");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let root = root.to_string_lossy().into_owned();
+        let ctx = CallContext {
+            seen: Seen::new("syntax-test"),
+            owner: "syntax-test".into(),
+            checks_owner: "syntax-test".into(),
+            hidden: Vec::new(),
+            note: Arc::new(|_| {}),
+        };
+        let stop = Arc::new(StopSignal::new());
+        let write =
+            |path: &str, content: &str| json!({ "path": path, "content": content }).to_string();
+        let fine = "fn main() {\n    let x = 1;\n}\n";
+        let first = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("src/main.rs", fine),
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(
+            !first.content.contains("doesn't parse"),
+            "{}",
+            first.content
+        );
+        let broken = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("src/main.rs", "fn main() {\n    let x = ;\n}\n"),
+            &stop,
+            &ctx,
+        )
+        .await;
+        let (head, note) = broken.content.split_once("\n\n").unwrap();
+        assert!(
+            head.starts_with("wrote ") && head.ends_with("lines)"),
+            "{head}"
+        );
+        assert!(note.starts_with("The file doesn't parse now"), "{note}");
+        // A partial write that breaks it again, from fine.
+        execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("src/main.rs", fine),
+            &stop,
+            &ctx,
+        )
+        .await;
+        let edit =
+            json!({ "path": "src/main.rs", "old_text": "let x = 1;", "content": "let x = ;" });
+        let edited = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &edit.to_string(),
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert!(
+            edited.content.contains("\n\nThe file doesn't parse now"),
+            "{}",
+            edited.content
+        );
+        // Unknown language: as before.
+        let other = execute(
+            &t.core,
+            Some(&root),
+            "write",
+            &write("notes.xyz", "fn main( {"),
+            &stop,
+            &ctx,
+        )
+        .await;
+        assert_eq!(other.content, "wrote 10 bytes to notes.xyz (+1 -0 lines)");
     }
 
     #[test]
@@ -1481,6 +1816,7 @@ mod tests {
             truncated: false,
             duration_ms: 1234,
             waited: None,
+            whole: None,
         };
         let text = format_command_output("cargo test", &out);
         assert_eq!(
@@ -1497,6 +1833,7 @@ mod tests {
         };
         let out = CommandOutput {
             waited: Some(waited),
+            whole: None,
             ..out
         };
         let text = format_command_output("cargo test", &out);
@@ -1844,6 +2181,7 @@ a.rs (3 matches)
             truncated: false,
             duration_ms: 120_000,
             waited: None,
+            whole: None,
         };
         let text = format_command_output("sleep 999", &out);
         assert_eq!(
@@ -1861,6 +2199,7 @@ a.rs (3 matches)
             truncated: true,
             duration_ms: 1,
             waited: None,
+            whole: None,
         };
         assert!(format_command_output("x", &out).ends_with("(long output: shown are its start and end; use a narrower command or read for the rest)"));
         assert_eq!(
@@ -1932,5 +2271,156 @@ a.rs (3 matches)
         let _ = search_outlines(&root, &result, start + SEARCH_OUTLINE_TIME);
         println!("{}", format_search_result(&result, &outlines));
         eprintln!("outlines: cold {cold:?}, cached {:?}", start.elapsed());
+    }
+
+    /// G02: a failed call's class, by the words the tools write: each from
+    /// the code that writes it where a function does, so a change of
+    /// wording that loses its class fails here.
+    #[test]
+    fn a_failed_calls_class_comes_from_the_words_its_tool_wrote() {
+        let file = "fn a() {}\nfn a() {}\n";
+        let edit = |old: &str, new: &str, lines: Option<usize>| {
+            let e = crate::edit_file::apply_edit(file, old, new, lines, lines).unwrap_err();
+            format!("Error: src/a.rs: {e}")
+        };
+        let cases: Vec<(String, Option<&str>)> = vec![
+            // Not failures: a write, and a command that ran and failed.
+            ("wrote 3 bytes to a.txt (+1 -0 lines)".into(), None),
+            (
+                "$ npm test\nexit code 1, 0.4 s\n--- stderr ---\nfail".into(),
+                None,
+            ),
+            (edit("fn b", "x", None), Some("old_text not found")),
+            (edit("fn b", "x", Some(1)), Some("old_text not found")),
+            (edit("fn a", "x", None), Some("old_text not unique")),
+            (edit("", "x", None), Some("bad edit")),
+            (edit("fn a", "fn a", None), Some("bad edit")),
+            (edit("fn a", "x", Some(9)), Some("bad edit")),
+            (
+                "Error: stopped by the user before this ran.".into(),
+                Some("stopped"),
+            ),
+            (
+                "Error: interrupted: the app closed before this ran. Run it again if you still need it."
+                    .into(),
+                Some("interrupted"),
+            ),
+            (
+                "Error: not run: the task went over its budget (it ran for 2 h).".into(),
+                Some("not run"),
+            ),
+            (
+                "Error: a.txt changed since you last read it (by another chat); your write was not applied."
+                    .into(),
+                Some("file changed"),
+            ),
+            ("Error: src/x.ts: not a file".into(), Some("no such file")),
+            ("Error: notes: not a directory".into(), Some("no such file")),
+            (
+                "Error: no declaration named \"Foo\" in the project graph.".into(),
+                Some("no such symbol"),
+            ),
+            (
+                "Error: logo.png: binary file, cannot edit".into(),
+                Some("binary file"),
+            ),
+            (
+                "Error: path must not contain '..': ../x".into(),
+                Some("bad path"),
+            ),
+            (
+                "Error: blocked by the user's permission settings. `git push` isn't allowed in this run."
+                    .into(),
+                Some("denied"),
+            ),
+            (
+                "Error: rejected by the user's AI reviewer (Reviewer): Not asked for.".into(),
+                Some("denied"),
+            ),
+            (
+                super::super::autopilot::DAEMON_FOLDER_REFUSED.into(),
+                Some("denied"),
+            ),
+            (
+                super::super::autopilot::NO_QUESTIONS.into(),
+                Some("not allowed"),
+            ),
+            (
+                "Error: write isn't available in Plan mode, which doesn't change anything.".into(),
+                Some("not allowed"),
+            ),
+            (
+                super::super::test_writer::not_a_test_file("src/a.ts"),
+                Some("not allowed"),
+            ),
+            (
+                super::super::test_writer::hidden_file("src/a.ts"),
+                Some("not allowed"),
+            ),
+            (
+                super::super::plan::checklist_gate_error("4 files changed", "write"),
+                Some("not allowed"),
+            ),
+            (
+                "Error: unknown tool \"frob\".".into(),
+                Some("not allowed"),
+            ),
+            (
+                "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- A \"## Criteria\" section is required."
+                    .into(),
+                Some("plan"),
+            ),
+            (
+                "Error: subagents are turned off in the settings. Do the work yourself.".into(),
+                Some("subagent"),
+            ),
+            (
+                "Error: could not parse arguments as JSON: {".into(),
+                Some("bad arguments"),
+            ),
+            ("Error: \"path\" is required.".into(), Some("bad arguments")),
+            ("Error: boom.".into(), Some("other")),
+        ];
+        for (text, want) in cases {
+            assert_eq!(error_class(&text), want, "{text}");
+        }
+        for class in CUT_CLASSES.iter().chain(EDIT_MISS_CLASSES) {
+            assert!(
+                ERROR_CLASSES.iter().any(|(c, _)| c == class),
+                "{class} is a class"
+            );
+        }
+    }
+
+    /// G02: how a command that ran ended, from its result; nothing for a
+    /// refusal or another tool's result.
+    #[test]
+    fn a_commands_end_comes_from_its_result() {
+        let end = |exit_code: Option<i32>, timed_out: bool, stopped: bool| {
+            let out = CommandOutput {
+                exit_code,
+                stdout: "ok\n".into(),
+                stderr: String::new(),
+                timed_out,
+                stopped,
+                truncated: false,
+                duration_ms: 400,
+                waited: None,
+                whole: None,
+            };
+            command_end(&format_command_output("npm test", &out))
+        };
+        assert_eq!(end(Some(0), false, false), Some((Some(0), false)));
+        assert_eq!(end(Some(2), false, false), Some((Some(2), false)));
+        assert_eq!(end(None, true, false), Some((None, true)));
+        assert_eq!(end(None, false, true), Some((None, false)));
+        assert_eq!(end(None, false, false), Some((None, false)), "a signal");
+        for other in [
+            "Error: blocked by the user's permission settings.",
+            "wrote 3 bytes to a.txt",
+            "",
+        ] {
+            assert_eq!(command_end(other), None, "{other}");
+        }
     }
 }

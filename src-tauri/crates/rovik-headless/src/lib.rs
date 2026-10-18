@@ -7,7 +7,14 @@
 //!   cargo run -p rovik-headless -- \
 //!     --project ./repo --settings settings.json [--policy policy.json] \
 //!     --prompt "Fix the failing test" --out report.json [--data ./data] \
-//!     [--timeout 1800] [--max-tokens 1500000]
+//!     [--timeout 1800] [--max-tokens 1500000] \
+//!     [--mode agent|plan|autopilot] [--effort balanced|thorough]
+//!
+//! `--mode autopilot` (S10, docs/design/autopilot-plan.md) runs the prompt
+//! as an Autopilot task, at `--effort` (Balanced unless said): the runner
+//! waits for the whole task, not its first run, and the report lists its
+//! stages, its outcome and its report's facts. `--mode` wins over the
+//! settings file's `mode`.
 //!
 //! `--max-tokens` stops the run once its requests (its subagents' included)
 //! have used that many tokens, as the provider reports them: a budget cap
@@ -40,8 +47,9 @@
 //! needs the virtual-files driver).
 
 use rovik_core::agent::OpenAIChatOptions;
+pub use rovik_core::agent_run::autopilot::Effort;
+pub use rovik_core::agent_run::budget::{usage_of, Price, Totals};
 use rovik_core::agent_run::events::AgentEvent;
-use rovik_core::agent_run::log::usage_counts;
 use rovik_core::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
 use rovik_core::agent_run::{
     self, AgentConfig, ApprovalDecision, ModelProfile, StartKind, StartRequest, UserMessage,
@@ -75,14 +83,6 @@ pub struct Settings {
     /// What the model costs, for runs whose provider doesn't report it.
     #[serde(default)]
     pub price: Option<Price>,
-}
-
-/// US dollars per million tokens.
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Price {
-    pub input_per_million: f64,
-    pub output_per_million: f64,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Default)]
@@ -197,11 +197,16 @@ pub struct Args {
     pub timeout: Duration,
     /// Stop the run past this many tokens (all its requests).
     pub max_tokens: Option<u64>,
+    /// The chat mode, over the settings file's (S10: "autopilot").
+    pub mode: Option<String>,
+    /// An Autopilot task's effort.
+    pub effort: Option<Effort>,
 }
 
 pub const USAGE: &str =
     "usage: rovik-headless --project DIR --settings FILE --prompt TEXT --out FILE \
-     [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N]";
+     [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N] \
+     [--mode agent|plan|autopilot] [--effort balanced|thorough]";
 
 pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut project = None;
@@ -212,6 +217,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut data = None;
     let mut timeout = Duration::from_secs(1800);
     let mut max_tokens = None;
+    let mut mode = None;
+    let mut effort = None;
     let mut it = argv.iter();
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -238,6 +245,20 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
                     .map_err(|_| format!("--max-tokens takes a number\n{USAGE}"))?;
                 max_tokens = Some(n.max(1));
             }
+            "--mode" => {
+                let m = value()?;
+                if !matches!(m.as_str(), "agent" | "plan" | "autopilot") {
+                    return Err(format!("--mode is agent, plan or autopilot\n{USAGE}"));
+                }
+                mode = Some(m);
+            }
+            "--effort" => {
+                effort = Some(match value()?.as_str() {
+                    "balanced" => Effort::Balanced,
+                    "thorough" => Effort::Thorough,
+                    _ => return Err(format!("--effort is balanced or thorough\n{USAGE}")),
+                });
+            }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -253,108 +274,9 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         data,
         timeout,
         max_tokens,
+        mode,
+        effort,
     })
-}
-
-/// Tokens in and out, and the cost when the provider says, of one reply's
-/// usage (OpenAI's names, or the Responses API's).
-pub fn usage_of(u: &Value) -> (u64, u64, Option<f64>) {
-    let (i, o, cost) = usage_counts(u);
-    (i.unwrap_or(0), o.unwrap_or(0), cost)
-}
-
-/// What a run's requests used, from its run log's reply lines.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct Totals {
-    pub lead_in: u64,
-    pub lead_out: u64,
-    pub sub_in: u64,
-    pub sub_out: u64,
-    /// The largest request the lead sent (its context at its fullest).
-    pub peak_lead_context: u64,
-    /// Of the prompt tokens, those the provider served from its cache
-    /// (prompt_cache.rs); 0 when it doesn't say.
-    pub lead_cached: u64,
-    pub sub_cached: u64,
-    /// Reported cost, when every reply with usage reported one.
-    pub reported_cost: Option<f64>,
-    /// Replies with usage.
-    pub replies: usize,
-    /// Replies that came back whole without usage: the provider doesn't
-    /// report it, so neither tokens nor cost are known.
-    pub missing_usage: usize,
-}
-
-impl Totals {
-    pub fn tokens(&self) -> u64 {
-        self.lead_in + self.lead_out + self.sub_in + self.sub_out
-    }
-
-    /// One reply line of the run log: the lead's (`dialog_id`) or a
-    /// subagent's.
-    pub fn add(&mut self, line: &Value, dialog_id: &str) {
-        if line["event"] != "reply" {
-            return;
-        }
-        // P6.2: an object without token counts reports nothing either.
-        let counted = |u: &&Value| {
-            let (i, o, _) = usage_counts(u);
-            i.is_some() || o.is_some()
-        };
-        let Some(u) = line.get("usage").filter(|u| u.is_object()).filter(counted) else {
-            // A request that failed or was cut short may have none.
-            if line.get("error").is_none() {
-                self.missing_usage += 1;
-            }
-            return;
-        };
-        let (i, o, cost) = usage_of(u);
-        let cached = rovik_core::prompt_cache::cached_tokens(u).unwrap_or(0);
-        if line["dialogId"] == dialog_id {
-            self.lead_in += i;
-            self.lead_out += o;
-            self.lead_cached += cached;
-            self.peak_lead_context = self.peak_lead_context.max(i);
-        } else {
-            self.sub_in += i;
-            self.sub_out += o;
-            self.sub_cached += cached;
-        }
-        self.reported_cost = match (self.replies, self.reported_cost, cost) {
-            (0, _, c) => c,
-            (_, Some(a), Some(c)) => Some(a + c),
-            _ => None,
-        };
-        self.replies += 1;
-    }
-
-    /// The share of the lead's prompt tokens served from the provider's
-    /// cache, in percent; None before any prompt tokens were counted.
-    pub fn cache_hit_percent(&self) -> Option<u64> {
-        (self.lead_in > 0).then(|| self.lead_cached * 100 / self.lead_in)
-    }
-
-    /// Its cost: as reported, else by the settings' price; None: unknown.
-    pub fn cost(&self, price: Option<Price>) -> (Option<f64>, &'static str) {
-        // Some replies' tokens aren't known: nor is the cost.
-        if self.missing_usage > 0 {
-            return (None, "unknown");
-        }
-        if let Some(c) = self.reported_cost {
-            return (Some(c), "provider");
-        }
-        match price {
-            Some(p) => (
-                Some(
-                    (self.lead_in + self.sub_in) as f64 * p.input_per_million / 1e6
-                        + (self.lead_out + self.sub_out) as f64 * p.output_per_million / 1e6,
-                ),
-                "price",
-            ),
-            None if self.replies == 0 => (Some(0.0), "none"),
-            None => (None, "unknown"),
-        }
-    }
 }
 
 /// Reads the run log's new lines since `offset` (the log is appended to).
@@ -494,6 +416,16 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     };
     db.write(move |c| store::create_dialog(c, &dialog)).await?;
 
+    // S10: the command line's mode over the settings file's.
+    if let Some(mode) = &args.mode {
+        settings.mode = Some(mode.clone());
+    }
+    let autopilot = settings.mode.as_deref() == Some("autopilot");
+    if autopilot {
+        settings.config.autopilot.effort = args.effort.unwrap_or_default();
+    } else if args.effort.is_some() {
+        return Err(format!("--effort is for --mode autopilot\n{USAGE}"));
+    }
     let started = Instant::now();
     let request = StartRequest {
         dialog_id: dialog_id.clone(),
@@ -544,9 +476,18 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     let mut children: Vec<String> = Vec::new();
     let mut watched = Totals::default();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
+    // S10: an Autopilot task is over when its stages are, whatever runs
+    // it took (the driver may record the last ones without a run).
+    let mut task_tick = tokio::time::interval(Duration::from_millis(250));
     let outcome = loop {
         let next = tokio::select! {
             e = tokio::time::timeout_at(deadline, rx.recv()) => e,
+            _ = task_tick.tick(), if autopilot => {
+                if let Some(outcome) = task_over(&core, &dialog_id).await {
+                    break outcome;
+                }
+                continue;
+            }
             _ = tick.tick(), if args.max_tokens.is_some() => {
                 for line in new_log_lines(&log_file, &mut log_offset) {
                     if of_run(&line, &dialog_id, &children) {
@@ -611,7 +552,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                     policy.answer(&r["questions"]),
                 );
             }
-            Some("runEnded") if event["dialogId"] == dialog_id.as_str() => {
+            // An Autopilot task goes on after a stage's run: its end is
+            // the task's (`task_over`).
+            Some("runEnded") if event["dialogId"] == dialog_id.as_str() && !autopilot => {
                 break event["outcome"].as_str().unwrap_or("").to_string();
             }
             _ => {}
@@ -631,7 +574,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         .read(move |c| store::get_messages(c, &id, None, 100_000))
         .await?
         .messages;
-    let report = report(
+    let mut report = report(
         &dialog_id,
         &outcome,
         ms,
@@ -642,6 +585,29 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         questions,
         &log_dir.join("agent-log.jsonl"),
     );
+    if autopilot {
+        let stages = agent_run::autopilot::task_stages(&core, &dialog_id)
+            .await?
+            .unwrap_or_default();
+        report["effort"] = json!(settings.config.autopilot.effort);
+        report["stages"] = json!(stages
+            .iter()
+            .map(|r| json!({
+                "name": r.stage.name,
+                "status": r.stage.status,
+                "round": r.stage.round,
+                "outcome": r.stage.outcome,
+                "summary": r.stage.summary,
+                "files": r.stage.files,
+                "spent": r.stage.spent,
+            }))
+            .collect::<Vec<_>>());
+        report["report"] = messages
+            .iter()
+            .rev()
+            .find_map(|m| m.meta.as_ref()?.get("report").cloned())
+            .unwrap_or(Value::Null);
+    }
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
     // Closed first: Windows won't remove an open database's folder. The
@@ -664,6 +630,26 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     Ok(report)
 }
 
+/// S10: an Autopilot task's outcome once it's over: its stages are done
+/// and nothing of the chat runs (the delivery's report included). None:
+/// it goes on.
+async fn task_over(core: &Core, dialog_id: &str) -> Option<String> {
+    if core.agents.is_running(dialog_id) {
+        return None;
+    }
+    if agent_run::autopilot::unfinished(core, dialog_id)
+        .await
+        .ok()?
+    {
+        return None;
+    }
+    let stages = agent_run::autopilot::task_stages(core, dialog_id)
+        .await
+        .ok()??;
+    let last = stages.last()?;
+    Some(last.stage.outcome.clone().unwrap_or_else(|| "done".into()))
+}
+
 /// Whether the run's `"event":"run"` line (written as it ends) is in the log.
 fn has_run_line(log: &Path, dialog_id: &str) -> bool {
     std::fs::read_to_string(log).is_ok_and(|text| {
@@ -678,7 +664,7 @@ fn has_run_line(log: &Path, dialog_id: &str) -> bool {
 /// Stops the run and lets it end and store what it has: its `runEnded`,
 /// or ten seconds.
 async fn stop_and_wait(core: &Core, rx: &mut UnboundedReceiver<Value>, dialog_id: &str) {
-    agent_run::agent_stop(core, dialog_id.to_string());
+    agent_run::agent_stop(core, dialog_id.to_string()).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(e) = rx.recv().await {
             if e["type"] == "runEnded" && e["dialogId"] == dialog_id {
@@ -687,6 +673,50 @@ async fn stop_and_wait(core: &Core, rx: &mut UnboundedReceiver<Value>, dialog_id
         }
     })
     .await;
+}
+
+/// G02 (autopilot-plan): what the run's `tool` lines and its lead's
+/// `verify` lines say, for the report.
+#[derive(Debug, Default, PartialEq)]
+pub struct ToolCounts {
+    /// Its tool calls, its subagents' included.
+    pub calls: u64,
+    /// The ones that failed by the model's doing: a Stop's, a closed app's
+    /// and a budget's left out (`tools::CUT_CLASSES`).
+    pub errors: u64,
+    /// Those by class (`tools::error_class`).
+    pub classes: std::collections::BTreeMap<String, u64>,
+    /// Edits whose old text didn't pick one place in the file.
+    pub edit_misses: u64,
+    /// The checks' rounds the lead's runs went through.
+    pub verify_rounds: u64,
+}
+
+pub fn tool_counts(run_log: &[Value], dialog_id: &str) -> ToolCounts {
+    use rovik_core::agent_run::tools::{CUT_CLASSES, EDIT_MISS_CLASSES};
+    let mut counts = ToolCounts::default();
+    for line in run_log {
+        match line["event"].as_str() {
+            Some("tool") => {
+                counts.calls += 1;
+                if line["failed"] != true {
+                    continue;
+                }
+                let class = line["error"].as_str().unwrap_or("other");
+                if CUT_CLASSES.contains(&class) {
+                    continue;
+                }
+                counts.errors += 1;
+                *counts.classes.entry(class.to_string()).or_default() += 1;
+                if EDIT_MISS_CLASSES.contains(&class) {
+                    counts.edit_misses += 1;
+                }
+            }
+            Some("verify") if line["dialogId"] == dialog_id => counts.verify_rounds += 1,
+            _ => {}
+        }
+    }
+    counts
 }
 
 /// Whether a run log line is this run's: the lead's (`dialog_id`) or one of
@@ -774,6 +804,7 @@ fn report(
     } else {
         (None, "unknown")
     };
+    let tools = tool_counts(&run_log, dialog_id);
     json!({
         "outcome": outcome,
         "ms": ms,
@@ -783,6 +814,14 @@ fn report(
         "mode": settings.mode.clone().unwrap_or_else(|| "agent".into()),
         "messages": messages.len(),
         "toolCalls": tool_calls,
+        // G02: from the run log's tool and verify lines.
+        "allToolCalls": tools.calls,
+        "toolErrors": tools.errors,
+        "toolErrorClasses": tools.classes,
+        "editMisses": tools.edit_misses,
+        "verifyRounds": tools.verify_rounds,
+        // An Autopilot task's, set by `run`.
+        "stages": Value::Null,
         "filesWritten": changed,
         "verification": meta("verification"),
         "reviews": meta("review"),
@@ -876,6 +915,7 @@ mod tests {
         assert_eq!(a.timeout, Duration::from_secs(60));
         assert_eq!(a.max_tokens, None);
         assert_eq!(a.policy, None);
+        assert_eq!((a.mode.clone(), a.effort), (None, None));
         assert!(parse_args(&argv(&["--project", "p"]))
             .unwrap_err()
             .starts_with("--settings is required"));
@@ -885,6 +925,29 @@ mod tests {
         assert!(parse_args(&argv(&["--prompt"]))
             .unwrap_err()
             .contains("needs a value"));
+        // S10: an Autopilot task, at an effort.
+        let base = [
+            "--project",
+            "p",
+            "--settings",
+            "s.json",
+            "--prompt",
+            "Do it",
+            "--out",
+            "r.json",
+        ];
+        let with = |more: &[&str]| parse_args(&argv(&[&base[..], more].concat()));
+        let a = with(&["--mode", "autopilot", "--effort", "thorough"]).unwrap();
+        assert_eq!(
+            (a.mode.as_deref(), a.effort),
+            (Some("autopilot"), Some(Effort::Thorough))
+        );
+        assert!(with(&["--mode", "yolo"])
+            .unwrap_err()
+            .contains("agent, plan or autopilot"));
+        assert!(with(&["--effort", "max"])
+            .unwrap_err()
+            .contains("balanced or thorough"));
     }
 
     #[test]
@@ -968,6 +1031,47 @@ mod tests {
             "d",
         );
         assert_eq!((t.replies, t.missing_usage), (0, 0));
+    }
+
+    /// G02: the report's counts from the run log: every tool line is a
+    /// call; a failure the run cut (Stop, a closed app, a budget) isn't the
+    /// model's error; an edit miss is one whose old text didn't pick one
+    /// place; the checks' rounds are the lead's.
+    #[test]
+    fn tool_counts_from_the_run_log() {
+        let tool = |failed: bool, error: Option<&str>| json!({ "event": "tool", "dialogId": "lead", "tool": "write", "failed": failed, "error": error });
+        let log = vec![
+            tool(false, None),
+            tool(true, Some("old_text not found")),
+            tool(true, Some("old_text not unique")),
+            tool(true, Some("no such file")),
+            tool(true, Some("stopped")),
+            tool(true, Some("not run")),
+            json!({ "event": "tool", "dialogId": "kid", "parentDialogId": "lead", "tool": "bash", "failed": true, "error": "denied" }),
+            json!({ "event": "verify", "dialogId": "lead", "round": 1 }),
+            json!({ "event": "verify", "dialogId": "lead", "round": 2 }),
+            json!({ "event": "verify", "dialogId": "kid", "round": 1 }),
+            json!({ "event": "reply", "dialogId": "lead" }),
+        ];
+        let counts = tool_counts(&log, "lead");
+        assert_eq!(
+            counts,
+            ToolCounts {
+                calls: 7,
+                errors: 4,
+                classes: [
+                    ("denied".to_string(), 1),
+                    ("no such file".to_string(), 1),
+                    ("old_text not found".to_string(), 1),
+                    ("old_text not unique".to_string(), 1),
+                ]
+                .into_iter()
+                .collect(),
+                edit_misses: 2,
+                verify_rounds: 2,
+            }
+        );
+        assert_eq!(tool_counts(&[], "lead"), ToolCounts::default());
     }
 
     #[test]
@@ -1233,6 +1337,8 @@ mod tests {
             data: Some(data.clone()),
             timeout: Duration::from_secs(5),
             max_tokens: None,
+            mode: None,
+            effort: None,
         };
         let err = run(&args(dir.join("missing"))).await.unwrap_err();
         assert!(err.contains("missing"), "{err}");

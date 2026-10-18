@@ -442,6 +442,51 @@ pub fn group(keys: &[String], owners: &Owners, triage: Option<&Triage>) -> Vec<C
     causes
 }
 
+/// V05: the files a round changed (`changed`, project-relative) that its
+/// regressions (`broke`, keys) are behind, so a rollback can put back only
+/// those: an error's own file when the round changed it, and for a failing
+/// test the changed files whose name it carries (`posts` in
+/// `posts > lists`, a stem of three letters or more). None when a key
+/// names no file the round changed (a compiler's error in a file it didn't
+/// touch, a test named after none, "test|failed"): what's behind it isn't
+/// known, so everything goes back.
+pub fn files_behind(broke: &[String], changed: &[String], roots: &[String]) -> Option<Vec<String>> {
+    let mut files: Vec<String> = Vec::new();
+    for key in broke {
+        let failure = parse_key(key);
+        let found: Vec<String> = match (&failure.file, failure.what.split_once('|')) {
+            (Some(file), _) => {
+                let file = resolve(file, roots, changed);
+                changed
+                    .iter()
+                    .filter(|c| super::paths::same(c, &file))
+                    .cloned()
+                    .collect()
+            }
+            (None, Some(("test", name))) => {
+                let name = name.to_lowercase();
+                changed
+                    .iter()
+                    .filter(|c| {
+                        let s = stem(c);
+                        s.len() > 2 && name.contains(&s)
+                    })
+                    .cloned()
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        if found.is_empty() {
+            return None;
+        }
+        for f in found {
+            push_unique(&mut files, f);
+        }
+    }
+    files.sort();
+    (!files.is_empty()).then_some(files)
+}
+
 /// R07: the causes that may be fixed at the same time: two or more, each
 /// a different worker's and rated high by triage. Empty otherwise.
 pub fn parallel_set(causes: &[Cause]) -> Vec<&Cause> {
@@ -752,5 +797,58 @@ mod tests {
         t.check = "test".into();
         let causes = group(&keys, &owners, Some(&t));
         assert!(parallel_set(&causes).is_empty());
+    }
+
+    /// V05: what a round's regressions are behind, by the failures' files
+    /// and the tests' names; nothing when one names no changed file.
+    #[test]
+    fn a_regression_is_behind_the_files_it_names() {
+        let changed: Vec<String> = [
+            "src/users.ts",
+            "src/posts.ts",
+            "tests/posts.test.ts",
+            "a.ts",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let roots = vec!["/p".to_string()];
+        let behind = |keys: &[&str]| {
+            let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+            files_behind(&keys, &changed, &roots)
+        };
+        // A test by its name: the changed files it carries.
+        assert_eq!(
+            behind(&["test|test|posts > lists posts"]),
+            Some(vec![
+                "src/posts.ts".to_string(),
+                "tests/posts.test.ts".to_string()
+            ])
+        );
+        // An error in a changed file, however it's printed.
+        assert_eq!(
+            behind(&["typecheck|/p/src/users.ts|TS2322|Type 'string' is not assignable"]),
+            Some(vec!["src/users.ts".to_string()])
+        );
+        // Several keys: all of their files, once.
+        assert_eq!(
+            behind(&["test|test|users > saves", "lint|src/users.ts||unused"]),
+            Some(vec!["src/users.ts".to_string()])
+        );
+        // One key named after no changed file: not known.
+        assert_eq!(
+            behind(&["test|test|users > saves", "test|test|tags > counts"]),
+            None
+        );
+        // An error in a file the round didn't change, a short stem, a key
+        // with nothing to go on: not known.
+        assert_eq!(
+            behind(&["typecheck|src/b.ts|TS2554|Expected 2 arguments"]),
+            None
+        );
+        assert_eq!(behind(&["test|test|a"]), None);
+        assert_eq!(behind(&["test|failed"]), None);
+        assert_eq!(behind(&["test|and 6 more"]), None);
+        assert_eq!(behind(&[]), None);
     }
 }

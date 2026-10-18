@@ -8,6 +8,11 @@ import { render } from 'solid-js/web';
 import ToolCallBlock from './ToolCallBlock';
 import ReviewRecord from './ReviewRecord';
 import VerificationRecord from './VerificationRecord';
+import PlannerRecord from './PlannerRecord';
+import JudgeRecord from './JudgeRecord';
+import BreakerRecord from './BreakerRecord';
+import CandidatesRecord from './CandidatesRecord';
+import PickRecord from './PickRecord';
 import MessageList from './MessageList';
 import { chatApi } from '../lib/chatApi';
 import { liveSubagent, noteSubagentStarted } from '../lib/subagents';
@@ -274,6 +279,207 @@ test('checks saved as running with no run going read as interrupted', () => {
     root.querySelector('.chat-verify-title')?.textContent,
     'Checks didn’t finish: the run ended while they were running.'
   );
+});
+
+test('checks taken from the plan say so (V02)', () => {
+  const meta = {
+    status: 'passed' as const,
+    round: 1,
+    maxRounds: 3,
+    checks: [{ kind: 'test' as const, command: 'node check.js', status: 'passed' as const }],
+    changedFiles: ['ok.txt'],
+  };
+  const props = {
+    dialogId: 'd',
+    recordId: 'v1',
+    latest: true,
+    live: false,
+    onRunChecks: () => {},
+    onOpenProjectChecks: () => {},
+  };
+  const note = (root: Element) =>
+    [...root.querySelectorAll('.chat-verify-progress')].find((n) =>
+      n.textContent?.includes('Validation section')
+    );
+  const plan = container();
+  render(() => <VerificationRecord meta={{ ...meta, fromPlan: true }} {...props} />, plan);
+  assert.ok(note(plan), 'from the plan: said');
+  const own = container();
+  render(() => <VerificationRecord meta={meta} {...props} />, own);
+  assert.equal(note(own), undefined, "the project's own: nothing to say");
+});
+
+test('Autopilot’s rounds: no count, an environment round, two without progress (V03)', () => {
+  const base = {
+    round: 2,
+    maxRounds: 10,
+    byProgress: true,
+    checks: [{ kind: 'test' as const, command: 'npm test', status: 'failed' as const }],
+    changedFiles: ['ok.txt'],
+  };
+  const props = {
+    dialogId: 'd',
+    recordId: 'v1',
+    latest: false,
+    live: false,
+    onRunChecks: () => {},
+    onOpenProjectChecks: () => {},
+  };
+  const title = (meta: VerificationMeta) => {
+    const root = container();
+    render(() => <VerificationRecord meta={meta} {...props} />, root);
+    return { root, text: root.querySelector('.chat-verify-title')?.textContent };
+  };
+  // A failed round: its attempt, no count to tell.
+  assert.equal(
+    title({ ...base, status: 'failed' }).text,
+    'Checks failed: sent to the agent to fix (attempt 2).'
+  );
+  assert.equal(
+    title({ ...base, byProgress: undefined, maxRounds: 3, status: 'failed' }).text,
+    'Checks failed: sent to the agent to fix (attempt 2 of 3).',
+    'outside Autopilot, as before'
+  );
+  // Two rounds without progress ended it.
+  assert.equal(
+    title({ ...base, round: 4, status: 'gave-up', noProgress: true }).text,
+    'Checks still fail after 4 attempts, the last two without progress. The agent stopped here.'
+  );
+  // The environment, not the change: installed and checked again.
+  const installed = title({
+    ...base,
+    round: 1,
+    status: 'failed',
+    environment: {
+      failure: 'sh: 1: vitest: not found',
+      command: 'npm test',
+      installs: [
+        { command: 'npm ci', folder: '', status: 'passed', durationMs: 300 },
+        {
+          command: 'pnpm install --frozen-lockfile',
+          folder: 'web',
+          status: 'failed',
+          exitCode: 1,
+          output: 'ERR_PNPM_OUTDATED_LOCKFILE',
+        },
+      ],
+    },
+  });
+  assert.equal(
+    installed.text,
+    'Checks failed on the environment, not on the change (sh: 1: vitest: not found): the dependencies were installed (1 of 2 installs failed), and the checks run again. This attempt isn’t counted.'
+  );
+  const rows = [...installed.root.querySelectorAll('.chat-verify-check')].map((li) => li.className);
+  assert.deepEqual(rows, [
+    'chat-verify-check failed',
+    'chat-verify-check passed',
+    'chat-verify-check failed',
+  ]);
+  assert.ok(
+    installed.root.querySelector('details pre')?.textContent?.includes('OUTDATED'),
+    'a failed install’s output'
+  );
+  // Nothing to install: it went to the agent.
+  assert.equal(
+    title({
+      ...base,
+      round: 1,
+      status: 'failed',
+      environment: { failure: 'sh: 1: vitest: not found', command: 'npm test', installs: [] },
+    }).text,
+    'Checks failed on the environment, not on the change (sh: 1: vitest: not found): nothing to install was found, so it went to the agent. This attempt isn’t counted.'
+  );
+});
+
+test('a rollback of only what broke says what stayed (V05)', () => {
+  const meta = {
+    status: 'rolled-back' as const,
+    round: 2,
+    maxRounds: 3,
+    checks: [{ kind: 'test' as const, command: 'npm test', status: 'failed' as const }],
+    changedFiles: ['users.txt', 'posts.txt', 'tags.txt'],
+    rolledBack: {
+      restored: ['tags.txt'],
+      skipped: [],
+      broke: ['test|test|t::tags'],
+      diff: '--- tags.txt',
+      kept: ['posts.txt', 'users.txt'],
+    },
+  };
+  const props = {
+    dialogId: 'd',
+    recordId: 'v1',
+    latest: false,
+    live: false,
+    onRunChecks: () => {},
+    onOpenProjectChecks: () => {},
+  };
+  const partial = container();
+  render(() => <VerificationRecord meta={meta} {...props} />, partial);
+  assert.equal(
+    partial.querySelector('.chat-verify-title')?.textContent,
+    'The fix broke something that passed before: the files behind it were put back (tags.txt), the rest of it stays (posts.txt, users.txt), and the checks run again.'
+  );
+  assert.ok(
+    partial
+      .querySelector('.chat-verify-rollback summary')
+      ?.textContent?.includes('kept: posts.txt, users.txt')
+  );
+  const all = container();
+  const { kept: _kept, ...everything } = meta.rolledBack;
+  render(() => <VerificationRecord meta={{ ...meta, rolledBack: everything }} {...props} />, all);
+  assert.equal(
+    all.querySelector('.chat-verify-title')?.textContent,
+    'The fix broke something that passed before, so it was rolled back (attempt 2 of 3).'
+  );
+});
+
+test('a suite too slow for its timeout, and the tests that ran instead (V06)', () => {
+  const root = container();
+  render(
+    () => (
+      <VerificationRecord
+        meta={{
+          status: 'passed',
+          round: 1,
+          maxRounds: 10,
+          byProgress: true,
+          checks: [
+            {
+              kind: 'test',
+              command: 'npm test',
+              status: 'slow',
+              reason: 'timed out after 600 s; the tests of the changed files ran instead',
+            },
+            {
+              kind: 'test',
+              command: 'npx vitest run src/a.test.js',
+              status: 'passed',
+              durationMs: 300,
+            },
+          ],
+          changedFiles: ['src/a.js'],
+        }}
+        dialogId="d"
+        recordId="v1"
+        latest={false}
+        live={false}
+        onRunChecks={() => {}}
+        onOpenProjectChecks={() => {}}
+      />
+    ),
+    root
+  );
+  const rows = [...root.querySelectorAll('.chat-verify-check')];
+  assert.deepEqual(
+    rows.map((r) => r.className),
+    ['chat-verify-check slow', 'chat-verify-check passed']
+  );
+  assert.equal(
+    rows[0].querySelector('.chat-verify-note')?.textContent,
+    'slow: timed out after 600 s; the tests of the changed files ran instead'
+  );
+  assert.equal(root.querySelector('.chat-verify-title')?.textContent, 'Checks passed.');
 });
 
 const button = (root: Element, text: string) =>
@@ -582,4 +788,348 @@ test('review_record_doesnt_remount_when_meta_changes (P5.1)', async () => {
     dispose();
     api.getMessages = original;
   }
+});
+
+test('a planner record: the plan taken, problems flagged, the plan on demand (T01)', () => {
+  const root = container();
+  render(
+    () => (
+      <>
+        <PlannerRecord
+          meta={{
+            role: 'plan',
+            candidate: 'a',
+            status: 'done',
+            title: 'Greet',
+            steps: 2,
+            plan: '# Greet\n\n## Steps\n\n1. **Say hi**',
+            chosen: true,
+            model: 'Test/m',
+            toolCalls: 4,
+            ms: 2000,
+          }}
+          dialogId="lead-p"
+          recordId="pa"
+          live={false}
+        />
+        <PlannerRecord
+          meta={{
+            role: 'plan',
+            candidate: 'b',
+            status: 'done',
+            title: 'Greet',
+            steps: 1,
+            problems: ['Step 1 names `gone.txt`, which isn’t in the project'],
+          }}
+          dialogId="lead-p"
+          recordId="pb"
+          live={false}
+        />
+        <PlannerRecord
+          meta={{ role: 'plan', candidate: 'c', status: 'running' }}
+          dialogId="lead-p"
+          recordId="pc"
+          live={false}
+        />
+      </>
+    ),
+    root
+  );
+  const records = [...root.querySelectorAll('.chat-planner')];
+  assert.deepEqual(
+    records.map((r) => r.className),
+    [
+      'chat-verify chat-planner done chosen',
+      'chat-verify chat-planner flagged',
+      'chat-verify chat-planner stopped',
+    ]
+  );
+  assert.equal(
+    records[0].querySelector('.chat-verify-files')?.textContent,
+    'Test/m · 4 tool calls · 2 s'
+  );
+  assert.equal(records[0].querySelector('details pre')?.textContent?.startsWith('# Greet'), true);
+  assert.equal(
+    records[1].querySelector('.chat-verify-flags li')?.textContent,
+    'Step 1 names `gone.txt`, which isn’t in the project'
+  );
+  assert.equal(
+    records[2].querySelector('.chat-verify-title')?.textContent,
+    'Planner C didn’t finish: the run ended meanwhile.'
+  );
+});
+
+test('a judge record: what it chose and why, its merged plan on demand (T02)', () => {
+  const root = container();
+  render(
+    () => (
+      <>
+        <JudgeRecord
+          meta={{
+            role: 'plans',
+            status: 'done',
+            offered: ['a', 'b', 'c'],
+            choice: 'merged',
+            revised: true,
+            title: 'Greet',
+            steps: 2,
+            plan: '# Greet\n\n## Steps\n\n1. **Say hi**',
+            why: 'Plan a’s steps with plan c’s criteria.',
+            model: 'Test/m',
+          }}
+          dialogId="lead-j"
+          recordId="j1"
+          live={false}
+        />
+        <JudgeRecord
+          meta={{
+            role: 'plans',
+            status: 'skipped',
+            reason: 'its model failed',
+            fallback: 'b',
+          }}
+          dialogId="lead-j"
+          recordId="j2"
+          live={false}
+        />
+      </>
+    ),
+    root
+  );
+  const records = [...root.querySelectorAll('.chat-judge')];
+  assert.deepEqual(
+    records.map((r) => r.className),
+    ['chat-verify chat-judge done', 'chat-verify chat-judge skipped']
+  );
+  assert.equal(
+    records[0].querySelector('.chat-judge-why')?.textContent,
+    'Plan a’s steps with plan c’s criteria.'
+  );
+  assert.equal(records[0].querySelector('details summary')?.textContent, 'The merged plan');
+  assert.equal(records[0].querySelector('details pre')?.textContent?.startsWith('# Greet'), true);
+  assert.equal(
+    records[1].querySelector('.chat-verify-title')?.textContent,
+    'The judge gave no choice: its model failed. The task takes planner B’s plan.'
+  );
+  assert.equal(records[1].querySelector('details'), null, 'no plan of its own');
+});
+
+test('criteria records: the set written, the merge with what it assumed (T03)', () => {
+  const root = container();
+  render(
+    () => (
+      <>
+        <PlannerRecord
+          meta={{
+            role: 'criteria',
+            candidate: 'b',
+            status: 'done',
+            criteria: ['It greets.', 'It waves.'],
+            outOfScope: ['The CLI.'],
+            assumptions: [],
+          }}
+          dialogId="lead-c"
+          recordId="cb"
+          live={false}
+        />
+        <JudgeRecord
+          meta={{
+            role: 'criteria',
+            status: 'done',
+            offered: ['a', 'b'],
+            criteria: ['It greets.'],
+            outOfScope: [],
+            assumptions: ['The sets disagreed on waving: none, the narrower reading.'],
+          }}
+          dialogId="lead-c"
+          recordId="cj"
+          live={false}
+        />
+      </>
+    ),
+    root
+  );
+  const [writer, judge] = [...root.querySelectorAll('.chat-verify')];
+  assert.equal(
+    writer.querySelector('.chat-verify-title')?.textContent,
+    'Criteria writer B wrote 2 criteria.'
+  );
+  assert.deepEqual(
+    [...writer.querySelectorAll('.chat-planner-criteria li')].map((li) => li.textContent),
+    ['It greets.', 'It waves.']
+  );
+  assert.equal(writer.querySelector('.chat-planner-part')?.textContent, 'Out of scope: The CLI. ');
+  assert.equal(writer.querySelector('.chat-planner-assumptions'), null);
+  assert.equal(
+    judge.querySelector('.chat-verify-title')?.textContent,
+    'The judge merged the 2 sets into 1 criterion.'
+  );
+  assert.equal(
+    judge.querySelector('.chat-planner-assumptions li')?.textContent,
+    'The sets disagreed on waving: none, the narrower reading.'
+  );
+});
+
+test('the adversarial tester’s record: its tests and marks, what it removed (T04)', () => {
+  const root = container();
+  render(
+    () => (
+      <BreakerRecord
+        meta={{
+          status: 'done',
+          files: ['edge.test.js'],
+          marks: [{ file: 'edge.test.js', mark: 'criterion 1' }],
+          removed: ['guess.test.js'],
+          found: true,
+          summary: 'Tried the line’s ending.',
+        }}
+        dialogId="lead-b"
+        recordId="b1"
+        live={false}
+      />
+    ),
+    root
+  );
+  const record = root.querySelector('.chat-breaker')!;
+  assert.equal(record.className, 'chat-verify chat-tests chat-breaker found');
+  assert.equal(
+    record.querySelector('.chat-tests-files li')?.textContent,
+    'edge.test.js · criterion 1'
+  );
+  assert.equal(
+    record.querySelector('.chat-breaker-removed')?.textContent,
+    'Removed, speculative and passing: guess.test.js '
+  );
+  assert.equal(
+    record.querySelector('.chat-tests-summary')?.textContent,
+    'Tried the line’s ending.'
+  );
+});
+
+test('the candidates’ record: each one’s line, its work on demand, one waiting (T05)', () => {
+  const root = container();
+  render(
+    () => (
+      <CandidatesRecord
+        meta={{
+          task: 't',
+          round: 1,
+          status: 'running',
+          candidates: [
+            {
+              letter: 'a',
+              chat: 'cand-a',
+              status: 'done',
+              outcome: 'verified',
+              summary: '1 check passed',
+            },
+            { letter: 'b', chat: 'cand-b', status: 'waiting' },
+          ],
+        }}
+        dialogId="lead-k"
+        recordId="k1"
+        live={true}
+      />
+    ),
+    root
+  );
+  const record = root.querySelector('.chat-candidates')!;
+  assert.equal(record.className, 'chat-verify chat-candidates running');
+  const lines = [...record.querySelectorAll('.chat-candidate')].map((li) => li.textContent);
+  assert.deepEqual(lines, ['A: done · 1 check passed · Show its work', 'B: waiting']);
+  // D19: the installs a candidate's copy got before it started.
+  const prepared = container();
+  render(
+    () => (
+      <CandidatesRecord
+        meta={{
+          task: 't',
+          round: 1,
+          status: 'running',
+          candidates: [
+            {
+              letter: 'a',
+              chat: 'cand-a',
+              status: 'running',
+              prepared: 'Installed: `npm ci --no-audit --no-fund`',
+            },
+          ],
+        }}
+        dialogId="lead-k"
+        recordId="k3"
+        live={true}
+      />
+    ),
+    prepared
+  );
+  const line = prepared.querySelector('.chat-candidate-prepared')!;
+  assert.equal(line.textContent, 'Installed: npm ci --no-audit --no-fund');
+  assert.equal(line.querySelector('code')?.textContent, 'npm ci --no-audit --no-fund');
+  // Interrupted: nothing runs it any more.
+  const cut = container();
+  render(
+    () => (
+      <CandidatesRecord
+        meta={{ task: 't', round: 1, status: 'running', candidates: [] }}
+        dialogId="lead-k"
+        recordId="k2"
+        live={false}
+      />
+    ),
+    cut
+  );
+  assert.equal(
+    cut.querySelector('.chat-verify-title')?.textContent,
+    'The candidates didn’t finish: the run ended meanwhile.'
+  );
+});
+
+test('the pick’s record: the scores, the winner, the loser’s diff kept (T06)', () => {
+  const root = container();
+  const score = {
+    changed: true,
+    finished: true,
+    testsPassed: 1,
+    checksPassed: 1,
+    openFindings: 0,
+    diffLines: 2,
+  };
+  render(
+    () => (
+      <PickRecord
+        meta={{
+          task: 't',
+          status: 'done',
+          winner: 'a',
+          judged: false,
+          adopted: true,
+          candidates: [
+            { letter: 'a', chat: 'cand-a', score, files: ['ok.txt'] },
+            {
+              letter: 'b',
+              chat: 'cand-b',
+              score: { ...score, diffLines: 3 },
+              files: ['ok.txt', 'notes.txt'],
+              diff: '--- notes.txt (new file)\n+Wrote ok.',
+            },
+          ],
+        }}
+        live={false}
+      />
+    ),
+    root
+  );
+  const record = root.querySelector('.chat-pick')!;
+  assert.equal(record.className, 'chat-verify chat-pick done');
+  assert.equal(
+    record.querySelector('.chat-verify-title')?.textContent,
+    'Candidate A’s change is the task’s: it scored better.'
+  );
+  assert.equal(
+    record.querySelector('.chat-pick-winner')?.textContent,
+    'A: 1 test written first passes · 1 check passes · no findings open · 2 lines changed'
+  );
+  const kept = record.querySelector('details')!;
+  assert.equal(kept.querySelector('summary')?.textContent, 'Candidate B’s change, not taken');
+  assert.equal(kept.querySelector('pre')?.textContent, '--- notes.txt (new file)\n+Wrote ok.');
 });

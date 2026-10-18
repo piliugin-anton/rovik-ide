@@ -17,6 +17,7 @@ import {
   type Args,
 } from './toolArgs';
 import { diffRows, snippetLines } from './lineDiff';
+import { reviewAnswersSummary } from './changeReview';
 import { kindLabel } from './subagents';
 
 /** Consecutive calls to one tool; a single call is a run of one. */
@@ -34,7 +35,7 @@ export interface ToolRun {
  * not a file name.
  */
 function standsAlone(call: ChatToolCall): boolean {
-  if (['ask_user', 'todo', 'submit_plan', 'task'].includes(call.name)) return true;
+  if (['ask_user', 'todo', 'submit_plan', 'task', 'answer_review'].includes(call.name)) return true;
   return call.name === 'write' && isLiveContextPath(str(parseArgsLenient(call.arguments).path));
 }
 
@@ -295,6 +296,14 @@ export function describeGroup(
         text ? { text } : undefined,
       ]);
     }
+    case 'answer_review':
+      return label(
+        verb('Answering the review', 'Answered the review'),
+        argsList.map((a) => {
+          const text = reviewAnswersSummary(a);
+          return text ? { text } : undefined;
+        })
+      );
     case 'submit_plan':
       return label(
         verb('Saving the plan', 'Saved the plan'),

@@ -8,6 +8,7 @@
 pub mod app;
 pub mod project;
 pub mod ssh;
+pub mod task;
 
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
@@ -40,6 +41,8 @@ pub struct Daemon {
     child: Child,
     /// What `serve` was given after its own arguments.
     args: Vec<String>,
+    /// What its environment has besides the test's.
+    env: Vec<(String, String)>,
     pub socket: PathBuf,
     /// The daemon's folder (`--data`).
     pub data: PathBuf,
@@ -65,6 +68,11 @@ pub struct Row {
 impl Daemon {
     /// A daemon serving `COMPUTER`, with `args` after its own.
     pub async fn start(args: &[&str]) -> Daemon {
+        Daemon::start_with(args, &[]).await
+    }
+
+    /// `start`, with `env` in the daemon's environment.
+    pub async fn start_with(args: &[&str], env: &[(&str, &str)]) -> Daemon {
         let dir = temp_dir();
         let data = dir.0.join("rovik");
         std::fs::create_dir_all(&data).unwrap();
@@ -84,10 +92,15 @@ impl Daemon {
         .unwrap();
         let socket = dir.0.join("agentd.sock");
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let child = spawn(&dir, &data, &socket, &args);
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let child = spawn(&dir, &data, &socket, &args, &env);
         let mut daemon = Daemon {
             child,
             args,
+            env,
             socket,
             data,
             token,
@@ -121,7 +134,7 @@ impl Daemon {
 
     /// The daemon again, on the same folder, socket and arguments.
     pub async fn restart(&mut self) {
-        self.child = spawn(&self.dir, &self.data, &self.socket, &self.args);
+        self.child = spawn(&self.dir, &self.data, &self.socket, &self.args, &self.env);
         self.wait_until_it_answers().await;
     }
 
@@ -223,7 +236,13 @@ impl Daemon {
 }
 
 /// `serve` on `data` and `socket`, its stderr added to the folder's.
-fn spawn(dir: &TempDir, data: &Path, socket: &Path, args: &[String]) -> Child {
+fn spawn(
+    dir: &TempDir,
+    data: &Path,
+    socket: &Path,
+    args: &[String],
+    env: &[(String, String)],
+) -> Child {
     let stderr = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -240,6 +259,7 @@ fn spawn(dir: &TempDir, data: &Path, socket: &Path, args: &[String]) -> Child {
         // A login shell that answers at once, and no real home.
         .env("SHELL", "/bin/sh")
         .env("HOME", &dir.0)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr)
@@ -589,4 +609,61 @@ pub fn commit_paths(root: &Path, paths: &[&str]) -> git2::Oid {
     let parent = repo.head().unwrap().peel_to_commit().unwrap();
     repo.commit(Some("HEAD"), &me, &me, "more", &tree, &[&parent])
         .unwrap()
+}
+
+/// An HTTP server that keeps each request's path and JSON body, and
+/// answers them with `statuses` in turn, the last one again once they run
+/// out: its URL, and what it got.
+pub async fn listening(
+    statuses: Vec<u16>,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = got.clone();
+    tokio::spawn(async move {
+        let mut answered = 0;
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut bytes = Vec::new();
+            let mut buffer = [0u8; 4096];
+            let body = loop {
+                let Ok(n) = tokio::io::AsyncReadExt::read(&mut socket, &mut buffer).await else {
+                    break None;
+                };
+                if n == 0 {
+                    break None;
+                }
+                bytes.extend_from_slice(&buffer[..n]);
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                let Some(end) = text.find("\r\n\r\n") else {
+                    continue;
+                };
+                let length = text[..end]
+                    .lines()
+                    .find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= end + 4 + length {
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let body = serde_json::from_slice(&bytes[end + 4..end + 4 + length])
+                        .unwrap_or(Value::Null);
+                    break Some((path, body));
+                }
+            };
+            let Some(request) = body else { continue };
+            kept.lock().unwrap().push(request);
+            let status = statuses[answered.min(statuses.len() - 1)];
+            answered += 1;
+            let reply =
+                format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, reply.as_bytes()).await;
+        }
+    });
+    (url, got)
 }

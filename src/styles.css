@@ -516,6 +516,7 @@ body.tree-dragging {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
 }
 
 .tabs {
@@ -3979,10 +3980,19 @@ body.tree-dragging {
 
 .resizable-inner {
   box-sizing: border-box;
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  /* A length on both sides (a dragged px width, then 100vw), so expanding
+     and collapsing animate instead of jumping. */
+  transition: width 333ms ease;
+}
+
+/* Dragging the divider stays instant. */
+.resizable-inner.resizing {
+  transition: none;
 }
 
 .resizable-handle {
@@ -4006,6 +4016,73 @@ body.is-resizing * {
   -webkit-user-select: none !important;
   user-select: none !important;
   cursor: col-resize !important;
+}
+
+.sidebar-expanded .chat-panel {
+  border: 1px solid var(--border);
+}
+
+/* Expanded panel (the floating toggle): the panel is the window, so the
+   right pane — open-file tabs, editor, terminal — and the divider go away.
+   The chat tab's content becomes a centered column of at most 768px; Files
+   and Git keep the full width. */
+.app.sidebar-expanded .app-main {
+  display: none;
+}
+
+.app.sidebar-expanded .resizable-handle {
+  display: none;
+}
+
+.app.sidebar-expanded .chat-panel {
+  width: 100%;
+  max-width: 768px;
+  margin-inline: auto;
+}
+
+/* The full-window toggle: floating over the panel's content at its right
+   edge, faint until it is hovered or focused. */
+.sidebar-expand-button {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-control);
+  color: var(--fg-dim);
+  opacity: 0.55;
+  cursor: pointer;
+  transition:
+    opacity 0.15s,
+    color 0.15s,
+    background 0.15s;
+}
+
+.sidebar-expand-button:hover,
+.sidebar-expand-button:focus-visible,
+.sidebar-expand-button.expanded {
+  opacity: 1;
+  color: var(--fg);
+  background: var(--bg-control-hover);
+}
+
+.sidebar-expand-button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resizable-inner {
+    transition: none;
+  }
 }
 
 /* git-panel.css
@@ -5057,6 +5134,192 @@ body.is-resizing * {
   color: var(--fg-dim);
 }
 
+/* S04: an Autopilot task's tests written before the code (TestsRecord.tsx). */
+.chat-tests.done {
+  border-left-color: var(--success);
+}
+
+.chat-tests.blocked,
+.chat-tests.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-tests-files {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.chat-tests-note,
+.chat-tests-assumptions {
+  color: var(--fg-dim);
+}
+
+.chat-tests-summary {
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+
+.chat-tests-assumptions {
+  white-space: pre-wrap;
+}
+
+/* S09: the facts under a task's report (ReportFacts.tsx). */
+.chat-report.delivered {
+  border-left-color: var(--success);
+}
+
+.chat-report.partial {
+  border-left-color: var(--warning);
+}
+
+.chat-report.undelivered {
+  border-left-color: var(--error);
+}
+
+.chat-report-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+
+.chat-report-facts dt {
+  color: var(--fg-dim);
+}
+
+.chat-report-facts dd {
+  margin: 0;
+  color: var(--fg);
+  min-width: 0;
+}
+
+/* T01: a Thorough task's planners (PlannerRecord.tsx); the one taken stands out. */
+.chat-planner.done {
+  border-left-color: var(--fg-dim);
+}
+
+.chat-planner.done.chosen {
+  border-left-color: var(--success);
+}
+
+.chat-planner.skipped {
+  border-left-color: var(--warning);
+}
+
+/* T03: criteria in a writer's or the judge's record (PlannerRecord.tsx). */
+.chat-planner-criteria,
+.chat-planner-assumptions {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg);
+}
+
+.chat-planner-part {
+  color: var(--fg-dim);
+}
+
+/* T04: the adversarial tester (BreakerRecord.tsx): its tests found a fault. */
+.chat-breaker.found {
+  border-left-color: var(--warning);
+}
+
+.chat-breaker-removed {
+  color: var(--fg-dim);
+}
+
+/* T02: the judge of a Thorough task's plans (JudgeRecord.tsx). */
+.chat-judge.done {
+  border-left-color: var(--success);
+}
+
+.chat-judge.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-judge-why {
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+
+/* T05: a Thorough task's two implementers (CandidatesRecord.tsx). */
+.chat-candidates.done {
+  border-left-color: var(--fg-dim);
+}
+
+.chat-candidates.single {
+  border-left-color: var(--warning);
+}
+
+.chat-candidates-list,
+.chat-pick-scores {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fg);
+}
+
+.chat-candidate.failed,
+.chat-candidate.stopped {
+  color: var(--fg-dim);
+}
+
+.chat-candidate-prepared {
+  color: var(--fg-dim);
+  font-size: 0.92em;
+}
+
+/* T06: the pick of the better candidate (PickRecord.tsx). */
+.chat-pick.done {
+  border-left-color: var(--success);
+}
+
+.chat-pick.failed {
+  border-left-color: var(--warning);
+}
+
+.chat-pick-winner {
+  font-weight: 600;
+}
+
+/* S08: an acceptance check's verdicts (AcceptanceRecord.tsx). */
+.chat-acceptance.satisfied {
+  border-left-color: var(--success);
+}
+
+.chat-acceptance.unsatisfied,
+.chat-acceptance.skipped {
+  border-left-color: var(--warning);
+}
+
+.chat-acceptance.unmet {
+  border-left-color: var(--error);
+}
+
+.chat-acceptance-criteria {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.chat-acceptance-criteria li {
+  margin: 2px 0;
+}
+
+.chat-acceptance-criterion {
+  color: var(--fg);
+}
+
+.chat-acceptance-verdict {
+  display: block;
+  color: var(--fg-dim);
+}
+
+.chat-acceptance-criteria li.met .chat-acceptance-verdict {
+  color: var(--success);
+}
+
+.chat-acceptance-criteria li.unmet .chat-acceptance-verdict {
+  color: var(--error);
+}
+
 /* P5.6: a record at work, and one the run left unfinished. */
 .chat-verify.running,
 .chat-review.running {
@@ -5163,6 +5426,10 @@ summary.chat-verify-row::-webkit-details-marker {
   color: var(--error);
 }
 
+.chat-verify-check.slow svg {
+  color: var(--warning);
+}
+
 .chat-verify-kind {
   flex-shrink: 0;
   color: var(--fg);
@@ -5233,6 +5500,170 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   .verify-spin {
     animation: none;
   }
+}
+
+/* An Autopilot stage in the chat (StageRecord.tsx): one line. */
+
+.chat-stage {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 90%;
+  padding: 4px 10px;
+  border-left: 3px solid var(--fg-dim);
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.chat-stage svg {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.chat-stage-name {
+  color: var(--fg);
+}
+
+.chat-stage-status {
+  color: var(--fg-dim);
+}
+
+.chat-stage-summary {
+  min-width: 0;
+  color: var(--fg-dim);
+}
+
+.chat-stage-summary::before {
+  content: '· ';
+}
+
+.chat-stage-summary code {
+  font-size: 11px;
+}
+
+.chat-stage.done {
+  border-left-color: var(--success);
+}
+
+.chat-stage.done svg {
+  color: var(--success);
+}
+
+.chat-stage.failed {
+  border-left-color: var(--error);
+}
+
+.chat-stage.failed svg {
+  color: var(--error);
+}
+
+.chat-stage.running {
+  border-left-color: var(--info);
+}
+
+.chat-stage.running svg {
+  color: var(--info);
+}
+
+.chat-stage.stopped svg {
+  color: var(--warning);
+}
+
+.chat-stage.waiting svg {
+  color: var(--info);
+}
+
+.chat-stage.skipped {
+  opacity: 0.8;
+}
+
+/* The chat's Autopilot task above the input (AutopilotStrip.tsx). */
+
+.autopilot-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  flex-shrink: 0;
+  margin: 0 10px 8px;
+  padding: 4px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.autopilot-strip-line {
+  color: var(--fg);
+}
+
+.autopilot-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+
+.autopilot-stage-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.autopilot-stage-button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.autopilot-stage-button:disabled {
+  cursor: default;
+}
+
+.autopilot-stage.pending .autopilot-stage-button,
+.autopilot-stage.skipped .autopilot-stage-button {
+  color: var(--fg-dim);
+}
+
+.autopilot-stage.done svg {
+  color: var(--success);
+}
+
+.autopilot-stage.failed svg {
+  color: var(--error);
+}
+
+.autopilot-stage.running svg {
+  color: var(--info);
+}
+
+.autopilot-stage.stopped svg {
+  color: var(--warning);
+}
+
+.autopilot-stage.waiting svg {
+  color: var(--info);
+}
+
+.autopilot-stage-label {
+  white-space: nowrap;
+}
+
+.autopilot-stage-round {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Project checks settings (ProjectChecksSettings.tsx) */
@@ -5644,7 +6075,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg);
 }
 
-.mode-option.plan.active svg {
+.mode-option.plan.active svg,
+.mode-option.autopilot.active svg {
   color: var(--accent);
 }
 
@@ -8328,10 +8760,155 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   white-space: pre-wrap;
 }
 
-.subagent-settings .settings-section.disabled .subagent-kind-row,
-.subagent-settings .settings-section.disabled .model-with-fallbacks,
+.subagent-settings .settings-section.disabled .subagent-kind-row:not(.autopilot-used),
+.subagent-settings
+  .settings-section.disabled
+  .subagent-kind-row:not(.autopilot-used)
+  .model-with-fallbacks,
 .subagent-settings .settings-section.disabled .subagent-limits {
   opacity: 0.55;
+}
+
+/* A kind Autopilot uses: its switch is greyed out, its model and effort stay. */
+.subagent-settings
+  .settings-section.disabled
+  .subagent-kind-row.autopilot-used
+  > .setting-checkbox {
+  opacity: 0.55;
+}
+
+/* The Autopilot section's budget and denylist, each under its own line
+   (SubagentSettings.tsx). */
+.autopilot-subtitle {
+  margin: 12px 0 0 92px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.autopilot-budget {
+  margin-left: 92px;
+}
+
+.autopilot-kinds-note {
+  margin-top: 12px;
+}
+
+/* A cloud host that works on its own: its block (HostAutonomy.tsx, H01). */
+.host-autonomy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 0 92px;
+}
+
+.host-autonomy .autopilot-subtitle,
+.host-autonomy .setting-checkbox,
+.host-autonomy-budget {
+  margin-left: 0;
+}
+
+.host-autonomy-note {
+  margin: 0;
+}
+
+.host-autonomy-push {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 24px;
+}
+
+/* The host's tasks (HostTasks.tsx, H08): a chat a line, its summary under. */
+.host-tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.host-tasks-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+}
+
+.host-task-title {
+  color: var(--fg);
+}
+
+.host-task-line {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.host-task-running {
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--accent);
+}
+
+.host-task-summary {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* "Test delivery" (H05): its button, then what it found. */
+.host-autonomy-test {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.host-autonomy-tested.warning {
+  color: var(--warning);
+}
+
+/* Its text fields: the deploy key's path and the notify URL. */
+.host-autonomy-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 420px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.host-autonomy-field input {
+  background: var(--bg-editor);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font-size: 13px;
+}
+
+.host-autonomy-budget {
+  margin-top: 0;
+}
+
+/* Its Prepare switch, between the budget and the denylist (S03). */
+.setting-checkbox.autopilot-prepare {
+  margin-top: 12px;
+}
+
+/* "Used by Autopilot" on the kinds Autopilot turns on for its chats. */
+.autopilot-kind-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--fg-muted);
+  vertical-align: 1px;
 }
 
 .subagent-kind-row {

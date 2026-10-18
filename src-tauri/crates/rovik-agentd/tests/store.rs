@@ -59,7 +59,7 @@ async fn each_computers_configuration_applies_to_its_own_chats() {
     start.config = None;
     start.dialog_id = "laptop-chat".into();
     laptop
-        .call(Request::AgentStart(start.clone()))
+        .call(Request::AgentStart(Box::new(start.clone())))
         .await
         .unwrap();
     start.profile.base_url = desk_model;
@@ -72,7 +72,9 @@ async fn each_computers_configuration_applies_to_its_own_chats() {
             attachments: Vec::new(),
         },
     };
-    desk.call(Request::AgentStart(start)).await.unwrap();
+    desk.call(Request::AgentStart(Box::new(start)))
+        .await
+        .unwrap();
 
     // The desk's write needs no approval: its run ends.
     let mut desk_status = None;
@@ -221,7 +223,10 @@ async fn keys_are_kept_in_keys_json_alone() {
     reviewer.api_key = reviewer_key.into();
     start.config.as_mut().unwrap().approval_profiles = vec![reviewer];
     let mut session = daemon.session().await;
-    session.call(Request::AgentStart(start)).await.unwrap();
+    session
+        .call(Request::AgentStart(Box::new(start)))
+        .await
+        .unwrap();
     for _ in 0..400 {
         match session.call(Request::AgentStatus).await {
             Ok(Response::AgentStatus(s)) if s.runs.is_empty() => break,

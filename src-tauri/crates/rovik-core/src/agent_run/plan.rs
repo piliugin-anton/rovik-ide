@@ -57,6 +57,263 @@ A question (why something happens, how the code works, what an error means) gets
    submit_plan checks the plan, and a reviewer may check it against the code; either sends it back with what to fix. Fix it and submit the complete plan again; when a reviewer held it back, answer each of its findings in `responses`. The plan goes in submit_plan, never in your reply; after submitting, reply in a few sentences.
 4. When a plan exists (shown below), the user's message is about it: revise the plan with the new information, keeping what still holds, and submit it complete; don't replace it with a summary of what they said. A question about it is answered without submitting."###;
 
+/// Plan mode's lines that Autopilot's plan stage says otherwise: the user
+/// isn't there, so nothing is asked (D5) and the plan isn't theirs to edit
+/// before it's built.
+const PLAN_MODE_CHOSEN: &str =
+    "The user chose Plan mode: investigate and write a plan; don't carry it out.";
+const AUTOPILOT_PLAN_STAGE: &str = "This is the plan stage of an Autopilot task: investigate and write a plan; don't carry it out. Once it's reviewed, another run implements it, with nobody there.";
+const PLAN_MODE_QUESTIONS: &str = "2. Ask only what the code can't tell you and what really changes the design, behavior or scope: with the ask_user tool, early, all questions in one call, as concrete options with a short reason. Don't ask about names, formatting or anything the repository decides: decide it and say so in the plan. Never ask in plain text and stop.";
+const AUTOPILOT_QUESTIONS: &str = "2. Nobody answers questions in Autopilot: decide what the code and the request can't tell you, and write each assumption under **Assumptions** in \"## Criteria\", with why. Never ask, with a tool or in plain text.";
+/// The plan's first section, after which Autopilot's plan says what done
+/// means (S01, D8).
+const PLAN_SUMMARY_LINE: &str = "   - a \"# \" title and a one-paragraph summary of the approach;";
+const AUTOPILOT_CRITERIA: &str = "   - \"## Criteria\": what done means, as numbered statements (`1.`, `2.`), each one a test or a reading of the result can check, together covering the whole request and nothing beyond it; then **Out of scope**: what the task leaves alone, and **Assumptions**: what you decided that the request doesn't say, with why (either may say \"None.\"). The tests are written from them before the code, and the result is judged by them;";
+
+/// What Plan mode tells the model: `PLAN_MODE_INSTRUCTIONS`, or in
+/// Autopilot's plan stage the same with its own lines.
+pub fn plan_mode_instructions(autopilot: bool) -> String {
+    if !autopilot {
+        return PLAN_MODE_INSTRUCTIONS.to_string();
+    }
+    PLAN_MODE_INSTRUCTIONS
+        .replace(PLAN_MODE_CHOSEN, AUTOPILOT_PLAN_STAGE)
+        .replace(PLAN_MODE_QUESTIONS, AUTOPILOT_QUESTIONS)
+        .replace(
+            PLAN_SUMMARY_LINE,
+            &format!("{PLAN_SUMMARY_LINE}\n{AUTOPILOT_CRITERIA}"),
+        )
+}
+
+/// The plan's form as Plan mode describes it (its sections and each
+/// step's lines), in Autopilot with its criteria: what Thorough's planners
+/// are asked to write (T01), so their plans pass the same checks.
+pub fn plan_form() -> String {
+    let all = plan_mode_instructions(true);
+    let start = all.find(PLAN_SUMMARY_LINE).unwrap_or(0);
+    let end = all[start..]
+        .find("   Before you submit")
+        .map_or(all.len(), |e| start + e);
+    all[start..end]
+        .lines()
+        .map(|l| l.strip_prefix("   ").unwrap_or(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The criteria (S01, D8)
+ * ---------------------------------------------------------------------------
+ */
+
+/// An Autopilot plan's "## Criteria": what done means, as numbered,
+/// testable statements, then what the task leaves alone and what it
+/// assumed. The test writer writes from them and the acceptance check
+/// judges by them.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Criteria {
+    /// The numbered statements, in order, each on one line.
+    pub items: Vec<String>,
+    /// What the task leaves alone; empty when it says "None".
+    pub out_of_scope: Vec<String>,
+    /// What the planner decided that the request doesn't say.
+    pub assumptions: Vec<String>,
+    /// Whether the section has its **Out of scope** part (even "None.").
+    pub has_out_of_scope: bool,
+    /// Whether it has its **Assumptions** part (even "None.").
+    pub has_assumptions: bool,
+}
+
+/// A part's heading inside the criteria: `**Out of scope**`, `**Out of
+/// scope:** the CLI`, `### Assumptions`, `- Assumptions: none`.
+static CRITERIA_PART: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^\s*(?:[-*+]\s+)?(?:#{3,6}\s*)?(?:\*\*|__)?\s*(out[ -]of[ -]scope|non[- ]goals|assumptions?)\s*:?\s*(?:\*\*|__)?\s*:?\s*(.*)$",
+    )
+    .unwrap()
+});
+/// A numbered line: `1. Text`, `2) Text`.
+static NUMBERED_ITEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*\d+[.)]\s+(\S.*)$").unwrap());
+/// A bullet: `- Text`, `* Text`.
+static BULLET_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*[-*+]\s+(\S.*)$").unwrap());
+
+/// Whether a part's line says it has nothing: "None.", "n/a", "—".
+fn says_none(text: &str) -> bool {
+    let t = text
+        .trim()
+        .trim_matches(|c: char| c == '*' || c == '_' || c == '.' || c == '-' || c == '—');
+    matches!(
+        t.to_lowercase().as_str(),
+        "" | "none" | "n/a" | "na" | "nothing"
+    )
+}
+
+/// The plan's criteria section: the first `## ` heading with "criteria" in
+/// it (`## Criteria`, `## Acceptance criteria`), without its heading.
+pub fn criteria_section(markdown: &str) -> Option<String> {
+    let markdown = markdown.replace("\r\n", "\n");
+    for (at, line, fenced) in lines_with_fences(&markdown) {
+        if fenced || !NEXT_HEADING.is_match(line) {
+            continue;
+        }
+        if line.to_lowercase().contains("criteri") {
+            return Some(section_after(&markdown, at + line.len()).trim().to_string());
+        }
+    }
+    None
+}
+
+/// S01: an Autopilot plan's criteria, read from its "## Criteria"; None
+/// when it has none. Strict: only numbered lines are criteria (a line
+/// under one continues it), and the two parts are found by their names.
+pub fn criteria(markdown: &str) -> Option<Criteria> {
+    let section = criteria_section(markdown)?;
+    #[derive(PartialEq)]
+    enum Part {
+        Items,
+        OutOfScope,
+        Assumptions,
+    }
+    let mut part = Part::Items;
+    let mut out = Criteria::default();
+    // The list a line continues: the latest item of the part it's in.
+    let mut open = false;
+    for (_, line, fenced) in lines_with_fences(&section) {
+        let line = line.trim_end_matches('\n');
+        if fenced {
+            continue;
+        }
+        if line.trim().is_empty() {
+            open = false;
+            continue;
+        }
+        if let Some(c) = CRITERIA_PART.captures(line) {
+            let name = c[1].to_lowercase();
+            part = if name.starts_with("assum") {
+                out.has_assumptions = true;
+                Part::Assumptions
+            } else {
+                out.has_out_of_scope = true;
+                Part::OutOfScope
+            };
+            let rest = c[2].trim();
+            open = false;
+            if !says_none(rest) {
+                let list = match part {
+                    Part::Assumptions => &mut out.assumptions,
+                    _ => &mut out.out_of_scope,
+                };
+                list.push(rest.to_string());
+                open = true;
+            }
+            continue;
+        }
+        let list = match part {
+            Part::Items => &mut out.items,
+            Part::OutOfScope => &mut out.out_of_scope,
+            Part::Assumptions => &mut out.assumptions,
+        };
+        let item = NUMBERED_ITEM
+            .captures(line)
+            .or_else(|| {
+                (part != Part::Items)
+                    .then(|| BULLET_ITEM.captures(line))
+                    .flatten()
+            })
+            .map(|c| c[1].trim().to_string());
+        match item {
+            Some(text) if part != Part::Items && says_none(&text) => open = false,
+            Some(text) => {
+                list.push(text);
+                open = true;
+            }
+            // A line under an item continues it.
+            None if open => {
+                if let Some(last) = list.last_mut() {
+                    last.push(' ');
+                    last.push_str(line.trim());
+                }
+            }
+            // A part's text that isn't a list: one item, unless it says none.
+            None if part != Part::Items && !says_none(line) => {
+                list.push(line.trim().to_string());
+                open = true;
+            }
+            None => {}
+        }
+    }
+    Some(out)
+}
+
+/// T03: `markdown` with `body` as its "## Criteria": the criteria section
+/// replaced where it has one, else put before its first `## ` section
+/// (after the title and the summary), else at its end.
+pub fn with_criteria(markdown: &str, body: &str) -> String {
+    let markdown = markdown.replace("\r\n", "\n");
+    let section = format!("## Criteria\n\n{}\n\n", body.trim());
+    let headings: Vec<(usize, &str)> = lines_with_fences(&markdown)
+        .into_iter()
+        .filter(|(_, line, fenced)| !fenced && NEXT_HEADING.is_match(line))
+        .map(|(at, line, _)| (at, line))
+        .collect();
+    let at = headings
+        .iter()
+        .position(|(_, line)| line.to_lowercase().contains("criteri"));
+    let out = match (at, headings.first()) {
+        (Some(i), _) => {
+            let end = headings.get(i + 1).map_or(markdown.len(), |(at, _)| *at);
+            format!(
+                "{}{section}{}",
+                &markdown[..headings[i].0],
+                &markdown[end..]
+            )
+        }
+        (None, Some((first, _))) => {
+            format!("{}{section}{}", &markdown[..*first], &markdown[*first..])
+        }
+        (None, None) => format!("{}\n\n{section}", markdown.trim_end()),
+    };
+    format!("{}\n", out.trim_end())
+}
+
+/// S01: what an Autopilot plan's criteria lack (empty: they're there).
+pub fn criteria_problems(markdown: &str) -> Vec<String> {
+    let Some(c) = criteria(markdown) else {
+        return vec![
+            "Add a \"## Criteria\" section: what done means, as numbered statements (1., 2., ...), each one a test or a \
+             reading of the result can check; then **Out of scope** and **Assumptions** (either may say \"None.\")."
+                .into(),
+        ];
+    };
+    let mut problems = Vec::new();
+    if c.items.is_empty() {
+        problems.push(
+            "List the criteria under \"## Criteria\" as a numbered list (1., 2., ...): each a statement of what done \
+             means that a test or a reading of the result can check."
+                .into(),
+        );
+    }
+    if !c.has_out_of_scope {
+        problems.push(
+            "Add **Out of scope** under \"## Criteria\": what the task leaves alone, or \"None.\"."
+                .into(),
+        );
+    }
+    if !c.has_assumptions {
+        problems.push(
+            "Add **Assumptions** under \"## Criteria\": what you decided that the request doesn't say, with why, or \
+             \"None.\"."
+                .into(),
+        );
+    }
+    problems
+}
+
 /*
  * ---------------------------------------------------------------------------
  * Plans
@@ -426,6 +683,76 @@ pub fn relative_plan_path(path: &str, root: Option<&str>) -> String {
         },
         None => path.to_string(),
     }
+}
+
+/// The text that implements a plan (Agent mode): the plan in full, kept in
+/// view for the whole run (the current request is never dropped from the
+/// context), then how to carry it out. `file`: where it's saved, as the
+/// chat shows it.
+pub fn implementation_request(plan: &str, file: Option<&str>) -> String {
+    [
+        match file {
+            Some(file) => format!(
+                "Implement this plan. It's saved in {file}; the user may have edited it, and this is its current version."
+            ),
+            None => "Implement this plan.".to_string(),
+        },
+        String::new(),
+        "<plan>".into(),
+        plan.trim().to_string(),
+        "</plan>".into(),
+        String::new(),
+        concat!(
+            "First create your checklist with the todo tool from the plan's steps, with the first step in_progress, then work through them in order, ",
+            "one step at a time, each with its own todo call: call todo alone to mark a step in_progress before starting it, ",
+            "do the work, then call todo alone again to mark it done before the next step. Never save up finished steps for one update at the end. ",
+            "For each step, read the files it names before changing them, and make ",
+            "the changes it describes to the functions, types and settings it names. Follow the plan and its decisions. ",
+            "If a step turns out wrong or unnecessary (a file or function isn\u{2019}t where the plan says, or the change ",
+            "doesn\u{2019}t fit the code), mark it skipped or changed with the reason instead of silently doing something else. ",
+            "When the steps are done, run the checks in the plan\u{2019}s Validation section that you can run (build, ",
+            "typecheck, tests, lint), add or update the tests it asks for, and fix what fails. In your final message, ",
+            "say which checks passed, which you couldn\u{2019}t run and why, what is left to check by hand, and why you changed ",
+            "any files the plan doesn\u{2019}t mention.",
+        )
+        .into(),
+    ]
+    .join("\n")
+}
+
+/// "Implement this plan" as the app sends it: `meta.implementsPlan` with
+/// the plan's path (`meta.planPath`). The text the model gets, the plan as
+/// its file is now, goes in `meta.sentContent` before the message is
+/// stored, so every turn and Retry sends it the same. A message that has
+/// its text already, or isn't one, is left as it is. Err: the file can't
+/// be read.
+pub fn expand_implementation(
+    message: &mut super::UserMessage,
+    root: Option<&str>,
+) -> Result<(), String> {
+    let Some(meta) = message.meta.as_mut().and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let implements = meta.get("implementsPlan").and_then(Value::as_bool) == Some(true);
+    let path = meta
+        .get("planPath")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let (Some(path), true, false) = (path, implements, meta.contains_key("sentContent")) else {
+        return Ok(());
+    };
+    let file = match root {
+        Some(root) if !Path::new(&path).is_absolute() => join(root, &path),
+        _ => path,
+    };
+    let text = std::fs::read_to_string(&file)
+        .map_err(|e| format!("The plan in {file} can't be read: {e}"))?;
+    let shown = relative_plan_path(&file, root);
+    meta.insert(
+        "sentContent".into(),
+        Value::String(implementation_request(&text, Some(&shown))),
+    );
+    Ok(())
 }
 
 /// Plan mode: the current plan (as the file is now), for the model to revise.
@@ -833,6 +1160,181 @@ pub fn section(markdown: &str, name: &str) -> Option<String> {
     None
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * The plan's validation commands (V02)
+ * ---------------------------------------------------------------------------
+ */
+
+/// Programs a validation command starts with: package managers, build
+/// tools, test runners, interpreters (`node check.js`).
+const CHECK_PROGRAMS: &[&str] = &[
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "bun",
+    "deno",
+    "node",
+    "tsc",
+    "eslint",
+    "prettier",
+    "vitest",
+    "jest",
+    "mocha",
+    "playwright",
+    "cargo",
+    "go",
+    "python",
+    "python3",
+    "pytest",
+    "tox",
+    "nox",
+    "uv",
+    "poetry",
+    "mypy",
+    "pyright",
+    "ruff",
+    "flake8",
+    "pylint",
+    "make",
+    "just",
+    "cmake",
+    "ctest",
+    "gradle",
+    "mvn",
+    "dotnet",
+    "swift",
+    "bundle",
+    "rake",
+    "rspec",
+    "php",
+    "composer",
+    "phpunit",
+    "mix",
+    "sbt",
+    "stack",
+    "cabal",
+    "zig",
+    "bash",
+    "sh",
+];
+
+/// Programs that check on their own (`pytest`), wherever they come.
+const CHECKERS: &[&str] = &[
+    "pytest", "mypy", "pyright", "ruff", "flake8", "pylint", "tox", "nox", "tsc", "eslint",
+    "phpunit", "rspec", "ctest", "jest", "mocha", "vitest", "clippy",
+];
+
+/// Words that make a command a check (`npm run test:unit`, `cargo build`).
+const CHECK_WORDS: &[&str] = &[
+    "test",
+    "tests",
+    "check",
+    "lint",
+    "build",
+    "typecheck",
+    "clippy",
+    "vet",
+    "verify",
+];
+
+/// Words of commands that don't end on their own: a check that ran one
+/// would wait for its timeout.
+const RUNS_ON: &[&str] = &["dev", "start", "serve", "watch", "runserver", "preview"];
+
+/// The commands of a plan's "## Validation" section, in order, each once:
+/// the code spans (`` `cargo test` ``) and the lines of code blocks that
+/// read as a check, not a file (`tests/test_x.py`), a function, or a step
+/// to do by hand. They become an Autopilot task's checks when the project
+/// has none (V02). Nothing when the plan has no such section.
+pub fn validation_commands(plan: &str) -> Vec<String> {
+    let Some(section) = section(plan, "validation") else {
+        return Vec::new();
+    };
+    let mut spans: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in section.lines() {
+        if is_fence(line) {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            spans.push(line.trim().to_string());
+            continue;
+        }
+        spans.extend(CODE_SPAN.captures_iter(line).map(|c| c[1].to_string()));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for span in spans {
+        let command = span.trim().trim_start_matches("$ ").trim().to_string();
+        if is_validation_command(&command) && !out.contains(&command) {
+            out.push(command);
+        }
+    }
+    out
+}
+
+static CODE_SPAN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`\n]+)`").unwrap());
+
+/// Whether a span reads as a check to run (see `validation_commands`).
+fn is_validation_command(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let Some(first) = words.first() else {
+        return false;
+    };
+    let program = first.rsplit('/').next().unwrap_or(first).to_lowercase();
+    let script = first.starts_with("./");
+    if !CHECK_PROGRAMS.contains(&program.as_str()) && !script {
+        return false;
+    }
+    // The pieces of each word: `test:unit`, `check.js`, `--watch`.
+    let pieces: Vec<String> = words
+        .iter()
+        .flat_map(|w| w.split(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
+        .filter(|p| !p.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    if pieces.iter().any(|p| RUNS_ON.contains(&p.as_str())) {
+        return false;
+    }
+    // `cargo run`, `go run`: the program itself, not a check of it.
+    if matches!(program.as_str(), "cargo" | "go") && words.get(1) == Some(&"run") {
+        return false;
+    }
+    pieces
+        .iter()
+        .any(|p| CHECKERS.contains(&p.as_str()) || CHECK_WORDS.contains(&p.as_str()))
+}
+
+/// A validation command's kind, for the order the gate runs checks in
+/// (type check, lint, tests, build).
+pub fn validation_kind(command: &str) -> &'static str {
+    let words: Vec<String> = command
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let has = |w: &str| words.iter().any(|x| x == w);
+    if has("tsc") || has("typecheck") || has("type-check") || has("mypy") || has("pyright") {
+        "typecheck"
+    } else if has("lint")
+        || has("clippy")
+        || has("eslint")
+        || has("ruff")
+        || has("flake8")
+        || has("pylint")
+        || has("vet")
+        || has("prettier")
+    {
+        "lint"
+    } else if has("build") && !has("test") {
+        "build"
+    } else {
+        "test"
+    }
+}
+
 /// A findings heading an agent may put in its plan (`## Findings`,
 /// `## Review findings`), or the IDE's `## Open review findings` from an
 /// earlier save: findings are the reviewer's, never the plan's.
@@ -1152,6 +1654,15 @@ pub fn plan_problems_in(markdown: &str, root: Option<&Path>) -> Vec<String> {
     let mut problems = plan_problems(markdown);
     if let Some(root) = root {
         problems.extend(project_problems(markdown, root));
+    }
+    problems
+}
+
+/// `plan_problems_in`, and in an Autopilot task's plan its criteria (S01).
+pub fn plan_problems_for(markdown: &str, root: Option<&Path>, autopilot: bool) -> Vec<String> {
+    let mut problems = plan_problems_in(markdown, root);
+    if autopilot {
+        problems.extend(criteria_problems(markdown));
     }
     problems
 }
@@ -1608,6 +2119,190 @@ pub fn checklist_note(items: &[TodoItem], carried: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A04: Autopilot's plan stage has its own lines for Plan mode's on
+    /// asking and on the user's choice; the rest is Plan mode's. The lines
+    /// it replaces are Plan mode's still, or it would replace nothing.
+    #[test]
+    fn autopilots_plan_stage_asks_nothing() {
+        for line in [PLAN_MODE_CHOSEN, PLAN_MODE_QUESTIONS] {
+            assert!(PLAN_MODE_INSTRUCTIONS.contains(line), "{line}");
+        }
+        assert_eq!(plan_mode_instructions(false), PLAN_MODE_INSTRUCTIONS);
+        let autopilot = plan_mode_instructions(true);
+        assert!(
+            autopilot.contains(AUTOPILOT_QUESTIONS) && autopilot.contains(AUTOPILOT_PLAN_STAGE)
+        );
+        assert!(!autopilot.contains("ask_user") && !autopilot.contains("The user chose"));
+        assert!(autopilot.contains("submit_plan") && autopilot.contains("## Decisions"));
+        // S01: and what done means, before the steps.
+        assert!(PLAN_MODE_INSTRUCTIONS.contains(PLAN_SUMMARY_LINE));
+        let criteria = autopilot
+            .find(AUTOPILOT_CRITERIA)
+            .expect("the criteria line");
+        assert!(criteria < autopilot.find("\"## Steps\"").unwrap());
+        assert!(!PLAN_MODE_INSTRUCTIONS.contains("## Criteria"));
+    }
+
+    const CRITERIA_PLAN: &str = "# Add users\n\nUsers can sign up.\n\n## Criteria\n\n\
+        1. `POST /users` with a new email creates a user and answers 201.\n\
+        2. The same email again answers 409\n   and creates nothing.\n\
+        3) `GET /users` lists them, newest first.\n\n\
+        **Out of scope**: password resets.\n\n\
+        **Assumptions**\n\n\
+        - Emails compare case-insensitively: the request doesn't say, and `users.email` is `CITEXT`.\n\
+        - Paging stays as the other lists do.\n\n\
+        ## Steps\n\n1. **Users**\n   - Files: `src/users.rs`\n   - Add `create_user` to `src/users.rs`.\n";
+
+    /// S01: a plan's criteria, its parts, a criterion over two lines, the
+    /// numbered list's two spellings.
+    #[test]
+    fn a_plans_criteria_are_read() {
+        let c = criteria(CRITERIA_PLAN).unwrap();
+        assert_eq!(
+            c.items,
+            [
+                "`POST /users` with a new email creates a user and answers 201.",
+                "The same email again answers 409 and creates nothing.",
+                "`GET /users` lists them, newest first.",
+            ]
+        );
+        assert_eq!(c.out_of_scope, ["password resets."]);
+        assert_eq!(c.assumptions.len(), 2);
+        assert!(c.assumptions[0].starts_with("Emails compare case-insensitively"));
+        assert!(c.has_out_of_scope && c.has_assumptions);
+        assert!(criteria_problems(CRITERIA_PLAN).is_empty());
+        // `## Acceptance criteria`, `### ` parts, "None." for a part.
+        let other = "# T\n\n## Acceptance criteria\n\n1. It works.\n\n### Out of scope\n\nNone.\n\n### Assumptions\n- None\n\n## Steps\n";
+        let c = criteria(other).unwrap();
+        assert_eq!(c.items, ["It works."]);
+        assert!(c.out_of_scope.is_empty() && c.assumptions.is_empty());
+        assert!(c.has_out_of_scope && c.has_assumptions);
+        assert!(criteria_problems(other).is_empty());
+    }
+
+    /// S01: what's missing, said so; garbage reads as no criteria, never as
+    /// some.
+    #[test]
+    fn a_plans_criteria_are_replaced_or_put_in_place() {
+        let body = "1. It greets.\n\n**Out of scope**: None.\n\n**Assumptions**: English.";
+        // Replaced where the plan has them, the rest as it was.
+        let plan = "# Greet\n\nSay hi.\n\n## Criteria\n\n1. Old.\n\n## Steps\n\n1. **Greet**\n   - Files: `a.rs`\n";
+        assert_eq!(
+            with_criteria(plan, body),
+            format!("# Greet\n\nSay hi.\n\n## Criteria\n\n{body}\n\n## Steps\n\n1. **Greet**\n   - Files: `a.rs`\n")
+        );
+        // Its last section.
+        assert_eq!(
+            with_criteria("# Greet\n\n## Acceptance criteria\n\n1. Old.\n", body),
+            format!("# Greet\n\n## Criteria\n\n{body}\n")
+        );
+        // None: before the first section, after the title and summary.
+        assert_eq!(
+            with_criteria("# Greet\n\nSay hi.\n\n## Steps\n\n1. **Greet**\n", body),
+            format!("# Greet\n\nSay hi.\n\n## Criteria\n\n{body}\n\n## Steps\n\n1. **Greet**\n")
+        );
+        assert_eq!(
+            with_criteria("# Greet", body),
+            format!("# Greet\n\n## Criteria\n\n{body}\n")
+        );
+        // A heading in a fence is the plan's text, not a section.
+        let fenced = "# Greet\n\n```\n## Criteria\n```\n\n## Steps\n\n1. **Greet**\n";
+        assert!(with_criteria(fenced, body)
+            .starts_with("# Greet\n\n```\n## Criteria\n```\n\n## Criteria\n\n1. It greets."));
+        let replaced = with_criteria(plan, body);
+        assert_eq!(criteria(&replaced).unwrap().assumptions, ["English."]);
+    }
+
+    #[test]
+    fn criteria_missing_or_partial_say_what_to_add() {
+        assert_eq!(criteria("# T\n\n## Steps\n\n1. x"), None);
+        let none = criteria_problems("# T\n\n## Steps\n\n1. x");
+        assert_eq!(none.len(), 1);
+        assert!(
+            none[0].starts_with("Add a \"## Criteria\" section"),
+            "{none:?}"
+        );
+        // Bullets aren't criteria; the parts missing are named.
+        let bullets = "# T\n\n## Criteria\n\n- It works.\n- It's fast.\n\n## Steps\n";
+        assert!(criteria(bullets).unwrap().items.is_empty());
+        let problems = criteria_problems(bullets);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].starts_with("List the criteria"));
+        assert!(
+            problems[1].contains("**Out of scope**") && problems[2].contains("**Assumptions**")
+        );
+        // A numbered list in a code block isn't one.
+        let fenced = "# T\n\n## Criteria\n\n```\n1. not this\n```\n\n**Out of scope**: none\n**Assumptions**: none\n";
+        assert!(criteria(fenced).unwrap().items.is_empty());
+        for garbage in [
+            "",
+            "## Criteria",
+            "## Criteria\n\n\u{0}\u{1}",
+            "## criteria\n\n***\n1.",
+        ] {
+            let c = criteria(garbage).unwrap_or_default();
+            assert!(c.items.is_empty(), "{garbage:?}: {c:?}");
+        }
+    }
+
+    /// S01: Autopilot's plans need criteria; anyone else's, as before.
+    #[test]
+    fn only_autopilots_plans_need_criteria() {
+        let plan = "# Make the test pass\n\nThe test passes once ok.txt says ok.\n\n## Steps\n\n\
+            1. **Write ok**\n   - Files: `ok.txt`\n   - Replace the text of `ok.txt` with `ok`, which `check.js` checks.\n\
+            2. **Check**\n   - Files: `check.js` (read)\n   - Read `check.js` to confirm it checks `ok.txt`; it keeps its code.\n\n\
+            ## Validation\n- `npm test`\n";
+        assert!(plan_problems_for(plan, None, false).is_empty());
+        let problems = plan_problems_for(plan, None, true);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        let with = plan.replace(
+            "## Steps",
+            "## Criteria\n\n1. `npm test` passes.\n\n**Out of scope**: None.\n**Assumptions**: None.\n\n## Steps",
+        );
+        assert!(plan_problems_for(&with, None, true).is_empty());
+    }
+
+    /// A04: "Implement this plan" sent with the plan's path gets the text
+    /// the model is sent from the file as it is; other messages, and one
+    /// with its text already, are left as they are.
+    #[test]
+    fn an_implementation_request_is_written_from_the_plans_file() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.to_string_lossy().into_owned();
+        let file = dir.0.join(".rovik/plans/p.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "# P\n\nThe plan.\n").unwrap();
+        let message = |meta: Value| super::super::UserMessage {
+            id: "u".into(),
+            content: "Implement the plan in `.rovik/plans/p.md`.".into(),
+            meta: Some(meta),
+            attachments: Vec::new(),
+        };
+        let expected = implementation_request("# P\n\nThe plan.\n", Some(".rovik/plans/p.md"));
+        for path in [
+            file.to_string_lossy().into_owned(),
+            ".rovik/plans/p.md".into(),
+        ] {
+            let mut m =
+                message(json!({ "mode": "agent", "implementsPlan": true, "planPath": path }));
+            expand_implementation(&mut m, Some(&root)).unwrap();
+            assert_eq!(m.meta.as_ref().unwrap()["sentContent"], expected, "{path}");
+            assert_eq!(m.meta.as_ref().unwrap()["implementsPlan"], true);
+        }
+        for meta in [
+            json!({ "mode": "agent" }),
+            json!({ "implementsPlan": true }),
+            json!({ "implementsPlan": true, "planPath": "x.md", "sentContent": "as sent" }),
+        ] {
+            let mut m = message(meta.clone());
+            expand_implementation(&mut m, Some(&root)).unwrap();
+            assert_eq!(m.meta, Some(meta));
+        }
+        let mut gone = message(json!({ "implementsPlan": true, "planPath": "missing.md" }));
+        let err = expand_implementation(&mut gone, Some(&root)).unwrap_err();
+        assert!(err.contains("can't be read"), "{err}");
+    }
     use serde_json::json;
 
     const GOOD_PLAN: &str = "# Add users\n\nSummary.\n\n## Steps\n\
@@ -3151,6 +3846,56 @@ mod tests {
                 Some("backend"),
                 None
             ]
+        );
+    }
+    /// V02: the commands of a plan's Validation section, as checks: code
+    /// spans and code blocks that read as checks, not files, functions,
+    /// steps by hand or commands that never end.
+    #[test]
+    fn a_plans_validation_commands_are_its_checks() {
+        let plan = "# Add users\n\n## Steps\n\n1. **Users**\n   - Files: `src/users.rs`\n   - Run `cargo fmt` there.\n\n\
+            ## Validation\n\
+            - `cargo test -p users` and `cargo clippy --all-targets`\n\
+            - `npx tsc --noEmit`; `npm run test:unit`\n\
+            - `python -m pytest tests/test_users.py`\n\
+            - Add a test for `parse_args` in `tests/test_users.py`, as `test_parse_args()`\n\
+            - `node check.js`, `./scripts/ci.sh check`\n\
+            - Open /users by hand; `npm run dev` and `cargo run` to look; `vitest --watch`\n\
+            - `cargo test -p users` again\n\
+            ```sh\n$ go vet ./...\nmake test\n```\n";
+        assert_eq!(
+            validation_commands(plan),
+            [
+                "cargo test -p users",
+                "cargo clippy --all-targets",
+                "npx tsc --noEmit",
+                "npm run test:unit",
+                "python -m pytest tests/test_users.py",
+                "node check.js",
+                "./scripts/ci.sh check",
+                "go vet ./...",
+                "make test",
+            ]
+        );
+        // No section, an empty one, or nothing that runs: none.
+        assert!(validation_commands("# Plan\n\n## Steps\n1. x\n").is_empty());
+        assert!(validation_commands("# Plan\n\n## Validation\n\n## Decisions\n- x\n").is_empty());
+        assert!(
+            validation_commands("## Validation\n- Check it by hand.\n- `ok.txt` says ok\n")
+                .is_empty()
+        );
+        assert!(validation_commands("## Validation\n- ``\n- `   `\n- `` ` ``\n").is_empty());
+        assert_eq!(
+            [
+                "npx tsc --noEmit",
+                "cargo clippy",
+                "go vet ./...",
+                "npm run build",
+                "cargo test",
+                "node check.js"
+            ]
+            .map(validation_kind),
+            ["typecheck", "lint", "lint", "build", "test", "test"]
         );
     }
 }

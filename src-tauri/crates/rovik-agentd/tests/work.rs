@@ -189,7 +189,7 @@ async fn a_run_works_in_its_worktree_under_the_servers_rules() {
 
     setup
         .client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await
         .unwrap();
     ended(&setup.client).await;
@@ -258,7 +258,7 @@ async fn commands_naming_the_daemons_folder_wait_for_the_user() {
 
     setup
         .client
-        .request::<Option<String>>(Request::AgentStart(start))
+        .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await
         .unwrap();
 

@@ -1,6 +1,7 @@
 // Typed wrappers for the chat database commands (src-tauri/src/chat_db).
 import { invoke } from '@tauri-apps/api/core';
 import type { ChatMessage, ChatToolCall, DialogCursor, DialogSummary, ToolMeta } from '../types';
+import type { StageRow } from './autopilot';
 import type { Highlighted } from './chatSearch';
 import type { Effort } from './reasoning';
 
@@ -98,6 +99,12 @@ export const chatApi = {
     page(invoke('chat_get_messages_around', { messageId, before, after })),
 
   getMessageBody: (messageId: string) => invoke<string>('chat_get_message_body', { messageId }),
+
+  /**
+   * The chat's current Autopilot task's stage records, oldest first, from
+   * all its rows (a task's runs can be longer than a page); null: none.
+   */
+  taskStages: (dialogId: string) => invoke<StageRow[] | null>('chat_task_stages', { dialogId }),
 
   createDialog: (dialog: {
     id: string;

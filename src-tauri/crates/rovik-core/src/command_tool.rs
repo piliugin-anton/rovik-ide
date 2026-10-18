@@ -21,6 +21,11 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 /// summaries usually are. What's in between is dropped and counted.
 const HEAD_BYTES: usize = 16 * 1024;
 const TAIL_BYTES: usize = 48 * 1024;
+/// A check's whole output, kept too for the verify gate's failure keys
+/// (V07): every error counts when rounds are compared, the middle ones
+/// too. Past this a stream keeps its start and its last WHOLE_TAIL_BYTES.
+const WHOLE_BYTES: usize = 8 * 1024 * 1024;
+const WHOLE_TAIL_BYTES: usize = 1024 * 1024;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +40,10 @@ pub struct CommandOutput {
     pub truncated: bool,
     /// From the start of the command, after any wait for a CPU slot.
     pub duration_ms: u64,
+    /// `Queued::whole_output`: stdout and stderr up to WHOLE_BYTES each,
+    /// for what `stdout` and `stderr` leave out (V07).
+    #[serde(skip)]
+    pub whole: Option<(String, String)>,
     /// Waited for a CPU slot before it started (workload/queue.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waited: Option<crate::workload::Waited>,
@@ -50,6 +59,9 @@ pub struct Queued {
     pub env: Vec<(String, String)>,
     /// An isolated chat's command: the project's path shows its view.
     pub confine: Option<crate::overlay::confine::Confine>,
+    /// Keep the whole output too (`CommandOutput::whole`): the verify
+    /// gate's checks (V07).
+    pub whole_output: bool,
 }
 
 #[cfg(windows)]
@@ -90,27 +102,35 @@ struct HeadTail {
     tail: Vec<u8>,
     /// Bytes dropped from the front of `tail` so far.
     dropped: usize,
+    head_bytes: usize,
+    tail_bytes: usize,
 }
 
 impl HeadTail {
     fn new() -> Self {
+        Self::sized(HEAD_BYTES, TAIL_BYTES)
+    }
+
+    fn sized(head_bytes: usize, tail_bytes: usize) -> Self {
         HeadTail {
             head: Vec::new(),
             tail: Vec::new(),
             dropped: 0,
+            head_bytes,
+            tail_bytes,
         }
     }
 
     fn push(&mut self, mut bytes: &[u8]) {
-        if self.head.len() < HEAD_BYTES {
-            let take = bytes.len().min(HEAD_BYTES - self.head.len());
+        if self.head.len() < self.head_bytes {
+            let take = bytes.len().min(self.head_bytes - self.head.len());
             self.head.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
         }
         self.tail.extend_from_slice(bytes);
         // Trim in batches, not on every read.
-        if self.tail.len() > 2 * TAIL_BYTES {
-            let cut = self.tail.len() - TAIL_BYTES;
+        if self.tail.len() > 2 * self.tail_bytes {
+            let cut = self.tail.len() - self.tail_bytes;
             self.tail.drain(..cut);
             self.dropped += cut;
         }
@@ -118,8 +138,8 @@ impl HeadTail {
 
     /// The kept output, and whether anything was dropped.
     fn finish(mut self) -> (Vec<u8>, bool) {
-        if self.tail.len() > TAIL_BYTES {
-            let cut = self.tail.len() - TAIL_BYTES;
+        if self.tail.len() > self.tail_bytes {
+            let cut = self.tail.len() - self.tail_bytes;
             self.tail.drain(..cut);
             self.dropped += cut;
         }
@@ -146,18 +166,29 @@ impl HeadTail {
     }
 }
 
+/// A stream as kept: its start and end, whether anything was dropped, and
+/// with `whole`, up to WHOLE_BYTES of it (V07).
+type Drained = ((Vec<u8>, bool), Option<Vec<u8>>);
+
 /// Reads a whole stream on its own thread, keeping its start and end.
-fn drain<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<(Vec<u8>, bool)> {
+fn drain<R: Read + Send + 'static>(mut reader: R, whole: bool) -> thread::JoinHandle<Drained> {
     thread::spawn(move || {
         let mut kept = HeadTail::new();
+        let mut all =
+            whole.then(|| HeadTail::sized(WHOLE_BYTES - WHOLE_TAIL_BYTES, WHOLE_TAIL_BYTES));
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => kept.push(&buf[..n]),
+                Ok(n) => {
+                    kept.push(&buf[..n]);
+                    if let Some(all) = all.as_mut() {
+                        all.push(&buf[..n]);
+                    }
+                }
             }
         }
-        kept.finish()
+        (kept.finish(), all.map(|a| a.finish().0))
     })
 }
 
@@ -237,6 +268,7 @@ fn run_blocking(
                     truncated: false,
                     duration_ms: 0,
                     waited: None,
+                    whole: None,
                 })
             }
         }
@@ -280,8 +312,9 @@ fn run_blocking(
         job.spawned(child.id());
     }
 
-    let stdout = drain(child.stdout.take().ok_or("no stdout")?);
-    let stderr = drain(child.stderr.take().ok_or("no stderr")?);
+    let whole = queued.is_some_and(|q| q.whole_output);
+    let stdout = drain(child.stdout.take().ok_or("no stdout")?, whole);
+    let stderr = drain(child.stderr.take().ok_or("no stderr")?, whole);
 
     // Done when the shell has exited and the pipes are closed: a server the
     // command left running in the background still holds them, and its
@@ -313,20 +346,25 @@ fn run_blocking(
     // A process that left the group (setsid, a detached daemon) may still
     // hold the pipes after the kill; don't wait on the readers forever then.
     let killed = timed_out || stopped;
-    let join = |handle: thread::JoinHandle<(Vec<u8>, bool)>| -> (Vec<u8>, bool) {
+    let join = |handle: thread::JoinHandle<Drained>| -> Drained {
         if killed {
             let deadline = Instant::now() + Duration::from_secs(2);
             while !handle.is_finished() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
             }
             if !handle.is_finished() {
-                return (Vec::new(), true);
+                return ((Vec::new(), true), None);
             }
         }
         handle.join().unwrap_or_default()
     };
-    let (out, out_cut) = join(stdout);
-    let (err, err_cut) = join(stderr);
+    let ((out, out_cut), out_whole) = join(stdout);
+    let ((err, err_cut), err_whole) = join(stderr);
+    let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
+    let whole = match (out_whole, err_whole) {
+        (None, None) => None,
+        (o, e) => Some((text(o.unwrap_or_default()), text(e.unwrap_or_default()))),
+    };
     if !killed {
         if let Some(job) = &job {
             job.completed();
@@ -342,6 +380,7 @@ fn run_blocking(
         truncated: out_cut || err_cut,
         duration_ms: started.elapsed().as_millis() as u64,
         waited,
+        whole,
     })
 }
 
@@ -434,6 +473,60 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    /// V07: a check's output past what's kept to show is kept whole for
+    /// its failure keys: an error in the middle of 200 KB is among them.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_checks_whole_output_keeps_the_middle_errors_for_its_keys() {
+        use crate::agent_run::command_output::failure_keys;
+        let dir = std::env::temp_dir();
+        let lines = "i=0; while [ $i -lt 2000 ]; do echo \"ok line $i, padded out to well over fifty bytes long\"; i=$((i+1)); done";
+        let script = format!(
+            "{lines}; echo 'src/mid.ts(3,5): error TS2322: Type string is not number.'; {lines}; \
+             echo 'src/end.ts(1,1): error TS2304: Cannot find name x.'; exit 2"
+        );
+        let queued = Queued {
+            kind: crate::workload::JobKind::Check {
+                owner: "whole-output-test".into(),
+            },
+            note: Box::new(|_| {}),
+            env: Vec::new(),
+            confine: None,
+            whole_output: true,
+        };
+        let out = run_blocking(
+            dir.to_str().unwrap(),
+            &script,
+            Duration::from_secs(60),
+            &|| false,
+            Some(&queued),
+        )
+        .unwrap();
+        assert!(out.stdout.len() + out.stderr.len() < HEAD_BYTES + TAIL_BYTES + 200);
+        assert!(
+            out.truncated && !out.stdout.contains("src/mid.ts"),
+            "shown: cut"
+        );
+        let (stdout, _) = out.whole.expect("kept whole");
+        assert!(stdout.len() > 200_000, "{}", stdout.len());
+        let keys = failure_keys("typecheck", &stdout, false);
+        assert!(keys.iter().any(|k| k.contains("src/mid.ts")), "{keys:?}");
+        assert!(keys.iter().any(|k| k.contains("src/end.ts")), "{keys:?}");
+        // What's shown, as before: the end's error only.
+        let shown = failure_keys("typecheck", &out.stdout, false);
+        assert!(!shown.iter().any(|k| k.contains("src/mid.ts")), "{shown:?}");
+        // Not asked for: not kept.
+        let plain = run_blocking(
+            dir.to_str().unwrap(),
+            "echo hi",
+            Duration::from_secs(5),
+            &|| false,
+            None,
+        )
+        .unwrap();
+        assert!(plain.whole.is_none());
     }
 
     #[cfg(windows)]

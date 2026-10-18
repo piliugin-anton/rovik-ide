@@ -20,7 +20,7 @@ use crate::server::{self, OwnUser};
 use crate::store::Store;
 use crate::work;
 use rovik_core::agent_run::events::AgentEvent;
-use rovik_core::agent_run::{self, recovery};
+use rovik_core::agent_run::{self, candidates, recovery};
 use rovik_core::chat_db::store::now_ms;
 use rovik_core::{process, rt, workload, Core, EventSink, Paths};
 use std::path::{Path, PathBuf};
@@ -112,6 +112,7 @@ async fn run(
         store: store.clone(),
         events: events.clone(),
         results: results.clone(),
+        notifier: crate::notify::Notifier::new(store.clone()),
     };
     let core = Core::new(paths, Arc::new(sink))?;
     // `ChatChanged` names the database's clock (6.3).
@@ -125,6 +126,10 @@ async fn run(
     core.agents
         .set_markers_resolver(Arc::new(move |chat| results::marked_left(&marks, chat)));
     core.agents.set_on_server();
+    // A delivered task's result goes to its branch when its computer asked
+    // (D15, H04).
+    core.agents
+        .set_deliverer(Arc::new(crate::deliver::Pushing(results.clone())));
     // The heavy-work slots, again whenever other users' daemons start or
     // stop.
     tokio::spawn(apply_slots(limits.admin, limits.user_slots));
@@ -156,6 +161,11 @@ async fn run(
     //    last process left going (5.4). The cleanup comes again each day.
     //    A stop meanwhile (an upgrade, a reboot) ends start-up where it
     //    is, and the runs started so far pause for the next start.
+    // T05: a Thorough task's candidates work in worktrees beside its chat's.
+    core.agents
+        .set_copies(Arc::new(crate::candidates::Worktrees(Arc::downgrade(
+            &daemon,
+        ))));
     daemon.projects.clear_stale_locks();
     daemon.results.clear_stale_locks();
     let starting_up = async {
@@ -292,6 +302,9 @@ struct Tap {
     store: Arc<Store>,
     events: Arc<Events>,
     results: Arc<Results>,
+    /// A task's end and its failed stages, told where its computer asked
+    /// (H06).
+    notifier: Arc<crate::notify::Notifier>,
 }
 
 impl EventSink for Tap {
@@ -309,19 +322,50 @@ impl EventSink for Tap {
             _ => {}
         }
         self.events.agent(event);
-        // The run's end goes out first, then its result.
+        self.notifier.agent(event);
+        // The run's end goes out first, then its result: not an Autopilot
+        // task's own stages', which change nothing that's a result yet (the
+        // installs it prepared, the tests it wrote first: S03, S04; its
+        // candidates' implementations, which its pick takes from: T05).
         if let AgentEvent::RunEnded {
-            dialog_id, outcome, ..
+            dialog_id,
+            outcome,
+            autopilot,
+            stage,
+            ..
         } = event
         {
-            if !drained(outcome) {
-                self.results.after_run(dialog_id, outcome);
+            let candidates = outcome == candidates::CANDIDATES_OUTCOME;
+            if !drained(outcome) && !makes_no_result(stage.as_deref()) && !candidates {
+                self.results.after_run(dialog_id, outcome, *autopilot);
             }
         }
     }
 }
 
+/// An Autopilot stage the IDE runs itself, before the implementation:
+/// what it changes comes with the implementation's result (S03).
+fn makes_no_result(stage: Option<&str>) -> bool {
+    matches!(stage, Some("prepare" | "tests" | "deliver"))
+}
+
 /// A run's outcome when the daemon's stop paused it (R02).
 fn drained(outcome: &str) -> bool {
     outcome.strip_prefix("paused-") == Some(recovery::DRAIN)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::makes_no_result;
+
+    /// S03: the IDE's own stages of an Autopilot task bring no result; the
+    /// runs that change the project do, as every other run does.
+    #[test]
+    fn only_the_ides_own_stages_bring_no_result() {
+        assert!(makes_no_result(Some("prepare")) && makes_no_result(Some("tests")));
+        assert!(makes_no_result(Some("deliver")));
+        for stage in [None, Some("plan"), Some("implement"), Some("later")] {
+            assert!(!makes_no_result(stage), "{stage:?}");
+        }
+    }
 }

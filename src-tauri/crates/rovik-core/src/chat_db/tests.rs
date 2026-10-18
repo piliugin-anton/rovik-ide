@@ -83,6 +83,63 @@ fn mark(text: &str, ranges: &[[usize; 2]]) -> String {
     out
 }
 
+/// A02: the rows with a record of one kind, oldest first, after a place:
+/// a meta that only mentions the key (in a message's text) isn't one, nor
+/// one that holds null under it.
+#[test]
+fn rows_with_a_meta_key_are_found_and_only_those() {
+    let mut conn = db();
+    dialog(&mut conn, "d", "Chat", 0);
+    dialog(&mut conn, "other", "Other", 0);
+    let with = |id: &str, role: &str, meta: serde_json::Value| NewMessage {
+        meta: Some(meta),
+        ..message(id, role, "")
+    };
+    add(
+        &mut conn,
+        "d",
+        vec![
+            with(
+                "s1",
+                "assistant",
+                serde_json::json!({ "stage": { "name": "plan" } }),
+            ),
+            with(
+                "u1",
+                "user",
+                serde_json::json!({ "sentContent": "rename \"stage\" to \"step\"" }),
+            ),
+            with("n1", "assistant", serde_json::json!({ "stage": null })),
+            message("plain", "assistant", "text"),
+            with(
+                "s2",
+                "assistant",
+                serde_json::json!({ "stage": { "name": "deliver" } }),
+            ),
+        ],
+    );
+    add(
+        &mut conn,
+        "other",
+        vec![with("s3", "assistant", serde_json::json!({ "stage": {} }))],
+    );
+    let ids = |rows: Vec<MessageRow>| rows.into_iter().map(|m| m.id).collect::<Vec<_>>();
+    let found = messages_with_meta(&conn, "d", "stage", None).unwrap();
+    let first_seq = found[0].seq;
+    assert_eq!(ids(found), ["s1", "s2"]);
+    assert_eq!(
+        ids(messages_with_meta(&conn, "d", "stage", Some(first_seq)).unwrap()),
+        ["s2"]
+    );
+    assert_eq!(
+        ids(role_messages_after(&conn, "d", "user", first_seq).unwrap()),
+        ["u1"]
+    );
+    assert!(role_messages_after(&conn, "d", "tool", first_seq)
+        .unwrap()
+        .is_empty());
+}
+
 #[test]
 fn paging_dialogs_by_cursor() {
     let mut conn = db();
@@ -408,7 +465,7 @@ fn attachments_are_listed_in_order_and_collected_when_unreferenced() {
     add(&mut conn, "d", vec![message("u1", "user", "look"), shot]);
 
     let page = get_messages(&conn, "d", None, 10).unwrap();
-    assert_eq!(page.messages[1].attachments, [a.clone()]);
+    assert_eq!(page.messages[1].attachments, std::slice::from_ref(&a));
 
     // b is unreferenced and past its grace period; a is in use.
     assert_eq!(super::attachments::collect_garbage(&conn, &dir).unwrap(), 1);
@@ -977,6 +1034,66 @@ fn chat_model_round_trips() {
     // Missing chats are ignored.
     set_chat_model(&conn, "ghost", &other).unwrap();
     assert_eq!(chat_model(&conn, "ghost").unwrap(), None);
+}
+
+/// D2: a window keeps the chat's rows from its start, after the one row
+/// it keeps before them (the task's request); without one, the chat is
+/// whole.
+#[test]
+fn a_history_window_keeps_its_rows_after_the_request() {
+    use super::history::{load_messages, load_messages_in, Window};
+    let mut conn = db();
+    dialog(&mut conn, "d", "Windowed", 0);
+    let mut stage = message("r1", "assistant", "");
+    stage.meta = Some(serde_json::json!({ "stage": { "name": "implement" } }));
+    add(
+        &mut conn,
+        "d",
+        vec![
+            message("u0", "user", "Earlier talk"),
+            message("a0", "assistant", "An earlier answer."),
+            message("task", "user", "Make the test pass"),
+            message("a1", "assistant", "Saved the plan."),
+            stage,
+            message("ide", "user", "Implement this plan."),
+            message("a2", "assistant", "Done."),
+        ],
+    );
+    let texts = |window: Option<&Window>| -> Vec<String> {
+        load_messages_in(&conn, "d", None, window)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.text)
+            .collect()
+    };
+    let whole = load_messages(&conn, "d", None).unwrap();
+    assert_eq!(whole.len(), 6, "the stage record is never sent");
+    let from = get_messages(&conn, "d", None, 50)
+        .unwrap()
+        .messages
+        .iter()
+        .find(|m| m.id == "r1")
+        .unwrap()
+        .seq;
+    let window = Window {
+        from_seq: from,
+        keep: Some("task".into()),
+    };
+    assert_eq!(
+        texts(Some(&window)),
+        ["Make the test pass", "Implement this plan.", "Done."]
+    );
+    // A row it keeps that isn't the chat's, or none: its rows alone.
+    let elsewhere = Window {
+        keep: Some("ghost".into()),
+        ..window.clone()
+    };
+    assert_eq!(texts(Some(&elsewhere)), ["Implement this plan.", "Done."]);
+    let alone = Window {
+        keep: None,
+        ..window
+    };
+    assert_eq!(texts(Some(&alone)), ["Implement this plan.", "Done."]);
 }
 
 #[test]

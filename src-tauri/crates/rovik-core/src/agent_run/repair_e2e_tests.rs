@@ -809,6 +809,146 @@ async fn undoing_a_flagged_change_verifies_the_run() {
     assert!(rounds.last().unwrap().get("integrity").is_none());
 }
 
+/// V05: three checks, each on its own file: lint on users.txt, the build
+/// on posts.txt, and the tests, whose `tags` test reads tags.txt.
+fn three_checks() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "lint": "node lint.js", "build": "node build.js", "test": "node run.js" } }"#,
+        ),
+        (
+            "lint.js",
+            "if (require('fs').readFileSync('users.txt', 'utf8').includes('bad')) { console.log('users.txt:1: error: users is bad'); process.exit(1); }",
+        ),
+        (
+            "build.js",
+            "if (require('fs').readFileSync('posts.txt', 'utf8').includes('bad')) { console.log('posts.txt:1: error: posts is bad'); process.exit(1); }",
+        ),
+        ("run.js", RUNNER),
+        (
+            "tests/tags.test.js",
+            "const fs = require('fs');\ntest('tags', () => assert(!fs.readFileSync('tags.txt', 'utf8').includes('broken'), 'tags.txt is broken'));\n",
+        ),
+        ("users.txt", "bad\n"),
+        ("posts.txt", "bad\n"),
+        ("tags.txt", "fine\n"),
+    ]
+}
+
+/// V05: a round fixes two checks and breaks the tests' `tags`: only
+/// tags.txt, the file behind it, goes back; the two fixes stay, and the
+/// checks run again at once and pass.
+#[tokio::test]
+async fn a_fix_that_breaks_one_check_keeps_its_other_fixes() {
+    if !has_node() {
+        return;
+    }
+    let h = harness(&three_checks()).await;
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        // Fixes lint and the build; breaks `tags`.
+        write("w2", "users.txt", "good\n"),
+        write("w3", "posts.txt", "good\n"),
+        write("w4", "tags.txt", "broken\n"),
+        Reply::Text("Done."),
+        // Never asked: the checks pass once tags.txt is back.
+        Reply::Text("Unexpected."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix the checks"), checks_on()))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    assert_eq!(h.file("users.txt").as_deref(), Some("good\n"), "kept");
+    assert_eq!(h.file("posts.txt").as_deref(), Some("good\n"), "kept");
+    assert_eq!(h.file("tags.txt").as_deref(), Some("fine\n"), "put back");
+    let messages = h.messages().await;
+    let rounds = records(&messages);
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [&json!("failed"), &json!("rolled-back"), &json!("passed")]
+    );
+    let rb = &rounds[1]["rolledBack"];
+    assert_eq!(rb["broke"], json!(["test|test|t::tags"]));
+    assert_eq!(rb["restored"], json!(["tags.txt"]));
+    assert_eq!(rb["kept"], json!(["posts.txt", "users.txt"]));
+    // The round counts once: the checks of what stayed are round 2's.
+    assert_eq!(rounds[2]["round"], 2);
+    // The agent was told of round 1 only: the rest needed nobody.
+    assert_eq!(harness_texts(&messages, "verification").len(), 1);
+    assert!(!messages.iter().any(|m| m.content == "Unexpected."));
+}
+
+/// V05: the files behind what broke went back, and the rest of the fix
+/// still breaks it: then everything goes back, as before V05, and the
+/// agent has the round it would have had.
+#[tokio::test]
+async fn when_the_rest_still_breaks_it_everything_goes_back() {
+    if !has_node() {
+        return;
+    }
+    let mut files = three_checks();
+    // `tags` reads posts.txt too: the build's fix breaks it as well.
+    files[4] = (
+        "tests/tags.test.js",
+        "const fs = require('fs');\ntest('tags', () => assert(!fs.readFileSync('tags.txt', 'utf8').includes('broken') && !fs.readFileSync('posts.txt', 'utf8').includes('good'), 'tags is broken'));\n",
+    );
+    let h = harness(&files).await;
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        write("w2", "users.txt", "good\n"),
+        write("w3", "posts.txt", "good\n"),
+        write("w4", "tags.txt", "broken\n"),
+        Reply::Text("Done."),
+        // Told everything went back, it stops there.
+        Reply::Text("I'll leave it."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Fix the checks"), checks_on()))
+        .await;
+    h.run_end().await;
+    for (file, was) in [
+        ("users.txt", "bad\n"),
+        ("posts.txt", "bad\n"),
+        ("tags.txt", "fine\n"),
+    ] {
+        assert_eq!(
+            h.file(file).as_deref(),
+            Some(was),
+            "{file}: as before round 2"
+        );
+    }
+    let messages = h.messages().await;
+    let rounds = records(&messages);
+    let statuses: Vec<&Value> = rounds.iter().map(|r| &r["status"]).collect();
+    assert_eq!(
+        statuses,
+        [
+            &json!("failed"),
+            &json!("rolled-back"),
+            &json!("rolled-back"),
+            &json!("unresolved")
+        ],
+        "{rounds:#?}"
+    );
+    assert_eq!(
+        rounds[1]["rolledBack"]["kept"],
+        json!(["posts.txt", "users.txt"])
+    );
+    let all = &rounds[2]["rolledBack"];
+    assert!(all.get("kept").is_none(), "everything: {all}");
+    assert_eq!(all["restored"], json!(["posts.txt", "users.txt"]));
+    assert_eq!(rounds[2]["round"], 2, "the same round, counted once");
+    // The agent hears it as attempt 2: the third is still its own.
+    let reports = harness_texts(&messages, "verification");
+    assert_eq!(reports.len(), 2);
+    assert!(reports[1].contains("(attempt 2 of 3)"), "{}", reports[1]);
+    assert!(reports[1].contains("users is bad"), "{}", reports[1]);
+}
+
 #[tokio::test]
 async fn a_fix_that_lets_the_tests_run_is_not_rolled_back() {
     if !has_node() {

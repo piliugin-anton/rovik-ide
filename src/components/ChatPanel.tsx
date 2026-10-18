@@ -45,7 +45,7 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { estimateContext } from '../lib/aiChat';
 import { DEFAULT_CONTEXT_TOKENS } from '../lib/contextBudget';
 import ContextMeter, { type ContextUsage } from './ContextMeter';
-import { chatMode, implementationRequest, setChatMode, type ChatMode } from '../lib/chatMode';
+import { chatMode, setChatMode, setOwnModeChat, type ChatMode } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
 import { formatBytes, plural } from '../lib/textUtils';
@@ -63,8 +63,18 @@ import {
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
+import AutopilotStrip from './AutopilotStrip';
+import { stageRows, taskRecords, taskWaits, type StageRow } from '../lib/autopilot';
+import { autopilotConfig } from '../lib/autopilotSettings';
 import { overlayStatus } from '../lib/overlay';
-import { barChanged, clearUpload, cloud, onCloudEvent, readOnlyReason } from '../lib/cloud';
+import {
+  barChanged,
+  clearUpload,
+  cloud,
+  onCloudEvent,
+  readOnlyReason,
+  worksOnItsOwn,
+} from '../lib/cloud';
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
 import ChatLocation from './ChatLocation';
 import UploadProgress from './UploadProgress';
@@ -77,9 +87,8 @@ import {
   settledChecklist,
 } from '../lib/checklist';
 import {
+  implementationMessage,
   onImplementPlanRequest,
-  readPlan,
-  relativePlanPath,
   takeImplementPlanRequest,
 } from '../lib/plans';
 import QuestionPanel from './QuestionPanel';
@@ -318,6 +327,13 @@ export default function ChatPanel(props: ChatProps) {
       if (barChanged(event, activeDialogId())) setIsolationRevision((n) => n + 1);
     })
   );
+  // A chat on a host that works on its own goes in Autopilot unless the
+  // user picks another mode for it (H02).
+  createEffect(() => {
+    const open = activeDialog();
+    setOwnModeChat(open && worksOnItsOwn(open.place, cloud.hosts) ? open.id : null);
+  });
+  onCleanup(() => setOwnModeChat(null));
   // The chat on screen goes first in the queue for heavy work (builds,
   // tests) when several chats want the CPU at once (src-tauri/src/workload).
   createEffect(() => {
@@ -2640,7 +2656,13 @@ export default function ChatPanel(props: ChatProps) {
   const agentConfig = (): AgentConfig => ({
     permissions: permissions(),
     approvalProfiles: approvalProfiles(permissions()),
-    subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
+    subagents: resolveSubagentConfig(
+      subagentSettings(),
+      providers(),
+      resolveProfile,
+      selection() ?? null
+    ),
+    autopilot: autopilotConfig(subagentSettings().autopilot),
   });
   createEffect(() => configureAgent(agentConfig()));
 
@@ -2761,40 +2783,26 @@ export default function ChatPanel(props: ChatProps) {
     return chatMode();
   }
 
-  /**
-   * "Implement this plan" under the plan in the chat: the plan file's current
-   * text (edits included), or the reply itself if it has no file.
-   */
-  async function implementPlan() {
+  /** "Implement this plan" under the plan in the chat: its file. */
+  function implementPlan() {
     const dialogId = activeDialogId();
     if (!dialogId) return;
     const last = store.messagesOf(dialogId).find((m) => m.id === planMessageId());
-    if (!last) return;
-    const file = last.meta?.planFile;
-    // From its host, for a remote chat (K09).
-    const text = file ? await readPlan(dialogId, file).catch(() => null) : null;
-    startImplementation(dialogId, text ?? last.content, text !== null ? file : undefined);
+    const file = last?.meta?.planFile;
+    if (file) startImplementation(dialogId, file);
   }
 
   /**
-   * Agent mode, carrying out a plan. The plan goes in full with the request,
-   * which keeps it in view for the whole run (the current request is never
-   * dropped from the context); the chat shows a short line.
+   * Agent mode, carrying out a plan. The backend reads the plan's file as it
+   * is now (a remote chat's on its host, K09) and sends it in full with the
+   * request, which keeps it in view for the whole run (the current request
+   * is never dropped from the context); the chat shows a short line.
    */
-  function startImplementation(dialogId: string, plan: string, file?: string) {
+  function startImplementation(dialogId: string, file: string) {
     if (!activeProfile() || isRunning(dialogId)) return;
     setChatMode('agent');
-    const rel = file ? relativePlanPath(file, props.rootPath()) : undefined;
-    const wire = implementationRequest(plan, rel);
-    void sendMessage(
-      dialogId,
-      {
-        id: crypto.randomUUID(),
-        content: rel ? `Implement the plan in \`${rel}\`.` : 'Implement the plan above.',
-        meta: { mode: 'agent', sentContent: wire, implementsPlan: true },
-      },
-      wire
-    );
+    const { content, meta } = implementationMessage(file, props.rootPath());
+    void sendMessage(dialogId, { id: crypto.randomUUID(), content, meta }, undefined);
   }
 
   /**
@@ -2824,7 +2832,7 @@ export default function ChatPanel(props: ChatProps) {
     const dialogId = activeDialogId();
     if (!dialogId || sending() || loadingHistory()) return;
     const request = takeImplementPlanRequest();
-    if (request) startImplementation(dialogId, request.content, request.path);
+    if (request) startImplementation(dialogId, request.path);
   }
   const stopPlanRequests = onImplementPlanRequest(() => takePlanFromEditor());
   onCleanup(stopPlanRequests);
@@ -2879,6 +2887,69 @@ export default function ChatPanel(props: ChatProps) {
     return undefined;
   });
 
+  /*
+   * The open chat's Autopilot task, for the strip above the input. Its
+   * records as stored are read again when the chat changes, a run starts or
+   * ends, or a record comes or changes: the messages held can be a page of
+   * a task's longer runs. Those held are the live ones (taskRecords).
+   */
+  const [storedStages, setStoredStages] = createSignal<{
+    dialogId: string;
+    rows: StageRow[] | null;
+  } | null>(null);
+  const stagesKey = createMemo(() => {
+    const records = stageRows(messages()).map((r) => `${r.id}:${r.stage.status}`);
+    return `${activeDialogId() ?? ''}|${sending()}|${records.join(',')}`;
+  });
+  let stagesRead = 0;
+  createEffect(
+    on(stagesKey, () => {
+      const dialogId = activeDialogId();
+      const read = ++stagesRead;
+      if (!dialogId) return setStoredStages(null);
+      chatApi.taskStages(dialogId).then(
+        (rows) => {
+          if (read === stagesRead) setStoredStages({ dialogId, rows });
+        },
+        (err) => console.error('Failed to read the Autopilot task:', err)
+      );
+    })
+  );
+  const taskStages = createMemo(() => {
+    const chat = activeChat();
+    const stored = storedStages();
+    if (!chat) return null;
+    const rows = stored && stored.dialogId === activeDialogId() ? stored.rows : null;
+    return taskRecords(rows, chat.messages, !chat.hasNewer);
+  });
+  /**
+   * The record of the stage the task's run carries out now, whatever page
+   * of the chat is held (the strip opens one around a record): the task's
+   * latest, while it runs.
+   */
+  const liveStageId = createMemo(() => {
+    if (!sending()) return null;
+    const rows = taskStages();
+    const last = rows?.[rows.length - 1];
+    return last?.stage.status === 'running' ? last.id : null;
+  });
+  /** A stage's record in the chat, from the strip: loaded around it when it isn't held. */
+  async function showStageRecord(id: string) {
+    const dialog = activeDialog();
+    if (!dialog) return;
+    if (!messages().some((m) => m.id === id)) {
+      try {
+        await store.openChatAround(dialog, id);
+      } catch (err) {
+        console.error('Failed to open the stage’s record:', err);
+        return;
+      }
+    }
+    setFocusMessageId(id);
+    // Shown once: messages coming in afterwards don't scroll back to it.
+    window.setTimeout(() => setFocusMessageId((f) => (f === id ? null : f)), 0);
+  }
+
   /** A question waiting in the open chat: the composer answers it. */
   const waitingQuestion = () => {
     const id = store.state.activeId;
@@ -2929,7 +3000,9 @@ export default function ChatPanel(props: ChatProps) {
    * and have no result. When such a chat is opened, the run picks up where
    * it stopped: each of those calls asks the user again (manually, whatever
    * the settings say, since the user wasn't there to decide), runs if
-   * allowed, and the agent continues.
+   * allowed, and the agent continues. An Autopilot task the app's closing
+   * cut, mid-stage or between two, goes on the same way (lib/autopilot.ts):
+   * the backend reads its records and knows where.
    */
 
   createEffect(() => {
@@ -2938,8 +3011,9 @@ export default function ChatPanel(props: ChatProps) {
     // Wait until the newest messages are loaded and nothing is running.
     if (!dialogId || !chat || chat.hasNewer || sending() || !activeProfile()) return;
     if (resumed.has(dialogId)) return;
-    // A remote chat's daemon picks its run up itself (K07).
-    if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place)) return;
+    // A remote chat's daemon picks its run up itself (K07). The task as
+    // stored: the page held may show none of its records.
+    if (!resumesHere(chat.messages, store.summaryOf(dialogId)?.place, taskStages())) return;
     resumed.add(dialogId);
     untrack(() => void beginRun(dialogId, { kind: 'resume' }, lastUserWireContent(dialogId)));
   });
@@ -3734,6 +3808,7 @@ export default function ChatPanel(props: ChatProps) {
         dialogId={activeDialogId()}
         chat={activeChat()}
         sending={sending()}
+        liveStageId={liveStageId()}
         focusMessageId={focusMessageId()}
         onLoadOlder={() =>
           activeDialogId() ? store.loadOlder(activeDialogId()!) : Promise.resolve(0)
@@ -3787,6 +3862,16 @@ export default function ChatPanel(props: ChatProps) {
             chatTitle={(other) => store.state.list.items.find((d) => d.id === other)?.title}
             remote={store.summaryOf(id)?.place?.kind === 'host'}
             readOnly={readOnly()}
+          />
+        )}
+      </Show>
+      {/* The chat's Autopilot task: its stages, each with how it went. */}
+      <Show when={taskStages()}>
+        {(rows) => (
+          <AutopilotStrip
+            rows={rows()}
+            running={sending()}
+            onShow={(id) => void showStageRecord(id)}
           />
         )}
       </Show>
@@ -3851,7 +3936,9 @@ export default function ChatPanel(props: ChatProps) {
                     ? 'Answer the question above, or type your own answer…'
                     : chatMode() === 'plan'
                       ? 'Describe what to plan…'
-                      : 'Message the model...'
+                      : chatMode() === 'autopilot'
+                        ? 'Describe the task…'
+                        : 'Message the model...'
             }
           />
 
@@ -3943,8 +4030,9 @@ export default function ChatPanel(props: ChatProps) {
               hidden
               onChange={(e) => filesPicked(e.currentTarget)}
             />
+            {/* Stop while a run goes, or while the task waits out a rate limit (H07). */}
             <Show
-              when={sending() && !waitingQuestion()}
+              when={(sending() || taskWaits(taskStages())) && !waitingQuestion()}
               fallback={
                 <button
                   onClick={() => void handleSend()}

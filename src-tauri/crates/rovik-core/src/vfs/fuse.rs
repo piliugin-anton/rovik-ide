@@ -241,8 +241,11 @@ impl fuser::Filesystem for FuseFs {
         _rdev: u32,
         reply: ReplyEntry,
     ) {
-        // Regular files only: no devices, FIFOs or sockets in memory.
-        if mode & libc::S_IFMT as u32 != libc::S_IFREG as u32 && mode & libc::S_IFMT as u32 != 0 {
+        // Regular files only: no devices, FIFOs or sockets in memory. The
+        // casts are for macOS, whose `mode_t` is u16.
+        #[allow(clippy::unnecessary_cast)]
+        let (kind, regular) = (mode & libc::S_IFMT as u32, libc::S_IFREG as u32);
+        if kind != regular && kind != 0 {
             return reply.error(Errno::EPERM);
         }
         let name = match name_str(name) {

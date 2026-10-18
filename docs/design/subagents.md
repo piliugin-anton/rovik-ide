@@ -312,14 +312,18 @@ not through `task`.
 sections (`subagent.rs` `KindSpec`); a report must have the first ones
 (`required`), and the rest are optional:
 
-| Kind          | Sections (required first)                                  |
-| ------------- | ---------------------------------------------------------- |
-| scout         | `Answer`; `Evidence`, `Open questions`, `Web sources`      |
-| worker        | `Summary`; `Changed files`, `Open questions`               |
-| test writer   | `Summary`; `Test files`, `Assumptions`                     |
-| triage        | `Root cause`, `Files to fix`, `Next step`, `Confidence`    |
-| reviewer      | `Findings`: a numbered list (`change_review.rs`), or None. |
-| plan reviewer | `Findings`, the same list, with `Step N` for a location.   |
+| Kind          | Sections (required first)                                                                                                                                                                                                                         |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| scout         | `Answer`; `Evidence`, `Open questions`, `Web sources`                                                                                                                                                                                             |
+| worker        | `Summary`; `Changed files`, `Decisions`, `Open questions`                                                                                                                                                                                         |
+| test writer   | `Summary`; `Test files`, `Assumptions`                                                                                                                                                                                                            |
+| triage        | `Root cause`, `Files to fix`, `Next step`, `Confidence`                                                                                                                                                                                           |
+| reviewer      | `Findings`: a numbered list (`change_review.rs`), or None.                                                                                                                                                                                        |
+| plan reviewer | `Findings`, the same list, with `Step N` for a location.                                                                                                                                                                                          |
+| acceptance    | `Verdicts`; `Evidence`, `Unmet` (Autopilot's, `acceptance.rs`)                                                                                                                                                                                    |
+| planner       | `Plan`, `Criteria`: one of them, as the brief asks: the whole plan under `Plan`, or the criteria alone (Thorough's, `planning.rs`)                                                                                                                |
+| judge         | `Choice`, `Criteria`, `Verdict`: one of them, as the brief asks: a choice among plans (then `Why`, and `Plan` when it merged or revised one), the merged criteria, or the better of two candidates' changes (then `Why`) (Thorough's, `judge.rs`) |
+| breaker       | `Summary`; `Test files`, `Assumptions` (Thorough's, `breaker.rs`)                                                                                                                                                                                 |
 
 There's no `## Status` section: the harness decides the status.
 

@@ -8,10 +8,15 @@
 //   node scripts/eval/eval.mjs pilot --settings FILE
 //   node scripts/eval/eval.mjs run --settings FILE
 //   node scripts/eval/eval.mjs report DIR
-//   node scripts/eval/eval.mjs variants --settings FILE [--kinds a,b]   (G02)
+//   node scripts/eval/eval.mjs variants --settings FILE [--kinds a,b | --variants a,b]   (G02)
 //   node scripts/eval/eval.mjs compare [--out FILE]                     (G02, G03)
+//   node scripts/eval/eval.mjs compare A B [--out FILE]                 (autopilot-plan G03)
 //   node scripts/eval/eval.mjs apply-defaults [--comparison FILE]       (G03)
-//   node scripts/eval/eval.mjs dry-run-variants [--tasks a,b]
+//   node scripts/eval/eval.mjs dry-run-variants [--tasks a,b] [--variants a,b]
+//
+// The variants are each kind on by itself (`kind-<id>`) and, from the
+// Autopilot plan's G03, Autopilot at each effort (`autopilot-balanced`,
+// `autopilot-thorough`).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -24,13 +29,18 @@ import {
   appendFileSync,
   copyFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  AUTOPILOT_VARIANTS,
   MEASURED_KINDS,
   UNMEASURED_KINDS,
   applyDefaults,
+  autopilotCaps,
+  autopilotSettings,
+  compareCampaigns,
   compareVariant,
+  comparisonMarkdown,
   grade,
   parseCargo,
   parseGoJson,
@@ -376,6 +386,8 @@ async function runOne(task, rep, campaignDir, opts) {
   const ws = join(CACHE, 'work', workspaceName(campaignDir, task.id, rep));
   const { env, caches, start } = prepare(task, task.base, ws);
   const report = join(dir, 'report.json');
+  // G03: an Autopilot variant's caps are its own (`autopilotCaps`).
+  const caps = opts.perRun ?? BUDGET.perRun;
   const args = [
     '--project',
     ws,
@@ -390,15 +402,17 @@ async function runOne(task, rep, campaignDir, opts) {
     '--data',
     join(dir, 'data'),
     '--timeout',
-    String(BUDGET.perRun.timeoutSeconds),
+    String(caps.timeoutSeconds),
     '--max-tokens',
-    String(BUDGET.perRun.maxTokens),
+    String(caps.maxTokens),
+    // G03: `--mode autopilot --effort …` for an Autopilot variant.
+    ...(opts.args ?? []),
   ];
   const started = Date.now();
   const r = await run(opts.runner, args, {
     env: { ...env, ...(opts.env ?? {}) },
     cwd: ws,
-    timeoutMs: (BUDGET.perRun.timeoutSeconds + 300) * 1000,
+    timeoutMs: (caps.timeoutSeconds + 300) * 1000,
     logFile: join(dir, 'runner.log'),
   });
   const rep_ = existsSync(report) ? readJson(report) : null;
@@ -423,6 +437,17 @@ async function runOne(task, rep, campaignDir, opts) {
     ms: rep_?.ms ?? Date.now() - started,
     interventions: rep_?.interventions ?? 0,
     toolCalls: rep_?.toolCalls ?? 0,
+    // G02: how the run used its tools (its subagents' included), its
+    // checks' rounds, and an Autopilot task's stages.
+    toolErrors: rep_?.toolErrors ?? 0,
+    toolErrorClasses: rep_?.toolErrorClasses ?? {},
+    editMisses: rep_?.editMisses ?? 0,
+    verifyRounds: rep_?.verifyRounds ?? 0,
+    mode: rep_?.mode ?? null,
+    effort: rep_?.effort ?? null,
+    stages: Array.isArray(rep_?.stages)
+      ? rep_.stages.map(({ name, status, round, outcome }) => ({ name, status, round, outcome }))
+      : null,
     grade: g,
     ...(touched.length ? { changedCaches: touched } : {}),
   };
@@ -462,8 +487,11 @@ function settingsFor(flags) {
   return { path, price };
 }
 
-/** Runs a campaign's runs in order, within its budget cap. */
-async function campaign(name, tasks, repeats, cap, flags) {
+/**
+ * Runs a campaign's runs in order, within its budget cap. `variant`: an
+ * Autopilot variant's caps a run and the runner's flags (G03).
+ */
+async function campaign(name, tasks, repeats, cap, flags, variant = {}) {
   const { path: settings, price } = settingsFor(flags);
   const runner = runnerPath(flags);
   const policy = resolve(flags.policy ?? join(EVAL, 'policy.json'));
@@ -475,6 +503,7 @@ async function campaign(name, tasks, repeats, cap, flags) {
       price,
       policy,
       runner,
+      ...variant,
     });
   } finally {
     unlock();
@@ -487,10 +516,11 @@ async function campaignIn(
   repeats,
   cap,
   campaignDir,
-  { settings, price, policy, runner }
+  { settings, price, policy, runner, perRun, args }
 ) {
   // The first run's estimate: every token it may use at the input price.
-  const firstEstimate = (BUDGET.perRun.maxTokens / 1e6) * price.inputPerMillion;
+  const caps = perRun ?? BUDGET.perRun;
+  const firstEstimate = (caps.maxTokens / 1e6) * price.inputPerMillion;
   const plan = [];
   for (let rep = 1; rep <= repeats; rep++)
     for (const task of tasks)
@@ -504,7 +534,7 @@ async function campaignIn(
     firstEstimate,
     runOne: async ({ task, rep }) => {
       process.stdout.write(`[${name}] ${task.id} #${rep}: `);
-      const r = await runOne(task, rep, campaignDir, { settings, policy, runner });
+      const r = await runOne(task, rep, campaignDir, { settings, policy, runner, perRun, args });
       const cost = typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(3)}` : 'cost unknown';
       console.log(
         `${r.success ? 'PASS' : 'fail'} (${r.outcome}, ${r.grade.passed}/${r.grade.required} tests, ` +
@@ -606,13 +636,68 @@ const kindsWanted = (flags) => {
 };
 
 /**
- * G02: each measured kind on by itself, on the baseline's tasks, each its
- * own campaign (`kind-<id>`) within its cap. A kind's campaign starts only
- * if the baseline's cost a run, times its cost budget, times the runs,
- * fits the cap.
+ * Every variant, each its own campaign: each measured kind on by itself
+ * (G02, `kind-<id>`) and Autopilot at each effort (G03, `autopilot-<effort>`).
+ */
+const ALL_VARIANTS = [
+  ...MEASURED_KINDS.map((k) => ({ ...k, campaign: `kind-${k.id}`, kind: k.id })),
+  ...AUTOPILOT_VARIANTS.map((v) => ({ ...v, campaign: v.id })),
+];
+
+/** The variants asked for: `--variants` (campaign or kind ids), `--kinds` (kinds only), or all. */
+function variantsWanted(flags) {
+  if (flags.kinds && flags.variants) throw new Error('give --variants or --kinds, not both');
+  if (flags.kinds) {
+    const kinds = kindsWanted(flags).map((k) => k.id);
+    return ALL_VARIANTS.filter((v) => kinds.includes(v.kind));
+  }
+  if (!flags.variants) return ALL_VARIANTS;
+  const ids = String(flags.variants).split(',');
+  const of = (id) => ALL_VARIANTS.find((v) => v.campaign === id || v.kind === id);
+  const unknown = ids.filter((id) => !of(id));
+  if (unknown.length)
+    throw new Error(
+      `unknown variants: ${unknown.join(', ')} (variants: ${ALL_VARIANTS.map((v) => v.campaign).join(', ')})`
+    );
+  return ALL_VARIANTS.filter((v) => ids.some((id) => of(id) === v));
+}
+
+/**
+ * A variant's campaign, as `variants` and `dry-run-variants` run it: its
+ * settings from the baseline's, its cost budget against the baseline, its
+ * cap, and for Autopilot its caps a run and the runner's flags.
+ */
+function variantPlan(variant, base) {
+  if (variant.kind) {
+    const v = BUDGET.variants;
+    return {
+      settings: variantSettings(base, variant.kind),
+      costRatioMax: v.costRatioMax[variant.kind] ?? v.costRatioMax.default,
+      capUsd: v.capUsd,
+      repeats: v.repeats,
+      run: {},
+    };
+  }
+  const effort = BUDGET.autopilot.efforts[variant.effort];
+  return {
+    settings: autopilotSettings(base, variant.effort, effort),
+    costRatioMax: effort.costRatioMax,
+    capUsd: effort.capUsd,
+    repeats: BUDGET.autopilot.repeats,
+    run: {
+      perRun: autopilotCaps(effort),
+      args: ['--mode', 'autopilot', '--effort', variant.effort],
+    },
+  };
+}
+
+/**
+ * G02 and G03: each variant on the baseline's tasks, each its own campaign
+ * within its cap: a kind on by itself, or Autopilot at an effort. A
+ * campaign starts only if the baseline's cost a run, times the variant's
+ * cost budget, times the runs, fits the cap.
  */
 async function variants(flags) {
-  const v = BUDGET.variants;
   const { path } = settingsFor(flags);
   const base = readJson(path);
   if (subagentsOn(base))
@@ -625,7 +710,6 @@ async function variants(flags) {
     throw new Error(`no baseline results in ${baseDir}: run \`eval.mjs run\` first`);
   const baseTasks = [...new Set(baseResults.map((r) => r.task))].join(',');
   const tasks = usableTasks(flags.tasks ?? baseTasks);
-  const repeats = Number(flags.repeats ?? v.repeats);
   const baseSummary = summarize(baseResults);
   // P6.6: a budget from unknown costs would be made up.
   if (baseSummary.unknownCosts || baseSummary.meanCostUsd === null)
@@ -633,44 +717,55 @@ async function variants(flags) {
       `${baseSummary.unknownCosts} baseline run(s) have no known cost: variants can't be budgeted`
     );
   const perRun = baseSummary.meanCostUsd;
-  for (const kind of kindsWanted(flags)) {
-    const name = `kind-${kind.id}`;
+  for (const variant of variantsWanted(flags)) {
+    const name = variant.campaign;
     const dir = resolve(join(RESULTS, name));
     const settings = join(dir, 'settings.json');
-    writeJson(settings, variantSettings(base, kind.id));
-    const budget = v.costRatioMax[kind.id] ?? v.costRatioMax.default;
-    const proj = projection([perRun * budget], tasks.length * repeats, v.capUsd);
+    const plan = variantPlan(variant, base);
+    writeJson(settings, plan.settings);
+    const repeats = Number(flags.repeats ?? plan.repeats);
+    const budget = plan.costRatioMax;
+    const proj = projection([perRun * budget], tasks.length * repeats, plan.capUsd);
     console.log(
-      `\n${kind.label}: up to $${(perRun * budget).toFixed(3)} a run (${budget}× the baseline's ` +
-        `$${perRun.toFixed(3)}); ${tasks.length} tasks × ${repeats} ≈ $${proj.total.toFixed(2)} (cap $${v.capUsd}).`
+      `\n${variant.label}: up to $${(perRun * budget).toFixed(3)} a run (${budget}× the baseline's ` +
+        `$${perRun.toFixed(3)}); ${tasks.length} tasks × ${repeats} ≈ $${proj.total.toFixed(2)} (cap $${plan.capUsd}).`
     );
     if (!proj.ok) {
       console.log(`Skipped: ${proj.reason}. Run fewer tasks (--tasks) or repetitions (--repeats).`);
       process.exitCode = 1;
       continue;
     }
-    await campaign(name, tasks, repeats, v.capUsd, { ...flags, settings, out: dir });
+    await campaign(name, tasks, repeats, plan.capUsd, { ...flags, settings, out: dir }, plan.run);
   }
 }
 
+/** A campaign's settings (its settings.json), if it kept them. */
+const settingsOf = (d) => {
+  const f = join(d, 'settings.json');
+  return existsSync(f) ? readJson(f) : null;
+};
+
+/** Why a campaign stopped early, from its summary; null if it didn't. */
+const stoppedOf = (d) => {
+  const f = join(d, 'summary.json');
+  return existsSync(f) ? (readJson(f).stopped ?? null) : 'no summary: it never finished';
+};
+
 /**
  * G02/G03: every kind's campaign against the baseline, over the tasks both
- * ran; the decision for each; the results file and its data.
+ * ran; the decision for each; the results file and its data. With two
+ * campaigns named (G03 in the Autopilot plan), the second against the
+ * first instead (`compareTwo`).
  */
 function compareAll(flags) {
+  const named = (flags._ ?? []).slice(1);
+  if (named.length === 2) return compareTwo(named[0], named[1], flags);
+  if (named.length) throw new Error('compare takes two campaigns, or none');
   const dir = resolve(flags.results ?? RESULTS);
   const baseDir = join(dir, 'baseline');
   const baseResults = campaignResults(baseDir);
   if (!baseResults.length) throw new Error(`no baseline results in ${baseDir}`);
   const v = BUDGET.variants;
-  const settingsOf = (d) => {
-    const f = join(d, 'settings.json');
-    return existsSync(f) ? readJson(f) : null;
-  };
-  const stoppedOf = (d) => {
-    const f = join(d, 'summary.json');
-    return existsSync(f) ? (readJson(f).stopped ?? null) : 'no summary: it never finished';
-  };
   const rows = [];
   let model = null;
   for (const kind of MEASURED_KINDS) {
@@ -710,6 +805,56 @@ function compareAll(flags) {
   return comparison;
 }
 
+/** A campaign named on the command line: a folder, or a campaign of the results folder. */
+function campaignDir(arg, flags) {
+  const dir = resolve(flags.results ?? RESULTS);
+  return arg.includes('/') || arg.startsWith('.') ? resolve(arg) : join(dir, arg);
+}
+
+/**
+ * G03 (autopilot-plan): any campaign against any other, over the tasks
+ * both ran: every number side by side, pass@k and pass^k, and whether the
+ * second is better beyond the noise within its cost budget (a variant's
+ * own, or `--cost-ratio`; none for other campaigns). Writes
+ * `compare-<a>-<b>.md` and `.json` in the results folder, or `--out`.
+ */
+function compareTwo(aArg, bArg, flags) {
+  const [aDir, bDir] = [campaignDir(aArg, flags), campaignDir(bArg, flags)];
+  const [aAll, bAll] = [campaignResults(aDir), campaignResults(bDir)];
+  if (!aAll.length) throw new Error(`no results in ${aDir}`);
+  if (!bAll.length) throw new Error(`no results in ${bDir}`);
+  const common = new Set(aAll.map((r) => r.task).filter((t) => bAll.some((r) => r.task === t)));
+  if (!common.size) throw new Error(`${aDir} and ${bDir} have no task in common`);
+  const [a, b] = [aAll, bAll].map((all) => summarize(all.filter((r) => common.has(r.task))));
+  const [aName, bName] = [basename(aDir), basename(bDir)];
+  const variant = ALL_VARIANTS.find((v) => v.campaign === bName);
+  const costRatioMax = flags['cost-ratio']
+    ? Number(flags['cost-ratio'])
+    : variant
+      ? variantPlan(variant, {}).costRatioMax
+      : null;
+  const decision = compareCampaigns(a, b, {
+    costRatioMax,
+    stopped: stoppedOf(aDir) ?? stoppedOf(bDir),
+    minTasks: Number(flags['min-tasks'] ?? 5),
+  });
+  const model = settingsOf(bDir)?.profile?.label ?? settingsOf(aDir)?.profile?.label ?? 'unknown';
+  const comparison = {
+    date: new Date().toISOString().slice(0, 10),
+    model,
+    fake: /fake/i.test(model) || !!flags.fake,
+    a: { name: aName, summary: a },
+    b: { name: bName, summary: b },
+    decision,
+  };
+  const out = resolve(flags.out ?? join(dirname(bDir), `compare-${aName}-${bName}.md`));
+  writeFileSync(out, comparisonMarkdown(comparison));
+  writeJson(out.replace(/\.md$/, '') + '.json', comparison);
+  console.log(comparisonMarkdown(comparison));
+  console.log(`Written: ${out}`);
+  return comparison;
+}
+
 /** G03: the decision into the app's defaults (src/lib/subagentSettings.ts). */
 function applyDefaultsCommand(flags) {
   const file = resolve(flags.comparison ?? join(RESULTS, 'comparison.json'));
@@ -729,31 +874,52 @@ function applyDefaultsCommand(flags) {
 }
 
 /**
- * G02's pipeline without a provider: the baseline and each kind's variant,
- * once per task, with the scripted model that applies the reference change;
- * then the comparison, into a scratch directory. Every run must pass, and
- * the results must be marked as a dry run.
+ * G02's and G03's pipeline without a provider: the baseline and each
+ * variant (`--variants`: some of them), once per task, with the scripted
+ * model that makes the reference change (for Autopilot, its own mode:
+ * the task's plan, each stage's answer, and the change as writes); then
+ * the comparisons, into a scratch directory. Every run must pass, and the
+ * results must be marked as a dry run.
  */
 async function dryRunVariants(flags) {
   const tasks = usableTasks(flags.tasks ?? 'mi-subfactorial,lo-filter-map');
   const runner = runnerPath(flags);
   const policy = join(EVAL, 'policy.json');
   const dir = resolve(flags.out ?? join(RESULTS, `dry-run-variants-${Date.now()}`));
+  const wanted = variantsWanted(flags);
   let bad = 0;
-  for (const kind of [null, ...MEASURED_KINDS]) {
-    const name = kind ? `kind-${kind.id}` : 'baseline';
+  for (const variant of [null, ...wanted]) {
+    const name = variant?.campaign ?? 'baseline';
+    const autopilot = !!variant && !variant.kind;
     for (const task of tasks) {
-      const model = await fakeModel(['oracle', referencePatch(task)]);
+      const model = await fakeModel(
+        autopilot ? ['autopilot', referenceFiles(task)] : ['oracle', referencePatch(task)]
+      );
       const settings = join(dir, name, `settings-${task.id}.json`);
       const base = fakeSettings(model.url);
-      const s = variantSettings(base, kind?.id ?? null);
-      writeJson(settings, s);
-      writeJson(join(dir, name, 'settings.json'), { ...s, profile: base.profile });
+      const plan = variant
+        ? variantPlan(variant, base)
+        : { settings: variantSettings(base, null), run: {} };
+      writeJson(settings, plan.settings);
+      writeJson(join(dir, name, 'settings.json'), { ...plan.settings, profile: base.profile });
       try {
-        const r = await runOne(task, 1, join(dir, name), { settings, policy, runner });
-        if (!r.success) bad++;
+        const r = await runOne(task, 1, join(dir, name), {
+          settings,
+          policy,
+          runner,
+          ...plan.run,
+        });
+        const stages = r.stages ?? [];
+        const whole = !autopilot || reachedDelivery(stages);
+        if (!r.success || !whole) bad++;
+        const failing = autopilot
+          ? failingChecks(join(dir, name, task.id, '1', 'report.json'))
+          : [];
         console.log(
-          `${name} ${task.id}: ${r.success ? 'pass' : 'FAIL'} (${r.outcome}, $${(r.costUsd ?? 0).toFixed(4)})`
+          `${name} ${task.id}: ${r.success && whole ? 'pass' : 'FAIL'} (${r.outcome}, ` +
+            `$${(r.costUsd ?? 0).toFixed(4)}, ${r.toolErrors} tool errors)` +
+            (autopilot ? ` — ${stages.map((st) => `${st.name} ${st.status}`).join(', ')}` : '') +
+            (failing.length ? `; the project's own checks failed: ${failing.join(', ')}` : '')
         );
       } finally {
         model.stop();
@@ -761,10 +927,75 @@ async function dryRunVariants(flags) {
     }
     writeJson(join(dir, name, 'summary.json'), { stopped: null });
   }
-  const c = compareAll({ results: dir, out: join(dir, 'subagents-results.md'), fake: true });
-  if (!c.fake) bad++;
+  const comparisons = [];
+  if (wanted.some((v) => v.kind))
+    comparisons.push(
+      compareAll({ results: dir, out: join(dir, 'subagents-results.md'), fake: true })
+    );
+  for (const v of wanted.filter((v) => !v.kind))
+    comparisons.push(compareTwo('baseline', v.campaign, { results: dir, 'min-tasks': 1 }));
+  bad += comparisons.filter((c) => !c.fake).length;
   console.log(bad ? `\n${bad} unexpected results.` : '\nThe G02/G03 pipeline works.');
   if (bad) process.exitCode = 1;
+}
+
+/**
+ * Whether an Autopilot task ran to its delivery with none of the stages
+ * the scripted model answers failed. Its checks are the project's own: a
+ * lint that fails with or without the change (`go vet` on lo's tests,
+ * `ruff` on more-itertools) fails them, the task ends there, and the
+ * delivery says so.
+ */
+function reachedDelivery(stages) {
+  const last = stages.at(-1);
+  const theProjects = ['checks', 'deliver'];
+  return (
+    last?.name === 'deliver' &&
+    last.status !== 'running' &&
+    !stages.some((st) => st.status === 'failed' && !theProjects.includes(st.name))
+  );
+}
+
+/** The checks that failed in a run's last round, by command (its report's run log). */
+function failingChecks(reportFile) {
+  if (!existsSync(reportFile)) return [];
+  const rounds = (readJson(reportFile).runLog ?? []).filter((l) => l.event === 'verify');
+  return (rounds.at(-1)?.checks ?? [])
+    .filter((c) => c.status === 'failed')
+    .map((c) => `\`${c.command}\``);
+}
+
+/**
+ * The reference's version of each file its change touches, the hidden
+ * tests aside, as JSON (path -> content): what Autopilot's scripted model
+ * writes. A file the reference deletes isn't in it (a write can't delete).
+ */
+function referenceFiles(task) {
+  const repo = repoOf(task);
+  const exclude = task.hidden.map((f) => `:(exclude)${f}`);
+  const changed = sh('git', [
+    '-C',
+    repo,
+    'diff',
+    '--name-status',
+    '--no-renames',
+    task.base,
+    task.reference,
+    '--',
+    '.',
+    ...exclude,
+  ]);
+  const files = {};
+  for (const line of changed.stdout.split('\n').filter(Boolean)) {
+    const [status, path] = line.split('\t');
+    if (status === 'D') continue;
+    files[path] = sh('git', ['-C', repo, 'show', `${task.reference}:${path}`]).stdout;
+  }
+  if (!Object.keys(files).length)
+    throw new Error(`${task.id}: its reference writes no file, only deletes: no Autopilot dry run`);
+  const file = join(CACHE, 'patches', `${task.id}.files.json`);
+  writeJson(file, files);
+  return file;
 }
 
 // ----------------------------------------------------------------- dry run
@@ -865,7 +1096,8 @@ if (!command) {
   console.error(
     'usage: eval.mjs validate [--tasks a,b] | dry-run [--tasks a,b] | pilot --settings FILE | ' +
       'run --settings FILE [--repeats N] [--tasks a,b] | report [DIR] | ' +
-      'variants --settings FILE [--kinds a,b] | compare [--out FILE] | apply-defaults | dry-run-variants'
+      'variants --settings FILE [--kinds a,b | --variants a,b] | compare [A B] [--out FILE] | apply-defaults | ' +
+      'dry-run-variants [--variants a,b]'
   );
   process.exit(2);
 }

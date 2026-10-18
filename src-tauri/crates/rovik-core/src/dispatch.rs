@@ -27,11 +27,11 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
     let (db, vfs) = (&core.db, &core.vfs);
     let done = |()| Response::Done;
     match request {
-        Request::AgentStart(start) => agent_run::agent_start(core, start)
+        Request::AgentStart(start) => agent_run::agent_start(core, *start)
             .await
             .map(Response::RunId),
         Request::AgentStop { dialog_id } => {
-            Ok(Response::Bool(agent_run::agent_stop(core, dialog_id)))
+            Ok(Response::Bool(agent_run::agent_stop(core, dialog_id).await))
         }
         Request::AgentPause { dialog_id, host } => agent_run::agent_pause(core, dialog_id, host)
             .await
@@ -147,7 +147,10 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::KeysList
         | Request::KeysRemove { .. }
         | Request::Storage
-        | Request::CleanUp => {
+        | Request::CleanUp
+        | Request::AutonomyConfigure(_)
+        | Request::DeliveryTest { .. }
+        | Request::TaskStatus => {
             return Err(Fail::new(
                 FailCode::BadRequest,
                 "Only a daemon answers this request.",
@@ -302,8 +305,11 @@ mod tests {
                 attachments: Vec::new(),
             },
         };
-        let Response::RunId(Some(run_id)) =
-            call(&test.core, Request::AgentStart(start(&id, &url, send))).await
+        let Response::RunId(Some(run_id)) = call(
+            &test.core,
+            Request::AgentStart(Box::new(start(&id, &url, send))),
+        )
+        .await
         else {
             panic!("no run id");
         };
@@ -324,7 +330,7 @@ mod tests {
         let (test, id) = chat(vec![message("u", "user", "Hi")]).await;
         let resume = start(&id, "http://127.0.0.1:9", StartKind::Resume);
         assert_eq!(
-            call(&test.core, Request::AgentStart(resume)).await,
+            call(&test.core, Request::AgentStart(Box::new(resume))).await,
             Response::RunId(None)
         );
     }
@@ -345,7 +351,7 @@ mod tests {
             },
         );
         send.config = Some(AgentConfig::default());
-        let fail = dispatch(&test.core, Request::AgentStart(send))
+        let fail = dispatch(&test.core, Request::AgentStart(Box::new(send)))
             .await
             .unwrap_err();
         assert_eq!(fail.code, FailCode::Internal);
@@ -620,6 +626,7 @@ mod tests {
             Request::KeysList,
             Request::Storage,
             Request::CleanUp,
+            Request::AutonomyConfigure(Default::default()),
         ];
         for request in host {
             let fail = dispatch(&test.core, request).await.unwrap_err();
@@ -677,7 +684,7 @@ mod tests {
             },
         ];
         let writes = vec![
-            Request::AgentStart(start(id, "http://127.0.0.1:9", StartKind::Resume)),
+            Request::AgentStart(Box::new(start(id, "http://127.0.0.1:9", StartKind::Resume))),
             Request::ChatRename {
                 dialog_id: id.into(),
                 title: "Renamed".into(),

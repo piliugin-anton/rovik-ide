@@ -42,6 +42,12 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// S05: a step's light check: the syntax errors listed per file, the
+/// output kept per failed command, and how long a command may take.
+const LIGHT_SYNTAX_ERRORS: usize = 5;
+const LIGHT_OUTPUT_CHARS: usize = 2_000;
+const LIGHT_TIMEOUT_MS: u64 = 120_000;
+
 /// What a subagent's run knows about itself.
 pub(super) struct SubCtx {
     pub kind: Kind,
@@ -106,6 +112,9 @@ pub(super) struct SubCtx {
     /// Its report turns keep the "## Earlier findings" section, and a
     /// report that gives some of them no verdict is asked once for those.
     pub earlier_findings: Vec<super::change_review::Finding>,
+    /// T08: one turn without tools in its chat as it was, its words the
+    /// result, in no format (a change reviewer's view of the task's end).
+    pub view_only: bool,
 }
 
 impl SubCtx {
@@ -145,6 +154,7 @@ impl SubCtx {
             kept_copy: false,
             other_steps: Vec::new(),
             earlier_findings: Vec::new(),
+            view_only: false,
         }
     }
 
@@ -189,6 +199,16 @@ impl SubCtx {
                 .flatten()
         })
     }
+}
+
+/// A subagent the IDE starts in a batch (`run_ide_subagents`): the record
+/// that shows it (its call id), its goal and brief, and the first of its
+/// kind's models it starts on.
+pub(super) struct IdeJob {
+    pub(super) call_id: String,
+    pub(super) goal: String,
+    pub(super) message: String,
+    pub(super) models_from: usize,
 }
 
 /// A `task` call, ready to run or already answered.
@@ -613,7 +633,7 @@ impl Run {
         let kept_view = if kind == Kind::Worker {
             let (parent, id) = (self.dialog_id.clone(), child.id.clone());
             crate::rt::spawn_blocking(move || {
-                crate::overlay::chats::reopen_child(&parent, &id).map(|o| o.view.clone())
+                crate::overlay::chats::reopen_child(&parent, &id, 1).map(|o| o.view.clone())
             })
             .await
             .ok()
@@ -838,11 +858,27 @@ impl Run {
         message: String,
         earlier: Vec<super::change_review::Finding>,
     ) -> Result<(String, Option<SubResult>), String> {
+        self.run_ide_subagent_with(kind, call_id, goal, message, |sub| {
+            sub.earlier_findings = earlier
+        })
+        .await
+    }
+
+    /// `run_ide_subagent`, its context set up by `setup` before it starts
+    /// (S04: the test writer's limits, as `limit_test_writer` sets them).
+    pub(super) async fn run_ide_subagent_with(
+        &mut self,
+        kind: Kind,
+        call_id: &str,
+        goal: &str,
+        message: String,
+        setup: impl FnOnce(&mut SubCtx),
+    ) -> Result<(String, Option<SubResult>), String> {
         let config = self.config().subagents;
         let mut sub = self
             .new_sub(kind, call_id, config.budget(kind), &config)
             .await?;
-        sub.earlier_findings = earlier;
+        setup(&mut sub);
         let child_id = uuid::Uuid::new_v4().to_string();
         self.store_child(&child_id, call_id, kind, goal, message)
             .await?;
@@ -852,7 +888,66 @@ impl Run {
             self.absorb_child_writes(&r.writes);
             self.note_models(r);
         }
+        self.keep_spending().await;
         Ok((child_id, result))
+    }
+
+    /// Several subagents of `kind` the IDE starts itself, each from its
+    /// own brief, run at the same time (at most `max_at_once`), as a
+    /// batch of `task` calls is (T01: Thorough's planners). Each job's
+    /// `models_from` rotates the kind's models, so jobs start on different
+    /// ones where the row has several (T03). Results come back in the
+    /// jobs' order, as `run_ide_subagent`'s would.
+    pub(super) async fn run_ide_subagents(
+        &mut self,
+        kind: Kind,
+        jobs: Vec<IdeJob>,
+    ) -> Vec<Result<(String, Option<SubResult>), String>> {
+        let config = self.config().subagents;
+        let mut started: Vec<Result<(String, Run), String>> = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            let launched = async {
+                let mut sub = self
+                    .new_sub(kind, &job.call_id, config.budget(kind), &config)
+                    .await?;
+                let n = sub.models.len();
+                if n > 1 {
+                    sub.models.rotate_left(job.models_from % n);
+                    sub.options = sub.options_for(&sub.models[0]);
+                }
+                let child_id = uuid::Uuid::new_v4().to_string();
+                self.store_child(&child_id, &job.call_id, kind, &job.goal, job.message)
+                    .await?;
+                let child = self.launch_child(child_id.clone(), &job.call_id, &job.goal, sub)?;
+                Ok((child_id, child))
+            };
+            started.push(launched.await);
+        }
+        type Ran =
+            Pin<Box<dyn Future<Output = Result<(String, Option<SubResult>), String>> + Send>>;
+        let futures: Vec<Ran> = started
+            .into_iter()
+            .map(|launched| -> Ran {
+                match launched {
+                    Ok((child_id, child)) => {
+                        Box::pin(async move { Ok((child_id, run_child(child).await)) })
+                    }
+                    Err(e) => Box::pin(async move { Err(e) }),
+                }
+            })
+            .collect();
+        let results: Vec<Result<(String, Option<SubResult>), String>> = stream::iter(futures)
+            .buffered(config.max_at_once())
+            .collect()
+            .await;
+        for (_, result) in results.iter().flatten() {
+            if let Some(r) = result {
+                self.absorb_child_writes(&r.writes);
+                self.note_models(r);
+            }
+        }
+        self.keep_spending().await;
+        results
     }
 
     /// The child chat, with the brief as its first message.
@@ -1163,11 +1258,39 @@ impl Run {
         None
     }
 
+    /// U04 (R03): past its Autopilot task's budget, as its lead checks at
+    /// each of its own replies: the lead's run ends over the budget, and
+    /// this subagent stops with it. False: within it, or no task's.
+    fn cut_for_task_budget(&self) -> bool {
+        let Some(why) = self.core.agents.over_budget(&self.dialog_id) else {
+            return false;
+        };
+        self.core
+            .agents
+            .cut_for_budget(&self.core, &self.dialog_id, &why);
+        true
+    }
+
     /// The subagent's loop: how it ended, its report, and an error kind.
     async fn drive_sub(&mut self) -> Result<(SubStatus, String, Option<String>), String> {
+        if self.cut_for_task_budget() {
+            return Ok((SubStatus::Stopped, String::new(), None));
+        }
+        // T08: a reviewer's view of the task's end: one turn without tools.
+        if self.sub().is_some_and(|s| s.view_only) {
+            let text = self.words_only_turn().await?;
+            let status = if self.stopped() {
+                SubStatus::Stopped
+            } else if text.trim().is_empty() {
+                SubStatus::Failed
+            } else {
+                SubStatus::Done
+            };
+            return Ok((status, text, None));
+        }
         let mut last_text = String::new();
         loop {
-            if self.stopped() {
+            if self.stopped() || self.cut_for_task_budget() {
                 return Ok((SubStatus::Stopped, last_text, None));
             }
             if let Some(why) = self.over_budget() {
@@ -1239,6 +1362,7 @@ impl Run {
                 self.execute_tool_calls(run_now, None).await?;
             }
             for tc in over {
+                self.calls.start(&tc.id);
                 let content = format!(
                     "Error: not run: it's past your budget of {} tool calls. Write your report now with what you have.",
                     self.sub().map_or(0, |s| s.budget.tool_calls)
@@ -1340,12 +1464,7 @@ impl Run {
         let Some(problem) = subagent::format_problem(spec, &text) else {
             return self.ask_verdicts(text, status).await;
         };
-        let sections = spec
-            .sections
-            .iter()
-            .map(|s| format!("\"## {s}\""))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let headings = spec.headings_note();
         // B13: a follow-up plan review's rewrite keeps its verdicts.
         let earlier = self
             .sub()
@@ -1358,7 +1477,7 @@ impl Run {
         };
         self.add_harness(
             format!(
-                "{IDE_NOTE}Your report didn't follow the format: {problem}. Don't call any tools. Write the report again, with the headings {sections}.{verdicts}"
+                "{IDE_NOTE}Your report didn't follow the format: {problem}. Don't call any tools. Write the report again, {headings}.{verdicts}"
             ),
             "subagentFormat",
         )
@@ -1696,6 +1815,7 @@ impl Run {
             outlines: &outlines,
             note: Some(note.as_str()).filter(|n| !n.is_empty()),
             test_check: test_check.as_deref(),
+            first: None,
         });
         let budget = brief.budget(config.budget(Kind::TestWriter));
         let mut sub = self
@@ -1772,7 +1892,7 @@ impl Run {
 
     /// The files the test writer may not read (E02): those the plan names
     /// and those this run changed, test files aside.
-    async fn test_writer_hidden(&self) -> Vec<String> {
+    pub(super) async fn test_writer_hidden(&self) -> Vec<String> {
         let plan = self.implementing_plan().await;
         let root = self.root.clone().unwrap_or_default();
         let mut touched: Vec<String> = Vec::new();
@@ -1899,6 +2019,19 @@ impl Run {
                 "Step {n} isn't marked done: {why}. Check it, then continue the worker or finish the step yourself."
             ));
         }
+        // S05 (4.5): in Autopilot a step worker's files are checked lightly
+        // as it ends (a group's workers run their own light checks): what
+        // that finds goes to the lead with the result, and to the steps
+        // after it in their briefs.
+        let light = match base {
+            None if self.in_autopilot() && !actual.is_empty() => {
+                self.light_check_step(n, &result.writes).await
+            }
+            _ => None,
+        };
+        if let Some(note) = &light {
+            result.notes.push(note.clone());
+        }
         if result.status != SubStatus::Done {
             return None;
         }
@@ -1914,6 +2047,8 @@ impl Run {
             number: n,
             title: step.title.clone(),
             summary: crate::chat_db::store::char_prefix(&summary, 300).to_string(),
+            decisions: worker::step_decisions(&result.text),
+            light,
         });
         self.worker_steps.sort_by_key(|d| d.number);
         // The list so far: a group's earlier joins, else the chat's.
@@ -1930,6 +2065,123 @@ impl Run {
             items: items.clone(),
         });
         Some(items)
+    }
+
+    /// S05: the light check of a step's files as its worker ends: their
+    /// syntax (where a file parsed before the step, or is new: V04's
+    /// rule), then the stack's light commands on them
+    /// (`project::light_check_for`: a linter on a file, `go vet` on a
+    /// package; never a build or a test run). None: it found nothing.
+    async fn light_check_step(&self, n: usize, writes: &[ChildWrite]) -> Option<String> {
+        let root = self.root.clone()?;
+        let mut found: Vec<String> = Vec::new();
+        let mut files: Vec<String> = Vec::new();
+        for w in writes {
+            if files.contains(&w.path) {
+                continue;
+            }
+            files.push(w.path.clone());
+            let Ok(now) = std::fs::read(tools::to_absolute_path(&w.path, &root)) else {
+                continue;
+            };
+            let Ok(now) = String::from_utf8(now) else {
+                continue;
+            };
+            let parsed_before = match &w.original.bytes {
+                None => true,
+                Some(bytes) => std::str::from_utf8(bytes).is_ok_and(|before| {
+                    crate::outline::syntax_errors(&w.path, before).is_some_and(|e| e.is_empty())
+                }),
+            };
+            let errors = crate::outline::syntax_errors(&w.path, &now).unwrap_or_default();
+            if !parsed_before || errors.is_empty() {
+                continue;
+            }
+            let mut lines = vec![format!("`{}` doesn't parse:", w.path)];
+            for e in errors.iter().take(LIGHT_SYNTAX_ERRORS) {
+                lines.push(format!(
+                    "- {}:{}:{}: {}",
+                    w.path, e.start_line, e.start_col, e.message
+                ));
+            }
+            if errors.len() > LIGHT_SYNTAX_ERRORS {
+                lines.push(format!("- and {} more", errors.len() - LIGHT_SYNTAX_ERRORS));
+            }
+            found.push(lines.join("\n"));
+        }
+        let permissions = self.config().permissions;
+        let commands = super::project::light_check_for(std::path::Path::new(&root), &files);
+        let mut ran = 0;
+        for command in commands {
+            if self.stopped() {
+                break;
+            }
+            // Autopilot's denylist holds for the IDE's commands too (V01).
+            if super::permissions::denied_entry(&command, &permissions).is_some() {
+                continue;
+            }
+            ran += 1;
+            let stop = self.stop.clone();
+            let overlay = crate::overlay::chats::get(&self.dialog_id);
+            let queued = crate::command_tool::Queued {
+                kind: crate::workload::JobKind::Check {
+                    owner: self.dialog_id.clone(),
+                },
+                note: Box::new(|_| {}),
+                env: overlay
+                    .as_ref()
+                    .map(|o| o.command_env())
+                    .unwrap_or_default(),
+                confine: overlay.as_ref().and_then(|o| o.confine()),
+                whole_output: false,
+            };
+            let timeout = super::verify::check_timeout_ms(&self.dialog_id).min(LIGHT_TIMEOUT_MS);
+            let Ok(out) = crate::command_tool::run_command(
+                root.clone(),
+                command.clone(),
+                Some(timeout),
+                move || stop.is_set(),
+                Some(queued),
+            )
+            .await
+            else {
+                continue;
+            };
+            if out.stopped || (out.exit_code == Some(0) && !out.timed_out) {
+                continue;
+            }
+            let combined = [out.stderr.trim(), out.stdout.trim()]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let shown = super::command_output::focus_failures(&combined, LIGHT_OUTPUT_CHARS);
+            found.push(if out.timed_out {
+                format!("`{command}` timed out.")
+            } else if shown.trim().is_empty() {
+                format!("`{command}` failed (exit {}).", out.exit_code.unwrap_or(-1))
+            } else {
+                format!("`{command}` failed:\n```\n{}\n```", shown.trim_end())
+            });
+        }
+        log::write(
+            &self.core,
+            json!({
+                "event": "lightCheck",
+                "dialogId": self.dialog_id,
+                "step": n,
+                "files": files.len(),
+                "commands": ran,
+                "problems": found.len(),
+            }),
+        );
+        if found.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "The light check after step {n} found problems in its files:\n\n{}",
+            found.join("\n\n")
+        ))
     }
 
     /// D06, on the worker's side, before its result: a failed or stopped
@@ -1957,7 +2209,7 @@ impl Run {
             .map(|s| s.resumed_writes.clone())
             .unwrap_or_default();
         if matches!(status, SubStatus::Failed | SubStatus::Stopped) {
-            if let Some(rb) = self.roll_back(Vec::new()).await {
+            if let Some(rb) = self.roll_back(Vec::new(), None).await {
                 let mut note = String::from("Its changes were undone");
                 if rb.restored.is_empty() && rb.skipped.is_empty() {
                     note = if resumed.is_empty() {

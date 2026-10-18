@@ -40,6 +40,7 @@ import {
   type CallStatus,
 } from '../lib/toolArgs';
 import { editCounts } from '../lib/toolGroups';
+import { reviewAnswersSummary } from '../lib/changeReview';
 import LineCounts from './LineCounts';
 import {
   allow,
@@ -176,8 +177,9 @@ export function toolResultMeta(name: string, result: string): ToolMeta | undefin
       return { exitCode: code !== undefined ? Number(code) : null, ...(waited ? { waited } : {}) };
     }
     case 'write': {
-      // A whole-file write: "wrote 120 bytes to a.ts (+3 -1 lines)".
-      const changes = result.match(/\(\+(\d+) -(\d+) lines\)$/);
+      // A whole-file write: "wrote 120 bytes to a.ts (+3 -1 lines)", on the
+      // first line: a syntax check may follow it (V04).
+      const changes = result.match(/\(\+(\d+) -(\d+) lines\)$/m);
       return changes ? { added: Number(changes[1]), removed: Number(changes[2]) } : undefined;
     }
     case 'browse_url': {
@@ -261,6 +263,12 @@ function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta)
 
     case 'todo':
       return { title: 'Checklist', meta: todoSummary(args) };
+
+    case 'answer_review':
+      return {
+        title: active ? 'Answering the review' : 'Answered the review',
+        meta: reviewAnswersSummary(args),
+      };
 
     case 'write': {
       const content = str(args.content);

@@ -100,6 +100,13 @@ fn answer(request: &Request) -> Response {
         | Request::AgentPause { .. }
         | Request::AgentResolveApproval { .. }
         | Request::AgentAnswerQuestions { .. } => Response::Bool(true),
+        Request::DeliveryTest { remote } => {
+            Response::DeliveryTested(rovik_protocol::autopilot::DeliveryTest {
+                remote: remote.clone(),
+                branch: "rovik/test-20261017-095301".into(),
+                ..Default::default()
+            })
+        }
         _ => Response::Done,
     }
 }

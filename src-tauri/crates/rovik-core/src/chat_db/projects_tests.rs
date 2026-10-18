@@ -262,7 +262,7 @@ fn a_moved_repo_without_its_id_file_is_recognised() {
     };
     assert_eq!(
         candidates.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
-        [p.id.clone()]
+        std::slice::from_ref(&p.id)
     );
     assert!(candidates[0].missing && candidates[0].chat_count == 1);
     // "Use those chats": the new project made meanwhile is merged in.
@@ -308,7 +308,7 @@ fn a_live_clone_is_not_suggested_and_a_decline_is_remembered() {
     };
     assert_eq!(
         ids,
-        [pa.id.clone()],
+        std::slice::from_ref(&pa.id),
         "only the project whose folder is gone"
     );
     decline(&mut conn, &c, &ids).unwrap();

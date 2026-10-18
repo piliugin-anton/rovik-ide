@@ -3,6 +3,7 @@
 //! here fails `covers`, so a new request can't go untested.
 
 use crate::agent::*;
+use crate::autopilot::{AutopilotConfig, Budget, Effort, DEFAULT_AUTOPILOT_DENYLIST};
 use crate::chat::{ChatModel, MessagePatch, ToolCall};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
@@ -102,6 +103,8 @@ fn result(pending: Option<&str>) -> ChatResult {
         pending: pending.map(String::from),
         marked: Vec::new(),
         unchecked: false,
+        branch: None,
+        pr: None,
     }
 }
 
@@ -204,6 +207,16 @@ fn config() -> AgentConfig {
             max_run_tokens: Some(1_000_000),
             parallel_workers: true,
             ..Default::default()
+        },
+        autopilot: AutopilotConfig {
+            effort: Effort::Thorough,
+            budget: Budget {
+                max_hours: Some(1.5),
+                max_cost: None,
+                max_tokens: None,
+            },
+            prepare: false,
+            denied_commands: vec!["git push".into()],
         },
     }
 }
@@ -357,22 +370,22 @@ fn every_request_round_trips() {
     covers(
         "t",
         &[
-            Request::AgentStart(start()),
-            Request::AgentStart(StartRequest {
+            Request::AgentStart(Box::new(start())),
+            Request::AgentStart(Box::new(StartRequest {
                 start: StartKind::RunChecks {
                     record_id: "r".into(),
                 },
                 options: None,
                 config: None,
                 ..start()
-            }),
-            Request::AgentStart(StartRequest {
+            })),
+            Request::AgentStart(Box::new(StartRequest {
                 start: StartKind::CheckMerged {
                     files: vec!["src/main.rs".into()],
                     diffs: vec!["@@ -1 +1 @@\n-fn main() {}\n+fn main() { run() }".into()],
                 },
                 ..start()
-            }),
+            })),
             Request::AgentStop {
                 dialog_id: "d".into(),
             },
@@ -402,6 +415,17 @@ fn every_request_round_trips() {
             },
             Request::AgentStatus,
             Request::AgentConfigure(config()),
+            Request::DeliveryTest {
+                remote: "git@github.com:acme/app.git".into(),
+            },
+            Request::TaskStatus,
+            Request::AutonomyConfigure(crate::autopilot::AutonomyConfig {
+                delivery: crate::autopilot::Delivery::PushBranch {
+                    deploy_key: "~/.ssh/rovik_deploy".into(),
+                    open_pr: true,
+                },
+                notify_url: Some("https://ntfy.sh/t".into()),
+            }),
             Request::AgentSetEffort {
                 profile_id: "p::m".into(),
                 options: Some(options()),
@@ -503,6 +527,7 @@ fn every_request_round_trips() {
                 },
                 settings: Some(json!({ "checks": ["npm test"] })),
                 excludes: vec!["*.local".into()],
+                remote: Some("git@github.com:acme/app.git".into()),
             },
             Request::ProjectEnsure {
                 project: Project {
@@ -512,6 +537,7 @@ fn every_request_round_trips() {
                 },
                 settings: None,
                 excludes: Vec::new(),
+                remote: None,
             },
             Request::WorkSync {
                 dialog_id: "d".into(),
@@ -733,6 +759,34 @@ fn every_response_round_trips() {
                 data: 3,
                 tmp: 0,
             }),
+            Response::DeliveryTested(crate::autopilot::DeliveryTest {
+                remote: "git@github.com:acme/app.git".into(),
+                branch: "rovik/test-20261017-095301".into(),
+                problem: None,
+                pull_requests: Some("`gh` is logged in to github.com".into()),
+            }),
+            Response::DeliveryTested(crate::autopilot::DeliveryTest::default()),
+            Response::Tasks(vec![
+                crate::autopilot::ChatTask {
+                    chat: "c1".into(),
+                    title: "Make the test pass".into(),
+                    computer: "laptop".into(),
+                    running: Some("run-2".into()),
+                    outcome: Some("done".into()),
+                    task: Some(crate::autopilot::TaskState {
+                        id: "u1".into(),
+                        stage: "implement".into(),
+                        status: "running".into(),
+                        outcome: None,
+                        summary: Some("Step 2 of 3".into()),
+                        ms: 61_000,
+                        cost: 0.42,
+                        uncosted: 1,
+                        tokens: 0,
+                    }),
+                },
+                crate::autopilot::ChatTask::default(),
+            ]),
         ],
     );
 }
@@ -923,7 +977,7 @@ fn a_requests_fields_are_its_commands_arguments() {
         json,
         json!({ "dialogId": "d", "toolCallId": "c", "decision": { "kind": "allow" } })
     );
-    let start: Value = serde_json::to_value(Request::AgentStart(start())).unwrap();
+    let start: Value = serde_json::to_value(Request::AgentStart(Box::new(start()))).unwrap();
     assert_eq!(start["t"], "agentStart");
     assert_eq!(
         start["dialogId"], "d",
@@ -1002,6 +1056,39 @@ fn the_shared_event_fixtures_round_trip_unchanged() {
         tags::<AgentEvent>("type"),
         "event types without a fixture"
     );
+}
+
+/// V02: a run's end says when it was an Autopilot task's, whose result
+/// lands only once checked; an older peer's end, without it, wasn't.
+#[test]
+fn a_runs_end_says_when_it_was_autopilots() {
+    let ended = |autopilot, stage: Option<&str>| AgentEvent::RunEnded {
+        dialog_id: "d".into(),
+        run_id: "r".into(),
+        outcome: "unverified".into(),
+        autopilot,
+        stage: stage.map(str::to_string),
+    };
+    let task = round_trip(&ended(true, None));
+    assert_eq!(task["autopilot"], true, "{task}");
+    // S03: and which of its stages.
+    let prepare = round_trip(&ended(true, Some("prepare")));
+    assert_eq!(prepare["stage"], "prepare", "{prepare}");
+    let plain = round_trip(&ended(false, None));
+    assert!(plain.get("autopilot").is_none(), "unchanged: {plain}");
+    assert!(plain.get("stage").is_none(), "unchanged: {plain}");
+    let older: AgentEvent = serde_json::from_value(json!({
+        "type": "runEnded", "dialogId": "d", "runId": "r", "outcome": "done",
+    }))
+    .unwrap();
+    assert!(matches!(
+        older,
+        AgentEvent::RunEnded {
+            autopilot: false,
+            stage: None,
+            ..
+        }
+    ));
 }
 
 /// K02: a run's file writes and notices say which chat they're from.
@@ -1144,6 +1231,44 @@ fn a_configuration_without_its_keys() {
     assert!(keyless.models().all(|m| m.api_key.is_empty()));
     assert_eq!(keyless.models().count(), named.len());
     assert!(config.models().all(|m| !m.api_key.is_empty()), "untouched");
+}
+
+/// Autopilot's settings (A01): a configuration from a peer that has none
+/// reads with Autopilot's defaults, as does one that sends only some, and
+/// the effort is its id on the wire.
+#[test]
+fn autopilot_settings_round_trip_and_default_when_missing() {
+    let mut older = serde_json::to_value(config()).unwrap();
+    older.as_object_mut().unwrap().remove("autopilot");
+    let older: AgentConfig = serde_json::from_value(older).unwrap();
+    assert_eq!(older.autopilot, AutopilotConfig::default());
+
+    let defaults = AutopilotConfig::default();
+    assert_eq!(defaults.effort, Effort::Balanced);
+    assert!(defaults.prepare, "D19: on by default");
+    assert_eq!(defaults.budget, Budget::default());
+    assert_eq!(defaults.denied_commands, DEFAULT_AUTOPILOT_DENYLIST);
+
+    let some: AutopilotConfig = serde_json::from_value(json!({ "effort": "thorough" })).unwrap();
+    assert_eq!(
+        some,
+        AutopilotConfig {
+            effort: Effort::Thorough,
+            ..AutopilotConfig::default()
+        }
+    );
+    assert_eq!(
+        round_trip(&config().autopilot),
+        json!({
+            "effort": "thorough",
+            "budget": { "maxHours": 1.5, "maxCost": null },
+            "prepare": false,
+            "deniedCommands": ["git push"],
+        })
+    );
+    for effort in [Effort::Balanced, Effort::Thorough] {
+        assert_eq!(round_trip(&effort), json!(effort.id()));
+    }
 }
 
 /// The bodies of `/packs` (4.4), and the query of a push.

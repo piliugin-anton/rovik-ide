@@ -129,6 +129,17 @@ impl SshServer {
         file
     }
 
+    /// `user_key` in a file of its own under `dir`, unencrypted and
+    /// readable by its owner alone, as `ssh -i` takes a deploy key.
+    pub fn plain_key_file(&self, dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let file = dir.join("deploy_key");
+        let text = self.user_key.to_openssh(LineEnding::LF).unwrap();
+        std::fs::write(&file, text.as_bytes()).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        file
+    }
+
     /// An SSH agent at a socket under `dir`, holding `user_key`.
     pub async fn agent(&self, dir: &Path) -> PathBuf {
         let socket = dir.join("agent.sock");

@@ -679,7 +679,9 @@ fn resolve_graph_file(paths: &[String], input: &str) -> Result<usize, String> {
     // Last resort: files containing it, to point the model at search instead.
     let mut near: Vec<&String> = paths
         .iter()
-        .filter(|p| p.contains(&norm) || norm.split('/').last().is_some_and(|f| p.ends_with(f)))
+        .filter(|p| {
+            p.contains(&norm) || norm.split('/').next_back().is_some_and(|f| p.ends_with(f))
+        })
         .collect();
     near.sort();
     near.truncate(GRAPH_MAX_CANDIDATES);
@@ -731,13 +733,13 @@ pub fn neighbours(root: &Path, path: &str, options: &Options) -> Result<String, 
             .sum::<f64>()
     };
     uses.sort_by(|a, b| {
-        total(&[b.1.clone()])
-            .total_cmp(&total(&[a.1.clone()]))
+        total(std::slice::from_ref(&b.1))
+            .total_cmp(&total(std::slice::from_ref(&a.1)))
             .then(graph.paths[a.0].cmp(&graph.paths[b.0]))
     });
     used_by.sort_by(|a, b| {
-        total(&[b.1.clone()])
-            .total_cmp(&total(&[a.1.clone()]))
+        total(std::slice::from_ref(&b.1))
+            .total_cmp(&total(std::slice::from_ref(&a.1)))
             .then(graph.paths[a.0].cmp(&graph.paths[b.0]))
     });
     uses.truncate(GRAPH_MAX_FILES);

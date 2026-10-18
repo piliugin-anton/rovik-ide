@@ -11,6 +11,7 @@ use crate::keys::{self, Keys};
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
 };
+use rovik_protocol::autopilot::AutonomyConfig;
 use rovik_protocol::host::KeyInfo;
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::work::{ChatResult, Project};
@@ -29,6 +30,11 @@ pub struct State {
     /// Each computer's last configuration.
     #[serde(default)]
     pub computers: BTreeMap<String, AgentConfig>,
+    /// What this server keeps for each computer that has it work on its
+    /// own (H02): where its tasks' results go, whom to tell. A computer
+    /// without it: the default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub autonomy: BTreeMap<String, AutonomyConfig>,
     /// The projects a computer carried here, by id (6.4).
     #[serde(default)]
     pub projects: BTreeMap<String, ProjectState>,
@@ -45,6 +51,10 @@ pub struct ProjectState {
     /// Its settings (K03), for each worktree of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<Value>,
+    /// Where its tasks' results are pushed, when its computer has this
+    /// server push them (D15, H04): its `origin`, as an SSH address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -284,6 +294,45 @@ impl Store {
         self.save(inner)
     }
 
+    /// What `computer` has this server keep for its runs that go on
+    /// without it (`AutonomyConfigure`, H02): the default forgets it.
+    pub fn set_autonomy(&self, computer: &str, config: AutonomyConfig) -> Result<(), String> {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        let kept = &mut inner.state.autonomy;
+        let unchanged = match config.is_default() {
+            true => kept.remove(computer).is_none(),
+            false => kept.insert(computer.to_string(), config.clone()) == Some(config),
+        };
+        if unchanged {
+            return Ok(());
+        }
+        self.save(inner)
+    }
+
+    /// What `computer` has this server keep (H02): the default when it has
+    /// nothing kept.
+    pub fn computer_autonomy(&self, computer: &str) -> AutonomyConfig {
+        let inner = self.lock();
+        inner
+            .state
+            .autonomy
+            .get(computer)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// What the chat's computer has this server keep (H02): the default
+    /// when it has nothing kept, or the chat isn't known.
+    pub fn autonomy_of(&self, dialog_id: &str) -> AutonomyConfig {
+        let inner = self.lock();
+        let computer = inner.state.chats.get(dialog_id).map(|c| &c.computer);
+        computer
+            .and_then(|c| inner.state.autonomy.get(c))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The providers whose key keys.json keeps, and their base URLs: never
     /// the keys (`KeysList`).
     pub fn keys(&self) -> Vec<KeyInfo> {
@@ -318,13 +367,22 @@ impl Store {
     }
 
     /// The project as its computer last described it (6.4).
-    pub fn ensure_project(&self, project: &Project, settings: Option<Value>) -> Result<(), String> {
+    /// A `ProjectEnsure`'s project. A remote it doesn't name stays as it was:
+    /// only a computer that has this server push its results names one.
+    pub fn ensure_project(
+        &self,
+        project: &Project,
+        settings: Option<Value>,
+        remote: Option<String>,
+    ) -> Result<(), String> {
         let _writing = self.writing();
         let mut inner = self.lock();
+        let known = inner.state.projects.get(&project.id);
         let state = ProjectState {
             name: project.name.clone(),
             subpath: project.subpath.clone(),
             settings,
+            remote: remote.or_else(|| known.and_then(|p| p.remote.clone())),
         };
         if inner.state.projects.get(&project.id) == Some(&state) {
             return Ok(());
@@ -400,18 +458,45 @@ impl Store {
     /// same result again keeps its number.
     pub fn result_made(&self, dialog_id: &str, mut result: ChatResult) -> ChatResult {
         self.change(dialog_id, |chat| {
+            // Where it was pushed (H04) is the same result's still.
             let unnumbered = |r: &ChatResult| ChatResult {
                 seq: 0,
+                branch: None,
+                pr: None,
                 ..r.clone()
             };
             result.seq = match &chat.result {
-                Some(last) if unnumbered(last) == unnumbered(&result) => last.seq,
+                Some(last) if unnumbered(last) == unnumbered(&result) => {
+                    result.branch = last.branch.clone();
+                    result.pr = last.pr.clone();
+                    last.seq
+                }
                 Some(last) => last.seq + 1,
                 None => 1,
             };
             chat.result = Some(result.clone());
         });
         result
+    }
+
+    /// The chat's newest result went to `branch` on its project's remote,
+    /// with its pull request `pr` (H04): the same result, numbered as it
+    /// was. None: the chat has no result.
+    pub fn result_delivered(
+        &self,
+        dialog_id: &str,
+        branch: &str,
+        pr: Option<&str>,
+    ) -> Option<ChatResult> {
+        let mut delivered = None;
+        self.change(dialog_id, |chat| {
+            if let Some(result) = &mut chat.result {
+                result.branch = Some(branch.to_string());
+                result.pr = pr.map(str::to_string);
+                delivered = Some(result.clone());
+            }
+        });
+        delivered
     }
 
     /// Conflict markers went into `files` for the chat to settle: they're
@@ -453,6 +538,18 @@ impl Store {
 
     /// The project's folder in the chat's worktree, from its root: "" when
     /// the project is its repository's root folder (K31).
+    /// Where the chat's project's results are pushed (H04), if known.
+    pub fn remote_of(&self, dialog_id: &str) -> Option<String> {
+        let inner = self.lock();
+        let chat = inner.state.chats.get(dialog_id)?;
+        inner
+            .state
+            .projects
+            .get(chat.project.as_ref()?)?
+            .remote
+            .clone()
+    }
+
     pub fn subpath_of(&self, dialog_id: &str) -> String {
         let inner = self.lock();
         let chat = inner.state.chats.get(dialog_id);
@@ -560,6 +657,22 @@ impl Store {
             .filter(|chat| chat.computer == computer && chat.released.is_none())
             .filter_map(|chat| chat.result.clone())
             .collect()
+    }
+
+    /// `computer`'s chats here, with what state.json keeps of each (H08):
+    /// not those it took back.
+    pub fn chats_of(&self, computer: &str) -> Vec<(String, ChatState)> {
+        let inner = self.lock();
+        let chats = inner.state.chats.iter();
+        chats
+            .filter(|(_, chat)| chat.computer == computer && chat.released.is_none())
+            .map(|(id, chat)| (id.clone(), chat.clone()))
+            .collect()
+    }
+
+    /// Every chat known here.
+    pub fn chats(&self) -> Vec<String> {
+        self.lock().state.chats.keys().cloned().collect()
     }
 
     /// The chats that have a worktree.
