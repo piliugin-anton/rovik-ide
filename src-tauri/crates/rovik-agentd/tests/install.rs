@@ -378,3 +378,57 @@ fn admin_commands_are_for_administrators() {
         .file("/etc/systemd/system/rovik-agentd@.service")
         .exists());
 }
+
+/// D19: install puts the Chrome for Testing Rovik pins in place for the
+/// browser tools, checked against its pinned SHA-256, with the packages it
+/// needs. `admin browser` does it for an administrator, and an upgrade runs
+/// the new build's before the daemons start on it.
+#[test]
+fn the_pinned_browser_comes_with_rovik_and_its_upgrades() {
+    let server = Server::new();
+    let build = server.build.to_string_lossy().into_owned();
+    let installed = server.run(&["install", "--admin", "nobody", "--binary", &build], None);
+    let out = said(&installed);
+    assert!(installed.status.success(), "{out}");
+    let pin =
+        rovik_core::pinned_browser::Build::for_system("linux", std::env::consts::ARCH).unwrap();
+    assert!(
+        out.contains(&format!(
+            "would download {} ({} bytes, SHA-256 {})",
+            pin.url(),
+            pin.size,
+            pin.sha256
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "would run: env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
+             -q -y --no-install-recommends satisfy <deb.deps>"
+        ),
+        "{out}"
+    );
+
+    let (_, uid) = someone_else();
+    let refused = server.run(&["admin", "browser"], Some(uid));
+    assert_eq!(refused.status.code(), Some(1), "{}", said(&refused));
+    let again = server.run(&["admin", "browser"], Some(NOBODY));
+    assert!(again.status.success(), "{}", said(&again));
+    assert!(said(&again).contains(&format!("would download {}", pin.url())));
+
+    let path = server.file("/etc/rovik/agentd.toml");
+    let settings = std::fs::read_to_string(&path).unwrap() + "allow_unsigned = true\n";
+    std::fs::write(&path, settings).unwrap();
+    let newer = server.dir.0.join("newer");
+    script(&newer, "9.9.9");
+    let newer = newer.to_string_lossy().into_owned();
+    let upgraded = server.run(&["admin", "upgrade", &newer], Some(NOBODY));
+    let out = said(&upgraded);
+    assert!(upgraded.status.success(), "{out}");
+    let browser = out.find("would run: /opt/rovik/bin/rovik-agentd admin browser");
+    let restart = out.find("would run: systemctl try-restart");
+    assert!(
+        matches!((browser, restart), (Some(b), Some(r)) if b < r),
+        "{out}"
+    );
+}

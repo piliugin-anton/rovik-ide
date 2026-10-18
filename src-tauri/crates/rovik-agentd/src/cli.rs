@@ -42,13 +42,15 @@ usage: rovik-agentd <command>
       this one unless told.
   user start|stop|restart|status [--root DIR]
       Through sudo: your own daemon.
-  admin [limits [NAME=VALUE ...] | add USER | remove USER |
+  admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
          upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
       Through sudo, for Rovik's administrators: the limits on each user's
-      daemon (none takes one away), the administrators, an upgrade for
-      everyone (a release's build, signed in FILE.sig, or a build of one's
-      own where agentd.toml allows unsigned ones; an older build only with
-      --allow-downgrade), or Rovik's removal from the server.
+      daemon (none takes one away), the administrators, the browser for
+      the browser tools (the Chrome for Testing Rovik pins, which install
+      and upgrade put in place too), an upgrade for everyone (a release's
+      build, signed in FILE.sig, or a build of one's own where agentd.toml
+      allows unsigned ones; an older build only with --allow-downgrade), or
+      Rovik's removal from the server.
   --root DIR puts / at DIR and prints the commands that would change the
   system instead of running them.";
 

@@ -10,10 +10,17 @@ say user "$(id -un)"
 say home "$HOME"
 say disk_kb "$(df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { print $4 }')"
 say git "$(git --version 2>/dev/null)"
+# As the browser tools look: the browser Rovik pins on servers (D19), then
+# Chromium, then Chrome.
 chrome=
-for name in chromium chromium-browser google-chrome google-chrome-stable; do
-  if found=$(command -v "$name" 2>/dev/null); then chrome=$found; break; fi
+for found in /opt/rovik/browser/*/chrome; do
+  if [ -x "$found" ]; then chrome=$found; fi
 done
+if [ -z "$chrome" ]; then
+  for name in chromium chromium-browser google-chrome google-chrome-stable; do
+    if found=$(command -v "$name" 2>/dev/null); then chrome=$found; break; fi
+  done
+fi
 say chrome "$chrome"
 if [ -n "$chrome" ]; then
   if timeout 30 "$chrome" --headless=new --disable-gpu --no-first-run --dump-dom about:blank >/dev/null 2>&1; then

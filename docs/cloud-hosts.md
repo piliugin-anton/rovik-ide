@@ -18,6 +18,7 @@ Rovik is installed once per server, by root:
 | `/etc/systemd/system/rovik-agentd@.service.d/limits.conf` | The memory, task and CPU caps on each daemon.            |
 | `/etc/systemd/system/rovik.slice`                         | The caps on all of Rovik together.                       |
 | `/etc/sudoers.d/rovik`                                    | Lets users run the commands described below.             |
+| `/opt/rovik/browser/<version>/`                           | The browser tools' browser (below), owned by root.       |
 | The `rovik-admin` group                                   | The administrators.                                      |
 
 Each user's daemon keeps its files in `~/.rovik` and works in
@@ -38,7 +39,8 @@ sudo /path/to/rovik-agentd install --admin USER
 The installer copies the binary, writes `agentd.toml` with USER as the
 administrator and with limits sized to the machine, writes the units, adds
 USER to `rovik-admin`, installs the sudoers rule once `visudo` accepts it,
-and starts USER's daemon. To see what it would do without changing
+starts USER's daemon, and installs the browser for the browser tools
+([The browser](#the-browser)). To see what it would do without changing
 anything, add `--root /tmp/somewhere`. It then writes the files under that
 folder and prints each command it would run.
 
@@ -85,12 +87,13 @@ sudo /opt/rovik/bin/rovik-agentd admin limits memory_max=6G max_slots=2
 sudo /opt/rovik/bin/rovik-agentd admin limits cpu_quota=none     # remove one
 sudo /opt/rovik/bin/rovik-agentd admin add USER
 sudo /opt/rovik/bin/rovik-agentd admin remove USER
+sudo /opt/rovik/bin/rovik-agentd admin browser                   # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin upgrade FILE
 sudo /opt/rovik/bin/rovik-agentd admin uninstall
 ```
 
-These change the limits, the version and the list of administrators, and
-nothing else. Being Rovik's administrator gives no access to other users'
+These change the limits, the version, the browser and the list of
+administrators, and nothing else. Being Rovik's administrator gives no access to other users'
 files or chats.
 
 ## Limits
@@ -169,6 +172,27 @@ one port. The browser tools open none: Rovik drives the agent's Chrome over
 a pipe that only that user's daemon holds, not a DevTools port, so other
 users of the server can't reach the browser, which runs as that user.
 
+## The browser
+
+The browser tools use Chrome for Testing, Google's build of Chromium for
+automation, at one version that Rovik pins: the version eoka, the library
+that drives it, is tested with. The installer puts it in
+`/opt/rovik/browser/<version>`, and `admin browser` installs it when it's
+missing. It downloads Google's archive for the server's CPU (x86_64 or
+aarch64, about 200 MB) and refuses it unless its size and SHA-256 are the
+ones Rovik pins. It then installs the libraries the archive lists for the
+server's package manager (apt-get, dnf or zypper), and only then gives the
+folder its version's name. Chrome for Testing needs the GNU C library, so
+on Alpine the browser tools use Alpine's own `chromium` package instead.
+A browser that can't be installed doesn't stop an install or an upgrade:
+the browser tools say what's missing when they're used.
+
+The browser tools use the pinned browser first, then Chromium
+(`/usr/bin/chromium`, `/usr/bin/chromium-browser` or the snap), then Chrome.
+They drive it over a pipe, never a DevTools port, and they close a Chrome
+that listens on a TCP port anyway, which a flag in a Chrome flags file can
+make it do.
+
 ## Upgrades
 
 `admin upgrade FILE` installs a new build beside the current one, moves
@@ -182,11 +206,15 @@ A build older than the installed one is refused unless the command says
 `--allow-downgrade`. The installer reads FILE once, and installs what it
 read: a file in your home is yours to change meanwhile, so it never goes
 back to it, and asks the copy under `/opt/rovik/bin` its version, as you
-rather than as root.
+rather than as root. Before the daemons start again, the new build installs
+the browser it pins if it's missing, and the other versions go. An upgrade
+from the app does the same for a server whose installed build is older
+than that.
 
 ## Removing Rovik
 
 `admin uninstall` stops every daemon and removes everything listed above.
+The libraries the browser needed stay installed.
 Each user's `~/.rovik` and `~/.local/share/rovik` stay, because their
 chats are there. A user who no longer wants Rovik runs `user stop` and
 deletes those two folders. The app does this with "Remove Rovik from this

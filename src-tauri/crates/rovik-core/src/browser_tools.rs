@@ -10,7 +10,11 @@
 //!   a DevTools port. The port listens on 127.0.0.1 without a password, so
 //!   on a server others share, any of them could drive this browser, which
 //!   runs as the user (docs/design/cloud-agent-dev-plan.md, D18). Windows
-//!   keeps the port.
+//!   keeps the port. On Linux a Chrome that listens on a TCP port anyway,
+//!   from a flag in a Chrome flags file, is closed before it's used.
+//! - The browser is the Chrome for Testing Rovik pins (`pinned_browser`,
+//!   D19), as a cloud host or the app installed it, else Chromium, else
+//!   Chrome.
 //! - `browse_url` / `web_search` / `browser_screenshot` are read-only:
 //!   navigate, read, screenshot. A prompt-injected page must never be
 //!   followed.
@@ -193,17 +197,53 @@ impl BrowserState {
     }
 }
 
-/// The Chrome or Chromium the browser tools start, if one is installed.
-pub fn chrome_path() -> Option<std::path::PathBuf> {
-    eoka::stealth::find_chrome().ok()
+/// Chromium, which the tools start rather than Chrome where both are
+/// installed.
+const CHROMIUM: &[&str] = if cfg!(target_os = "linux") {
+    &[
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/snap/bin/chromium",
+    ]
+} else if cfg!(target_os = "macos") {
+    &["/Applications/Chromium.app/Contents/MacOS/Chromium"]
+} else {
+    &[]
+};
+
+/// The browser the tools start, if one is installed: the Chrome for
+/// Testing Rovik pins (D19), as a cloud host or the app installed it, else
+/// Chromium, else Chrome.
+pub fn chrome_path() -> Option<PathBuf> {
+    crate::pinned_browser::installed()
+        .or_else(|| {
+            CHROMIUM
+                .iter()
+                .map(PathBuf::from)
+                .find(|path| path.is_file())
+        })
+        .or_else(|| eoka::stealth::find_chrome().ok())
 }
 
-async fn launch() -> Result<Live, String> {
-    let chrome = chrome_path().ok_or_else(|| {
-        "Chrome or Chromium was not found. Install Google Chrome or Chromium to use web tools."
-            .to_string()
-    })?;
+/// What the tools say when there's no browser to start.
+fn no_browser() -> String {
+    use crate::pinned_browser::{downloading, NAME};
+    if let Some((received, total)) = downloading() {
+        let percent = received * 100 / total.max(1);
+        return format!(
+            "The browser for the web tools, {NAME}, is still being installed ({percent}%). \
+             Try again when the app says it's ready."
+        );
+    }
+    "No browser was found. Install Chromium or Google Chrome to use web tools. On a server \
+     with Rovik installed for everyone, an administrator installs the browser Rovik pins \
+     with: sudo /opt/rovik/bin/rovik-agentd admin browser"
+        .into()
+}
 
+/// How the tools start the browser at `chrome`: headless, and on Unix over
+/// a pipe, with no DevTools port (D18).
+fn launch_config(chrome: &Path) -> StealthConfig {
     let mut config = StealthConfig {
         headless: true,
         viewport_width: VIEWPORT.0,
@@ -212,16 +252,24 @@ async fn launch() -> Result<Live, String> {
         pipe: cfg!(unix),
         ..StealthConfig::default()
     };
-
     // eoka puts its throwaway profile, and the folder it gives Chrome as
     // TMPDIR, under the host's /tmp. Snap Chromium has a private /tmp, where
     // neither exists. Use folders inside the snap's own writable area
-    // instead; the profile is wiped on every launch so each session starts
-    // clean.
-    if let Some(snap) = snap_dirs(&chrome) {
-        let _ = std::fs::remove_dir_all(&snap.profile);
+    // instead.
+    if let Some(snap) = snap_dirs(chrome) {
         config.user_data_dir = Some(snap.profile.to_string_lossy().into_owned());
         config.runtime_dir = Some(snap.runtime.to_string_lossy().into_owned());
+    }
+    config
+}
+
+async fn launch() -> Result<Live, String> {
+    let chrome = chrome_path().ok_or_else(no_browser)?;
+    let config = launch_config(&chrome);
+    // The snap's profile is wiped on every launch so each session starts
+    // clean.
+    if let Some(profile) = &config.user_data_dir {
+        let _ = std::fs::remove_dir_all(profile);
     }
 
     let browser = Browser::launch_with_config(config)
@@ -232,7 +280,114 @@ async fn launch() -> Result<Live, String> {
         .await
         .map_err(|e| format!("Failed to open a browser tab: {e}"))?;
 
+    // Rovik gives Chrome no port, but a Chrome flags file (the distribution's
+    // CHROMIUM_FLAGS, a user's chromium-flags.conf) can add one, which anyone
+    // on the machine could use to drive this browser.
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = browser.process_id() {
+        match listening_ports(pid) {
+            Ok(ports) if !ports.is_empty() => {
+                let _ = browser.close().await;
+                let ports: Vec<String> = ports.iter().map(u16::to_string).collect();
+                return Err(format!(
+                    "Chrome ({}) listens on TCP port {}, which anyone on this machine could use \
+                     to drive it, so the browser tools won't use it. A Chrome flags file adds \
+                     --remote-debugging-port: remove it there.",
+                    chrome.display(),
+                    ports.join(", ")
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => log::warn!("Couldn't check Chrome's ports: {error}"),
+        }
+    }
+
     Ok(Live { browser, page })
+}
+
+/// The TCP ports process `pid` and those descended from it listen on, from
+/// /proc.
+#[cfg(target_os = "linux")]
+fn listening_ports(pid: u32) -> std::io::Result<Vec<u16>> {
+    // Each listening socket, as a descriptor's link names it, and its port.
+    let mut listening = std::collections::HashMap::new();
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let rows = match std::fs::read_to_string(table) {
+            Ok(rows) => rows,
+            // A system without IPv6.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for row in rows.lines().skip(1) {
+            let columns: Vec<&str> = row.split_whitespace().collect();
+            // The local address (hex ADDRESS:PORT), the state (0A is
+            // LISTEN) and the inode.
+            if let (Some(local), Some(&"0A"), Some(inode)) =
+                (columns.get(1), columns.get(3), columns.get(9))
+            {
+                let port = local.rsplit_once(':').map(|(_, port)| port);
+                if let Some(port) = port.and_then(|port| u16::from_str_radix(port, 16).ok()) {
+                    listening.insert(format!("socket:[{inode}]"), port);
+                }
+            }
+        }
+    }
+    let mut ports = Vec::new();
+    if listening.is_empty() {
+        return Ok(ports);
+    }
+    for process in process_tree(pid)? {
+        // A process that's gone, or one that hides its descriptors, has
+        // none to show.
+        let Ok(descriptors) = std::fs::read_dir(format!("/proc/{process}/fd")) else {
+            continue;
+        };
+        for descriptor in descriptors.flatten() {
+            let Ok(target) = std::fs::read_link(descriptor.path()) else {
+                continue;
+            };
+            if let Some(port) = target.to_str().and_then(|target| listening.get(target)) {
+                ports.push(*port);
+            }
+        }
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    Ok(ports)
+}
+
+/// `pid` and every process descended from it, from /proc.
+#[cfg(target_os = "linux")]
+fn process_tree(pid: u32) -> std::io::Result<Vec<u32>> {
+    let mut children = std::collections::HashMap::<u32, Vec<u32>>::new();
+    for entry in std::fs::read_dir("/proc")?.flatten() {
+        let Some(child) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        // The parent is the second field after the command, which ends at
+        // the last parenthesis.
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let parent = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .and_then(|parent| parent.parse::<u32>().ok());
+        if let Some(parent) = parent {
+            children.entry(parent).or_default().push(child);
+        }
+    }
+    let mut tree = vec![pid];
+    let mut next = 0;
+    while next < tree.len() {
+        tree.extend(children.get(&tree[next]).into_iter().flatten().copied());
+        next += 1;
+    }
+    Ok(tree)
 }
 
 /// The Chromium snap's folders for the browser: its profile, and the parent
@@ -808,6 +963,43 @@ mod tests {
     }
 
     #[test]
+    fn chrome_is_started_headless_over_a_pipe_with_no_port() {
+        let chrome = Path::new("/opt/rovik/browser/155.0.8059.39/chrome");
+        let config = launch_config(chrome);
+        assert_eq!(config.chrome_path.as_deref(), chrome.to_str());
+        assert!(config.headless);
+        assert_eq!(config.pipe, cfg!(unix));
+        assert!(!config.live_session);
+        assert!(
+            !config
+                .extra_args
+                .iter()
+                .any(|arg| arg.starts_with("--remote-debugging-port")),
+            "{:?}",
+            config.extra_args
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_ports_a_process_listens_on_are_found() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(listening_ports(std::process::id()).unwrap().contains(&port));
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        assert!(process_tree(std::process::id())
+            .unwrap()
+            .contains(&child.id()));
+        assert_eq!(listening_ports(child.id()).unwrap(), Vec::<u16>::new());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
     fn the_chromium_snap_is_recognized_by_its_launcher_path() {
         // /snap/bin/chromium resolves to /usr/bin/snap, an ELF file.
         assert!(is_snap_chromium(Path::new("/snap/bin/chromium")));
@@ -853,6 +1045,7 @@ mod tests {
         }
 
         /// `pid` and every process descended from it.
+        #[cfg(target_os = "macos")]
         fn process_tree(pid: u32) -> Vec<u32> {
             let output = std::process::Command::new("ps")
                 .args(["-A", "-o", "pid=,ppid="])
@@ -875,40 +1068,6 @@ mod tests {
         }
 
         /// The TCP sockets listening in `pids`.
-        #[cfg(target_os = "linux")]
-        fn listening_tcp_sockets(pids: &[u32]) -> Vec<String> {
-            let mut listening = std::collections::HashSet::new();
-            for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-                let Ok(table) = std::fs::read_to_string(table) else {
-                    continue;
-                };
-                for row in table.lines().skip(1) {
-                    let columns: Vec<&str> = row.split_whitespace().collect();
-                    // State 0A is LISTEN; column 9 is the socket's inode.
-                    if let (Some(&"0A"), Some(inode)) = (columns.get(3), columns.get(9)) {
-                        listening.insert(format!("socket:[{inode}]"));
-                    }
-                }
-            }
-            let mut found = Vec::new();
-            for pid in pids {
-                let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
-                    continue;
-                };
-                for fd in fds.flatten() {
-                    let Ok(target) = std::fs::read_link(fd.path()) else {
-                        continue;
-                    };
-                    let target = target.to_string_lossy().into_owned();
-                    if listening.contains(&target) {
-                        found.push(format!("pid {pid}: {target}"));
-                    }
-                }
-            }
-            found
-        }
-
-        /// The TCP sockets listening in `pids`.
         #[cfg(target_os = "macos")]
         fn listening_tcp_sockets(pids: &[u32]) -> Vec<String> {
             let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
@@ -921,6 +1080,92 @@ mod tests {
                 .skip(1)
                 .map(str::to_owned)
                 .collect()
+        }
+
+        /// The app's own copy, for real: the pinned browser downloaded from
+        /// Google into the app's data folder and checked, then the browser
+        /// the tools start and read a page with.
+        #[test]
+        #[ignore = "downloads the pinned browser, about 200 MB"]
+        fn the_app_downloads_the_pinned_browser_and_the_tools_use_it() {
+            let data = crate::testing::temp_dir();
+            // Run on its own (`--ignored --exact`): the app's data folder
+            // is found from the environment.
+            let folder = if cfg!(target_os = "macos") {
+                "HOME"
+            } else {
+                "XDG_DATA_HOME"
+            };
+            std::env::set_var(folder, &data.0);
+            crate::rt::block_on(async {
+                let mut told = (0, 0);
+                let path = crate::pinned_browser::install_for_app(|got, of| told = (got, of))
+                    .await
+                    .unwrap();
+                assert!(path.starts_with(&data.0), "{}", path.display());
+                assert!(told.0 > 0 && told.0 == told.1, "{told:?}");
+                if !Path::new(crate::pinned_browser::SERVER_ROOT).exists() {
+                    assert_eq!(chrome_path(), Some(path.clone()));
+                }
+                // Installed, it's found and not downloaded again.
+                let mut again = false;
+                let found = crate::pinned_browser::install_for_app(|_, _| again = true)
+                    .await
+                    .unwrap();
+                assert_eq!((found, again), (path, false));
+
+                let url = serve("<!doctype html><title>Pinned</title><p>The app's copy.</p>").await;
+                let state = BrowserState::default();
+                let page = browse_url(&state, url, None).await.unwrap();
+                assert_eq!(page.title, "Pinned");
+                state.shutdown().await;
+            });
+        }
+
+        /// A port Chrome opens from a flag Rovik didn't give, as a Chrome
+        /// flags file would add it, is found.
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn a_port_from_a_flag_rovik_did_not_give_is_found() {
+            let Some(chrome) = chrome_path().filter(|chrome| !is_snap_chromium(chrome)) else {
+                eprintln!("no Chrome or Chromium outside a snap here, skipping");
+                return;
+            };
+            let dir = crate::testing::temp_dir();
+            let wrapper = dir.0.join("chrome-with-a-port");
+            let script = format!(
+                "#!/bin/sh\nexec '{}' --remote-debugging-port=0 \"$@\"\n",
+                chrome.display()
+            );
+            std::fs::write(&wrapper, script).unwrap();
+            std::fs::set_permissions(
+                &wrapper,
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            let profile = dir.0.join("profile");
+            crate::rt::block_on(async {
+                let mut config = launch_config(&wrapper);
+                config.user_data_dir = Some(profile.to_string_lossy().into_owned());
+                let browser = Browser::launch_with_config(config).await.unwrap();
+                let pid = browser.process_id().unwrap();
+                // Chrome names the port it chose in the profile, soon after
+                // it answers on the pipe.
+                let mut found = (None, Vec::new());
+                for _ in 0..100 {
+                    let named = std::fs::read_to_string(profile.join("DevToolsActivePort"))
+                        .ok()
+                        .and_then(|text| text.lines().next()?.parse::<u16>().ok());
+                    found = (named, listening_ports(pid).unwrap());
+                    if found.0.is_some() && !found.1.is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                let (named, listening) = found;
+                assert_eq!(listening, vec![named.expect("Chrome named its port")]);
+                browser.close().await.unwrap();
+            });
         }
 
         /// The tools against a real Chrome, when one is installed: a page's
@@ -974,6 +1219,9 @@ mod tests {
                 assert!(!webdriver);
 
                 let pid = state.chrome_pid().await.expect("Chrome is running");
+                #[cfg(target_os = "linux")]
+                let listening = listening_ports(pid).unwrap();
+                #[cfg(target_os = "macos")]
                 let listening = listening_tcp_sockets(&process_tree(pid));
                 assert!(listening.is_empty(), "Chrome listens on TCP: {listening:?}");
                 state.shutdown().await;

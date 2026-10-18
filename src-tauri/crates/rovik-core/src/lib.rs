@@ -22,6 +22,7 @@ mod opencode;
 pub mod outline;
 pub mod overlay;
 pub mod packs;
+pub mod pinned_browser;
 pub mod process;
 pub mod project_profile;
 pub mod prompt_cache;

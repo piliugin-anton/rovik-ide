@@ -525,6 +525,8 @@ fn exec_starts(shown: &str) -> Vec<String> {
 /// else is told whom to ask. The daemons that ran pause their runs and
 /// start again on it (R02). Without systemd only the administrator's own
 /// daemon is started again here; the others' take it at their next start.
+/// The browser the new build pins is installed when it's missing
+/// (`admin browser`).
 pub async fn upgrade(
     connector: &SshConnector,
     builds: &Builds,
@@ -551,6 +553,17 @@ pub async fn upgrade(
     let upgraded = run(&ssh, &command, b"").await;
     forget_upload(&ssh, &upload).await;
     upgraded?;
+    // The browser the new build pins, when it isn't there (D19): a build
+    // from before it upgrades without installing one. The browser tools say
+    // so when they're used without it, so it's no reason to fail the upgrade.
+    let browser = format!(
+        "{} -n {} admin browser",
+        layout.sudo,
+        quote(&layout.installed)
+    );
+    if let Err(e) = run(&ssh, &browser, b"").await {
+        log::warn!("The upgrade installed no browser: {e}");
+    }
     if !probe.systemd {
         start(&ssh, &probe, layout).await?;
     }
