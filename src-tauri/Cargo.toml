@@ -97,6 +97,12 @@ libc.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
+# Intel Macs: the OpenSSL git2's HTTPS and SSH need, built from source. The
+# Intel app is built on Apple silicon (release.yml), whose Homebrew OpenSSL
+# is for the other CPU; openssl-sys finds none for Intel there.
+[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
 # winfsp.dll is delay-loaded (build.rs), so the app starts without WinFsp.
 [target.'cfg(windows)'.build-dependencies]
 winfsp = { version = "0.13", default-features = false, features = ["delayload"] }
