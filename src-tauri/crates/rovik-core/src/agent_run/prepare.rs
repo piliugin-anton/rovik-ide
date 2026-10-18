@@ -1,6 +1,7 @@
 //! Prepare (autopilot-plan 4.3, D19): the installs a working copy's
-//! lockfiles imply, where the dependencies they install aren't there, run
-//! as heavy work with the checks' timeout.
+//! lockfiles imply, or a Node package's manifest names without one, where
+//! the dependencies they install aren't there, run as heavy work with the
+//! checks' timeout.
 //!
 //! S03: an Autopilot task's Prepare stage runs them before the tests and
 //! the code (`prepare_stage`), in a run of its own with no model turn; a
@@ -22,7 +23,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// An install a lockfile implies.
+/// An install a package needs: its lockfile's, or npm's of its package.json.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Install {
     /// Where it runs, from the project's folder: "" for the folder itself.
@@ -41,11 +42,20 @@ const NODE_LOCKFILES: &[&str] = &[
     "bun.lock",
 ];
 
-/// The installs the lockfiles in `root` and one folder down imply, where
+/// A Node package's install without a lockfile: npm's, at the latest
+/// versions its package.json allows, writing no lockfile (it would be a
+/// file the change adds).
+const UNLOCKED_NODE_INSTALL: &str = "npm install --no-package-lock --no-audit --no-fund";
+
+/// The installs the packages in `root` and one folder down need, where
 /// what they install isn't there: `node_modules` (or Yarn's `.pnp.cjs`)
 /// for Node, the `.venv` uv makes, a virtual environment for pip's
 /// requirements, `target` for Cargo (never built there), `vendor` for Go.
-/// The folder itself first, then the others by name.
+/// A lockfile says how; a Node package without one, whose dependencies
+/// npm installs, gets npm's install (a server's copy of a project that
+/// commits no lockfile has nothing installed). A Node workspace's packages
+/// install with it, from its root, never each on its own. The folder
+/// itself first, then the others by name.
 pub fn needed(root: &Path) -> Vec<Install> {
     let mut folders = vec![String::new()];
     if let Ok(entries) = std::fs::read_dir(root) {
@@ -58,23 +68,29 @@ pub fn needed(root: &Path) -> Vec<Install> {
         below.sort();
         folders.extend(below);
     }
+    let (inside, root_is_one) = (below_a_workspace(root), workspace_root(root));
     folders
         .into_iter()
-        .flat_map(|folder| installs_in(root, folder))
+        .flat_map(|folder| {
+            let in_workspace = inside || (root_is_one && !folder.is_empty());
+            installs_in(root, folder, in_workspace)
+        })
         .collect()
 }
 
-/// The installs `folder`'s own lockfiles imply.
-fn installs_in(root: &Path, folder: String) -> Vec<Install> {
+/// The installs `folder`'s own lockfiles imply, or its package.json names
+/// without one, unless it's `in_workspace`: a package of a Node workspace,
+/// which its root installs.
+fn installs_in(root: &Path, folder: String, in_workspace: bool) -> Vec<Install> {
     let dir = root.join(&folder);
     let has = |name: &str| dir.join(name).exists();
     let mut commands: Vec<&'static str> = Vec::new();
-    if has("package.json")
-        && NODE_LOCKFILES.iter().any(|l| has(l))
-        && !has("node_modules")
-        && !has(".pnp.cjs")
-    {
-        commands.push(node_install(&dir));
+    if has("package.json") && !has("node_modules") && !has(".pnp.cjs") {
+        if NODE_LOCKFILES.iter().any(|l| has(l)) {
+            commands.push(node_install(&dir));
+        } else if !in_workspace && npm_installs(&dir) {
+            commands.push(UNLOCKED_NODE_INSTALL);
+        }
     }
     if has("Cargo.toml") && has("Cargo.lock") && !has("target") {
         commands.push("cargo fetch");
@@ -101,9 +117,7 @@ fn installs_in(root: &Path, folder: String) -> Vec<Install> {
 /// The install of a Node package's lockfile, by its package manager.
 fn node_install(dir: &Path) -> &'static str {
     use crate::project_profile::workspaces::{detect_package_manager, is_yarn_berry};
-    let pkg = std::fs::read_to_string(dir.join("package.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let pkg = package_json(dir);
     match detect_package_manager(dir) {
         "pnpm" => "pnpm install --frozen-lockfile",
         "yarn" if is_yarn_berry(dir, pkg.as_ref()) => "yarn install --immutable",
@@ -114,7 +128,56 @@ fn node_install(dir: &Path) -> &'static str {
     }
 }
 
-/// How installs went, in a line: what was installed, or which failed.
+/// Whether npm installs what `dir`'s package.json, which has no lockfile
+/// beside it, names: dependencies, or the packages of the workspace it's
+/// the root of, and no other package manager's (its `packageManager`,
+/// Yarn's settings, a pnpm workspace).
+fn npm_installs(dir: &Path) -> bool {
+    use crate::project_profile::workspaces::{detect_package_manager, is_yarn_berry};
+    let Some(pkg) = package_json(dir) else {
+        return false;
+    };
+    let names = ["dependencies", "devDependencies", "optionalDependencies"]
+        .iter()
+        .any(|key| pkg[*key].as_object().is_some_and(|deps| !deps.is_empty()))
+        || !pkg["workspaces"].is_null();
+    let npms = pkg["packageManager"]
+        .as_str()
+        .is_none_or(|manager| manager.starts_with("npm@"));
+    names && npms && detect_package_manager(dir) == "npm" && !is_yarn_berry(dir, Some(&pkg))
+}
+
+/// `dir`'s package.json, when it reads.
+fn package_json(dir: &Path) -> Option<Value> {
+    let text = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Whether `dir` is a Node workspace's root: its package.json names
+/// workspaces, or a pnpm-workspace.yaml does.
+fn workspace_root(dir: &Path) -> bool {
+    dir.join("pnpm-workspace.yaml").exists()
+        || package_json(dir).is_some_and(|pkg| !pkg["workspaces"].is_null())
+}
+
+/// Whether a folder above `root`, up to its repository's top, is a Node
+/// workspace's root: `root`'s packages are that workspace's.
+fn below_a_workspace(root: &Path) -> bool {
+    let mut dir = root;
+    while !dir.join(".git").exists() {
+        let Some(parent) = dir.parent() else {
+            return false;
+        };
+        if workspace_root(parent) {
+            return true;
+        }
+        dir = parent;
+    }
+    false
+}
+
+/// How installs went, in a line: what was installed, or which failed, and
+/// the programs they need that weren't found where the chat runs.
 pub(super) fn installs_line(done: &[InstallResult]) -> String {
     let named = |d: &InstallResult| match d.folder.as_str() {
         "" => format!("`{}`", d.command),
@@ -127,8 +190,22 @@ pub(super) fn installs_line(done: &[InstallResult]) -> String {
             done.iter().map(named).collect::<Vec<_>>().join(", ")
         );
     }
+    let mut missing: Vec<&str> = Vec::new();
+    for program in failed.iter().filter_map(|d| not_found(d)) {
+        if !missing.contains(&program) {
+            missing.push(program);
+        }
+    }
+    let why = match missing.as_slice() {
+        [] => "the checks will say what's missing".to_string(),
+        [program] => format!("{program} wasn't found where the chat runs"),
+        [first @ .., last] => format!(
+            "{} and {last} weren't found where the chat runs",
+            first.join(", ")
+        ),
+    };
     format!(
-        "{} of {} installs failed ({}): the checks will say what's missing",
+        "{} of {} installs failed ({}): {why}",
         failed.len(),
         done.len(),
         failed
@@ -137,6 +214,20 @@ pub(super) fn installs_line(done: &[InstallResult]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+/// The program a failed install runs that its shell didn't find: `npm`
+/// for `npm ci` ending "sh: 1: npm: not found", with exit code 127 (cmd's
+/// 9009 on Windows). Not one the install itself runs (a package's script).
+fn not_found(d: &InstallResult) -> Option<&str> {
+    let program = d.command.split_whitespace().next()?;
+    let code @ Some(127 | 9009) = d.exit_code.flatten() else {
+        return None;
+    };
+    let line = super::command_output::environment_failure(code, d.output.as_deref()?)?;
+    line.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+        .any(|word| word == program)
+        .then_some(program)
 }
 
 /// An install as its record shows it: like a check's result.
@@ -177,10 +268,11 @@ impl InstallResult {
 }
 
 impl Run {
-    /// S03 (4.3): the Prepare stage's run. The installs the lockfiles imply
-    /// run where what they install isn't there, a record showing each; the
-    /// stage's record says how it went. "stopped" when the user stopped it,
-    /// else "done": a failed install doesn't end the task.
+    /// S03 (4.3): the Prepare stage's run. The installs the packages need
+    /// (`needed`) run where what they install isn't there, a record
+    /// showing each; the stage's record says how it went. "stopped" when
+    /// the user stopped it, else "done": a failed install doesn't end the
+    /// task.
     pub(super) async fn prepare_stage(&mut self) -> Result<String, String> {
         use super::autopilot::Status;
         if self.stage.is_none() {
@@ -249,7 +341,7 @@ impl Run {
     }
 
     /// D19 in a Thorough task's candidate's copy (T05), before its
-    /// implementation starts: the installs its lockfiles imply, where what
+    /// implementation starts: the installs its packages need, where what
     /// they install isn't there. A server's worktree has none of the chat's
     /// installs, which git ignores; a copy on this computer sees the
     /// project's through its overlay, and needs none. Run as the Prepare
@@ -292,7 +384,7 @@ impl Run {
 
     /// V03 (D12): the round's checks failed on their environment
     /// (`failure`, from `command`'s output). The round isn't counted: the
-    /// installs the lockfiles imply run (when the task's settings let
+    /// installs the packages need run (when the task's settings let
     /// Prepare run), and the checks run again at once ("repaired"). With
     /// nothing to install, the agent hears what's missing instead
     /// ("continue"). The record says which, and that it isn't counted.
@@ -487,6 +579,16 @@ mod tests {
         (folder.to_string(), command.to_string())
     }
 
+    /// Writes `content` to `path` in `dir`.
+    fn write(dir: &Path, path: &str, content: &str) {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// A package.json that names a dependency.
+    const DEPENDS: &str = r#"{ "name": "t", "devDependencies": { "vitest": "^3.2.0" } }"#;
+
     /// 4.3: each lockfile's install, where what it installs isn't there.
     #[test]
     fn a_lockfile_without_its_dependencies_needs_its_install() {
@@ -590,5 +692,145 @@ mod tests {
         // `node_modules` is a file here: it's there, so nothing installs.
         assert_eq!(commands(&dir.0), []);
         assert_eq!(commands(&dir.0.join("missing")), []);
+    }
+
+    /// A Node package that commits no lockfile, as a server's copy of it
+    /// has it, with nothing installed: npm installs what its package.json
+    /// names, writing no lockfile.
+    #[test]
+    fn a_package_without_a_lockfile_installs_what_it_names() {
+        let cases = [
+            DEPENDS,
+            r#"{ "dependencies": { "left-pad": "1.3.0" } }"#,
+            r#"{ "optionalDependencies": { "fsevents": "*" } }"#,
+            r#"{ "packageManager": "npm@10.8.2", "dependencies": { "a": "1" } }"#,
+            // A workspace's root, whose packages npm installs.
+            r#"{ "private": true, "workspaces": ["packages/*"] }"#,
+        ];
+        for manifest in cases {
+            let dir = project(&[".git/"]);
+            write(&dir.0, "package.json", manifest);
+            assert_eq!(
+                commands(&dir.0),
+                [at("", "npm install --no-package-lock --no-audit --no-fund")],
+                "{manifest}"
+            );
+        }
+    }
+
+    /// Nothing for npm to install, or another package manager's package:
+    /// nothing.
+    #[test]
+    fn a_package_without_a_lockfile_npm_wouldnt_install_needs_nothing() {
+        let cases: &[(&str, &[&str])] = &[
+            (r#"{ "scripts": { "test": "node t.js" } }"#, &[]),
+            (r#"{ "dependencies": {} }"#, &[]),
+            ("not json", &[]),
+            (DEPENDS, &["node_modules/"]),
+            (DEPENDS, &[".pnp.cjs"]),
+            (
+                r#"{ "packageManager": "pnpm@9.1.0", "dependencies": { "a": "1" } }"#,
+                &[],
+            ),
+            (
+                r#"{ "packageManager": "yarn@1.22.22", "dependencies": { "a": "1" } }"#,
+                &[],
+            ),
+            (DEPENDS, &[".yarnrc.yml"]),
+            (DEPENDS, &["pnpm-workspace.yaml"]),
+        ];
+        for (manifest, files) in cases {
+            let dir = project(files);
+            std::fs::create_dir_all(dir.0.join(".git")).unwrap();
+            write(&dir.0, "package.json", manifest);
+            assert_eq!(commands(&dir.0), [], "{manifest} {files:?}");
+        }
+    }
+
+    /// A Node workspace's packages install with it, from its root: never
+    /// each on its own, one folder down or as the project's own folder.
+    #[test]
+    fn a_workspaces_packages_install_from_its_root() {
+        let unlocked = "npm install --no-package-lock --no-audit --no-fund";
+        let dir = project(&[".git/"]);
+        write(&dir.0, "package.json", r#"{ "workspaces": ["web"] }"#);
+        write(&dir.0, "web/package.json", DEPENDS);
+        assert_eq!(commands(&dir.0), [at("", unlocked)]);
+        // Its lockfile says how.
+        write(&dir.0, "package-lock.json", "{}");
+        assert_eq!(commands(&dir.0), [at("", "npm ci --no-audit --no-fund")]);
+        // pnpm's, with no lockfile: not npm's to install.
+        let pnpm = project(&[".git/", "pnpm-workspace.yaml"]);
+        write(&pnpm.0, "package.json", "{}");
+        write(&pnpm.0, "web/package.json", DEPENDS);
+        assert_eq!(commands(&pnpm.0), []);
+        // A package of its own beside a root that isn't a workspace's.
+        let apart = project(&[".git/"]);
+        write(&apart.0, "package.json", r#"{ "name": "tools" }"#);
+        write(&apart.0, "web/package.json", DEPENDS);
+        assert_eq!(commands(&apart.0), [at("web", unlocked)]);
+        // The project is a package of a workspace above it in its
+        // repository, or a folder of its packages.
+        let repo = project(&[".git/"]);
+        write(&repo.0, "package.json", r#"{ "workspaces": ["apps/*"] }"#);
+        write(&repo.0, "apps/web/package.json", DEPENDS);
+        assert_eq!(commands(&repo.0.join("apps/web")), []);
+        assert_eq!(commands(&repo.0.join("apps")), []);
+        // A workspace above its repository's top isn't its.
+        std::fs::create_dir_all(repo.0.join("apps/web/.git")).unwrap();
+        assert_eq!(commands(&repo.0.join("apps/web")), [at("", unlocked)]);
+    }
+
+    /// A failed install's line names the program its shell didn't find:
+    /// not one a package's script runs, nor a failure of another kind.
+    #[test]
+    fn an_install_whose_program_isnt_there_says_so() {
+        let ran = |command: &str, folder: &str, code: i32, output: &str| InstallResult {
+            status: if code == 0 { "passed" } else { "failed" },
+            exit_code: Some(Some(code)),
+            output: (code != 0).then(|| output.to_string()),
+            ..InstallResult::pending(&Install {
+                folder: folder.into(),
+                command: command.into(),
+            })
+        };
+        let npm = ran(
+            "npm ci --no-audit --no-fund",
+            "",
+            127,
+            "sh: 1: npm: not found",
+        );
+        assert_eq!(
+            installs_line(std::slice::from_ref(&npm)),
+            "1 of 1 installs failed (`npm ci --no-audit --no-fund`): npm wasn't found where the chat runs"
+        );
+        let cargo = ran("cargo fetch", "api", 127, "bash: cargo: command not found");
+        let web = ran(
+            "npm install --no-package-lock --no-audit --no-fund",
+            "web",
+            9009,
+            "'npm' is not recognized as an internal or external command,",
+        );
+        let uv = ran("uv sync", "py", 0, "");
+        assert_eq!(
+            installs_line(&[npm, cargo, web, uv.clone()]),
+            "3 of 4 installs failed (`npm ci --no-audit --no-fund`, `cargo fetch` in api, \
+             `npm install --no-package-lock --no-audit --no-fund` in web): \
+             npm and cargo weren't found where the chat runs"
+        );
+        let script = ran(
+            "npm ci --no-audit --no-fund",
+            "",
+            127,
+            "sh: 1: node-gyp: not found",
+        );
+        let other = ran("npm ci --no-audit --no-fund", "", 1, "npm ERR! code E404");
+        for failed in [script, other] {
+            assert_eq!(
+                installs_line(&[failed]),
+                "1 of 1 installs failed (`npm ci --no-audit --no-fund`): the checks will say what's missing"
+            );
+        }
+        assert_eq!(installs_line(&[uv]), "Installed: `uv sync` in py");
     }
 }

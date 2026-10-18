@@ -235,9 +235,10 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           <span>
             Prepare dependencies before the first check
             <span class="setting-checkbox-sub">
-              Where a lockfile’s dependencies aren’t installed (no <code>node_modules</code>, no
-              virtual environment), its install runs before the code is written, and again once if a
-              check fails for want of a program or a package.
+              Where a project’s dependencies aren’t installed (no <code>node_modules</code>, no
+              virtual environment), their install runs before the code is written: its lockfile’s,
+              or npm’s for a <code>package.json</code> without one. It runs again once if a check
+              fails for want of a program or a package.
             </span>
           </span>
         </label>
