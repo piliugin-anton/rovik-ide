@@ -891,7 +891,7 @@ fn clear_stale_mount(mountpoint: &Path) {
         matches!(std::fs::metadata(mountpoint), Err(e) if e.raw_os_error() == Some(libc::ENOTCONN));
     if stale {
         for helper in ["fusermount3", "fusermount"] {
-            let ok = std::process::Command::new(helper)
+            let ok = crate::process::command(helper)
                 .args(["-u", "-z"])
                 .arg(mountpoint)
                 .output()

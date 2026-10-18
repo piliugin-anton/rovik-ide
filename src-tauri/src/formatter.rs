@@ -680,7 +680,6 @@ fn run(
 ) -> Result<String, String> {
     use rovik_core::command_tool::{shell_exited, ProcessTree};
 
-    rovik_core::process::no_window(&mut cmd);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -789,7 +788,7 @@ fn format_text(
             }
         })
         .collect();
-    let mut cmd = Command::new(&f.program);
+    let mut cmd = rovik_core::process::command(&f.program);
     cmd.args(&args).current_dir(&f.cwd).env("PATH", search_path);
     // An empty file has nothing to format, and some tools reject it.
     if content.trim().is_empty() {

@@ -41,6 +41,7 @@ const MODEL_PORT = Number(args['model-port'] ?? 18080);
 const ONLY = args.only ? new RegExp(args.only, 'i') : null;
 const DRIVER = args.driver ?? (PLATFORM === 'darwin' ? 'bridge' : 'webdriver');
 const APP = resolve(args.app ?? '');
+const APPIMAGE = /\.AppImage$/i.test(APP);
 
 function parseArgs(list) {
   const out = {};
@@ -215,8 +216,9 @@ const MOD = PLATFORM === 'darwin' ? Keys.META : Keys.CTRL;
 
 /** A leftover instance would take the new launch (single instance) and the session would hang. */
 function killApp() {
-  // By the launched binary's name: an installed build's may differ.
-  const name = basename(APP) || 'rovik-ide';
+  // By the launched binary's name: an installed build's may differ. An
+  // AppImage's is the binary inside it.
+  const name = APPIMAGE ? 'rovik-ide' : basename(APP) || 'rovik-ide';
   try {
     if (PLATFORM === 'win32') spawnSync('taskkill', ['/IM', name, '/F'], { stdio: 'ignore' });
     else spawnSync('pkill', ['-x', name.slice(0, 15)], { stdio: 'ignore' });
@@ -1034,6 +1036,39 @@ async function run() {
     );
     await click('.terminal-toggle-button');
   });
+
+  // Run from an AppImage, what the terminal starts gets the system's
+  // environment, not the AppImage's: with its libraries first
+  // (LD_LIBRARY_PATH), the flatpak a login shell's profile runs stopped
+  // with a symbol lookup error, and python3 didn't start (PYTHONHOME).
+  if (APPIMAGE) {
+    await step(
+      'appimage: the terminal gets the system’s environment, not the AppImage’s',
+      async () => {
+        await click('.terminal-toggle-button');
+        await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
+        await sleep(2500);
+        const start = await panelText('.xterm-rows');
+        assert(
+          !/symbol lookup error|error while loading shared libraries/.test(start),
+          `the shell's start: ${start.trim()}`
+        );
+        await click('.xterm-screen');
+        await typeKeys(
+          "env | grep -c -e '^APPIMAGE=' -e '^APPDIR=' -e '/\\.mount_' | sed 's/^/appimage-vars=/'"
+        );
+        await keys(Keys.ENTER);
+        let count = null;
+        await waitFor(async () => {
+          const found = (await panelText('.xterm-rows')).match(/appimage-vars=(\d+)/);
+          count = found && Number(found[1]);
+          return found !== null;
+        }, 'the count of variables naming the AppImage');
+        assert(count === 0, `${count} of the shell's variables name the AppImage`);
+        await click('.terminal-toggle-button');
+      }
+    );
+  }
 
   // A key press the webview acts on too, as a person's is (xdotool's on
   // X, or WebDriver's): Linux's and Windows' webviews paste on

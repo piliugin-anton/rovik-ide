@@ -484,7 +484,7 @@ pub fn ran_no_tests(output: &str) -> bool {
 pub fn light_check_for(root: &Path, files: &[String]) -> Vec<String> {
     let installed = |tool: &str| {
         root.join("node_modules/.bin").join(tool).is_file()
-            || std::env::var_os("PATH").is_some_and(|path| {
+            || crate::process::child_var("PATH").is_some_and(|path| {
                 std::env::split_paths(&path)
                     .any(|d| d.join(tool).is_file() || d.join(format!("{tool}.exe")).is_file())
             })

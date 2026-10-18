@@ -92,7 +92,7 @@ fn shell_command(command: &str, confine: Option<&crate::overlay::confine::Confin
     let mut cmd = match confine {
         Some(c) => crate::overlay::confine::command(c, &shell, &["-c", command]),
         None => {
-            let mut cmd = Command::new(shell);
+            let mut cmd = crate::process::command(shell);
             cmd.args(["-c", command]);
             cmd
         }

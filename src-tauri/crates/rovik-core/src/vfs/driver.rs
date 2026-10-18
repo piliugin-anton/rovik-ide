@@ -11,6 +11,7 @@
 //! it when there is one, and its code signature is checked before it runs.
 
 use std::path::Path;
+#[cfg(any(target_os = "macos", windows))]
 use std::process::Command;
 #[cfg(any(target_os = "macos", windows))]
 use std::time::Duration;
@@ -48,7 +49,7 @@ pub enum InstallOutcome {
 
 #[cfg(target_os = "linux")]
 fn which(name: &str) -> Option<std::path::PathBuf> {
-    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = crate::process::child_var("PATH").unwrap_or_default();
     std::env::split_paths(&path)
         .chain(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(Into::into))
         .map(|dir| dir.join(name))
@@ -60,7 +61,7 @@ pub fn status() -> DriverStatus {
     let helper = which("fusermount3").or_else(|| which("fusermount"));
     let device = Path::new("/dev/fuse").exists();
     let version = helper.as_ref().and_then(|h| {
-        let out = Command::new(h).arg("-V").output().ok()?;
+        let out = crate::process::command(h).arg("-V").output().ok()?;
         let text = String::from_utf8_lossy(&out.stdout).to_string()
             + &String::from_utf8_lossy(&out.stderr);
         text.lines()
@@ -118,11 +119,11 @@ pub async fn install() -> Result<InstallOutcome, String> {
     let graphical =
         std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
     let mut command = if is_root {
-        let mut c = Command::new("sh");
+        let mut c = crate::process::command("sh");
         c.args(["-c", &script]);
         c
     } else if which("pkexec").is_some() && graphical {
-        let mut c = Command::new("pkexec");
+        let mut c = crate::process::command("pkexec");
         c.args(["sh", "-c", &script]);
         c
     } else {

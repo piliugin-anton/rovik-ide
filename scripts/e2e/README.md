@@ -27,6 +27,18 @@ xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- \
   node scripts/e2e/run.mjs --app src-tauri/target/release/rovik-ide --out e2e-out
 ```
 
+An AppImage runs the same way (`--app Rovik.IDE_<version>_amd64.AppImage`),
+with one more step: the terminal's shell has the system's environment, not
+the AppImage's (no variable naming the AppImage, and nothing it starts as
+it logs in fails, as flatpak did with the AppImage's libraries). That step
+alone:
+
+```sh
+xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- \
+  node scripts/e2e/run.mjs --app Rovik.IDE_0.1.1_amd64.AppImage --out e2e-out \
+  --only 'launch|empty state|project: open an existing|appimage'
+```
+
 ## Windows
 
 WebDriver through msedgedriver, of the WebView2 runtime's version:

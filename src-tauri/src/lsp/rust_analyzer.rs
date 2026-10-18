@@ -15,7 +15,6 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -73,7 +72,7 @@ fn managed_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// `<binary> --version`, if it runs. rustup's proxy for a component that
 /// isn't installed exists on PATH but fails here, which is what we want.
 fn version_of(path: &Path) -> Option<String> {
-    let mut child = rovik_core::process::no_window(&mut Command::new(path))
+    let mut child = rovik_core::process::command(path)
         .arg("--version")
         .env("PATH", tool_path())
         .stdout(std::process::Stdio::piped())
@@ -417,7 +416,7 @@ pub struct RustSrcStatus {
 pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let run = |cmd: &str, args: &[&str]| {
-            rovik_core::process::no_window(&mut Command::new(cmd))
+            rovik_core::process::command(cmd)
                 .args(args)
                 .current_dir(&root)
                 .env("PATH", tool_path())
@@ -443,7 +442,7 @@ pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
 #[tauri::command]
 pub async fn ra_install_rust_src(root: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = rovik_core::process::no_window(&mut Command::new("rustup"))
+        let out = rovik_core::process::command("rustup")
             .args(["component", "add", "rust-src"])
             .current_dir(&root)
             .env("PATH", tool_path())

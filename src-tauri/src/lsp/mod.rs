@@ -11,7 +11,7 @@ pub mod rust_analyzer;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -62,10 +62,11 @@ pub enum LspEvent {
     },
 }
 
-/// PATH with the cargo bin folder added. Launched from a desktop entry,
-/// the app often doesn't have it, and rust-analyzer needs `cargo`/`rustc`.
+/// The PATH a program the app starts gets, with the cargo bin folder
+/// added. Launched from a desktop entry, the app often doesn't have it, and
+/// rust-analyzer needs `cargo`/`rustc`.
 pub fn tool_path() -> std::ffi::OsString {
-    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+    let mut dirs: Vec<std::path::PathBuf> = rovik_core::process::child_var("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     let cargo_bin = std::env::var_os("CARGO_HOME")
@@ -154,8 +155,7 @@ pub fn lsp_start(
     on_event: Channel<LspEvent>,
 ) -> Result<String, String> {
     let path = tool_path();
-    let mut cmd = Command::new(find_program(&command, &path));
-    let mut child = rovik_core::process::no_window(&mut cmd)
+    let mut child = rovik_core::process::command(find_program(&command, &path))
         .args(&args)
         .current_dir(&cwd)
         .env("PATH", &path)
