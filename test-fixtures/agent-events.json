@@ -183,6 +183,7 @@
       "message": "It works in the project folder directly."
     },
     { "type": "userMessageSettled", "dialogId": "fx-chat", "messageId": "fx-user", "ok": false },
+    { "type": "taskDriving", "dialogId": "fx-chat", "driving": true },
     { "type": "runEnded", "dialogId": "fx-chat", "runId": "fx-run", "outcome": "done" }
   ]
 }

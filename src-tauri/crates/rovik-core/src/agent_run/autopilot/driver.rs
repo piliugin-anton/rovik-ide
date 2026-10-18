@@ -19,6 +19,7 @@ use super::stage::{
 };
 use crate::agent::OpenAIChatOptions;
 use crate::agent_run::budget::{self, Spent};
+use crate::agent_run::events::AgentEvent;
 use crate::agent_run::recovery::{self, Recovery};
 use crate::agent_run::{plan, StartKind, StartRequest, UserMessage};
 use crate::chat_db::store;
@@ -86,7 +87,7 @@ pub(super) async fn record_run(
 }
 
 /// A message of the user's that starts a task: sent in Autopilot mode.
-pub(super) fn starts_task(message: &UserMessage) -> bool {
+pub(in crate::agent_run) fn starts_task(message: &UserMessage) -> bool {
     let meta = message.meta.as_ref();
     meta.and_then(|m| m.get("mode")).and_then(Value::as_str) == Some(MODE)
         && meta.and_then(|m| m.get("harness")).is_none()
@@ -211,7 +212,7 @@ pub(in crate::agent_run) fn after_run(
     outcome: String,
     spent: Spent,
     settings: Settings,
-    driving: DriveGuard,
+    driving: (DriveGuard, AtWork),
 ) -> Driving {
     Box::pin(async move {
         let _driving = driving;
@@ -292,6 +293,48 @@ pub(in crate::agent_run) async fn drive_lock(dialog_id: &str) -> DriveGuard {
 
 pub(in crate::agent_run) fn try_drive_lock(dialog_id: &str) -> Option<DriveGuard> {
     lock_of(dialog_id).try_lock_owned().ok()
+}
+
+/// The chat's driver at work on its task, told (`TaskDriving`) as it
+/// starts and once its last turn is over: while it starts a stage's run,
+/// goes from one stage to the next, or carries out a stage of the IDE's
+/// own (a delivery), no run of the chat's may be going, and the frontend
+/// shows the task's running stage as running, not as cut short. Held with
+/// the driver's turn where the driver goes on with the task; never by a
+/// start that only waits for its turn (`driver_turn`).
+pub(in crate::agent_run) struct AtWork {
+    core: Core,
+    dialog_id: String,
+}
+
+impl AtWork {
+    pub(in crate::agent_run) fn start(core: &Core, dialog_id: &str) -> AtWork {
+        tell_driving(core, dialog_id, true);
+        AtWork {
+            core: core.clone(),
+            dialog_id: dialog_id.to_string(),
+        }
+    }
+}
+
+impl Drop for AtWork {
+    fn drop(&mut self) {
+        tell_driving(&self.core, &self.dialog_id, false);
+    }
+}
+
+/// One more of the chat's driver's turns at work (`more`), or one fewer:
+/// told when its driving starts or ends. One change at a time, so the
+/// events come in the order of the changes, whichever threads make them.
+fn tell_driving(core: &Core, dialog_id: &str, more: bool) {
+    static TELLING: Mutex<()> = Mutex::new(());
+    let _one = TELLING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(driving) = core.agents.turn_driving(dialog_id, more) {
+        core.emit(AgentEvent::TaskDriving {
+            dialog_id: dialog_id.to_string(),
+            driving,
+        });
+    }
 }
 
 /// Why a start of the chat's run was refused: its driver is between two
@@ -761,6 +804,7 @@ pub(in crate::agent_run) async fn go_on(
         retry_later(core.clone(), chat, record, settings, until);
         return Ok(Some(None));
     }
+    let _at_work = AtWork::start(core, dialog_id);
     let stage = match next {
         Next::Running(stage) => stage,
         _ => {

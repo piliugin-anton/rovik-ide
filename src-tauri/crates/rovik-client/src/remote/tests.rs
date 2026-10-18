@@ -5,7 +5,7 @@ use super::*;
 use crate::testing::{identity, Fake};
 use rovik_core::agent_run::events::Patch;
 use rovik_core::agent_run::permissions::{ApprovalRule, Permissions};
-use rovik_core::agent_run::{ModelProfile, UserMessage};
+use rovik_core::agent_run::{ModelProfile, RunningRun, UserMessage};
 use rovik_core::chat_db::store::{MessagePatch, MessageRow, NewDialog};
 use rovik_core::testing::{temp_dir, TempDir};
 use rovik_core::{EventSink, Paths};
@@ -1029,6 +1029,79 @@ async fn a_file_the_host_cant_send_leaves_its_row_without_it() {
     let data = app.core.db.data_dir().to_path_buf();
     assert!(attachments::file_for(&data, &lost).is_none());
     assert_eq!(*app.witnessed.lock().unwrap(), [("t1".to_string(), true)]);
+}
+
+/// A host that comes back tells of its tasks' drivers at work before its
+/// runs, and of those that finished while it was away after them: between
+/// two of a task's runs, its stage never shows as cut short.
+#[tokio::test]
+async fn a_host_that_comes_back_tells_of_its_drivers_at_work() {
+    let app = App::new();
+    for chat in ["going", "done"] {
+        app.chat(chat, None, Vec::new()).await;
+    }
+    let (remote, fake) = connected(&app).await;
+    for chat in ["going", "done"] {
+        remote.place(chat, HOST);
+    }
+    let driving = |dialog_id: &str, driving| {
+        event(AgentEvent::TaskDriving {
+            dialog_id: dialog_id.into(),
+            driving,
+        })
+    };
+    remote.receive(HOST, driving("done", true)).await;
+    *fake.status.lock().unwrap() = Some(AgentStatus {
+        runs: vec![RunningRun {
+            dialog_id: "going".into(),
+            run_id: "r1".into(),
+        }],
+        driving: vec!["going".into()],
+        ..Default::default()
+    });
+    app.events.lock().unwrap().clear();
+    remote
+        .receive(HOST, Incoming::Subscribed { complete: false })
+        .await;
+    let told: Vec<String> = app
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            matches!(
+                e["type"].as_str(),
+                Some("taskDriving" | "runStarted" | "runEnded")
+            )
+        })
+        .map(|e| format!("{} {} {}", e["type"], e["dialogId"], e["driving"]))
+        .collect();
+    assert_eq!(
+        told,
+        [
+            r#""taskDriving" "going" true"#,
+            r#""runStarted" "going" null"#,
+            r#""taskDriving" "done" false"#,
+        ]
+    );
+    // Told once: the next catch-up finds nothing new to tell of "done".
+    app.events.lock().unwrap().clear();
+    *fake.status.lock().unwrap() = Some(AgentStatus::default());
+    remote
+        .receive(HOST, Incoming::Subscribed { complete: false })
+        .await;
+    let ended: Vec<Value> = app
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "taskDriving")
+        .cloned()
+        .collect();
+    assert_eq!(
+        ended,
+        [json!({ "type": "taskDriving", "dialogId": "going", "driving": false })]
+    );
 }
 
 #[tokio::test]

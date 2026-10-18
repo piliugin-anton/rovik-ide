@@ -122,6 +122,7 @@ export interface ReasoningLearned {
 type AgentEvent =
   | { type: 'runStarted'; dialogId: string; runId: string }
   | { type: 'runEnded'; dialogId: string; runId: string; outcome: string }
+  | { type: 'taskDriving'; dialogId: string; driving: boolean }
   | { type: 'messagesAdded'; dialogId: string; messages: (MessageRow & { pending?: boolean })[] }
   | { type: 'messagePatched'; dialogId: string; messageId: string; patch: MessagePatch }
   | { type: 'approvalRequested'; request: ApprovalRequest }
@@ -343,6 +344,11 @@ function handle(event: AgentEvent) {
     case 'runStarted':
       chatStore.setRunning(event.dialogId, true);
       break;
+    case 'taskDriving':
+      // Between two of the task's runs: the chat stays busy, and its
+      // running stage shows as running, not cut short.
+      chatStore.setDriving(event.dialogId, event.driving);
+      break;
     case 'runEnded':
       chatStore.setRunning(event.dialogId, false);
       // The run is over: the live items are stale. Re-ask the backend
@@ -451,6 +457,8 @@ interface AgentStatus {
   subagents?: RunningSubagent[];
   approvals: ApprovalRequest[];
   questions: PendingQuestions[];
+  /** The chats whose Autopilot driver is at work; absent from an older backend. */
+  driving?: string[];
 }
 
 let ready: Promise<void> | null = null;
@@ -467,6 +475,7 @@ export function initAgentRuns(): Promise<void> {
     try {
       const status = await invoke<AgentStatus>('agent_status');
       for (const run of status.runs) chatStore.setRunning(run.dialogId, true);
+      for (const dialogId of status.driving ?? []) chatStore.setDriving(dialogId, true);
       for (const sub of status.subagents ?? []) seedRunningSubagent(sub);
       // What waited already: in the chats, without a compare tab for each.
       for (const request of status.approvals) registerApproval(request, false);

@@ -773,6 +773,17 @@ T05 depends most on the environment it meets.
   opening the chat resumes it (the daemon resumes its own at its start).
   Only the current task's latest record is at work while a run goes: one
   a new request took over from stays "didn't finish".
+- **Between two runs the task's driver is at work** (`TaskDriving`): it
+  writes the next stage's record before that stage's run starts, takes
+  over from a run before the run's end is told, and carries out a
+  delivery with no run at all. It says when its work starts and when its
+  last turn of it ends, and the app counts the chat as running meanwhile
+  (`AgentStatus.driving` after a reload, a host's after a reconnect): the
+  strip and the records show the stage running, the chat list spins, Stop
+  shows, and opening the chat doesn't resume the task. Without it each
+  step from one stage to the next showed "didn't finish" for a moment,
+  and a delivery for as long as it took. A Stop meanwhile stops the stage
+  the driver starts, once its turn is over.
 - **In the chat** each record is one line where its stage began: the
   stage, its round when it ran more than once, its status, and its
   summary. A click on the strip scrolls to it, loading the page around
@@ -782,7 +793,10 @@ T05 depends most on the environment it meets.
   styles, at a side panel's width): the app itself and a same-machine
   daemon couldn't be run in the sandbox this was built in. The daemon's
   test (`rovik-agentd/tests/autopilot.rs`) checks the rows a remote
-  chat's mirror gets.
+  chat's mirror gets. The app's end-to-end run (`scripts/e2e/run.mjs`, on
+  Linux under Xvfb) since sends a task to the evaluation's scripted model
+  (`scripts/eval/fake-model.mjs autopilot`) and follows it to its
+  delivery: it fails if a stage shows as cut short at any moment.
 
 ### A06: the effort setting
 

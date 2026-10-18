@@ -586,9 +586,11 @@ it came, with these exceptions:
   daemon already filters by computer; this is a second guard.
 
 When a host connects, the client sends events that bring the frontend up
-to date: `runStarted`, `approvalRequested` and `questionsAsked` for the
-host's current state, and `runEnded` for runs that ended while it was
-away.
+to date: `taskDriving`, `runStarted`, `approvalRequested` and
+`questionsAsked` for the host's current state, and `runEnded` for runs
+that ended while it was away, then `taskDriving` for Autopilot drivers
+that finished meanwhile (the order keeps a task's stage from showing as
+cut short in between).
 
 ### 6.2 A remote start, on the daemon
 

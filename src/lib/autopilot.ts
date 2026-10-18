@@ -261,7 +261,8 @@ export function taskRecords(
 
 /**
  * How a stage shows: as recorded, `pending` when not reached (yet), and,
- * when recorded running but nothing runs it, `waiting` while it waits out
+ * when recorded running but nothing runs it (no run, nor the task's driver
+ * at work between two of its runs: `running` is either), `waiting` while it waits out
  * the provider's rate limit (H07: its run goes on by itself), else
  * `stopped` (the app closed, or a crash, cut it; it goes on once the task
  * is resumed).

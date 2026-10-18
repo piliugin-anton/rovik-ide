@@ -80,7 +80,10 @@ export function summaryParts(text: string) {
 
 export default function StageRecord(props: {
   stage: StageMeta;
-  /** A run of the chat's is going on: a stage recorded running is at work. */
+  /**
+   * A run of the chat's, or its task's driver, is at work on this stage: one
+   * recorded running isn't cut short.
+   */
   live: boolean;
 }) {
   const status = () => shownStatus(props.stage.status, props.live, waitsOutRateLimit(props.stage));

@@ -38,6 +38,7 @@ const status = {
   })),
   approvals: [],
   questions: [],
+  driving: ['task-9'],
 };
 (globalThis as any).window = {
   __TAURI_INTERNALS__: {
@@ -78,6 +79,9 @@ test('reload_with_0_1_3_running_children', async () => {
   await initAgentRuns();
   // Three children of one lead, from agent_status.
   assert.ok(isRunning('lead-3'));
+  // A task's driver at work between two of its runs: the chat is busy.
+  assert.ok(isRunning('task-9'));
+  assert.ok(!isRunning('task-8'));
   for (const n of [1, 2, 3]) {
     assert.equal(liveSubagent('lead-3', `t${n}`)?.childDialogId, `kid-3-${n}`);
     assert.equal(liveSubagent('lead-3', `t${n}`)?.toolCalls, n);
@@ -155,6 +159,30 @@ test('frontend_closes_a_deleted_tab: a rolled-back new file goes from the editor
   }
 });
 
+test("a task's driver at work keeps its chat busy from one of its runs to the next", async () => {
+  await initAgentRuns();
+  const chat = 'task-1';
+  const busy: boolean[] = [];
+  const told = (payload: Record<string, unknown>) => {
+    emit({ dialogId: chat, ...payload });
+    busy.push(isRunning(chat));
+  };
+  // The order the backend tells it in: the driver at work before the
+  // stage's run ends, until the next stage's run has started.
+  told({ type: 'taskDriving', driving: true });
+  told({ type: 'runStarted', runId: 'plan' });
+  told({ type: 'taskDriving', driving: false });
+  told({ type: 'taskDriving', driving: true });
+  told({ type: 'runEnded', runId: 'plan', outcome: 'done' });
+  told({ type: 'runStarted', runId: 'implement' });
+  told({ type: 'taskDriving', driving: false });
+  told({ type: 'taskDriving', driving: true });
+  told({ type: 'runEnded', runId: 'implement', outcome: 'done' });
+  // Its delivery, the IDE's own: no run, the driver at work, then done.
+  told({ type: 'taskDriving', driving: false });
+  assert.deepEqual(busy, [true, true, true, true, true, true, true, true, true, false]);
+});
+
 /**
  * test-fixtures/agent-events.json: one event of each type, as the backend
  * sends it. The backend's tests read each into its `AgentEvent` and write it
@@ -189,7 +217,12 @@ test("the backend's events, as the shared fixtures have them, reach their stores
   // What each type of event changes, checked right after it.
   const effects: Record<string, (e: FixtureEvent) => void> = {
     runStarted: (e) => assert.ok(isRunning(e.dialogId)),
-    runEnded: (e) => assert.ok(!isRunning(e.dialogId)),
+    // Over, but for its task's driver at work (told before the run's end).
+    runEnded: (e) => assert.equal(isRunning(e.dialogId), !!chatStore.state.driving[e.dialogId]),
+    taskDriving: (e) => {
+      assert.equal(!!chatStore.state.driving[e.dialogId], e.driving);
+      if (e.driving) assert.ok(isRunning(e.dialogId));
+    },
     messagesAdded: (e) => {
       for (const m of e.messages) assert.equal(message(m.id)?.content, m.content, m.id);
     },
@@ -236,6 +269,9 @@ test("the backend's events, as the shared fixtures have them, reach their stores
       new Set(Object.keys(effects)),
       'every check has its event'
     );
+    // The driver done too: nothing goes on in the chat.
+    emit({ type: 'taskDriving', dialogId: 'fx-chat', driving: false });
+    assert.ok(!isRunning('fx-chat'));
   } finally {
     for (const stop of stops) stop();
   }

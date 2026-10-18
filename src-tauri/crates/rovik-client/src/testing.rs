@@ -38,15 +38,19 @@ pub struct Fake {
     pub info: Arc<Mutex<Option<HostInfo>>>,
     /// What its welcome says it does: nothing unless told.
     pub features: Arc<Mutex<Vec<String>>>,
+    /// What it answers `AgentStatus` with, once set: nothing going on
+    /// until then.
+    pub status: Arc<Mutex<Option<AgentStatus>>>,
 }
 
 impl Connector for Fake {
     fn connect(&self) -> Connecting<'_> {
         let (requests, info) = (self.requests.clone(), self.info.clone());
         let features = self.features.lock().unwrap().clone();
+        let status = self.status.clone();
         Box::pin(async move {
             let (client, server) = tokio::io::duplex(1 << 16);
-            tokio::spawn(serve(server, requests, info, features));
+            tokio::spawn(serve(server, requests, info, features, status));
             Ok(Box::new(client) as Stream)
         })
     }
@@ -57,6 +61,7 @@ async fn serve(
     requests: Arc<Mutex<Vec<Request>>>,
     info: Arc<Mutex<Option<HostInfo>>>,
     features: Vec<String>,
+    status: Arc<Mutex<Option<AgentStatus>>>,
 ) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(io).await else {
         return;
@@ -77,8 +82,10 @@ async fn serve(
             },
             Ok(Frame::Call { id, req }) => {
                 let info = info.lock().unwrap().clone();
-                let res = Ok(match (&req, info) {
-                    (Request::HostInfo, Some(info)) => Response::HostInfo(info),
+                let status = status.lock().unwrap().clone();
+                let res = Ok(match (&req, info, status) {
+                    (Request::HostInfo, Some(info), _) => Response::HostInfo(info),
+                    (Request::AgentStatus, _, Some(status)) => Response::AgentStatus(status),
                     _ => answer(&req),
                 });
                 requests.lock().unwrap().push(req);

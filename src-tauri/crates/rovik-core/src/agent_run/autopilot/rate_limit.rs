@@ -127,7 +127,8 @@ pub(super) fn retry_later(
         if !here {
             return;
         }
-        // It waits no more: its run goes on.
+        // It waits no more: its run goes on, the driver at work until it has.
+        let _at_work = super::driver::AtWork::start(&core, &dialog_id);
         let gone_on = end_stage(&core, &dialog_id, &record, |r| {
             if let Some(kept) = r.rate_limit.as_mut() {
                 kept.until = None;

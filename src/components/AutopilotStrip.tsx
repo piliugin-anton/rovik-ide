@@ -13,7 +13,7 @@ import { StageIcon } from './StageRecord';
 export default function AutopilotStrip(props: {
   /** The task's records, oldest first (lib/autopilot.ts `taskRecords`). */
   rows: StageRow[];
-  /** A run of the chat's is going on. */
+  /** A run of the chat's is going on, or its task's driver is at work. */
   running: boolean;
   /** Show a record in the chat, by its message id. */
   onShow: (recordId: string) => void;
