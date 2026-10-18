@@ -1,20 +1,25 @@
 # The checks a pull request must pass (docs/design/autopilot-plan.md, G01):
-# the Rust workspace's tests, the evaluation's dry run (the headless runner
-# end to end against a scripted model, scripts/eval), the frontend's tests
-# and type check, and the formatting. What a contributor runs before a
-# push, run for every push to a pull request.
+# the Rust workspace's tests on each system the app ships for (Linux, macOS
+# and Windows), the evaluation's dry run (the headless runner end to end
+# against a scripted model, scripts/eval), the frontend's tests and type
+# check, and the formatting. What a contributor runs before a push, run for
+# every push to a pull request, and by the release workflow before it
+# builds a merge (workflow_call).
 name: CI
 
 on:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
-# A newer push to the pull request makes the run under way moot.
+# A newer push to the pull request makes the run under way moot. Any other
+# run (by hand, or a release's checks) is a group of its own: nothing
+# cancels it.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -28,25 +33,52 @@ env:
 
 jobs:
   rust:
-    name: Rust tests and the evaluation's dry run
-    runs-on: ubuntu-latest
+    name: Rust tests (${{ matrix.name }})
+    strategy:
+      # Each system's result is its own: one failing doesn't stop the others.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-latest
+            args: ''
+          - name: macOS
+            runner: macos-latest
+            args: ''
+          # The daemon runs on Linux servers only (D16): on Windows it's a
+          # stub that says so, and its tests aren't built.
+          - name: Windows
+            runner: windows-latest
+            args: --exclude rovik-agentd
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
     steps:
       # The runner's own toolchains this build doesn't use: room for the
       # test binaries.
       - name: Free disk space
+        if: runner.os == 'Linux'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
+      # Windows' git writes CRLF line ends on checkout; the tests read the
+      # files as they're committed.
+      - name: Keep line ends as committed
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       # The whole history: the evaluation's tasks on this repository start
       # from its earlier commits.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       # The app's own crate builds against WebKitGTK; fuse3 gives the
-      # overlay tests a mount (they skip themselves without one).
+      # overlay tests a mount (they skip themselves without one, as they do
+      # on macOS without macFUSE and on Windows without WinFsp).
       - name: Install the system's packages
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libssl-dev \
@@ -70,8 +102,9 @@ jobs:
       - run: npm ci
       - name: cargo test --workspace
         working-directory: src-tauri
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ matrix.args }}
       - name: The evaluation's dry run
+        if: runner.os == 'Linux'
         run: node scripts/eval/eval.mjs dry-run
 
   frontend:
