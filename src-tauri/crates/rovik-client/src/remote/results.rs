@@ -108,6 +108,7 @@ impl Remote {
     /// conflicts were resolved comes in now, in their place, and what was
     /// resolved of them goes.
     pub async fn take_newer(&self, dialog_id: &str) -> Result<(), String> {
+        self.check_here(dialog_id).await?;
         let (reply, taken) = oneshot::channel();
         let job = Job::TakeNewer {
             dialog_id: dialog_id.to_string(),
@@ -183,7 +184,14 @@ impl Remote {
                 let _ = reply.send(self.take_back(&host, &dialog_id).await);
                 self.changed(&dialog_id);
             }
-            Job::Opened => self.land_waiting().await,
+            Job::Opened => {
+                self.land_waiting().await;
+                // Results passed over as another window's while that one had
+                // this project open: its window may have ended first.
+                for (host, _) in self.hosts.ready() {
+                    self.ask_results(&host, None).await;
+                }
+            }
             Job::Land {
                 dialog_id, reply, ..
             } if self.is_moving_back(&dialog_id) => {
@@ -244,8 +252,14 @@ impl Remote {
         if self.host_of(&chat).as_deref() != Some(host) {
             return Ok(());
         }
-        // Each of Rovik's processes is told of every result: the one that
-        // holds the chat first imports it, and the others find it imported.
+        // Each of Rovik's processes is told of every result. The window
+        // with the chat's project open imports it, and lands it there: one
+        // without it would leave it waiting for a project open elsewhere.
+        if self.handled_elsewhere(&chat).await {
+            return Ok(());
+        }
+        // Its project open nowhere: the one that holds the chat first
+        // imports it, and the others find it imported.
         let Some(_importing) = rovik_core::chat_hold::take(&chat) else {
             return Ok(());
         };

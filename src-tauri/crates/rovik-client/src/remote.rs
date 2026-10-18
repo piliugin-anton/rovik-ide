@@ -164,7 +164,20 @@ pub struct Remote {
     cloud: Mutex<Option<CloudSink>>,
     /// The queue of results to import and land (remote/results.rs).
     jobs: mpsc::UnboundedSender<Job>,
+    /// Whether a project is open in another of Rovik's windows, each a
+    /// process with its own connections (the app's instances.rs).
+    elsewhere: Mutex<Option<OpenElsewhere>>,
+    /// What brings the hosts' policies up to date before they go to a
+    /// host: another window may have changed them (HostsPage::follow).
+    refresh: Mutex<Option<Refresh>>,
 }
+
+/// Whether the project with this id is open in another of Rovik's windows:
+/// that window lands its chats' results and shows their events.
+pub type OpenElsewhere = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// Brings the hosts' policies up to date from their settings file.
+pub type Refresh = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]
 struct State {
@@ -210,6 +223,11 @@ struct State {
     /// The hosts whose mirrored chats pulled since they connected (K23):
     /// a window that missed `CaughtUp` asks.
     caught_up: HashSet<String>,
+    /// Each remote chat's project, as looked up (None: it has none).
+    projects: HashMap<String, Option<String>>,
+    /// Whether each project was open in another window, as last asked: a
+    /// run's events come many a second.
+    elsewhere_seen: HashMap<String, (std::time::Instant, bool)>,
     /// How many times each chat's result went back to be checked merged
     /// with the project's newer changes (6.6), since its last message.
     rechecks: HashMap<String, u32>,
@@ -228,6 +246,8 @@ impl Remote {
             state: Mutex::new(State::default()),
             cloud: Mutex::new(None),
             jobs,
+            elsewhere: Mutex::new(None),
+            refresh: Mutex::new(None),
         });
         rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
         remote
@@ -241,6 +261,79 @@ impl Remote {
 
     pub fn on_cloud(&self, sink: CloudSink) {
         *self.cloud.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink);
+    }
+
+    /// How to tell a project open in another of Rovik's windows.
+    pub fn on_open_elsewhere(&self, elsewhere: OpenElsewhere) {
+        *self.elsewhere.lock().unwrap_or_else(|e| e.into_inner()) = Some(elsewhere);
+    }
+
+    /// How to bring the hosts' policies up to date before one is sent.
+    pub fn on_refresh(&self, refresh: Refresh) {
+        *self.refresh.lock().unwrap_or_else(|e| e.into_inner()) = Some(refresh);
+    }
+
+    fn refresh_policies(&self) {
+        let refresh = self
+            .refresh
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(refresh) = refresh {
+            refresh();
+        }
+    }
+
+    /// Whether the remote chat is another window's: its project is open
+    /// there, and not here. That window imports and lands its results,
+    /// pulls its rows and shows its events (approvals, questions): one
+    /// window does, as one did when Rovik was a single process. A chat
+    /// whose project is open nowhere is every window's.
+    pub async fn handled_elsewhere(&self, dialog_id: &str) -> bool {
+        let Some(project) = self.chat_project(dialog_id).await else {
+            return false;
+        };
+        let open_here = self
+            .lock()
+            .open
+            .as_ref()
+            .is_some_and(|(id, _)| *id == project);
+        if open_here {
+            return false;
+        }
+        if let Some((at, seen)) = self.lock().elsewhere_seen.get(&project) {
+            if at.elapsed() < Duration::from_secs(2) {
+                return *seen;
+            }
+        }
+        let elsewhere = self
+            .elsewhere
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let seen = elsewhere.is_some_and(|elsewhere| elsewhere(&project));
+        self.lock()
+            .elsewhere_seen
+            .insert(project, (std::time::Instant::now(), seen));
+        seen
+    }
+
+    /// The chat's project, looked up once.
+    async fn chat_project(&self, dialog_id: &str) -> Option<String> {
+        if let Some(known) = self.lock().projects.get(dialog_id) {
+            return known.clone();
+        }
+        let id = dialog_id.to_string();
+        let project = self
+            .core
+            .db
+            .read(move |c| store::dialog_project(c, &id))
+            .await
+            .ok()?;
+        self.lock()
+            .projects
+            .insert(dialog_id.to_string(), project.clone());
+        project
     }
 
     fn cloud(&self) -> Option<CloudSink> {
@@ -396,7 +489,7 @@ impl Remote {
         daemon.is_some_and(|d| d.features.iter().any(|f| f == feature))
     }
 
-    fn policy(&self, host: &str) -> ApprovalPolicy {
+    pub(crate) fn policy(&self, host: &str) -> ApprovalPolicy {
         self.lock().policies.get(host).copied().unwrap_or_default()
     }
 
@@ -804,6 +897,9 @@ impl Remote {
         let reply = rovik_core::dispatch(&self.core, request.clone()).await?;
         if matches!(request, Request::AgentConfigure(_)) {
             self.lock().configured = true;
+            // As the settings file has them: another window's change of a
+            // host's policy isn't sent back as it was.
+            self.refresh_policies();
         }
         let sent = self.hosts.ready().into_iter().map(|(host, client)| {
             let mut request = request.clone();
@@ -838,6 +934,7 @@ impl Remote {
         let Ok(client) = self.client(host) else {
             return;
         };
+        self.refresh_policies();
         if self.lock().configured {
             let mut config = self.core.agents.config().without_keys();
             self.apply_policy(host, &mut config);
@@ -1024,6 +1121,13 @@ impl Remote {
                 };
             }
             _ => {}
+        }
+        // Another window's project: its approvals, questions and notices
+        // show there, once.
+        if let Some(dialog) = event.dialog_id() {
+            if self.handled_elsewhere(dialog).await {
+                return;
+            }
         }
         self.core.emit(event);
     }

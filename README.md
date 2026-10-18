@@ -544,6 +544,22 @@ What one process must not do to another's work is guarded the same way:
   back in the input, as the crashed window would have at its restart.
 - Every window opens where the last one was left; a window started while
   others run steps down from there, so it doesn't hide the one it came from.
+- Every window connects to the cloud hosts, and a chat on a host is its
+  project's window's: that window imports and lands its results, pulls its
+  rows and shows its approvals and questions. Land, Undo and Discard of
+  such a chat are refused in another window. The chats of a project open
+  in no window are every window's, and a mirrored chat is pulled by one
+  window at a time.
+- Each window follows the hosts' settings file: a host another window
+  added, deployed again (a new token), changed or removed is connected
+  again or let go of here within seconds, and before a window sends a host
+  its configuration it reads the host's approval policy again, so an older
+  window doesn't send back the one the user just changed. The file is
+  changed by one window at a time.
+- A window open while a newer Rovik updated the chat database (an update
+  installed while it ran) stops writing to it: close it and open Rovik
+  again. rust-analyzer's old versions are cleaned up only while no other
+  window runs, as one may still run them.
 
 ### Chat isolation
 

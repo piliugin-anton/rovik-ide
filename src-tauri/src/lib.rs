@@ -107,12 +107,33 @@ pub fn run() {
             app.manage(hosts.clone());
             app.manage(core.clone());
             app.manage(remote.clone());
+            // A project is open in one window (instances.rs): its remote
+            // chats' results, rows and events are that window's.
+            let windows = app.handle().clone();
+            remote.on_open_elsewhere(Arc::new(move |project| {
+                windows
+                    .try_state::<Instances>()
+                    .is_some_and(|i| i.open_elsewhere(Some(project), None).is_some())
+            }));
+            // Another window may change the hosts' settings: their policies
+            // are read again before one goes to a host.
+            let page = Arc::downgrade(&hosts);
+            remote.on_refresh(Arc::new(move || {
+                if let Some(hosts) = page.upgrade() {
+                    hosts.follow_policies();
+                }
+            }));
             // A project left for another while its chats were at work stays
             // this window's until they're done (instances.rs).
             let handle = app.handle().clone();
+            let following = hosts.clone();
             rt::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    // The hosts another window added, deployed, changed or
+                    // removed: this window's connections follow.
+                    let hosts = following.clone();
+                    let _ = rt::spawn_blocking(move || hosts.follow()).await;
                     let instances = handle.state::<Instances>();
                     let mut still = Vec::new();
                     for project in instances.left_at_work() {
