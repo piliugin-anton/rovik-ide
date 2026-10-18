@@ -402,6 +402,144 @@ fn rename_replaces_the_title_row() {
     assert_eq!(search(&conn, "fresh", None, 10).unwrap().len(), 1);
 }
 
+/// The sends a window that ended left unsettled: each chat's latest from
+/// the user with no finished reply after it, in the chats of the project
+/// owned here; not a failed one, not the app's own notes, not a subagent's
+/// chat, a chat on a host or one of another project.
+#[test]
+fn unsettled_sends_are_the_chats_latest_unanswered() {
+    let mut conn = db();
+    for (id, path) in [("p", "/p"), ("q", "/q")] {
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at, last_opened_at)
+             VALUES (?1, ?1, ?2, 0, 0)",
+            rusqlite::params![id, path],
+        )
+        .unwrap();
+    }
+    let chat = |conn: &mut Connection, id: &str, project: Option<&str>, messages| {
+        create_dialog(
+            conn,
+            &NewDialog {
+                id: id.into(),
+                title: id.into(),
+                created_at: now_ms(),
+                updated_at: now_ms(),
+                project_id: project.map(str::to_string),
+            },
+        )
+        .unwrap();
+        add(conn, id, messages);
+    };
+    let partial = |id: &str| {
+        let mut m = message(id, "assistant", "Echo of your");
+        m.finalized = false;
+        m
+    };
+    let failed = |id: &str| {
+        let mut m = message(id, "user", "failed already");
+        m.failed = true;
+        m
+    };
+    let harness = |id: &str| {
+        let mut m = message(id, "user", "the app's own");
+        m.meta = Some(serde_json::json!({ "harness": "autopilot" }));
+        m
+    };
+    chat(
+        &mut conn,
+        "answered",
+        Some("p"),
+        vec![
+            message("a-u", "user", "hi"),
+            message("a-a", "assistant", "hello"),
+        ],
+    );
+    chat(
+        &mut conn,
+        "nothing-back",
+        Some("p"),
+        vec![message("n-u", "user", "anyone?")],
+    );
+    chat(
+        &mut conn,
+        "cut-mid-reply",
+        Some("p"),
+        vec![
+            message("c-u1", "user", "first"),
+            message("c-a1", "assistant", "done"),
+            message("c-u2", "user", "Crash me"),
+            partial("c-a2"),
+        ],
+    );
+    chat(&mut conn, "failed", Some("p"), vec![failed("f-u")]);
+    chat(
+        &mut conn,
+        "harness-only",
+        Some("p"),
+        vec![
+            message("h-u", "user", "hi"),
+            message("h-a", "assistant", "hello"),
+            harness("h-h"),
+        ],
+    );
+    chat(
+        &mut conn,
+        "other-project",
+        Some("q"),
+        vec![message("o-u", "user", "elsewhere")],
+    );
+    chat(
+        &mut conn,
+        "no-project",
+        None,
+        vec![message("x-u", "user", "loose")],
+    );
+    chat(
+        &mut conn,
+        "on-a-host",
+        Some("p"),
+        vec![message("r-u", "user", "far away")],
+    );
+    conn.execute(
+        "UPDATE dialogs SET location = 'host:h1' WHERE id = 'on-a-host'",
+        [],
+    )
+    .unwrap();
+    chat(
+        &mut conn,
+        "subagent",
+        Some("p"),
+        vec![message("s-u", "user", "a lead's ask")],
+    );
+    conn.execute(
+        "UPDATE dialogs SET parent_id = 'answered' WHERE id = 'subagent'",
+        [],
+    )
+    .unwrap();
+
+    let mut sends = unsettled_sends(&conn, Some("p")).unwrap();
+    sends.sort_by(|a, b| a.dialog_id.cmp(&b.dialog_id));
+    assert_eq!(
+        sends,
+        [
+            UnsettledSend {
+                dialog_id: "cut-mid-reply".into(),
+                message_id: "c-u2".into(),
+                content: "Crash me".into(),
+            },
+            UnsettledSend {
+                dialog_id: "nothing-back".into(),
+                message_id: "n-u".into(),
+                content: "anyone?".into(),
+            },
+        ]
+    );
+    let loose = unsettled_sends(&conn, None).unwrap();
+    assert_eq!(loose.len(), 1);
+    assert_eq!(loose[0].message_id, "x-u");
+}
+
 #[test]
 fn answered_and_around() {
     let mut conn = db();
@@ -1146,6 +1284,46 @@ fn history_sends_a_user_message_as_it_was_first_sent() {
 /// an image as a PNG fitted into 768×768, once however often it's attached,
 /// and a PDF as it is, with its pages. A damaged image and other types are
 /// refused. (How its bytes come over the IPC is the app's command's test.)
+/// A window open while a newer Rovik's updated the database (an update
+/// installed while it ran) stops writing: what the newer schema added, it
+/// would write around. Reads go on.
+#[tokio::test]
+async fn a_window_older_than_the_database_stops_writing() {
+    let dir = shared_folder("newer");
+    let old = super::DbState::open(&dir).unwrap();
+    old.write(|c| {
+        dialog(c, "d1", "Kept", 0);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    // The newer window's migration.
+    let newer = rusqlite::Connection::open(dir.join("chats.db")).unwrap();
+    newer
+        .pragma_update(None, "user_version", schema::VERSION + 1)
+        .unwrap();
+    let refused = old
+        .write(|c| {
+            dialog(c, "d2", "Not written", 0);
+            Ok(())
+        })
+        .await;
+    assert!(refused
+        .unwrap_err()
+        .contains("A newer version of Rovik updated the chat database"));
+    let titles: Vec<String> = old
+        .read(|c| {
+            let mut s = c
+                .prepare("SELECT title FROM dialogs ORDER BY title")
+                .unwrap();
+            let rows = s.query_map([], |r| r.get(0)).unwrap();
+            Ok(rows.map(Result::unwrap).collect())
+        })
+        .await
+        .unwrap();
+    assert_eq!(titles, ["Kept"]);
+}
+
 #[tokio::test]
 async fn attachments_are_stored_as_pngs_and_pdfs() {
     let dir = std::env::temp_dir().join(format!("chat-db-attach-{}", std::process::id()));
@@ -1200,5 +1378,93 @@ async fn attachments_are_stored_as_pngs_and_pdfs() {
     let svg = store(b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec()).await;
     assert!(svg.unwrap_err().contains("PNG, JPEG"));
     drop(db);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two of Rovik's processes on one data folder: two databases opened on it
+/// here, each with its own writer and its own hold on the marker.
+fn shared_folder(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("chat-db-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_processes_writing_one_chat_both_get_their_messages_in() {
+    let dir = shared_folder("writers");
+    let a = super::DbState::open(&dir).unwrap();
+    let b = super::DbState::open(&dir).unwrap();
+    a.write(|c| {
+        dialog(c, "d1", "Shared", 0);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    // Each append reads the chat's last seq, then writes after it: begun
+    // as a read, a commit by the other writer between the two would fail it.
+    let mut writes = Vec::new();
+    for n in 0..40 {
+        let db = if n % 2 == 0 { a.clone() } else { b.clone() };
+        writes.push(tokio::spawn(async move {
+            let m = message(&format!("m{n}"), "user", "hi");
+            db.write(move |c| append_messages(c, "d1", &[m]).map_err(|e| e.to_string()))
+                .await
+        }));
+    }
+    for w in writes {
+        w.await.unwrap().expect("no write fails for the other's");
+    }
+    let seqs: Vec<i64> = a
+        .read(|c| {
+            let mut s = c
+                .prepare("SELECT seq FROM messages WHERE dialog_id = 'd1' ORDER BY seq")
+                .unwrap();
+            let rows = s.query_map([], |r| r.get(0)).unwrap();
+            Ok(rows.map(Result::unwrap).collect())
+        })
+        .await
+        .unwrap();
+    // Each after the one before, none written over.
+    assert_eq!(seqs.len(), 40);
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
+    drop((a, b));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_marker_knows_when_others_still_have_the_database_open() {
+    let dir = shared_folder("marker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("chats.db.running");
+    let read = || std::fs::read_to_string(&marker).unwrap();
+
+    let mut a = super::Presence::start(&marker);
+    assert!(a.alone && !a.unclean, "a first start");
+    a.settle();
+    assert_eq!(read(), "running");
+    let mut b = super::Presence::start(&marker);
+    assert!(!b.alone && !b.unclean, "A runs: not B's to judge");
+    // A leaves first: B still runs.
+    a.leave();
+    drop(a);
+    assert_eq!(read(), "running");
+    // Read while B is still about: let go of at its leaving (Windows
+    // lets no one read a locked file).
+    b.leave();
+    assert_eq!(read(), "clean");
+    drop(b);
+
+    let mut c = super::Presence::start(&marker);
+    assert!(c.alone && !c.unclean);
+    c.settle();
+    // C crashes: never leaves.
+    drop(c);
+    let d = super::Presence::start(&marker);
+    assert!(d.alone && d.unclean);
+    drop(d);
+
+    // An older Rovik's crash: its empty marker.
+    std::fs::write(&marker, "").unwrap();
+    assert!(super::Presence::start(&marker).unclean);
     let _ = std::fs::remove_dir_all(&dir);
 }

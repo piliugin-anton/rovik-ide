@@ -15,6 +15,15 @@ type check is one of the checks an agent's change has to pass before it
 lands). Everything else it starts itself: the fake model (port 18080), and
 `tauri-driver` (port 4444) unless `--driver bridge`.
 
+The `instances:` steps start other Rovik windows beside the driven one,
+with its data: one on the project the driven window has open (which comes
+to the front, and the other ends) and one on another project (which only
+it may open). They start `--second-app`, by default the driven binary
+itself; a bridge build mustn't be one, as its page would take the run's
+commands. On Linux under X, "New window" is clicked too, and the claims
+the windows it opens hold are checked: only the first has the chats
+without a project.
+
 ## Linux
 
 WebDriver through WebKitWebDriver (`webkit2gtk-driver`), with real X
@@ -25,6 +34,18 @@ cargo install tauri-driver --locked
 npx tauri build
 xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- \
   node scripts/e2e/run.mjs --app src-tauri/target/release/rovik-ide --out e2e-out
+```
+
+An AppImage runs the same way (`--app Rovik.IDE_<version>_amd64.AppImage`),
+with one more step: the terminal's shell has the system's environment, not
+the AppImage's (no variable naming the AppImage, and nothing it starts as
+it logs in fails, as flatpak did with the AppImage's libraries). That step
+alone:
+
+```sh
+xvfb-run -a -s '-screen 0 1600x1000x24' dbus-run-session -- \
+  node scripts/e2e/run.mjs --app Rovik.IDE_0.1.1_amd64.AppImage --out e2e-out \
+  --only 'launch|empty state|project: open an existing|appimage'
 ```
 
 ## Windows
@@ -52,10 +73,16 @@ WKWebView has no WebDriver, so the app is built with an in-page bridge
 `inject-bridge.mjs`) and driven over HTTP on port 17999:
 
 ```sh
+cp -R "src-tauri/target/release/bundle/macos/Rovik IDE.app" /tmp/shipped/
 npx tauri build --bundles app --config scripts/e2e/bridge.tauri.conf.json
 node scripts/e2e/run.mjs --driver bridge --out e2e-out \
-  --app "src-tauri/target/release/bundle/macos/Rovik IDE.app/Contents/MacOS/rovik-ide"
+  --app "src-tauri/target/release/bundle/macos/Rovik IDE.app/Contents/MacOS/rovik-ide" \
+  --second-app "/tmp/shipped/Rovik IDE.app/Contents/MacOS/rovik-ide"
 ```
+
+The copy is the build as it ships, kept before the bridge build replaces
+it: the other windows of the `instances:` steps (without it, they're
+skipped).
 
 The bridge works on Linux too (`--driver bridge` with a bridge build),
 which is how it's checked without a Mac. A bridge build must never ship:

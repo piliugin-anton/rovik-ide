@@ -16,6 +16,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { dismiss, notify } from '../notifications';
 import { LspClient, type ServerStatus } from './client';
+import { sharedMap } from '../sharedState';
 
 interface RaBinary {
   path: string;
@@ -31,7 +32,9 @@ interface RaRelease {
   sha256: string;
 }
 
-/** Stored in localStorage: this machine's choices, not per project. */
+/** This machine's choices, not per project: shared by the windows
+ *  (lib/sharedState.ts), so a window's daily update check doesn't undo a
+ *  path or a choice another window saved. */
 interface Prefs {
   /** Use this rust-analyzer binary. */
   customPath?: string;
@@ -55,20 +58,15 @@ const NOTE_INSTALL = 'ra-install';
 const NOTE_STATUS = 'ra-status';
 const NOTE_UPDATE = 'ra-update';
 
+const prefs = sharedMap('rust-analyzer', { key: PREFS_KEY });
+
 function loadPrefs(): Prefs {
-  try {
-    return JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}') ?? {};
-  } catch {
-    return {};
-  }
+  return { ...prefs.all() } as Prefs;
 }
 
+/** Only what changed (undefined removes it). */
 function savePrefs(patch: Partial<Prefs>) {
-  try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch }));
-  } catch {
-    // storage unavailable: the choice just isn't remembered
-  }
+  void prefs.set(patch);
 }
 
 /* ---------------------------------------------------------------------------

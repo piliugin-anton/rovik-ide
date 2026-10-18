@@ -1858,7 +1858,41 @@ body.tree-dragging {
 .settings-menu {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
+}
+
+/* The pages in groups: the editor, the AI chats, the project, this computer. */
+.settings-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-menu-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+/* A page's state now, under what it's for; a warning wants attention. */
+.settings-menu-state {
+  font-size: 11px;
+  color: var(--fg);
+  opacity: 0.85;
+}
+
+.settings-menu-state.warning {
+  color: var(--warning);
+  opacity: 1;
+}
+
+.settings-menu-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-dim);
 }
 
 .settings-menu-item {
@@ -1995,6 +2029,47 @@ body.tree-dragging {
 
 .settings-section .setting-explain.warning {
   color: var(--error);
+}
+
+/* Whether a setting has an effect now, and why not when it hasn't. */
+.settings-status {
+  margin: 8px 0 0 92px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.settings-status.warning {
+  color: var(--warning);
+}
+
+/* The dialog's own: the saved AI settings couldn't be read. */
+.settings-status.settings-load-failed {
+  margin: 0 0 10px;
+}
+
+/* Number fields in a row ("At once per chat [3]  Per run [12]"). */
+.setting-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.setting-number-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.setting-number {
+  width: 72px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
 }
 
 .segmented {
@@ -4018,6 +4093,10 @@ body.is-resizing * {
   cursor: col-resize !important;
 }
 
+.sidebar-expanded {
+  height: calc(100% - 24px);
+}
+
 .sidebar-expanded .chat-panel {
   border: 1px solid var(--border);
 }
@@ -4040,8 +4119,8 @@ body.is-resizing * {
   margin-inline: auto;
 }
 
-/* The full-window toggle: floating over the panel's content at its right
-   edge, faint until it is hovered or focused. */
+/* The full-window toggle: a small square button floating over the panel's
+   content at its right edge, faint until it is hovered or focused. */
 .sidebar-expand-button {
   position: absolute;
   right: 6px;
@@ -4055,7 +4134,7 @@ body.is-resizing * {
   height: 22px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 50%;
+  border-radius: 4px;
   background: var(--bg-control);
   color: var(--fg-dim);
   opacity: 0.55;
@@ -4287,6 +4366,11 @@ body.is-resizing * {
   letter-spacing: 0.04em;
   color: var(--fg-muted);
   cursor: default;
+}
+
+/* The row the arrow keys are on (Rebase's branch list). */
+.git-branch-dropdown .context-menu-item.git-menu-cursor {
+  background: var(--hover-strong);
 }
 
 .git-branch-dropdown .context-menu-item.git-menu-disabled {
@@ -5097,6 +5181,10 @@ body.is-resizing * {
   flex-direction: column;
   gap: 6px;
   max-width: 90%;
+  /* A record's text wraps: a path, command or URL too long for the card
+     breaks inside it instead of spilling past its border (a narrower pane
+     must not push the facts out of the block). */
+  overflow-wrap: anywhere;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--fg-dim);
@@ -7475,7 +7563,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 15px;
 }
 
-/* Settings → Editor page (components/EditorSettings.tsx) */
+/* Settings → Editor (EditorSettings.tsx) and Heavy commands' number of slots */
 .editor-settings-select,
 .editor-settings-number {
   background: var(--input-bg);
@@ -7637,6 +7725,15 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .files-empty-new:hover {
   background: var(--bg-control-hover);
+}
+
+/* The chat panel when this window can't show chats (lib/projects.ts) */
+
+.chats-blocked-text {
+  margin: 0 0 4px;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 /* New project dialog (components/NewProjectDialog.tsx) */
@@ -8298,6 +8395,75 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg);
 }
 
+/* A conflict's lines, picked one by one (ConflictResolver.tsx, PickLines).
+   Over the dialogs' own checkboxes (.modal input[type='checkbox']). */
+.conflict-resolver input.cr-pick {
+  flex-shrink: 0;
+  align-self: center;
+  width: 12px;
+  height: 12px;
+  /* WebKitGTK draws the box a little wider than its 12px. */
+  margin: 0 10px 0 0;
+  cursor: pointer;
+}
+
+.conflict-resolver .cr-ours input.cr-pick {
+  accent-color: var(--cr-ours);
+}
+
+.conflict-resolver .cr-theirs input.cr-pick {
+  accent-color: var(--cr-theirs);
+}
+
+/* A line both sides have. */
+.cr-line.cr-same .cr-code {
+  color: var(--fg-muted);
+}
+
+/* A line only this side has. */
+.cr-ours .cr-line.cr-alone {
+  box-shadow: inset 2px 0 0 var(--cr-ours);
+}
+
+.cr-theirs .cr-line.cr-alone {
+  box-shadow: inset 2px 0 0 var(--cr-theirs);
+}
+
+/* The part of a line that differs from the other side's version. */
+.cr-change {
+  border-radius: 2px;
+  color: inherit;
+}
+
+.cr-ours .cr-change {
+  background: color-mix(in srgb, var(--cr-ours) 38%, transparent);
+}
+
+.cr-theirs .cr-change {
+  background: color-mix(in srgb, var(--cr-theirs) 38%, transparent);
+}
+
+.cr-ours .cr-line.cr-picked {
+  background: color-mix(in srgb, var(--cr-ours) 16%, transparent);
+}
+
+.cr-theirs .cr-line.cr-picked {
+  background: color-mix(in srgb, var(--cr-theirs) 16%, transparent);
+}
+
+.cr-line.cr-left-out {
+  opacity: 0.45;
+}
+
+/* Where only the other side has a line: keeps the rows level. */
+.cr-line.cr-gap {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--fg-dim) 14%, transparent) 5px 6px
+  );
+}
+
 .cr-empty-lines {
   padding: 2px 8px 4px 52px;
   color: var(--fg-dim);
@@ -8765,7 +8931,7 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   .settings-section.disabled
   .subagent-kind-row:not(.autopilot-used)
   .model-with-fallbacks,
-.subagent-settings .settings-section.disabled .subagent-limits {
+.subagent-settings .settings-section.disabled .setting-fields {
   opacity: 0.55;
 }
 
@@ -8777,8 +8943,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   opacity: 0.55;
 }
 
-/* The Autopilot section's budget and denylist, each under its own line
-   (SubagentSettings.tsx). */
+/* A cloud host's autonomy block has its own lines (HostAutonomy.tsx); the
+   Autopilot page's budget sits under its section's title
+   (AutopilotSettings.tsx). */
 .autopilot-subtitle {
   margin: 12px 0 0 92px;
   font-size: 12px;
@@ -8893,9 +9060,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin-top: 0;
 }
 
-/* Its Prepare switch, between the budget and the denylist (S03). */
+/* Its Prepare switch, under its section's title (S03). */
 .setting-checkbox.autopilot-prepare {
-  margin-top: 12px;
+  margin-top: 4px;
 }
 
 /* "Used by Autopilot" on the kinds Autopilot turns on for its chats. */
@@ -8934,32 +9101,9 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   padding-left: 24px;
 }
 
-.subagent-limits {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-top: 8px;
-}
-
 .subagent-limits-kind {
   min-width: 90px;
   color: var(--fg-dim);
-}
-
-.subagent-limit {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.subagent-number {
-  width: 72px;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
 }
 
 /* The change reviewer's record (ReviewRecord.tsx). */

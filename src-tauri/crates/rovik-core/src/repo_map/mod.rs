@@ -1255,8 +1255,9 @@ fn relative(root: &Path, path: &str) -> String {
         .to_string()
 }
 
-/// Forgets the cached tags (tests).
+/// Forgets the cached tags (tests). A test that panicked holding the
+/// cache doesn't fail the others.
 #[cfg(test)]
 fn clear_cache() {
-    CACHE.lock().unwrap().clear();
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }

@@ -177,11 +177,12 @@ pub fn plan(requested: Option<&Path>) -> Plan {
         .as_deref()
         .and_then(problem::parse_version);
     let backend = problem::choose_backend(macos_version(), macfuse);
+    // Each of Rovik's processes its own (vfs/mod.rs `default_mountpoint`).
     let mountpoint = requested
         .map(Path::to_path_buf)
         .unwrap_or_else(|| match backend {
-            Backend::FsKit => PathBuf::from(FSKIT_MOUNTPOINT),
-            Backend::Kext => std::env::temp_dir().join("rovik-ide-vfs"),
+            Backend::FsKit => PathBuf::from(crate::os_lock::slotted(FSKIT_MOUNTPOINT)),
+            Backend::Kext => std::env::temp_dir().join(crate::os_lock::slotted("rovik-ide-vfs")),
         });
     Plan {
         backend,

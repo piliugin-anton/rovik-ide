@@ -168,13 +168,11 @@ pub fn signature_of(path: &Path) -> PathBuf {
 }
 
 /// Writes `bytes` beside `path`, then moves them there: a file half
-/// written is never one kept.
+/// written is never one kept. Under a name of this process's own: two of
+/// Rovik's windows may fetch the same file at once.
 fn keep(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut part = path.as_os_str().to_owned();
-    part.push(".part");
-    let part = PathBuf::from(part);
-    std::fs::write(&part, bytes).map_err(|e| format!("{}: {e}", part.display()))?;
-    std::fs::rename(&part, path).map_err(|e| format!("{}: {e}", path.display()))
+    rovik_core::atomic_file::write_atomic(path, bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 async fn download(url: &str, wait: Duration) -> Result<Vec<u8>, String> {

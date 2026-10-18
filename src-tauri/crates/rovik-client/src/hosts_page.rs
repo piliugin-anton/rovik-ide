@@ -25,7 +25,8 @@ use rovik_protocol::{features, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::SystemTime;
 
 /// Why a host set to the user's own ssh is neither tested nor deployed.
 const SYSTEM_SSH: &str = "Testing and deploying go through Rovik's own SSH, which runs their \
@@ -46,6 +47,19 @@ pub struct HostsPage {
     /// saved here, the store locked. Shown in place of "Connecting…",
     /// which it would otherwise say for good.
     unconnected: Mutex<HashMap<String, String>>,
+    /// What this window made of the settings file, which another of
+    /// Rovik's windows may change (`follow`).
+    followed: Mutex<Followed>,
+}
+
+/// What a window made of the hosts' settings file: when it read it for
+/// the policies and for the connections, and what each of its connections
+/// was made of (the host's settings but its policies, and its token).
+#[derive(Default)]
+struct Followed {
+    policies: Option<(SystemTime, u64)>,
+    connections: Option<(SystemTime, u64)>,
+    connected: HashMap<String, (String, Option<String>)>,
 }
 
 /// The hosts, as the page lists them.
@@ -218,7 +232,102 @@ impl HostsPage {
             version: version.to_string(),
             file: Mutex::new(()),
             unconnected: Mutex::new(HashMap::new()),
+            followed: Mutex::new(Followed::default()),
         }
+    }
+
+    fn followed(&self) -> MutexGuard<'_, Followed> {
+        self.followed.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// When the settings file was written last, and its length.
+    fn modified(&self) -> Option<(SystemTime, u64)> {
+        let meta = std::fs::metadata(self.config_dir.join(crate::host_settings::FILE)).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+
+    /// The hosts' policies as the settings file has them, when it changed
+    /// since it was read for them: another window may have set one, and
+    /// this window would send its own old one to the host, which keeps one
+    /// per computer (Remote asks before each configuration it sends).
+    pub fn follow_policies(&self) {
+        let at = self.modified();
+        {
+            let mut followed = self.followed();
+            if followed.policies == at {
+                return;
+            }
+            followed.policies = at;
+        }
+        let Ok(settings) = self.settings() else {
+            return;
+        };
+        for host in &settings.hosts {
+            self.remote.set_policy(&host.id, host.approval_policy);
+            self.remote.set_autonomy(&host.id, host.autonomy.clone());
+        }
+    }
+
+    /// This window's connections as the settings file has the hosts, when
+    /// it changed since: another window may have added, deployed, changed
+    /// or removed one. A host whose connection was made of other settings
+    /// (its address, its key, a new deploy's token) connects again; one
+    /// that's gone is let go of. The app looks every few seconds.
+    pub fn follow(&self) {
+        let at = self.modified();
+        {
+            let mut followed = self.followed();
+            if followed.connections == at {
+                return;
+            }
+            followed.connections = at;
+        }
+        self.follow_policies();
+        let Ok(settings) = self.settings() else {
+            return;
+        };
+        for host in &settings.hosts {
+            let made = self.followed().connected.get(&host.id).cloned();
+            if made.as_ref() != Some(&self.made_of(host)) {
+                if let Err(e) = self.connect(&settings.computer, host) {
+                    log::warn!("{}: {e}", host.name);
+                }
+            }
+        }
+        let gone: Vec<String> = (self.followed().connected.keys())
+            .filter(|id| settings.host(id).is_none())
+            .cloned()
+            .collect();
+        for id in gone {
+            self.remote.disconnect(&id);
+            self.followed().connected.remove(&id);
+        }
+    }
+
+    /// What a host's connection is made of: its settings but those that go
+    /// by `follow_policies` (and what only a deploy runs), and its token's
+    /// digest (a deploy makes a new one; the token itself isn't kept).
+    fn made_of(&self, host: &Host) -> (String, Option<String>) {
+        use sha2::{Digest, Sha256};
+        let mut made = host.clone();
+        made.approval_policy = ApprovalPolicy::default();
+        made.autonomy = AutonomySettings::default();
+        made.setup_script = None;
+        let token = matches!(host.deploy, DeployState::Deployed { .. })
+            .then(|| {
+                self.secret(SecretName::Token {
+                    host: host.id.clone(),
+                })
+            })
+            .flatten()
+            .map(|token| {
+                let digest = Sha256::digest(token.0.as_bytes());
+                digest
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            });
+        (serde_json::to_string(&made).unwrap_or_default(), token)
     }
 
     /// Why each host that couldn't be connected couldn't, by its id.
@@ -239,6 +348,11 @@ impl HostsPage {
         edit: impl FnOnce(&mut HostSettings) -> Result<T, String>,
     ) -> Result<T, String> {
         let _held = self.file.lock().unwrap_or_else(|e| e.into_inner());
+        // And one across Rovik's windows: another's change isn't written over.
+        let lock = self.config_dir.join("cloud-hosts.lock");
+        let _windows = rovik_core::os_lock::hold(&lock)
+            .map_err(|e| log::warn!("{}: {e}", lock.display()))
+            .ok();
         let mut settings = self.settings()?;
         let done = edit(&mut settings)?;
         settings.save(&self.config_dir)?;
@@ -263,6 +377,12 @@ impl HostsPage {
     /// Connects every deployed host whose token is saved, as the app
     /// starts. On the current Tokio runtime.
     pub fn connect_all(&self) {
+        {
+            let at = self.modified();
+            let mut followed = self.followed();
+            followed.policies = at;
+            followed.connections = at;
+        }
         let Ok(settings) = self.settings() else {
             return;
         };
@@ -277,6 +397,8 @@ impl HostsPage {
     /// connection: through the user's own ssh, or Rovik's, which checks the
     /// install on each new connection (D5).
     fn connect(&self, computer: &str, host: &Host) -> Result<(), String> {
+        let made = self.made_of(host);
+        self.followed().connected.insert(host.id.clone(), made);
         let connected = self.connect_in(computer, host);
         let mut unconnected = self.unconnected.lock().unwrap_or_else(|e| e.into_inner());
         match &connected {
@@ -319,13 +441,15 @@ impl HostsPage {
         Ok(())
     }
 
-    /// Where the user's own ssh forwards a host's daemon here.
+    /// Where the user's own ssh forwards a host's daemon here: each of
+    /// Rovik's processes its own socket, as ssh takes the path over.
     fn local(&self, host: &Host) -> Result<Local, String> {
         #[cfg(unix)]
         {
-            Ok(Local::Socket(
-                self.sockets.join(format!("{}.sock", host.id)),
-            ))
+            Ok(Local::Socket(self.sockets.join(format!(
+                "{}.sock",
+                rovik_core::os_lock::slotted(&host.id)
+            ))))
         }
         #[cfg(not(unix))]
         {
@@ -527,6 +651,7 @@ impl HostsPage {
             ));
         }
         self.remote.disconnect(id);
+        self.followed().connected.remove(id);
         self.unconnected
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1140,6 +1265,102 @@ mod tests {
             .await
             .unwrap();
         assert!(!setup.page.summaries().unwrap()[0].autonomous);
+    }
+
+    /// Another window over the same settings and secrets: a process of its
+    /// own, with its own connections.
+    fn another_window(setup: &Setup) -> (HostsPage, Arc<Remote>) {
+        let remote = Remote::new(setup.app.core.clone());
+        let page = HostsPage::new(
+            setup.app.dir.0.join("config"),
+            setup.app.dir.0.join("ssh"),
+            setup.page.secrets.clone(),
+            remote.clone(),
+            "0.2.0",
+        );
+        (page, remote)
+    }
+
+    /// A window that set a host's policy: the other window, which read the
+    /// file before, has it once it follows the file (and Remote asks it to
+    /// before each configuration it sends the host), not its old one.
+    #[tokio::test]
+    async fn a_policy_another_window_set_is_the_one_sent() {
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("pw")).unwrap();
+        let (other, theirs) = another_window(&setup);
+        other.connect_all();
+        assert_eq!(theirs.policy(&saved.id), ApprovalPolicy::WaitForMe);
+        setup
+            .page
+            .set_policy(&saved.id, ApprovalPolicy::AiReviewerThenMe)
+            .await
+            .unwrap();
+        assert_eq!(
+            theirs.policy(&saved.id),
+            ApprovalPolicy::WaitForMe,
+            "not read yet"
+        );
+        other.follow_policies();
+        assert_eq!(theirs.policy(&saved.id), ApprovalPolicy::AiReviewerThenMe);
+    }
+
+    /// The hosts another window deployed, deployed again (a new token) or
+    /// removed: this window's connections follow the file.
+    #[tokio::test]
+    async fn the_hosts_another_window_changes_are_followed_here() {
+        let setup = setup();
+        let saved = setup.page.save(new_host(), password("pw")).unwrap();
+        let (other, theirs) = another_window(&setup);
+        other.connect_all();
+        let connected = |remote: &Remote| remote.states().iter().any(|(id, _)| *id == saved.id);
+        assert!(!connected(&theirs), "not deployed: not connected");
+
+        // Deployed in this window: connected in the other once it follows.
+        let token = SecretName::Token {
+            host: saved.id.clone(),
+        };
+        setup
+            .page
+            .secrets
+            .set(&token, &Secret("t1".into()))
+            .unwrap();
+        let deployed = |version: &str| DeployState::Deployed {
+            version: version.into(),
+            sha256: None,
+        };
+        setup
+            .page
+            .change_host(&saved.id, |h| h.deploy = deployed("0.2.0"))
+            .unwrap();
+        other.follow();
+        assert!(connected(&theirs));
+        let made = other.followed().connected[&saved.id].clone();
+
+        // Deployed again: a new token, and the same settings.
+        setup
+            .page
+            .secrets
+            .set(&token, &Secret("t2".into()))
+            .unwrap();
+        setup
+            .page
+            .change_host(&saved.id, |h| h.deploy = deployed("0.2.0"))
+            .unwrap();
+        other.follow();
+        let again = other.followed().connected[&saved.id].clone();
+        assert_eq!(made.0, again.0);
+        assert_ne!(made.1, again.1, "connected again with the new token");
+        assert!(
+            !again.1.as_deref().unwrap_or("").contains("t2"),
+            "not the token itself"
+        );
+
+        // Removed there: let go of here.
+        setup.page.remove(&saved.id).await.unwrap();
+        other.follow();
+        assert!(!connected(&theirs));
+        assert!(!other.followed().connected.contains_key(&saved.id));
     }
 
     #[tokio::test]

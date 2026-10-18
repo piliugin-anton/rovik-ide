@@ -21,6 +21,7 @@
 //
 // The effort itself is picked in the chat (EffortSelector), per model.
 import type { ProviderModel } from '../types';
+import { sharedMap } from './sharedState';
 
 export type ReasoningField = 'reasoning_effort' | 'reasoning' | 'chat_template_kwargs' | 'thinking';
 export const REASONING_FIELDS: ReasoningField[] = [
@@ -166,23 +167,24 @@ export function describeReasoning(setting: ReasoningSetting): string {
 }
 
 /* ---------------------------------------------------------------------------
- * The effort chosen in the chat, per model (this machine's choice).
+ * The effort chosen in the chat, per model (this machine's choice), shared
+ * by the windows (lib/sharedState.ts): one's choice for a model doesn't
+ * undo another's for another.
  * ------------------------------------------------------------------------- */
 
 const EFFORT_KEY = 'rovik.reasoningEffort';
+const efforts = sharedMap('reasoning-efforts', { key: EFFORT_KEY });
 
 export function loadEfforts(): Record<string, Effort> {
-  try {
-    return JSON.parse(localStorage.getItem(EFFORT_KEY) ?? '{}') ?? {};
-  } catch {
-    return {};
-  }
+  return { ...efforts.all() } as Record<string, Effort>;
 }
 
-export function saveEfforts(efforts: Record<string, Effort>) {
-  try {
-    localStorage.setItem(EFFORT_KEY, JSON.stringify(efforts));
-  } catch {
-    // not remembered
-  }
+/** The effort chosen for the model `profileId`. */
+export function saveEffort(profileId: string, effort: Effort) {
+  void efforts.set({ [profileId]: effort });
+}
+
+/** `fn` runs with them all when another window chose one. */
+export function followEfforts(fn: (all: Record<string, Effort>) => void): () => void {
+  return efforts.subscribe(() => fn(loadEfforts()));
 }

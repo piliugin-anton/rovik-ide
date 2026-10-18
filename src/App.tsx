@@ -35,6 +35,7 @@ import {
   fsErrorMessage,
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
+import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
 import type {
   FileWatchPayload,
   LastProjectOpenFile,
@@ -57,12 +58,23 @@ import {
   type ConfirmOptions,
 } from './components/ConfirmDialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { projectSession, rememberProjectSession, type SessionFile } from './lib/projectSessions';
+import {
+  rememberProjectSession,
+  savedProjectSession,
+  type ProjectSession,
+  type SessionFile,
+} from './lib/projectSessions';
 import NotificationHost from './components/NotificationHost';
 import ProjectSwitcher from './components/ProjectSwitcher';
 import NewProjectDialog from './components/NewProjectDialog';
 import ProjectList from './components/ProjectList';
-import { currentProject, projectList, refreshProjects, resolveProject } from './lib/projects';
+import {
+  chatsBlocked,
+  currentProject,
+  projectList,
+  refreshProjects,
+  resolveProject,
+} from './lib/projects';
 import { chatApi, type ProjectSummary } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
 import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
@@ -103,17 +115,14 @@ import {
 import { startBrowser } from './lib/browserStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
 import { cloud, hostName, initCloud } from './lib/cloud';
-import AiSettingsModal from './components/AiSettingsModal';
+import SettingsDialog from './components/SettingsDialog';
 import {
   appSettingsPage,
   closeAppSettings,
-  notifyAiSettingsSaved,
   openAppSettings,
+  rereadAiSettingsOnFocus,
 } from './lib/appSettings';
-import { createAiSettingsHolder, loadAiSettings, reconcileSelection } from './lib/aiSettings';
-import { DEFAULT_SUBAGENT_SETTINGS, type SubagentSettings } from './lib/subagentSettings';
-import { DEFAULT_PERMISSIONS, type AgentPermissions } from './lib/permissions';
-import type { ModelSelection, Provider } from './types';
+import { followAiSettingsRevision, reloadAiSettings } from './lib/aiSettingsStore';
 import { dismissBootSplash } from './lib/bootSplash';
 
 let unlistenFSChanges: (() => void) | undefined;
@@ -122,6 +131,9 @@ export default function App() {
   const [rootPath, setRootPath] = createSignal<string | null>(null);
   /** Until the last project is restored, the Files tab shows no empty state. */
   const [restoringProject, setRestoringProject] = createSignal(true);
+  /** The project whose tabs are being opened again: until they are, the
+   *  tabs shown aren't kept as its (showWithTabs). */
+  const [tabsComing, setTabsComing] = createSignal<string | null>(null);
 
   // Virtual files: mount, or offer to install the driver (in the background).
   onMount(() => void startVirtualFiles());
@@ -133,11 +145,22 @@ export default function App() {
   // The web tools' browser: downloaded if it's missing (in the background).
   onMount(() => void startBrowser());
 
-  // Load last opened project on startup
+  // Load last opened project on startup: the folder the command line asked
+  // for (`rovik-ide <folder>`, claimed for this window by the backend), else
+  // the last project, unless another window has it open (lib/instances.ts).
+  // A window another one started ("New window") starts without one.
   onMount(async () => {
     try {
-      const projectData = await getLastProject();
-      if (!projectData) return;
+      const startup = await invoke<{ folder: string | null; newWindow: boolean }>(
+        'startup_info'
+      ).catch(() => ({ folder: null, newWindow: false }));
+      if (startup.newWindow && !startup.folder) return;
+      const asked = startup.folder;
+      const projectData = await getLastProject(asked ?? undefined);
+      if (!projectData) {
+        if (asked) await openWithItsTabs(asked);
+        return;
+      }
       const [path, openFiles, expandedPaths, terminalCollapsed] = projectData;
       for (const m of monaco.editor.getModels()) m.dispose();
       tree.presetExpanded(path, expandedPaths);
@@ -177,73 +200,12 @@ export default function App() {
     clearVfsSettingsRequest();
     openAppSettings('vfs');
   });
-  // The Settings dialog's copy of the AI settings, loaded once at startup
-  // (ChatPanel keeps its own copy and reloads when the dialog saves).
-  const [settingsProviders, setSettingsProviders] = createSignal<Provider[]>([]);
-  const [settingsPermissions, setSettingsPermissions] =
-    createSignal<AgentPermissions>(DEFAULT_PERMISSIONS);
-  const [settingsSubagents, setSettingsSubagents] =
-    createSignal<SubagentSettings>(DEFAULT_SUBAGENT_SETTINGS);
-  const [settingsChatModel, setSettingsChatModel] = createSignal<ModelSelection | null>(null);
-  // P5.7: after a failed load, the subagent settings here are defaults, not what's saved.
-  const aiSettings = createAiSettingsHolder({
-    setProviders: setSettingsProviders,
-    setPermissions: setSettingsPermissions,
-    setSubagents: setSettingsSubagents,
-  });
-  onMount(async () => {
-    try {
-      const settings = await loadAiSettings();
-      aiSettings.apply(settings);
-      setSettingsChatModel(reconcileSelection(settings.providers, settings.active));
-    } catch (err) {
-      console.error('Failed to load AI settings for Settings dialog:', err);
-    }
-  });
-  // The chat's model may have been switched since: read it again each time
-  // the dialog opens (the "code will also be sent to …" warning uses it).
-  createEffect(
-    on(
-      () => appSettingsPage() !== null,
-      (open) => {
-        if (!open) return;
-        loadAiSettings()
-          .then((settings) =>
-            setSettingsChatModel(reconcileSelection(settings.providers, settings.active))
-          )
-          .catch((err) => console.error('Failed to reload the chat model for Settings:', err));
-      }
-    )
-  );
-  function handleAppSettingsSaved(changes: {
-    providers: Provider[];
-    permissions: AgentPermissions;
-    subagents: SubagentSettings;
-  }) {
-    setSettingsProviders(changes.providers);
-    setSettingsPermissions(changes.permissions);
-    setSettingsSubagents(changes.subagents);
-    // Keep the chat's current model choice: only the providers/permissions
-    // changed here, so reconcile against the saved selection.
-    void loadAiSettings()
-      .catch(() => null)
-      .then(async (current) => {
-        const active: ModelSelection | null = reconcileSelection(
-          changes.providers,
-          current?.active ?? null
-        );
-        setSettingsChatModel(active);
-        // P5.7: never the defaults a failed load left over the saved ones.
-        const saved = await aiSettings.save({
-          providers: changes.providers,
-          active,
-          permissions: changes.permissions,
-          subagents: changes.subagents,
-        });
-        if (saved) notifyAiSettingsSaved();
-      })
-      .catch((err) => console.error('Failed to save AI settings:', err));
-  }
+  // The Settings dialog's AI settings (lib/aiSettingsStore.ts): read once
+  // now, so the dialog opens on them, again each time it opens, and again
+  // when another window may have saved them (this one came to the front:
+  // rereadAiSettingsOnFocus, below).
+  onMount(() => void reloadAiSettings().catch((err) => console.error(err)));
+  followAiSettingsRevision();
   const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);
 
   const [contextMenuVisible, setContextMenuVisible] = createSignal(false);
@@ -333,9 +295,16 @@ export default function App() {
     return rows.length > 0 ? rows[0] : null;
   });
 
-  async function getLastProject(): Promise<[string, OpenFile[], string[], boolean] | null> {
+  /** The last project, as it was left, if this window may open it; only
+   *  `folder` when given (its tabs come back if it was the last). */
+  async function getLastProject(
+    folder?: string
+  ): Promise<[string, OpenFile[], string[], boolean] | null> {
     const lastProject = await loadLastProject();
     if (!lastProject || !lastProject.path) return null;
+    if (folder !== undefined && lastProject.path !== folder) return null;
+    // Open in another window: this one starts without a project.
+    if (!(await claimProject(lastProject.path, { focusOther: false, retries: 2 }))) return null;
     const openedFilesRaw: LastProjectOpenFile[] = lastProject.openedFiles ?? [];
     const openFiles = await reopenFiles(openedFilesRaw);
 
@@ -406,6 +375,8 @@ export default function App() {
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
         if (!(await settleUnsavedTabs('app'))) event.preventDefault();
+        // Its tabs, for opening it again here or in another window.
+        else await keepTabsNow();
       })
       .then((unlisten) => (gone ? unlisten() : (stop = unlisten)))
       .catch((err) => console.error('No close guard:', err));
@@ -425,43 +396,73 @@ export default function App() {
   /** Opens a project folder: Files, Chat and Git switch to it. */
   async function openProjectAt(folder: string) {
     if (folder === rootPath()) return;
+    // Open in another window (or a copy sharing its chats): that one comes
+    // to the front instead (lib/instances.ts).
+    if (!(await checkProject(folder))) return;
     if (!(await settleUnsavedTabs('project'))) return;
     // Chosen meanwhile (the dialog was open), or the same one again.
     if (folder === rootPath()) return;
+    // Its tabs as the window that had it last left them, this one or
+    // another (checked above: none has it now).
+    const session = await savedProjectSession(folder);
+    // Claimed elsewhere since the check, if it came to that.
+    if (!(await claimProject(folder))) return;
     // The project left keeps its tabs for coming back to it.
-    const left = rootPath();
-    if (left) {
-      rememberProjectSession(left, {
-        files: openFiles()
-          .filter((f) => !f.readOnly)
-          .map(({ id, path, name, language }) => ({ id, path, name, language })),
-        active: activePath(),
-        expanded: [...tree.expanded()],
-      });
-    }
-    const session = projectSession(folder);
-    if (session) tree.presetExpanded(folder, session.expanded);
+    void keepTabsNow();
     for (const m of monaco.editor.getModels()) m.dispose();
     // The old project's change marks; its tabs close below.
     for (const { absPath } of markedFiles()) clearGitBase(absPath);
-    setRootPath(folder);
-    setOpenFiles([]);
-    setActivePath(null);
     setSelectedFileIds(new Set<string>());
     setLastSelectedId(null);
-    if (!session?.files.length) return;
-    // Its own tabs, as it was left.
-    const files = await reopenFiles(session.files);
-    // Another project chosen since, or a file opened meanwhile: leave it.
-    if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
-    setOpenFiles(files);
-    setActivePath(
-      files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
-    );
+    await showWithTabs(folder, session);
   }
 
-  // Which project the open folder is, and so whose chats are shown.
-  createEffect(on(rootPath, (root) => void resolveProject(root)));
+  /** `folder` becomes the project shown, its tabs as they were left, if kept. */
+  async function showWithTabs(folder: string, session: ProjectSession | null) {
+    // Not kept until they're back: the tabs shown meanwhile aren't its.
+    setTabsComing(folder);
+    try {
+      if (session) tree.presetExpanded(folder, session.expanded);
+      setRootPath(folder);
+      setOpenFiles([]);
+      setActivePath(null);
+      if (!session?.files.length) return;
+      const files = await reopenFiles(session.files);
+      // Another project chosen since, or a file opened meanwhile: leave it.
+      if (rootPath() !== folder || openFiles().length > 0 || files.length === 0) return;
+      setOpenFiles(files);
+      setActivePath(
+        files.some((f) => f.path === session.active) ? session.active : files[files.length - 1].path
+      );
+    } finally {
+      if (tabsComing() === folder) setTabsComing(null);
+    }
+  }
+
+  /** A folder asked for at the start that wasn't the last project: its own tabs. */
+  async function openWithItsTabs(folder: string) {
+    await showWithTabs(folder, await savedProjectSession(folder).catch(() => null));
+  }
+
+  // Which project the open folder is, and so whose chats are shown: once
+  // the start has chosen the folder, so no other's chats are claimed first.
+  createEffect(
+    on([rootPath, restoringProject], ([root, restoring]) => {
+      if (!restoring) void resolveProject(root);
+    })
+  );
+  // The chats without a project were another window's: maybe they're free
+  // now, when this one comes to the front.
+  onMount(() => {
+    const again = () => {
+      if (!rootPath() && chatsBlocked()?.kind === 'no-project-elsewhere') {
+        void resolveProject(null);
+      }
+    };
+    window.addEventListener('focus', again);
+    onCleanup(() => window.removeEventListener('focus', again));
+  });
+  onMount(() => onCleanup(rereadAiSettingsOnFocus()));
 
   /** A project whose folder is gone: point it at its folder (lib/projects.ts). */
   async function relinkProject(p: ProjectSummary) {
@@ -1856,6 +1857,38 @@ export default function App() {
     });
   });
 
+  /** The project's tabs shown now, as kept for coming back to it; none
+   *  while they're being opened. Text: it changes when they do, not as
+   *  their files are typed in. */
+  const tabsNow = createMemo((): string | null => {
+    const root = rootPath();
+    if (!root || restoringProject() || tabsComing() === root) return null;
+    const files: SessionFile[] = openFiles()
+      .filter((f) => !f.readOnly)
+      .map(({ id, path, name, language }) => ({ id, path, name, language }));
+    return JSON.stringify({ root, files, active: activePath(), expanded: [...tree.expanded()] });
+  });
+  let tabsTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Keeps the tabs shown now as their project's (lib/projectSessions.ts). */
+  function keepTabsNow(): Promise<void> {
+    clearTimeout(tabsTimer);
+    tabsTimer = undefined;
+    const now = tabsNow();
+    if (!now) return Promise.resolve();
+    const { root, ...session } = JSON.parse(now) as ProjectSession & { root: string };
+    return rememberProjectSession(root, session);
+  }
+  // Kept as they change, a moment after: the project opens with them again
+  // here or in another window, this one closed or not (last-project.json
+  // has one project's, whichever window wrote last).
+  createEffect(
+    on(tabsNow, (now) => {
+      clearTimeout(tabsTimer);
+      tabsTimer = now ? setTimeout(() => void keepTabsNow(), 500) : undefined;
+    })
+  );
+  onCleanup(() => clearTimeout(tabsTimer));
+
   createEffect(async () => {
     const currentPath = rootPath();
     if (!currentPath) return;
@@ -1963,6 +1996,7 @@ export default function App() {
           <ProjectSwitcher
             onOpenFolder={() => void handlePickFolder()}
             onNewProject={() => setNewProjectOpen(true)}
+            onNewWindow={() => void openNewWindow()}
             onOpen={(p) => openProjectAt(p.path)}
             onRelink={(p) => void relinkProject(p)}
             onDelete={(p) => void deleteProject(p)}
@@ -2078,15 +2112,51 @@ export default function App() {
         </Show>
 
         <Show when={sidebarTab() === 'chat'}>
-          <ChatPanel
-            rootPath={rootPath}
-            activeFileContext={activeFileContext}
-            files={tree.files}
-            projectId={() => {
-              const p = currentProject();
-              return p === undefined ? undefined : (p?.id ?? null);
-            }}
-          />
+          <Show
+            when={!chatsBlocked()}
+            fallback={
+              <div class="files-empty chats-blocked">
+                <Show
+                  when={chatsBlocked()?.kind === 'no-project-elsewhere'}
+                  fallback={
+                    <p class="chats-blocked-text">
+                      This project’s chats couldn’t be opened:{' '}
+                      {(chatsBlocked() as { error?: string } | null)?.error}
+                    </p>
+                  }
+                >
+                  <p class="chats-blocked-text">
+                    The chats without a project are open in another window. Open a project here to
+                    chat about it.
+                  </p>
+                  <button
+                    type="button"
+                    class="files-empty-open"
+                    onClick={() => void handlePickFolder()}
+                  >
+                    Open project…
+                  </button>
+                  <button
+                    type="button"
+                    class="files-empty-new"
+                    onClick={() => void showNoProjectWindow()}
+                  >
+                    Show that window
+                  </button>
+                </Show>
+              </div>
+            }
+          >
+            <ChatPanel
+              rootPath={rootPath}
+              activeFileContext={activeFileContext}
+              files={tree.files}
+              projectId={() => {
+                const p = currentProject();
+                return p === undefined ? undefined : (p?.id ?? null);
+              }}
+            />
+          </Show>
         </Show>
 
         <Show when={sidebarTab() === 'git'}>
@@ -2216,16 +2286,7 @@ export default function App() {
       <NotificationHost />
       <Show when={appSettingsPage()} keyed>
         {(page) => (
-          <AiSettingsModal
-            providers={settingsProviders()}
-            permissions={settingsPermissions()}
-            subagents={settingsSubagents()}
-            chatModel={settingsChatModel()}
-            initialPage={page}
-            rootPath={rootPath()}
-            onSave={handleAppSettingsSaved}
-            onClose={closeAppSettings}
-          />
+          <SettingsDialog initialPage={page} rootPath={rootPath()} onClose={closeAppSettings} />
         )}
       </Show>
     </div>

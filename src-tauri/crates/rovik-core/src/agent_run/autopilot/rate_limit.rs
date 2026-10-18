@@ -100,20 +100,32 @@ pub(super) fn retry_later(
     if !armed_waits().insert(key.clone()) {
         return;
     }
+    // The chat is held while it waits: another process leaves it be.
+    let Some(hold) = crate::chat_hold::take(&dialog_id) else {
+        armed_waits().remove(&key);
+        return;
+    };
     crate::rt::spawn(async move {
-        let wait = (until - store::now_ms()).max(0) as u64;
-        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        let _hold = hold;
+        // Looked at now and then: a stage that no longer waits (a Stop, a
+        // new message) lets the chat go before its wait is over.
+        loop {
+            let left = (until - store::now_ms()).max(0) as u64;
+            if left == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(left.min(LOOK_EVERY_MS))).await;
+            if store::now_ms() < until && !still_waits(&core, &dialog_id, &record, until).await {
+                armed_waits().remove(&key);
+                return;
+            }
+        }
         armed_waits().remove(&key);
         let driving = drive_lock(&dialog_id).await;
         if core.agents.is_running(&dialog_id) {
             return;
         }
-        let latest = match current_task(&core, &dialog_id).await {
-            Ok(Some((_, records))) => records.last().cloned(),
-            _ => None,
-        };
-        let still = latest.is_some_and(|r| r.id == record && r.record.waits_until() == Some(until));
-        if !still {
+        if !still_waits(&core, &dialog_id, &record, until).await {
             return;
         }
         // A chat that moved meanwhile (to a host, or back from this one)
@@ -146,6 +158,19 @@ pub(super) fn retry_later(
         }
         drop(driving);
     });
+}
+
+/// How often a stage's wait looks whether it's still waited for.
+const LOOK_EVERY_MS: u64 = 30_000;
+
+/// Whether stage record `record` is still the chat's task's latest, under
+/// way and waiting for the wait that ends at `until`.
+async fn still_waits(core: &Core, dialog_id: &str, record: &str, until: i64) -> bool {
+    let latest = match current_task(core, dialog_id).await {
+        Ok(Some((_, records))) => records.last().cloned(),
+        _ => None,
+    };
+    latest.is_some_and(|r| r.id == record && r.record.waits_until() == Some(until))
 }
 
 /// A Stop with no run to stop (R03): the stage of the chat's task that

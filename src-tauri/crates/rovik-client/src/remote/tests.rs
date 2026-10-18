@@ -1120,3 +1120,103 @@ async fn a_host_that_goes_away_has_to_catch_up_again() {
         .await;
     assert!(!remote.caught_up(HOST), "away, it has to catch up again");
 }
+
+/// One window per project (the app's instances.rs): a remote chat whose
+/// project another window has open shows its events there, not in this
+/// one; once this window opens it, here; one open nowhere, in every one.
+#[tokio::test]
+async fn a_chat_shows_its_events_in_the_window_its_project_is_open_in() {
+    let app = App::new();
+    let folder = app.dir.0.join("p");
+    std::fs::create_dir_all(&folder).unwrap();
+    let root = folder.to_string_lossy().into_owned();
+    let opened = rovik_core::chat_db::api::chat_open_project(&app.core.db, root).await;
+    let project = opened.unwrap().project.id;
+    app.chat("chat", Some(&project), Vec::new()).await;
+    let remote = Remote::new(app.core.clone());
+    remote.place("chat", HOST);
+    let open_there = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let there = open_there.clone();
+    let id = project.clone();
+    remote.on_open_elsewhere(Arc::new(move |p| {
+        p == id && there.load(std::sync::atomic::Ordering::Relaxed)
+    }));
+    let ask = || AgentEvent::ApprovalRequested {
+        request: approval("chat", false),
+    };
+    remote.receive(HOST, event(ask())).await;
+    assert!(
+        app.sent().is_empty(),
+        "the other window's: {:?}",
+        app.sent()
+    );
+    assert!(remote.handled_elsewhere("chat").await);
+    assert_eq!(
+        remote.check_here("chat").await,
+        Err(
+            "This chat's project is open in another Rovik window: land or discard it there.".into()
+        )
+    );
+
+    // Open here now.
+    remote.set_open_project(Some((project.clone(), folder)));
+    remote.receive(HOST, event(ask())).await;
+    assert_eq!(app.sent().len(), 1);
+    assert!(remote.check_here("chat").await.is_ok());
+
+    // Open nowhere: every window's.
+    remote.set_open_project(None);
+    open_there.store(false, std::sync::atomic::Ordering::Relaxed);
+    remote.lock().elsewhere_seen.clear();
+    remote.receive(HOST, event(ask())).await;
+    assert_eq!(app.sent().len(), 2);
+}
+
+/// Another window may have changed a host's policy: before a configuration
+/// goes to a host, the policies are brought up to date, so this window's
+/// old one isn't sent back.
+#[tokio::test]
+async fn the_policies_are_read_again_before_a_configuration_goes_out() {
+    let app = App::new();
+    let (remote, fake) = connected(&app).await;
+    remote.set_policy(HOST, ApprovalPolicy::AiReviewerThenMe);
+    let mine = Arc::downgrade(&remote);
+    remote.on_refresh(Arc::new(move || {
+        // As HostsPage::follow_policies finds the file another window wrote.
+        if let Some(remote) = mine.upgrade() {
+            remote.set_policy(HOST, ApprovalPolicy::WaitForMe);
+        }
+    }));
+    let config = AgentConfig {
+        approval_profiles: vec![start("c", StartKind::Retry, None).profile],
+        ..AgentConfig::default()
+    };
+    remote
+        .everywhere(Request::AgentConfigure(config.clone()))
+        .await
+        .unwrap();
+    assert_eq!(remote.policy(HOST), ApprovalPolicy::WaitForMe);
+    let mut expected = config.without_keys();
+    ApprovalPolicy::WaitForMe.apply(&AutonomySettings::default(), &mut expected);
+    let requests = fake.requests.lock().unwrap().clone();
+    assert_eq!(requests, [Request::AgentConfigure(expected)]);
+}
+
+/// A mirrored chat is pulled by one window at a time: two pulling from the
+/// same revision could write an older page over a newer one.
+#[tokio::test]
+async fn a_chat_is_pulled_by_one_window_at_a_time() {
+    let app = App::new();
+    let (one, other) = (Remote::new(app.core.clone()), Remote::new(app.core.clone()));
+    let held = one.pull_lock("chat").await.unwrap();
+    assert!(held.is_some());
+    let waiting = tokio::spawn(async move { other.pull_lock("chat").await.map(|l| l.is_some()) });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        !waiting.is_finished(),
+        "the other window waits for the pull going"
+    );
+    drop(held);
+    let took = tokio::time::timeout(Duration::from_secs(5), waiting).await;
+    assert_eq!(took.unwrap().unwrap(), Ok(true));
+}

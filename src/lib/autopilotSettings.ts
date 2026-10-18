@@ -1,15 +1,15 @@
 // autopilotSettings.ts
 //
-// The Autopilot section of Settings → Subagents
-// (docs/design/autopilot-plan.md, 3.5): how much a task spends on
-// independence, the commands its runs never run, and the budget a task
-// may spend. Saved with the Subagents settings (lib/subagentSettings.ts,
+// Settings → Autopilot (docs/design/autopilot-plan.md, 3.5): how much a
+// task spends on independence, the commands its runs never run, and the
+// budget a task may spend. Saved with the Subagents settings (lib/subagentSettings.ts,
 // `autopilot`) and sent in `AgentConfig.autopilot`
 // (rovik-protocol/src/autopilot.rs `AutopilotConfig`), which only chats in
 // Autopilot read. And whether a task installs its dependencies before the
 // first check (S03).
 import type { AutopilotEffort } from './autopilot';
 import type { SubagentKindId } from './subagentSettings';
+import { plural } from './textUtils';
 
 /** Where a task stops on its own (U04): null, no limit. */
 export interface AutopilotBudget {
@@ -196,4 +196,22 @@ export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
     budget: budgetOf(settings),
     prepare: settings.prepare !== false,
   };
+}
+
+/** A token limit as the pages show it: in millions, "2.5M". */
+export function formatTokenLimit(tokens: number): string {
+  const millions = tokens / 1_000_000;
+  return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
+}
+
+/** One line for the Settings menu. */
+export function autopilotSummary(settings: AutopilotSettings): string {
+  const effort = AUTOPILOT_EFFORTS.find((e) => e.id === settings.effort)?.label ?? settings.effort;
+  const budget = budgetOf(settings);
+  const stops: string[] = [];
+  if (budget.maxHours) stops.push(`after ${budget.maxHours} h`);
+  if (budget.maxCost) stops.push(`once it cost ${budget.maxCost}`);
+  if (budget.maxTokens) stops.push(`once it used ${formatTokenLimit(budget.maxTokens)} tokens`);
+  const stop = stops.length ? `a task stops ${stops.join(' or ')}` : 'no limit on a task';
+  return `${effort} · ${stop} · ${plural(denylistOf(settings).length, 'command')} never run`;
 }

@@ -25,6 +25,12 @@ use tokio::process::{Child, Command};
 /// to pass.
 const READY_WAIT: Duration = Duration::from_secs(60);
 
+/// The user's ssh, started as every program the app starts is
+/// (`rovik_core::process::command`).
+fn ssh_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    Command::from(rovik_core::process::command(program))
+}
+
 /// The user's own ssh, and where it goes.
 #[derive(Clone, Debug)]
 pub struct SystemSsh {
@@ -126,7 +132,7 @@ impl SystemSshConnector {
         if let Some(path) = remote.as_ref() {
             return Ok(path.clone());
         }
-        let asked = Command::new(&self.ssh.program)
+        let asked = ssh_command(&self.ssh.program)
             .args(self.ssh.command_args("printf '%s' \"$HOME\""))
             .stdin(Stdio::null())
             .kill_on_drop(true)
@@ -163,7 +169,7 @@ impl SystemSshConnector {
                 std::fs::create_dir_all(dir)?;
             }
         }
-        let mut child = Command::new(&self.ssh.program)
+        let mut child = ssh_command(&self.ssh.program)
             .args(self.ssh.forward_args(&self.local, &remote))
             .stdin(Stdio::null())
             .stdout(Stdio::null())

@@ -490,8 +490,19 @@ mod tests {
             named.message
         );
         drop(listener);
-        let closed = reach("127.0.0.1", port).await;
-        assert_eq!(closed.outcome, Outcome::Failed);
+        // A port let go is free for any test running meanwhile to take
+        // (macOS gave one to another): one of a few let go stays free.
+        let mut closed = reach("127.0.0.1", port).await;
+        for _ in 0..4 {
+            if closed.outcome == Outcome::Failed {
+                break;
+            }
+            let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = other.local_addr().unwrap().port();
+            drop(other);
+            closed = reach("127.0.0.1", port).await;
+        }
+        assert_eq!(closed.outcome, Outcome::Failed, "{}", closed.message);
         assert!(!closed.lets_through());
         let unknown = reach("no-such-host.invalid", 22).await;
         assert_eq!(unknown.outcome, Outcome::Failed);

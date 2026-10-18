@@ -305,14 +305,18 @@ pub(in crate::agent_run) fn try_drive_lock(dialog_id: &str) -> Option<DriveGuard
 pub(in crate::agent_run) struct AtWork {
     core: Core,
     dialog_id: String,
+    /// The chat held for this process meanwhile (chat_hold.rs).
+    _hold: Option<crate::chat_hold::Hold>,
 }
 
 impl AtWork {
     pub(in crate::agent_run) fn start(core: &Core, dialog_id: &str) -> AtWork {
+        let hold = crate::chat_hold::take(dialog_id);
         tell_driving(core, dialog_id, true);
         AtWork {
             core: core.clone(),
             dialog_id: dialog_id.to_string(),
+            _hold: hold,
         }
     }
 }
@@ -787,11 +791,11 @@ pub(in crate::agent_run) async fn go_on(
         return Ok(None);
     }
     // Someone is on it already: the driver between two stages, a run, or a
-    // resume a moment ago.
+    // resume a moment ago; here, or in another of Rovik's processes.
     let Some(_driving) = try_drive_lock(dialog_id) else {
         return Ok(Some(None));
     };
-    if core.agents.is_running(dialog_id) {
+    if core.agents.is_running(dialog_id) || crate::chat_hold::elsewhere(dialog_id) {
         return Ok(Some(None));
     }
     let settings = Settings::of(request);

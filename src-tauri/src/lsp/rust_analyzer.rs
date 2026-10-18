@@ -15,7 +15,6 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -73,7 +72,7 @@ fn managed_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// `<binary> --version`, if it runs. rustup's proxy for a component that
 /// isn't installed exists on PATH but fails here, which is what we want.
 fn version_of(path: &Path) -> Option<String> {
-    let mut child = rovik_core::process::no_window(&mut Command::new(path))
+    let mut child = rovik_core::process::no_window(&mut rovik_core::process::command(path))
         .arg("--version")
         .env("PATH", tool_path())
         .stdout(std::process::Stdio::piped())
@@ -127,8 +126,13 @@ fn system_binary() -> Option<RaBinary> {
 }
 
 /// Old versions left from earlier updates. One that's still running (Windows)
-/// can't be deleted yet; that's fine, the next look tries again.
+/// can't be deleted yet; that's fine, the next look tries again. Not while
+/// another Rovik window runs: its server may run an older one, which its
+/// Restart starts again.
 fn prune(app: &AppHandle, keep: &str) {
+    if !rovik_core::os_lock::alone() {
+        return;
+    }
     let Ok(dir) = managed_dir(app) else { return };
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
@@ -333,7 +337,8 @@ pub async fn ra_install(
     let tag = release.tag.clone();
     let asset = release.asset.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<RaBinary, String> {
-        let staging = dir.join(format!(".staging-{tag}"));
+        // This process's own: another window may install at the same time.
+        let staging = dir.join(format!(".staging-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&staging);
         fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
         let exe_path = staging.join(EXE);
@@ -351,8 +356,13 @@ pub async fn ra_install(
             .ok_or("the downloaded rust-analyzer doesn't run on this system")?;
 
         let final_dir = dir.join(&tag);
-        let _ = fs::remove_dir_all(&final_dir);
-        fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
+        if version_of(&final_dir.join(EXE)).is_some() {
+            // Installed meanwhile (another window), and maybe running: kept.
+            let _ = fs::remove_dir_all(&staging);
+        } else {
+            let _ = fs::remove_dir_all(&final_dir);
+            fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
+        }
         let current =
             serde_json::to_string(&Current { tag: tag.clone() }).map_err(|e| e.to_string())?;
         rovik_core::atomic_file::write_atomic(&dir.join("current.json"), current.as_bytes())
@@ -417,7 +427,7 @@ pub struct RustSrcStatus {
 pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let run = |cmd: &str, args: &[&str]| {
-            rovik_core::process::no_window(&mut Command::new(cmd))
+            rovik_core::process::no_window(&mut rovik_core::process::command(cmd))
                 .args(args)
                 .current_dir(&root)
                 .env("PATH", tool_path())
@@ -443,7 +453,7 @@ pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
 #[tauri::command]
 pub async fn ra_install_rust_src(root: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let out = rovik_core::process::no_window(&mut Command::new("rustup"))
+        let out = rovik_core::process::no_window(&mut rovik_core::process::command("rustup"))
             .args(["component", "add", "rust-src"])
             .current_dir(&root)
             .env("PATH", tool_path())

@@ -6,6 +6,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { plural } from './textUtils';
 
 export type AuthKind = 'key' | 'agent' | 'password' | 'keyboard-interactive' | 'system-ssh';
 
@@ -392,6 +393,18 @@ export function hostStatus(row: Pick<HostRow, 'deploy' | 'state'>): { label: str
     default:
       return { label: 'Connecting…', tone: 'warn' };
   }
+}
+
+/** One line for the Settings menu: how many hosts, and how many are connected. */
+export function hostsSummary(list: HostsList): string {
+  if (list.hosts.length === 0) return 'No hosts yet';
+  const connected = list.hosts.filter(
+    (h) => h.deploy.state === 'deployed' && h.state === 'ready'
+  ).length;
+  const chats = list.hosts.reduce((n, h) => n + h.chats, 0);
+  return `${plural(list.hosts.length, 'host')}, ${connected} connected${
+    chats ? `, ${plural(chats, 'chat')} there` : ''
+  }`;
 }
 
 /** The connection test as a whole, from its steps so far. */

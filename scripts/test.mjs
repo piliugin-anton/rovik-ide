@@ -88,6 +88,10 @@ try {
       conditions: ['browser'],
       logLevel: 'error',
       plugins: [solidJsx, browserOnly],
+      // Vite's `import.meta.glob` (lib/monacoThemes.ts: the community
+      // themes' JSON, loaded lazily) isn't Node's: here it finds no file,
+      // which the loader takes as "not there" and falls back on vs-dark.
+      banner: { js: 'import.meta.glob = () => ({});' },
       loader: {
         '.css': 'empty',
         '.ttf': 'empty',

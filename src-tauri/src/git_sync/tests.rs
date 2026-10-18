@@ -1,5 +1,5 @@
 use super::*;
-use rovik_core::merge::MARKER;
+use rovik_core::merge::{parse_merged, MARKER};
 use std::fs;
 use std::path::PathBuf;
 
@@ -199,9 +199,10 @@ fn merge_conflict_resolve_and_continue() {
             MergeSegment::Common {
                 text: "one\n".into()
             },
+            // As git's markers in the file: the two sides only.
             MergeSegment::Conflict {
                 ours: "OURS\n".into(),
-                base: "two\n".into(),
+                base: String::new(),
                 theirs: "THEIRS\n".into()
             },
             MergeSegment::Common {
@@ -510,4 +511,148 @@ fn a_mode_change_alone_adds_no_lines() {
     };
     assert_eq!(counts("run.sh"), (0, 0), "only its mode changed");
     assert_eq!(counts("new.txt"), (3, 0), "a new file still gets its lines");
+}
+
+// ---------------------------------------------------------------------------
+// Rebase onto a branch (the Git menu's Rebase…)
+// ---------------------------------------------------------------------------
+
+/// A local branch `name` at `at`.
+fn branch_at(repo: &Repository, name: &str, at: Oid) {
+    repo.branch(name, &repo.find_commit(at).unwrap(), true)
+        .unwrap();
+}
+
+#[test]
+fn rebasing_onto_a_branch_replays_the_branchs_commits_on_it() {
+    // main ("ours") onto release, which has up's commit but isn't main's
+    // upstream.
+    let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+    let up = repo.revparse_single("refs/heads/up").unwrap().id();
+    branch_at(&repo, "release", up);
+    let out = git_rebase_blocking(p(&dir), "release".into(), false, false).unwrap();
+    assert_eq!(out.result, "rebased");
+    let head = repo.head().unwrap();
+    assert_eq!(head.shorthand().ok(), Some("main"));
+    let commit = head.peel_to_commit().unwrap();
+    assert_eq!(commit.summary().unwrap(), Some("ours"));
+    assert_eq!(commit.parent_id(0).unwrap(), up);
+    assert_eq!(
+        fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "zero\none\ntwo\nthree\nours\n"
+    );
+    // main has release's commits now: nothing to do, nothing rewritten.
+    let again = git_rebase_blocking(p(&dir), "release".into(), false, false).unwrap();
+    assert_eq!(again.result, "up-to-date");
+    assert_eq!(repo.head().unwrap().target().unwrap(), commit.id());
+}
+
+#[test]
+fn a_branch_with_nothing_of_its_own_moves_up_to_the_branch() {
+    let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+    let start = repo.revparse_single("refs/heads/up~1").unwrap().id();
+    let up = repo.revparse_single("refs/heads/up").unwrap().id();
+    branch_at(&repo, "behind", start);
+    checkout(&repo, "behind");
+    let out = git_rebase_blocking(p(&dir), "up".into(), false, false).unwrap();
+    assert_eq!(out.result, "rebased");
+    let head = repo.head().unwrap();
+    assert_eq!(head.shorthand().ok(), Some("behind"));
+    assert_eq!(head.target().unwrap(), up);
+    // At up now: rebasing again finds nothing to do.
+    assert_eq!(
+        git_rebase_blocking(p(&dir), "up".into(), false, false)
+            .unwrap()
+            .result,
+        "up-to-date"
+    );
+}
+
+#[test]
+fn a_rebase_onto_a_remote_branch_stops_at_conflicts_and_names_it() {
+    let (dir, repo) = diverged("one\nOURS\nthree\n", "one\nTHEIRS\nthree\n");
+    let up = repo.revparse_single("refs/heads/up").unwrap().id();
+    repo.reference("refs/remotes/origin/release", up, true, "test")
+        .unwrap();
+    let out = git_rebase_blocking(p(&dir), "origin/release".into(), true, false).unwrap();
+    assert_eq!(out.result, "conflicts");
+    assert_eq!(out.conflicts, vec!["a.txt".to_string()]);
+
+    let op = current_operation(&repo).unwrap();
+    assert_eq!(op.kind, "rebase");
+    assert_eq!(op.branch.as_deref(), Some("main"));
+    // What it's rebased onto, not main's upstream (up).
+    assert_eq!(op.incoming.as_deref(), Some("origin/release"));
+    assert_eq!((op.step, op.total), (Some(1), Some(1)));
+    let file = git_conflict_file_blocking(p(&dir), "a.txt".into()).unwrap();
+    assert_eq!(file.ours_label, "Upstream (origin/release)");
+    assert_eq!(file.theirs_label, "Your commit: ours");
+
+    git_conflict_resolve_blocking(
+        p(&dir),
+        "a.txt".into(),
+        Some("one\nBOTH\nthree\n".into()),
+        None,
+    )
+    .unwrap();
+    let out = git_operation_continue_blocking(p(&dir), None).unwrap();
+    assert_eq!(out.result, "rebased");
+    assert_eq!(repo.state(), RepositoryState::Clean);
+    let commit = repo.head().unwrap().peel_to_commit().unwrap();
+    assert_eq!(commit.parent_id(0).unwrap(), up);
+    assert_eq!(
+        fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "one\nBOTH\nthree\n"
+    );
+}
+
+#[test]
+fn a_rebase_that_would_rewrite_pushed_commits_asks_first() {
+    let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+    // main's commit is on its upstream: pushed.
+    let main = repo.head().unwrap().target().unwrap();
+    branch_at(&repo, "pushed", main);
+    repo.config()
+        .unwrap()
+        .set_str("branch.main.merge", "refs/heads/pushed")
+        .unwrap();
+    let out = git_rebase_blocking(p(&dir), "up".into(), false, false).unwrap();
+    assert_eq!(out.result, "rewrites-pushed");
+    assert_eq!(repo.head().unwrap().target().unwrap(), main);
+    assert_eq!(repo.state(), RepositoryState::Clean);
+    // Asked, and told to go ahead.
+    let out = git_rebase_blocking(p(&dir), "up".into(), false, true).unwrap();
+    assert_eq!(out.result, "rebased");
+    let commit = repo.head().unwrap().peel_to_commit().unwrap();
+    assert_ne!(commit.id(), main);
+    assert_eq!(commit.summary().unwrap(), Some("ours"));
+}
+
+#[test]
+fn a_rebase_is_refused_where_it_cant_be_done() {
+    let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+    let refused = |onto: &str, remote: bool| {
+        git_rebase_blocking(p(&dir), onto.into(), remote, false).unwrap_err()
+    };
+    assert!(refused("main", false).contains("onto itself"));
+    assert!(refused("nope", false).contains("no branch nope"));
+    // `up` is local: there's no remote branch of that name.
+    assert!(refused("up", true).contains("no branch up"));
+
+    let main = repo.head().unwrap().target().unwrap();
+    fs::write(dir.join("b.txt"), "changed\n").unwrap();
+    let dirty = refused("up", false);
+    assert!(dirty.contains("then rebase again"), "{dirty}");
+    fs::write(dir.join("b.txt"), "b\n").unwrap();
+
+    repo.set_head_detached(main).unwrap();
+    assert!(refused("up", false).contains("Check out a branch"));
+    checkout(&repo, "main");
+    assert_eq!(repo.head().unwrap().target().unwrap(), main);
+
+    let (dir, repo) = diverged("one\nOURS\nthree\n", "one\nTHEIRS\nthree\n");
+    let merging = integrate_upstream(&repo, Some(PullStrategy::Merge), false).unwrap();
+    assert_eq!(merging.result, "conflicts");
+    let busy = git_rebase_blocking(p(&dir), "up".into(), false, false).unwrap_err();
+    assert!(busy.contains("A merge is in progress"), "{busy}");
 }

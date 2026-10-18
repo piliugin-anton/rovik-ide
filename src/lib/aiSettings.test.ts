@@ -139,3 +139,26 @@ test('save_keeping_subagents: the real load failing saves nothing', async () => 
   assert.equal(result, null);
   assert.equal(sent.length, 0);
 });
+
+test('ai_settings_holder: each save goes with the copy it was made of, for the backend to save it onto the settings as they are now', async () => {
+  const saves: { settings: PersistedAiSettings; base?: PersistedAiSettings }[] = [];
+  const holder = createAiSettingsHolder(
+    { setProviders() {}, setPermissions() {}, setSubagents() {} },
+    {
+      load: async () => ({ ...edited, version: 2 }),
+      save: async (settings, base) => void saves.push({ settings, base }),
+    }
+  );
+  const loaded: PersistedAiSettings = { ...edited, version: 2, subagents: mine };
+  holder.apply(loaded);
+  const first = { ...edited, subagents: mine, active: { providerId: 'p', modelId: 'm' } };
+  assert.equal(await holder.save(first), true);
+  assert.deepEqual(saves[0].base, loaded, 'the copy as loaded');
+  // The next save was made of the first.
+  assert.equal(await holder.save({ ...first, active: null }), true);
+  assert.deepEqual(saves[1].base, { ...first, version: 2 });
+  // After a load that failed, no copy to go by: saved as it is.
+  holder.apply({ ...edited, version: 2, loadFailed: true });
+  await holder.save(edited);
+  assert.equal(saves[2].base, undefined);
+});
