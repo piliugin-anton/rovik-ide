@@ -1035,6 +1035,40 @@ async function run() {
     await click('.terminal-toggle-button');
   });
 
+  // A key press the webview acts on too, as a person's is (xdotool's on
+  // X, or WebDriver's): Linux's and Windows' webviews paste on
+  // Ctrl+Shift+V themselves. Not through the bridge (macOS, or Windows
+  // when WebDriver can't start the app): its keys are the page's own
+  // events, which the webview doesn't act on.
+  if (DRIVER !== 'bridge') {
+    await step('terminal: Ctrl+Shift+V pastes the clipboard once', async () => {
+      const marker = `e2e-paste-${process.pid}`;
+      await click('.terminal-toggle-button');
+      await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
+      await click('.xterm-screen');
+      const copied = await d.exec(
+        'return navigator.clipboard.writeText(arguments[0]).then(() => true, (e) => String(e));',
+        marker
+      );
+      assert(copied === true, `the clipboard holds the text: ${copied}`);
+      await typeKeys('echo ');
+      if (X) xdo('key', 'ctrl+shift+v');
+      else await keys([Keys.CTRL, Keys.SHIFT, 'v']);
+      await sleep(500);
+      await keys(Keys.ENTER);
+      // The echo's line: the text once (twice when pasted twice).
+      const echoed = async () =>
+        (await panelText('.xterm-rows'))
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.startsWith(marker));
+      await waitFor(async () => (await echoed()).length > 0, 'the pasted command’s output', 20_000);
+      const [line] = await echoed();
+      assert(line === marker, `pasted once: the echo is ${JSON.stringify(line)}`);
+      await click('.terminal-toggle-button');
+    });
+  }
+
   await step('git: changes listed, commit', async () => {
     await sidebar('Git');
     await waitFor(() => d.exists('.git-file-row'), 'changed files');

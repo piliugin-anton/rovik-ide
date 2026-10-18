@@ -3,7 +3,8 @@
 // (TerminalNewMenu): "Local", or each connected host, by mouse or by
 // keyboard. A remote terminal opens through `spawn_remote_terminal`, and
 // the tabs say where each runs while a host is connected or one runs on
-// one. The app is answered here, command by command. Run with: npm test
+// one. Ctrl+Shift+V pastes the clipboard once. The app is answered here,
+// command by command. Run with: npm test
 import { container } from '../test/dom';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -293,4 +294,36 @@ test('a host going offline: its terminal still says where it runs until it ends'
   send(1, { type: 'exit', code: 0 });
   await flush();
   assert.deepEqual(labels(root), ['bash 1', 'bash 2']);
+});
+
+test("Ctrl+Shift+V pastes the clipboard once: the webview's own paste doesn't follow", async () => {
+  await app([]);
+  const root = await panel();
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { readText: async () => 'git status', writeText: async () => {} },
+  });
+  try {
+    const before = calls.length;
+    const key = new KeyboardEvent('keydown', {
+      key: 'V',
+      code: 'KeyV',
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    root.querySelector('.terminal-instance .xterm-helper-textarea')!.dispatchEvent(key);
+    await flush();
+    // Linux's and Windows' webviews paste on this key themselves unless
+    // its default is prevented, and xterm would send that paste too.
+    assert.ok(key.defaultPrevented, "the webview's paste is kept from following");
+    const written = calls.slice(before).filter((c) => c.cmd === 'write_to_terminal');
+    assert.deepEqual(
+      written.map((c) => c.args.data),
+      ['git status']
+    );
+  } finally {
+    delete (navigator as any).clipboard;
+  }
 });
