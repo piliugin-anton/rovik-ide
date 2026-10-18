@@ -250,7 +250,10 @@ impl Remote {
     /// The chat's pull lock, shared with the other windows: once the one
     /// pulling it now is done (at most a minute: then the pull fails, and
     /// goes again with the next change or connection).
-    pub(super) async fn pull_lock(&self, chat: &str) -> Result<Option<std::fs::File>, String> {
+    pub(super) async fn pull_lock(
+        &self,
+        chat: &str,
+    ) -> Result<Option<rovik_core::os_lock::Held>, String> {
         let name: String = chat
             .chars()
             .map(|c| {

@@ -10,7 +10,6 @@
 //! queue is the machine's, as it was.
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -23,7 +22,7 @@ const MOST: usize = 16;
 pub(super) struct Slots {
     dir: Option<PathBuf>,
     /// By job: the slot it holds, and the lock that keeps it.
-    held: HashMap<u64, (usize, File)>,
+    held: HashMap<u64, (usize, crate::os_lock::Held)>,
 }
 
 static SLOTS: LazyLock<Mutex<Slots>> = LazyLock::new(Default::default);

@@ -31,7 +31,7 @@ pub struct ChatOverlay {
     pub store: PathBuf,
     mount: Mutex<Option<crate::vfs::Mount>>,
     /// The store's lock while it's open here (`hold_store`).
-    held: Mutex<Option<std::fs::File>>,
+    held: Mutex<Option<crate::os_lock::Held>>,
 }
 
 impl ChatOverlay {
@@ -671,7 +671,7 @@ pub const OPEN_ELSEWHERE: &str = "this chat's changes are open in another Rovik 
 /// The lock of the overlay store `store`, for opening it here: never in
 /// two processes at once, which would each change its files unaware of
 /// the other. None: the lock couldn't be made, and the store opens anyway.
-fn hold_store(store: &Path) -> Result<Option<std::fs::File>, String> {
+fn hold_store(store: &Path) -> Result<Option<crate::os_lock::Held>, String> {
     match crate::os_lock::try_hold(&store.join(MOUNTED)) {
         Ok(Some(lock)) => Ok(Some(lock)),
         Ok(None) => Err(OPEN_ELSEWHERE.into()),

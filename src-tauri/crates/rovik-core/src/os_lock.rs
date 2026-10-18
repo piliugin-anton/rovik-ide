@@ -5,6 +5,11 @@
 //! nothing stays stuck. The lock belongs to the open file, not to the
 //! process: each is held through one open file, as a second of the
 //! process's own would find it taken.
+//!
+//! Letting go unlocks the file before closing it. Closed alone, it would
+//! stay locked while a program this process starts at that moment is
+//! between its fork and its exec (it shares the open file until then),
+//! and Windows unlocks a closed file's locks when it gets to it.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
@@ -29,6 +34,23 @@ fn open(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
+/// A lock held, until it's dropped.
+#[derive(Debug)]
+pub struct Held(File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+impl std::ops::Deref for Held {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.0
+    }
+}
+
 fn try_lock(file: &File) -> io::Result<bool> {
     match file.try_lock() {
         Ok(()) => Ok(true),
@@ -39,24 +61,24 @@ fn try_lock(file: &File) -> io::Result<bool> {
 
 /// Holds the lock at `path`, the file made if missing; None while another
 /// process holds it.
-pub fn try_hold(path: &Path) -> io::Result<Option<File>> {
+pub fn try_hold(path: &Path) -> io::Result<Option<Held>> {
     let file = open(path)?;
     for attempt in 0..TRIES {
         if attempt > 0 {
             std::thread::sleep(APART);
         }
         if try_lock(&file)? {
-            return Ok(Some(file));
+            return Ok(Some(Held(file)));
         }
     }
     Ok(None)
 }
 
 /// Holds the lock at `path`, once whoever has it lets go.
-pub fn hold(path: &Path) -> io::Result<File> {
+pub fn hold(path: &Path) -> io::Result<Held> {
     let file = open(path)?;
     file.lock()?;
-    Ok(file)
+    Ok(Held(file))
 }
 
 /// Whether another process holds the lock at `path`: looked at without
@@ -66,12 +88,19 @@ pub fn held_elsewhere(path: &Path) -> bool {
     let Ok(file) = File::open(path) else {
         return false;
     };
-    matches!(file.try_lock_shared(), Err(TryLockError::WouldBlock))
+    match file.try_lock_shared() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(TryLockError::WouldBlock) => true,
+        Err(TryLockError::Error(_)) => false,
+    }
 }
 
 /// This process's slot: its number among the Rovik processes running on
 /// this computer (the lowest free), and the lock that keeps it.
-static SLOT: OnceLock<(usize, Option<File>)> = OnceLock::new();
+static SLOT: OnceLock<(usize, Option<Held>)> = OnceLock::new();
 /// Where the slots are kept.
 static SLOTS: OnceLock<std::path::PathBuf> = OnceLock::new();
 
@@ -101,10 +130,10 @@ fn alone_in(dir: &Path, mine: usize) -> bool {
 }
 
 /// The lowest slot in `dir` no process holds, held.
-fn first_free(dir: &Path) -> (usize, Option<File>) {
+fn first_free(dir: &Path) -> (usize, Option<Held>) {
     for n in 1..=64 {
         let taken = open(&dir.join(format!("slot-{n}.lock")))
-            .and_then(|file| Ok(try_lock(&file)?.then_some(file)));
+            .and_then(|file| Ok(try_lock(&file)?.then_some(Held(file))));
         match taken {
             Ok(Some(file)) => return (n, Some(file)),
             Ok(None) => continue,
@@ -145,6 +174,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A program that starts and ends at once.
+    fn nothing() -> std::process::Command {
+        if cfg!(windows) {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.args(["/C", "exit"]);
+            cmd
+        } else {
+            std::process::Command::new("true")
+        }
+    }
+
+    // A program another thread starts shares the open files until its exec:
+    // a lock closed then stayed held until the program got there.
+    #[test]
+    fn a_lock_let_go_is_free_at_once_while_programs_start() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let path = temp_dir("let-go").join("busy.lock");
+        let stop = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicUsize::new(0));
+        let starting = {
+            let (stop, started) = (Arc::clone(&stop), Arc::clone(&started));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = nothing().status();
+                    started.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+        let (mut lingered, mut tries) = (0, 0);
+        while started.load(Ordering::Relaxed) < 50 && tries < 1_000_000 {
+            tries += 1;
+            drop(try_hold(&path).unwrap().expect("free"));
+            lingered += usize::from(held_elsewhere(&path));
+        }
+        stop.store(true, Ordering::Relaxed);
+        starting.join().unwrap();
+        assert_eq!(lingered, 0, "let go, yet held, {lingered} times in {tries}");
     }
 
     // Two open files in one test process stand for two processes: the lock

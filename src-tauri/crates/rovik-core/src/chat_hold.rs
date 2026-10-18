@@ -9,7 +9,6 @@
 //! are only counted, and no chat is at work anywhere else.
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -22,7 +21,7 @@ pub const AT_WORK_ELSEWHERE: &str =
 pub struct Holds {
     dir: Mutex<Option<PathBuf>>,
     /// By chat: how many holds, and the lock they share.
-    held: Mutex<HashMap<String, (usize, Option<File>)>>,
+    held: Mutex<HashMap<String, (usize, Option<crate::os_lock::Held>)>>,
 }
 
 static HOLDS: LazyLock<Arc<Holds>> = LazyLock::new(Default::default);

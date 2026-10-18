@@ -560,6 +560,9 @@ What one process must not do to another's work is guarded the same way:
   installed while it ran) stops writing to it: close it and open Rovik
   again. rust-analyzer's old versions are cleaned up only while no other
   window runs, as one may still run them.
+- A lock is unlocked as it's let go, not only closed: a program another
+  thread starts at that moment shares the open file until its exec, which
+  kept a lock let go held meanwhile.
 
 ### Chat isolation
 

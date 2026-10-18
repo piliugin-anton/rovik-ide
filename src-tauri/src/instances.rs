@@ -16,8 +16,8 @@
 // takes the token it wrote next to its locks, in the user's own data
 // folder.
 
+use rovik_core::os_lock::Held;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -82,7 +82,7 @@ struct AtWork {
 #[derive(Default)]
 struct Claims {
     /// Every lock held, by claim.
-    held: HashMap<String, File>,
+    held: HashMap<String, Held>,
     /// The project open in the window: its claims, its folder ("" for none),
     /// and its project's ID once the window knows it (`opened`).
     open: Vec<String>,
@@ -144,7 +144,7 @@ impl Instances {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         let mut claims = self.claims();
-        let mut taken: HashMap<String, File> = HashMap::new();
+        let mut taken: HashMap<String, Held> = HashMap::new();
         for key in &keys {
             if claims.held.contains_key(key) {
                 continue;
@@ -321,7 +321,7 @@ impl Instances {
     }
 
     /// The lock for `key`, if no other process holds it (None).
-    fn lock(&self, key: &str) -> std::io::Result<Option<File>> {
+    fn lock(&self, key: &str) -> std::io::Result<Option<Held>> {
         rovik_core::os_lock::try_hold(&self.files(key).0)
     }
 
@@ -331,7 +331,7 @@ impl Instances {
 
     /// Its `.json` first, while still locked: once the lock goes, another
     /// process may write its own.
-    fn let_go(&self, key: &str, lock: File) {
+    fn let_go(&self, key: &str, lock: Held) {
         let _ = std::fs::remove_file(self.files(key).1);
         drop(lock);
     }

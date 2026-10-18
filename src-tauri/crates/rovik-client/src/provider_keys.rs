@@ -95,7 +95,7 @@ impl ProviderKeys {
 
     /// The settings file to this process while it's read and written: the
     /// other windows' saves wait.
-    fn file_lock(&self) -> Option<std::fs::File> {
+    fn file_lock(&self) -> Option<rovik_core::os_lock::Held> {
         let lock = self.path.with_extension("lock");
         rovik_core::os_lock::hold(&lock)
             .map_err(|e| eprintln!("ai settings: {}: {e}", lock.display()))
