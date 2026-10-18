@@ -5101,6 +5101,10 @@ body.is-resizing * {
   flex-direction: column;
   gap: 6px;
   max-width: 90%;
+  /* A record's text wraps: a path, command or URL too long for the card
+     breaks inside it instead of spilling past its border (a narrower pane
+     must not push the facts out of the block). */
+  overflow-wrap: anywhere;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-left: 3px solid var(--fg-dim);
