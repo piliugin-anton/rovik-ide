@@ -1112,6 +1112,74 @@ async function run() {
     await waitFor(() => git(DEMO, 'branch', '--show-current') === 'main', 'back on main');
   });
 
+  await step('git: a new branch is published when asked, then pushes on its own', async () => {
+    const remote = join(WORK, 'remote.git');
+    const remoteTip = () => {
+      try {
+        return git(remote, 'rev-parse', '--verify', '-q', 'refs/heads/feature/publish');
+      } catch {
+        return '';
+      }
+    };
+    const commit = async (file, text, message) => {
+      writeFileSync(join(DEMO, 'src', file), text);
+      await waitFor(
+        async () => (await panelText('.git-panel')).includes(file),
+        `${file} listed`,
+        20_000
+      );
+      await click('textarea[placeholder="Commit message"], input[placeholder="Commit message"]');
+      await typeKeys(message);
+      await click(await buttonByText('Commit'));
+      await waitFor(
+        () => git(DEMO, 'log', '-1', '--format=%s') === message,
+        `the commit ${message}`
+      );
+    };
+    await moreActions();
+    await click(await buttonByText('New branch…'));
+    await click('input[placeholder="Branch name"]');
+    await typeKeys('feature/publish');
+    await keys(Keys.ENTER);
+    await waitFor(() => git(DEMO, 'branch', '--show-current') === 'feature/publish', 'the branch');
+    // Not on the remote, nothing to commit: the button publishes it.
+    await waitFor(
+      async () => (await panelText('.git-commit-button')).trim() === 'Publish',
+      'the Publish button',
+      20_000
+    );
+    await commit('published.txt', 'published\n', 'Publish me');
+    // The remote has no branch to push the commit to: asked first.
+    await waitFor(
+      async () => (await d.bodyText()).includes('Publish feature/publish?'),
+      'the question to publish it',
+      20_000
+    );
+    assert(remoteTip() === '', 'nothing pushed before the answer');
+    await click(await buttonByText('Publish branch'));
+    await waitFor(
+      () => remoteTip() === git(DEMO, 'rev-parse', 'HEAD'),
+      'the branch published',
+      30_000
+    );
+    assert(
+      git(DEMO, 'rev-parse', '--abbrev-ref', 'feature/publish@{upstream}') ===
+        'origin/feature/publish',
+      'it tracks its remote branch'
+    );
+    // Tracked now: the next commit is pushed with no question.
+    await commit('published.txt', 'published twice\n', 'Pushed on its own');
+    await waitFor(() => remoteTip() === git(DEMO, 'rev-parse', 'HEAD'), 'the push', 30_000);
+    await click('.git-branch-button');
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.git-branch-dropdown li.context-menu-item')].find((e) => e.textContent.trim() === 'main');`,
+        'main'
+      )
+    );
+    await waitFor(() => git(DEMO, 'branch', '--show-current') === 'main', 'back on main');
+  });
+
   await step('git: pull a conflicting change, resolve it, push', async () => {
     // On main, whatever the steps before left.
     if (git(DEMO, 'branch', '--show-current') !== 'main') git(DEMO, 'checkout', '-qf', 'main');

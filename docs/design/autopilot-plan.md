@@ -346,10 +346,17 @@ lockfile found at the root or one folder down (`package-lock.json`,
 `pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, `requirements.txt`,
 `uv.lock`, `go.sum`), when its dependency folder or cache is missing, the
 install it implies runs as heavy work (`workload`), once, with the
-project's check timeout. Output goes to `@checks/prepare` like a check's.
-A failed install is a `prepare` record with `status: failed`; the pipeline
-goes on, and the checks say what's missing. The stage reruns once when a
-later check fails with an environment failure (D12).
+project's check timeout. A Node package with no lockfile, as a server's
+copy of a project that commits none has it, gets npm's install of what
+its package.json names (`npm install --no-package-lock`: no lockfile the
+change didn't make), unless it's another package manager's
+(`packageManager`, Yarn's settings, a pnpm workspace) or a package of a
+Node workspace, which installs from its root. Output goes to
+`@checks/prepare` like a check's. A failed install is a `prepare` record
+with `status: failed`; the pipeline goes on, and the checks say what's
+missing. An install whose own program isn't there says so: "npm wasn't
+found where the chat runs". The stage reruns once when a later check
+fails with an environment failure (D12).
 
 ### 4.4 Tests
 
@@ -1210,9 +1217,13 @@ T05 depends most on the environment it meets.
   as the installs of a check round are (`PrepareRecord.tsx`); the stage
   record's `ref` is it. Done: "Installed: `npm ci --no-audit --no-fund`",
   or "1 of 2 installs failed (`uv sync` in api): the checks will say
-  what's missing". Skipped: "Nothing to install: the dependencies are
-  there", "No project folder", "Off in the settings". Stopped by the
-  user: failed, `stopped`, and the delivery comes next.
+  what's missing", or, when the shell didn't find the install's program
+  (exit code 127, cmd's 9009), "1 of 1 installs failed
+  (`npm ci --no-audit --no-fund`): npm wasn't found where the chat
+  runs".
+  Skipped: "Nothing to install: the dependencies are there", "No
+  project folder", "Off in the settings". Stopped by the user: failed,
+  `stopped`, and the delivery comes next.
 - **The saved output**: `@checks/prepare-1.log` (`prepare-api-2.log` one
   folder down). The stage's run starts the chat's saved output afresh
   (P4.7), and the task's later runs keep `prepare-…` when they clean

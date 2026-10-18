@@ -17,7 +17,7 @@ pub enum Stage {
     Plan,
     /// The plan reviewer checks it against the code (4.2).
     PlanReview,
-    /// The dependencies a lockfile implies are installed (4.3).
+    /// The dependencies the packages need are installed (4.3).
     Prepare,
     /// The test writer writes tests from the plan, before the code (4.4).
     Tests,

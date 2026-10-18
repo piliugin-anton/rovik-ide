@@ -31,11 +31,22 @@ import { confirmDialog } from './ConfirmDialog';
 import { ConflictResolver } from './ConflictResolver';
 import { PullStrategyDialog, type PullStrategyPick } from './PullStrategyDialog';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
+import {
+  COMMIT_LABELS,
+  commitAction,
+  publishHint,
+  publishQuestion,
+  unpublished,
+} from '../lib/gitPublish';
 
 const GIT_ROW_HEIGHT = 22;
 
 /** Commit messages being written, by project: the panel goes while another sidebar tab is shown. */
 const commitDrafts = new Map<string, string>();
+
+/** The branches whose publishing the user put off after a commit ("Not now"),
+ *  by project: not asked about again while the app runs. Publish still does it. */
+const publishPutOff = new Set<string>();
 
 interface GitPanelProps {
   /** Absolute path to the currently open project/workspace. */
@@ -723,10 +734,10 @@ export function GitPanel(props: GitPanelProps) {
       const hasChanges = st.files.length > 0;
 
       // Retry / push-only: no message but commits waiting to be pushed
-      // (e.g. a previous push failed with an SSH/network error). There is
-      // nothing to commit, so just push.
+      // (e.g. a previous push failed with an SSH/network error), or a
+      // branch to publish. There is nothing to commit, so just push.
       if (!msg || !hasChanges) {
-        if (st.ahead <= 0) return;
+        if (st.ahead <= 0 && !unpublished(st)) return;
         try {
           await push();
         } finally {
@@ -742,11 +753,24 @@ export function GitPanel(props: GitPanelProps) {
       const updated = await refreshStatus();
       try {
         if (updated && updated.ahead > 0) await push();
+        else if (unpublished(updated)) await publishAfterCommit(updated);
       } finally {
         await refreshStatus();
         refreshHistoryIfOpen();
       }
     });
+
+  /** A commit on a branch with no remote branch yet wasn't pushed: asks to
+   *  publish the branch, whose push makes its remote branch and tracks it. */
+  const publishAfterCommit = async (st: GitStatus) => {
+    const key = `${props.projectPath}\n${st.branch}`;
+    if (publishPutOff.has(key)) return;
+    if (!(await confirmDialog(publishQuestion(st)))) {
+      publishPutOff.add(key);
+      return;
+    }
+    await push();
+  };
 
   const switchBranch = (branch: string) =>
     withBusy(async () => {
@@ -1230,13 +1254,15 @@ export function GitPanel(props: GitPanelProps) {
     if (!s || busy()) return false;
     // A merge / rebase in progress is finished from its banner, not here.
     if (s.operation) return false;
-    if (s.ahead > 0) return true;
+    // Push, or Publish a branch with no remote branch yet (lib/gitPublish.ts).
+    if (commitAction(s, commitMessage()) !== 'commit') return true;
     return !!commitMessage().trim() && s.files.length > 0;
   });
-  const commitButtonText = createMemo(() => {
+  const commitButtonAction = createMemo(() => {
     const s = status();
-    return s && s.ahead > 0 ? 'Push' : 'Commit';
+    return s ? commitAction(s, commitMessage()) : 'commit';
   });
+  const commitButtonText = () => COMMIT_LABELS[commitButtonAction()];
 
   /*
    * Git's own activity (a commit, a checkout, also from a terminal) and
@@ -2383,9 +2409,12 @@ export function GitPanel(props: GitPanelProps) {
             class="git-commit-button primary icon-button"
             disabled={!canCommit()}
             onClick={commitAndMaybePush}
+            title={
+              commitButtonAction() === 'publish' && status() ? publishHint(status()!) : undefined
+            }
           >
             <Show when={!busy()} fallback={<IconSpinner />}>
-              <Show when={commitButtonText() === 'Push'} fallback={<IconCheck />}>
+              <Show when={commitButtonAction() !== 'commit'} fallback={<IconCheck />}>
                 <IconArrowUp />
               </Show>
             </Show>
