@@ -426,7 +426,9 @@ access tokens → Fine-grained tokens**) for this repository only, with
 **Contents: Read and write**, and add it to the repository's **Settings →
 Secrets and variables → Actions** as `RELEASE_TOKEN`. Without it, a
 protected master refuses the release's commit of the version, and the
-release stops there.
+release stops there. The token expires on the date you choose: choose the
+latest it offers, and when it runs out, replace the secret with a new one
+(a release with an expired token stops at its checkout).
 
 To debug model requests, set `ROVIK_API_LOG=1`. Every request and response
 is then logged to `<temp dir>/rovik-api-log.jsonl`; set it to a file path
