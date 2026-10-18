@@ -9,11 +9,16 @@
 //! session, keys can't be read or saved there: those already in the
 //! settings file stay in it, as before H06, until a load with the store
 //! unlocked moves them over.
+//!
+//! Each of Rovik's windows (a process each) keeps a copy of the settings
+//! and saves it whole, now and then without the user (a model's API route
+//! learned). Saved onto the settings as they are now (`save_onto`), a copy
+//! older than another window's save only changes what it changed itself.
 
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use rovik_protocol::Secret;
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +53,56 @@ impl ProviderKeys {
     /// Keys still in the file move to the store first, when it can take
     /// them.
     pub fn load(&self) -> Result<String, String> {
+        let _file = self.file_lock();
+        self.load_here()
+    }
+
+    /// Saves the settings the frontend sends, keys and all (`save_here`).
+    pub fn save(&self, json: &str) -> Result<(), String> {
+        let _file = self.file_lock();
+        self.save_here(json)
+    }
+
+    /// Saves `json`, what a window made of the settings it loaded (`base`),
+    /// onto the settings as they are now: another window may have saved
+    /// meanwhile, and what this one left as it was stays as that one saved
+    /// it (`merge`).
+    pub fn save_onto(&self, json: &str, base: &str) -> Result<(), String> {
+        let _file = self.file_lock();
+        let (Ok(ours), Ok(base)) = (
+            serde_json::from_str::<Value>(json),
+            serde_json::from_str::<Value>(base),
+        ) else {
+            return self.save_here(json);
+        };
+        let now = self.load_here().ok();
+        let merged = match now.and_then(|now| serde_json::from_str::<Value>(&now).ok()) {
+            Some(theirs) => merge(&base, &ours, &theirs),
+            None => ours,
+        };
+        self.save_here(&merged.to_string())
+    }
+
+    /// When the settings file was last written (ms since the epoch; 0: never),
+    /// read without the keychain: whether another window saved meanwhile.
+    pub fn stamp(&self) -> u64 {
+        std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as u64)
+    }
+
+    /// The settings file to this process while it's read and written: the
+    /// other windows' saves wait.
+    fn file_lock(&self) -> Option<rovik_core::os_lock::Held> {
+        let lock = self.path.with_extension("lock");
+        rovik_core::os_lock::hold(&lock)
+            .map_err(|e| eprintln!("ai settings: {}: {e}", lock.display()))
+            .ok()
+    }
+
+    fn load_here(&self) -> Result<String, String> {
         let mut unread = self.unread.lock().unwrap_or_else(|e| e.into_inner());
         if !self.path.exists() {
             return Ok(EMPTY.into());
@@ -81,7 +136,7 @@ impl ProviderKeys {
     /// Saves the settings the frontend sends, keys and all: each key goes
     /// to the store, and the file keeps where it is. A provider that's gone
     /// or whose key was cleared has its key forgotten.
-    pub fn save(&self, json: &str) -> Result<(), String> {
+    fn save_here(&self, json: &str) -> Result<(), String> {
         let unread = self.unread.lock().unwrap_or_else(|e| e.into_inner());
         let mut settings: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let saved = self.saved_keys();
@@ -191,6 +246,121 @@ impl ProviderKeys {
         rovik_core::atomic_file::write_atomic_private(&self.path, settings.to_string().as_bytes())
             .map_err(|e| e.to_string())
     }
+}
+
+/// `ours`, a window's settings, made of `base`, the settings as it loaded
+/// them, onto `theirs`, the settings as they are now: what it changed is
+/// taken, the rest is as it is now. Providers, and their models, are taken
+/// one by one, by id, and each of their fields on its own; anything else
+/// (the model in use, the permissions) whole. Where both changed the same
+/// thing, the window saving now wins.
+fn merge(base: &Value, ours: &Value, theirs: &Value) -> Value {
+    match (base, ours, theirs) {
+        (Value::Object(b), Value::Object(o), Value::Object(t)) => merge_fields(b, o, t),
+        _ => ours.clone(),
+    }
+}
+
+fn merge_fields(
+    base: &Map<String, Value>,
+    ours: &Map<String, Value>,
+    theirs: &Map<String, Value>,
+) -> Value {
+    let mut out = Map::new();
+    for (key, o) in ours {
+        if let Some(v) = merge_one(base.get(key), Some(o), theirs.get(key), merge_value) {
+            out.insert(key.clone(), v);
+        }
+    }
+    for (key, t) in theirs.iter().filter(|(k, _)| !ours.contains_key(*k)) {
+        if let Some(v) = merge_one(base.get(key), None, Some(t), merge_value) {
+            out.insert(key.clone(), v);
+        }
+    }
+    Value::Object(out)
+}
+
+/// One value: a list of things with ids item by item, else whole.
+fn merge_value(base: &Value, ours: &Value, theirs: &Value) -> Value {
+    if ours == base {
+        return theirs.clone();
+    }
+    if theirs == base {
+        return ours.clone();
+    }
+    match (by_id(base), by_id(ours), by_id(theirs)) {
+        (Some(b), Some(o), Some(t)) => merge_items(&b, &o, &t),
+        _ => ours.clone(),
+    }
+}
+
+fn merge_items(
+    base: &[(&str, &Map<String, Value>)],
+    ours: &[(&str, &Map<String, Value>)],
+    theirs: &[(&str, &Map<String, Value>)],
+) -> Value {
+    let find = |list: &[(&str, &Map<String, Value>)], id: &str| {
+        list.iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, item)| Value::Object((*item).clone()))
+    };
+    let item = |b: &Value, o: &Value, t: &Value| match (b, o, t) {
+        (Value::Object(b), Value::Object(o), Value::Object(t)) => merge_fields(b, o, t),
+        _ => o.clone(),
+    };
+    let mut out = Vec::new();
+    for (id, o) in ours {
+        let o = Value::Object((*o).clone());
+        if let Some(v) = merge_one(
+            find(base, id).as_ref(),
+            Some(&o),
+            find(theirs, id).as_ref(),
+            item,
+        ) {
+            out.push(v);
+        }
+    }
+    for (id, t) in theirs.iter().filter(|(id, _)| find(ours, id).is_none()) {
+        let t = Value::Object((*t).clone());
+        if let Some(v) = merge_one(find(base, id).as_ref(), None, Some(&t), item) {
+            out.push(v);
+        }
+    }
+    Value::Array(out)
+}
+
+/// A field or an item, present or not in each: one only the window added
+/// is taken, and one it removed goes; one another window removed stays
+/// gone unless this one changed it.
+fn merge_one(
+    base: Option<&Value>,
+    ours: Option<&Value>,
+    theirs: Option<&Value>,
+    both: impl Fn(&Value, &Value, &Value) -> Value,
+) -> Option<Value> {
+    match (base, ours, theirs) {
+        (Some(b), Some(o), Some(t)) => Some(both(b, o, t)),
+        (None, Some(o), _) => Some(o.clone()),
+        (Some(b), Some(o), None) => (o != b).then(|| o.clone()),
+        (Some(_), None, _) => None,
+        (None, None, t) => t.cloned(),
+    }
+}
+
+/// A list whose items are all things with distinct ids, by id.
+fn by_id(value: &Value) -> Option<Vec<(&str, &Map<String, Value>)>> {
+    let list = value.as_array()?;
+    let mut items = Vec::with_capacity(list.len());
+    let mut seen = HashMap::new();
+    for item in list {
+        let object = item.as_object()?;
+        let id = object.get("id")?.as_str().filter(|id| !id.is_empty())?;
+        if seen.insert(id, ()).is_some() {
+            return None;
+        }
+        items.push((id, object));
+    }
+    Some(items)
 }
 
 fn providers(settings: &mut Value) -> impl Iterator<Item = &mut Map<String, Value>> {
@@ -431,5 +601,116 @@ mod tests {
             "{ not json",
             "the frontend reports it"
         );
+    }
+
+    /// Two windows, each with the settings as it loaded them.
+    fn loaded(setup: &Setup) -> Value {
+        serde_json::from_str(&setup.keys.load().unwrap()).unwrap()
+    }
+
+    fn provider<'a>(settings: &'a Value, id: &str) -> Option<&'a Value> {
+        settings["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+    }
+
+    #[test]
+    fn a_window_saving_an_older_copy_keeps_what_another_window_saved() {
+        let setup = setup(true);
+        let a_base = loaded(&setup);
+        let b_base = loaded(&setup);
+
+        // B adds a provider, its key with it, and changes OpenRouter's key.
+        let mut b = b_base.clone();
+        b["providers"].as_array_mut().unwrap().push(json!({
+            "id": "added", "name": "Added", "baseUrl": "https://example.com/v1",
+            "apiKey": "sk-added", "stream": true, "models": []
+        }));
+        b["providers"][2]["apiKey"] = json!("sk-or-rotated");
+        setup
+            .keys
+            .save_onto(&b.to_string(), &b_base.to_string())
+            .unwrap();
+
+        // A, unaware, learns a model's API route and saves its copy whole.
+        let mut a = a_base.clone();
+        a["providers"][0]["models"][0]["apiRoute"] = json!("responses");
+        setup
+            .keys
+            .save_onto(&a.to_string(), &a_base.to_string())
+            .unwrap();
+
+        let now = loaded(&setup);
+        assert_eq!(provider(&now, "added").unwrap()["name"], json!("Added"));
+        assert_eq!(key_of(&setup, "added").unwrap(), "sk-added");
+        assert_eq!(key_of(&setup, "router").unwrap(), "sk-or-rotated");
+        assert_eq!(
+            provider(&now, "router").unwrap()["apiKey"],
+            json!("sk-or-rotated")
+        );
+        assert_eq!(
+            provider(&now, "openai").unwrap()["models"][0]["apiRoute"],
+            json!("responses")
+        );
+        assert_eq!(key_of(&setup, "openai").unwrap(), "sk-openai-secret");
+    }
+
+    #[test]
+    fn what_a_window_removes_goes_and_what_another_removed_stays_gone() {
+        let setup = setup(true);
+        let a_base = loaded(&setup);
+        let b_base = loaded(&setup);
+        // B removes OpenRouter.
+        let mut b = b_base.clone();
+        b["providers"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|p| p["id"] != "router");
+        setup
+            .keys
+            .save_onto(&b.to_string(), &b_base.to_string())
+            .unwrap();
+        // A removes Ollama, OpenRouter left as it was in its copy.
+        let mut a = a_base.clone();
+        a["providers"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|p| p["id"] != "local");
+        setup
+            .keys
+            .save_onto(&a.to_string(), &a_base.to_string())
+            .unwrap();
+
+        let now = loaded(&setup);
+        let ids: Vec<&str> = now["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["openai"]);
+        assert!(key_of(&setup, "router").is_err(), "its key went with it");
+    }
+
+    #[test]
+    fn the_model_in_use_is_taken_whole() {
+        let base = json!({ "active": { "providerId": "a", "modelId": "a1" } });
+        let ours = json!({ "active": { "providerId": "a", "modelId": "a2" } });
+        let theirs = json!({ "active": { "providerId": "b", "modelId": "b1" } });
+        // Never a's provider with b's model.
+        assert_eq!(merge(&base, &ours, &theirs), ours);
+        // Left as it was here: as the other window chose.
+        assert_eq!(merge(&base, &base, &theirs), theirs);
+    }
+
+    #[test]
+    fn a_save_without_the_copy_it_came_from_is_saved_as_it_is() {
+        let setup = setup(true);
+        let mut settings = loaded(&setup);
+        settings["providers"].as_array_mut().unwrap().truncate(1);
+        setup.keys.save(&settings.to_string()).unwrap();
+        assert_eq!(loaded(&setup)["providers"].as_array().unwrap().len(), 1);
     }
 }

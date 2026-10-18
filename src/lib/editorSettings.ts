@@ -1,12 +1,15 @@
 // editorSettings.ts
 //
 // The editor's appearance and formatting options (theme, font size,
-// indentation, word wrap, minimap, format on save). Kept in localStorage — they are
-// per-user, not per-project — and exposed as reactive signals so the
-// Monaco instance in components/Editor.tsx follows them live.
+// indentation, word wrap, minimap, format on save). Per user, not per
+// project: shared by the windows (lib/sharedState.ts), so one window's
+// change doesn't undo another's, and a window follows the others' as it
+// comes to the front. Exposed as reactive signals so the Monaco instance
+// in components/Editor.tsx follows them live.
 
 import { createSignal } from 'solid-js';
 import { BUILTIN_DARK_THEMES, COMMUNITY_DARK_THEMES, isDarkThemeId } from './monacoThemes';
+import { sharedMap } from './sharedState';
 
 export type EditorThemeId = string;
 
@@ -65,11 +68,9 @@ const DEFAULTS: EditorSettings = {
   openFilesAfterAgentEdits: false,
 };
 
-function load(): EditorSettings {
+/** The settings saved, each one checked: what isn't valid is the default. */
+function load(parsed: Partial<EditorSettings>): EditorSettings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULTS;
-    const parsed = JSON.parse(raw) as Partial<EditorSettings>;
     return {
       theme:
         typeof parsed.theme === 'string' && isDarkThemeId(parsed.theme)
@@ -111,15 +112,10 @@ function load(): EditorSettings {
   }
 }
 
-const [settings, setSettings] = createSignal<EditorSettings>(load());
-
-function persist(next: EditorSettings) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch (err) {
-    console.error('Failed to save editor settings:', err);
-  }
-}
+const saved = sharedMap('editor-settings', { key: STORAGE_KEY });
+const [settings, setSettings] = createSignal<EditorSettings>(load(saved.all()));
+// Another window's change.
+saved.subscribe((all) => setSettings(load(all)));
 
 /** The whole settings object (reactive). */
 export function editorSettings(): EditorSettings {
@@ -132,7 +128,7 @@ export function editorTheme(): EditorThemeId {
 }
 
 export function updateEditorSettings(patch: Partial<EditorSettings>): void {
-  const next = { ...settings(), ...patch };
-  setSettings(next);
-  persist(next);
+  setSettings({ ...settings(), ...patch });
+  // Only what changed: the others may be another window's newer ones.
+  void saved.set(patch);
 }

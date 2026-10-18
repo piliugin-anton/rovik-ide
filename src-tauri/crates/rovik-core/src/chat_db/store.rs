@@ -1194,6 +1194,63 @@ pub fn get_message_body(conn: &Connection, message_id: &str) -> DbResult<String>
     }
 }
 
+/// A message the user sent that no reply settled (`unsettled_sends`).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsettledSend {
+    pub dialog_id: String,
+    pub message_id: String,
+    pub content: String,
+}
+
+/// The sends of the chats of `project` (None: those without one) that no
+/// reply settled: in each chat owned here (a lead chat, not on a host or
+/// on its way to one), the user's latest message (not one of the app's
+/// own, `meta.harness`) when it isn't failed and no finished reply came
+/// after it. A run cut short by its process ending (another window's
+/// crash) leaves one; whether a run is still at work on it is the
+/// caller's to judge (chat_hold).
+pub fn unsettled_sends(conn: &Connection, project: Option<&str>) -> DbResult<Vec<UnsettledSend>> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT m.dialog_id, m.id, m.meta, m.failed FROM dialogs d
+             JOIN messages m ON m.dialog_id = d.id
+             WHERE d.project_id IS ?1 AND d.parent_id IS NULL AND d.location IS NULL
+               AND NOT EXISTS (SELECT 1 FROM cloud_moves c WHERE c.dialog_id = d.id)
+               AND m.role = 'user'
+               AND m.seq > COALESCE((SELECT MAX(a.seq) FROM messages a
+                   WHERE a.dialog_id = d.id AND a.role = 'assistant' AND a.finalized = 1), -1)
+             ORDER BY m.dialog_id, m.seq DESC",
+        )
+        .map_err(err)?;
+    let rows: Vec<(String, String, Option<String>, bool)> = stmt
+        .query_map(params![project], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0))
+        })
+        .map_err(err)?
+        .collect::<Result<_, _>>()
+        .map_err(err)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut sends = Vec::new();
+    for (dialog_id, message_id, meta, failed) in rows {
+        let harness = meta
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<Value>(m).ok())
+            .is_some_and(|m| m.get("harness").is_some());
+        // The chat's latest send only: one failed already was told.
+        if harness || !seen.insert(dialog_id.clone()) || failed {
+            continue;
+        }
+        let content = get_message_body(conn, &message_id)?;
+        sends.push(UnsettledSend {
+            dialog_id,
+            message_id,
+            content,
+        });
+    }
+    Ok(sends)
+}
+
 /// Which of these user messages have a successful assistant reply after
 /// them (used to recover drafts after a restart).
 pub fn messages_answered(conn: &Connection, ids: &[String]) -> DbResult<Vec<String>> {

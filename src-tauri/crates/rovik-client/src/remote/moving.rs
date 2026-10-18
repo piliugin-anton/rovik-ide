@@ -161,16 +161,24 @@ impl Remote {
     ) -> Result<(), Fail> {
         let client = self.ready(host)?;
         let (project, root) = self.movable(dialog_id).await?;
-        // Before its row, which a connection's settling then leaves alone.
+        // Before its row, which a connection's settling then leaves alone,
+        // here or in another of Rovik's processes.
         let name = self.host_name(host);
+        let hold = rovik_core::chat_hold::take(dialog_id).ok_or_else(|| {
+            Fail::new(
+                FailCode::BadRequest,
+                rovik_core::chat_hold::AT_WORK_ELSEWHERE,
+            )
+        })?;
         {
             let mut state = self.lock();
-            if !state.moving.insert(dialog_id.to_string()) {
+            if state.moving.contains_key(dialog_id) {
                 return Err(Fail::new(
                     FailCode::BadRequest,
                     format!("This chat is moving to {name} already."),
                 ));
             }
+            state.moving.insert(dialog_id.to_string(), hold);
             state.cancels.remove(dialog_id);
         }
         let move_id = uuid::Uuid::new_v4().to_string();
@@ -240,7 +248,7 @@ impl Remote {
         }
         {
             let mut state = self.lock();
-            if state.moving.contains(dialog_id) {
+            if state.moving.contains_key(dialog_id) {
                 state.cancels.insert(dialog_id.to_string());
                 return Ok(());
             }
@@ -290,7 +298,10 @@ impl Remote {
             return;
         };
         for going in left {
-            if self.lock().moving.contains(&going.dialog_id) {
+            // Going on here, or in another of Rovik's processes: its own.
+            if self.lock().moving.contains_key(&going.dialog_id)
+                || rovik_core::chat_hold::elsewhere(&going.dialog_id)
+            {
                 continue;
             }
             let finished = match going.direction.as_str() {

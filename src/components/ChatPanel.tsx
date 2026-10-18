@@ -39,7 +39,7 @@ import {
   resolveProfile,
 } from '../lib/aiSettings';
 import { chatStore } from '../lib/chatStore';
-import { attachmentUrl, chatApi } from '../lib/chatApi';
+import { attachmentUrl, chatApi, type UnsettledSend } from '../lib/chatApi';
 import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
 import { estimateContext } from '../lib/aiChat';
@@ -55,10 +55,11 @@ import ContextControls from './ContextControls';
 import { contextModeFor, ensureContextMode } from '../lib/contextMode';
 import {
   formatsToSend,
+  followEfforts,
   loadEfforts,
   mergeLearned,
   reasoningStatus,
-  saveEfforts,
+  saveEffort,
   type Effort,
 } from '../lib/reasoning';
 import TodoPanel from './TodoPanel';
@@ -111,6 +112,7 @@ import {
 } from '../lib/agentRuns';
 import type { ShowTarget } from '../lib/remoteNotices';
 import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
+import { chatsAtWorkElsewhere } from '../lib/instances';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
 import ChatList, { type ChatListRow } from './ChatList';
@@ -235,10 +237,10 @@ export default function ChatPanel(props: ChatProps) {
     ...store.state.driving,
     ...Object.fromEntries(Object.keys(store.state.starting).map((id) => [id, true as const])),
   }));
-  /** A background chat (not the open one) finished with unseen messages. */
+  /** A background chat of the list (not the open one) finished with unseen messages. */
   const hasBackgroundUnread = createMemo(() => {
     const active = activeDialogId();
-    return Object.keys(store.state.unread).some((id) => id !== active);
+    return store.state.list.items.some((d) => d.id !== active && store.state.unread[d.id]);
   });
   const [loadingHistory, setLoadingHistory] = createSignal(true);
   /** Set when the chat database couldn't be read at startup. */
@@ -376,14 +378,14 @@ export default function ChatPanel(props: ChatProps) {
    * the replies and kept with the model in the settings.
    */
   const [efforts, setEfforts] = createSignal<Record<string, Effort>>(loadEfforts());
+  onCleanup(followEfforts(setEfforts));
   const effortFor = (profileId: string | undefined): Effort =>
     (profileId && efforts()[profileId]) || 'default';
   function setEffort(effort: Effort) {
     const profile = activeProfile();
     if (!profile) return;
-    const next = { ...efforts(), [profile.id]: effort };
-    setEfforts(next);
-    saveEfforts(next);
+    setEfforts({ ...efforts(), [profile.id]: effort });
+    saveEffort(profile.id, effort);
     // Runs with this model follow it; this chat's, if stuck, right away.
     setRunEffort(profile.id, reasoningOptions(profile), activeDialogId());
     saveChatModel(activeDialogId());
@@ -821,6 +823,7 @@ export default function ChatPanel(props: ChatProps) {
       // Runs going on are known before drafts are judged unanswered.
       await initAgentRuns();
       await recoverDraftsAfterRestart();
+      await recoverUnsettledSends(store.projectId());
       setDraftsJudged(true);
       const active = activeDialogId();
       if (active) await restoreComposerDraft(active);
@@ -882,15 +885,26 @@ export default function ChatPanel(props: ChatProps) {
    * for a project that is already the current one.
    */
   async function switchToProject(id: string | null) {
+    // What's typed stays the chat's it was typed in (as when another chat
+    // is picked): the input is cleared for the project's own chat.
+    const prevId = activeDialogId();
+    if (prevId) await flushComposerDom(prevId);
+    resetComposerState();
     setLoadingHistory(true);
     try {
       await store.switchProject(id);
-      if (isMounted && props.projectId() === id) await openNewestChat();
+      if (isMounted && props.projectId() === id) {
+        await openNewestChat();
+        await recoverUnsettledSends(id);
+      }
     } catch (err) {
       setHistoryLoadError(String(err));
     } finally {
       if (isMounted) setLoadingHistory(false);
     }
+    // The reset cleared the input while the old chat was still active,
+    // scheduling an empty save for it: dropped, the flush kept it.
+    if (prevId && prevId !== activeDialogId()) cancelComposerDraft(prevId);
     await catchUpWithProject();
   }
 
@@ -2471,27 +2485,76 @@ export default function ChatPanel(props: ChatProps) {
   // later (a running chat's, a remote chat's until its host caught up), so
   // a host catching up doesn't judge the others again.
   let draftsToJudge: PendingDraft[] | null = null;
+  /** The sends judged here: a send is judged once. */
+  const judgedSends = new Set<string>();
   async function recoverDraftsAfterRestart() {
     const drafts = draftsToJudge ?? listPendingDrafts();
     if (drafts.length === 0) return;
+    for (const d of drafts) judgedSends.add(d.messageId);
     try {
-      // A running chat's and a remote chat's wait (lib/remoteGuards.ts).
-      draftsToJudge = await recoverDrafts(drafts, {
-        isRunning: (id) => store.isRunning(id),
-        placeOf: async (id) => {
-          const known = store.summaryOf(id);
-          return known ? known.place : (await chatApi.getDialog(id).catch(() => null))?.place;
-        },
-        caughtUp: cloud.caughtUp,
-        answered: (ids) => chatApi.messagesAnswered(ids),
-        clear: clearPendingDraft,
-        markFailed: markMessageFailed,
-      });
+      draftsToJudge = await judgeDrafts(drafts);
     } catch (err) {
       console.error('Draft recovery check failed:', err);
       return;
     }
 
+    const active = activeDialogId();
+    if (active) restoreDraftForDialog(active);
+  }
+
+  /** Judges `drafts` (lib/remoteGuards.ts): those left to judge later. */
+  async function judgeDrafts(drafts: PendingDraft[]): Promise<PendingDraft[]> {
+    // Another window's run may answer its chat's yet (lib/instances.ts).
+    const elsewhere = await chatsAtWorkElsewhere(drafts.map((d) => d.dialogId));
+    // A running chat's and a remote chat's wait.
+    return recoverDrafts(drafts, {
+      isRunning: (id) => store.isRunning(id) || elsewhere.has(id),
+      placeOf: async (id) => {
+        const known = store.summaryOf(id);
+        return known ? known.place : (await chatApi.getDialog(id).catch(() => null))?.place;
+      },
+      caughtUp: cloud.caughtUp,
+      answered: (ids) => chatApi.messagesAnswered(ids),
+      clear: clearPendingDraft,
+      markFailed: markMessageFailed,
+    });
+  }
+
+  /**
+   * The sends another window left unanswered in the chats shown now, as it
+   * ended mid-run (a crash): its drafts were its own (localStorage isn't
+   * shared between windows), so this one judges them as its own after a
+   * restart: each is marked failed and its text comes back in the input.
+   */
+  async function recoverUnsettledSends(projectId: string | null) {
+    let sends: UnsettledSend[];
+    try {
+      sends = await chatApi.unsettledSends(projectId);
+    } catch (err) {
+      console.error('Looking for unanswered sends failed:', err);
+      return;
+    }
+    if (!isMounted || store.projectId() !== projectId) return;
+    const pending = new Set(listPendingDrafts().map((d) => d.messageId));
+    const drafts: PendingDraft[] = sends
+      .filter((s) => !judgedSends.has(s.messageId) && !pending.has(s.messageId))
+      .map((s) => ({
+        dialogId: s.dialogId,
+        messageId: s.messageId,
+        segments: [{ type: 'text', text: s.content }],
+        createdAt: new Date().toISOString(),
+      }));
+    if (drafts.length === 0) return;
+    for (const d of drafts) {
+      judgedSends.add(d.messageId);
+      savePendingDraft(d);
+    }
+    try {
+      await judgeDrafts(drafts);
+    } catch (err) {
+      console.error('Judging unanswered sends failed:', err);
+      return;
+    }
     const active = activeDialogId();
     if (active) restoreDraftForDialog(active);
   }

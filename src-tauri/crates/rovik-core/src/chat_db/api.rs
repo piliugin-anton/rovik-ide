@@ -240,6 +240,23 @@ pub async fn chat_search(
         .await
 }
 
+/// The sends of the project's chats a window that ended left unsettled
+/// (`store::unsettled_sends`), but for those a run is at work on, in this
+/// process or another (chat_hold): theirs may still be answered.
+pub async fn chat_unsettled_sends(
+    db: &DbState,
+    project_id: Option<String>,
+) -> Result<Vec<store::UnsettledSend>, String> {
+    let sends = db
+        .read(move |c| store::unsettled_sends(c, project_id.as_deref()))
+        .await?;
+    let here = crate::chat_hold::held_here();
+    Ok(sends
+        .into_iter()
+        .filter(|s| !here.contains(&s.dialog_id) && !crate::chat_hold::elsewhere(&s.dialog_id))
+        .collect())
+}
+
 pub async fn chat_messages_answered(
     db: &DbState,
     message_ids: Vec<String>,

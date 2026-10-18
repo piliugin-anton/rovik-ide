@@ -4,7 +4,7 @@
 //! local chat gets them in its overlay (chats.rs), a remote one in its
 //! worktree when a sync conflicts (6.7), both written by [`text`].
 
-use crate::merge::{is_binary, merge3_raw, parse_merged, MergeSegment};
+use crate::merge::{is_binary, merge3_raw_as, parse_merged, MergeSegment, Style};
 
 /// Starts the project's version.
 pub const PROJECT: &str = "<<<<<<< project (now)";
@@ -15,10 +15,27 @@ pub const SPLIT: &str = "=======";
 /// Ends a conflict.
 pub const CHAT: &str = ">>>>>>> this chat";
 
-/// A file's versions merged, in segments, the project's side as "ours". A
-/// missing side, or a merge libgit2 refuses, makes the whole file one
-/// conflict.
+/// A file's versions merged, in segments, the project's side as "ours",
+/// each conflict with the lines before either change: what the markers
+/// show. A missing side, or a merge libgit2 refuses, makes the whole file
+/// one conflict.
 pub fn segments(
+    base: Option<&[u8]>,
+    project: Option<&[u8]>,
+    chat: Option<&[u8]>,
+) -> Vec<MergeSegment> {
+    segments_as(Style::WithBase, base, project, chat)
+}
+
+/// [`segments`] as the conflict resolver shows them: each conflict cut as
+/// git cuts it, smaller where both sides share lines, without the lines
+/// before.
+pub fn view(base: Option<&[u8]>, project: Option<&[u8]>, chat: Option<&[u8]>) -> Vec<MergeSegment> {
+    segments_as(Style::Git, base, project, chat)
+}
+
+fn segments_as(
+    style: Style,
     base: Option<&[u8]>,
     project: Option<&[u8]>,
     chat: Option<&[u8]>,
@@ -34,7 +51,7 @@ pub fn segments(
     let (Some(project), Some(chat)) = (project, chat) else {
         return whole();
     };
-    match merge3_raw(base.unwrap_or_default(), project, chat) {
+    match merge3_raw_as(base.unwrap_or_default(), project, chat, style) {
         Ok(merged) => parse_merged(&String::from_utf8_lossy(&merged.content)),
         Err(_) => whole(),
     }

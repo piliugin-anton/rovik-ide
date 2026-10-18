@@ -1,11 +1,58 @@
-// src-tauri/src/process.rs
+// src-tauri/crates/rovik-core/src/process.rs
 //
 // What every child process the app starts needs, whatever the platform:
-// no console window popping up on Windows, and on macOS/Linux the PATH the
+// no console window popping up on Windows, on macOS/Linux the PATH the
 // user's shell would have, not the bare one a desktop launcher hands a GUI
-// app.
+// app, and run from an AppImage, the user's environment rather than the
+// AppImage's (process/appimage.rs).
 
+use std::ffi::{OsStr, OsString};
 use std::process::Command;
+
+#[cfg(target_os = "linux")]
+mod appimage;
+
+/// A command for `program`. When the app runs from an AppImage, it starts
+/// with the user's environment ([`child_env`]) and in the folder the
+/// AppImage was started from, not the AppImage's; anywhere else, as
+/// `Command::new` does. What's set on it afterwards (`env`, `current_dir`)
+/// comes on top. A console window on Windows is each caller's to hide
+/// ([`no_window`]): the user's ssh asks for a password in one.
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    for (key, value) in child_env() {
+        match value {
+            Some(value) => cmd.env(key, value),
+            None => cmd.env_remove(key),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = appimage::current().and_then(|a| a.start_dir.as_ref()) {
+        cmd.current_dir(dir);
+    }
+    cmd
+}
+
+/// What a program the app starts needs changed in the environment it
+/// inherits: nothing, unless the app runs from an AppImage, whose
+/// launcher's changes are undone. Each variable to set, or to remove
+/// (None); for a command that isn't a [`Command`] (a pseudo-terminal's).
+pub fn child_env() -> Vec<(OsString, Option<OsString>)> {
+    #[cfg(target_os = "linux")]
+    if let Some(image) = appimage::current() {
+        return image.undo(&std::env::vars_os().collect::<Vec<_>>());
+    }
+    Vec::new()
+}
+
+/// `key` as a program the app starts gets it ([`child_env`]): the PATH to
+/// look its programs up on, or to give it.
+pub fn child_var(key: &str) -> Option<OsString> {
+    match child_env().into_iter().find(|(k, _)| k == key) {
+        Some((_, value)) => value,
+        None => std::env::var_os(key),
+    }
+}
 
 /// Keeps a console program from opening a console window. A release build is
 /// a GUI-subsystem app on Windows (main.rs), so without this every `cmd`,
@@ -137,7 +184,7 @@ fn login_shell_path() -> Option<String> {
             vec!["-l".to_string(), "-c".into(), posix],
         ),
     };
-    let mut child = Command::new(&program)
+    let mut child = command(&program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

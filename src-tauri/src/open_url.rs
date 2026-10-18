@@ -52,7 +52,7 @@ fn opener(url: &str) -> Command {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 fn opener(url: &str) -> Command {
-    let mut cmd = Command::new("xdg-open");
+    let mut cmd = rovik_core::process::command("xdg-open");
     cmd.arg(url);
     cmd
 }

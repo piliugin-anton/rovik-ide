@@ -15,6 +15,7 @@ import { batch } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ChatMessage, ChatPlace, DialogCursor, DialogSummary, MessageStatus } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
+import { sharedMap, type Entries } from './sharedState';
 
 export type { MessageRow };
 
@@ -74,31 +75,30 @@ const UNREAD_KEY = 'rovik.chatUnread';
 /** Where the unread ids were kept before the app was renamed. */
 const LEGACY_UNREAD_KEY = 'tauri-ide:chat-unread';
 
-/** Unread chat ids from the last session (survives restarts; pruned on read/delete). */
-function loadPersistedUnread(): Record<string, true> {
+/**
+ * The unread chats' ids (survive restarts; gone once read or deleted),
+ * shared by the windows (lib/sharedState.ts): a chat read in one window
+ * isn't unread again because another saved its older copy, and a window
+ * follows the others' marks as it comes to the front.
+ */
+function unreadMarks() {
   try {
-    const raw = localStorage.getItem(UNREAD_KEY) ?? localStorage.getItem(LEGACY_UNREAD_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const out: Record<string, true> = {};
-    for (const id of Object.keys(parsed as Record<string, unknown>)) {
-      if (typeof id === 'string' && id) out[id] = true;
+    // Kept under another name before the app was renamed.
+    const legacy = localStorage.getItem(LEGACY_UNREAD_KEY);
+    if (legacy !== null) {
+      if (localStorage.getItem(UNREAD_KEY) === null) localStorage.setItem(UNREAD_KEY, legacy);
+      localStorage.removeItem(LEGACY_UNREAD_KEY);
     }
-    return out;
   } catch {
-    return {};
+    // No storage: none kept from before.
   }
+  return sharedMap('chat-unread', { key: UNREAD_KEY });
 }
 
-function savePersistedUnread(unread: Record<string, true>) {
-  try {
-    localStorage.removeItem(LEGACY_UNREAD_KEY);
-    if (Object.keys(unread).length === 0) localStorage.removeItem(UNREAD_KEY);
-    else localStorage.setItem(UNREAD_KEY, JSON.stringify(unread));
-  } catch (err) {
-    console.error('Failed to persist unread chats:', err);
-  }
+function unreadIds(saved: Entries): Record<string, true> {
+  const out: Record<string, true> = {};
+  for (const id of Object.keys(saved)) if (id && saved[id]) out[id] = true;
+  return out;
 }
 
 function previewOf(text: string): string {
@@ -106,6 +106,7 @@ function previewOf(text: string): string {
 }
 
 export function createChatStore() {
+  const marks = unreadMarks();
   const [state, setState] = createStore<ChatState>({
     list: { items: [], nextCursor: null, loading: false, loaded: false },
     open: {},
@@ -115,8 +116,18 @@ export function createChatStore() {
     running: {},
     driving: {},
     starting: {},
-    unread: loadPersistedUnread(),
+    unread: unreadIds(marks.all()),
     chatVisible: false,
+  });
+  // Another window's marks: a chat read there, or a reply come in there.
+  marks.subscribe((saved) => {
+    const unread = unreadIds(saved);
+    // The chat looked at here is read, whatever was saved.
+    if (state.activeId && isSeen(state.activeId) && unread[state.activeId]) {
+      delete unread[state.activeId];
+      void marks.set({ [state.activeId]: null });
+    }
+    setState('unread', reconcile(unread));
   });
 
   /*
@@ -421,7 +432,7 @@ export function createChatStore() {
   function markUnreadIfUnseen(dialogId: string) {
     if (isSeen(dialogId) || state.unread[dialogId]) return;
     setState('unread', dialogId, true);
-    savePersistedUnread(state.unread);
+    void marks.set({ [dialogId]: true });
   }
 
   /** The user looked at the chat: its dot goes away. */
@@ -431,7 +442,7 @@ export function createChatStore() {
       'unread',
       produce((u) => delete u[dialogId])
     );
-    savePersistedUnread(state.unread);
+    void marks.set({ [dialogId]: null });
   }
 
   /** Whether the chat panel's messages are on screen (sidebar tab is chat). */
@@ -441,8 +452,10 @@ export function createChatStore() {
     if (visible && state.activeId) markRead(state.activeId);
   }
 
-  /** Any chat the user hasn't looked at yet (drives the tab dot). */
-  const hasAnyUnread = () => Object.keys(state.unread).length > 0;
+  /** Any chat listed (this window's project's) the user hasn't looked at
+   *  yet (drives the tab dot). Another project's shows where it's open:
+   *  this window's list hasn't got it to find. */
+  const hasAnyUnread = () => state.list.items.some((d) => state.unread[d.id]);
 
   /** Any chat with an agent run going on (drives the tab spinner). */
   const hasAnyRunning = () =>
@@ -505,7 +518,7 @@ export function createChatStore() {
         }
       })
     );
-    savePersistedUnread(state.unread);
+    void marks.set({ [dialogId]: null });
     return persist(() => chatApi.deleteDialog(dialogId));
   }
 

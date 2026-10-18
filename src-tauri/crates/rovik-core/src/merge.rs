@@ -5,8 +5,11 @@
 //! (git_sync.rs), approvals whose file changed while they waited
 //! (agent_run/execute.rs) and, later, chats' changes landing in the project.
 //!
-//! The merge is diff3-style with long markers; [`parse_merged`] turns the
-//! result into segments, the form ConflictResolver.tsx shows.
+//! The merge's markers are long, and written in one of two [`Style`]s:
+//! git's own for the conflicts the resolver shows ([`conflict_segments`]),
+//! diff3 where the lines before either change are shown too (a chat's
+//! markers, overlay/markers.rs). [`parse_merged`] turns either into
+//! segments, the form ConflictResolver.tsx shows.
 
 use git2::{MergeFileInput, MergeFileOptions};
 use serde::Serialize;
@@ -20,9 +23,27 @@ pub enum MergeSegment {
     },
     Conflict {
         ours: String,
+        /// The lines before either change: diff3's markers only. Empty in
+        /// git's style, the resolver's ([`conflict_segments`]).
         base: String,
         theirs: String,
     },
+}
+
+/// How a merge's conflicts are cut and written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// git's own (`merge.conflictStyle = merge`, its default): a conflict
+    /// as small as git makes it. Lines both sides share are left out of it,
+    /// at its ends and between two changes (unless 3 or fewer lie between
+    /// them: those stay in). Shows the two sides only: the conflicts git
+    /// writes in the file.
+    Git,
+    /// diff3: each conflict shows the lines before either change too. Those
+    /// can't be split where both sides share lines, so neither is the
+    /// conflict: it spans everything from the first line either side
+    /// changed to the last.
+    WithBase,
 }
 
 /// One conflicted file, as the conflict resolver (ConflictResolver.tsx)
@@ -79,7 +100,29 @@ pub struct RawMerge {
     pub automergeable: bool,
 }
 
+/// [`merge3_raw_as`] with the lines before either change in each conflict.
 pub fn merge3_raw(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<RawMerge, String> {
+    merge3_raw_as(base, ours, theirs, Style::WithBase)
+}
+
+/// The conflicts of merging `ours` and `theirs`, as the resolver shows them:
+/// cut as git cuts them ([`Style::Git`]), so they're the ones git wrote in
+/// the file. A conflict's `base` is empty.
+pub fn conflict_segments(
+    base: &[u8],
+    ours: &[u8],
+    theirs: &[u8],
+) -> Result<Vec<MergeSegment>, String> {
+    let raw = merge3_raw_as(base, ours, theirs, Style::Git)?;
+    Ok(parse_merged(&String::from_utf8_lossy(&raw.content)))
+}
+
+pub fn merge3_raw_as(
+    base: &[u8],
+    ours: &[u8],
+    theirs: &[u8],
+    style: Style,
+) -> Result<RawMerge, String> {
     // libgit2 must be initialised, which git2 does in its constructors but
     // not for a file merge: without a repository opened first, the merge
     // fails with "no error". Any constructor will do.
@@ -92,7 +135,11 @@ pub fn merge3_raw(base: &[u8], ours: &[u8], theirs: &[u8]) -> Result<RawMerge, S
     let mut c = MergeFileInput::new();
     c.content(theirs);
     let mut opts = MergeFileOptions::new();
-    opts.style_diff3(true).marker_size(MARKER as u16);
+    match style {
+        Style::Git => opts.style_standard(true),
+        Style::WithBase => opts.style_diff3(true),
+    };
+    opts.marker_size(MARKER as u16);
     let merged = git2::merge_file(&a, &b, &c, Some(&mut opts)).map_err(|e| e.to_string())?;
     Ok(RawMerge {
         content: merged.content().to_vec(),
@@ -106,7 +153,8 @@ fn is_marker(line: &str, ch: char, labelled: bool) -> bool {
     run == MARKER && (bare.len() == MARKER || (labelled && bare.as_bytes()[MARKER] == b' '))
 }
 
-/// Splits libgit2's diff3-style merge output (with MARKER-long markers) into segments.
+/// Splits libgit2's merge output (with MARKER-long markers, in either
+/// [`Style`]) into segments.
 pub fn parse_merged(text: &str) -> Vec<MergeSegment> {
     #[derive(PartialEq)]
     enum At {
@@ -339,6 +387,94 @@ mod tests {
         assert!(is_binary(b"a\0b"));
         assert!(is_binary(&[0xff, 0xfe, 0x41]));
         assert!(!is_binary("plain text, ünïcode\n".as_bytes()));
+    }
+
+    /// Common text, and conflicts as (ours, theirs).
+    fn cut(segments: &[MergeSegment]) -> Vec<Result<&str, (&str, &str)>> {
+        segments
+            .iter()
+            .map(|s| match s {
+                MergeSegment::Common { text } => Ok(text.as_str()),
+                MergeSegment::Conflict { ours, theirs, .. } => {
+                    Err((ours.as_str(), theirs.as_str()))
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_resolver_cuts_conflicts_as_git_does() {
+        // The same version bump on both sides, a different author on each:
+        // only the author's line conflicts (diff3 keeps the bump in it).
+        let base = "[package]\nversion = \"0.1.0\"\nauthors = [\"Ann\"]\n";
+        let ours = "[package]\nversion = \"0.2.0\"\nauthors = [\"Ann\", \"Bob\"]\n";
+        let theirs = "[package]\nversion = \"0.2.0\"\nauthors = [\"Ann\", \"Cid\"]\n";
+        let git = conflict_segments(base.as_bytes(), ours.as_bytes(), theirs.as_bytes()).unwrap();
+        assert_eq!(
+            cut(&git),
+            vec![
+                Ok("[package]\nversion = \"0.2.0\"\n"),
+                Err((
+                    "authors = [\"Ann\", \"Bob\"]\n",
+                    "authors = [\"Ann\", \"Cid\"]\n"
+                )),
+            ]
+        );
+        assert!(matches!(&git[1], MergeSegment::Conflict { base, .. } if base.is_empty()));
+        let Merged::Conflict(diff3) = merge3(base, ours, theirs).unwrap() else {
+            panic!("expected a conflict")
+        };
+        assert_eq!(
+            cut(&diff3)[1],
+            Err((
+                "version = \"0.2.0\"\nauthors = [\"Ann\", \"Bob\"]\n",
+                "version = \"0.2.0\"\nauthors = [\"Ann\", \"Cid\"]\n"
+            ))
+        );
+
+        // Both rewrote lines 2-9, the 4 in the middle alike: two conflicts
+        // with those lines between them, where diff3 has one of 8 lines.
+        let base = "f(\nb1\nb2\nb3\nb4\nb5\nb6\nb7\nb8\n)\n";
+        let ours = "f(\no1\no2\ns3\ns4\ns5\ns6\no7\no8\n)\n";
+        let theirs = "f(\nt1\nt2\ns3\ns4\ns5\ns6\nt7\nt8\n)\n";
+        let git = conflict_segments(base.as_bytes(), ours.as_bytes(), theirs.as_bytes()).unwrap();
+        assert_eq!(
+            cut(&git),
+            vec![
+                Ok("f(\n"),
+                Err(("o1\no2\n", "t1\nt2\n")),
+                Ok("s3\ns4\ns5\ns6\n"),
+                Err(("o7\no8\n", "t7\nt8\n")),
+                Ok(")\n"),
+            ]
+        );
+        let Merged::Conflict(diff3) = merge3(base, ours, theirs).unwrap() else {
+            panic!("expected a conflict")
+        };
+        assert_eq!(
+            diff3
+                .iter()
+                .filter(|s| matches!(s, MergeSegment::Conflict { .. }))
+                .count(),
+            1
+        );
+
+        // 3 shared lines or fewer between two changes stay in one conflict,
+        // as git keeps them.
+        let ours = "f(\no1\no2\ns3\ns4\ns5\no6\no7\no8\n)\n";
+        let theirs = "f(\nt1\nt2\ns3\ns4\ns5\nt6\nt7\nt8\n)\n";
+        let git = conflict_segments(base.as_bytes(), ours.as_bytes(), theirs.as_bytes()).unwrap();
+        assert_eq!(
+            cut(&git),
+            vec![
+                Ok("f(\n"),
+                Err((
+                    "o1\no2\ns3\ns4\ns5\no6\no7\no8\n",
+                    "t1\nt2\ns3\ns4\ns5\nt6\nt7\nt8\n"
+                )),
+                Ok(")\n"),
+            ]
+        );
     }
 
     #[test]

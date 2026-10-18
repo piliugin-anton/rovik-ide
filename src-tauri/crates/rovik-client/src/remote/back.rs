@@ -64,9 +64,16 @@ impl Remote {
             .ok_or_else(|| refused("This chat is on this computer already."))?;
         let client = self.ready(&host)?;
         let root = self.returnable(dialog_id).await?;
-        // Before its row, which a connection's settling then leaves alone.
-        if !self.lock().moving.insert(dialog_id.to_string()) {
-            return Err(refused(MOVING_BACK));
+        // Before its row, which a connection's settling then leaves alone,
+        // here or in another of Rovik's processes.
+        let hold = rovik_core::chat_hold::take(dialog_id)
+            .ok_or_else(|| refused(rovik_core::chat_hold::AT_WORK_ELSEWHERE))?;
+        {
+            let mut state = self.lock();
+            if state.moving.contains_key(dialog_id) {
+                return Err(refused(MOVING_BACK));
+            }
+            state.moving.insert(dialog_id.to_string(), hold);
         }
         let move_id = uuid::Uuid::new_v4().to_string();
         let (chat, from, id) = (dialog_id.to_string(), host.clone(), move_id);
@@ -387,8 +394,16 @@ impl Remote {
             self.delete_there(client, chat).await;
             return Ok(());
         }
-        if !self.lock().moving.insert(chat.to_string()) {
+        // Another of Rovik's processes settles it.
+        let Some(hold) = rovik_core::chat_hold::take(chat) else {
             return Ok(());
+        };
+        {
+            let mut state = self.lock();
+            if state.moving.contains_key(chat) {
+                return Ok(());
+            }
+            state.moving.insert(chat.to_string(), hold);
         }
         let settled = self.settle_cut_short(client, going).await;
         self.let_go(chat);

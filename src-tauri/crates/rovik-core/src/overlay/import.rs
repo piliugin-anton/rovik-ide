@@ -525,6 +525,10 @@ fn swap(
     if resolving(dialog_id) {
         return Err(ImportError::Resolving);
     }
+    // Open in another of Rovik's processes: that one imports it.
+    if chats::open_elsewhere(dialog_id) {
+        return Err(ImportError::Failed(chats::OPEN_ELSEWHERE.into()));
+    }
     chats::let_go(dialog_id);
     // The old store goes aside first: the chat is without one only between
     // two renames, not while a large one is deleted.

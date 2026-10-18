@@ -68,6 +68,7 @@ impl Remote {
 
     /// What changes the chat's files waits for its run's end, on its host.
     pub async fn check_idle(&self, dialog_id: &str) -> Result<(), String> {
+        self.check_here(dialog_id).await?;
         let status: AgentStatus = self
             .ask(dialog_id, Request::AgentStatus)
             .await
@@ -80,6 +81,19 @@ impl Remote {
 
     /// Throws the chat's changes away: its worktree on its host back at its
     /// landing base, and the result imported here.
+    /// Refused when the chat's project is open in another window: its
+    /// result lands there, and two windows landing into one project don't
+    /// take turns.
+    pub async fn check_here(&self, dialog_id: &str) -> Result<(), String> {
+        if self.handled_elsewhere(dialog_id).await {
+            return Err(
+                "This chat's project is open in another Rovik window: land or discard it there."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     pub async fn discard(&self, dialog_id: &str) -> Result<(), String> {
         let ask = Request::WorkDiscard {
             dialog_id: dialog_id.to_string(),
@@ -144,6 +158,7 @@ impl Remote {
         dialog_id: &str,
         files: Option<Vec<String>>,
     ) -> Result<UndoneMerge, String> {
+        self.check_here(dialog_id).await?;
         let ask = Request::WorkUndoMerge {
             dialog_id: dialog_id.to_string(),
             files,

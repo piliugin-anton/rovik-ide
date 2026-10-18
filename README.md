@@ -36,10 +36,18 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
 - Project-wide text search powered by ripgrep's engine.
+- Several windows, each with a project of its own: **New window** in the
+  project menu opens another, and `rovik-ide <folder>` opens a folder in a
+  window of its own. A project is open in one window at a time (a copy
+  sharing its chats too): opening it again brings that window to the front
+  (see [Several windows](#several-windows)).
 - A built-in terminal that uses your own shell, on this computer or on a
   connected [cloud host](#a-terminal-on-a-cloud-host).
-- A Git panel: commit, branches, stash, history, pull and push. Merge
-  conflicts are resolved in a side-by-side conflict resolver.
+- A Git panel: commit, branches, stash, history, pull and push, and a
+  rebase onto any local or remote branch, found by searching. Merge
+  conflicts are resolved in a side-by-side conflict resolver: the
+  conflicts git wrote in the file, each settled with one side, both,
+  lines ticked from either side, or an edit by hand.
 
 **AI agent**
 
@@ -488,6 +496,82 @@ website/                 the site at rovik-ide.dev, and the icon's drawing
 ---
 
 ## How some parts work
+
+### Several windows
+
+Each window is a Rovik process of its own, with a project of its own. All
+of them share one chats database, settings and data folder, but a chat's
+run, its Autopilot task and the files it has open live in the memory of the
+process that has its project: two windows on one project would change its
+chats unaware of each other. So a project is claimed by the window that
+opens it, with an OS lock on a file in `<data>/open-projects`, named after
+its folder and its project ID (copies sharing the chats share the ID). The
+lock goes with the window, a crash included. Opening a project another
+window has asks that window to come to the front instead, over a localhost
+connection that only takes the token it wrote next to its lock. A window
+with no folder open claims the chats without a project, so a second such
+window shows a note instead of them. A window that switches to another
+project while chats of the first are still at work (a run, an Autopilot
+task, a stage waiting out a rate limit) keeps the first claimed until they
+finish.
+
+What one process must not do to another's work is guarded the same way:
+
+- A chat at work holds a lock in `<data>/chats-at-work`. No other window
+  starts a run in it, resumes it, or marks its unanswered message failed.
+- An open overlay holds a lock in its store. Another window's startup
+  cleanup leaves it alone, and no other window opens it, imports results
+  into it or deletes it.
+- A landing being written holds a lock in its journal's folder, so another
+  window starting meanwhile doesn't "finish" it as interrupted.
+- Each database write takes the write lock as it begins (`BEGIN IMMEDIATE`)
+  and waits for the other window's commit, rather than failing halfway.
+  The marker that says the database is open is shared: the integrity check
+  and attachment cleanup run only in a window that starts alone.
+- What only one process can have gets a slot number per window (1, 2, …):
+  the virtual files' folder (`vfs`, `vfs-2`), the system ssh's forwarding
+  sockets, and the headless browser's profile under snap Chromium.
+- AI settings are saved onto the file as it is now: a window only changes
+  what it changed itself, so an older copy in another window never drops a
+  provider or a key saved meanwhile.
+- The heavy-build slots (Settings → Builds & checks) are the machine's: a
+  slot one window's build holds is taken in every window, by a lock in
+  `<data>/heavy-slots`, and a busy terminal counts in all of them too. The
+  number of slots set in one window applies in the others.
+- A window that crashed mid-reply leaves its chat's message unanswered, and
+  its own drafts are its own (each window's browser storage is): the window
+  that opens that project next marks the message failed and puts its text
+  back in the input, as the crashed window would have at its restart.
+- Every window opens where the last one was left; a window started while
+  others run steps down from there, so it doesn't hide the one it came from.
+- Every window connects to the cloud hosts, and a chat on a host is its
+  project's window's: that window imports and lands its results, pulls its
+  rows and shows its approvals and questions. Land, Undo and Discard of
+  such a chat are refused in another window. The chats of a project open
+  in no window are every window's, and a mirrored chat is pulled by one
+  window at a time.
+- Each window follows the hosts' settings file: a host another window
+  added, deployed again (a new token), changed or removed is connected
+  again or let go of here within seconds, and before a window sends a host
+  its configuration it reads the host's approval policy again, so an older
+  window doesn't send back the one the user just changed. The file is
+  changed by one window at a time.
+- A window open while a newer Rovik updated the chat database (an update
+  installed while it ran) stops writing to it: close it and open Rovik
+  again. rust-analyzer's old versions are cleaned up only while no other
+  window runs, as one may still run them.
+- What a window used to keep in its own browser storage, and so wrote back
+  whole over what other windows had saved, is shared in `<data>/shared`: a
+  file each for the projects' tabs, the editor settings, the reasoning
+  effort per model, rust-analyzer's choices and the chats' unread marks. A
+  save changes only the entries it changed, one window at a time, and a
+  window reads them again as it comes to the front. So a project closed
+  with its window opens with its tabs in another, and a setting changed in
+  one window isn't undone by another's. A window's unread dots are for its
+  own project's chats.
+- A lock is unlocked as it's let go, not only closed: a program another
+  thread starts at that moment shares the open file until its exec, which
+  kept a lock let go held meanwhile.
 
 ### Chat isolation
 

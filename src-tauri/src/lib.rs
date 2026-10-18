@@ -1,3 +1,4 @@
+use crate::instances::Instances;
 use crate::{filesystem::WatcherState, terminal::TerminalState};
 use rovik_client::hosts_page::HostsPage;
 use rovik_client::provider_keys::ProviderKeys;
@@ -13,10 +14,12 @@ mod filesystem;
 mod formatter;
 mod git;
 mod git_sync;
+mod instances;
 mod lsp;
 mod open_url;
 mod project_files;
 mod remote_chats;
+mod shared_state;
 mod terminal;
 mod typings;
 
@@ -29,14 +32,6 @@ pub fn run() {
     tauri::async_runtime::set(rt::handle().clone());
     init_log();
     tauri::Builder::default()
-        // Must be the first plugin: a second launch focuses this window
-        // instead of opening the chat database a second time.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }))
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(TerminalState::default())
         .manage(lsp::LspState::default())
@@ -50,6 +45,37 @@ pub fn run() {
         .setup(|app| {
             let config = app.path().app_config_dir()?;
             let data = app.path().app_data_dir()?;
+            // Rovik runs as several processes, a project open in one of
+            // them only (instances.rs): asked by another, this one's window
+            // comes to the front.
+            let window = app.handle().clone();
+            let instances = Instances::start(data.join("open-projects"), move || {
+                log::info!("instances: another window asked this one to come to the front");
+                if let Some(main) = window.get_webview_window("main") {
+                    let _ = main.unminimize();
+                    let _ = main.show();
+                    let _ = main.set_focus();
+                }
+            })?;
+            // A folder on the command line opens in this window, unless
+            // another one has it open: that one comes to the front, and
+            // this one ends before it has a window.
+            let folder = startup_folder();
+            if let Some(path) = &folder {
+                if instances.claim(Some(path), true, false).open_elsewhere {
+                    std::process::exit(0);
+                }
+            }
+            app.manage(instances);
+            app.manage(Startup {
+                folder,
+                new_window: std::env::args().any(|a| a == NEW_WINDOW),
+            });
+            // What only one process at a time can have (the virtual files'
+            // folder, ssh's sockets): each has its own, by its slot. And the
+            // chats each is at work on, which the others leave be.
+            rovik_core::os_lock::take_slot(&data.join("slots"));
+            rovik_core::chat_hold::init(data.join("chats-at-work"));
             // The providers' API keys, in the keychain or the encrypted
             // file in its place, out of ai-settings.json (H06).
             let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
@@ -80,8 +106,45 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
             ));
             app.manage(hosts.clone());
-            app.manage(core);
+            app.manage(core.clone());
             app.manage(remote.clone());
+            // A project is open in one window (instances.rs): its remote
+            // chats' results, rows and events are that window's.
+            let windows = app.handle().clone();
+            remote.on_open_elsewhere(Arc::new(move |project| {
+                windows
+                    .try_state::<Instances>()
+                    .is_some_and(|i| i.open_elsewhere(Some(project), None).is_some())
+            }));
+            // Another window may change the hosts' settings: their policies
+            // are read again before one goes to a host.
+            let page = Arc::downgrade(&hosts);
+            remote.on_refresh(Arc::new(move || {
+                if let Some(hosts) = page.upgrade() {
+                    hosts.follow_policies();
+                }
+            }));
+            // A project left for another while its chats were at work stays
+            // this window's until they're done (instances.rs).
+            let handle = app.handle().clone();
+            let following = hosts.clone();
+            rt::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    // The hosts another window added, deployed, changed or
+                    // removed: this window's connections follow.
+                    let hosts = following.clone();
+                    let _ = rt::spawn_blocking(move || hosts.follow()).await;
+                    let instances = handle.state::<Instances>();
+                    let mut still = Vec::new();
+                    for project in instances.left_at_work() {
+                        if at_work_in(&core, project.clone()).await {
+                            still.push(project);
+                        }
+                    }
+                    instances.let_go_done(|p| still.contains(p));
+                }
+            });
             // Off the main thread: connecting reads the hosts' tokens from
             // the keychain, which may take a moment or ask the user, and
             // the window comes first.
@@ -97,9 +160,10 @@ pub fn run() {
             // it refuses without this; WebView2 asks for permission. The
             // input's own menu reads text that way too. macOS allows it.
             if let Some(main) = app.config().app.windows.iter().find(|w| w.label == "main") {
-                tauri::WebviewWindowBuilder::from_config(app.handle(), main)?
+                let window = tauri::WebviewWindowBuilder::from_config(app.handle(), main)?
                     .enable_clipboard_access()
                     .build()?;
+                cascade(&window, rovik_core::os_lock::slot());
             }
             Ok(())
         })
@@ -130,8 +194,11 @@ pub fn run() {
             filesystem::dir_entry_count,
             filesystem::load_ai_settings,
             filesystem::save_ai_settings,
+            filesystem::ai_settings_stamp,
             commands::chat::chat_list_dialogs,
             commands::chat::chat_open_project,
+            commands::chat::chats_at_work_elsewhere,
+            commands::chat::chat_unsettled_sends,
             commands::chat::chat_read_plan,
             commands::chat::chat_answer_copy,
             commands::chat::chat_answer_moved,
@@ -184,6 +251,9 @@ pub fn run() {
             commands::chat::chat_get_model,
             filesystem::load_last_project,
             filesystem::save_last_project,
+            shared_state::shared_state_read,
+            shared_state::shared_state_start,
+            shared_state::shared_state_merge,
             filesystem::get_path_id,
             filesystem::create_file,
             filesystem::create_dir,
@@ -197,6 +267,11 @@ pub fn run() {
             git_sync::git_pull_config,
             git_sync::git_operation_continue,
             git_sync::git_operation_abort,
+            git_sync::git_rebase,
+            project_claim,
+            project_check,
+            startup_info,
+            new_window,
             git_sync::git_conflict_file,
             git_sync::git_conflict_resolve,
             git::git_commit,
@@ -312,8 +387,166 @@ pub fn run() {
                 if let Some(core) = app.try_state::<Core>() {
                     rt::block_on(core.shutdown());
                 }
+                // Only once the core is done with the project's chats.
+                if let Some(instances) = app.try_state::<Instances>() {
+                    instances.release();
+                }
             }
         });
+}
+
+/// Every window restores the one place saved (window-state): one started
+/// while others run (its slot, 2 for the second) steps down from it, as
+/// new windows do, instead of opening exactly over the window it came
+/// from, which looked as if that one's project had closed.
+fn cascade(window: &tauri::WebviewWindow, slot: usize) {
+    if slot <= 1 || window.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let (Ok(at), Ok(scale)) = (window.outer_position(), window.scale_factor()) else {
+        return;
+    };
+    let step = (32.0 * scale) as i32 * ((slot - 1) % 8) as i32;
+    let (mut x, mut y) = (at.x + step, at.y + step);
+    // Still on its screen: back to its corner otherwise.
+    if let (Ok(Some(screen)), Ok(size)) = (window.current_monitor(), window.outer_size()) {
+        let (origin, room) = (screen.position(), screen.size());
+        if x + size.width as i32 > origin.x + room.width as i32 {
+            x = origin.x + step / 2;
+        }
+        if y + size.height as i32 > origin.y + room.height as i32 {
+            y = origin.y + step / 2;
+        }
+    }
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// How this window was started: the folder given on the command line
+/// (`rovik-ide <folder>`), claimed, and whether it's another window
+/// started from one (`new_window`).
+struct Startup {
+    folder: Option<std::path::PathBuf>,
+    new_window: bool,
+}
+
+/// What `new_window` starts the other Rovik with: a window that starts
+/// without a project (the last one is open in this one).
+const NEW_WINDOW: &str = "--new-window";
+
+/// Whether this process is at work on a chat of the project `project`
+/// (None: of the chats without a project): a run, Autopilot's driver, a
+/// stage waiting out a rate limit (rovik_core::chat_hold).
+async fn at_work_in(core: &Core, project: Option<String>) -> bool {
+    let held = rovik_core::chat_hold::held_here();
+    if held.is_empty() {
+        return false;
+    }
+    core.db
+        .read(move |c| chat_db::projects::has_lead_chat(c, &held, project.as_deref()))
+        .await
+        .unwrap_or(false)
+}
+
+/// The first argument that's a folder: others (macOS's `-psn_…`, a
+/// WebDriver's flags) aren't for Rovik.
+fn startup_folder() -> Option<std::path::PathBuf> {
+    std::env::args_os()
+        .skip(1)
+        .filter(|a| !a.to_string_lossy().starts_with('-'))
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_dir())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupInfo {
+    /// The folder the command line asked this window to open, if any.
+    folder: Option<String>,
+    /// Started by another window's "New window": no project to restore.
+    new_window: bool,
+}
+
+#[tauri::command]
+fn startup_info(startup: tauri::State<'_, Startup>) -> StartupInfo {
+    StartupInfo {
+        folder: startup
+            .folder
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
+        new_window: startup.new_window,
+    }
+}
+
+/// Claims a project for this window before it opens (instances.rs; no
+/// `path`: the chats without a project): when another window has it, or a
+/// copy of it sharing its chats, it isn't opened here, and that window is
+/// asked to come to the front (`focus_other`). The project open here stays
+/// this window's while its chats are at work.
+#[tauri::command]
+async fn project_claim(
+    app: tauri::AppHandle,
+    core: tauri::State<'_, Core>,
+    path: Option<String>,
+    focus_other: bool,
+) -> Result<instances::Claim, String> {
+    let open = app.state::<Instances>().open_project();
+    let keep_open = match open {
+        Some(project) => at_work_in(&core, project).await,
+        None => false,
+    };
+    rt::spawn_blocking(move || {
+        let path = path.as_deref().map(std::path::Path::new);
+        app.state::<Instances>().claim(path, focus_other, keep_open)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Whether another window has a project open (instances.rs), without
+/// claiming it; that window is asked to come to the front (`focus_other`).
+#[tauri::command]
+async fn project_check(
+    app: tauri::AppHandle,
+    path: Option<String>,
+    focus_other: bool,
+) -> Result<instances::Claim, String> {
+    rt::spawn_blocking(move || {
+        let path = path.as_deref().map(std::path::Path::new);
+        app.state::<Instances>().check(path, focus_other)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Starts another Rovik: a window of its own, for a project of its own.
+#[tauri::command]
+fn new_window() -> Result<(), String> {
+    use std::process::Stdio;
+    // From an AppImage, the AppImage again, as the desktop starts it; this
+    // binary would need the AppImage's environment and folder.
+    let mut cmd = match std::env::var_os("APPIMAGE") {
+        Some(image) => process::command(image),
+        None => std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?),
+    };
+    cmd.arg(NEW_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Not ended with this one's terminal, if it was started from one.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Couldn't start another Rovik: {e}"))?;
+    // Reaped if it ends first; it doesn't end with this one.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// `chat-attachment://localhost/<sha256>`'s response: the attachment, or 404.

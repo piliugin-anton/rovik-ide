@@ -66,6 +66,14 @@ impl Remote {
         rovik_core::rt::spawn(async move {
             tokio::time::sleep(wait).await;
             let Some(remote) = me.upgrade() else { return };
+            // Another window's project: that window pulls it (into the
+            // database both have).
+            if remote.handled_elsewhere(&chat).await {
+                if let Some(pulls) = remote.lock().pulls.get_mut(&chat) {
+                    pulls.coming = false;
+                }
+                return;
+            }
             if remote.start_pulling(&chat, true) {
                 remote.keep_pulling(&host, &chat).await;
             }
@@ -193,8 +201,12 @@ impl Remote {
         again
     }
 
-    /// Pulls the chat's changes from its host, page after page.
+    /// Pulls the chat's changes from its host, page after page. One window
+    /// at a time: two pulling at once from the same revision could write
+    /// an older page over a newer one, and the mirror, at the newer
+    /// revision, would never ask for those rows again.
     async fn pull(&self, host: &str, chat: &str) -> Result<(), String> {
+        let _pulling = self.pull_lock(chat).await?;
         let id = chat.to_string();
         let mirrored = self.core.db.read(move |c| mirror::state(c, &id)).await?;
         let Some(mirrored) = mirrored.filter(|m| m.host == host) else {
@@ -233,6 +245,38 @@ impl Remote {
                 None => return Ok(()),
             }
         }
+    }
+
+    /// The chat's pull lock, shared with the other windows: once the one
+    /// pulling it now is done (at most a minute: then the pull fails, and
+    /// goes again with the next change or connection).
+    pub(super) async fn pull_lock(
+        &self,
+        chat: &str,
+    ) -> Result<Option<rovik_core::os_lock::Held>, String> {
+        let name: String = chat
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path = self.data_dir().join("pulling").join(format!("{name}.lock"));
+        for _ in 0..600 {
+            match rovik_core::os_lock::try_hold(&path) {
+                Ok(Some(lock)) => return Ok(Some(lock)),
+                Ok(None) => tokio::time::sleep(Duration::from_millis(100)).await,
+                // Unlockable: pulled as if alone.
+                Err(e) => {
+                    log::warn!("{}: {e}", path.display());
+                    return Ok(None);
+                }
+            }
+        }
+        Err("another window has been pulling it for a minute".into())
     }
 
     /// What a page brought, told to the frontend.

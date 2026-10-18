@@ -562,7 +562,15 @@ export interface GitPullConfig {
 }
 
 export interface GitPullOutcome {
-  result: 'up-to-date' | 'fast-forward' | 'merged' | 'rebased' | 'conflicts' | 'needs-strategy';
+  result:
+    | 'up-to-date'
+    | 'fast-forward'
+    | 'merged'
+    | 'rebased'
+    | 'conflicts'
+    | 'needs-strategy'
+    /** A rebase onto a branch would rewrite commits already pushed (git_rebase). */
+    | 'rewrites-pushed';
   conflicts: string[];
 }
 

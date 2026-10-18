@@ -13,11 +13,12 @@
 //! command turns heavy it takes a slot even if all are in use, and the chat
 //! work holding one is slowed down instead.
 //!
-//! The app runs as a single instance (tauri-plugin-single-instance), so the
-//! slots live in this process; no lock files are needed between windows.
+//! Each of Rovik's windows is a process with a queue of its own, and the
+//! machine is one: a slot held in one window counts in all (machine.rs).
 
 use super::classify::{classify, Class};
 use super::history;
+use super::machine;
 use super::tracker::{self, Sampling};
 use std::collections::HashMap;
 use std::path::Path;
@@ -128,6 +129,8 @@ pub(super) struct State {
     pub(super) machine: Machine,
     /// Tests set the machine; the sampler then leaves it alone.
     pub(super) fixed_machine: bool,
+    /// Slots other windows hold, as last looked (machine.rs).
+    pub(super) elsewhere: usize,
 }
 
 pub(super) struct Shared {
@@ -163,14 +166,15 @@ impl State {
         self.slot_cap.map_or(slots, |cap| slots.min(cap.max(1)))
     }
 
-    /// Free slots; negative when the terminal took one that was in use.
+    /// Free slots; negative when the terminal took one that was in use. The
+    /// other windows' count too.
     pub(super) fn available(&self) -> isize {
         let used = self
             .jobs
             .values()
             .filter(|j| j.has_slot || j.terminal_busy())
             .count();
-        self.capacity() as isize - used as isize
+        self.capacity() as isize - used as isize - self.elsewhere as isize
     }
 
     pub(super) fn priority(&self, id: u64) -> Priority {
@@ -214,10 +218,11 @@ impl State {
     fn memory_allows(&self, id: u64) -> bool {
         let need = self.jobs[&id].expected_peak;
         let free = self.machine.free_memory;
-        let others_heavy = self
-            .jobs
-            .iter()
-            .any(|(o, j)| *o != id && (j.has_slot || j.terminal_busy()));
+        let others_heavy = self.elsewhere > 0
+            || self
+                .jobs
+                .iter()
+                .any(|(o, j)| *o != id && (j.has_slot || j.terminal_busy()));
         need == 0 || free == 0 || !others_heavy || free >= need + MEMORY_SPARE
     }
 
@@ -246,6 +251,9 @@ impl State {
                 (_, true) => format!("this chat is running `{label}`"),
                 (_, false) => format!("another chat is running `{label}`"),
             };
+        }
+        if self.elsewhere > 0 {
+            return "another Rovik window is running a heavy command".to_string();
         }
         if !self.memory_allows(id) {
             return "not enough free memory".to_string();
@@ -367,7 +375,9 @@ pub struct Slots {
 }
 
 pub fn slots() -> Slots {
-    let state = lock();
+    let elsewhere = machine::held_elsewhere();
+    let mut state = lock();
+    state.elsewhere = elsewhere;
     if state.machine.cores > 0 {
         let m = &state.machine;
         let reading = (m.cores, m.total_memory, m.free_memory, m.untracked_load);
@@ -402,7 +412,8 @@ fn slots_with(
             .jobs
             .values()
             .filter(|j| j.has_slot || j.terminal_busy())
-            .count(),
+            .count()
+            + state.elsewhere,
         waiting: state.jobs.values().filter(|j| j.waiting.is_some()).count(),
         cores,
         total_memory,
@@ -419,6 +430,8 @@ impl Job {
         note: &dyn Fn(Option<String>),
     ) -> Option<Waited> {
         let started = Instant::now();
+        // The slots another window set meanwhile.
+        super::follow_settings();
         let mut state = lock();
         if state
             .jobs
@@ -436,6 +449,11 @@ impl Job {
         let mut last_note: Option<(String, u64)> = None;
         let mut reason = None;
         loop {
+            // The other windows' slots, looked at without the queue held.
+            drop(state);
+            let elsewhere = machine::held_elsewhere();
+            state = lock();
+            state.elsewhere = elsewhere;
             if !state.jobs.contains_key(&self.id) {
                 return Some(Waited::default());
             }
@@ -451,6 +469,8 @@ impl Job {
             if state.available() > 0
                 && state.first_in_line(self.id, seq)
                 && state.memory_allows(self.id)
+                // Another window may have taken it since it was looked at.
+                && machine::take(self.id, state.capacity())
             {
                 let job = state.jobs.get_mut(&self.id).unwrap();
                 job.waiting = None;
@@ -528,7 +548,7 @@ impl Job {
     /// one slot runs at a time.
     pub fn cpu_split_env(&self) -> Vec<(&'static str, String)> {
         let state = lock();
-        let holders = state.jobs.values().filter(|j| j.has_slot).count().max(1);
+        let holders = (state.jobs.values().filter(|j| j.has_slot).count() + state.elsewhere).max(1);
         if state.capacity() < 2 || holders < 2 {
             return Vec::new();
         }
@@ -547,6 +567,7 @@ impl Job {
 impl Drop for Job {
     fn drop(&mut self) {
         let finished = lock().jobs.remove(&self.id);
+        machine::release(self.id);
         SHARED.changed.notify_all();
         let Some(job) = finished else { return };
         // Undo a pause or lowered priority on whatever is still running.
@@ -585,6 +606,7 @@ pub(crate) fn test_reset(cores: usize, total_memory: u64, free_memory: u64) {
         untracked_load: 0.0,
     };
     s.fixed_machine = true;
+    s.elsewhere = 0;
 }
 
 #[cfg(test)]
@@ -614,5 +636,54 @@ mod tests {
         set_slot_cap(None);
         assert_eq!(lock().capacity(), 4);
         test_reset(BIG_CORES, BIG_MEMORY, BIG_MEMORY);
+    }
+
+    /// Another window (a process of its own) holds the only slot: a heavy
+    /// command here waits, saying why, and goes once that window lets go.
+    #[test]
+    fn a_slot_another_window_holds_counts_here() {
+        let _serial = test_support::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct Alone;
+        impl Drop for Alone {
+            fn drop(&mut self) {
+                machine::reset();
+            }
+        }
+        let _alone = Alone;
+        test_reset(4, 16 << 30, 8 << 30);
+        let dir = std::env::temp_dir().join(format!("heavy-slots-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        machine::init(dir.clone());
+        let mut other = machine::Slots::default();
+        other.set_dir(Some(dir));
+        assert!(other.take(99, 1), "the other window's build");
+
+        let job = begin(JobKind::Agent { owner: "a".into() }, "cargo build", None);
+        let notes = std::sync::Mutex::new(Vec::new());
+        let gave_up = std::sync::atomic::AtomicBool::new(false);
+        let waited = job.wait_for_slot(
+            &|| gave_up.load(std::sync::atomic::Ordering::Relaxed),
+            &|n| {
+                if let Some(n) = n {
+                    notes.lock().unwrap().push(n);
+                    gave_up.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+        );
+        assert!(waited.is_none(), "it waited while the other window built");
+        let notes = notes.into_inner().unwrap();
+        assert!(
+            notes[0].contains("another Rovik window is running a heavy command"),
+            "{notes:?}"
+        );
+
+        other.release(99);
+        assert!(job.wait_for_slot(&|| false, &|_| {}).is_some());
+        assert!(lock().jobs.values().any(|j| j.has_slot));
+        assert!(!other.take(98, 1), "now this window's");
+        drop(job);
+        assert!(other.take(98, 1), "free again once it's done");
     }
 }
