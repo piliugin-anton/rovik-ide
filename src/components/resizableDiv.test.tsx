@@ -1,7 +1,8 @@
 // The panel's full-window toggle: the floating button (criteria 1, 2 and 6),
-// the `100vw` width it puts on the inner panel (criterion 2), the instant
-// width while the divider is dragged (criterion 3) and the drag that does
-// nothing while expanded (criterion 4). Run with: npm test
+// shown when App says so (`showFloatingButton`: on the Chat tab), the `100vw`
+// width it puts on the inner panel (criterion 2), the instant width while
+// the divider is dragged (criterion 3) and the drag that does nothing while
+// expanded (criterion 4). Run with: npm test
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,7 +59,7 @@ test('criterion 1: the panel shows a floating button at its right edge, labelled
   const root = container();
   const dispose = render(
     () => (
-      <Resizable class="sidebar" maxWidth={480}>
+      <Resizable showFloatingButton class="sidebar" maxWidth={480}>
         <div class="panel-content">files</div>
       </Resizable>
     ),
@@ -81,11 +82,32 @@ test('criterion 1: the panel shows a floating button at its right edge, labelled
   }
 });
 
+test('criterion 1: the button shows only when App says so (the Chat tab)', () => {
+  const root = container();
+  const [shown, setShown] = createSignal(false);
+  const dispose = render(
+    () => (
+      <Resizable class="sidebar" showFloatingButton={shown()} maxWidth={480}>
+        <div class="panel-content">files</div>
+      </Resizable>
+    ),
+    root
+  );
+  try {
+    assert.equal(button(root), null, 'another tab: no button');
+    assert.ok(inner(root)!.querySelector('.panel-content'), 'the children are still rendered');
+    setShown(true);
+    assert.ok(button(root), 'the Chat tab: the button');
+  } finally {
+    dispose();
+  }
+});
+
 test('criterion 1: expanded, the button offers to collapse', () => {
   const root = container();
   const dispose = render(
     () => (
-      <Resizable class="sidebar" expanded={true}>
+      <Resizable showFloatingButton class="sidebar" expanded={true}>
         <div class="panel-content">files</div>
       </Resizable>
     ),
@@ -104,7 +126,11 @@ test('criterion 2: a click reports the expansion it asks for', () => {
   const reported: boolean[] = [];
   const dispose = render(
     () => (
-      <Resizable expanded={false} onExpandedChange={(value) => reported.push(value)}>
+      <Resizable
+        showFloatingButton
+        expanded={false}
+        onExpandedChange={(value) => reported.push(value)}
+      >
         <div class="panel-content">files</div>
       </Resizable>
     ),
@@ -124,7 +150,7 @@ test('criterion 2: expanded, the inner panel is 100vw wide and carries the expan
   const root = container();
   const dispose = render(
     () => (
-      <Resizable class="sidebar" expanded={true}>
+      <Resizable showFloatingButton class="sidebar" expanded={true}>
         <div class="panel-content">files</div>
       </Resizable>
     ),
@@ -142,7 +168,7 @@ test('criterion 2: collapsed, the inner panel keeps a pixel width and no expande
   const root = container();
   const dispose = render(
     () => (
-      <Resizable class="sidebar" expanded={false} maxWidth={480}>
+      <Resizable showFloatingButton class="sidebar" expanded={false} maxWidth={480}>
         <div class="panel-content">files</div>
       </Resizable>
     ),
@@ -160,7 +186,7 @@ test('criterion 3: a drag sets a pixel width and marks the panel as resizing mea
   const root = container();
   const dispose = render(
     () => (
-      <Resizable class="sidebar" maxWidth={800}>
+      <Resizable showFloatingButton class="sidebar" maxWidth={800}>
         <div class="panel-content">files</div>
       </Resizable>
     ),
@@ -190,7 +216,7 @@ test('criterion 4: a mousedown on the handle while expanded starts no drag', () 
   const root = container();
   const dispose = render(
     () => (
-      <Resizable class="sidebar" expanded={true} maxWidth={800}>
+      <Resizable showFloatingButton class="sidebar" expanded={true} maxWidth={800}>
         <div class="panel-content">files</div>
       </Resizable>
     ),
@@ -218,7 +244,12 @@ test('criterion 6: collapsing returns the panel to the width it had before expan
   const [expanded, setExpanded] = createSignal(false);
   const dispose = render(
     () => (
-      <Resizable expanded={expanded()} onExpandedChange={setExpanded} maxWidth={800}>
+      <Resizable
+        showFloatingButton
+        expanded={expanded()}
+        onExpandedChange={setExpanded}
+        maxWidth={800}
+      >
         <div class="panel-content">files</div>
       </Resizable>
     ),

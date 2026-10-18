@@ -1973,45 +1973,47 @@ export default function App() {
             ⚙
           </button>
         </div>
-        <Show when={!sidebarExpanded()}><div class="sidebar-tabs">
-          <button
-            classList={{ active: sidebarTab() === 'files' }}
-            onClick={() => setSidebarTab('files')}
-          >
-            Files
-          </button>
-          <button
-            classList={{ active: sidebarTab() === 'chat' }}
-            onClick={() => setSidebarTab('chat')}
-          >
-            AI Chat
-            <Show
-              when={chatStore.hasAnyRunning()}
-              fallback={
-                <Show when={chatStore.hasAnyUnread()}>
-                  <span
-                    class="sidebar-tab-dot"
-                    title="New messages from the agent"
-                    aria-label="New messages from the agent"
-                  />
-                </Show>
-              }
+        <Show when={!sidebarExpanded()}>
+          <div class="sidebar-tabs">
+            <button
+              classList={{ active: sidebarTab() === 'files' }}
+              onClick={() => setSidebarTab('files')}
             >
-              <span
-                class="sidebar-tab-spinner"
-                title="The agent is working"
-                aria-label="The agent is working"
-                role="status"
-              />
-            </Show>
-          </button>
-          <button
-            classList={{ active: sidebarTab() === 'git' }}
-            onClick={() => setSidebarTab('git')}
-          >
-            Git
-          </button>
-        </div></Show>
+              Files
+            </button>
+            <button
+              classList={{ active: sidebarTab() === 'chat' }}
+              onClick={() => setSidebarTab('chat')}
+            >
+              AI Chat
+              <Show
+                when={chatStore.hasAnyRunning()}
+                fallback={
+                  <Show when={chatStore.hasAnyUnread()}>
+                    <span
+                      class="sidebar-tab-dot"
+                      title="New messages from the agent"
+                      aria-label="New messages from the agent"
+                    />
+                  </Show>
+                }
+              >
+                <span
+                  class="sidebar-tab-spinner"
+                  title="The agent is working"
+                  aria-label="The agent is working"
+                  role="status"
+                />
+              </Show>
+            </button>
+            <button
+              classList={{ active: sidebarTab() === 'git' }}
+              onClick={() => setSidebarTab('git')}
+            >
+              Git
+            </button>
+          </div>
+        </Show>
 
         <Show when={sidebarTab() === 'files'}>
           <Show

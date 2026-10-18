@@ -9,7 +9,8 @@ interface ResizableProps {
   /** The panel fills the window; the right pane is hidden by `.sidebar-expanded`. */
   expanded?: boolean;
   onExpandedChange?: (expanded: boolean) => void;
-  showFloatingButton: boolean
+  /** Whether the floating expand toggle shows: App's to say (on the Chat tab). */
+  showFloatingButton: boolean;
 }
 
 // The left panel is chrome: tabs, pickers, rows, toolbars, chat messages.
@@ -122,26 +123,28 @@ export default function Resizable(props: ResizableProps) {
         {props.children}
 
         {/* Floating full-window toggle, at the panel's right edge */}
-        <Show when={props.showFloatingButton}> <button
-          type="button"
-          class="sidebar-expand-button"
-          classList={{ expanded: !!props.expanded }}
-          aria-pressed={!!props.expanded}
-          title={props.expanded ? 'Collapse panel' : 'Expand panel'}
-          aria-label={props.expanded ? 'Collapse panel' : 'Expand panel'}
-          onClick={() => props.onExpandedChange?.(!props.expanded)}
-        >
-          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-            <path
-              d={props.expanded ? 'M10 3 5 8l5 5' : 'M6 3l5 5-5 5'}
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button></Show>
+        <Show when={props.showFloatingButton}>
+          <button
+            type="button"
+            class="sidebar-expand-button"
+            classList={{ expanded: !!props.expanded }}
+            aria-pressed={!!props.expanded}
+            title={props.expanded ? 'Collapse panel' : 'Expand panel'}
+            aria-label={props.expanded ? 'Collapse panel' : 'Expand panel'}
+            onClick={() => props.onExpandedChange?.(!props.expanded)}
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path
+                d={props.expanded ? 'M10 3 5 8l5 5' : 'M6 3l5 5-5 5'}
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </Show>
       </div>
 
       {/* Resize Handle */}

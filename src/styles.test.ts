@@ -176,4 +176,9 @@ test('criterion 2: App owns the expanded state and marks its root with sidebar-e
   assert.match(app, /onExpandedChange=\{/, 'the panel can report the toggle back to App');
   const panel = readFileSync('src/components/ResizableDiv.tsx', 'utf8');
   assert.match(panel, /sidebar-expand-button/, 'the panel renders the floating button');
+  assert.match(
+    app,
+    /showFloatingButton=\{sidebarTab\(\) === 'chat'\}/,
+    'the floating button shows on the Chat tab only'
+  );
 });
