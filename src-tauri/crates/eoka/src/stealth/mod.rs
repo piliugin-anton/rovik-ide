@@ -1,0 +1,17 @@
+//! Stealth Layer
+//!
+//! All the anti-detection components:
+//! - Binary patcher (Aho-Corasick based)
+//! - JavaScript evasion scripts
+//! - Human-like interaction simulation
+//! - Fingerprint generation
+
+pub mod evasions;
+pub mod fingerprint;
+pub mod human;
+pub mod patcher;
+
+pub use evasions::{build_evasion_script, build_evasion_script_for};
+pub use fingerprint::{random_user_agent, Fingerprint, Platform};
+pub use human::{Human, HumanSpeed};
+pub use patcher::{find_chrome, ChromePatcher};

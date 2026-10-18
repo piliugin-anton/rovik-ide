@@ -1,0 +1,23 @@
+# Rust
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.png
+!examples/*.png
+
+# Internal docs
+PLAN.md
+
+# GitHub Actions local testing
+.act
