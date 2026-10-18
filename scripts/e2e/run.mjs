@@ -1104,6 +1104,41 @@ async function run() {
     });
   }
 
+  // On the chat tab the panel can take the whole window, and give it back.
+  // Folding back, the terminal widened from nothing; fitted on every frame,
+  // the shell was resized to 2 columns, then 14, 59… and redrew its prompt
+  // at each, which pushed its output away and left the prompt in pieces.
+  await step(
+    'sidebar: the chat over the whole window and back, the terminal keeps its text',
+    async () => {
+      await click('.terminal-toggle-button');
+      await waitFor(() => d.exists('.xterm-rows'), 'a terminal', 15_000);
+      await click('.xterm-screen');
+      await typeKeys(
+        'clear; for i in 1 2 3 4 5 6; do echo "e2e-fold $i: the quick brown fox jumps over the lazy dog"; done'
+      );
+      await keys(Keys.ENTER);
+      await waitFor(
+        async () => (await panelText('.xterm-rows')).includes('e2e-fold 6: the quick'),
+        'the lines'
+      );
+      await sleep(500);
+      const before = await panelText('.xterm-rows');
+      await sidebar('AI Chat');
+      await click('.sidebar-expand-button');
+      await waitFor(() => d.exists('.app.sidebar-expanded'), 'the chat over the whole window');
+      await sleep(500);
+      await click('.sidebar-expand-button');
+      await waitFor(async () => !(await d.exists('.app.sidebar-expanded')), 'the panel back');
+      // Its transition, then the terminal's settling.
+      await sleep(1000);
+      const after = await panelText('.xterm-rows');
+      assert(after === before, `the terminal's text changed:\n${after.trim()}`);
+      await sidebar('Files');
+      await click('.terminal-toggle-button');
+    }
+  );
+
   await step('git: changes listed, commit', async () => {
     await sidebar('Git');
     await waitFor(() => d.exists('.git-file-row'), 'changed files');
