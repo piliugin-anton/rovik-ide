@@ -1,5 +1,5 @@
 use super::*;
-use rovik_core::merge::MARKER;
+use rovik_core::merge::{parse_merged, MARKER};
 use std::fs;
 use std::path::PathBuf;
 
@@ -199,9 +199,10 @@ fn merge_conflict_resolve_and_continue() {
             MergeSegment::Common {
                 text: "one\n".into()
             },
+            // As git's markers in the file: the two sides only.
             MergeSegment::Conflict {
                 ours: "OURS\n".into(),
-                base: "two\n".into(),
+                base: String::new(),
                 theirs: "THEIRS\n".into()
             },
             MergeSegment::Common {

@@ -15,7 +15,7 @@ use git2::{
     build::CheckoutBuilder, BranchType, ErrorCode, Oid, RebaseOptions, Reference, Repository,
     RepositoryState, ResetType, Status, StatusOptions,
 };
-use rovik_core::merge::{is_binary, parse_merged, ConflictFile, MergeSegment};
+use rovik_core::merge::{is_binary, ConflictFile, MergeSegment};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 
@@ -705,8 +705,8 @@ pub fn git_conflict_file_blocking(path: String, file: String) -> Result<Conflict
     let segments = if binary {
         Vec::new()
     } else if let (Some(o), Some(t)) = (&ours, &theirs) {
-        let merged = rovik_core::merge::merge3_raw(base.as_deref().unwrap_or(&[]), o, t)?;
-        parse_merged(&String::from_utf8_lossy(&merged.content))
+        // Cut as git cut them: the conflicts its markers show in the file.
+        rovik_core::merge::conflict_segments(base.as_deref().unwrap_or(&[]), o, t)?
     } else {
         // One side deleted the file: it's all one conflict.
         vec![MergeSegment::Conflict {

@@ -2348,7 +2348,7 @@ fn conflict_file_of(path: &str, s: &Sides) -> crate::merge::ConflictFile {
     let segments = if binary {
         Vec::new()
     } else {
-        markers::segments(s.base.as_deref(), s.project.as_deref(), s.chat.as_deref())
+        markers::view(s.base.as_deref(), s.project.as_deref(), s.chat.as_deref())
     };
     crate::merge::ConflictFile {
         path: path.to_string(),
@@ -2500,7 +2500,12 @@ fn mark_one(dialog_id: &str, path: &str) -> Result<bool, String> {
     if file.binary || file.ours.is_none() || file.theirs.is_none() {
         return Ok(false);
     }
-    let text = markers::text(&file.segments);
+    // The chat's markers show the lines before either change too.
+    let text = markers::text(&markers::segments(
+        s.base.as_deref(),
+        s.project.as_deref(),
+        s.chat.as_deref(),
+    ));
     // The chat's own version is kept: Resolve… and Undo the merge use it.
     keep_versions(dialog_id, path, &s)?;
     with_fs(dialog_id, |fs| {
