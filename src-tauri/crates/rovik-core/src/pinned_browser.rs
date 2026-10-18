@@ -194,18 +194,35 @@ impl Drop for Downloading {
 /// `app_root()`, the bytes so far and the total told to `progress` as they
 /// come. Nothing is downloaded when it's there already. The other versions
 /// there go. A failure leaves nothing behind.
-pub async fn install_for_app(mut progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
-    // One install at a time: a second waits, then finds the first's.
-    static INSTALLING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _one = INSTALLING.lock().await;
-    let build = Build::here().ok_or_else(|| format!("{NAME} has no build for this system."))?;
+///
+/// One of Rovik's processes installs it at a time (a window each): another
+/// one's install waits for it, `progress` told (0, 0) meanwhile, and then
+/// finds it there.
+pub async fn install_for_app(progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
     let root = app_root().ok_or("There's no data folder to keep the browser in.")?;
+    install_in(root, progress).await
+}
+
+/// `install_for_app`, in `root`.
+async fn install_in(root: PathBuf, mut progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
+    let build = Build::here().ok_or_else(|| format!("{NAME} has no build for this system."))?;
     let executable = build.executable_in(&root);
     if executable.is_file() {
         let _ = prune(&root);
         return Ok(executable);
     }
     std::fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let lock = root.join(".install.lock");
+    if crate::os_lock::held_elsewhere(&lock) {
+        progress(0, 0);
+    }
+    let held = tokio::task::spawn_blocking(move || crate::os_lock::hold(&lock))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{}: {e}", root.join(".install.lock").display()))?;
+    if executable.is_file() {
+        return Ok(executable);
+    }
     // The tools use only this version: the others, and what an install
     // that was stopped left, make room for it.
     let _ = prune(&root);
@@ -233,6 +250,7 @@ pub async fn install_for_app(mut progress: impl FnMut(u64, u64)) -> Result<PathB
     }
     let _ = prune(&root);
     drop(status);
+    drop(held);
     Ok(executable)
 }
 
@@ -281,6 +299,40 @@ mod tests {
                  Google Chrome for Testing"
             )
         );
+    }
+
+    /// One window's install waits for another's, told (0, 0) meanwhile, and
+    /// then finds it there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_install_waits_for_another_windows_and_finds_it() {
+        let Some(build) = Build::here() else {
+            return;
+        };
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.join("browser");
+        std::fs::create_dir_all(&root).unwrap();
+        let other = crate::os_lock::hold(&root.join(".install.lock")).unwrap();
+        let told = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let heard = told.clone();
+        let install = tokio::spawn(install_in(root.clone(), move |got, of| {
+            heard.lock().unwrap().push((got, of));
+        }));
+        for _ in 0..100 {
+            if !told.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(*told.lock().unwrap(), [(0, 0)]);
+        assert!(!install.is_finished());
+
+        // The other window's install ends with the browser in place.
+        let executable = build.executable_in(&root);
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"").unwrap();
+        drop(other);
+        assert_eq!(install.await.unwrap(), Ok(executable));
+        assert_eq!(*told.lock().unwrap(), [(0, 0)]);
     }
 
     #[cfg(target_os = "linux")]

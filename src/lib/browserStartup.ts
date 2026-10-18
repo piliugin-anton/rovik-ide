@@ -42,8 +42,12 @@ export function needsDownload(status: BrowserStatus): boolean {
   return status.path === null && status.size !== null;
 }
 
-/** The notification while it downloads, then while it's unpacked. */
+/**
+ * The notification while another window downloads it (a total of 0), while
+ * this one does, then while it's unpacked.
+ */
 export function progressNote(downloaded: number, total: number): Partial<NotificationOptions> {
+  if (total === 0) return { progress: 'busy', message: 'Another Rovik window is downloading it…' };
   if (downloaded >= total) return { progress: 'busy', message: 'Unpacking…' };
   return {
     progress: downloaded / total,

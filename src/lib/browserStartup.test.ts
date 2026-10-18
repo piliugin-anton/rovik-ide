@@ -21,6 +21,10 @@ test('it’s downloaded when it’s missing and there’s a build for this syste
 });
 
 test('the notification shows how far the download is, then the unpacking', () => {
+  assert.deepEqual(progressNote(0, 0), {
+    progress: 'busy',
+    message: 'Another Rovik window is downloading it…',
+  });
   assert.deepEqual(progressNote(0, 200 * 1024 * 1024), {
     progress: 0,
     message: '0 bytes of 200 MB',

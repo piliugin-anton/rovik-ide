@@ -2542,9 +2542,11 @@ Tasks add notes here when reality differs from the plan.
     `pinned_browser::app_root()` names without Tauri, so a daemon on the
     same machine finds it too. `src/lib/browserStartup.ts` asks for it when
     the app starts (`browser_status`, `browser_install`) and shows the
-    progress as rust-analyzer's download does. Until it's ready, the tools
-    use an installed Chromium or Chrome, and with none, say it's still
-    being installed.
+    progress as rust-analyzer's download does. One of Rovik's processes
+    installs it at a time (`os_lock`, `.install.lock` beside the versions):
+    another window's waits, then finds it. Until it's ready, the tools use
+    an installed Chromium or Chrome, and with none, say it's still being
+    installed.
 - **U01, Settings → Cloud hosts.**
   - The page is `CloudHostsSettings`, a new `AiSettingsPage`, last in the
     menu. Unlike the other pages it saves as it goes, through `hosts_*`
