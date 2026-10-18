@@ -50,6 +50,16 @@ pub struct GitStatus {
     /// A merge / rebase in progress (conflicts to resolve, or to continue).
     #[serde(default)]
     pub operation: Option<crate::git_sync::GitOperation>,
+    /// The branch's upstream ("origin/feature"). None for a branch with no
+    /// remote branch yet (new, never pushed, or its remote branch gone),
+    /// and off a branch.
+    #[serde(default)]
+    pub upstream: Option<String>,
+    /// The remote the branch pushes to (`git push`'s): where publishing a
+    /// branch with no upstream makes it. None with no remote, and off a
+    /// branch.
+    #[serde(default)]
+    pub push_remote: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +323,23 @@ fn workdir_line_stats(repo: &Repository) -> std::collections::HashMap<String, (u
     merged
 }
 
+/// The checked-out branch's upstream ("origin/feature") and the remote
+/// its push goes to: (None, None) off a branch.
+fn branch_remotes(repo: &Repository) -> (Option<String>, Option<String>) {
+    let Ok(head) = repo.head() else {
+        return (None, None);
+    };
+    let Some(name) = head.is_branch().then(|| head.shorthand().ok()).flatten() else {
+        return (None, None);
+    };
+    let upstream = repo
+        .find_branch(name, BranchType::Local)
+        .ok()
+        .and_then(|b| b.upstream().ok())
+        .and_then(|u| u.name().ok().flatten().map(str::to_string));
+    (upstream, push_remote_name(repo, name).ok())
+}
+
 fn compute_ahead_behind(repo: &Repository) -> Option<(usize, usize)> {
     let head = repo.head().ok()?;
     if !head.is_branch() {
@@ -356,6 +383,7 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
     };
 
     let (ahead, behind) = compute_ahead_behind(&repo).unwrap_or((0, 0));
+    let (upstream, push_remote) = branch_remotes(&repo);
 
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
@@ -416,6 +444,8 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
             })
             .unwrap_or_default(),
         operation,
+        upstream,
+        push_remote,
     })
 }
 
@@ -3249,6 +3279,40 @@ mod branch_tests {
         git_checkout_blocking(p(&dir), "mine".into()).unwrap();
         assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
         assert_eq!(upstream_of(&repo, "mine").as_deref(), Some("origin/mine"));
+    }
+
+    /// A new branch has no remote branch until its first push, which makes
+    /// one and tracks it: the panel asks to publish it then (GitPanel.tsx).
+    #[test]
+    fn a_new_branch_has_no_upstream_until_its_first_push() {
+        let (dir, repo, remote) = repo_with_origin("publish");
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(status.push_remote.as_deref(), Some("origin"));
+
+        git_create_branch_blocking(p(&dir), "topic".into(), true, None).unwrap();
+        fs::write(dir.join("f.txt"), "topic\n").unwrap();
+        commit_all(&repo, "topic");
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!(status.branch, "topic");
+        assert_eq!(status.upstream, None);
+        assert_eq!(status.push_remote.as_deref(), Some("origin"));
+        assert_eq!(status.ahead, 0, "nothing to be ahead of");
+
+        assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!(status.upstream.as_deref(), Some("origin/topic"));
+        assert_eq!((status.ahead, status.behind), (0, 0));
+        let origin = Repository::open_bare(&remote).unwrap();
+        assert_eq!(
+            tip(&origin, "refs/heads/topic"),
+            tip(&repo, "refs/heads/topic")
+        );
+
+        // No remote: nowhere to publish it.
+        repo.remote_delete("origin").unwrap();
+        let status = git_status_blocking(p(&dir)).unwrap();
+        assert_eq!((status.upstream, status.push_remote), (None, None));
     }
 
     #[test]
