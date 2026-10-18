@@ -165,10 +165,9 @@ what Rovik's folders take.
 
 A dev server, or anything else the agent's commands open on a port, can be
 reached by every user of the server, and two people's agents can clash on
-one port. Until Rovik drives Chrome over a pipe, the browser tools open
-Chrome's DevTools on a `127.0.0.1` port that other users of the server
-could reach. Leave the browser tools off on servers you share with people
-you don't trust.
+one port. The browser tools open none: Rovik drives the agent's Chrome over
+a pipe that only that user's daemon holds, not a DevTools port, so other
+users of the server can't reach the browser, which runs as that user.
 
 ## Upgrades
 

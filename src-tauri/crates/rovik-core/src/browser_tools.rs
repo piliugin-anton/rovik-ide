@@ -6,6 +6,11 @@
 //! - Stealth browser (`StealthConfig::default`: evasions, patched binary,
 //!   human-like input), plus a Cloudflare-challenge solver that runs before
 //!   every read, so bot checks don't block the agent.
+//! - Driven over a pipe on Linux and macOS (`--remote-debugging-pipe`), not
+//!   a DevTools port. The port listens on 127.0.0.1 without a password, so
+//!   on a server others share, any of them could drive this browser, which
+//!   runs as the user (docs/design/cloud-agent-dev-plan.md, D18). Windows
+//!   keeps the port.
 //! - `browse_url` / `web_search` / `browser_screenshot` are read-only:
 //!   navigate, read, screenshot. A prompt-injected page must never be
 //!   followed.
@@ -180,6 +185,14 @@ impl BrowserState {
     }
 }
 
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+impl BrowserState {
+    /// The running Chrome's process id, if one is running.
+    async fn chrome_pid(&self) -> Option<u32> {
+        self.0.lock().await.live.as_ref()?.browser.process_id()
+    }
+}
+
 /// The Chrome or Chromium the browser tools start, if one is installed.
 pub fn chrome_path() -> Option<std::path::PathBuf> {
     eoka::stealth::find_chrome().ok()
@@ -196,16 +209,19 @@ async fn launch() -> Result<Live, String> {
         viewport_width: VIEWPORT.0,
         viewport_height: VIEWPORT.1,
         chrome_path: Some(chrome.to_string_lossy().into_owned()),
+        pipe: cfg!(unix),
         ..StealthConfig::default()
     };
 
-    // eoka puts its throwaway profile in /tmp and reads Chrome's DevTools
-    // port from a file inside it. Snap Chromium has a private /tmp, so that
-    // file would never appear. Use a profile inside the snap's own writable
-    // area instead, wiped on every launch so each session starts clean.
-    if let Some(profile) = snap_profile_dir(&chrome) {
-        let _ = std::fs::remove_dir_all(&profile);
-        config.user_data_dir = Some(profile.to_string_lossy().into_owned());
+    // eoka puts its throwaway profile, and the folder it gives Chrome as
+    // TMPDIR, under the host's /tmp. Snap Chromium has a private /tmp, where
+    // neither exists. Use folders inside the snap's own writable area
+    // instead; the profile is wiped on every launch so each session starts
+    // clean.
+    if let Some(snap) = snap_dirs(&chrome) {
+        let _ = std::fs::remove_dir_all(&snap.profile);
+        config.user_data_dir = Some(snap.profile.to_string_lossy().into_owned());
+        config.runtime_dir = Some(snap.runtime.to_string_lossy().into_owned());
     }
 
     let browser = Browser::launch_with_config(config)
@@ -219,23 +235,37 @@ async fn launch() -> Result<Live, String> {
     Ok(Live { browser, page })
 }
 
-/// `Some(profile dir)` when `chrome` is (or wraps) the Chromium snap.
-fn snap_profile_dir(chrome: &Path) -> Option<PathBuf> {
+/// The Chromium snap's folders for the browser: its profile, and the parent
+/// of eoka's per-launch folder (Chrome's TMPDIR).
+struct SnapDirs {
+    profile: PathBuf,
+    runtime: PathBuf,
+}
+
+/// `Some` when `chrome` is (or wraps) the Chromium snap.
+fn snap_dirs(chrome: &Path) -> Option<SnapDirs> {
     if !cfg!(target_os = "linux") || !is_snap_chromium(chrome) {
         return None;
     }
     let common = PathBuf::from(std::env::var_os("HOME")?).join("snap/chromium/common");
-    let dir = common.join("rovik-ide-browser");
+    let profile = common.join("rovik-ide-browser");
     // The folder's name before the app was renamed: moved over once, so the
     // browser keeps its cookies and logins.
     let legacy = common.join("tauri-ide-browser");
-    if !dir.exists() && legacy.is_dir() {
-        let _ = std::fs::rename(&legacy, &dir);
+    if !profile.exists() && legacy.is_dir() {
+        let _ = std::fs::rename(&legacy, &profile);
     }
-    Some(dir)
+    Some(SnapDirs {
+        profile,
+        runtime: common.join("rovik-ide-runtime"),
+    })
 }
 
 fn is_snap_chromium(chrome: &Path) -> bool {
+    // /snap/bin/chromium is a link to /usr/bin/snap: look before resolving.
+    if chrome.starts_with("/snap/") {
+        return true;
+    }
     let resolved = std::fs::canonicalize(chrome).unwrap_or_else(|_| chrome.to_path_buf());
     if resolved.starts_with("/snap/") {
         return true;
@@ -775,5 +805,179 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, "Stopped by the user.");
+    }
+
+    #[test]
+    fn the_chromium_snap_is_recognized_by_its_launcher_path() {
+        // /snap/bin/chromium resolves to /usr/bin/snap, an ELF file.
+        assert!(is_snap_chromium(Path::new("/snap/bin/chromium")));
+        assert!(!is_snap_chromium(Path::new("/opt/google/chrome/chrome")));
+    }
+
+    /// Against a real Chrome, on the systems where it runs over a pipe.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    mod real_chrome {
+        use super::*;
+
+        /// Serves `html` at `/` on 127.0.0.1, until the test ends.
+        async fn serve(html: &'static str) -> String {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/", listener.local_addr().unwrap());
+            tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let mut request = Vec::new();
+                        let mut buffer = [0; 4096];
+                        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            match socket.read(&mut buffer).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => request.extend_from_slice(&buffer[..n]),
+                            }
+                        }
+                        let (status, body) = if request.starts_with(b"GET / ") {
+                            ("200 OK", html)
+                        } else {
+                            ("404 Not Found", "")
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                    });
+                }
+            });
+            url
+        }
+
+        /// `pid` and every process descended from it.
+        fn process_tree(pid: u32) -> Vec<u32> {
+            let output = std::process::Command::new("ps")
+                .args(["-A", "-o", "pid=,ppid="])
+                .output()
+                .unwrap();
+            let mut children = std::collections::HashMap::<u32, Vec<u32>>::new();
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let mut fields = line.split_whitespace().map(str::parse::<u32>);
+                if let (Some(Ok(child)), Some(Ok(parent))) = (fields.next(), fields.next()) {
+                    children.entry(parent).or_default().push(child);
+                }
+            }
+            let mut tree = vec![pid];
+            let mut next = 0;
+            while next < tree.len() {
+                tree.extend(children.get(&tree[next]).into_iter().flatten().copied());
+                next += 1;
+            }
+            tree
+        }
+
+        /// The TCP sockets listening in `pids`.
+        #[cfg(target_os = "linux")]
+        fn listening_tcp_sockets(pids: &[u32]) -> Vec<String> {
+            let mut listening = std::collections::HashSet::new();
+            for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+                let Ok(table) = std::fs::read_to_string(table) else {
+                    continue;
+                };
+                for row in table.lines().skip(1) {
+                    let columns: Vec<&str> = row.split_whitespace().collect();
+                    // State 0A is LISTEN; column 9 is the socket's inode.
+                    if let (Some(&"0A"), Some(inode)) = (columns.get(3), columns.get(9)) {
+                        listening.insert(format!("socket:[{inode}]"));
+                    }
+                }
+            }
+            let mut found = Vec::new();
+            for pid in pids {
+                let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+                    continue;
+                };
+                for fd in fds.flatten() {
+                    let Ok(target) = std::fs::read_link(fd.path()) else {
+                        continue;
+                    };
+                    let target = target.to_string_lossy().into_owned();
+                    if listening.contains(&target) {
+                        found.push(format!("pid {pid}: {target}"));
+                    }
+                }
+            }
+            found
+        }
+
+        /// The TCP sockets listening in `pids`.
+        #[cfg(target_os = "macos")]
+        fn listening_tcp_sockets(pids: &[u32]) -> Vec<String> {
+            let pids: Vec<String> = pids.iter().map(u32::to_string).collect();
+            let output = std::process::Command::new("lsof")
+                .args(["-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-p", &pids.join(",")])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .skip(1)
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// The tools against a real Chrome, when one is installed: a page's
+        /// text, and a screenshot of it in the chat's attachments. Chrome runs
+        /// over a pipe, so it listens on no TCP port that another user of the
+        /// machine could connect to (D18).
+        #[test]
+        fn browse_url_and_browser_screenshot_drive_chrome_over_a_pipe() {
+            if chrome_path().is_none() {
+                eprintln!("no Chrome or Chromium here, skipping");
+                return;
+            }
+            crate::rt::block_on(async {
+                let url = serve(
+                    "<!doctype html><title>Rovik fixture</title>\
+                     <main><h1>Pipe</h1><p>Read over the DevTools pipe.</p></main>",
+                )
+                .await;
+                let dir = crate::testing::temp_dir();
+                let db = crate::chat_db::DbState::open(&dir.0).unwrap();
+                let state = BrowserState::default();
+
+                let page = browse_url(&state, url.clone(), None).await.unwrap();
+                assert_eq!(page.title, "Rovik fixture");
+                assert!(
+                    page.text.contains("Read over the DevTools pipe."),
+                    "{}",
+                    page.text
+                );
+
+                let shot = browser_screenshot_inner(&state, &db, None, None)
+                    .await
+                    .unwrap();
+                assert_eq!(shot.url, url);
+                let (mime, jpeg) =
+                    crate::chat_db::attachments::read(db.data_dir(), &shot.attachment_id).unwrap();
+                assert_eq!(mime, "image/jpeg");
+                assert!(jpeg.starts_with(&[0xFF, 0xD8, 0xFF]));
+
+                let webdriver = state
+                    .with_page(
+                        |page| async move {
+                            page.evaluate_sync::<bool>("navigator.webdriver")
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                assert!(!webdriver);
+
+                let pid = state.chrome_pid().await.expect("Chrome is running");
+                let listening = listening_tcp_sockets(&process_tree(pid));
+                assert!(listening.is_empty(), "Chrome listens on TCP: {listening:?}");
+                state.shutdown().await;
+            });
+        }
     }
 }

@@ -1336,6 +1336,7 @@ of a decision or a task.
 - **The eoka fork.** Until upstream takes the pipe transport, Rovik
   carries a fork, and updating eoka means bringing the change along. It
   touches only how Chrome is launched and the transport.
+  `src-tauri/crates/eoka/FORK.md` lists the changes.
 - **Known limits of v1:**
   - Chats without a project don't move.
   - Submodules and nested repositories aren't carried.
@@ -2470,12 +2471,46 @@ Tasks add notes here when reality differs from the plan.
     (`hosts_trust_build`), as it shows a new host key, and stops there.
     The page says to test the connection when a deployed host is
     offline. Signed releases (B02) let the check take any release build.
-- **H08 is skipped for now, as asked.** The agent's Chrome stays on eoka
-  0.5.14's DevTools port on `127.0.0.1`, so on a shared server other users
-  can reach the browser that runs as you (K52). `docs/cloud-hosts.md`
-  says so and suggests leaving the browser tools off on servers shared
-  with people you don't trust. D18 and H08 stand as the plan for when the
-  pipe transport is taken up again.
+- **H08, Chrome over a pipe.**
+  - The fork is eoka 0.7.2, the latest release, not 0.5.14: vendored as
+    published in one commit, then changed in the next, so the change reads
+    as a diff. `browser_tools.rs` builds against 0.7.2 unchanged. FORK.md
+    in the crate lists what differs and how to drop the fork.
+  - `StealthConfig::pipe` (default off, as upstream would want it) starts
+    Chrome with `--remote-debugging-pipe`, its fds 3 and 4 two pipes made
+    close-on-exec, raised above 4 before `dup2` so neither end can be its
+    own target. The transport takes either link (`transport/link.rs`):
+    messages are queued whole and written cancel-safe, as the WebSocket's
+    buffer does, and shutdown closes the pipe's write end without the
+    writer lock, so Chrome reads EOF and exits (0.3 s, checked) while a
+    writer waiting for room fails at once. Readiness is the first
+    `Browser.getVersion` reply; a Chrome that never answers is reported
+    with its exit status and the end of its stderr, and stopped.
+  - `browser_tools.rs` sets `pipe` on Unix. eoka 0.7 gives Chrome a
+    folder of its own under the host's `/tmp` as `TMPDIR`, which snap
+    Chromium's private `/tmp` doesn't have: for the snap, that folder's
+    parent is `~/snap/chromium/common/rovik-ide-runtime`, beside the
+    profile. eoka 0.7 resolved `/snap/bin/chromium` to `/usr/bin/snap`,
+    which doesn't start Chromium under that name: the fork keeps that path
+    as given. Rovik's own snap check missed it the same way, and looks at
+    the path first now.
+  - Tests: the transport's tests run over both links (`name::websocket`
+    and `name::pipe`), but for the WebSocket's own frames (pings, close
+    frames, protocol errors, the upgrade); `tests/pipe.rs` checks the fds
+    and arguments Chrome gets and the failure reports with a script in
+    Chrome's place, and, with Chrome (ignored by default), that its
+    processes listen on no TCP port while a port launch's do, that
+    `navigator.webdriver` is false without evasions, that what pages see
+    is the same over both links, that the pipe gets through a wrapper
+    script, and that tabs and screenshots work. Upstream's browser suite
+    passes here over the port (Xvfb, Chromium 141). `browser_tools.rs` has
+    the same no-port check through
+    `browse_url` and `browser_screenshot`, run where Chrome is installed.
+    Snap Chromium and macOS weren't available to check here.
+  - eoka 0.7 copies and patches Chrome into each launch's own folder, where
+    0.5.14 kept one patched copy: a launch takes about 2 s in a release
+    build (0.2 s unpatched), paid again after each idle shutdown. The pipe
+    adds nothing to it.
 - **U01, Settings → Cloud hosts.**
   - The page is `CloudHostsSettings`, a new `AiSettingsPage`, last in the
     menu. Unlike the other pages it saves as it goes, through `hosts_*`
