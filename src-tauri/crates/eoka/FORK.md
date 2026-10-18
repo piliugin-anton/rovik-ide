@@ -33,6 +33,11 @@ on Linux and macOS (`rovik-core/src/browser_tools.rs`).
 - `src/browser/launch.rs`: an explicit `/snap/bin/<app>` path is kept as
   given. Resolving it gives `/usr/bin/snap`, which starts the app only
   under the link's name.
+- `src/stealth/patcher.rs`: on macOS the patched copy is signed ad hoc
+  without Chrome's entitlements and hardened-runtime flags, as eoka did
+  before 0.7.0. Google Chrome's entitlements include restricted ones that
+  macOS honours only under Google's signature, so it killed the copy as it
+  started (SIGKILL, nothing on stderr).
 - `src/lib.rs`: the `pipe` field.
 - Tests: the transport tests run over both links; `tests/pipe.rs` checks
   a real Chrome over the pipe.

@@ -919,14 +919,15 @@ impl ChromePatcher {
 
         tracing::info!("Re-signing {:?} with ad-hoc signature...", sign_path);
 
+        // A plain ad-hoc signature, without the original's entitlements and
+        // hardened-runtime flags. Chrome's entitlements include restricted
+        // ones (its application identifier, keychain groups) that macOS
+        // honours only under Google's own signature: it kills an ad-hoc
+        // signed copy that claims them as it starts, with SIGKILL and nothing
+        // on stderr. Without the hardened runtime, the helpers' JIT needs no
+        // entitlement, and the mock keychain eoka asks for needs none either.
         let output = Command::new("/usr/bin/codesign")
-            .args([
-                "--sign",
-                "-",
-                "--force",
-                "--deep",
-                "--preserve-metadata=entitlements,flags,runtime",
-            ])
+            .args(["--sign", "-", "--force", "--deep"])
             .arg(sign_path)
             .output()?;
         if !output.status.success() {

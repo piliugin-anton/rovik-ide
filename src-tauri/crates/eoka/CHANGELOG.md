@@ -21,6 +21,11 @@ All notable changes to this project will be documented in this file.
 
 - An explicit `/snap/bin/<app>` path is kept as given: it links to the `snap`
   binary, which starts the app only under the link's name.
+- macOS: the patched copy of Chrome is signed ad hoc without the original's
+  entitlements and hardened-runtime flags, as before 0.7.0. Google Chrome's
+  entitlements include restricted ones that macOS honours only under Google's
+  signature, so it killed the re-signed copy as it started (SIGKILL, no
+  output).
 
 ## [0.7.2] - Unreleased
 
