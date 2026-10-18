@@ -668,16 +668,17 @@ fn lookup(
 ///
 /// Many formatters are wrappers: `prettier.cmd` runs node through cmd.exe
 /// on Windows, `mix`, `dart` and `ktlint` are shell scripts starting a VM.
-/// So the tool gets its own process group, a timeout kills the whole tree
-/// (command_tool::kill_tree), and it is only reaped once its output is
-/// done, so the group can't be a stranger's by then (shell_exited).
+/// So the tool gets its own process group (a job object on Windows), a
+/// timeout kills the whole tree (command_tool::ProcessTree), and it is only
+/// reaped once its output is done, so the group can't be a stranger's by
+/// then (shell_exited).
 fn run(
     mut cmd: Command,
     input: String,
     ok_codes: &[i32],
     timeout: Duration,
 ) -> Result<String, String> {
-    use rovik_core::command_tool::{kill_tree, shell_exited};
+    use rovik_core::command_tool::{shell_exited, ProcessTree};
 
     rovik_core::process::no_window(&mut cmd);
     cmd.stdin(Stdio::piped())
@@ -689,6 +690,7 @@ fn run(
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let tree = ProcessTree::of(&child);
 
     let mut stdin = child.stdin.take().expect("piped stdin");
     std::thread::spawn(move || {
@@ -723,7 +725,7 @@ fn run(
             break;
         }
         if start.elapsed() > timeout {
-            kill_tree(&mut child);
+            tree.kill(&mut child);
             let _ = child.wait();
             return Err(format!("timed out after {} s", timeout.as_secs()));
         }

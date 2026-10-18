@@ -199,24 +199,110 @@ fn drain<R: Read + Send + 'static>(mut reader: R, whole: bool) -> thread::JoinHa
     })
 }
 
-/// Kills the shell and everything it started. `Child::kill` alone only
-/// ends the shell, leaving e.g. a dev server it ran alive and holding the
-/// output pipes.
-#[cfg(unix)]
-pub fn kill_tree(child: &mut std::process::Child) {
-    // The shell leads its own group (`process_group(0)`); the group outlives
-    // it while any member is alive, so this works after it has exited too.
-    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
-        unsafe { libc::kill(-pid, libc::SIGKILL) };
+/// A started shell (or tool) and everything it starts, which a timeout or
+/// a Stop kills together: `Child::kill` alone only ends the shell, leaving
+/// e.g. a dev server it ran alive and holding the output pipes.
+///
+/// On Unix the shell leads its own process group (the caller spawned it
+/// with `process_group(0)`), which outlives it while any member is alive.
+/// On Windows it goes into a job object as it starts: what its members
+/// start is in the job too, even once their parent has exited, and the job
+/// ends them all at once. `taskkill /T` ended them one at a time, so a
+/// script whose child it ended first went on to its next command
+/// meanwhile (`cmd /c "slow & next"`), and it found nothing of a tree
+/// whose first process had exited. Where no job can be made, taskkill's
+/// tree it is.
+pub struct ProcessTree {
+    #[cfg(windows)]
+    job: Option<job_object::JobObject>,
+}
+
+impl ProcessTree {
+    /// The tree of `child`, just spawned: taken at once, before it has
+    /// had the time to start anything outside it.
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    pub fn of(child: &std::process::Child) -> ProcessTree {
+        ProcessTree {
+            #[cfg(windows)]
+            job: job_object::JobObject::of(child),
+        }
     }
-    let _ = child.kill();
+
+    /// Kills the shell and everything it started.
+    pub fn kill(&self, child: &mut std::process::Child) {
+        // The group outlives the shell while any member is alive, so this
+        // works after it has exited too.
+        #[cfg(unix)]
+        if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+            unsafe { libc::kill(-pid, libc::SIGKILL) };
+        }
+        #[cfg(windows)]
+        if !self.job.as_ref().is_some_and(job_object::JobObject::kill) {
+            let _ = crate::process::no_window(&mut Command::new("taskkill"))
+                .args(["/T", "/F", "/PID", &child.id().to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        let _ = child.kill();
+    }
+}
+
+/// A job object holding a started process, and so all it starts.
+#[cfg(windows)]
+mod job_object {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+    };
+
+    pub struct JobObject(HANDLE);
+
+    // A job's handle may be used, and closed, from any thread.
+    unsafe impl Send for JobObject {}
+    unsafe impl Sync for JobObject {}
+
+    impl JobObject {
+        /// A new job holding `child`; None where it can't be made or
+        /// `child` can't go in it (before Windows 8, with the app in a job
+        /// of its own already).
+        pub fn of(child: &std::process::Child) -> Option<JobObject> {
+            use std::os::windows::io::AsRawHandle;
+            // SAFETY: a new unnamed job, whose handle Drop closes once;
+            // the child's handle is open while `child` is.
+            unsafe {
+                let job = JobObject(CreateJobObjectW(None, PCWSTR::null()).ok()?);
+                AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())).ok()?;
+                Some(job)
+            }
+        }
+
+        /// Ends every process in the job: whether it could.
+        pub fn kill(&self) -> bool {
+            // SAFETY: the handle is open until Drop.
+            unsafe { TerminateJobObject(self.0, 1).is_ok() }
+        }
+    }
+
+    impl Drop for JobObject {
+        fn drop(&mut self) {
+            // Closing it ends nothing: a command's background process that
+            // outlives a normal end goes on, as on Unix.
+            // SAFETY: opened in `of`, closed only here.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
 }
 
 /// Whether the shell has exited, without reaping it. A reaped shell's pid
 /// can go to a new process once its group is empty (say, the only process
-/// still holding the pipes left the group with setsid), and `kill_tree`
-/// would then signal that stranger's group. The unreaped zombie keeps the
-/// pid, and so the group id, ours until `wait`.
+/// still holding the pipes left the group with setsid), and a kill of its
+/// tree would then signal that stranger's group. The unreaped zombie keeps
+/// the pid, and so the group id, ours until `wait`.
 #[cfg(target_os = "linux")]
 pub fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -230,17 +316,6 @@ pub fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
 #[cfg(not(target_os = "linux"))]
 pub fn shell_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
     child.try_wait().map(|s| s.is_some())
-}
-
-#[cfg(windows)]
-pub fn kill_tree(child: &mut std::process::Child) {
-    let _ = crate::process::no_window(&mut Command::new("taskkill"))
-        .args(["/T", "/F", "/PID", &child.id().to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let _ = child.kill();
 }
 
 fn run_blocking(
@@ -312,6 +387,7 @@ fn run_blocking(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to start the command: {e}"))?;
+    let tree = ProcessTree::of(&child);
     if let Some(job) = &job {
         job.spawned(child.id());
     }
@@ -339,12 +415,12 @@ fn run_blocking(
         let paused = job.as_ref().map(|j| j.paused()).unwrap_or_default();
         timed_out = !stopped && started.elapsed().saturating_sub(paused) >= timeout;
         if stopped || timed_out {
-            kill_tree(&mut child);
+            tree.kill(&mut child);
             break;
         }
         thread::sleep(Duration::from_millis(25));
     }
-    // Reaped only now, after any kill_tree: see shell_exited.
+    // Reaped only now, after any kill of its tree: see shell_exited.
     let status = child.wait().ok();
 
     // A process that left the group (setsid, a detached daemon) may still
