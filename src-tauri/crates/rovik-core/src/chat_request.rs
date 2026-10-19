@@ -867,8 +867,28 @@ fn find_sse_boundary(buffer: &[u8], from: usize) -> Option<(usize, usize)> {
  * ---------------------------------------------------------------------------
  */
 
+/// Where each attempt's HTTP client comes from.
+#[derive(Clone, Copy)]
+pub enum Clients<'a> {
+    /// The one the app's requests share (`net`), its connections kept for
+    /// the next request. An attempt that may have failed for its connection
+    /// replaces it: the next one connects afresh.
+    Shared,
+    /// This one, for every attempt.
+    Only(&'a Client),
+}
+
+impl Clients<'_> {
+    async fn get(self) -> Client {
+        match self {
+            Clients::Shared => crate::net::client().await,
+            Clients::Only(client) => client.clone(),
+        }
+    }
+}
+
 pub struct RequestSpec<'a> {
-    pub client: &'a Client,
+    pub client: Clients<'a>,
     pub url: &'a str,
     pub api_key: &'a str,
     pub body: &'a serde_json::Value,
@@ -942,6 +962,7 @@ impl Upload {
 
 async fn attempt(
     spec: &RequestSpec<'_>,
+    client: &Client,
     first_byte: Duration,
     cancel: &mut watch::Receiver<bool>,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
@@ -975,8 +996,7 @@ async fn attempt(
     };
 
     let (upload, body, length) = Upload::start(spec.body);
-    let request = spec
-        .client
+    let request = client
         .post(spec.url)
         .bearer_auth(spec.api_key)
         .headers(crate::opencode::headers(spec.url, spec.chat_id))
@@ -996,8 +1016,16 @@ async fn attempt(
         tokio::select! {
             _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
             r = &mut request => match r {
-                Err(e) => return Err(fail(
-                    ChatError::new(ErrorKind::Network, "Could not reach the provider.").with_details(e.to_string()), false)),
+                Err(e) => {
+                    let message = match crate::net::proxy_for_requests(spec.url) {
+                        Some(proxy) => format!("Could not reach the provider through {proxy}."),
+                        None => "Could not reach the provider.".to_string(),
+                    };
+                    return Err(fail(
+                        ChatError::new(ErrorKind::Network, message).with_details(crate::net::error_text(&e)),
+                        false,
+                    ));
+                }
                 Ok(r) => break r,
             },
             _ = tokio::time::sleep_until(wait_until.into()) => {
@@ -1236,13 +1264,24 @@ pub async fn run(
     let mut attempt_number = 1;
     let mut first_byte = spec.limits.first_byte;
     loop {
-        let failure = match attempt(spec, first_byte, cancel, emit).await {
+        let client = spec.client.get().await;
+        let failure = match attempt(spec, &client, first_byte, cancel, emit).await {
             Ok(()) => {
                 emit(ChatStreamEvent::Done);
                 return Ok(());
             }
             Err(f) => f,
         };
+        // A connection gone quiet or dropped may be the provider's or the
+        // network's, but it isn't one to send the next attempt on.
+        let connection_suspect = failure.silent
+            || matches!(
+                failure.error.kind,
+                ErrorKind::Stalled | ErrorKind::Timeout | ErrorKind::Network
+            );
+        if connection_suspect && matches!(spec.client, Clients::Shared) {
+            crate::net::refresh();
+        }
         // The provider may still be working through a long prompt (a cold
         // cache, a local server's prompt processing) and be further along
         // when asked again: give it longer.

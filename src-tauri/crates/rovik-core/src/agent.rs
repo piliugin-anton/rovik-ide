@@ -1,6 +1,5 @@
 use crate::chat_request::{responses, Api};
 use crate::core::Core;
-use reqwest::Client;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,7 +244,7 @@ fn apply_reasoning_level(
 /// Also returns what was learned, when reasoning fields were sent at all.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_with_reasoning(
-    client: &Client,
+    client: crate::chat_request::Clients<'_>,
     url: &str,
     api_key: &str,
     body: &serde_json::Value,
@@ -848,8 +847,6 @@ pub async fn run_chat(
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 
-    let client = Client::new();
-
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
     // Token estimates for this model: learned from what the provider reported
@@ -1248,7 +1245,7 @@ pub async fn run_chat(
     // field gets one retry without any of them, which counts as a rejection
     // only if that retry then works. Nothing has been shown at that point.
     let (result, support) = run_with_reasoning(
-        &client,
+        crate::chat_request::Clients::Shared,
         &url,
         &api_key,
         &body,
@@ -1931,22 +1928,27 @@ pub async fn list_models(
 ) -> Result<Vec<RemoteModel>, String> {
     let url = format!("{}/models", base_url.trim().trim_end_matches('/'));
 
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
-
+    // The chats' client: what this finds out about the connection (a proxy
+    // that refuses it, a server that answers) is what the chats will meet.
+    let client = crate::net::client().await;
     let mut req = client
         .get(&url)
+        .timeout(std::time::Duration::from_secs(15))
         .headers(crate::opencode::headers(&url, None));
     if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }
 
-    let res = req
-        .send()
-        .await
-        .map_err(|e| format!("Could not reach {url}: {e}"))?;
+    let res = req.send().await.map_err(|e| {
+        crate::net::refresh();
+        let through = crate::net::proxy_for_requests(&url)
+            .map(|proxy| format!(" through {proxy}"))
+            .unwrap_or_default();
+        format!(
+            "Could not reach {url}{through}: {}",
+            crate::net::error_text(&e)
+        )
+    })?;
     let status = res.status();
     let body = res.text().await.map_err(|e| e.to_string())?;
 
@@ -2078,6 +2080,7 @@ mod tests {
 #[cfg(test)]
 mod reasoning_tests {
     use super::*;
+    use reqwest::Client;
 
     #[test]
     fn effort_in_each_format() {
@@ -2229,7 +2232,7 @@ mod reasoning_tests {
         };
         let mut events = Vec::new();
         let (result, learned) = run_with_reasoning(
-            &client,
+            crate::chat_request::Clients::Only(&client),
             url,
             "k",
             &body,
@@ -2599,7 +2602,7 @@ mod reasoning_tests {
         std::mem::forget(tx);
         let mut routes = Vec::new();
         let (result, _) = run_with_reasoning(
-            &client,
+            crate::chat_request::Clients::Only(&client),
             url,
             "k",
             &body,

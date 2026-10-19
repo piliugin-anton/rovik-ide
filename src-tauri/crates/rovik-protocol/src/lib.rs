@@ -18,6 +18,7 @@ pub mod diff;
 pub mod events;
 mod frame;
 pub mod host;
+pub mod network;
 pub mod packs;
 pub mod permissions;
 pub mod plan;

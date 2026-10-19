@@ -68,6 +68,8 @@ async fn stopped_wait(stopped: &mut tokio::sync::watch::Receiver<bool>) {
 struct Live {
     browser: Browser,
     page: Page,
+    /// The proxy it was started with (Settings → Network).
+    proxy: Option<crate::net::BrowserProxy>,
 }
 
 #[derive(Default)]
@@ -107,8 +109,15 @@ impl BrowserState {
         let run = async {
             let mut inner = self.0.lock().await;
 
+            // Started again on a proxy set since.
+            let proxy = crate::net::browser_proxy().await;
+            if inner.live.as_ref().is_some_and(|live| live.proxy != proxy) {
+                if let Some(old) = inner.live.take() {
+                    let _ = old.browser.close().await;
+                }
+            }
             if inner.live.is_none() {
-                inner.live = Some(launch().await?);
+                inner.live = Some(launch(proxy).await?);
                 self.spawn_idle_watcher();
             }
             inner.last_used = Some(Instant::now());
@@ -242,14 +251,20 @@ fn no_browser() -> String {
 }
 
 /// How the tools start the browser at `chrome`: headless, and on Unix over
-/// a pipe, with no DevTools port (D18).
-fn launch_config(chrome: &Path) -> StealthConfig {
+/// a pipe, with no DevTools port (D18). Through `proxy` when Settings →
+/// Network gives the browser one (eoka signs in to it), or directly with
+/// `direct://`; without, Chrome's own settings, which follow the system's
+/// proxy.
+fn launch_config(chrome: &Path, proxy: Option<&crate::net::BrowserProxy>) -> StealthConfig {
     let mut config = StealthConfig {
         headless: true,
         viewport_width: VIEWPORT.0,
         viewport_height: VIEWPORT.1,
         chrome_path: Some(chrome.to_string_lossy().into_owned()),
         pipe: cfg!(unix),
+        proxy: proxy.map(|p| p.server.clone()),
+        proxy_username: proxy.and_then(|p| p.username.clone()),
+        proxy_password: proxy.and_then(|p| p.password.as_ref().map(|secret| secret.0.clone())),
         ..StealthConfig::default()
     };
     // eoka puts its throwaway profile, and the folder it gives Chrome as
@@ -263,9 +278,9 @@ fn launch_config(chrome: &Path) -> StealthConfig {
     config
 }
 
-async fn launch() -> Result<Live, String> {
+async fn launch(proxy: Option<crate::net::BrowserProxy>) -> Result<Live, String> {
     let chrome = chrome_path().ok_or_else(no_browser)?;
-    let config = launch_config(&chrome);
+    let config = launch_config(&chrome, proxy.as_ref());
     // The snap's profile is wiped on every launch so each session starts
     // clean.
     if let Some(profile) = &config.user_data_dir {
@@ -302,7 +317,11 @@ async fn launch() -> Result<Live, String> {
         }
     }
 
-    Ok(Live { browser, page })
+    Ok(Live {
+        browser,
+        page,
+        proxy,
+    })
 }
 
 /// The TCP ports process `pid` and those descended from it listen on, from
@@ -963,10 +982,43 @@ mod tests {
         assert_eq!(err, "Stopped by the user.");
     }
 
+    /// Settings → Network's proxy for the browser, which eoka signs in to;
+    /// no proxy, `direct://`; none, Chrome's own settings.
+    #[test]
+    fn chrome_is_given_the_proxy_it_was_set() {
+        let chrome = Path::new("/opt/rovik/browser/155.0.8059.39/chrome");
+        let proxy = crate::net::BrowserProxy {
+            server: "http://proxy.example.com:3128".into(),
+            username: Some("alice".into()),
+            password: Some(rovik_protocol::Secret("pw".into())),
+        };
+        let config = launch_config(chrome, Some(&proxy));
+        assert_eq!(
+            config.proxy.as_deref(),
+            Some("http://proxy.example.com:3128")
+        );
+        assert_eq!(config.proxy_username.as_deref(), Some("alice"));
+        assert_eq!(config.proxy_password.as_deref(), Some("pw"));
+        let config = launch_config(chrome, Some(&crate::net::BrowserProxy::direct()));
+        assert_eq!(
+            (
+                config.proxy.as_deref(),
+                config.proxy_username,
+                config.proxy_password
+            ),
+            (Some("direct://"), None, None)
+        );
+        let config = launch_config(chrome, None);
+        assert_eq!(
+            (config.proxy, config.proxy_username, config.proxy_password),
+            (None, None, None)
+        );
+    }
+
     #[test]
     fn chrome_is_started_headless_over_a_pipe_with_no_port() {
         let chrome = Path::new("/opt/rovik/browser/155.0.8059.39/chrome");
-        let config = launch_config(chrome);
+        let config = launch_config(chrome, None);
         assert_eq!(config.chrome_path.as_deref(), chrome.to_str());
         assert!(config.headless);
         assert_eq!(config.pipe, cfg!(unix));
@@ -1146,7 +1198,7 @@ mod tests {
             .unwrap();
             let profile = dir.0.join("profile");
             crate::rt::block_on(async {
-                let mut config = launch_config(&wrapper);
+                let mut config = launch_config(&wrapper, None);
                 config.user_data_dir = Some(profile.to_string_lossy().into_owned());
                 let browser = Browser::launch_with_config(config).await.unwrap();
                 let pid = browser.process_id().unwrap();

@@ -9269,6 +9269,101 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg-dim);
 }
 
+/* Settings → Network (NetworkSettings.tsx) */
+
+.network-settings .settings-section .setting-explain,
+.network-settings .settings-status {
+  margin-left: 0;
+}
+
+/* A saved proxy is a row; the editor takes its place, or the add button's. */
+.network-proxy-form {
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.network-proxy-kind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.network-proxy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.network-proxy-row > label {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.network-proxy-row > .network-proxy-port {
+  flex: 0 0 96px;
+}
+
+.network-proxy-form .settings-hint {
+  margin: 0;
+}
+
+.network-forget {
+  align-self: flex-start;
+  font-size: 12px;
+}
+
+.network-proxy .profile-row-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.network-settings .settings-section .network-system-line {
+  margin: 8px 0 0;
+}
+
+/* Where connections go: a group per place, a "kind  [menu]" line per kind
+   of connection, the menu under its kind where the page is narrow. */
+.network-route-group + .network-route-group {
+  margin-top: 10px;
+}
+
+.network-route-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.network-route {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.network-route-label {
+  flex: 1 1 170px;
+  min-width: 0;
+}
+
+.network-route .settings-select {
+  flex: 1 1 200px;
+  width: auto;
+  min-width: 0;
+  max-width: 260px;
+}
+
+.network-settings .settings-section .network-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+
 /* Settings → Cloud hosts (CloudHostsSettings.tsx) */
 
 .cloud-hosts-settings .setting-checkbox,

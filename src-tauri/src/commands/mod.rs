@@ -16,6 +16,7 @@ pub mod browser;
 pub mod chat;
 pub mod clm;
 pub mod hosts;
+pub mod network;
 pub mod overlay;
 pub mod project;
 pub mod tools;

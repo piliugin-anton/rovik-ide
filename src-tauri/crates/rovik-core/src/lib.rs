@@ -19,6 +19,7 @@ mod dispatch;
 mod edit_file;
 pub mod file_guard;
 pub mod merge;
+pub mod net;
 mod opencode;
 pub mod os_lock;
 pub mod outline;

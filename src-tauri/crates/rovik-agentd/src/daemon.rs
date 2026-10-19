@@ -110,12 +110,19 @@ impl Daemon {
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
             Request::AgentStart(start) => self.start(computer, *start).await,
-            // Only this computer's configuration changes (D16).
-            Request::AgentConfigure(config) => self
-                .store
-                .configure(computer, config)
-                .map(|()| Response::Done)
-                .map_err(|e| Fail::new(FailCode::Internal, e)),
+            // Only this computer's configuration changes (D16). How this
+            // server connects (Settings → Network's cloud hosts' rows) is
+            // the process's: the last computer to say has it.
+            Request::AgentConfigure(config) => {
+                let network = config.network.clone();
+                self.store
+                    .configure(computer, config)
+                    .map(|()| {
+                        rovik_core::net::set_host_network(network);
+                        Response::Done
+                    })
+                    .map_err(|e| Fail::new(FailCode::Internal, e))
+            }
             Request::AutonomyConfigure(config) => self
                 .store
                 .set_autonomy(computer, config)

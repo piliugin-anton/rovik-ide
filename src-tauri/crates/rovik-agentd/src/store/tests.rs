@@ -235,6 +235,42 @@ fn the_store_reads_back_what_it_kept() {
     );
 }
 
+/// How a computer has this server connect (Settings → Network) is kept
+/// with its configuration, the proxies' passwords in memory only: never in
+/// state.json.
+#[test]
+fn the_proxies_passwords_stay_out_of_state_json() {
+    use rovik_protocol::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut configured = config("", "");
+    let egress = |password: &str| {
+        ProxyRoute::Proxy(ProxyEndpoint {
+            kind: ProxyKind::Http,
+            host: "egress.example.com".into(),
+            port: 3128,
+            username: Some("alice".into()),
+            password: Some(rovik_protocol::Secret(password.into())),
+        })
+    };
+    configured.network = Some(HostNetwork {
+        timeout_secs: Some(45),
+        models: Some(egress("models-pw")),
+        browser: Some(egress("browser-pw")),
+    });
+    store.configure("laptop", configured.clone()).unwrap();
+    store
+        .started("laptop", &start("chat", "sk-chat", None))
+        .unwrap();
+    let file = fs::read_to_string(dir.0.join("state.json")).unwrap();
+    assert!(file.contains("egress.example.com"), "{file}");
+    assert!(file.contains("alice"), "{file}");
+    assert!(!file.contains("models-pw"), "{file}");
+    assert!(!file.contains("browser-pw"), "{file}");
+    let kept = store.config_of("chat").unwrap();
+    assert_eq!(kept.network, configured.network, "in memory, whole");
+}
+
 /// H02: what a computer has the server keep for its runs that go on
 /// without it is its chats', read back after a restart; the default
 /// forgets it, and state.json, private, holds the notify URL whole.

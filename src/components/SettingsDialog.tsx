@@ -6,7 +6,7 @@
 // (lib/editorSettings.ts); the AI settings (providers, permissions,
 // subagents, Autopilot) through lib/aiSettingsStore.ts, which saves them
 // at once and tells the chat panel; the rest (project checks, heavy
-// commands, virtual files, cloud hosts) by the backend. There's nothing to
+// commands, virtual files, network, cloud hosts) by the backend. There's nothing to
 // save on close. Sub-pages keep a Back bar pinned under the header,
 // outside the scrolling body.
 import { createSignal, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
@@ -36,6 +36,7 @@ import AutopilotSettings from './AutopilotSettings';
 import ProjectChecksSettings from './ProjectChecksSettings';
 import HeavyCommandsSettings from './HeavyCommandsSettings';
 import VirtualFilesSettings from './VirtualFilesSettings';
+import NetworkSettings from './NetworkSettings';
 import CloudHostsSettings, { type HostsSettingsController } from './CloudHostsSettings';
 
 /** The pages that edit the AI settings: shown once those are read. */
@@ -214,6 +215,9 @@ export default function SettingsDialog(props: SettingsDialogProps) {
             </Match>
             <Match when={page() === 'vfs'}>
               <VirtualFilesSettings />
+            </Match>
+            <Match when={page() === 'network'}>
+              <NetworkSettings />
             </Match>
             <Match when={page() === 'hosts'}>
               <CloudHostsSettings controller={setHostsApi} />

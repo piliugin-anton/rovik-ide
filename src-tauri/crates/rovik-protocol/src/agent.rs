@@ -5,6 +5,7 @@
 use crate::autopilot::AutopilotConfig;
 use crate::diff::Hunk;
 use crate::events::{ApprovalRequest, QuestionsRequest};
+use crate::network::HostNetwork;
 use crate::permissions::Permissions;
 use crate::subagents::{ModelChoice, SubagentConfig};
 use serde::{Deserialize, Serialize};
@@ -105,6 +106,11 @@ pub struct AgentConfig {
     pub subagents: SubagentConfig,
     /// How Autopilot's tasks run: read only by chats in Autopilot.
     pub autopilot: AutopilotConfig,
+    /// How a host connects for this computer's chats (Settings → Network,
+    /// "Cloud hosts"). The app sets it for its hosts, the frontend never
+    /// does; a host keeps the proxies' passwords in memory only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<HostNetwork>,
 }
 
 impl AgentConfig {

@@ -19,6 +19,7 @@ use rovik_core::chat_db::store::{self, NewChildDialog, NewMessage};
 use rovik_core::chat_db::{api, attachments, moves};
 use rovik_core::{project_profile, Core};
 use rovik_protocol::autopilot::{AutonomyConfig, AutonomySettings, DeliveryTest};
+use rovik_protocol::network::HostNetwork;
 use rovik_protocol::packs::{self, Pushed};
 use rovik_protocol::permissions::Approver;
 use rovik_protocol::work::{ChatResult, ChatSync};
@@ -905,17 +906,20 @@ impl Remote {
     /// policy.
     pub async fn everywhere(&self, request: Request) -> Result<Response, Fail> {
         let reply = rovik_core::dispatch(&self.core, request.clone()).await?;
+        let mut network = None;
         if matches!(request, Request::AgentConfigure(_)) {
             self.lock().configured = true;
             // As the settings file has them: another window's change of a
             // host's policy isn't sent back as it was.
             self.refresh_policies();
+            network = host_network().await;
         }
         let sent = self.hosts.ready().into_iter().map(|(host, client)| {
             let mut request = request.clone();
             if let Request::AgentConfigure(config) = &mut request {
                 *config = config.without_keys();
                 self.apply_policy(&host, config);
+                config.network = network.clone();
             }
             async move {
                 if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
@@ -925,6 +929,30 @@ impl Remote {
         });
         futures_util::future::join_all(sent).await;
         Ok(reply)
+    }
+
+    /// Settings → Network changed how cloud hosts connect (their rows, the
+    /// timeout, a proxy or its password they go through): each ready host
+    /// is sent the configuration again, with it. Before the frontend
+    /// applied its settings nothing goes, as on connecting.
+    pub async fn send_host_network(&self) {
+        if !self.lock().configured {
+            return;
+        }
+        self.refresh_policies();
+        let network = host_network().await;
+        let sent = self.hosts.ready().into_iter().map(|(host, client)| {
+            let mut config = self.core.agents.config().without_keys();
+            self.apply_policy(&host, &mut config);
+            config.network = network.clone();
+            async move {
+                let request = Request::AgentConfigure(config);
+                if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
+                    log::warn!("{host} didn't take how to connect: {fail}");
+                }
+            }
+        });
+        futures_util::future::join_all(sent).await;
     }
 
     /// On connecting (§2.3: "on connect and on every change"): the
@@ -948,6 +976,7 @@ impl Remote {
         if self.lock().configured {
             let mut config = self.core.agents.config().without_keys();
             self.apply_policy(host, &mut config);
+            config.network = host_network().await;
             let sent = client.call_within(Request::AgentConfigure(config), HOSTS_WAIT);
             if let Err(fail) = sent.await {
                 log::warn!("{host} didn't take the configuration: {fail}");
@@ -1383,6 +1412,12 @@ fn mark_remote(mut request: ApprovalRequest) -> ApprovalRequest {
 
 fn internal(message: String) -> Fail {
     Fail::new(FailCode::Internal, message)
+}
+
+/// How the hosts are to connect (Settings → Network), the proxies'
+/// passwords with it; none when it says nothing but "the host's own way".
+async fn host_network() -> Option<HostNetwork> {
+    Some(rovik_core::net::host_network().await).filter(|n| *n != HostNetwork::default())
 }
 
 #[cfg(test)]

@@ -8,6 +8,8 @@
 //! delivery's end. A call is tried again three times, a second, two, then
 //! four after the one before; one that never goes through is logged, the
 //! URL by its host alone (it may carry a token), and changes nothing else.
+//! A call goes the way this server's requests do (`rovik_core::net`, as
+//! the computers' Settings → Network say).
 
 use crate::store::Store;
 use rovik_core::agent_run::events::AgentEvent;
@@ -44,7 +46,6 @@ type LatestReport = (String, BranchAndPr);
 
 pub struct Notifier {
     store: Arc<Store>,
-    client: reqwest::Client,
     /// The records told already, by message and status: an event that
     /// brings one again (its spend updated, a resume) tells nobody twice.
     told: Mutex<HashSet<String>>,
@@ -56,13 +57,8 @@ pub struct Notifier {
 
 impl Notifier {
     pub fn new(store: Arc<Store>) -> Arc<Notifier> {
-        let client = reqwest::Client::builder()
-            .timeout(CALL_WAIT)
-            .build()
-            .unwrap_or_default();
         Arc::new(Notifier {
             store,
-            client,
             told: Mutex::new(HashSet::new()),
             reports: Mutex::new(HashMap::new()),
         })
@@ -165,8 +161,12 @@ impl Notifier {
         let Some(url) = self.store.autonomy_of(&notice.chat).notify_url else {
             return;
         };
-        let me = self.clone();
         rovik_core::rt::spawn(async move {
+            let client = rovik_core::net::builder()
+                .await
+                .timeout(CALL_WAIT)
+                .build()
+                .unwrap_or_default();
             let mut wait = FIRST_RETRY;
             let mut last = String::new();
             for attempt in 0..=RETRIES {
@@ -174,7 +174,7 @@ impl Notifier {
                     tokio::time::sleep(wait).await;
                     wait *= 2;
                 }
-                match me.client.post(&url).json(&notice).send().await {
+                match client.post(&url).json(&notice).send().await {
                     Ok(reply) if reply.status().is_success() => return,
                     Ok(reply) => last = format!("it answered {}", reply.status()),
                     // Its message names the URL: never logged whole.

@@ -200,10 +200,11 @@ fn asset_name() -> Result<String, String> {
     Ok(format!("rust-analyzer-{target}"))
 }
 
-fn http() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+/// Settings → Network's timeout and proxy (`rovik_core::net`).
+async fn http() -> Result<reqwest::Client, String> {
+    rovik_core::net::builder()
+        .await
         .user_agent(concat!("rovik-ide/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -212,10 +213,10 @@ fn http() -> Result<reqwest::Client, String> {
 #[tauri::command]
 pub async fn ra_latest_release() -> Result<RaRelease, String> {
     let asset = asset_name()?;
-    let no_redirect = reqwest::Client::builder()
+    let no_redirect = rovik_core::net::builder()
+        .await
         .user_agent(concat!("rovik-ide/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;
     // /releases/latest redirects to /releases/tag/<tag>.
@@ -236,7 +237,8 @@ pub async fn ra_latest_release() -> Result<RaRelease, String> {
         .ok_or("no release tag")?
         .to_string();
 
-    let html = http()?
+    let html = http()
+        .await?
         .get(format!("{REPO}/releases/expanded_assets/{tag}"))
         .send()
         .await
@@ -287,7 +289,8 @@ pub async fn ra_install(
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     // Download, hashing as it arrives.
-    let response = http()?
+    let response = http()
+        .await?
         .get(&release.url)
         .send()
         .await

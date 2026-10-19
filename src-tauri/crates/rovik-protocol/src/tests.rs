@@ -9,6 +9,7 @@ use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
 use crate::events::*;
 use crate::host::{HostInfo, Install, KeyInfo, Storage};
+use crate::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 use crate::permissions::{ApprovalRule, Approver, ChecklistMode, Permissions};
 use crate::plan::*;
 use crate::subagents::{KindConfig, ModelChoice, SubagentConfig};
@@ -218,7 +219,61 @@ fn config() -> AgentConfig {
             prepare: false,
             denied_commands: vec!["git push".into()],
         },
+        network: None,
     }
+}
+
+/// How a host connects goes with the configuration, its proxies'
+/// passwords left out of what it writes down; one from before it, without,
+/// reads as none: the host's own settings.
+#[test]
+fn a_configuration_carries_how_the_host_connects() {
+    let mut config = AgentConfig::default();
+    assert!(serde_json::to_value(&config)
+        .unwrap()
+        .get("network")
+        .is_none());
+    let proxy = ProxyEndpoint {
+        kind: ProxyKind::Http,
+        host: "proxy.example.com".into(),
+        port: 3128,
+        username: Some("alice".into()),
+        password: Some(Secret("pw".into())),
+    };
+    config.network = Some(HostNetwork {
+        timeout_secs: Some(45),
+        models: Some(ProxyRoute::Proxy(proxy.clone())),
+        browser: Some(ProxyRoute::Direct),
+    });
+    let json = serde_json::to_value(&config).unwrap();
+    assert_eq!(
+        json["network"],
+        serde_json::json!({
+            "timeoutSecs": 45,
+            "models": {"proxy": {"kind": "http", "host": "proxy.example.com", "port": 3128, "username": "alice", "password": "pw"}},
+            "browser": "direct",
+        })
+    );
+    let back: AgentConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(back, config);
+    assert!(
+        !format!("{config:?}").contains("\"pw\""),
+        "no password in a log"
+    );
+    let kept = config.network.as_ref().unwrap().without_passwords();
+    assert_eq!(
+        kept.models,
+        Some(ProxyRoute::Proxy(ProxyEndpoint {
+            password: None,
+            ..proxy
+        }))
+    );
+    assert_eq!(kept.browser, Some(ProxyRoute::Direct));
+    assert_eq!(kept.timeout_secs, Some(45));
+    let before: AgentConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(before.network, None);
+    let unset: HostNetwork = serde_json::from_str("{}").unwrap();
+    assert_eq!(unset, HostNetwork::default());
 }
 
 fn start() -> StartRequest {

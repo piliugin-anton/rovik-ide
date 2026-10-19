@@ -191,10 +191,11 @@ mod download {
 
     const MAX_BYTES: u64 = 200 * 1024 * 1024;
 
-    pub fn client(redirects: bool) -> Result<reqwest::Client, String> {
-        let mut builder = reqwest::Client::builder()
-            .user_agent(concat!("rovik-ide/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(15));
+    /// Settings → Network's timeout and proxy (`net`).
+    pub async fn client(redirects: bool) -> Result<reqwest::Client, String> {
+        let mut builder = crate::net::builder()
+            .await
+            .user_agent(concat!("rovik-ide/", env!("CARGO_PKG_VERSION")));
         if !redirects {
             builder = builder.redirect(reqwest::redirect::Policy::none());
         }
@@ -211,7 +212,8 @@ mod download {
     /// release pages (the REST API's anonymous limit is too low for shared
     /// networks).
     pub async fn latest_asset(repo: &str, matches: impl Fn(&str) -> bool) -> Result<Asset, String> {
-        let response = client(false)?
+        let response = client(false)
+            .await?
             .get(format!("https://github.com/{repo}/releases/latest"))
             .send()
             .await
@@ -226,7 +228,8 @@ mod download {
             .next()
             .filter(|t| !t.is_empty() && !t.contains('/'))
             .ok_or("no release tag")?;
-        let html = client(true)?
+        let html = client(true)
+            .await?
             .get(format!(
                 "https://github.com/{repo}/releases/expanded_assets/{tag}"
             ))
@@ -252,7 +255,8 @@ mod download {
 
     /// Downloads into `dir`, checking the checksum when there is one.
     pub async fn fetch(asset: &Asset, dir: &Path) -> Result<std::path::PathBuf, String> {
-        let response = client(true)?
+        let response = client(true)
+            .await?
             .get(&asset.url)
             .send()
             .await

@@ -237,9 +237,23 @@ async fn build(ssh: &Ssh, options: &TestOptions, user: &str) -> Step {
 }
 
 /// The name, then a TCP connection to the SSH port at one of its
-/// addresses.
+/// addresses; or, where SSH to cloud hosts goes through a proxy (Settings
+/// → Network), a connection through it, the proxy looking the name up.
 async fn reach(host: &str, port: u16) -> Step {
     let step = |outcome, message: String| Step::new(Check::Address, outcome, message);
+    match rovik_core::net::cloud_host_proxy(host, port).await {
+        Err(why) => return step(Outcome::Failed, why),
+        Ok(Some(proxy)) => {
+            return match rovik_core::net::open_cloud_host(host, port).await {
+                Ok(_) => step(
+                    Outcome::Passed,
+                    format!("{host} answers on port {port}, through {proxy}."),
+                ),
+                Err(why) => step(Outcome::Failed, why),
+            }
+        }
+        Ok(None) => {}
+    }
     let named = host.parse::<IpAddr>().is_err();
     let addresses: Vec<SocketAddr> = match host.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, port)],
@@ -593,5 +607,181 @@ mod tests {
         let json = serde_json::to_value(&plain).unwrap();
         assert_eq!(json["check"], "log-in");
         assert!(json.get("hostKey").is_none());
+    }
+
+    /// An SSH server here, taking `tester` with the password `pw`.
+    struct Sshd;
+
+    impl russh::server::Handler for Sshd {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            user: &str,
+            password: &str,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            Ok(if (user, password) == ("tester", "pw") {
+                russh::server::Auth::Accept
+            } else {
+                russh::server::Auth::reject()
+            })
+        }
+    }
+
+    /// Settings → Network's SSH to cloud hosts through a proxy: the SSH
+    /// connection and the test's first step go through it, the proxy
+    /// looking the name up.
+    /// In a process of its own, as it sets the process's network settings.
+    #[test]
+    fn a_cloud_host_is_reached_through_the_proxy() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "connection_test::tests::through_the_proxy_in_a_process_of_its_own",
+            ])
+            .args(["--ignored", "--test-threads=1"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stdout}{stderr}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+    }
+
+    #[tokio::test]
+    #[ignore = "run in a process of its own by a_cloud_host_is_reached_through_the_proxy"]
+    async fn through_the_proxy_in_a_process_of_its_own() {
+        use rovik_core::net::{NetworkSettings, ProxyKind, Route, Routes, SavedProxy};
+        use rovik_protocol::Secret;
+        use russh::keys::ssh_key::private::Ed25519Keypair;
+        use russh::keys::PrivateKey;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        let key = PrivateKey::from(Ed25519Keypair::from_seed(&[7; 32]));
+        let pinned = key.public_key().to_openssh().unwrap();
+        let config = Arc::new(russh::server::Config {
+            keys: vec![key],
+            auth_rejection_time: Duration::from_millis(10),
+            auth_rejection_time_initial: Some(Duration::ZERO),
+            ..Default::default()
+        });
+        let sshd = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sshd_port = sshd.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = sshd.accept().await {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Ok(session) = russh::server::run_stream(config, stream, Sshd).await {
+                        let _ = session.await;
+                    }
+                });
+            }
+        });
+
+        // A proxy that takes any CONNECT to the server here.
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+        let noted = asked.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = proxy.accept().await {
+                let noted = noted.clone();
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if stream.read(&mut byte).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    noted
+                        .lock()
+                        .unwrap()
+                        .push(head.lines().next().unwrap_or("").to_string());
+                    let mut host = TcpStream::connect(("127.0.0.1", sshd_port)).await.unwrap();
+                    stream
+                        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut host).await;
+                });
+            }
+        });
+
+        let through_the_proxy = NetworkSettings {
+            proxies: vec![SavedProxy {
+                id: "test".into(),
+                kind: ProxyKind::Http,
+                host: "127.0.0.1".into(),
+                port: proxy_port,
+                username: None,
+                password_saved: false,
+            }],
+            routes: Routes {
+                ssh: Route::Proxy("test".into()),
+                ..Routes::default()
+            },
+            ..NetworkSettings::default()
+        };
+        rovik_core::net::save(through_the_proxy.clone(), &HashMap::new()).unwrap();
+        // A name only the proxy knows.
+        let target = SshTarget {
+            host: "build.example.invalid".into(),
+            port: 22,
+            user: "tester".into(),
+            auth: SshAuth::Password(Secret("pw".into())),
+            host_key: Some(pinned),
+        };
+        let ssh = Ssh::connect(&target)
+            .await
+            .map_err(|e| e.to_string())
+            .unwrap();
+        assert!(!ssh.is_closed());
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            ["CONNECT build.example.invalid:22 HTTP/1.1"]
+        );
+
+        let step = reach("build.example.invalid", 22).await;
+        assert_eq!(step.outcome, Outcome::Passed, "{}", step.message);
+        assert_eq!(
+            step.message,
+            format!(
+                "build.example.invalid answers on port 22, through the HTTP proxy at 127.0.0.1:{proxy_port}."
+            )
+        );
+
+        // SSH directly: where the name isn't found.
+        let directly = Routes {
+            ssh: Route::Direct,
+            ..Routes::default()
+        };
+        rovik_core::net::save(
+            NetworkSettings {
+                routes: directly,
+                ..through_the_proxy
+            },
+            &HashMap::new(),
+        )
+        .unwrap();
+        let direct = reach("build.example.invalid", 22).await;
+        assert_eq!(direct.outcome, Outcome::Failed);
+        assert!(
+            direct
+                .message
+                .starts_with("build.example.invalid wasn't found"),
+            "{}",
+            direct.message
+        );
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            2,
+            "the one connection and the step"
+        );
     }
 }
