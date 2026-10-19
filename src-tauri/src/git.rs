@@ -1151,7 +1151,8 @@ fn stash_trees(
 
 /// What a stash contains: the files it touched, from diffing the base
 /// against the stash tree (tracked changes) and — when present — the
-/// untracked-files tree. What `git stash show` lists.
+/// untracked files, each new. What `git stash show --include-untracked`
+/// lists.
 #[tauri::command]
 pub async fn git_stash_show(path: String, index: usize) -> Result<Vec<GitStashFile>, String> {
     off_main_thread(move || git_stash_show_blocking(path, index)).await
@@ -1162,11 +1163,14 @@ pub fn git_stash_show_blocking(path: String, index: usize) -> Result<Vec<GitStas
     let (stash, base, untracked) = stash_trees(&repo, index)?;
     let mut files: std::collections::HashMap<String, (String, usize, usize)> =
         std::collections::HashMap::new();
-    // Untracked first: on overlap the tracked diff wins (both status and counts).
-    for other in [untracked.as_ref(), Some(&stash)] {
+    // Untracked first: on overlap the tracked diff wins (both status and
+    // counts). The untracked files' tree holds them alone: diffed against
+    // no tree, each is new, where against the base every other file of the
+    // branch would read as deleted.
+    for (from, other) in [(None, untracked.as_ref()), (base.as_ref(), Some(&stash))] {
         let Some(other) = other else { continue };
         let diff = repo
-            .diff_tree_to_tree(base.as_ref(), Some(other), None)
+            .diff_tree_to_tree(from, Some(other), None)
             .map_err(|e| e.to_string())?;
         let stats = diff_line_stats(&diff);
         for delta in diff.deltas() {
@@ -2623,10 +2627,15 @@ mod revert_tests {
     fn stash_show_lists_tracked_and_untracked_files() {
         let dir = stash_repo();
         let files = git_stash_show_blocking(path(&dir), 0).unwrap();
-        let a = files.iter().find(|f| f.path == "src/a.rs").unwrap();
-        assert_eq!(a.status, "M");
+        // What it touched, and nothing else of the branch: with untracked
+        // files, the files it left alone (b.txt) aren't deleted ones.
+        let listed: Vec<(&str, &str)> = files
+            .iter()
+            .map(|f| (f.path.as_str(), f.status.as_str()))
+            .collect();
+        assert_eq!(listed, [("new.txt", "A"), ("src/a.rs", "M")]);
         let n = files.iter().find(|f| f.path == "new.txt").unwrap();
-        assert_eq!(n.status, "A");
+        assert_eq!((n.additions, n.deletions), (1, 0));
         assert!(
             git_status_blocking(path(&dir)).unwrap().files.is_empty(),
             "tree is clean after stash"

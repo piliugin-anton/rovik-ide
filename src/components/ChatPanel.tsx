@@ -65,7 +65,14 @@ import {
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import AutopilotStrip from './AutopilotStrip';
-import { stageRows, taskRecords, taskWaits, withLiveStages, type StageRow } from '../lib/autopilot';
+import {
+  runningCandidate,
+  stageRows,
+  taskRecords,
+  taskWaits,
+  withLiveStages,
+  type StageRow,
+} from '../lib/autopilot';
 import { autopilotConfig } from '../lib/autopilotSettings';
 import { overlayStatus } from '../lib/overlay';
 import {
@@ -133,7 +140,7 @@ import {
 } from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
-import { runUsage, usageLabel } from '../lib/subagents';
+import { runUsage, transcript, transcriptHold, usageLabel } from '../lib/subagents';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
   resolveSubagentConfig,
@@ -2995,14 +3002,43 @@ export default function ChatPanel(props: ChatProps) {
     return taskRecords(rows, chat.messages, !chat.hasNewer, chat.stagePatches);
   });
   /**
+   * T05: the candidate implementing a Thorough task's plan right now, in a
+   * chat of its own, where its review, checks and acceptance go: its
+   * messages are followed while it runs, for the strip.
+   */
+  const candidate = createMemo(
+    () => {
+      const chat = activeChat();
+      return chat && !chat.hasNewer ? runningCandidate(chat.messages) : null;
+    },
+    null,
+    { equals: (a, b) => a?.chat === b?.chat && a?.recordId === b?.recordId }
+  );
+  const candidateWork = transcriptHold();
+  onCleanup(candidateWork.release);
+  createEffect(() => {
+    const c = candidate();
+    const dialogId = activeDialogId();
+    if (c && dialogId) void candidateWork.open(c.chat, dialogId, `${c.recordId}:${c.letter}`);
+    else candidateWork.release();
+  });
+  /**
    * The strip's records: the task's, with the stages its run carries out
    * inside itself (the change review, the checks) as the run gets to them,
-   * when the newest messages are held (lib/autopilot.ts `withLiveStages`).
+   * the running candidate's too, when the newest messages are held
+   * (lib/autopilot.ts `withLiveStages`).
    */
   const stripRows = createMemo(() => {
     const rows = taskStages();
     const chat = activeChat();
-    return rows && chat && !chat.hasNewer ? withLiveStages(rows, chat.messages) : rows;
+    if (!rows || !chat || chat.hasNewer) return rows;
+    const c = candidate();
+    const theirs = c ? transcript(c.chat) : undefined;
+    const followed =
+      c && theirs && !theirs.loading
+        ? { recordId: c.recordId, messages: theirs.messages }
+        : undefined;
+    return withLiveStages(rows, chat.messages, followed);
   });
   /**
    * The record of the stage the task's run carries out now, whatever page

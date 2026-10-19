@@ -2,11 +2,12 @@
 //
 // An Autopilot task's acceptance check in the chat (S08,
 // agent_run/acceptance.rs): each of the plan's criteria with its verdict
-// and what shows it, and the checker's work on demand. Updates live while
+// and what shows it, what the checker's work took once it's done, and its
+// work on demand, while it runs too, as a task call's. Updates live while
 // it runs.
 import { For, Show } from 'solid-js';
 import { acceptanceHeadline, type AcceptanceMeta } from '../lib/autopilot';
-import { liveLabel, liveSubagent } from '../lib/subagents';
+import { liveLabel, liveSubagent, workFacts } from '../lib/subagents';
 import { SubagentTranscript } from './ToolCallBlock';
 import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 
@@ -58,13 +59,20 @@ export default function AcceptanceRecord(props: {
           )}
         </For>
       </ol>
-      <Show when={props.meta.status !== 'running' && childId()}>
+      <Show when={(props.meta.status !== 'running' && workFacts(props.meta)) || childId()}>
         <div class="chat-verify-files">
-          <ShowWorkButton work={work} />
+          <Show when={props.meta.status !== 'running'}>{workFacts(props.meta)}</Show>
+          <Show when={childId()}>
+            {props.meta.status !== 'running' && workFacts(props.meta) ? ' · ' : ''}
+            <ShowWorkButton work={work} />
+          </Show>
         </div>
       </Show>
       <Show when={work.shown() && childId()}>
-        <SubagentTranscript childDialogId={childId()!} running={props.meta.status === 'running'} />
+        <SubagentTranscript
+          childDialogId={childId()!}
+          running={props.meta.status === 'running' && !interrupted()}
+        />
       </Show>
     </div>
   );

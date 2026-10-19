@@ -9,6 +9,8 @@ import StaticCodeBlock from './StaticCodeBlock';
 import EditDiffBlock from './EditDiffBlock';
 import ContextEditView from './ContextEditView';
 import QuestionCard from './QuestionCard';
+import VerificationRecord from './VerificationRecord';
+import AcceptanceRecord from './AcceptanceRecord';
 import { StatusIcon } from './TodoPanel';
 import { parseTodo } from '../lib/todo';
 import { attachmentUrl, chatApi } from '../lib/chatApi';
@@ -579,7 +581,10 @@ function shortGoal(goal: string | undefined): string {
 
 /**
  * A subagent's work: its chat's tool calls and replies, loaded when the
- * block asks for it and followed live from then on (lib/subagents.ts).
+ * block asks for it and followed live from then on (lib/subagents.ts). A
+ * Thorough task's candidate (T05) runs the checks and the acceptance check
+ * in its chat: their records show as they do in a chat, without the
+ * chat's buttons, live while they run.
  */
 export function SubagentTranscript(props: { childDialogId: string; running: boolean }) {
   const t = () => transcript(props.childDialogId);
@@ -587,8 +592,19 @@ export function SubagentTranscript(props: { childDialogId: string; running: bool
   const toolIndex = createMemo(() => indexToolResults(t()?.messages ?? []));
   const shown = () =>
     (t()?.messages ?? []).filter(
-      (m) => m.role === 'assistant' && (m.toolCalls?.length || m.content.trim() || m.error)
+      (m) =>
+        m.role === 'assistant' &&
+        (m.toolCalls?.length ||
+          m.content.trim() ||
+          m.error ||
+          m.meta?.verification ||
+          m.meta?.acceptance)
     );
+  /** A record is live while the run is and it's the chat's newest row, as in a chat. */
+  const live = (m: ChatMessage) => {
+    const all = t()?.messages ?? [];
+    return props.running && all[all.length - 1]?.id === m.id;
+  };
   return (
     <div class="subagent-transcript">
       <Show when={!t()?.loading} fallback={<div class="tool-call-pending">Loading…</div>}>
@@ -609,6 +625,27 @@ export function SubagentTranscript(props: { childDialogId: string; running: bool
                     />
                   )}
                 </For>
+                <Show when={m.meta?.verification}>
+                  {(v) => (
+                    <VerificationRecord
+                      meta={v()}
+                      dialogId={props.childDialogId}
+                      recordId={m.id}
+                      latest={false}
+                      live={live(m)}
+                    />
+                  )}
+                </Show>
+                <Show when={m.meta?.acceptance}>
+                  {(a) => (
+                    <AcceptanceRecord
+                      meta={a()}
+                      dialogId={props.childDialogId}
+                      recordId={m.id}
+                      live={live(m)}
+                    />
+                  )}
+                </Show>
               </>
             )}
           </For>

@@ -6480,6 +6480,15 @@ async fn two_candidates_implement_the_plan_each_in_a_copy_and_the_better_lands()
     let messages = h.messages().await;
     let row = candidates_row(&messages);
     assert_eq!(row["status"], "done", "{row}");
+    let record_id = messages
+        .iter()
+        .find(|m| {
+            m.meta
+                .as_ref()
+                .is_some_and(|v| v.get("candidates").is_some())
+        })
+        .map(|m| m.id.clone())
+        .unwrap();
     let chats: Vec<String> = row["candidates"]
         .as_array()
         .unwrap()
@@ -6526,6 +6535,18 @@ async fn two_candidates_implement_the_plan_each_in_a_copy_and_the_better_lands()
             "its copy is gone"
         );
         by_them = theirs_spent(&theirs_records(&h, chat).await).plus(by_them);
+        // Its line in the task's chat follows its run, as a subagent's
+        // block does: its progress, under the call it goes by there.
+        let call = format!("{record_id}:{letter}");
+        let progress: Vec<Value> = h
+            .events_of("subagentProgress")
+            .into_iter()
+            .filter(|e| e["dialogId"] == h.dialog_id.as_str() && e["toolCallId"] == call.as_str())
+            .collect();
+        assert!(
+            progress.iter().any(|e| e["toolCalls"].as_u64() > Some(0)),
+            "candidate {letter}: {progress:?}"
+        );
     }
     assert!(by_them.ms > 0);
     assert_eq!(implement.spent, Some(by_them));

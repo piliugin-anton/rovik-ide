@@ -477,11 +477,14 @@ async fn pipe_startup_failure(
     error: Error,
 ) -> Error {
     // A Chrome that is exiting gets a moment to finish, so its status and
-    // last words are known.
+    // last words are known: once it exited, its stderr is read to its end.
     let transport = connection.transport();
-    let _ = transport
+    let exited = transport
         .wait_for_owned_exit(std::time::Duration::from_millis(500))
         .await;
+    if matches!(exited, Ok(true)) {
+        stderr.drained(std::time::Duration::from_millis(500)).await;
+    }
     let status = transport
         .owned_exit_status()
         .map_or_else(|| "still running".to_string(), |status| status.to_string());

@@ -8,22 +8,10 @@
 // the merged set, where the sets disagreed under what it assumed.
 import { Show } from 'solid-js';
 import { judgeHeadline, type JudgeMeta } from '../lib/autopilot';
-import { liveLabel, liveSubagent } from '../lib/subagents';
+import { liveLabel, liveSubagent, workFacts } from '../lib/subagents';
 import { SubagentTranscript } from './ToolCallBlock';
 import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 import { CriteriaParts } from './PlannerRecord';
-
-/** "the model · 12 tool calls · 40 s", what's known of it. */
-function facts(meta: JudgeMeta): string {
-  const seconds = meta.ms !== undefined ? `${Math.round(meta.ms / 1000)} s` : '';
-  const calls =
-    meta.toolCalls !== undefined
-      ? `${meta.toolCalls} tool call${meta.toolCalls === 1 ? '' : 's'}`
-      : '';
-  return [meta.model, calls, seconds, meta.partial ? 'cut short by its budget' : '']
-    .filter(Boolean)
-    .join(' · ');
-}
 
 export default function JudgeRecord(props: {
   meta: JudgeMeta;
@@ -57,9 +45,9 @@ export default function JudgeRecord(props: {
       <CriteriaParts meta={props.meta} />
       <Show when={props.meta.status !== 'running'}>
         <div class="chat-verify-files">
-          {facts(props.meta)}
+          {workFacts(props.meta)}
           <Show when={childId()}>
-            {facts(props.meta) ? ' · ' : ''}
+            {workFacts(props.meta) ? ' · ' : ''}
             <ShowWorkButton work={work} />
           </Show>
         </div>

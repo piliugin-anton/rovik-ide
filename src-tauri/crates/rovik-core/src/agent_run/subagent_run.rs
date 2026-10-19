@@ -1052,17 +1052,25 @@ impl Run {
      * -----------------------------------------------------------------------
      */
 
-    /// Tells the lead's chat how far the subagent got (its block shows it).
-    pub(super) fn note_sub_progress(&self, current_tool: &str) {
-        let Some(sub) = self.sub() else { return };
+    /// Tells the lead's chat how far the subagent got (its block shows it),
+    /// or the task's chat how far its candidate got (T05: its line shows
+    /// it). `current_tool` empty: between two tool calls, the model's turn.
+    pub(super) fn note_progress(&self, current_tool: &str) {
+        let (dialog_id, call) = match self.sub() {
+            Some(sub) => (sub.parent_dialog_id.clone(), sub.parent_call_id.clone()),
+            None => match self.core.agents.candidate_call(&self.dialog_id) {
+                Some(at) => at,
+                None => return,
+            },
+        };
         self.core.agents.note_child_progress(
             &self.dialog_id,
             self.guard.tool_calls,
             &self.profile.label,
         );
         self.core.emit(AgentEvent::SubagentProgress {
-            dialog_id: sub.parent_dialog_id.clone(),
-            tool_call_id: sub.parent_call_id.clone(),
+            dialog_id,
+            tool_call_id: call,
             tool_calls: self.guard.tool_calls,
             current_tool: Some(current_tool.to_string()).filter(|t| !t.is_empty()),
             model: self.profile.label.clone(),
@@ -1296,7 +1304,7 @@ impl Run {
             if let Some(why) = self.over_budget() {
                 return self.result_turn(SubStatus::Partial, &why, last_text).await;
             }
-            self.note_sub_progress("");
+            self.note_progress("");
             let turn = self.model_turn().await?;
 
             // Cut for repeating itself: the stream was cancelled to cut it,

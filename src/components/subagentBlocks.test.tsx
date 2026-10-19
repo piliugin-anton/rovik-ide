@@ -130,6 +130,61 @@ test('subagent_transcript_with_reused_ids (P5.8)', async () => {
   assert.ok(blocks[2].classList.contains('running'), 'the third has none yet');
 });
 
+test('a_candidates_transcript_shows_its_checks_and_acceptance (T05)', async () => {
+  // A Thorough task's candidate runs the checks and the acceptance check in
+  // its own chat: its transcript shows their records, without the chat's
+  // buttons, live while they run.
+  const messages: ChatMessage[] = [
+    { id: 'c1', role: 'assistant', content: 'Implemented the greeting.' },
+    {
+      id: 'c2',
+      role: 'assistant',
+      content: '',
+      meta: {
+        verification: {
+          status: 'unverified',
+          round: 1,
+          maxRounds: 3,
+          checks: [],
+          changedFiles: ['greet.ts'],
+        },
+      },
+    },
+    {
+      id: 'c3',
+      role: 'assistant',
+      content: '',
+      meta: {
+        acceptance: {
+          status: 'running',
+          round: 1,
+          maxRounds: 2,
+          criteria: ['It greets by name'],
+        },
+      },
+    },
+  ];
+  await withMessages(messages, () => openTranscript('cand-t', 'lead-t', 'k1:a'));
+  const root = container();
+  render(() => <SubagentTranscript childDialogId="cand-t" running={true} />, root);
+  assert.equal(root.querySelector('.subagent-reply')?.textContent, 'Implemented the greeting.');
+  const records = [...root.querySelectorAll('.chat-verify')];
+  assert.equal(records.length, 2);
+  assert.ok(records[0].classList.contains('unverified'), records[0].className);
+  assert.equal(button(root, 'Set up checks'), undefined, 'none of the chat’s buttons');
+  assert.ok(records[1].classList.contains('chat-acceptance'), records[1].className);
+  assert.ok(records[1].classList.contains('running'), 'the newest row, its run going: live');
+  assert.equal(
+    records[1].querySelector('.chat-verify-title')?.textContent,
+    'Checking the change against the plan’s 1 criterion…'
+  );
+
+  // Once the candidate's run is over, a record left running reads as cut short.
+  const after = container();
+  render(() => <SubagentTranscript childDialogId="cand-t" running={false} />, after);
+  assert.ok(after.querySelector('.chat-acceptance')!.classList.contains('stopped'));
+});
+
 test('approval_shown_after_reload_with_nothing_else_known (P1.5)', () => {
   // After a reload: only the approval, naming its lead's call.
   registerApproval({

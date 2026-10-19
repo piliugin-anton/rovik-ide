@@ -31,6 +31,7 @@ import {
   testsHeadline,
   unfinishedTask,
   keptStage,
+  runningCandidate,
   withLiveStages,
   type StageMeta,
   type StageRow,
@@ -462,6 +463,53 @@ test('the strip: the stages done inside the implementation show as its run gets 
   );
   // A reviewer that didn't run: skipped, not ticked.
   assert.equal(shown(review('skipped'), checks('running')).statuses.review, 'skipped');
+});
+
+test('the strip: a Thorough task’s stages inside the implementation, from its running candidate (T05)', () => {
+  const before = [stage('t', 'plan', 'done'), stage('t', 'planReview', 'done')];
+  const implement = stage('t', 'implement', 'running');
+  const records = stageRows([...before, implement]);
+  /** The task chat's record of its candidates, a and b. */
+  const candidates = (status: string, a: string, b: string): ChatMessage => ({
+    id: 'k1',
+    role: 'assistant',
+    content: '',
+    meta: {
+      candidates: {
+        task: 't',
+        round: 1,
+        status,
+        candidates: [
+          { letter: 'a', chat: 'cand-a', status: a },
+          { letter: 'b', chat: 'cand-b', status: b },
+        ],
+      } as never,
+    },
+  });
+  // Candidate a at work: the task's chat has its record, a's chat the rest.
+  const messages = [...before, implement, candidates('running', 'running', 'waiting')];
+  assert.deepEqual(runningCandidate(messages), { recordId: 'k1', letter: 'a', chat: 'cand-a' });
+  const theirs = { recordId: 'k1', messages: [review('clean'), checks('running')] };
+  const rows = withLiveStages(records, messages, theirs);
+  const statuses = Object.fromEntries(stripStages(rows).map((s) => [s.name, s.status]));
+  assert.equal(taskLine(rows, true), 'Autopilot: checks…');
+  assert.deepEqual(
+    [statuses.implement, statuses.review, statuses.checks],
+    ['done', 'done', 'running']
+  );
+  // A click shows the candidates' record, which is in the task's chat.
+  assert.equal(stripStages(rows).find((s) => s.name === 'checks')!.recordId, 'k1');
+  // Without its messages (not loaded yet): as recorded.
+  assert.deepEqual(withLiveStages(records, messages), records);
+  // b's turn, then none at work: the one to follow, then none.
+  const at = (record: ChatMessage) => runningCandidate([...before, implement, record]);
+  assert.equal(at(candidates('running', 'done', 'running'))?.chat, 'cand-b');
+  assert.equal(at(candidates('done', 'done', 'done')), null);
+  assert.equal(runningCandidate(before), null);
+  // Only the implementation's: the plan's review is the plan's run's.
+  const planning = stageRows([stage('t', 'plan', 'running')]);
+  const reviewing = { recordId: 'k1', messages: [review('running', 'plan')] };
+  assert.deepEqual(withLiveStages(planning, messages, reviewing), planning);
 });
 
 test('the strip: the implementation’s stages stay as they showed while the driver records them', () => {

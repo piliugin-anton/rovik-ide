@@ -260,6 +260,8 @@ struct Candidacy {
     project: Option<String>,
     /// The call id its events and transcript go by in that chat.
     call: String,
+    /// What its line in that chat shows, as a subagent's block does (P1.5).
+    info: ChildInfo,
 }
 
 /// How long an approval in an Autopilot task waits before it's denied
@@ -704,14 +706,16 @@ impl AgentState {
         }
     }
 
-    /// A subagent's progress, as its block's event says.
+    /// A subagent's progress, or a candidate's (T05), as its block's or
+    /// its line's event says.
     pub(super) fn note_child_progress(&self, dialog_id: &str, tool_calls: u32, model: &str) {
-        if let Some(info) = self
-            .lock()
-            .runs
-            .get_mut(dialog_id)
-            .and_then(|r| r.child.as_mut())
-        {
+        let mut inner = self.lock();
+        let inner = &mut *inner;
+        let info = match inner.runs.get_mut(dialog_id).and_then(|r| r.child.as_mut()) {
+            Some(info) => Some(info),
+            None => inner.candidates.get_mut(dialog_id).map(|c| &mut c.info),
+        };
+        if let Some(info) = info {
             info.tool_calls = tool_calls;
             info.model = model.to_string();
         }
@@ -795,18 +799,20 @@ impl AgentState {
     /// T05: `candidate` is a chat implementing `main`'s task, in a copy of
     /// `main`'s project folder `project`: it follows `main`'s configuration
     /// and its Stop, and the project's settings; `call` is the id its
-    /// events go by in `main`.
+    /// events go by in `main`, and `info` what its line there shows.
     pub(super) fn add_candidate(
         &self,
         candidate: &str,
         main: &str,
         project: Option<String>,
         call: &str,
+        info: ChildInfo,
     ) {
         let candidacy = Candidacy {
             main: main.to_string(),
             project,
             call: call.to_string(),
+            info,
         };
         self.lock()
             .candidates
@@ -816,6 +822,14 @@ impl AgentState {
     /// T05: the chat is no candidate's any more (its task picked).
     pub(super) fn drop_candidate(&self, candidate: &str) {
         self.lock().candidates.remove(candidate);
+    }
+
+    /// T05: the chat whose task a candidate implements, and the call id its
+    /// events go by there.
+    pub(super) fn candidate_call(&self, candidate: &str) -> Option<(String, String)> {
+        let inner = self.lock();
+        let c = inner.candidates.get(candidate)?;
+        Some((c.main.clone(), c.call.clone()))
     }
 
     /// T05: the project folder whose settings a candidate's runs follow.
@@ -1609,12 +1623,14 @@ pub fn agent_status(core: &Core) -> AgentStatus {
             .runs
             .iter()
             .filter_map(|(dialog_id, r)| {
+                // T05: with its line's info, so a page opened meanwhile
+                // shows how far it got, and its progress from there on.
                 if let Some(c) = inner.candidates.get(dialog_id) {
                     return Some(RunningSubagent {
                         dialog_id: dialog_id.clone(),
                         parent_dialog_id: c.main.clone(),
                         parent_call_id: c.call.clone(),
-                        info: None,
+                        info: Some(c.info.clone()),
                     });
                 }
                 Some(RunningSubagent {

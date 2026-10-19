@@ -215,7 +215,7 @@ impl Run {
                 rest = &rest[tasks..];
                 continue;
             }
-            self.note_sub_progress(&rest[0].name);
+            self.note_progress(&rest[0].name);
             // Decided when it's this call's turn: an approval before it may
             // have taken a while, and Stop may have come.
             let n = parallel::batch_len(rest, |tc| {

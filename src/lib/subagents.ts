@@ -453,6 +453,27 @@ export function workLabel(toolCalls: number, ms?: number): string {
   return `${calls} · ${time}`;
 }
 
+/**
+ * "the model · 12 tool calls · 40 s", what's known of an IDE subagent's
+ * work once it's done (a record's line: the tests, the tester, the
+ * acceptance check, the planners and the judge), and when its budget cut it.
+ */
+export function workFacts(meta: {
+  model?: string;
+  toolCalls?: number;
+  ms?: number;
+  partial?: boolean;
+}): string {
+  const seconds = meta.ms !== undefined ? `${Math.round(meta.ms / 1000)} s` : '';
+  const calls =
+    meta.toolCalls !== undefined
+      ? `${meta.toolCalls} tool call${meta.toolCalls === 1 ? '' : 's'}`
+      : '';
+  return [meta.model, calls, seconds, meta.partial ? 'cut short by its budget' : '']
+    .filter(Boolean)
+    .join(' · ');
+}
+
 /** "12 tool calls · bash · gpt-5": a subagent's progress while it runs. */
 export function liveLabel(
   p: Pick<LiveSubagent, 'toolCalls' | 'currentTool' | 'model'>,
