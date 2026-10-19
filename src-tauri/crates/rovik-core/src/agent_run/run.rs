@@ -1443,6 +1443,8 @@ impl Run {
             if let Some(pause) = self.pause.get().filter(|_| !self.continue_reply) {
                 return self.pause_for(pause).await;
             }
+            // T05: a candidate's line in its task's chat follows its run.
+            self.note_progress("");
             let turn = self.model_turn().await?;
 
             // Stopped for repeating itself: keep the reply up to where it

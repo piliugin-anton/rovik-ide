@@ -337,8 +337,17 @@ const SKIPPED = ['skipped', 'unverified'];
  * and only `messages` that reach the chat's newest. Each has its stage's
  * round in the task, as the driver records it (inside.rs), and the one
  * going on waits out the provider's rate limit while the run does (H07).
+ *
+ * T05: a Thorough task's implementation is its candidates', one after the
+ * other, each in a chat of its own, where its review, checks and acceptance
+ * go: the running one's `candidate` messages count as the run's, each
+ * shown by the candidates' record in the task's chat.
  */
-export function withLiveStages(rows: StageRow[], messages: ChatMessage[]): StageRow[] {
+export function withLiveStages(
+  rows: StageRow[],
+  messages: ChatMessage[],
+  candidate?: { recordId: string; messages: ChatMessage[] }
+): StageRow[] {
   let at = rows.length - 1;
   while (at >= 0 && !INSIDE[rows[at].stage.name]) at--;
   if (at < 0) return rows;
@@ -349,11 +358,15 @@ export function withLiveStages(rows: StageRow[], messages: ChatMessage[]): Stage
   if (after.some((r) => !inside.some(({ name }) => name === r.stage.name))) return rows;
   const since = messages.slice(messages.findIndex((m) => m.id === run.id) + 1);
   const latest = new Map<StageName, { id: string; record: InsideRecord }>();
-  for (const m of since)
-    for (const { name, of } of inside) {
-      const record = of(m);
-      if (record) latest.set(name, { id: m.id, record });
-    }
+  const scan = (list: ChatMessage[], shownBy?: string) => {
+    for (const m of list)
+      for (const { name, of } of inside) {
+        const record = of(m);
+        if (record) latest.set(name, { id: shownBy ?? m.id, record });
+      }
+  };
+  scan(since);
+  if (candidate && run.stage.name === 'implement') scan(candidate.messages, candidate.recordId);
   const reached = inside.filter(({ name }) => latest.has(name)).map(({ name }) => name);
   if (!reached.length) return rows;
   const furthest = reached[reached.length - 1];
@@ -821,6 +834,30 @@ export interface CandidatesMeta {
   status: 'running' | 'done' | 'stopped' | 'single';
   reason?: string;
   candidates?: CandidateMeta[];
+}
+
+/** T05: the candidate implementing a Thorough task's plan right now, and its record. */
+export interface RunningCandidate {
+  /** The candidates' record in the task's chat. */
+  recordId: string;
+  letter: string;
+  /** Its chat, where its run and its records are. */
+  chat: string;
+}
+
+/**
+ * The candidate at work on the chat's latest candidates' record, if one is:
+ * its run's records go in its own chat (`withLiveStages`).
+ */
+export function runningCandidate(messages: ChatMessage[]): RunningCandidate | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const meta = messages[i].meta?.candidates;
+    if (!meta) continue;
+    const at =
+      meta.status === 'running' ? meta.candidates?.find((c) => c.status === 'running') : undefined;
+    return at ? { recordId: messages[i].id, letter: at.letter, chat: at.chat } : null;
+  }
+  return null;
 }
 
 /** The headline of the candidates' record. */

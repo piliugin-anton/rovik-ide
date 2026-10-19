@@ -834,15 +834,27 @@ impl Run {
                 }
             };
             let call = call_id(&row_id, &state.letter);
-            core.agents
-                .add_candidate(&state.chat, &main, self.project_root.clone(), &call);
+            let info = super::ChildInfo {
+                kind: KIND.into(),
+                goal: format!("Candidate {}", state.letter),
+                model: self.profile.label.clone(),
+                started_at: store::now_ms().max(0) as u64,
+                tool_calls: 0,
+            };
+            core.agents.add_candidate(
+                &state.chat,
+                &main,
+                self.project_root.clone(),
+                &call,
+                info.clone(),
+            );
             core.emit(AgentEvent::SubagentStarted {
                 dialog_id: main.clone(),
                 tool_call_id: call.clone(),
                 child_dialog_id: state.chat.clone(),
-                kind: KIND.into(),
-                model: self.profile.label.clone(),
-                goal: format!("Candidate {}", state.letter),
+                kind: info.kind,
+                model: info.model,
+                goal: info.goal,
             });
             row.candidates[i].status = "running".into();
             save_row(&core, &main, &row_id, "candidates", json!(row)).await?;

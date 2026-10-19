@@ -253,8 +253,12 @@ export default function VerificationRecord(props: {
   latest: boolean;
   /** Checks for this record are running right now. */
   live: boolean;
-  onRunChecks: () => void;
-  onOpenProjectChecks: () => void;
+  /**
+   * Its buttons, where the chat is the user's: none in a subagent's or a
+   * candidate's transcript (SubagentTranscript), which only shows it.
+   */
+  onRunChecks?: () => void;
+  onOpenProjectChecks?: () => void;
 }) {
   /** Saved as running, but nothing runs it: the app closed mid-check. */
   const interrupted = () => props.meta.status === 'running' && !props.live;
@@ -262,13 +266,13 @@ export default function VerificationRecord(props: {
     <div class={`chat-verify ${interrupted() ? 'stopped' : props.meta.status}`} role="status">
       <div class="chat-verify-head">
         <span class="chat-verify-title">{headline(props.meta, interrupted())}</span>
-        <Show when={props.latest && props.meta.status === 'needs-approval'}>
-          <button type="button" class="chat-action-button" onClick={() => props.onRunChecks()}>
+        <Show when={props.latest && props.onRunChecks && props.meta.status === 'needs-approval'}>
+          <button type="button" class="chat-action-button" onClick={() => props.onRunChecks?.()}>
             Run checks
           </button>
         </Show>
-        <Show when={props.meta.status === 'unverified'}>
-          <button type="button" class="link-button" onClick={() => props.onOpenProjectChecks()}>
+        <Show when={props.onOpenProjectChecks && props.meta.status === 'unverified'}>
+          <button type="button" class="link-button" onClick={() => props.onOpenProjectChecks?.()}>
             Set up checks
           </button>
         </Show>

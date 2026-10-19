@@ -11,11 +11,12 @@ import VerificationRecord from './VerificationRecord';
 import PlannerRecord from './PlannerRecord';
 import JudgeRecord from './JudgeRecord';
 import BreakerRecord from './BreakerRecord';
+import AcceptanceRecord from './AcceptanceRecord';
 import CandidatesRecord from './CandidatesRecord';
 import PickRecord from './PickRecord';
 import MessageList from './MessageList';
 import { chatApi } from '../lib/chatApi';
-import { liveSubagent, noteSubagentStarted } from '../lib/subagents';
+import { liveSubagent, noteSubagentProgress, noteSubagentStarted } from '../lib/subagents';
 import type { ReviewMeta } from '../lib/changeReview';
 import type { VerificationMeta } from '../lib/verification';
 import type { ChatMessage } from '../types';
@@ -1006,6 +1007,94 @@ test('the adversarial tester’s record: its tests and marks, what it removed (T
   );
 });
 
+test('the acceptance record: what the check took once done, its work while it runs (S08)', () => {
+  const criteria = ['It greets by name', 'It exits 0'];
+  const done = container();
+  render(
+    () => (
+      <AcceptanceRecord
+        meta={{
+          status: 'satisfied',
+          round: 1,
+          maxRounds: 2,
+          criteria,
+          verdicts: [
+            { criterion: 1, satisfied: true, note: 'greet.ts prints it' },
+            { criterion: 2, satisfied: true, note: 'the test exits 0' },
+          ],
+          childDialogId: 'acc-kid',
+          model: 'Test/m',
+          toolCalls: 3,
+          ms: 12_400,
+        }}
+        dialogId="lead-acc"
+        recordId="acc1"
+        live={false}
+      />
+    ),
+    done
+  );
+  const line = done.querySelector('.chat-verify-files');
+  assert.equal(line?.textContent, 'Test/m · 3 tool calls · 12 s · Show its work');
+  // Cut short by its budget: the line says so.
+  const cut = container();
+  render(
+    () => (
+      <AcceptanceRecord
+        meta={{ status: 'skipped', round: 1, maxRounds: 2, criteria, partial: true, ms: 900 }}
+        dialogId="lead-acc"
+        recordId="acc2"
+        live={false}
+      />
+    ),
+    cut
+  );
+  assert.equal(
+    cut.querySelector('.chat-verify-files')?.textContent,
+    '1 s · cut short by its budget'
+  );
+  // While it runs, once its chat is known, its work is there as a task call's.
+  noteSubagentStarted({
+    dialogId: 'lead-acc',
+    toolCallId: 'acc3',
+    childDialogId: 'acc-kid-3',
+    kind: 'acceptance',
+    model: 'Test/m',
+    goal: 'Check the change against its criteria',
+  });
+  const running = container();
+  render(
+    () => (
+      <AcceptanceRecord
+        meta={{ status: 'running', round: 1, maxRounds: 2, criteria }}
+        dialogId="lead-acc"
+        recordId="acc3"
+        live={true}
+      />
+    ),
+    running
+  );
+  assert.equal(running.querySelector('.chat-verify-files')?.textContent, 'Show its work');
+  assert.equal(
+    running.querySelector('.chat-verify-progress')?.textContent,
+    '0 tool calls · Test/m'
+  );
+  // Before its chat is known: nothing to show yet.
+  const starting = container();
+  render(
+    () => (
+      <AcceptanceRecord
+        meta={{ status: 'running', round: 1, maxRounds: 2, criteria }}
+        dialogId="lead-acc"
+        recordId="acc4"
+        live={true}
+      />
+    ),
+    starting
+  );
+  assert.equal(starting.querySelector('.chat-verify-files'), null);
+});
+
 test('the candidates’ record: each one’s line, its work on demand, one waiting (T05)', () => {
   const root = container();
   render(
@@ -1065,6 +1154,44 @@ test('the candidates’ record: each one’s line, its work on demand, one waiti
   const line = prepared.querySelector('.chat-candidate-prepared')!;
   assert.equal(line.textContent, 'Installed: npm ci --no-audit --no-fund');
   assert.equal(line.querySelector('code')?.textContent, 'npm ci --no-audit --no-fund');
+  // A running candidate's line follows its run, from the progress its run
+  // tells the task's chat under the record's call (candidates.rs).
+  noteSubagentStarted({
+    dialogId: 'lead-k',
+    toolCallId: 'k4:a',
+    childDialogId: 'cand-a4',
+    kind: 'candidate',
+    model: 'Test/m',
+    goal: 'Candidate a',
+  });
+  noteSubagentProgress({
+    dialogId: 'lead-k',
+    toolCallId: 'k4:a',
+    toolCalls: 3,
+    currentTool: 'write',
+    model: 'Test/m',
+  });
+  const going = container();
+  render(
+    () => (
+      <CandidatesRecord
+        meta={{
+          task: 't',
+          round: 1,
+          status: 'running',
+          candidates: [{ letter: 'a', chat: 'cand-a4', status: 'running' }],
+        }}
+        dialogId="lead-k"
+        recordId="k4"
+        live={true}
+      />
+    ),
+    going
+  );
+  assert.equal(
+    going.querySelector('.chat-candidate')?.textContent,
+    'A: implementing… · 3 tool calls · write · Show its work'
+  );
   // Interrupted: nothing runs it any more.
   const cut = container();
   render(

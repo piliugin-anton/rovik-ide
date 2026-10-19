@@ -7,21 +7,9 @@
 // (T03) is a planner too: its record shows the criteria it wrote.
 import { For, Show } from 'solid-js';
 import { plannerHeadline, type PlannerMeta } from '../lib/autopilot';
-import { liveLabel, liveSubagent } from '../lib/subagents';
+import { liveLabel, liveSubagent, workFacts } from '../lib/subagents';
 import { SubagentTranscript } from './ToolCallBlock';
 import { createSubagentWork, ShowWorkButton } from './SubagentWork';
-
-/** "the model · 12 tool calls · 40 s", what's known of it. */
-function facts(meta: PlannerMeta): string {
-  const seconds = meta.ms !== undefined ? `${Math.round(meta.ms / 1000)} s` : '';
-  const calls =
-    meta.toolCalls !== undefined
-      ? `${meta.toolCalls} tool call${meta.toolCalls === 1 ? '' : 's'}`
-      : '';
-  return [meta.model, calls, seconds, meta.partial ? 'cut short by its budget' : '']
-    .filter(Boolean)
-    .join(' · ');
-}
 
 /**
  * Criteria a record holds (a writer's, or the judge's merge, T03): the
@@ -92,9 +80,9 @@ export default function PlannerRecord(props: {
       <CriteriaParts meta={props.meta} />
       <Show when={props.meta.status !== 'running'}>
         <div class="chat-verify-files">
-          {facts(props.meta)}
+          {workFacts(props.meta)}
           <Show when={childId()}>
-            {facts(props.meta) ? ' · ' : ''}
+            {workFacts(props.meta) ? ' · ' : ''}
             <ShowWorkButton work={work} />
           </Show>
         </div>
