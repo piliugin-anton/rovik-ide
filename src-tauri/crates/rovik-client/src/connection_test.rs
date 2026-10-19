@@ -713,7 +713,7 @@ mod tests {
         });
 
         let through_the_proxy = NetworkSettings {
-            proxy: ProxyMode::Custom,
+            proxy: Some(ProxyMode::Custom),
             custom: Some(CustomProxy {
                 kind: ProxyKind::Http,
                 host: "127.0.0.1".into(),

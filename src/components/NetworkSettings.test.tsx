@@ -1,9 +1,10 @@
 // Component tests: Settings → Network. The timeout; the proxy's three
-// choices: none, the first, which hides what a proxy has; the system's (said
-// as it is now); or a custom HTTP or SOCKS5 one, saved once it has a host and
-// a port, a proxy's URL pasted whole taken apart; its password, kept by the
-// keychain and forgotten on request; cloud hosts; and the agent's browsers,
-// here, in the cloud or both.
+// choices: none, which hides what a proxy has; the system's (said as it is
+// now); or a custom HTTP or SOCKS5 one, saved once it has a host and a port,
+// a proxy's URL pasted whole taken apart; until one is chosen, the system's
+// where this computer has a proxy set, else none; the custom proxy's
+// password, kept by the keychain and forgotten on request; cloud hosts; and
+// the agent's browsers, here, in the cloud or both.
 // The app is answered here, command by command. Run with: npm test
 import { container } from '../test/dom';
 import { after, test } from 'node:test';
@@ -37,7 +38,7 @@ const REST = { cloudHosts: false, browser: false, browserPlaces: 'local' as cons
 function app(view: Partial<NetworkView> = {}, refuse?: string) {
   calls = [];
   kept = {
-    settings: { proxy: 'direct', ...REST },
+    settings: { ...REST },
     passwordSaved: false,
     system: { https: 'http://proxy.corp:3128', http: 'http://proxy.corp:3128' },
     defaultTimeoutSecs: 30,
@@ -113,8 +114,16 @@ const shown = () => ({
 });
 const NOTHING = { form: false, cloudHosts: false, browser: false, places: false };
 
-test('no proxy is chosen at first, and what a proxy has hides with it', async () => {
-  app();
+const AUTOMATIC =
+  'Chosen automatically: System proxy while this computer has a proxy set, No proxy while it hasn’t. Choosing one keeps it.';
+const automatic = () =>
+  [...document.querySelectorAll('.network-settings .settings-hint')].some(
+    (p) => text(p) === AUTOMATIC
+  );
+const timeoutField = () => document.querySelector<HTMLInputElement>('.setting-number-field input')!;
+
+test('where this computer has no proxy, no proxy is chosen at first, which hides the rest', async () => {
+  app({ system: { https: null, http: null } });
   await page();
   const radios = [...document.querySelectorAll<HTMLInputElement>('input[name="network-proxy"]')];
   assert.deepEqual(
@@ -125,16 +134,17 @@ test('no proxy is chosen at first, and what a proxy has hides with it', async ()
     radios.map((r) => r.checked),
     [true, false, false]
   );
+  assert.ok(automatic(), 'said to be chosen automatically');
   // The system's is said as it is now, for choosing it.
-  assert.match(text(radio('System proxy').closest('label')), /Now: proxy\.corp:3128 \(HTTP\)\./);
+  assert.match(text(radio('System proxy').closest('label')), /Now: None is set/);
   assert.deepEqual(shown(), NOTHING);
-  const timeout = document.querySelector<HTMLInputElement>('.setting-number-field input')!;
-  assert.equal(timeout.placeholder, '30', 'the timeout is no proxy’s too');
+  assert.equal(timeoutField().placeholder, '30', 'the timeout is no proxy’s too');
   assert.deepEqual(saves(), []);
 
   await choose(radio('System proxy'));
   assert.deepEqual(saves(), [{ settings: { proxy: 'system', ...REST }, password: undefined }]);
   assert.deepEqual(shown(), { ...NOTHING, cloudHosts: true, browser: true, places: true });
+  assert.equal(automatic(), false, 'chosen now');
 
   await choose(radio('Custom'));
   assert.deepEqual(shown(), { form: true, cloudHosts: true, browser: true, places: true });
@@ -146,6 +156,29 @@ test('no proxy is chosen at first, and what a proxy has hides with it', async ()
   assert.deepEqual(shown(), NOTHING);
 });
 
+test('where this computer has a proxy, the system’s is chosen at first, until another is', async () => {
+  app();
+  await page();
+  assert.equal(radio('System proxy').checked, true);
+  assert.ok(automatic());
+  assert.match(text(radio('System proxy').closest('label')), /Now: proxy\.corp:3128 \(HTTP\)\./);
+  assert.deepEqual(shown(), { ...NOTHING, cloudHosts: true, browser: true, places: true });
+
+  // Another setting saved chooses no proxy.
+  await enter(timeoutField(), '60');
+  assert.deepEqual(saves(), [{ settings: { ...REST, timeoutSecs: 60 }, password: undefined }]);
+  assert.equal('proxy' in saves()[0].settings, false);
+  assert.ok(automatic());
+
+  await choose(radio('No proxy'));
+  assert.deepEqual(saves().at(-1), {
+    settings: { ...REST, timeoutSecs: 60, proxy: 'direct' },
+    password: undefined,
+  });
+  assert.equal(automatic(), false);
+  assert.deepEqual(shown(), NOTHING);
+});
+
 test('a custom proxy is saved once it has a host and a port', async () => {
   app();
   await page();
@@ -153,7 +186,7 @@ test('a custom proxy is saved once it has a host and a port', async () => {
   assert.ok(form(), 'its fields show');
   assert.equal(radio('Custom').checked, true);
   assert.deepEqual(statuses(), [
-    'Not in use yet: enter the proxy’s host and port. Until then, connections go directly.',
+    'Not in use yet: enter the proxy’s host and port. Until then, connections use the system’s proxy.',
   ]);
   assert.equal(field('Port').placeholder, '3128');
 

@@ -711,7 +711,7 @@ async fn browser_proxy_in_a_process_of_its_own() {
     let app = App::new();
     let (remote, fake) = connected(&app).await;
     let mut settings = NetworkSettings {
-        proxy: ProxyMode::Custom,
+        proxy: Some(ProxyMode::Custom),
         custom: Some(CustomProxy {
             kind: ProxyKind::Http,
             host: "proxy.example.com".into(),

@@ -6,11 +6,12 @@
 //!   from `builder`; cloud hosts' SSH connections start at
 //!   `open_cloud_host`.
 //! - All take the settings' timeout for connecting, and their proxy: none
-//!   ("No proxy", the first choice, whatever the system has set), the
-//!   system's, as reqwest finds it, or a custom HTTP or SOCKS5 one, which
-//!   nothing on this computer (localhost) goes through. Cloud hosts'
-//!   connections and the agent's browsers go through it only when the
-//!   settings say so.
+//!   ("No proxy", whatever the system has set), the system's, as reqwest
+//!   finds it, or a custom HTTP or SOCKS5 one, which nothing on this
+//!   computer (localhost) goes through. Until one is chosen, the system's,
+//!   which is none while the system has none set: the page shows "System
+//!   proxy" or "No proxy" as it finds the system. Cloud hosts' connections
+//!   and the agent's browsers go through it only when the settings say so.
 //! - The shared client, and its connections with it, is replaced when the
 //!   settings change; after an attempt that may have failed for its
 //!   connection (`refresh`); after the computer slept, as a connection
@@ -24,8 +25,8 @@
 //! proxy's password is in the app's keychain: the file says whether one is
 //! saved and when it last changed, and `init`'s `password` reads it, off
 //! the async threads, as a keychain may ask the user first. A process that
-//! never calls `init` (a cloud host's daemon, the tests) follows the
-//! system's proxy, as it always did, and has 30 s to connect.
+//! never calls `init` (a cloud host's daemon, the tests) has the settings'
+//! defaults: the system's proxy, and 30 s to connect.
 
 mod settings;
 #[cfg(test)]
@@ -156,25 +157,9 @@ enum Route {
     Custom(CustomProxy, Option<Secret>),
 }
 
+#[derive(Default)]
 struct Net {
     state: Mutex<State>,
-}
-
-impl Default for Net {
-    /// Until `init` reads the app's settings, the system's proxy: what a
-    /// process without settings of its own, a cloud host's daemon, follows.
-    fn default() -> Self {
-        let settings = NetworkSettings {
-            proxy: ProxyMode::System,
-            ..NetworkSettings::default()
-        };
-        Net {
-            state: Mutex::new(State {
-                settings,
-                ..State::default()
-            }),
-        }
-    }
 }
 
 static NET: LazyLock<Net> = LazyLock::new(Net::default);
@@ -308,10 +293,6 @@ impl Net {
             state.source = Some(source);
             state.password_due = true;
             state.password_not_before = None;
-            // The app's own defaults, "No proxy", until the file says more.
-            state.settings = NetworkSettings::default();
-            state.seen = None;
-            state.generation += 1;
         }
         self.follow(true);
     }

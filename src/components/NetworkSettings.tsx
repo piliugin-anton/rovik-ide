@@ -1,13 +1,14 @@
 // NetworkSettings.tsx
 //
 // Settings → Network: how long connecting may take, the proxy the app's
-// connections go through (none, the first choice; the system's; or a
-// custom HTTP or SOCKS5 one), and whether cloud hosts' SSH connections and
-// the agent's browsers (this computer's, the cloud hosts', or both) go
-// through it too, which only shows while there's a proxy. Each change
-// applies at once (lib/network.ts, kept by the backend). The custom proxy
-// is saved once it has a host and a port; until then the page says what's
-// in use. Its password goes to the keychain.
+// connections go through (none, the system's, or a custom HTTP or SOCKS5
+// one; until one is chosen, "System proxy" while this computer has a proxy
+// set, else "No proxy"), and whether cloud hosts' SSH connections and the
+// agent's browsers (this computer's, the cloud hosts', or both) go through
+// it too, which only shows while there's a proxy. Each change applies at
+// once (lib/network.ts, kept by the backend). The custom proxy is saved
+// once it has a host and a port; until then the page says what's in use.
+// Its password goes to the keychain.
 
 import { createResource, createSignal, Show } from 'solid-js';
 import {
@@ -17,8 +18,10 @@ import {
   networkSettings,
   portOf,
   proxyAddress,
+  proxyChoice,
   saveNetwork,
   splitProxyAddress,
+  systemHasProxy,
   systemProxyLine,
   type BrowserPlaces,
   type CustomProxy,
@@ -73,7 +76,9 @@ export default function NetworkSettings() {
   const [unlockError, setUnlockError] = createSignal<string | null>(null);
 
   const saved = () => view()!.settings;
-  const mode = () => (wantsCustom() ? 'custom' : saved().proxy);
+  const mode = () => (wantsCustom() ? 'custom' : proxyChoice(view()!));
+  // No proxy chosen yet: the radio checked is what this computer has.
+  const automatic = () => saved().proxy === undefined && !wantsCustom();
   const fields = () => draft() ?? draftOf(saved().custom);
 
   async function save(next: Settings, passwordChange?: string): Promise<boolean> {
@@ -137,13 +142,13 @@ export default function NetworkSettings() {
 
   /** What connections do while the custom proxy isn't complete. */
   const meanwhile = (v: NetworkView) => {
-    const { proxy, custom } = v.settings;
-    if (proxy === 'custom' && custom) {
-      return `connections use the saved one, ${proxyAddress(custom)}`;
+    const now = proxyChoice(v);
+    if (now === 'custom' && v.settings.custom) {
+      return `connections use the saved one, ${proxyAddress(v.settings.custom)}`;
     }
-    return proxy === 'direct' ? 'connections go directly' : 'connections use the system’s proxy';
+    return now === 'system' ? 'connections use the system’s proxy' : 'connections go directly';
   };
-  const noSystemProxy = (v: NetworkView) => !v.system.https && !v.system.http;
+  const noSystemProxy = (v: NetworkView) => !systemHasProxy(v);
 
   return (
     <div class="permissions-settings network-settings">
@@ -237,6 +242,12 @@ export default function NetworkSettings() {
                   </span>
                 </label>
               </div>
+              <Show when={automatic()}>
+                <p class="settings-hint setting-explain network-proxy-automatic">
+                  Chosen automatically: System proxy while this computer has a proxy set, No proxy
+                  while it hasn’t. Choosing one keeps it.
+                </p>
+              </Show>
 
               <Show when={mode() === 'custom'}>
                 <div class="profile-form network-proxy-form">

@@ -19,7 +19,7 @@ fn proxy(kind: ProxyKind, host: &str, port: u16, username: Option<&str>) -> Cust
 
 fn custom(proxy: CustomProxy, cloud_hosts: bool) -> NetworkSettings {
     NetworkSettings {
-        proxy: ProxyMode::Custom,
+        proxy: Some(ProxyMode::Custom),
         custom: Some(proxy),
         cloud_hosts,
         ..NetworkSettings::default()
@@ -299,7 +299,7 @@ fn settings_are_checked_and_tidied() {
     }
 
     let none = NetworkSettings {
-        proxy: ProxyMode::Custom,
+        proxy: Some(ProxyMode::Custom),
         ..NetworkSettings::default()
     };
     assert_eq!(
@@ -396,7 +396,6 @@ fn the_file_keeps_its_form() {
     assert_eq!(
         serde_json::to_value(Saved::default()).unwrap(),
         serde_json::json!({
-            "proxy": "direct",
             "cloudHosts": false,
             "browser": false,
             "browserPlaces": "local",
@@ -407,30 +406,42 @@ fn the_file_keeps_its_form() {
     assert!(!read.password_saved);
 }
 
-/// The app's settings start with "No proxy"; a process without settings
-/// of its own, a cloud host's daemon, follows the system's proxy.
+/// Until a proxy is chosen, the system's is used, which is none while the
+/// system has none set; saving the rest chooses none. A process without
+/// settings of its own, a cloud host's daemon, does the same.
 #[test]
-fn no_proxy_is_the_apps_first_choice() {
-    assert_eq!(NetworkSettings::default().proxy, ProxyMode::Direct);
-    let daemon = Net::default();
-    assert_eq!(daemon.lock().settings.proxy, ProxyMode::System);
+fn until_a_proxy_is_chosen_the_systems_is_used() {
+    let unchosen = NetworkSettings::default();
+    assert_eq!(unchosen.proxy, None);
+    assert_eq!(unchosen.mode(), ProxyMode::System);
+    assert!(unchosen.proxied());
+    assert_eq!(unchosen.custom_in_use(), None);
+    assert_eq!(Net::default().lock().settings, unchosen);
 
     let dir = crate::testing::temp_dir();
     let file = dir.0.join("network-settings.json");
-    let app = || {
-        let net = Net::default();
-        net.init(file.clone(), Arc::new(|| Ok(None)));
-        net
-    };
-    assert_eq!(
-        app().view().settings,
-        NetworkSettings::default(),
-        "no file yet"
-    );
-    std::fs::write(&file, br#"{"proxy": "system", "cloudHosts": true}"#).unwrap();
-    assert_eq!(app().lock().settings.proxy, ProxyMode::System);
-    std::fs::write(&file, b"{}").unwrap();
-    assert_eq!(app().lock().settings.proxy, ProxyMode::Direct, "none saved");
+    let written =
+        || -> serde_json::Value { serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap() };
+    let net = Net::default();
+    net.init(file.clone(), Arc::new(|| Ok(None)));
+    assert_eq!(net.view().settings, unchosen, "no file yet");
+    net.save(NetworkSettings {
+        timeout_secs: Some(60),
+        ..unchosen.clone()
+    })
+    .unwrap();
+    assert_eq!(written().get("proxy"), None, "the rest saved, none chosen");
+    assert_eq!(net.lock().settings.mode(), ProxyMode::System);
+
+    for (chosen, said) in [(ProxyMode::Direct, "direct"), (ProxyMode::System, "system")] {
+        net.save(NetworkSettings {
+            proxy: Some(chosen),
+            ..unchosen.clone()
+        })
+        .unwrap();
+        assert_eq!(written()["proxy"], said);
+        assert_eq!(net.lock().settings.mode(), chosen, "kept as chosen");
+    }
 }
 
 #[test]
@@ -605,8 +616,8 @@ async fn a_custom_socks5_proxy_carries_requests_by_name() {
     assert_eq!(asked.users, [("bob".to_string(), "pw".to_string())]);
 }
 
-/// "No proxy" goes around the system's proxy, which "System proxy" and a
-/// process without settings of its own go through. The system's proxy is
+/// "No proxy" goes around the system's proxy, which "System proxy" goes
+/// through, as do the settings while none is chosen. The system's proxy is
 /// the process's variables here, so this runs in a process of its own.
 #[test]
 fn no_proxy_goes_around_the_systems_proxy() {
@@ -651,11 +662,15 @@ async fn no_proxy_in_a_process_of_its_own() {
     assert_eq!(
         get(&net, &url).await.unwrap(),
         "through the system's proxy",
-        "without settings"
+        "none chosen"
     );
     assert_eq!(through(), 1);
 
-    net.save(NetworkSettings::default()).unwrap();
+    net.save(NetworkSettings {
+        proxy: Some(ProxyMode::Direct),
+        ..NetworkSettings::default()
+    })
+    .unwrap();
     assert_eq!(get(&net, &url).await.unwrap(), "directly", "no proxy");
     let download = net.builder().await.build().unwrap();
     let body = download.get(&url).send().await.unwrap().text().await;
@@ -664,7 +679,7 @@ async fn no_proxy_in_a_process_of_its_own() {
     assert_eq!(connections.load(Ordering::SeqCst), 2);
 
     let system_proxy = NetworkSettings {
-        proxy: ProxyMode::System,
+        proxy: Some(ProxyMode::System),
         cloud_hosts: true,
         browser: true,
         ..NetworkSettings::default()
@@ -684,7 +699,7 @@ async fn no_proxy_in_a_process_of_its_own() {
 
     // No proxy again: none of it, though the boxes are kept.
     net.save(NetworkSettings {
-        proxy: ProxyMode::Direct,
+        proxy: Some(ProxyMode::Direct),
         ..system_proxy
     })
     .unwrap();
@@ -876,7 +891,7 @@ async fn no_proxy_keeps_the_rest_for_later() {
     );
     settings.browser = true;
     settings.browser_places = BrowserPlaces::Both;
-    settings.proxy = ProxyMode::Direct;
+    settings.proxy = Some(ProxyMode::Direct);
     net.save(settings.clone()).unwrap();
     assert!(matches!(effective(&net.lock()).route, Route::Direct));
     assert_eq!(
@@ -886,7 +901,7 @@ async fn no_proxy_keeps_the_rest_for_later() {
     assert_eq!(net.browser_proxy().await, None);
     assert_eq!(net.cloud_browser_proxy().await, None);
 
-    settings.proxy = ProxyMode::Custom;
+    settings.proxy = Some(ProxyMode::Custom);
     net.save(settings).unwrap();
     assert!(matches!(effective(&net.lock()).route, Route::Custom(..)));
     assert!(matches!(

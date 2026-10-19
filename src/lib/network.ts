@@ -9,7 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { StoreKind } from './hosts';
 
-/** 'direct': no proxy, the first choice, even when the system has one set. */
+/** 'direct': no proxy, even when the system has one set. */
 export type ProxyMode = 'direct' | 'system' | 'custom';
 export type ProxyKind = 'http' | 'socks5';
 /** Which of the agent's browsers go through the proxy. */
@@ -27,7 +27,11 @@ export interface CustomProxy {
 export interface NetworkSettings {
   /** How long connecting may take, in seconds; none: the default. */
   timeoutSecs?: number;
-  proxy: ProxyMode;
+  /**
+   * The proxy chosen. None while none has been: the system's is used, none
+   * while it has none set (`proxyChoice`).
+   */
+  proxy?: ProxyMode;
   /** Kept while another choice is used, for going back to it. */
   custom?: CustomProxy;
   /** Cloud hosts' SSH connections go through the proxy too: kept, unused, with no proxy. */
@@ -139,11 +143,26 @@ export function systemProxyLine(view: Pick<NetworkView, 'system'>): string {
   return `${describeProxyUrl((https ?? http)!)}.`;
 }
 
+/** This computer has a proxy set, as "System proxy" uses it. */
+export function systemHasProxy(view: Pick<NetworkView, 'system'>): boolean {
+  return Boolean(view.system.https || view.system.http);
+}
+
+/**
+ * The choice in use: the one made, or until one is, "System proxy" while
+ * this computer has a proxy set and "No proxy" while it hasn't (which the
+ * system's proxy then is).
+ */
+export function proxyChoice(view: Pick<NetworkView, 'settings' | 'system'>): ProxyMode {
+  return view.settings.proxy ?? (systemHasProxy(view) ? 'system' : 'direct');
+}
+
 /** One line for the Settings menu. */
 export function networkSummary(view: NetworkView): string {
   const { settings } = view;
-  const direct = settings.proxy === 'direct';
-  const custom = settings.proxy === 'custom' ? settings.custom : undefined;
+  const choice = proxyChoice(view);
+  const direct = choice === 'direct';
+  const custom = choice === 'custom' ? settings.custom : undefined;
   let line: string;
   if (direct) {
     line = 'No proxy: connections go directly';
@@ -158,7 +177,7 @@ export function networkSummary(view: NetworkView): string {
   }
   const parts = [line];
   // What goes through the proxy besides, when there's one.
-  const anyProxy = !direct && Boolean(custom || view.system.https || view.system.http);
+  const anyProxy = !direct && Boolean(custom || systemHasProxy(view));
   if (settings.cloudHosts && anyProxy) parts.push('also for cloud hosts');
   if (settings.browser && anyProxy) {
     parts.push(`the browser too (${PLACES_LABEL[settings.browserPlaces].toLowerCase()})`);

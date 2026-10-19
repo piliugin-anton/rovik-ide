@@ -25,7 +25,11 @@ pub struct NetworkSettings {
     /// in seconds. None: [`DEFAULT_TIMEOUT_SECS`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u32>,
-    pub proxy: ProxyMode,
+    /// The proxy chosen. None while none has been: then the system's is
+    /// used, which is none while the system has none set, so the page shows
+    /// "System proxy" or "No proxy" as it finds the system.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxyMode>,
     /// The custom proxy. Kept while another choice is used, so going back
     /// to it needs nothing typed again.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,16 +66,16 @@ impl BrowserPlaces {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ProxyMode {
     /// No proxy: connections go directly, even when this computer has a
-    /// proxy set. What the app's settings start with.
-    #[default]
+    /// proxy set.
     Direct,
     /// This computer's proxy: on macOS and Windows its network settings,
     /// and everywhere the HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
-    /// variables. None set: connections go directly.
+    /// variables. None set: connections go directly. What's used while no
+    /// proxy has been chosen.
     System,
     /// The proxy set here, `NetworkSettings::custom`.
     Custom,
@@ -134,25 +138,30 @@ impl NetworkSettings {
         }
         if let Some(custom) = &self.custom {
             custom.check()?;
-        } else if self.proxy == ProxyMode::Custom {
+        } else if self.proxy == Some(ProxyMode::Custom) {
             return Err("Enter the proxy's host and port.".into());
         }
         Ok(())
     }
 
+    /// The proxy used: the one chosen, or while none is, the system's.
+    pub fn mode(&self) -> ProxyMode {
+        self.proxy.unwrap_or(ProxyMode::System)
+    }
+
     /// The custom proxy, when it's the one in use.
     pub fn custom_in_use(&self) -> Option<&CustomProxy> {
-        match self.proxy {
+        match self.mode() {
             ProxyMode::Custom => self.custom.as_ref(),
             ProxyMode::Direct | ProxyMode::System => None,
         }
     }
 
-    /// A proxy is used, the system's or the custom one: not with "No
+    /// A proxy may be used, the system's or the custom one: not with "No
     /// proxy", which nothing goes through a proxy with, cloud hosts and
     /// browsers neither.
     pub fn proxied(&self) -> bool {
-        self.proxy != ProxyMode::Direct
+        self.mode() != ProxyMode::Direct
     }
 }
 

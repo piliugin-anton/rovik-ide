@@ -8,6 +8,7 @@ import {
   networkSummary,
   portOf,
   proxyAddress,
+  proxyChoice,
   splitProxyAddress,
   systemProxyLine,
   type NetworkSettings,
@@ -20,7 +21,6 @@ function view(
 ): NetworkView {
   return {
     settings: {
-      proxy: 'direct',
       cloudHosts: false,
       browser: false,
       browserPlaces: 'local',
@@ -108,13 +108,26 @@ test('the system’s proxy is said as its address and kind', () => {
   );
 });
 
+test('until a proxy is chosen, the system’s is while this computer has one set', () => {
+  const corp = { https: 'http://proxy.corp:3128' };
+  assert.equal(proxyChoice(view()), 'direct');
+  assert.equal(proxyChoice(view({}, corp)), 'system');
+  assert.equal(proxyChoice(view({}, { http: 'socks5h://socks.corp:1080' })), 'system');
+  // Chosen: kept, whatever the computer has.
+  assert.equal(proxyChoice(view({ proxy: 'direct' }, corp)), 'direct');
+  assert.equal(proxyChoice(view({ proxy: 'system' })), 'system');
+});
+
 test('the menu’s line says the proxy in use, for cloud hosts too, and a timeout set', () => {
   const corp = { https: 'http://proxy.corp:3128' };
   const socks = { kind: 'socks5' as const, host: 'socks.example.com', port: 1080 };
+  // None chosen: as this computer has it.
   assert.equal(networkSummary(view()), 'No proxy: connections go directly');
+  assert.equal(networkSummary(view({}, corp)), 'System proxy: proxy.corp:3128 (HTTP)');
   // No proxy: what's kept for one isn't said, the timeout is.
+  const kept = { cloudHosts: true, browser: true, custom: socks, timeoutSecs: 60 };
   assert.equal(
-    networkSummary(view({ cloudHosts: true, browser: true, custom: socks, timeoutSecs: 60 }, corp)),
+    networkSummary(view({ proxy: 'direct', ...kept }, corp)),
     'No proxy: connections go directly · 60 s to connect'
   );
 
