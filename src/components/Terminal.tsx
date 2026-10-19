@@ -60,6 +60,91 @@ export function controlCharFor(e: KeyboardEvent): string | null {
 /** `text` without control characters, which the terminal would act on. */
 const printable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
 
+/**
+ * A key an input method has (a keydown of 229), kept from xterm, which does
+ * nothing with it but look at its textarea afterwards for what it gained:
+ * what the input method makes of it is sent by `sendInputMethodText`, or by
+ * xterm at a composition's end. That look went wrong on Linux (WebKitGTK,
+ * with IBus or Fcitx): after a space it sent the whole line again (WebKit
+ * keeps a space at the textarea's end as a non-breaking one, a plain one
+ * again once text follows, so the text before wasn't in the text after),
+ * and a letter twice when keys came faster than its looks.
+ */
+const isInputMethodKey = (e: KeyboardEvent) => e.type === 'keydown' && e.keyCode === 229;
+
+/**
+ * Text an input method types outside a composition, sent to the shell once
+ * from the event that carries it. On Linux an input method (IBus, GNOME's;
+ * Fcitx) answers a key after the webview (WebKitGTK) has passed it on as a
+ * keydown of 229, and its text comes as a composition that ends without
+ * having started: no compositionstart. xterm took it at that end, all its
+ * textarea held from a start no compositionstart had set, and from its
+ * look after the keydown too: "привет" went in as
+ * "ппрприпривпривеприветпривет". Such a composition's text is sent from
+ * here as it goes in (at its end if nothing went in), and its end kept
+ * from xterm. So is text that goes in on an input method's key outside a
+ * composition (its punctuation, on Windows), which only xterm's look sent.
+ * A composition that starts (Chinese, Japanese, a dead key's accent) is
+ * xterm's, as before. Returns the removal of its listeners.
+ */
+function sendInputMethodText(term: XTerm, container: HTMLElement): () => void {
+  let composing = false;
+  /** The last key is an input method's, and no keypress (xterm's to send) followed it. */
+  let inputMethodKey = false;
+  /** What went in for a composition that never started, sent already. */
+  let sentForComposition = false;
+  const ours = (e: Event) => e.target === term.textarea;
+  const send = (e: Event, text: string) => {
+    e.stopPropagation();
+    term.input(text, true);
+  };
+  const keydown = (e: Event) => {
+    if (!ours(e)) return;
+    inputMethodKey = (e as KeyboardEvent).keyCode === 229;
+    // As xterm does on such a key, kept from it: the prompt in view.
+    if (inputMethodKey) term.scrollToBottom();
+  };
+  const keypress = (e: Event) => {
+    if (ours(e)) inputMethodKey = false;
+  };
+  const start = (e: Event) => {
+    if (ours(e)) composing = true;
+  };
+  const input = (e: Event) => {
+    const { data, inputType, isComposing } = e as InputEvent;
+    if (!ours(e) || composing || !data) return;
+    if (isComposing || inputType === 'insertFromComposition') {
+      sentForComposition = true;
+      send(e, data);
+    } else if (inputType === 'insertText' && inputMethodKey) {
+      send(e, data);
+    }
+  };
+  const end = (e: Event) => {
+    if (!ours(e)) return;
+    if (composing) {
+      composing = false;
+      return;
+    }
+    e.stopPropagation();
+    const text = (e as CompositionEvent).data;
+    if (text && !sentForComposition) term.input(text, true);
+    sentForComposition = false;
+  };
+  // Captured on an element around xterm's textarea: before xterm's own.
+  const listeners: [string, (e: Event) => void][] = [
+    ['keydown', keydown],
+    ['keypress', keypress],
+    ['compositionstart', start],
+    ['input', input],
+    ['compositionend', end],
+  ];
+  for (const [type, listener] of listeners) container.addEventListener(type, listener, true);
+  return () => {
+    for (const [type, listener] of listeners) container.removeEventListener(type, listener, true);
+  };
+}
+
 /** Copy text to the OS clipboard, with a fallback for webviews without the async API. */
 async function writeClipboard(text: string): Promise<boolean> {
   try {
@@ -263,8 +348,9 @@ export default function Terminal(props: TerminalProps) {
         term.input(control, true);
         return false;
       }
-      return true;
+      return !isInputMethodKey(e);
     });
+    onCleanup(sendInputMethodText(term, containerEl));
     term.onTitleChange((title) => props.onTitleChange?.(title));
 
     // Input typed before the shell is up is kept, not dropped.

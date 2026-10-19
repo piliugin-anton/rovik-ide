@@ -3,8 +3,9 @@
 // (TerminalNewMenu): "Local", or each connected host, by mouse or by
 // keyboard. A remote terminal opens through `spawn_remote_terminal`, and
 // the tabs say where each runs while a host is connected or one runs on
-// one. Ctrl+Shift+V pastes the clipboard once. The app is answered here,
-// command by command. Run with: npm test
+// one. Ctrl+Shift+V pastes the clipboard once, and text an input method
+// types goes in once. The app is answered here, command by command. Run
+// with: npm test
 import { container } from '../test/dom';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -326,4 +327,166 @@ test("Ctrl+Shift+V pastes the clipboard once: the webview's own paste doesn't fo
   } finally {
     delete (navigator as any).clipboard;
   }
+});
+
+/** happy-dom's: CompositionEvent doesn't take its `data` from the init. */
+function compositionEvent(type: string, data?: string): Event {
+  const event = new (window as any).CompositionEvent(type, { bubbles: true });
+  if (data !== undefined) Object.defineProperty(event, 'data', { value: data });
+  return event;
+}
+/** An input event as the webview's own are: `composed`, which xterm checks. */
+const inputEvent = (type: string, data: string, inputType: string, isComposing = false): Event =>
+  new (window as any).InputEvent(type, {
+    data,
+    inputType,
+    isComposing,
+    bubbles: true,
+    composed: true,
+  });
+/** A key an input method has: a keydown (or keyup) of 229. */
+const inputMethodKeyEvent = (type: string) =>
+  new KeyboardEvent(type, { key: 'Unidentified', keyCode: 229, bubbles: true, cancelable: true });
+
+/**
+ * What WebKitGTK gives the terminal for a key an input method (IBus,
+ * Fcitx) answers with `ch`: a keydown of 229, then `ch` going in as a
+ * composition that ends without having started. `late`: the answer comes
+ * after a moment. No `keydown`: the compositor took the key (Wayland's
+ * text input), only the text comes. `insert`: the textarea's text once
+ * `ch` is in, from its text before.
+ */
+async function inputMethodKey(
+  textarea: HTMLTextAreaElement,
+  ch: string,
+  {
+    late = false,
+    keydown = true,
+    insert = (before: string) => before + ch,
+  }: { late?: boolean; keydown?: boolean; insert?: (before: string) => string } = {}
+) {
+  if (keydown) textarea.dispatchEvent(inputMethodKeyEvent('keydown'));
+  if (late) await flush();
+  textarea.dispatchEvent(inputEvent('beforeinput', ch, 'insertFromComposition', true));
+  textarea.value = insert(textarea.value);
+  textarea.dispatchEvent(inputEvent('input', ch, 'insertFromComposition', true));
+  textarea.dispatchEvent(compositionEvent('compositionend', ch));
+  if (keydown) textarea.dispatchEvent(inputMethodKeyEvent('keyup'));
+  await flush();
+}
+
+const helperTextarea = (root: HTMLElement) =>
+  root.querySelector<HTMLTextAreaElement>('.terminal-instance .xterm-helper-textarea')!;
+
+/** What went to the shell while `act` ran, write by write. */
+async function written(act: () => Promise<void>): Promise<string[]> {
+  const before = calls.length;
+  await act();
+  await flush();
+  return calls
+    .slice(before)
+    .filter((c) => c.cmd === 'write_to_terminal')
+    .map((c) => c.args.data);
+}
+
+test('text an input method types goes to the shell once (IBus, Fcitx on Linux)', async () => {
+  await app([]);
+  const root = await panel();
+  const textarea = helperTextarea(root);
+  const typed = (word: string, how?: { late?: boolean; keydown?: boolean }) =>
+    written(async () => {
+      for (const ch of word) await inputMethodKey(textarea, ch, how);
+    });
+  // xterm sent each letter again with letters typed before it (in the
+  // app: "привет" as "ппрприпривпривеприветпривет").
+  assert.deepEqual(await typed('привет'), [...'привет']);
+  assert.deepEqual(await typed('мир', { late: true }), [...'мир']);
+  assert.deepEqual(await typed('да', { keydown: false }), [...'да']);
+  // Keys faster than the answers: both keys down before either's text.
+  const fast = await written(async () => {
+    textarea.dispatchEvent(inputMethodKeyEvent('keydown'));
+    textarea.dispatchEvent(inputMethodKeyEvent('keydown'));
+    for (const ch of 'ой') {
+      textarea.dispatchEvent(inputEvent('beforeinput', ch, 'insertFromComposition', true));
+      textarea.value += ch;
+      textarea.dispatchEvent(inputEvent('input', ch, 'insertFromComposition', true));
+      textarea.dispatchEvent(compositionEvent('compositionend', ch));
+    }
+  });
+  assert.deepEqual(fast, [...'ой']);
+});
+
+test("a space before an input method's letter: the line doesn't go again", async () => {
+  await app([]);
+  const root = await panel();
+  const textarea = helperTextarea(root);
+  const sentNow = await written(async () => {
+    for (const ch of 'аб') await inputMethodKey(textarea, ch);
+    // A space, a key of its own: xterm sends it on its keypress. WebKitGTK
+    // keeps it at the textarea's end as a non-breaking space...
+    const space = (type: string) =>
+      new KeyboardEvent(type, { key: ' ', code: 'Space', keyCode: 32, bubbles: true });
+    textarea.dispatchEvent(space('keydown'));
+    textarea.dispatchEvent(space('keypress'));
+    textarea.value += ' ';
+    textarea.dispatchEvent(inputEvent('input', ' ', 'insertText'));
+    textarea.dispatchEvent(space('keyup'));
+    await flush();
+    // ...a plain one again once the next letter follows it.
+    await inputMethodKey(textarea, 'в', { insert: (before) => before.replace(/ $/, ' в') });
+  });
+  // The textarea's text before wasn't found in its text after: all of it
+  // went again, "аб в" after "аб ".
+  assert.deepEqual(sentNow, ['а', 'б', ' ', 'в']);
+});
+
+test("text that goes in on an input method's key outside a composition goes in once", async () => {
+  await app([]);
+  const root = await panel();
+  const textarea = helperTextarea(root);
+  // An input method's punctuation on Windows: a keydown of 229, then the
+  // text, no composition. Before the key's release, or after it.
+  const punctuation = (mark: string, releasedFirst: boolean) =>
+    written(async () => {
+      textarea.dispatchEvent(inputMethodKeyEvent('keydown'));
+      if (releasedFirst) textarea.dispatchEvent(inputMethodKeyEvent('keyup'));
+      textarea.dispatchEvent(inputEvent('beforeinput', mark, 'insertText'));
+      textarea.value += mark;
+      textarea.dispatchEvent(inputEvent('input', mark, 'insertText'));
+      if (!releasedFirst) textarea.dispatchEvent(inputMethodKeyEvent('keyup'));
+    });
+  assert.deepEqual(await punctuation('，', false), ['，']);
+  assert.deepEqual(await punctuation('。', true), ['。']);
+  // A keypress after the key: its text is xterm's to send, once.
+  const pressed = await written(async () => {
+    textarea.dispatchEvent(inputMethodKeyEvent('keydown'));
+    textarea.dispatchEvent(new KeyboardEvent('keypress', { key: '!', keyCode: 33, bubbles: true }));
+    textarea.value += '!';
+    textarea.dispatchEvent(inputEvent('input', '!', 'insertText'));
+    textarea.dispatchEvent(inputMethodKeyEvent('keyup'));
+  });
+  assert.deepEqual(pressed, ['!']);
+});
+
+test("a composition that starts is xterm's, as before: what it makes goes in once", async () => {
+  await app([]);
+  const root = await panel();
+  const textarea = helperTextarea(root);
+  const sentNow = await written(async () => {
+    // A Chinese input method's: "ni" spelled, "你" chosen.
+    textarea.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Process', keyCode: 229, bubbles: true })
+    );
+    textarea.dispatchEvent(compositionEvent('compositionstart'));
+    for (const spelled of ['n', 'ni']) {
+      textarea.value = spelled;
+      textarea.dispatchEvent(inputEvent('input', spelled, 'insertCompositionText', true));
+      textarea.dispatchEvent(compositionEvent('compositionupdate', spelled));
+      await flush();
+    }
+    textarea.value = '你';
+    textarea.dispatchEvent(inputEvent('input', '你', 'insertCompositionText', true));
+    textarea.dispatchEvent(compositionEvent('compositionend', '你'));
+  });
+  assert.deepEqual(sentNow, ['你']);
 });
