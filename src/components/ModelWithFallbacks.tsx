@@ -2,7 +2,8 @@
 //
 // A model choice and its fallbacks, as the Subagents page uses them for the
 // default subagent model and each kind (lib/subagentSettings.ts). Besides a
-// model, a choice can be a special value ("Same as the chat", "Default").
+// model, a choice can be a special value ("Same as the chat", "Default"); a
+// row that offers none (Thorough's kinds) says a model is still to choose.
 // Models marked "no tools" can't be picked (every subagent needs tools); a
 // saved model that was turned off or removed stays visible, marked, and is
 // skipped when the subagent runs.
@@ -45,6 +46,8 @@ export default function ModelWithFallbacks<S extends string>(props: {
   value: S | ModelSelection;
   /** The special choices offered before the models ("Same as the chat"…). */
   specials: { value: S; label: string }[];
+  /** Shown while the value is a special not offered: no model chosen yet. */
+  unset?: string;
   fallbacks: ModelSelection[];
   onChange: (value: S | ModelSelection) => void;
   onFallbacksChange: (fallbacks: ModelSelection[]) => void;
@@ -105,6 +108,15 @@ export default function ModelWithFallbacks<S extends string>(props: {
         disabled={props.disabled}
         onChange={(e) => choose(e.currentTarget.value)}
       >
+        <Show
+          when={
+            typeof props.value === 'string' && !props.specials.some((s) => s.value === props.value)
+          }
+        >
+          <option value={valueKey()} disabled>
+            {props.unset ?? 'Choose a model…'}
+          </option>
+        </Show>
         <For each={props.specials}>
           {(s) => <option value={`special:${s.value}`}>{s.label}</option>}
         </For>
@@ -124,8 +136,10 @@ export default function ModelWithFallbacks<S extends string>(props: {
       </select>
       <Show when={typeof props.value !== 'string' && !selected()?.usable}>
         <p class="settings-hint setting-explain warning">
-          This model is turned off, removed, or can’t use tools, so it’s skipped: the next model is
-          used instead.
+          This model is turned off, removed, or can’t use tools, so it’s skipped:{' '}
+          {props.specials.length > 0
+            ? 'the next model is used instead.'
+            : 'only the fallbacks here stand in for it.'}
         </p>
       </Show>
       <Show when={smallContext()}>

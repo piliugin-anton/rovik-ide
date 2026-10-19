@@ -4,15 +4,16 @@ import type { ModelProfile, ModelSelection, Provider } from '../types';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
   kindChain,
+  kindNames,
+  kindsWithoutModel,
   normalizeSubagentSettings,
-  JUDGING_KINDS,
   numberFieldValue,
-  otherProviderModel,
   otherProviders,
   resolveSubagentConfig,
   subagentSummary,
   type SubagentSettings,
 } from './subagentSettings';
+import { THOROUGH_KINDS } from './autopilotSettings';
 
 const providers: Provider[] = [
   {
@@ -354,52 +355,56 @@ test('number_field_value_table', () => {
     assert.equal(numberFieldValue(...args), expected, JSON.stringify(args));
 });
 
-test('judging rows left on Default start on another provider than the chat’s (T09)', () => {
+test('Thorough’s kinds run on the models chosen for them, and only those (T09)', () => {
   const chat = sel('a', 'cheap');
   const s: SubagentSettings = { ...DEFAULT_SUBAGENT_SETTINGS, enabled: true };
-  assert.deepEqual(otherProviderModel(providers, chat), sel('b', 'other'));
-  assert.equal(otherProviderModel(providers, null), null, 'no chat model known');
-  // Two providers: the judging rows resolve to the other one first.
-  const config = resolveSubagentConfig(s, providers, resolve, chat);
-  for (const kind of JUDGING_KINDS) {
-    assert.deepEqual(ids(config.kinds[kind]!.models), ['b::other', 'chat'], kind);
-  }
-  // The others keep their chain.
-  assert.deepEqual(ids(config.kinds.reviewer!.models), ['chat']);
-  assert.deepEqual(otherProviders(providers, s, 'judge', chat), ['Beta']);
-  assert.deepEqual(otherProviders(providers, s, 'reviewer', chat), []);
-  // One provider: the default.
-  const one = providers.slice(0, 1);
-  assert.deepEqual(ids(resolveSubagentConfig(s, one, resolve, chat).kinds.judge!.models), ['chat']);
-  // The chat on b: a's first usable model.
-  assert.deepEqual(
-    ids(resolveSubagentConfig(s, providers, resolve, sel('b', 'other')).kinds.planner!.models),
-    ['a::cheap', 'chat']
+  // Nothing chosen: no model for them, none picked for them either, with
+  // another provider set up; Thorough's tasks wait for a choice.
+  const config = resolveSubagentConfig(s, providers, resolve);
+  for (const kind of THOROUGH_KINDS) assert.deepEqual(ids(config.kinds[kind]!.models), [], kind);
+  assert.deepEqual(kindsWithoutModel(s, providers), ['planner', 'judge', 'breaker']);
+  assert.equal(
+    kindNames(kindsWithoutModel(s, providers)),
+    'the planner, the judge and the adversarial tester'
   );
-  // A default model of another provider already holds; one of the chat's
-  // provider comes after the other provider's.
-  const otherDefault = { ...s, defaultModel: sel('b', 'other') };
-  assert.deepEqual(
-    ids(resolveSubagentConfig(otherDefault, providers, resolve, chat).kinds.acceptance!.models),
-    ['b::other', 'chat']
-  );
-  const sameDefault = { ...s, defaultModel: sel('a', 'strong') };
-  assert.deepEqual(
-    ids(resolveSubagentConfig(sameDefault, providers, resolve, chat).kinds.breaker!.models),
-    ['b::other', 'a::strong', 'chat']
-  );
-  // A row set to a model of its own keeps it.
-  const own: SubagentSettings = {
+  assert.deepEqual(otherProviders(providers, s, 'judge', chat), []);
+  // The acceptance checker on Default: the default model's chain, nothing
+  // of another provider's picked for it.
+  assert.deepEqual(ids(config.kinds.acceptance!.models), ['chat']);
+  assert.deepEqual(otherProviders(providers, s, 'acceptance', chat), []);
+  // "Same as the chat" saved for one before: still nothing chosen.
+  const saved = {
     ...s,
+    kinds: { ...s.kinds, judge: { ...s.kinds.judge, model: 'chat' as const } },
+  };
+  assert.deepEqual(ids(resolveSubagentConfig(saved, providers, resolve).kinds.judge!.models), []);
+  assert.ok(kindsWithoutModel(saved, providers).includes('judge'));
+  // Chosen: the model and its fallbacks, not the default model nor the chat's.
+  const chosen: SubagentSettings = {
+    ...s,
+    defaultModel: sel('a', 'strong'),
     kinds: {
       ...s.kinds,
+      planner: { ...s.kinds.planner, model: sel('b', 'other'), fallbacks: [sel('a', 'cheap')] },
       judge: { ...s.kinds.judge, model: sel('a', 'strong') },
+      // Turned off, and a fallback that can't use tools: none that can run.
+      breaker: { ...s.kinds.breaker, model: sel('a', 'off'), fallbacks: [sel('a', 'mute')] },
     },
   };
-  assert.deepEqual(ids(resolveSubagentConfig(own, providers, resolve, chat).kinds.judge!.models), [
-    'a::strong',
-    'chat',
+  const resolved = resolveSubagentConfig(chosen, providers, resolve);
+  assert.deepEqual(ids(resolved.kinds.planner!.models), ['b::other', 'a::cheap']);
+  assert.deepEqual(ids(resolved.kinds.judge!.models), ['a::strong']);
+  assert.deepEqual(ids(resolved.kinds.breaker!.models), []);
+  assert.deepEqual(kindsWithoutModel(chosen, providers), ['breaker']);
+  assert.equal(kindNames(['breaker']), 'the adversarial tester');
+  assert.deepEqual(otherProviders(providers, chosen, 'planner', chat), ['Beta']);
+  // A fallback alone is chosen too.
+  const fallback = {
+    ...s,
+    kinds: { ...s.kinds, judge: { ...s.kinds.judge, fallbacks: [sel('b', 'other')] } },
+  };
+  assert.deepEqual(ids(resolveSubagentConfig(fallback, providers, resolve).kinds.judge!.models), [
+    'b::other',
   ]);
-  // Without the chat's model, nothing changes.
-  assert.deepEqual(ids(resolveSubagentConfig(s, providers, resolve).kinds.judge!.models), ['chat']);
+  assert.ok(!kindsWithoutModel(fallback, providers).includes('judge'));
 });

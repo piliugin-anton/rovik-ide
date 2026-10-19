@@ -81,6 +81,7 @@ import {
   cloud,
   onCloudEvent,
   readOnlyReason,
+  taskEffort,
   worksOnItsOwn,
 } from '../lib/cloud';
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
@@ -143,6 +144,8 @@ import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/pe
 import { runUsage, transcript, transcriptHold, usageLabel } from '../lib/subagents';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
+  kindNames,
+  kindsWithoutModel,
   resolveSubagentConfig,
   type SubagentSettings,
 } from '../lib/subagentSettings';
@@ -2730,12 +2733,7 @@ export default function ChatPanel(props: ChatProps) {
   const agentConfig = (): AgentConfig => ({
     permissions: permissions(),
     approvalProfiles: approvalProfiles(permissions()),
-    subagents: resolveSubagentConfig(
-      subagentSettings(),
-      providers(),
-      resolveProfile,
-      selection() ?? null
-    ),
+    subagents: resolveSubagentConfig(subagentSettings(), providers(), resolveProfile),
     autopilot: autopilotConfig(subagentSettings().autopilot),
   });
   createEffect(() => configureAgent(agentConfig()));
@@ -3299,6 +3297,23 @@ export default function ChatPanel(props: ChatProps) {
     if (notTaken.length > 0) {
       notifyNotTaken(notTaken);
       return;
+    }
+    // A Thorough task: the kinds it judges with run only on models chosen
+    // for them (T09), so it doesn't start until each has one. The text stays.
+    if (chatMode() === 'autopilot') {
+      const settings = subagentSettings();
+      const effort = taskEffort(dialog.place, cloud.hosts, settings.autopilot.effort);
+      const missing = effort === 'thorough' ? kindsWithoutModel(settings, providers()) : [];
+      if (missing.length > 0) {
+        notify({
+          kind: 'warning',
+          title: 'Choose the models Thorough judges with',
+          message: `A Thorough task doesn’t start until ${kindNames(missing)} ${missing.length > 1 ? 'have' : 'has'} a model chosen in Subagents. Your message stays in the input.`,
+          actions: [{ label: 'Open Subagents', run: () => openAppSettings('subagents') }],
+          timeout: 15_000,
+        });
+        return;
+      }
     }
 
     /*

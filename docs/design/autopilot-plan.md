@@ -522,7 +522,7 @@ out last.
 | T06 | Pick (4.9, D14): the mechanical score from the candidates' records, the judge on ties, the winner's working copy becomes the chat's, the loser's records kept                                                                                                                                              | T02, T05           | Unit tests on the score's ordering; e2e: a tie goes to the judge; the loser's diff is in its record                                                                             |
 | T07 | Thorough's loops (3.2): plan review, change review, repair and acceptance end on two rounds without progress or at the budget; `progress` defined per loop (open high and medium findings; failing keys; unsatisfied criteria)                                                                             | S02, S06, S08, U04 | e2e per loop: progress continues the loop; two rounds without it end the stage; the budget ends it first when smaller                                                           |
 | T08 | The reviewer's report: a second `words_only_turn` in the change reviewer's context, appended to the report under "The reviewer's view"                                                                                                                                                                     | S09                | e2e: the report has both parts                                                                                                                                                  |
-| T09 | Judging roles default to a different provider: `autopilotSettings.ts` picks, for planner, judge, acceptance and breaker rows left on "Default", the first enabled model of a provider other than the chat model's, when there is one; the hint on the page                                                 | A06                | `npm test`: with two providers the judging rows resolve to the other one; with one, to the default                                                                              |
+| T09 | Thorough's judging roles on a model the user chooses: the planner, judge and breaker rows have no "Default" or "Same as the chat" and run only on the models chosen in them; a Thorough task doesn't start until each has one. Nothing picks another provider's model for a row                            | A06                | `npm test`: rows with none chosen resolve to no models and are named; a chosen one to its model and fallbacks only; the page offers models only                                 |
 
 ### Milestone G: measure
 
@@ -1925,24 +1925,26 @@ T05 depends most on the environment it meets.
   be read), or its turn gave nothing: the report is the implementer's
   alone, as in Balanced.
 
-### T09: judging roles on another provider
+### T09: judging roles on a model the user chooses
 
-- **Which rows**: the planner, the judge, the acceptance checker and the
-  adversarial tester (`JUDGING_KINDS`), the kinds that judge another's
-  work. Left on Default, they start on the first enabled model, that can
-  call tools, of a provider other than the chat model's
-  (`otherProviderModel`, in the providers' order), then go on as their
-  chain did. With one provider, or a row set to a model of its own, or a
-  default subagent model that is another provider's already, nothing
-  changes.
-- **The chat's model** is the open chat's (`ChatPanel`'s selection),
-  passed to `resolveSubagentConfig`; the configuration goes again when it
-  changes. A task running in another chat meanwhile follows the open
-  chat's: the configuration is the app's, not a chat's. All four kinds are
-  Autopilot's only, so nothing changes outside it.
-- **On the page**: a hint under the Autopilot section says why, and a
-  judging row's warning ("In Autopilot, code will also be sent to …")
-  names the provider it now starts on.
+- **Which rows**: the planner, the judge and the adversarial tester
+  (`THOROUGH_KINDS`), the kinds Thorough adds to judge another's work.
+  Their rows offer models only, no "Default" and no "Same as the chat"; a
+  row saved with either before has no model chosen. They run on the model
+  and fallbacks chosen in the row (`runChain`), and only those: never the
+  default subagent model or the chat's, so another model judges what the
+  chat's model did when the user picked one.
+- **Until each has one** (`kindsWithoutModel`: none chosen that can run,
+  each turned off or removed), a Thorough task doesn't start: the chat
+  keeps the message and says which kinds need a model, with a button to
+  Subagents. The effort is the chat's host's when the host works on its
+  own and sets one (`taskEffort`, the host summary's `effort`), else this
+  computer's. A task under way goes on as it is. The rows and the
+  Autopilot page say so too, as a warning while the effort is Thorough.
+- **Nothing is picked for the user**: the acceptance checker, like every
+  other row, follows the default model's chain on Default. The first
+  version picked, for the four judging rows left on Default, a model of a
+  provider other than the chat model's; it's gone.
 
 ## G: measure
 

@@ -208,10 +208,13 @@ test('a remote edit approval doesn’t open the local file: it shows apart, allo
     { fileName: shown.fileName, before: shown.before, after: shown.after },
     { fileName: 'src/a.ts', before: 'one\n', after: 'two\n' }
   );
-  // "Show the change" shows it again.
+  // As it comes, by itself: the chat over the whole window stays.
+  assert.equal(shown.background, true);
+  // "Show the change" shows it again, asked for: it's seen.
   showRemoteEdit('remote-chat', 'remote-1');
   assert.equal(compared.length, 2);
   assert.equal(compared[1].id, shown.id, 'in the same tab');
+  assert.equal(compared[1].background, undefined);
   stopReveal();
   stopCompare();
   allow('remote-chat', 'remote-1');

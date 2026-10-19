@@ -11,6 +11,7 @@
 // outside the scrolling body.
 import { createSignal, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
 import { PAGE_TITLE, type SettingsPage } from '../lib/appSettings';
+import { kindsWithoutModel } from '../lib/subagentSettings';
 import {
   aiAutopilot,
   aiChatModel,
@@ -190,6 +191,7 @@ export default function SettingsDialog(props: SettingsDialogProps) {
             <Match when={page() === 'autopilot'}>
               <AutopilotSettings
                 settings={aiAutopilot()}
+                withoutModel={kindsWithoutModel(aiSubagents(), aiProviders())}
                 onChange={updateAutopilot}
                 onOpenPage={setPage}
               />

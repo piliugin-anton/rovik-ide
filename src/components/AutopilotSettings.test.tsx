@@ -13,9 +13,13 @@ import {
   type AutopilotSettings as Settings,
 } from '../lib/autopilotSettings';
 import type { SettingsPage } from '../lib/appSettings';
+import type { SubagentKindId } from '../lib/subagentSettings';
 
-/** The page, keeping what it changes; `opened` is the pages its links opened. */
-function page(initial: Settings = DEFAULT_AUTOPILOT_SETTINGS) {
+/**
+ * The page, keeping what it changes; `opened` is the pages its links opened.
+ * `withoutModel`: Thorough's kinds with no model chosen (Subagents).
+ */
+function page(initial: Settings = DEFAULT_AUTOPILOT_SETTINGS, withoutModel: SubagentKindId[] = []) {
   const root = container();
   const [settings, setSettings] = createSignal<Settings>(initial);
   const opened: SettingsPage[] = [];
@@ -23,6 +27,7 @@ function page(initial: Settings = DEFAULT_AUTOPILOT_SETTINGS) {
     () => (
       <AutopilotSettings
         settings={settings()}
+        withoutModel={withoutModel}
         onChange={setSettings}
         onOpenPage={(p) => opened.push(p)}
       />
@@ -168,4 +173,29 @@ test('autopilot settings: Prepare before the first check, on until turned off (S
   prepare().click();
   assert.equal(settings().prepare, undefined);
   assert.equal(prepare().checked, true);
+});
+
+test('autopilot settings: Thorough says which of its kinds still need a model (T09)', () => {
+  const note = (root: HTMLElement) =>
+    [...root.querySelectorAll('.setting-explain')].find((p) =>
+      p.textContent?.startsWith('Thorough tasks don’t start')
+    );
+  const thorough = page({ effort: 'thorough' }, ['planner', 'breaker']);
+  const said = note(thorough.root);
+  assert.equal(
+    said?.textContent,
+    'Thorough tasks don’t start until the planner and the adversarial tester have a model chosen in Subagents.'
+  );
+  assert.ok(said!.classList.contains('warning'), 'a warning, the effort being Thorough');
+  said!.querySelector('button')!.click();
+  assert.deepEqual(thorough.opened, ['subagents']);
+  // One kind; Balanced: said too, not as a warning.
+  const balanced = page(DEFAULT_AUTOPILOT_SETTINGS, ['judge']);
+  assert.equal(
+    note(balanced.root)?.textContent,
+    'Thorough tasks don’t start until the judge has a model chosen in Subagents.'
+  );
+  assert.equal(note(balanced.root)!.classList.contains('warning'), false);
+  // Each chosen: nothing to say.
+  assert.equal(note(page({ effort: 'thorough' }).root), undefined);
 });

@@ -8,13 +8,15 @@
 //
 // The backend gets them resolved (`resolveSubagentConfig`): for each kind,
 // the models to try in order (its model, its fallbacks, the default model
-// and its fallbacks, then the chat's model), enabled models only.
+// and its fallbacks, then the chat's model), enabled models only. The kinds
+// Autopilot's Thorough adds run only on the models chosen for them (T09).
 import type { ModelProfile, ModelSelection, OpenAIChatOptions, Provider } from '../types';
 import { formatsToSend, type Effort } from './reasoning';
 import { sameModel } from './permissions';
 import {
   DEFAULT_AUTOPILOT_SETTINGS,
   normalizeAutopilotSettings,
+  THOROUGH_KINDS,
   type AutopilotSettings,
 } from './autopilotSettings';
 
@@ -369,51 +371,44 @@ export function kindChain(settings: SubagentSettings, kind: SubagentKindId): Cha
 }
 
 /**
- * The kinds that judge another's work (autopilot-plan 3.2, T09): the
- * planner, the judge, the acceptance checker, the adversarial tester. Left
- * on Default, they start on a model of a provider other than the chat
- * model's, when one is set up: a judgment from another model family.
+ * The models a kind tries as it runs: `kindChain`, except for the kinds
+ * Autopilot's Thorough adds (the planner, the judge, the adversarial
+ * tester), which judge the chat model's work (autopilot-plan T09): theirs
+ * are the model and fallbacks chosen in their row, and only those, never
+ * the default model or the chat's. Nothing chosen: none.
  */
-export const JUDGING_KINDS: SubagentKindId[] = ['planner', 'judge', 'acceptance', 'breaker'];
-
-/**
- * T09: the first enabled model that can call tools of a provider other
- * than the chat model's, in the providers' order. Null: there's none, or
- * the chat's model isn't known.
- */
-export function otherProviderModel(
-  providers: Provider[],
-  chat: ModelSelection | null
-): ModelSelection | null {
-  if (!chat) return null;
-  for (const provider of providers) {
-    if (provider.id === chat.providerId) continue;
-    const model = provider.models.find((m) =>
-      usableModel(providers, { providerId: provider.id, modelId: m.id })
-    );
-    if (model) return { providerId: provider.id, modelId: model.id };
-  }
-  return null;
+export function runChain(settings: SubagentSettings, kind: SubagentKindId): ChainEntry[] {
+  if (!THOROUGH_KINDS.includes(kind)) return kindChain(settings, kind);
+  const k = settings.kinds[kind];
+  const own: ChainEntry[] = typeof k.model === 'string' ? [] : [k.model];
+  for (const f of k.fallbacks) if (!own.some((o) => sameEntry(o, f))) own.push(f);
+  return own;
 }
 
 /**
- * The models a kind tries as it runs: `kindChain`, and for a judging row
- * left on Default (T09) another provider's model first, unless the default
- * model is one already (that choice holds).
+ * Of the kinds Thorough adds, those with no model chosen that can run
+ * (none, or each turned off or removed): its tasks don't start until each
+ * has one (T09). In the page's order.
  */
-export function runChain(
+export function kindsWithoutModel(
   settings: SubagentSettings,
-  kind: SubagentKindId,
-  providers: Provider[],
-  chat: ModelSelection | null
-): ChainEntry[] {
-  const chain = kindChain(settings, kind);
-  if (!JUDGING_KINDS.includes(kind) || settings.kinds[kind].model !== 'default') return chain;
-  const other = otherProviderModel(providers, chat);
-  if (!other || !chat) return chain;
-  const d = settings.defaultModel;
-  if (d !== CHAT && d.providerId !== chat.providerId && usableModel(providers, d)) return chain;
-  return [other, ...chain.filter((e) => !sameEntry(e, other))];
+  providers: Provider[]
+): SubagentKindId[] {
+  return SUBAGENT_KINDS.map((k) => k.id).filter(
+    (id) =>
+      THOROUGH_KINDS.includes(id) &&
+      !runChain(settings, id).some((e) => e !== CHAT && usableModel(providers, e))
+  );
+}
+
+/** Kinds by name in a sentence: "the planner, the judge and the adversarial tester". */
+export function kindNames(kinds: SubagentKindId[]): string {
+  const names = kinds.map(
+    (id) => `the ${(SUBAGENT_KINDS.find((k) => k.id === id)?.label ?? id).toLowerCase()}`
+  );
+  return names.length > 1
+    ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+    : (names[0] ?? '');
 }
 
 /** An enabled model that can call tools: one a kind can use. */
@@ -428,19 +423,17 @@ export function usableModel(providers: Provider[], sel: ModelSelection): boolean
  * The settings as the backend takes them. `resolve` turns a selection into
  * a model (lib/aiSettings.ts `resolveProfile`); models turned off, removed
  * or marked "no tools" are left out, so the next one is tried instead.
- * `chat`: the chat's model, which judging rows on Default avoid (T09).
  */
 export function resolveSubagentConfig(
   settings: SubagentSettings,
   providers: Provider[],
-  resolve: (providers: Provider[], sel: ModelSelection) => ModelProfile | null,
-  chat: ModelSelection | null = null
+  resolve: (providers: Provider[], sel: ModelSelection) => ModelProfile | null
 ): SubagentConfig {
   const kinds: Partial<Record<SubagentKindId, KindConfig>> = {};
   for (const { id } of SUBAGENT_KINDS) {
     const k = settings.kinds[id];
     const models: ModelChoice[] = [];
-    for (const entry of runChain(settings, id, providers, chat)) {
+    for (const entry of runChain(settings, id)) {
       if (entry === CHAT) {
         models.push({ chat: true });
         continue;
@@ -497,7 +490,7 @@ export function otherProviders(
   chat: ModelSelection | null
 ): string[] {
   const names: string[] = [];
-  for (const entry of runChain(settings, kind, providers, chat)) {
+  for (const entry of runChain(settings, kind)) {
     if (entry === CHAT || !usableModel(providers, entry)) continue;
     if (chat && entry.providerId === chat.providerId) continue;
     const provider = providerOf(providers, entry);

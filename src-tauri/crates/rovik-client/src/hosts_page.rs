@@ -19,7 +19,7 @@ use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
 use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
 use crate::system_ssh::{Local, SystemSsh, SystemSshConnector};
-use rovik_protocol::autopilot::{AutonomySettings, ChatTask, DeliveryTest};
+use rovik_protocol::autopilot::{AutonomySettings, ChatTask, DeliveryTest, Effort};
 use rovik_protocol::host::{HostInfo, KeyInfo, Storage};
 use rovik_protocol::{features, Request, Response, Secret};
 use serde::{Deserialize, Serialize};
@@ -146,6 +146,11 @@ pub struct HostSummary {
     /// It works on its own (H02): its chats start in Autopilot.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub autonomous: bool,
+    /// The effort its tasks take while it works on its own, when it sets
+    /// one (H01); else the computer's. The chat checks what a task needs
+    /// before it sends one (T09).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 /// How a terminal reaches a host's shell (`HostsPage::shell_access`).
@@ -520,14 +525,18 @@ impl HostsPage {
         let mut summaries: Vec<HostSummary> = settings
             .hosts
             .into_iter()
-            .map(|host| HostSummary {
-                state: state_of(&host.id),
-                deployed: matches!(host.deploy, DeployState::Deployed { .. }),
-                caught_up: self.remote.caught_up(&host.id),
-                terminal: true,
-                autonomous: host.approval_policy == ApprovalPolicy::Autonomous,
-                id: host.id,
-                name: host.name,
+            .map(|host| {
+                let autonomous = host.approval_policy == ApprovalPolicy::Autonomous;
+                HostSummary {
+                    state: state_of(&host.id),
+                    deployed: matches!(host.deploy, DeployState::Deployed { .. }),
+                    caught_up: self.remote.caught_up(&host.id),
+                    terminal: true,
+                    autonomous,
+                    effort: host.autonomy.effort.filter(|_| autonomous),
+                    id: host.id,
+                    name: host.name,
+                }
             })
             .collect();
         for (id, state) in &states {
@@ -542,6 +551,7 @@ impl HostsPage {
                 caught_up: self.remote.caught_up(id),
                 terminal: false,
                 autonomous: false,
+                effort: None,
                 id: id.clone(),
             });
         }
@@ -1325,6 +1335,7 @@ mod tests {
                 open_pr: true,
             },
             notify_url: Some("https://ntfy.sh/t".into()),
+            effort: Some(Effort::Thorough),
             ..Default::default()
         };
         let kept = setup.page.set_autonomy(&saved.id, block).await.unwrap();
@@ -1346,14 +1357,19 @@ mod tests {
         assert_eq!(saved.approval_policy, ApprovalPolicy::Autonomous);
         let listed = setup.page.list().await.unwrap();
         assert_eq!(listed.hosts[0].host.autonomy, kept);
-        // H02: the chats are told it works on its own, and until when.
-        assert!(setup.page.summaries().unwrap()[0].autonomous);
+        // H02: the chats are told it works on its own, and until when,
+        // with the effort its tasks take then (T09: what they need).
+        let summary = &setup.page.summaries().unwrap()[0];
+        assert!(summary.autonomous);
+        assert_eq!(summary.effort, Some(Effort::Thorough));
         setup
             .page
             .set_policy(&saved.id, ApprovalPolicy::WaitForMe)
             .await
             .unwrap();
-        assert!(!setup.page.summaries().unwrap()[0].autonomous);
+        let summary = &setup.page.summaries().unwrap()[0];
+        assert!(!summary.autonomous);
+        assert_eq!(summary.effort, None, "the computer's, under another policy");
     }
 
     /// Another window over the same settings and secrets: a process of its
