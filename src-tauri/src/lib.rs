@@ -2,7 +2,7 @@ use crate::instances::Instances;
 use crate::{filesystem::WatcherState, terminal::TerminalState};
 use rovik_client::hosts_page::HostsPage;
 use rovik_client::provider_keys::ProviderKeys;
-use rovik_client::secrets::SecretStore;
+use rovik_client::secrets::{SecretError, SecretName, SecretStore};
 use rovik_client::Remote;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
 use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
@@ -80,6 +80,19 @@ pub fn run() {
             // The providers' API keys, in the keychain or the encrypted
             // file in its place, out of ai-settings.json (H06).
             let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
+            // Settings → Network (rovik_core::net) before anything connects:
+            // its file beside the AI settings, the proxy's password in the
+            // keychain, read once a proxy that signs in is used.
+            let store = secrets.clone();
+            rovik_core::net::init(
+                config.join("network-settings.json"),
+                Arc::new(move || match store.get(&SecretName::ProxyPassword) {
+                    Ok(password) => Ok(Some(password)),
+                    Err(SecretError::Missing(_)) => Ok(None),
+                    Err(e) => Err(e.to_string()),
+                }),
+            );
+            app.manage(secrets.clone());
             let keys = ProviderKeys::new(config.join("ai-settings.json"), secrets.clone());
             app.manage(Arc::new(keys));
             let paths = Paths::new(data.clone(), config.clone());
@@ -355,6 +368,8 @@ pub fn run() {
             commands::overlay::overlay_unmark,
             commands::workload::workload_set_slots,
             commands::workload::workload_status,
+            commands::network::network_settings,
+            commands::network::network_save,
             commands::tools::outline_symbols,
             commands::vfs::vfs_status,
             commands::vfs::vfs_install_driver,

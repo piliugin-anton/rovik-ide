@@ -71,24 +71,27 @@ pub async fn request(
         }
     };
 
-    let client = Client::builder()
-        .timeout(Duration::from_millis(
-            timeout_ms
-                .unwrap_or(DEFAULT_TIMEOUT_MS)
-                .clamp(1_000, 60_000),
-        ))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let timeout = Duration::from_millis(
+        timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(1_000, 60_000),
+    );
 
     // Same retry policy as chat requests (chat_request::run): backoff with
     // jitter, or the provider's Retry-After when longer; a wait over
     // MAX_RETRY_WAIT isn't retried.
     let mut attempt_number = 1;
     loop {
-        let error = match send_once(&client, &parsed, api_key, &body, chat_id).await {
+        // The chats' client (`net`), its connections kept between requests.
+        let client = crate::net::client().await;
+        let error = match send_once(&client, &parsed, api_key, &body, timeout, chat_id).await {
             Ok(value) => return Ok(value),
             Err(e) => e,
         };
+        // Not a connection to send the next attempt on.
+        if matches!(error.kind, ErrorKind::Timeout | ErrorKind::Network) {
+            crate::net::refresh();
+        }
         if !error.retryable || attempt_number >= MAX_ATTEMPTS {
             return Err(describe(&error, &parsed, attempt_number));
         }
@@ -110,10 +113,12 @@ async fn send_once(
     url: &reqwest::Url,
     api_key: &str,
     body: &serde_json::Value,
+    timeout: Duration,
     chat_id: Option<&str>,
 ) -> Result<serde_json::Value, ChatError> {
     let mut req = client
         .post(url.clone())
+        .timeout(timeout)
         .headers(crate::opencode::headers(url.as_str(), chat_id))
         .json(body);
     let key = api_key.trim();
@@ -127,7 +132,10 @@ async fn send_once(
         } else {
             ErrorKind::Network
         };
-        ChatError::new(kind, format!("Could not reach {url}: {e}"))
+        ChatError::new(
+            kind,
+            format!("Could not reach {url}: {}", crate::net::error_text(&e)),
+        )
     };
     let res = req.send().await.map_err(transport)?;
     let status = res.status();

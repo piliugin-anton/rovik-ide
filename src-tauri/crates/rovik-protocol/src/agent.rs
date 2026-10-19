@@ -7,6 +7,7 @@ use crate::diff::Hunk;
 use crate::events::{ApprovalRequest, QuestionsRequest};
 use crate::permissions::Permissions;
 use crate::subagents::{ModelChoice, SubagentConfig};
+use crate::Secret;
 use serde::{Deserialize, Serialize};
 
 /// A model, resolved by the frontend from the providers in its settings.
@@ -105,6 +106,25 @@ pub struct AgentConfig {
     pub subagents: SubagentConfig,
     /// How Autopilot's tasks run: read only by chats in Autopilot.
     pub autopilot: AutopilotConfig,
+    /// The proxy the agent's browser on a host goes through (Settings →
+    /// Network, "Use proxy for browser"). The app sets it for its hosts,
+    /// the frontend never does; a host keeps its password in memory only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_proxy: Option<BrowserProxy>,
+}
+
+/// A proxy for the agent's browser (eoka): Chrome's `--proxy-server`, and
+/// what it answers the proxy's sign-in with. Its `Debug` leaves the
+/// password out (`Secret`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProxy {
+    /// `http://host:port` or `socks5://host:port`.
+    pub server: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<Secret>,
 }
 
 impl AgentConfig {

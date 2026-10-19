@@ -23,6 +23,7 @@ import { autopilotSummary } from '../lib/autopilotSettings';
 import { workloadStatus, workloadSummary } from '../lib/workload';
 import { vfsStatus, vfsSummary } from '../lib/virtualFiles';
 import { hostsSummary, listHosts } from '../lib/hosts';
+import { networkSettings, networkSummary } from '../lib/network';
 
 interface SettingsMenuProps {
   /** The open project, for its group; none without a project. */
@@ -40,6 +41,7 @@ export default function SettingsMenu(props: SettingsMenuProps) {
   const [workload] = createResource(() => workloadStatus().catch(() => null));
   const [vfs] = createResource(() => vfsStatus().catch(() => null));
   const [hosts] = createResource(() => listHosts().catch(() => null));
+  const [network] = createResource(() => networkSettings().catch(() => null));
   const vfsLine = () => {
     const status = vfs();
     return status ? vfsSummary(status) : null;
@@ -156,6 +158,12 @@ export default function SettingsMenu(props: SettingsMenuProps) {
           about="The filesystem driver that lets each chat work on its own copy of your changes, and the agent manage its own context."
           state={vfsLine()?.text}
           warning={vfsLine()?.warning}
+        />
+        <Item
+          page="network"
+          label="Network"
+          about="How Rovik connects to model providers, the servers it downloads from and cloud hosts: how long a connection may take, and the proxy."
+          state={network() ? networkSummary(network()!) : undefined}
         />
         <Item
           page="hosts"

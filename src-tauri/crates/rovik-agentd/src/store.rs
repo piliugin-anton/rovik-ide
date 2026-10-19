@@ -850,12 +850,15 @@ impl Inner {
         Ok(())
     }
 
-    /// The computer's configuration: with keys here, without in state.json.
+    /// The computer's configuration: with keys here, without in state.json,
+    /// where the browser proxy's password never goes either.
     fn set_config(&mut self, computer: &str, mut config: AgentConfig) {
         self.keys.give(config.models_mut());
-        self.state
-            .computers
-            .insert(computer.to_string(), config.without_keys());
+        let mut kept = config.without_keys();
+        if let Some(proxy) = kept.browser_proxy.as_mut() {
+            proxy.password = None;
+        }
+        self.state.computers.insert(computer.to_string(), kept);
         self.configs.insert(computer.to_string(), config);
     }
 }

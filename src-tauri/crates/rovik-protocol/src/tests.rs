@@ -218,7 +218,37 @@ fn config() -> AgentConfig {
             prepare: false,
             denied_commands: vec!["git push".into()],
         },
+        browser_proxy: None,
     }
+}
+
+/// The browser proxy the app gives its hosts goes with the configuration;
+/// one from before it, without, reads as none.
+#[test]
+fn a_configuration_carries_the_browser_proxy() {
+    let mut config = AgentConfig::default();
+    assert!(serde_json::to_value(&config)
+        .unwrap()
+        .get("browserProxy")
+        .is_none());
+    config.browser_proxy = Some(BrowserProxy {
+        server: "http://proxy.example.com:3128".into(),
+        username: Some("alice".into()),
+        password: Some(Secret("pw".into())),
+    });
+    let json = serde_json::to_value(&config).unwrap();
+    assert_eq!(
+        json["browserProxy"],
+        serde_json::json!({"server": "http://proxy.example.com:3128", "username": "alice", "password": "pw"})
+    );
+    let back: AgentConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(back, config);
+    assert!(
+        !format!("{config:?}").contains("\"pw\""),
+        "no password in a log"
+    );
+    let before: AgentConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(before.browser_proxy, None);
 }
 
 fn start() -> StartRequest {

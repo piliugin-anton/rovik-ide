@@ -235,6 +235,34 @@ fn the_store_reads_back_what_it_kept() {
     );
 }
 
+/// The proxy a computer gives this server's browser (Settings → Network)
+/// is kept with its configuration, its password in memory only: never in
+/// state.json.
+#[test]
+fn the_browser_proxys_password_stays_out_of_state_json() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let mut configured = config("", "");
+    configured.browser_proxy = Some(rovik_protocol::agent::BrowserProxy {
+        server: "http://egress.example.com:3128".into(),
+        username: Some("alice".into()),
+        password: Some(rovik_protocol::Secret("browser-pw".into())),
+    });
+    store.configure("laptop", configured.clone()).unwrap();
+    store
+        .started("laptop", &start("chat", "sk-chat", None))
+        .unwrap();
+    let file = fs::read_to_string(dir.0.join("state.json")).unwrap();
+    assert!(file.contains("http://egress.example.com:3128"), "{file}");
+    assert!(file.contains("alice"), "{file}");
+    assert!(!file.contains("browser-pw"), "{file}");
+    let kept = store.config_of("chat").unwrap();
+    assert_eq!(
+        kept.browser_proxy, configured.browser_proxy,
+        "in memory, whole"
+    );
+}
+
 /// H02: what a computer has the server keep for its runs that go on
 /// without it is its chats', read back after a restart; the default
 /// forgets it, and state.json, private, holds the notify URL whole.

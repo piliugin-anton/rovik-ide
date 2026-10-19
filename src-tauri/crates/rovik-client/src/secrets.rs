@@ -40,6 +40,8 @@ pub enum SecretName {
     Token { host: String },
     /// A provider's API key (H06).
     ApiKey { provider: String },
+    /// The password of the proxy set in Settings → Network.
+    ProxyPassword,
 }
 
 impl SecretName {
@@ -50,6 +52,7 @@ impl SecretName {
             SecretName::KeyPassphrase { host } => format!("host/{host}/passphrase"),
             SecretName::Token { host } => format!("host/{host}/token"),
             SecretName::ApiKey { provider } => format!("provider/{provider}/api-key"),
+            SecretName::ProxyPassword => "network/proxy/password".to_string(),
         }
     }
 }
@@ -81,6 +84,9 @@ impl fmt::Display for SecretError {
             SecretError::Missing(SecretName::ApiKey { provider }) => write!(
                 f,
                 "No API key is saved for {provider}: enter it again in the settings."
+            ),
+            SecretError::Missing(SecretName::ProxyPassword) => f.write_str(
+                "No password is saved for the proxy: enter it again in Settings → Network.",
             ),
             SecretError::Locked => f.write_str(
                 "The saved passwords and keys are locked: enter their passphrase first.",

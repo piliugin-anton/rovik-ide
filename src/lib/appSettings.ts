@@ -22,6 +22,7 @@ export type SettingsPage =
   | 'project'
   | 'workload'
   | 'vfs'
+  | 'network'
   | 'hosts';
 
 export const PAGE_TITLE: Record<SettingsPage, string> = {
@@ -35,6 +36,7 @@ export const PAGE_TITLE: Record<SettingsPage, string> = {
   project: 'Project checks',
   workload: 'Heavy commands',
   vfs: 'Virtual files',
+  network: 'Network',
   hosts: 'Cloud hosts',
 };
 

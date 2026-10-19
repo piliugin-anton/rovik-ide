@@ -203,7 +203,9 @@ fn keep(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 async fn download(url: &str, wait: Duration) -> Result<Vec<u8>, Unfetched> {
-    let client = reqwest::Client::builder()
+    // Settings → Network's timeout and proxy.
+    let client = rovik_core::net::builder()
+        .await
         .timeout(wait)
         .user_agent(concat!("Rovik/", env!("CARGO_PKG_VERSION")))
         .build()

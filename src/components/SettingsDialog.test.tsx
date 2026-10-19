@@ -103,6 +103,14 @@ const COMPUTER: typeof backend = {
     ],
     store: { kind: 'keychain' },
   }),
+  network_settings: () => ({
+    settings: { proxy: 'direct', cloudHosts: false, browser: false, browserPlaces: 'local' },
+    passwordSaved: false,
+    system: { https: null, http: null },
+    defaultTimeoutSecs: 30,
+    minTimeoutSecs: 5,
+    maxTimeoutSecs: 300,
+  }),
   project_profile: () => ({ stack: [], checks: [], instructions: null }),
   load_project_settings: () => null,
 };
@@ -174,6 +182,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
       state: 'FUSE isn’t installed: chats work in the project folder directly',
       warning: true,
     },
+    { label: 'Network', state: 'No proxy: connections go directly', warning: false },
     { label: 'Cloud hosts', state: '2 hosts, 1 connected, 2 chats there', warning: false },
   ]);
   // Every item says what its page affects.

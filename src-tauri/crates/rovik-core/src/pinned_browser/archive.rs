@@ -22,9 +22,10 @@ pub async fn download(
     use futures_util::StreamExt;
     use std::io::Write;
     let url = build.url();
-    let client = reqwest::Client::builder()
+    // Settings → Network's timeout and proxy (`net`).
+    let client = crate::net::builder()
+        .await
         .user_agent(concat!("rovik/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(30))
         .read_timeout(STALL_WAIT)
         .build()
         .map_err(|e| e.to_string())?;

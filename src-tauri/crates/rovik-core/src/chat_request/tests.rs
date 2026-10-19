@@ -292,7 +292,7 @@ async fn run_body_against(
 ) -> (Result<(), ChatError>, Vec<ChatStreamEvent>) {
     let client = Client::new();
     let spec = RequestSpec {
-        client: &client,
+        client: Clients::Only(&client),
         url,
         api_key: "k",
         body,
@@ -659,7 +659,7 @@ async fn cancel_through_the_registry_stops_a_waiting_request() {
             ..fast_limits()
         };
         let spec = RequestSpec {
-            client: &client,
+            client: Clients::Only(&client),
             url: &url2,
             api_key: "k",
             body: &body,

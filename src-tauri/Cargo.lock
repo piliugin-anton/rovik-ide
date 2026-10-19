@@ -4866,6 +4866,8 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
+ "http",
+ "hyper-util",
  "ignore",
  "image",
  "libc",

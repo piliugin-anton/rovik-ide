@@ -43,7 +43,8 @@ use std::time::Duration;
 /// unanswered, and it's dropped.
 pub const KEEPALIVE: Duration = Duration::from_secs(15);
 
-/// How long the TCP connection and the handshake may take.
+/// How long the handshake may take, once connected (the connection's own
+/// timeout is Settings → Network's).
 const CONNECT_WAIT: Duration = Duration::from_secs(20);
 
 /// How long a command on the host may take before it's given up on
@@ -236,9 +237,15 @@ impl Ssh {
             nodelay: true,
             ..Default::default()
         });
-        let address = (target.host.as_str(), target.port);
-        let connected =
-            tokio::time::timeout(CONNECT_WAIT, client::connect(config, address, checker));
+        // Directly, or through the proxy (Settings → Network), within its
+        // timeout; then the handshake.
+        let stream = rovik_core::net::open_cloud_host(&target.host, target.port)
+            .await
+            .map_err(SshError::Unreachable)?;
+        let connected = tokio::time::timeout(
+            CONNECT_WAIT,
+            client::connect_stream(config, stream, checker),
+        );
         let mut handle = match connected.await {
             Ok(Ok(handle)) => handle,
             Ok(Err(russh::Error::UnknownKey)) => {

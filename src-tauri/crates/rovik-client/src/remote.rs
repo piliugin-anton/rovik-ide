@@ -905,17 +905,20 @@ impl Remote {
     /// policy.
     pub async fn everywhere(&self, request: Request) -> Result<Response, Fail> {
         let reply = rovik_core::dispatch(&self.core, request.clone()).await?;
+        let mut browser = None;
         if matches!(request, Request::AgentConfigure(_)) {
             self.lock().configured = true;
             // As the settings file has them: another window's change of a
             // host's policy isn't sent back as it was.
             self.refresh_policies();
+            browser = rovik_core::net::cloud_browser_proxy().await;
         }
         let sent = self.hosts.ready().into_iter().map(|(host, client)| {
             let mut request = request.clone();
             if let Request::AgentConfigure(config) = &mut request {
                 *config = config.without_keys();
                 self.apply_policy(&host, config);
+                config.browser_proxy = browser.clone();
             }
             async move {
                 if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
@@ -925,6 +928,30 @@ impl Remote {
         });
         futures_util::future::join_all(sent).await;
         Ok(reply)
+    }
+
+    /// Settings → Network changed what the hosts' browsers go through
+    /// ("Use proxy for browser"): each ready host is sent the configuration
+    /// again, with it. Before the frontend applied its settings nothing
+    /// goes, as on connecting.
+    pub async fn send_browser_proxy(&self) {
+        if !self.lock().configured {
+            return;
+        }
+        self.refresh_policies();
+        let browser = rovik_core::net::cloud_browser_proxy().await;
+        let sent = self.hosts.ready().into_iter().map(|(host, client)| {
+            let mut config = self.core.agents.config().without_keys();
+            self.apply_policy(&host, &mut config);
+            config.browser_proxy = browser.clone();
+            async move {
+                let request = Request::AgentConfigure(config);
+                if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
+                    log::warn!("{host} didn't take the browser's proxy: {fail}");
+                }
+            }
+        });
+        futures_util::future::join_all(sent).await;
     }
 
     /// On connecting (§2.3: "on connect and on every change"): the
@@ -948,6 +975,7 @@ impl Remote {
         if self.lock().configured {
             let mut config = self.core.agents.config().without_keys();
             self.apply_policy(host, &mut config);
+            config.browser_proxy = rovik_core::net::cloud_browser_proxy().await;
             let sent = client.call_within(Request::AgentConfigure(config), HOSTS_WAIT);
             if let Err(fail) = sent.await {
                 log::warn!("{host} didn't take the configuration: {fail}");
