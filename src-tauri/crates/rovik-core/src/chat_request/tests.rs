@@ -440,10 +440,17 @@ async fn partial_reply_then_stall_stops_without_retrying() {
     assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
-/// A reply that starts after 600 ms.
+/// The first-byte limit of the tests of a longer wait after silence.
+const LIMIT_MS: u64 = 1_000;
+
+/// A reply that starts after 1.25 times the limit. An attempt that waits
+/// the limit gives up before it starts. One that waits twice as long has
+/// most of the limit to spare, which a busy test machine needs (the macOS
+/// runners): when the test is held up past both the reply and the end of
+/// the wait, the wait ends first.
 fn late() -> Reply {
     Reply::Sse {
-        events: vec![(600, TEXT.into()), (0, DONE.into())],
+        events: vec![(LIMIT_MS * 5 / 4, TEXT.into()), (0, DONE.into())],
         hang: false,
     }
 }
@@ -462,8 +469,8 @@ fn limits_of(ms: u64) -> Limits {
 #[tokio::test]
 async fn an_attempt_after_a_silent_one_waits_twice_as_long() {
     let (url, served) = mock(vec![late(), late()]).await;
-    let (result, events) = run_against(&url, limits_of(400), None).await;
-    assert!(result.is_ok(), "{result:?}");
+    let (result, events) = run_against(&url, limits_of(LIMIT_MS), None).await;
+    assert!(result.is_ok(), "{result:?} after {:?}", names(&events));
     assert_eq!(names(&events), ["retrying:2", "delta:Hello", "done"]);
     assert_eq!(served.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
@@ -477,9 +484,9 @@ async fn a_reply_that_stops_does_not_lengthen_the_wait() {
         hang: true,
     };
     let (url, served) = mock(vec![stopped, late(), late()]).await;
-    let (result, events) = run_against(&url, limits_of(400), None).await;
-    assert!(result.is_ok(), "{result:?}");
-    // The second attempt still waits 400 ms; the third, 800.
+    let (result, events) = run_against(&url, limits_of(LIMIT_MS), None).await;
+    assert!(result.is_ok(), "{result:?} after {:?}", names(&events));
+    // The second attempt still waits the limit; the third, twice as long.
     assert_eq!(
         names(&events),
         ["retrying:2", "retrying:3", "delta:Hello", "done"]
