@@ -1,17 +1,22 @@
-// Component tests: Settings → Network. The timeout; the proxy's three
-// choices: none, which hides what a proxy has; the system's (said as it is
-// now); or a custom HTTP or SOCKS5 one, saved once it has a host and a port,
-// a proxy's URL pasted whole taken apart; until one is chosen, the system's
-// where this computer has a proxy set, else none; the custom proxy's
-// password, kept by the keychain and forgotten on request; cloud hosts; and
-// the agent's browsers, here, in the cloud or both.
+// Component tests: Settings → Network. The timeout; the proxies, each typed
+// once: added with its password, edited, its password kept or forgotten,
+// removed once nothing goes through it, a proxy's URL pasted whole taken
+// apart, the encrypted file unlocked to save a password; and where each
+// kind of connection goes, each menu with only what its kind takes, saved
+// as it's chosen, with the notes that apply then and only then.
 // The app is answered here, command by command. Run with: npm test
 import { container } from '../test/dom';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from 'solid-js/web';
 import NetworkSettings from './NetworkSettings';
-import type { NetworkView } from '../lib/network';
+import {
+  DEFAULT_ROUTES,
+  type NetworkSettings as Settings,
+  type NetworkView,
+  type RouteRow,
+  type SavedProxy,
+} from '../lib/network';
 
 /** How the app answers each command in the test running now. */
 let backend: Record<string, (args: any) => unknown> = {};
@@ -32,35 +37,53 @@ let calls: { cmd: string; args: any }[] = [];
 /** What the backend keeps, as it answers. */
 let kept: NetworkView;
 
-/** The settings besides the proxy, as the backend has them at first. */
-const REST = { cloudHosts: false, browser: false, browserPlaces: 'local' as const };
-
-function app(view: Partial<NetworkView> = {}, refuse?: string) {
+/** The app, with these settings and this view, refusing saves with `refuse`. */
+function app(settings: Partial<Settings> = {}, more: Partial<NetworkView> = {}, refuse?: string) {
   calls = [];
   kept = {
-    settings: { ...REST },
-    passwordSaved: false,
-    system: { https: 'http://proxy.corp:3128', http: 'http://proxy.corp:3128' },
+    settings: { proxies: [], routes: { ...DEFAULT_ROUTES }, ...settings },
+    system: { https: null, http: null },
     defaultTimeoutSecs: 30,
     minTimeoutSecs: 5,
     maxTimeoutSecs: 300,
-    ...view,
+    ...more,
   };
   backend = {
     network_settings: () => kept,
-    network_save: ({ settings, password }) => {
+    network_save: ({ settings, passwords }) => {
       if (refuse) throw refuse;
-      kept = {
-        ...kept,
-        settings,
-        passwordSaved: password === undefined ? kept.passwordSaved : password !== '',
-      };
+      const before = new Map(kept.settings.proxies.map((p) => [p.id, p.passwordSaved]));
+      const proxies = (settings as Settings).proxies.map((p) => {
+        const typed = passwords?.[p.id];
+        const saved = typed === undefined ? Boolean(before.get(p.id)) : typed !== '';
+        const { passwordSaved: _, ...rest } = p;
+        return saved ? { ...rest, passwordSaved: true } : rest;
+      });
+      kept = { ...kept, settings: { ...settings, proxies } };
       return kept;
     },
   };
 }
 
-const SAVED_PROXY = { kind: 'http' as const, host: 'proxy.example.com', port: 3128 };
+const SYSTEM = { https: 'http://proxy.corp:3128', http: 'http://proxy.corp:3128' };
+const P1: SavedProxy = {
+  id: 'p1',
+  kind: 'http',
+  host: 'proxy.example.com',
+  port: 3128,
+  username: 'alice',
+  passwordSaved: true,
+};
+const S1: SavedProxy = { id: 's1', kind: 'socks5', host: '10.0.0.2', port: 1080, username: 'bob' };
+
+const MENUS: Record<RouteRow, string> = {
+  models: 'Model providers and downloads on this computer',
+  ssh: 'SSH to cloud hosts',
+  browser: 'Agent’s browser on this computer',
+  hostModels: 'Model providers and downloads on cloud hosts',
+  hostBrowser: 'Agent’s browser on cloud hosts',
+};
+const ROWS = Object.keys(MENUS) as RouteRow[];
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -76,306 +99,315 @@ async function page() {
 }
 
 const saves = () => calls.filter((c) => c.cmd === 'network_save').map((c) => c.args);
-const text = (el: Element | null) => el?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-const radio = (label: string) =>
-  [...document.querySelectorAll<HTMLInputElement>('input[name="network-proxy"]')].find((r) =>
-    text(r.closest('label')).startsWith(label)
-  )!;
+const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+const menu = (row: RouteRow) =>
+  document.querySelector<HTMLSelectElement>(`select[aria-label="${MENUS[row]}"]`)!;
+const options = (row: RouteRow) => [...menu(row).options].map((o) => o.value);
+const shown = (row: RouteRow) => text(menu(row).options[menu(row).selectedIndex]);
+const optionLabel = (row: RouteRow, value: string) =>
+  text([...menu(row).options].find((o) => o.value === value));
+const button = (label: string, within: ParentNode = document) =>
+  [...within.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b) === label);
 const form = () => document.querySelector('.network-proxy-form');
 const field = (label: string) =>
   [...document.querySelectorAll('.network-proxy-form label')]
     .find((l) => text(l).startsWith(label))!
     .querySelector('input') as HTMLInputElement;
+const proxyRows = () => [...document.querySelectorAll('.network-proxy')];
+/** A saved proxy's row: what it is, and what's said under it. */
+const said = (row: Element) => [
+  text(row.querySelector('.profile-row-label')),
+  text(row.querySelector('.profile-row-sub')),
+];
+const notes = () => [...document.querySelectorAll('.network-note')].map(text);
 const statuses = () => [...document.querySelectorAll('.settings-status')].map(text);
-const cloudHosts = () =>
-  document.querySelector<HTMLInputElement>('.network-cloud-hosts input[type="checkbox"]')!;
+const timeoutField = () => document.querySelector<HTMLInputElement>('.setting-number-field input')!;
 
-async function choose(input: HTMLInputElement) {
-  input.checked = true;
-  input.dispatchEvent(new Event('change', { bubbles: true }));
+async function pick(row: RouteRow, value: string) {
+  menu(row).value = value;
+  menu(row).dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+}
+
+async function type(input: HTMLInputElement, value: string) {
+  input.value = value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
   await flush();
 }
 
 /** Types `value`, then leaves the field. */
 async function enter(input: HTMLInputElement, value: string) {
-  input.value = value;
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  await flush();
+  await type(input, value);
   input.dispatchEvent(new Event('change', { bubbles: true }));
   await flush();
 }
 
-/** Which of what a proxy has the page shows. */
-const shown = () => ({
-  form: Boolean(form()),
-  cloudHosts: Boolean(document.querySelector('.network-cloud-hosts')),
-  browser: Boolean(document.querySelector('.network-browser')),
-  places: Boolean(document.querySelector('select[aria-label="Which browsers"]')),
-});
-const NOTHING = { form: false, cloudHosts: false, browser: false, places: false };
+async function click(target: HTMLButtonElement | undefined) {
+  assert.ok(target, 'the button is there');
+  target.click();
+  await flush();
+}
 
-const AUTOMATIC =
-  'Chosen automatically: System proxy while this computer has a proxy set, No proxy while it hasn’t. Choosing one keeps it.';
-const automatic = () =>
-  [...document.querySelectorAll('.network-settings .settings-hint')].some(
-    (p) => text(p) === AUTOMATIC
-  );
-const timeoutField = () => document.querySelector<HTMLInputElement>('.setting-number-field input')!;
-
-test('where this computer has no proxy, no proxy is chosen at first, which hides the rest', async () => {
-  app({ system: { https: null, http: null } });
-  await page();
-  const radios = [...document.querySelectorAll<HTMLInputElement>('input[name="network-proxy"]')];
-  assert.deepEqual(
-    radios.map((r) => r.nextElementSibling!.firstChild!.textContent!.trim()),
-    ['No proxy', 'System proxy', 'Custom']
-  );
-  assert.deepEqual(
-    radios.map((r) => r.checked),
-    [true, false, false]
-  );
-  assert.ok(automatic(), 'said to be chosen automatically');
-  // The system's is said as it is now, for choosing it.
-  assert.match(text(radio('System proxy').closest('label')), /Now: None is set/);
-  assert.deepEqual(shown(), NOTHING);
-  assert.equal(timeoutField().placeholder, '30', 'the timeout is no proxy’s too');
-  assert.deepEqual(saves(), []);
-
-  await choose(radio('System proxy'));
-  assert.deepEqual(saves(), [{ settings: { proxy: 'system', ...REST }, password: undefined }]);
-  assert.deepEqual(shown(), { ...NOTHING, cloudHosts: true, browser: true, places: true });
-  assert.equal(automatic(), false, 'chosen now');
-
-  await choose(radio('Custom'));
-  assert.deepEqual(shown(), { form: true, cloudHosts: true, browser: true, places: true });
-  assert.equal(saves().length, 1, 'nothing to save without a host and a port');
-
-  await choose(radio('No proxy'));
-  assert.deepEqual(saves().at(-1), { settings: { proxy: 'direct', ...REST }, password: undefined });
-  assert.equal(radio('No proxy').checked, true);
-  assert.deepEqual(shown(), NOTHING);
-});
-
-test('where this computer has a proxy, the system’s is chosen at first, until another is', async () => {
+test('at first: no proxies, and each kind of connection where it goes by default', async () => {
   app();
   await page();
-  assert.equal(radio('System proxy').checked, true);
-  assert.ok(automatic());
-  assert.match(text(radio('System proxy').closest('label')), /Now: proxy\.corp:3128 \(HTTP\)\./);
-  assert.deepEqual(shown(), { ...NOTHING, cloudHosts: true, browser: true, places: true });
+  assert.equal(proxyRows().length, 0);
+  assert.match(text(document.body), /None yet: add one to send connections through it\./);
+  assert.match(text(document.body), /This computer’s proxy, for “System proxy”: none set\./);
 
-  // Another setting saved chooses no proxy.
-  await enter(timeoutField(), '60');
-  assert.deepEqual(saves(), [{ settings: { ...REST, timeoutSecs: 60 }, password: undefined }]);
-  assert.equal('proxy' in saves()[0].settings, false);
-  assert.ok(automatic());
-
-  await choose(radio('No proxy'));
-  assert.deepEqual(saves().at(-1), {
-    settings: { ...REST, timeoutSecs: 60, proxy: 'direct' },
-    password: undefined,
-  });
-  assert.equal(automatic(), false);
-  assert.deepEqual(shown(), NOTHING);
-});
-
-test('a custom proxy is saved once it has a host and a port', async () => {
-  app();
-  await page();
-  await choose(radio('Custom'));
-  assert.ok(form(), 'its fields show');
-  assert.equal(radio('Custom').checked, true);
-  assert.deepEqual(statuses(), [
-    'Not in use yet: enter the proxy’s host and port. Until then, connections use the system’s proxy.',
-  ]);
-  assert.equal(field('Port').placeholder, '3128');
-
-  await enter(field('Host'), 'proxy.example.com');
-  assert.deepEqual(saves(), [], 'not without a port');
-  await enter(field('Port'), '3128');
-  assert.deepEqual(saves(), [
-    {
-      settings: { proxy: 'custom', custom: SAVED_PROXY, ...REST },
-      password: undefined,
-    },
-  ]);
-  assert.deepEqual(statuses(), []);
-  assert.equal(radio('Custom').checked, true);
-
-  // Signing in: the username is kept with it.
-  await enter(field('Username'), ' alice ');
-  assert.deepEqual(saves().at(-1)!.settings.custom, { ...SAVED_PROXY, username: 'alice' });
-});
-
-test('a proxy’s URL pasted in the host field gives its kind and port', async () => {
-  app();
-  await page();
-  await choose(radio('Custom'));
-  await enter(field('Host'), 'socks5://10.0.0.2:1080/');
-  assert.deepEqual(saves(), [
-    {
-      settings: {
-        proxy: 'custom',
-        custom: { kind: 'socks5', host: '10.0.0.2', port: 1080 },
-        ...REST,
-      },
-      password: undefined,
-    },
-  ]);
-  const selected = document.querySelector('.network-proxy-kind [aria-checked="true"]');
-  assert.equal(text(selected), 'SOCKS5');
-  assert.equal(field('Host').value, '10.0.0.2');
-  assert.equal(field('Port').value, '1080');
-});
-
-test('the password goes to the keychain and can be forgotten', async () => {
-  app({ settings: { proxy: 'custom', custom: { ...SAVED_PROXY, username: 'alice' }, ...REST } });
-  await page();
-  const password = () => field('Password');
-  assert.equal(password().placeholder, 'Only if the proxy asks for one');
-  await enter(password(), 's3cret');
-  assert.deepEqual(saves(), [{ settings: kept.settings, password: 's3cret' }]);
-  assert.equal(password().value, '', 'not shown once saved');
-  assert.equal(password().placeholder, 'Saved: leave empty to keep it');
-
-  // Leaving it empty keeps it.
-  await enter(password(), '');
-  assert.equal(saves().length, 1);
-
-  const forget = [...document.querySelectorAll('button')].find(
-    (b) => text(b) === 'Forget the saved password'
-  )!;
-  forget.click();
-  await flush();
-  assert.deepEqual(saves().at(-1), { settings: kept.settings, password: '' });
-  assert.equal(password().placeholder, 'Only if the proxy asks for one');
-
-  // Another kind keeps the rest.
-  [...document.querySelectorAll<HTMLButtonElement>('.network-proxy-kind button')]
-    .find((b) => text(b) === 'SOCKS5')!
-    .click();
-  await flush();
-  assert.deepEqual(saves().at(-1)!.settings.custom, {
-    ...SAVED_PROXY,
-    kind: 'socks5',
-    username: 'alice',
-  });
-});
-
-test('no proxy or the system’s keeps the custom one for later', async () => {
-  app({ settings: { proxy: 'custom', custom: SAVED_PROXY, ...REST } });
-  await page();
-  assert.equal(radio('Custom').checked, true);
-  await choose(radio('System proxy'));
-  assert.deepEqual(saves(), [
-    { settings: { proxy: 'system', custom: SAVED_PROXY, ...REST }, password: undefined },
-  ]);
-  assert.equal(form(), null);
-  await choose(radio('No proxy'));
-  assert.deepEqual(saves().at(-1), {
-    settings: { proxy: 'direct', custom: SAVED_PROXY, ...REST },
-    password: undefined,
-  });
-  await choose(radio('Custom'));
-  assert.deepEqual(saves().at(-1), {
-    settings: { proxy: 'custom', custom: SAVED_PROXY, ...REST },
-    password: undefined,
-  });
-  assert.equal(field('Host').value, 'proxy.example.com');
-  // Emptied, it isn't saved: the saved one stays in use, and the page says so.
-  await enter(field('Host'), '');
-  assert.equal(saves().length, 3);
-  assert.deepEqual(statuses(), [
-    'Not in use yet: enter the proxy’s host and port. Until then, connections use the saved one, proxy.example.com:3128.',
-  ]);
-});
-
-test('the timeout and cloud hosts are saved as they change', async () => {
-  app({ settings: { proxy: 'system', ...REST }, system: { https: null, http: null } });
-  await page();
-  const timeout = document.querySelector<HTMLInputElement>('.setting-number-field input')!;
-  await enter(timeout, '60');
-  assert.deepEqual(saves().at(-1), {
-    settings: { proxy: 'system', ...REST, timeoutSecs: 60 },
-    password: undefined,
-  });
-  await enter(timeout, '');
-  assert.equal(saves().at(-1)!.settings.timeoutSecs, undefined, 'empty: the default');
-
-  cloudHosts().checked = true;
-  cloudHosts().dispatchEvent(new Event('change', { bubbles: true }));
-  await flush();
-  assert.equal(saves().at(-1)!.settings.cloudHosts, true);
-  assert.deepEqual(statuses(), ['No effect now: this computer has no proxy set.']);
-});
-
-test('what the backend refuses is said, and the fields keep what was typed', async () => {
-  app({}, 'Enter only the proxy’s name or address, such as proxy.example.com.');
-  await page();
-  await choose(radio('Custom'));
-  await enter(field('Port'), '8080');
-  await enter(field('Host'), 'me@proxy');
-  assert.equal(saves().length, 1);
-  assert.ok(
-    statuses().includes('Enter only the proxy’s name or address, such as proxy.example.com.'),
-    statuses().join(' | ')
-  );
-  assert.equal(field('Host').value, 'me@proxy');
-  assert.equal(field('Port').value, '8080');
-});
-
-test('use proxy for browser: off at first, then for the browsers chosen', async () => {
-  app({
-    settings: {
-      proxy: 'custom',
-      custom: { ...SAVED_PROXY, kind: 'socks5', username: 'alice' },
-      ...REST,
-    },
-  });
-  await page();
-  const browser = document.querySelector<HTMLInputElement>(
-    '.network-browser input[type="checkbox"]'
-  )!;
-  const places = document.querySelector<HTMLSelectElement>('select[aria-label="Which browsers"]')!;
-  assert.equal(browser.checked, false);
-  assert.equal(places.disabled, true, 'nothing to choose while it is off');
+  const groups = [...document.querySelectorAll('.network-route-group')];
   assert.deepEqual(
-    [...places.options].map((o) => [o.value, o.textContent]),
+    groups.map((g) => text(g.querySelector('.network-route-group-title'))),
+    ['This computer', 'Cloud hosts']
+  );
+  assert.deepEqual(
+    groups.map((g) => [...g.querySelectorAll('select')].map((s) => s.getAttribute('aria-label'))),
     [
-      ['local', 'Local only'],
-      ['cloud', 'Cloud only'],
-      ['both', 'Local + cloud'],
+      [MENUS.models, MENUS.ssh, MENUS.browser],
+      [MENUS.hostModels, MENUS.hostBrowser],
     ]
   );
-  assert.doesNotMatch(
-    text(form()),
-    /can’t sign in to a SOCKS5 proxy/,
-    'the browser doesn’t use it yet'
+  assert.deepEqual(
+    ROWS.map((row) => menu(row).value),
+    ['auto', 'direct', 'own', 'own', 'own']
   );
+  assert.deepEqual(ROWS.map(shown), [
+    'Automatic (no proxy)',
+    'No proxy',
+    'Its own settings',
+    'The host’s own settings',
+    'Its own settings',
+  ]);
+  assert.deepEqual(options('models'), ['auto', 'direct', 'system']);
+  assert.deepEqual(options('ssh'), ['direct', 'system']);
+  assert.deepEqual(options('browser'), ['own', 'direct', 'system']);
+  assert.deepEqual(options('hostModels'), ['own', 'direct']);
+  assert.deepEqual(options('hostBrowser'), ['own', 'direct']);
 
-  browser.checked = true;
-  browser.dispatchEvent(new Event('change', { bubbles: true }));
-  await flush();
-  assert.deepEqual(saves().at(-1)!.settings, { ...kept.settings, browser: true });
-  assert.equal(places.disabled, false);
-  assert.match(text(form()), /The agent’s browser can’t sign in to a SOCKS5 proxy/);
-  assert.doesNotMatch(text(document.body), /A cloud host’s browser is given the proxy/);
-
-  places.value = 'both';
-  places.dispatchEvent(new Event('change', { bubbles: true }));
-  await flush();
-  assert.equal(saves().at(-1)!.settings.browserPlaces, 'both');
-  assert.match(text(document.body), /A cloud host’s browser is given the proxy, and its password/);
+  assert.deepEqual(notes(), []);
+  assert.deepEqual(statuses(), []);
+  assert.equal(timeoutField().placeholder, '30');
+  assert.deepEqual(saves(), []);
 });
 
-test('without a keychain, the file is unlocked here and the password typed is saved', async () => {
-  app({
-    settings: { proxy: 'custom', custom: { ...SAVED_PROXY, username: 'alice' }, ...REST },
-    store: { kind: 'file', unlocked: false },
+test('automatically, this computer’s proxy where it has one set', async () => {
+  app({}, { system: SYSTEM });
+  await page();
+  assert.equal(shown('models'), 'Automatic (system proxy)');
+  assert.match(
+    text(document.body),
+    /This computer’s proxy, for “System proxy”: proxy\.corp:3128 \(HTTP\)\./
+  );
+});
+
+test('a proxy is added with its password, then each kind of connection can go through it', async () => {
+  app();
+  await page();
+  await click(button('+ Add a proxy'));
+  assert.ok(form(), 'the editor opens');
+  assert.equal(button('+ Add a proxy'), undefined, 'in place of the button');
+  assert.equal(button('Save')!.disabled, true, 'not without a host and a port');
+  assert.equal(field('Port').placeholder, '3128');
+
+  await type(field('Host'), 'proxy.example.com');
+  assert.equal(button('Save')!.disabled, true);
+  await type(field('Port'), '3128');
+  await type(field('Username'), ' alice ');
+  await type(field('Password'), 's3cret');
+  assert.deepEqual(saves(), [], 'saved with Save');
+  await click(button('Save'));
+
+  assert.equal(saves().length, 1);
+  const id = saves()[0].settings.proxies[0].id;
+  assert.match(id, /^proxy-[a-z0-9]{8}$/);
+  assert.deepEqual(saves()[0], {
+    settings: {
+      proxies: [{ id, kind: 'http', host: 'proxy.example.com', port: 3128, username: 'alice' }],
+      routes: DEFAULT_ROUTES,
+    },
+    passwords: { [id]: 's3cret' },
   });
+  assert.equal(form(), null, 'closed once saved');
+  assert.deepEqual(proxyRows().map(said), [['HTTP proxy.example.com:3128', 'Signs in as alice']]);
+  for (const row of ROWS) assert.ok(options(row).includes(`proxy:${id}`), row);
+  assert.equal(optionLabel('hostModels', `proxy:${id}`), 'HTTP proxy.example.com:3128 (alice)');
+  assert.match(
+    text(document.body),
+    /Addresses on this computer \(localhost\) are reached directly/
+  );
+
+  // Cancel saves nothing.
+  await click(button('+ Add a proxy'));
+  await type(field('Host'), 'other.example.com');
+  await type(field('Port'), '8080');
+  await click(button('Cancel'));
+  assert.equal(form(), null);
+  assert.equal(saves().length, 1);
+  assert.equal(proxyRows().length, 1);
+});
+
+test('choosing where a kind of connection goes saves it', async () => {
+  app({ proxies: [P1], timeoutSecs: 45 });
+  await page();
+  await pick('models', 'proxy:p1');
+  assert.deepEqual(saves().at(-1)!.settings.routes, { ...DEFAULT_ROUTES, models: { proxy: 'p1' } });
+  assert.equal(saves().at(-1)!.passwords, undefined);
+  assert.equal(saves().at(-1)!.settings.timeoutSecs, 45, 'the rest as it was');
+  await pick('ssh', 'system');
+  await pick('hostBrowser', 'direct');
+  assert.deepEqual(saves().at(-1)!.settings.routes, {
+    ...DEFAULT_ROUTES,
+    models: { proxy: 'p1' },
+    ssh: 'system',
+    hostBrowser: 'direct',
+  });
+  assert.equal(menu('models').value, 'proxy:p1');
+  assert.equal(shown('ssh'), 'System proxy');
+  assert.equal(shown('hostBrowser'), 'No proxy');
+
+  // Each menu has only what its kind takes, then the proxy.
+  assert.deepEqual(options('ssh'), ['direct', 'system', 'proxy:p1']);
+  assert.deepEqual(options('hostModels'), ['own', 'direct', 'proxy:p1']);
+  assert.deepEqual(options('hostBrowser'), ['own', 'direct', 'proxy:p1']);
+});
+
+test('a proxy is edited: its port, its password kept when left empty, and forgotten on request', async () => {
+  app({ proxies: [P1] });
+  await page();
+  await click(button('Edit', proxyRows()[0]));
+  assert.equal(field('Host').value, 'proxy.example.com');
+  assert.equal(field('Username').value, 'alice');
+  assert.equal(field('Password').placeholder, 'Saved: leave empty to keep it');
+  await type(field('Port'), '8080');
+  await click(button('Save'));
+  assert.deepEqual(saves().at(-1), {
+    settings: {
+      proxies: [
+        { id: 'p1', kind: 'http', host: 'proxy.example.com', port: 8080, username: 'alice' },
+      ],
+      routes: DEFAULT_ROUTES,
+    },
+    passwords: undefined,
+  });
+  assert.equal(kept.settings.proxies[0].passwordSaved, true, 'kept');
+  assert.equal(form(), null);
+
+  await click(button('Edit', proxyRows()[0]));
+  await click(button('Forget the saved password'));
+  assert.deepEqual(saves().at(-1)!.passwords, { p1: '' });
+  assert.equal(field('Password').placeholder, 'Only if the proxy asks for one');
+  assert.equal(button('Forget the saved password'), undefined);
+
+  // Another kind keeps the rest.
+  await click(
+    [...document.querySelectorAll<HTMLButtonElement>('.network-proxy-kind button')].find(
+      (b) => text(b) === 'SOCKS5'
+    )
+  );
+  assert.equal(field('Port').placeholder, '1080');
+  await click(button('Save'));
+  assert.deepEqual(saves().at(-1)!.settings.proxies, [
+    { id: 'p1', kind: 'socks5', host: 'proxy.example.com', port: 8080, username: 'alice' },
+  ]);
+  assert.deepEqual(said(proxyRows()[0]), [
+    'SOCKS5 proxy.example.com:8080',
+    'Signs in as alice, no password saved',
+  ]);
+});
+
+test('a proxy in use can’t be removed until nothing goes through it', async () => {
+  app({
+    proxies: [P1],
+    routes: { ...DEFAULT_ROUTES, models: { proxy: 'p1' }, hostBrowser: { proxy: 'p1' } },
+  });
+  await page();
+  const remove = () => button('Remove', proxyRows()[0])!;
+  assert.equal(
+    said(proxyRows()[0])[1],
+    'Signs in as alice · In use: model providers and cloud hosts’ browser'
+  );
+  assert.equal(remove().disabled, true);
+  assert.equal(
+    remove().title,
+    'In use: model providers and cloud hosts’ browser. Choose something else there first.'
+  );
+  await pick('models', 'direct');
+  assert.equal(remove().disabled, true, 'still the cloud hosts’ browser’s');
+  await pick('hostBrowser', 'own');
+  assert.equal(remove().disabled, false);
+  assert.equal(said(proxyRows()[0])[1], 'Signs in as alice');
+  await click(remove());
+  assert.deepEqual(saves().at(-1)!.settings.proxies, []);
+  assert.equal(proxyRows().length, 0);
+  assert.equal(options('models').includes('proxy:p1'), false);
+});
+
+test('the notes say what applies, and only while it does', async () => {
+  app({ proxies: [P1, S1] });
+  await page();
+  assert.deepEqual(notes(), []);
+  assert.deepEqual(statuses(), []);
+
+  await pick('hostModels', 'proxy:p1');
+  assert.deepEqual(notes(), [
+    'Cloud hosts are given the proxy, and its password, each time this computer connects to them, and keep the password in memory only. They have to be able to reach it; a host other computers use follows the last one to connect.',
+  ]);
+  await pick('hostModels', 'own');
+  await pick('hostBrowser', 'proxy:s1');
+  assert.equal(notes().length, 2, notes().join(' | '));
+  assert.ok(
+    notes().includes(
+      'The agent’s browser can’t sign in to a SOCKS5 proxy, so pages it opens won’t load through 10.0.0.2:1080.'
+    ),
+    notes().join(' | ')
+  );
+  await pick('hostBrowser', 'own');
+  await pick('browser', 'proxy:s1');
+  assert.deepEqual(notes(), [
+    'The agent’s browser can’t sign in to a SOCKS5 proxy, so pages it opens won’t load through 10.0.0.2:1080.',
+  ]);
+  await pick('browser', 'own');
+
+  await pick('ssh', 'system');
+  assert.deepEqual(notes(), [
+    'Hosts set to use your system’s ssh follow its own settings (ProxyJump, ProxyCommand) instead.',
+  ]);
+  assert.deepEqual(statuses(), [
+    'This computer has no proxy set, so “System proxy” goes directly for now.',
+  ]);
+  await pick('ssh', 'direct');
+  assert.deepEqual(notes(), []);
+  assert.deepEqual(statuses(), []);
+});
+
+test('“System proxy” is said to go directly only while this computer has none', async () => {
+  app({ routes: { ...DEFAULT_ROUTES, browser: 'system' } }, { system: SYSTEM });
+  await page();
+  assert.deepEqual(statuses(), []);
+});
+
+test('what the backend refuses is said, and the editor keeps what was typed', async () => {
+  app({}, {}, 'Enter only the proxy’s name or address, such as proxy.example.com.');
+  await page();
+  await click(button('+ Add a proxy'));
+  await type(field('Host'), 'me@proxy');
+  await type(field('Port'), '8080');
+  await click(button('Save'));
+  assert.equal(saves().length, 1);
+  assert.deepEqual(statuses(), [
+    'Enter only the proxy’s name or address, such as proxy.example.com.',
+  ]);
+  assert.ok(form(), 'still open');
+  assert.equal(field('Host').value, 'me@proxy');
+  assert.equal(field('Port').value, '8080');
+  assert.equal(proxyRows().length, 0);
+});
+
+test('without a keychain, the file is unlocked here and the proxy saved after', async () => {
+  app({}, { store: { kind: 'file', unlocked: false } });
   const save = backend.network_save;
   backend.network_save = (args) => {
-    if (args.password !== undefined && kept.store?.kind === 'file' && !kept.store.unlocked) {
+    if (args.passwords && kept.store?.kind === 'file' && !kept.store.unlocked) {
       throw 'The saved passwords and keys are locked: enter their passphrase first.';
     }
     return save(args);
@@ -385,27 +417,57 @@ test('without a keychain, the file is unlocked here and the password typed is sa
     kept = { ...kept, store: { kind: 'file', unlocked: true } };
   };
   await page();
+  await click(button('+ Add a proxy'));
+  assert.doesNotMatch(text(form()), /no keychain/, 'nothing to keep yet');
+  await type(field('Host'), 'proxy.example.com');
+  await type(field('Port'), '3128');
+  await type(field('Username'), 'alice');
   assert.match(text(form()), /This computer has no keychain/);
-  await enter(field('Password'), 's3cret');
+  await type(field('Password'), 's3cret');
+  await click(button('Save'));
   assert.ok(
     statuses().includes('The saved passwords and keys are locked: enter their passphrase first.'),
     statuses().join(' | ')
   );
+  assert.equal(proxyRows().length, 0, 'nothing saved');
   assert.equal(field('Password').value, 's3cret', 'kept to save once unlocked');
 
   const passphrase = document.querySelector<HTMLInputElement>(
     'input[aria-label="passphrase of the secrets file"]'
   )!;
-  passphrase.value = 'open sesame';
-  passphrase.dispatchEvent(new Event('input', { bubbles: true }));
-  await flush();
-  [...document.querySelectorAll<HTMLButtonElement>('button')]
-    .find((b) => text(b) === 'Unlock')!
-    .click();
-  await flush();
-  assert.deepEqual(saves().at(-1), { settings: kept.settings, password: 's3cret' });
-  assert.equal(kept.passwordSaved, true);
-  assert.doesNotMatch(text(form()), /This computer has no keychain/, 'unlocked: no more box');
-  assert.deepEqual(statuses(), []);
-  assert.equal(field('Password').placeholder, 'Saved: leave empty to keep it');
+  await type(passphrase, 'open sesame');
+  await click(button('Unlock'));
+  const tries = saves();
+  assert.equal(tries.length, 2, 'refused, then saved once unlocked');
+  const id = tries[1].settings.proxies[0].id;
+  assert.equal(tries[0].settings.proxies[0].id, id, 'the same proxy');
+  assert.deepEqual(tries[1].passwords, { [id]: 's3cret' });
+  assert.equal(form(), null);
+  assert.equal(kept.settings.proxies[0].passwordSaved, true);
+  assert.deepEqual(said(proxyRows()[0]), ['HTTP proxy.example.com:3128', 'Signs in as alice']);
+});
+
+test('a proxy’s URL pasted in the host field gives its kind and port', async () => {
+  app();
+  await page();
+  await click(button('+ Add a proxy'));
+  await enter(field('Host'), 'socks5://10.0.0.2:1080/');
+  assert.equal(text(document.querySelector('.network-proxy-kind [aria-checked="true"]')), 'SOCKS5');
+  assert.equal(field('Host').value, '10.0.0.2');
+  assert.equal(field('Port').value, '1080');
+  assert.deepEqual(saves(), []);
+  await click(button('Save'));
+  assert.deepEqual(saves()[0].settings.proxies[0].kind, 'socks5');
+});
+
+test('the timeout is saved as it changes', async () => {
+  app();
+  await page();
+  await enter(timeoutField(), '60');
+  assert.deepEqual(saves().at(-1), {
+    settings: { proxies: [], routes: DEFAULT_ROUTES, timeoutSecs: 60 },
+    passwords: undefined,
+  });
+  await enter(timeoutField(), '');
+  assert.equal(saves().at(-1)!.settings.timeoutSecs, undefined, 'empty: the default');
 });

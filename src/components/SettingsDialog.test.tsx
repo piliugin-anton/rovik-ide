@@ -104,8 +104,16 @@ const COMPUTER: typeof backend = {
     store: { kind: 'keychain' },
   }),
   network_settings: () => ({
-    settings: { cloudHosts: false, browser: false, browserPlaces: 'local' },
-    passwordSaved: false,
+    settings: {
+      proxies: [],
+      routes: {
+        models: 'auto',
+        ssh: 'direct',
+        browser: 'own',
+        hostModels: 'own',
+        hostBrowser: 'own',
+      },
+    },
     system: { https: null, http: null },
     defaultTimeoutSecs: 30,
     minTimeoutSecs: 5,

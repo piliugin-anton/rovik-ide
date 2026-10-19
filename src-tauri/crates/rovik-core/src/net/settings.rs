@@ -1,11 +1,14 @@
-//! What Settings → Network sets: how long connecting may take, the proxy
-//! connections go through (none, the system's or a custom one), and
-//! whether cloud hosts' SSH connections and the agent's browsers do too.
-//! Kept in network-settings.json (`net::init`); the custom proxy's
-//! password isn't, it's in the app's keychain.
+//! What Settings → Network sets: how long connecting may take, the proxies
+//! Rovik can use, and where each kind of connection goes (`Routes`): this
+//! computer's requests to model providers and its downloads, its SSH
+//! connections to cloud hosts, its agent's browser, and the cloud hosts'
+//! requests and browsers. Kept in network-settings.json (`net::init`); the
+//! proxies' passwords aren't, they're in the app's keychain.
 
+use rovik_protocol::network::{ProxyEndpoint, ProxyKind};
 use rovik_protocol::Secret;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::net::Ipv6Addr;
 use std::time::Duration;
 
@@ -17,108 +20,166 @@ pub const MAX_TIMEOUT_SECS: u32 = 300;
 
 /// The longest username and password a SOCKS5 proxy takes (RFC 1929).
 const MAX_CREDENTIAL_BYTES: usize = 255;
+/// The longest id a proxy has.
+const MAX_ID_CHARS: usize = 40;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NetworkSettings {
     /// How long connecting to a server, a proxy or a cloud host may take,
-    /// in seconds. None: [`DEFAULT_TIMEOUT_SECS`].
+    /// in seconds, here and on cloud hosts. None: [`DEFAULT_TIMEOUT_SECS`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u32>,
-    /// The proxy chosen. None while none has been: then the system's is
-    /// used, which is none while the system has none set, so the page shows
-    /// "System proxy" or "No proxy" as it finds the system.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proxy: Option<ProxyMode>,
-    /// The custom proxy. Kept while another choice is used, so going back
-    /// to it needs nothing typed again.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom: Option<CustomProxy>,
-    /// Cloud hosts' SSH connections go through the proxy too, when there's
-    /// one (`proxied`). Kept as it is while there's none, as is `browser`.
-    pub cloud_hosts: bool,
-    /// The agent's browser goes through the proxy too, where
-    /// `browser_places` says.
-    pub browser: bool,
-    pub browser_places: BrowserPlaces,
+    /// The proxies the routes can name.
+    pub proxies: Vec<SavedProxy>,
+    pub routes: Routes,
 }
 
-/// Which of the agent's browsers go through the proxy.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum BrowserPlaces {
-    /// The one on this computer.
-    #[default]
-    Local,
-    /// The ones cloud hosts start for the chats on them.
-    Cloud,
-    /// Both.
-    Both,
-}
-
-impl BrowserPlaces {
-    pub fn local(self) -> bool {
-        matches!(self, BrowserPlaces::Local | BrowserPlaces::Both)
-    }
-
-    pub fn cloud(self) -> bool {
-        matches!(self, BrowserPlaces::Cloud | BrowserPlaces::Both)
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ProxyMode {
-    /// No proxy: connections go directly, even when this computer has a
-    /// proxy set.
-    Direct,
-    /// This computer's proxy: on macOS and Windows its network settings,
-    /// and everywhere the HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
-    /// variables. None set: connections go directly. What's used while no
-    /// proxy has been chosen.
-    System,
-    /// The proxy set here, `NetworkSettings::custom`.
-    Custom,
-}
-
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum ProxyKind {
-    /// An HTTP proxy: HTTPS and SSH go through it by CONNECT.
-    Http,
-    /// A SOCKS5 proxy, which looks up the names it's given itself.
-    Socks5,
-}
-
+/// A proxy the routes can name.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct CustomProxy {
+pub struct SavedProxy {
+    /// What the routes name it by, and its password's in the keychain.
+    pub id: String,
     pub kind: ProxyKind,
     /// Its name or address, without a scheme or a port.
     pub host: String,
     pub port: u16,
-    /// Signs in to it with this name and the password in the keychain.
+    /// Signs in to it with this name and its password in the keychain.
     /// None: it's used without signing in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// A password for it is in the keychain. The backend keeps it: what the
+    /// page sends is taken from what's saved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub password_saved: bool,
+}
+
+/// Where one kind of connection goes.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Route {
+    /// This computer's requests to model providers only: the system's
+    /// proxy, which is none while the system has none set.
+    Auto,
+    /// The way it goes on its own: the browser's own settings, or on a
+    /// cloud host the host's.
+    Own,
+    /// No proxy: directly, even when the computer has a proxy set.
+    Direct,
+    /// This computer's proxy: on macOS and Windows its network settings,
+    /// and everywhere the HTTPS_PROXY, HTTP_PROXY, ALL_PROXY and NO_PROXY
+    /// variables. None set: directly.
+    System,
+    /// One of the saved proxies, by its id.
+    Proxy(String),
+}
+
+/// A kind of connection: a row of the page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    /// This computer's requests to model providers, and its downloads.
+    Models,
+    /// This computer's SSH connections to cloud hosts.
+    Ssh,
+    /// The agent's browser on this computer.
+    Browser,
+    /// Cloud hosts' requests to model providers, their downloads and
+    /// Autopilot's notices.
+    HostModels,
+    /// The agent's browser on cloud hosts.
+    HostBrowser,
+}
+
+impl Row {
+    pub const ALL: [Row; 5] = [
+        Row::Models,
+        Row::Ssh,
+        Row::Browser,
+        Row::HostModels,
+        Row::HostBrowser,
+    ];
+
+    /// As the page names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Row::Models => "Model providers and downloads on this computer",
+            Row::Ssh => "SSH to cloud hosts",
+            Row::Browser => "The agent's browser on this computer",
+            Row::HostModels => "Model providers and downloads on cloud hosts",
+            Row::HostBrowser => "The agent's browser on cloud hosts",
+        }
+    }
+
+    /// Whether it can go `route`'s way: "Automatic" is for this computer's
+    /// requests, "System proxy" this computer's alone, and "Its own" for
+    /// what has a way of its own.
+    pub fn takes(self, route: &Route) -> bool {
+        match route {
+            Route::Direct | Route::Proxy(_) => true,
+            Route::Auto => self == Row::Models,
+            Route::System => matches!(self, Row::Models | Row::Ssh | Row::Browser),
+            Route::Own => matches!(self, Row::Browser | Row::HostModels | Row::HostBrowser),
+        }
+    }
+
+    /// Where it goes until a way is chosen.
+    fn default_route(self) -> Route {
+        match self {
+            Row::Models => Route::Auto,
+            Row::Ssh => Route::Direct,
+            Row::Browser | Row::HostModels | Row::HostBrowser => Route::Own,
+        }
+    }
+}
+
+/// Where each kind of connection goes.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Routes {
+    pub models: Route,
+    pub ssh: Route,
+    pub browser: Route,
+    pub host_models: Route,
+    pub host_browser: Route,
+}
+
+impl Default for Routes {
+    fn default() -> Self {
+        Routes {
+            models: Row::Models.default_route(),
+            ssh: Row::Ssh.default_route(),
+            browser: Row::Browser.default_route(),
+            host_models: Row::HostModels.default_route(),
+            host_browser: Row::HostBrowser.default_route(),
+        }
+    }
+}
+
+impl Routes {
+    pub fn get(&self, row: Row) -> &Route {
+        match row {
+            Row::Models => &self.models,
+            Row::Ssh => &self.ssh,
+            Row::Browser => &self.browser,
+            Row::HostModels => &self.host_models,
+            Row::HostBrowser => &self.host_browser,
+        }
+    }
 }
 
 impl NetworkSettings {
     /// How long connecting may take.
     pub fn timeout(&self) -> Duration {
-        let secs = self
-            .timeout_secs
-            .unwrap_or(DEFAULT_TIMEOUT_SECS)
-            .clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
-        Duration::from_secs(u64::from(secs))
+        timeout_of(self.timeout_secs)
     }
 
-    /// Spaces around the host and the username dropped, and an empty
+    /// Spaces around the hosts and the usernames dropped, and an empty
     /// username taken for none.
     pub fn normalized(mut self) -> Self {
-        if let Some(custom) = &mut self.custom {
-            custom.host = custom.host.trim().to_string();
-            custom.username = custom
+        for proxy in &mut self.proxies {
+            proxy.host = proxy.host.trim().to_string();
+            proxy.username = proxy
                 .username
                 .take()
                 .map(|u| u.trim().to_string())
@@ -136,36 +197,68 @@ impl NetworkSettings {
                 ));
             }
         }
-        if let Some(custom) = &self.custom {
-            custom.check()?;
-        } else if self.proxy == Some(ProxyMode::Custom) {
-            return Err("Enter the proxy's host and port.".into());
+        let mut ids = HashSet::new();
+        for proxy in &self.proxies {
+            let id = proxy.id.as_str();
+            let plain = id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            if id.is_empty() || id.chars().count() > MAX_ID_CHARS || !plain {
+                return Err(format!("{id:?} isn't a proxy's id."));
+            }
+            if !ids.insert(id) {
+                return Err(format!("Two proxies have the id {id:?}."));
+            }
+            proxy.check()?;
+        }
+        for row in Row::ALL {
+            let route = self.routes.get(row);
+            if !row.takes(route) {
+                return Err(format!("{} can't go that way.", row.name()));
+            }
+            if let Route::Proxy(id) = route {
+                if !ids.contains(id.as_str()) {
+                    return Err(format!(
+                        "{} goes through a proxy that isn't saved.",
+                        row.name()
+                    ));
+                }
+            }
         }
         Ok(())
     }
 
-    /// The proxy used: the one chosen, or while none is, the system's.
-    pub fn mode(&self) -> ProxyMode {
-        self.proxy.unwrap_or(ProxyMode::System)
+    /// The saved proxy with this id.
+    pub fn proxy(&self, id: &str) -> Option<&SavedProxy> {
+        self.proxies.iter().find(|p| p.id == id)
     }
 
-    /// The custom proxy, when it's the one in use.
-    pub fn custom_in_use(&self) -> Option<&CustomProxy> {
-        match self.mode() {
-            ProxyMode::Custom => self.custom.as_ref(),
-            ProxyMode::Direct | ProxyMode::System => None,
+    /// The saved proxy `row` goes through, when it goes through one.
+    pub fn proxy_for(&self, row: Row) -> Option<&SavedProxy> {
+        match self.routes.get(row) {
+            Route::Proxy(id) => self.proxy(id),
+            _ => None,
         }
     }
 
-    /// A proxy may be used, the system's or the custom one: not with "No
-    /// proxy", which nothing goes through a proxy with, cloud hosts and
-    /// browsers neither.
-    pub fn proxied(&self) -> bool {
-        self.mode() != ProxyMode::Direct
+    /// The rows that go through the proxy `id`.
+    pub fn uses(&self, id: &str) -> Vec<Row> {
+        Row::ALL
+            .into_iter()
+            .filter(|&row| matches!(self.routes.get(row), Route::Proxy(p) if p == id))
+            .collect()
     }
 }
 
-impl CustomProxy {
+/// How long connecting may take, `secs` or the default, within the range.
+pub(crate) fn timeout_of(secs: Option<u32>) -> Duration {
+    let secs = secs
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
+    Duration::from_secs(u64::from(secs))
+}
+
+impl SavedProxy {
     /// Why it can't be used, when it can't.
     pub fn check(&self) -> Result<(), String> {
         let host = self.host.trim();
@@ -200,7 +293,7 @@ impl CustomProxy {
             ));
         }
         // What the clients are given has to be a URL.
-        self.url(None).map(|_| ())
+        proxy_url(&self.endpoint(None)).map(|_| ())
     }
 
     /// Why `password` can't sign in to it, when it can't: a SOCKS5 proxy
@@ -219,31 +312,56 @@ impl CustomProxy {
         authority(&self.host, self.port)
     }
 
-    /// Its URL for reqwest, signed in with `password` when it has a
-    /// username: `http://` for HTTP, `socks5h://` for SOCKS5 (the proxy
-    /// looks the names up).
-    pub(crate) fn url(&self, password: Option<&Secret>) -> Result<reqwest::Url, String> {
-        let scheme = match self.kind {
-            ProxyKind::Http => "http",
-            ProxyKind::Socks5 => "socks5h",
-        };
-        let address = authority(self.host.trim(), self.port);
-        let mut url = reqwest::Url::parse(&format!("{scheme}://{address}"))
-            .map_err(|_| format!("{address} isn't an address a proxy can have."))?;
-        if let Some(user) = self.username.as_deref() {
-            if let Some(password) = password {
-                self.check_password(password)?;
-            }
-            // Percent-encoded here, decoded where it's sent.
-            let signed_in = url
-                .set_username(user)
-                .and_then(|()| url.set_password(Some(password.map_or("", |p| p.0.as_str()))));
-            if signed_in.is_err() {
-                return Err(format!("{address} can't be signed in to."));
-            }
+    /// It, signed in to with `password` when it has a username.
+    pub fn endpoint(&self, password: Option<Secret>) -> ProxyEndpoint {
+        ProxyEndpoint {
+            kind: self.kind,
+            host: self.host.trim().to_string(),
+            port: self.port,
+            username: self.username.clone(),
+            password: self.username.as_ref().and(password),
         }
-        Ok(url)
     }
+}
+
+/// A proxy as a message says it: "the HTTP proxy at proxy.example.com:3128".
+pub fn described(proxy: &ProxyEndpoint) -> String {
+    let kind = match proxy.kind {
+        ProxyKind::Http => "HTTP",
+        ProxyKind::Socks5 => "SOCKS5",
+    };
+    format!("the {kind} proxy at {}", authority(&proxy.host, proxy.port))
+}
+
+/// A proxy's URL for reqwest, signed in to when it has a username:
+/// `http://` for HTTP, `socks5h://` for SOCKS5 (the proxy looks the names
+/// up).
+pub(crate) fn proxy_url(proxy: &ProxyEndpoint) -> Result<reqwest::Url, String> {
+    let scheme = match proxy.kind {
+        ProxyKind::Http => "http",
+        ProxyKind::Socks5 => "socks5h",
+    };
+    let address = authority(proxy.host.trim(), proxy.port);
+    let mut url = reqwest::Url::parse(&format!("{scheme}://{address}"))
+        .map_err(|_| format!("{address} isn't an address a proxy can have."))?;
+    if let Some(user) = proxy.username.as_deref() {
+        let password = proxy.password.as_ref();
+        if proxy.kind == ProxyKind::Socks5
+            && password.is_some_and(|p| p.0.len() > MAX_CREDENTIAL_BYTES)
+        {
+            return Err(format!(
+                "A SOCKS5 proxy takes a password of {MAX_CREDENTIAL_BYTES} bytes at most."
+            ));
+        }
+        // Percent-encoded here, decoded where it's sent.
+        let signed_in = url
+            .set_username(user)
+            .and_then(|()| url.set_password(Some(password.map_or("", |p| p.0.as_str()))));
+        if signed_in.is_err() {
+            return Err(format!("{address} can't be signed in to."));
+        }
+    }
+    Ok(url)
 }
 
 /// `host:port`, an IPv6 address in brackets.

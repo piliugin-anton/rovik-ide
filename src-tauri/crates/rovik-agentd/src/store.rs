@@ -855,9 +855,7 @@ impl Inner {
     fn set_config(&mut self, computer: &str, mut config: AgentConfig) {
         self.keys.give(config.models_mut());
         let mut kept = config.without_keys();
-        if let Some(proxy) = kept.browser_proxy.as_mut() {
-            proxy.password = None;
-        }
+        kept.network = kept.network.as_ref().map(|n| n.without_passwords());
         self.state.computers.insert(computer.to_string(), kept);
         self.configs.insert(computer.to_string(), config);
     }

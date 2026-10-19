@@ -1017,7 +1017,7 @@ async fn attempt(
             _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
             r = &mut request => match r {
                 Err(e) => {
-                    let message = match crate::net::custom_proxy_for(spec.url) {
+                    let message = match crate::net::proxy_for_requests(spec.url) {
                         Some(proxy) => format!("Could not reach the provider through {proxy}."),
                         None => "Could not reach the provider.".to_string(),
                     };

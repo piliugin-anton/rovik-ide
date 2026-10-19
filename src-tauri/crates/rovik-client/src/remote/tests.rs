@@ -671,16 +671,16 @@ async fn a_configuration_goes_to_every_host_without_its_keys() {
     assert_eq!(requests, [Request::AgentConfigure(config.without_keys())]);
 }
 
-/// "Use proxy for browser" in the cloud (Settings → Network): the hosts'
-/// configuration carries the proxy, its password with it, and goes again
+/// Cloud hosts' rows in Settings → Network: the hosts' configuration
+/// carries how they connect, the proxy's password with it, and goes again
 /// when it changes. In a process of its own, as it sets the process's
 /// network settings.
 #[test]
-fn the_hosts_browsers_are_given_the_proxy() {
+fn the_hosts_are_told_how_to_connect() {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "remote::tests::browser_proxy_in_a_process_of_its_own",
+            "remote::tests::host_network_in_a_process_of_its_own",
         ])
         .args(["--ignored", "--test-threads=1"])
         .output()
@@ -692,11 +692,14 @@ fn the_hosts_browsers_are_given_the_proxy() {
 }
 
 #[tokio::test]
-#[ignore = "run in a process of its own by the_hosts_browsers_are_given_the_proxy"]
-async fn browser_proxy_in_a_process_of_its_own() {
-    use rovik_core::net::{BrowserPlaces, CustomProxy, NetworkSettings, ProxyKind, ProxyMode};
-    use rovik_protocol::agent::BrowserProxy;
+#[ignore = "run in a process of its own by the_hosts_are_told_how_to_connect"]
+async fn host_network_in_a_process_of_its_own() {
+    use rovik_core::net::{
+        HostNetwork, NetworkSettings, ProxyEndpoint, ProxyKind, ProxyRoute, Route, Routes,
+        SavedProxy,
+    };
     use rovik_protocol::Secret;
+    use std::collections::HashMap;
 
     let configures = |fake: &Fake| -> Vec<AgentConfig> {
         let requests = fake.requests.lock().unwrap().clone();
@@ -711,21 +714,27 @@ async fn browser_proxy_in_a_process_of_its_own() {
     let app = App::new();
     let (remote, fake) = connected(&app).await;
     let mut settings = NetworkSettings {
-        proxy: Some(ProxyMode::Custom),
-        custom: Some(CustomProxy {
+        timeout_secs: Some(45),
+        proxies: vec![SavedProxy {
+            id: "corp".into(),
             kind: ProxyKind::Http,
             host: "proxy.example.com".into(),
             port: 3128,
             username: Some("alice".into()),
-        }),
-        browser: true,
-        browser_places: BrowserPlaces::Cloud,
-        ..NetworkSettings::default()
+            password_saved: false,
+        }],
+        routes: Routes {
+            host_models: Route::Proxy("corp".into()),
+            host_browser: Route::Proxy("corp".into()),
+            ..Routes::default()
+        },
     };
-    rovik_core::net::save(settings.clone()).unwrap();
-    rovik_core::net::password_saved(Some(Secret("pw".into()))).unwrap();
-    let theirs = Some(BrowserProxy {
-        server: "http://proxy.example.com:3128".into(),
+    let password = HashMap::from([("corp".to_string(), Some(Secret("pw".into())))]);
+    rovik_core::net::save(settings.clone(), &password).unwrap();
+    let corp = ProxyRoute::Proxy(ProxyEndpoint {
+        kind: ProxyKind::Http,
+        host: "proxy.example.com".into(),
+        port: 3128,
         username: Some("alice".into()),
         password: Some(Secret("pw".into())),
     });
@@ -734,19 +743,33 @@ async fn browser_proxy_in_a_process_of_its_own() {
         .everywhere(Request::AgentConfigure(AgentConfig::default()))
         .await
         .unwrap();
-    assert_eq!(configures(&fake).last().unwrap().browser_proxy, theirs);
-    // Not this computer's browser: the configuration here has none.
-    assert_eq!(app.core.agents.config().browser_proxy, None);
+    assert_eq!(
+        configures(&fake).last().unwrap().network,
+        Some(HostNetwork {
+            timeout_secs: Some(45),
+            models: Some(corp.clone()),
+            browser: Some(corp.clone()),
+        })
+    );
+    // Not this computer's: the configuration here has none, and its
+    // browser goes its own way.
+    assert_eq!(app.core.agents.config().network, None);
     assert_eq!(rovik_core::net::browser_proxy().await, None);
 
-    // This computer's browser only now: the host is told it has none.
-    settings.browser_places = BrowserPlaces::Local;
-    rovik_core::net::save(settings).unwrap();
-    remote.send_browser_proxy().await;
+    // The hosts' browsers go directly now: they're told.
+    settings.routes.host_browser = Route::Direct;
+    rovik_core::net::save(settings, &HashMap::new()).unwrap();
+    remote.send_host_network().await;
     let sent = configures(&fake);
     assert_eq!(sent.len(), 2);
-    assert_eq!(sent[1].browser_proxy, None);
-    assert_eq!(rovik_core::net::browser_proxy().await, theirs);
+    assert_eq!(
+        sent[1].network,
+        Some(HostNetwork {
+            timeout_secs: Some(45),
+            models: Some(corp),
+            browser: Some(ProxyRoute::Direct),
+        })
+    );
 }
 
 /// The fake's requests once the connection caught up (its `AgentStatus`),

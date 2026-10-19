@@ -4,38 +4,39 @@
 //!   (`client`), so their connections are kept open and reused, and on
 //!   HTTP/2 requests at once share one. Downloads build their own clients
 //!   from `builder`; cloud hosts' SSH connections start at
-//!   `open_cloud_host`.
-//! - All take the settings' timeout for connecting, and their proxy: none
-//!   ("No proxy", whatever the system has set), the system's, as reqwest
-//!   finds it, or a custom HTTP or SOCKS5 one, which nothing on this
-//!   computer (localhost) goes through. Until one is chosen, the system's,
-//!   which is none while the system has none set: the page shows "System
-//!   proxy" or "No proxy" as it finds the system. Cloud hosts' connections
-//!   and the agent's browsers go through it only when the settings say so.
+//!   `open_cloud_host`; the agent's browser starts with `browser_proxy`.
+//! - Each kind of connection goes its own way (`Routes`): directly, through
+//!   the system's proxy, as reqwest finds it, or through one of the saved
+//!   proxies, HTTP or SOCKS5, which nothing on this computer (localhost)
+//!   goes through. This computer's requests start at "Automatic": the
+//!   system's proxy, which is none while the system has none set.
+//! - A cloud host connects as the app tells it (`host_network`, sent with
+//!   the settings runs follow): there, `set_host_network` takes it, and the
+//!   shared client, the downloads and the browser follow it.
 //! - The shared client, and its connections with it, is replaced when the
 //!   settings change; after an attempt that may have failed for its
-//!   connection (`refresh`); after the computer slept, as a connection
-//!   kept from before is likely dead and a request on it would wait out
-//!   its first-byte limit; and every ten minutes, which follows a change of
-//!   the system's proxy. A request keeps the client it started with. While
-//!   one is under way on HTTP/2, pings find a dead connection.
+//!   connection (`refresh`); after the computer slept, as a connection kept
+//!   from before is likely dead and a request on it would wait out its
+//!   first-byte limit; and every ten minutes, which follows a change of the
+//!   system's proxy. A request keeps the client it started with. While one
+//!   is under way on HTTP/2, pings find a dead connection.
 //!
 //! The settings are network-settings.json, named by `init`. Another of
-//! Rovik's windows may save it: it's read again when it changed. The custom
-//! proxy's password is in the app's keychain: the file says whether one is
-//! saved and when it last changed, and `init`'s `password` reads it, off
-//! the async threads, as a keychain may ask the user first. A process that
-//! never calls `init` (a cloud host's daemon, the tests) has the settings'
-//! defaults: the system's proxy, and 30 s to connect.
+//! Rovik's windows may save it: it's read again when it changed. The
+//! proxies' passwords are in the app's keychain: the file says which have
+//! one and when one last changed, and `init`'s `password` reads them, off
+//! the async threads, as a keychain may ask the user first, once a route
+//! needs one. A process that never calls `init` (a cloud host's daemon, the
+//! tests) has the settings' defaults until a computer tells it more.
 
 mod settings;
 #[cfg(test)]
 mod tests;
 mod tunnel;
 
-pub use rovik_protocol::agent::BrowserProxy;
+pub use rovik_protocol::network::{HostNetwork, ProxyEndpoint, ProxyKind, ProxyRoute};
 pub use settings::{
-    authority, on_this_computer, BrowserPlaces, CustomProxy, NetworkSettings, ProxyKind, ProxyMode,
+    authority, described, on_this_computer, NetworkSettings, Route, Routes, Row, SavedProxy,
     DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS, MIN_TIMEOUT_SECS,
 };
 pub use tunnel::Link;
@@ -44,6 +45,7 @@ use base64::Engine;
 use hyper_util::client::proxy::matcher::Matcher;
 use rovik_protocol::Secret;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -63,11 +65,66 @@ const MAX_AGE: Duration = Duration::from_secs(10 * 60);
 const SLEPT_BY: Duration = Duration::from_secs(30);
 /// How often the settings file is looked at for another window's change.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
-/// After the password couldn't be read, how long before it's tried again.
+/// After a password couldn't be read, how long before it's tried again.
 const PASSWORD_RETRY: Duration = Duration::from_secs(30);
+/// Where what has to go through a proxy that can't be used goes: nowhere,
+/// so nothing goes around the proxy chosen.
+const NOWHERE: &str = "http://proxy.invalid:9";
 
-/// Reads the custom proxy's password: none when none is saved.
-pub type PasswordSource = Arc<dyn Fn() -> Result<Option<Secret>, String> + Send + Sync>;
+/// Reads a saved proxy's password, by the proxy's id: none when none is
+/// saved.
+pub type PasswordSource = Arc<dyn Fn(&str) -> Result<Option<Secret>, String> + Send + Sync>;
+
+/// The agent's browser's proxy (eoka): Chrome's `--proxy-server`, where
+/// `direct://` goes directly, and what it answers the proxy's sign-in
+/// with. Its `Debug` leaves the password out (`Secret`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserProxy {
+    pub server: String,
+    pub username: Option<String>,
+    pub password: Option<Secret>,
+}
+
+impl BrowserProxy {
+    /// Directly, whatever the browser's own settings say.
+    pub fn direct() -> BrowserProxy {
+        BrowserProxy {
+            server: "direct://".into(),
+            username: None,
+            password: None,
+        }
+    }
+
+    /// Through `proxy`, signed in to as it says.
+    fn of(proxy: &ProxyEndpoint) -> BrowserProxy {
+        let scheme = match proxy.kind {
+            ProxyKind::Http => "http",
+            // Chrome's SOCKS5 looks the names up through the proxy anyway.
+            ProxyKind::Socks5 => "socks5",
+        };
+        BrowserProxy {
+            server: format!("{scheme}://{}", authority(&proxy.host, proxy.port)),
+            username: proxy.username.clone(),
+            password: proxy.username.as_ref().and(proxy.password.clone()),
+        }
+    }
+
+    fn of_route(route: &ProxyRoute) -> BrowserProxy {
+        match route {
+            ProxyRoute::Direct => BrowserProxy::direct(),
+            ProxyRoute::Proxy(proxy) => BrowserProxy::of(proxy),
+        }
+    }
+
+    /// Through a proxy that can't be used: nowhere.
+    fn nowhere() -> BrowserProxy {
+        BrowserProxy {
+            server: NOWHERE.into(),
+            username: None,
+            password: None,
+        }
+    }
+}
 
 /// network-settings.json.
 #[derive(Serialize, Deserialize, Default)]
@@ -75,13 +132,10 @@ pub type PasswordSource = Arc<dyn Fn() -> Result<Option<Secret>, String> + Send 
 struct Saved {
     #[serde(flatten)]
     settings: NetworkSettings,
-    /// A password for the custom proxy is in the keychain.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    password_saved: bool,
-    /// When it last changed, in ms since 1970: another window reads it
-    /// again then.
+    /// When a proxy's password last changed, in ms since 1970: another
+    /// window reads them again then.
     #[serde(skip_serializing_if = "Option::is_none")]
-    password_changed: Option<u64>,
+    passwords_changed: Option<u64>,
 }
 
 /// Settings → Network's page.
@@ -89,9 +143,8 @@ struct Saved {
 #[serde(rename_all = "camelCase")]
 pub struct NetworkView {
     pub settings: NetworkSettings,
-    /// A password for the custom proxy is saved.
-    pub password_saved: bool,
-    /// The proxy "System proxy" uses now.
+    /// This computer's proxy now, which "System proxy" and "Automatic"
+    /// use.
     pub system: SystemProxy,
     pub default_timeout_secs: u32,
     pub min_timeout_secs: u32,
@@ -112,13 +165,13 @@ struct State {
     file: Option<PathBuf>,
     source: Option<PasswordSource>,
     settings: NetworkSettings,
-    password: Option<Secret>,
-    password_saved: bool,
-    /// When the password last changed, as the file says.
-    password_changed: Option<u64>,
-    /// The password is to be read (again).
-    password_due: bool,
-    /// No read of it before then: one is under way, or the last failed.
+    /// The saved proxies' passwords as read, by id: none when none is
+    /// saved. One that isn't here is read once a route needs it.
+    passwords: HashMap<String, Option<Secret>>,
+    /// When a password last changed, as the file says.
+    passwords_changed: Option<u64>,
+    /// No read of the passwords before then: one is under way, or the last
+    /// failed.
     password_not_before: Option<Instant>,
     /// The file as last read, and when it was last looked at.
     seen: Option<Vec<u8>>,
@@ -130,9 +183,10 @@ struct State {
     stale: bool,
     /// The clocks at the shared client's last use, to tell a sleep.
     clocks: Option<(SystemTime, Instant)>,
-    /// On a cloud host: the browser proxy the app sent (`AgentConfig`),
-    /// none for none. Not set in the app, whose settings say.
-    hosted_browser: Option<Option<BrowserProxy>>,
+    /// On a cloud host: how the app said to connect (`AgentConfig`), the
+    /// last computer to say having it. Not set in the app, whose settings
+    /// say.
+    hosted: Option<HostNetwork>,
 }
 
 struct Shared {
@@ -144,17 +198,21 @@ struct Shared {
 /// What the clients are built from now.
 struct Effective {
     timeout: Duration,
-    route: Route,
+    way: Way,
 }
 
-/// How the clients' connections get to their servers.
-enum Route {
-    /// Directly, whatever proxy the system has: "No proxy".
+/// How a kind of connection gets to its server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Way {
+    /// Directly, whatever proxy the system has.
     Direct,
     /// Through the system's proxy, as reqwest finds it.
     System,
-    /// Through the custom proxy, signed in to with its password.
-    Custom(CustomProxy, Option<Secret>),
+    /// Through this proxy, signed in to.
+    Proxy(ProxyEndpoint),
+    /// Through a proxy that isn't there: nothing goes around it, it fails
+    /// to connect. Not reached, as the settings are checked.
+    Nowhere,
 }
 
 #[derive(Default)]
@@ -164,8 +222,8 @@ struct Net {
 
 static NET: LazyLock<Net> = LazyLock::new(Net::default);
 
-/// Reads the settings from `file`, and the custom proxy's password, when
-/// it's needed, with `password`.
+/// Reads the settings from `file`, and the proxies' passwords, when
+/// they're needed, with `password`.
 pub fn init(file: PathBuf, password: PasswordSource) {
     NET.init(file, password);
 }
@@ -175,16 +233,33 @@ pub fn view() -> NetworkView {
     NET.view()
 }
 
-/// Keeps `settings` and applies them; refused when they can't be used.
-pub fn save(settings: NetworkSettings) -> Result<NetworkView, String> {
-    NET.save(settings)?;
-    Ok(NET.view())
+/// Why `settings` can't be kept with these passwords, the new ones (some)
+/// and those to forget (none), by proxy, when they can't.
+pub fn check(
+    settings: &NetworkSettings,
+    passwords: &HashMap<String, Option<Secret>>,
+) -> Result<(), String> {
+    let settings = settings.clone().normalized();
+    settings.check()?;
+    for (id, password) in passwords {
+        let proxy = settings
+            .proxy(id)
+            .ok_or_else(|| "A password came for a proxy that isn't saved.".to_string())?;
+        if let Some(password) = password {
+            proxy.check_password(password)?;
+        }
+    }
+    Ok(())
 }
 
-/// The app saved the custom proxy's password, or forgot it (none):
-/// applied, and noted for the other windows.
-pub fn password_saved(password: Option<Secret>) -> Result<NetworkView, String> {
-    NET.password_saved(password)?;
+/// Keeps `settings` and applies them, with the passwords the app saved
+/// (some) or forgot (none) for these proxies, noted for the other windows.
+/// Refused when they can't be used (`check`).
+pub fn save(
+    settings: NetworkSettings,
+    passwords: &HashMap<String, Option<Secret>>,
+) -> Result<NetworkView, String> {
+    NET.save(settings, passwords)?;
     Ok(NET.view())
 }
 
@@ -199,14 +274,14 @@ pub fn refresh() {
     NET.refresh();
 }
 
-/// A builder with the settings' timeout and proxy, for a client of its
-/// own (a download).
+/// A builder with the settings' timeout and the way the requests to model
+/// providers go, for a client of its own (a download).
 pub async fn builder() -> reqwest::ClientBuilder {
     NET.builder().await
 }
 
-/// A TCP connection to a cloud host's SSH server: through the proxy when
-/// the settings say cloud hosts' connections go through it.
+/// A TCP connection to a cloud host's SSH server, the way the settings say
+/// SSH to cloud hosts goes.
 pub async fn open_cloud_host(host: &str, port: u16) -> Result<Link, String> {
     NET.open_cloud_host(host, port).await
 }
@@ -227,42 +302,38 @@ pub async fn cloud_host_proxy(host: &str, port: u16) -> Result<Option<String>, S
     })
 }
 
-/// The proxy for the agent's browser in this process: on a cloud host the
-/// one the app sent (`set_hosted_browser_proxy`); in the app the settings'
-/// when "Use proxy for browser" covers this computer. None, as with "No
-/// proxy": Chrome's own settings, which follow the system's proxy.
+/// The proxy the agent's browser in this process starts with: on a cloud
+/// host the way the app said (`set_host_network`), in the app the way its
+/// settings say. None: Chrome's own settings.
 pub async fn browser_proxy() -> Option<BrowserProxy> {
     NET.browser_proxy().await
 }
 
-/// The proxy for the browsers of the cloud hosts, sent to them with the
-/// settings runs follow (`AgentConfig`): the settings' when "Use proxy for
-/// browser" covers the cloud.
-pub async fn cloud_browser_proxy() -> Option<BrowserProxy> {
-    NET.cloud_browser_proxy().await
+/// How cloud hosts are to connect, as the settings say, the proxies'
+/// passwords with them: sent with the settings runs follow
+/// (`AgentConfig::network`).
+pub async fn host_network() -> HostNetwork {
+    NET.host_network().await
 }
 
-/// On a cloud host: the browser proxy the app sent, for the browser this
-/// process starts from now on (the last computer to send one has it).
-pub fn set_hosted_browser_proxy(proxy: Option<BrowserProxy>) {
-    NET.lock().hosted_browser = Some(proxy);
+/// On a cloud host: how the app said to connect, for what this process
+/// connects to from now on. None: as the host has it.
+pub fn set_host_network(network: Option<HostNetwork>) {
+    NET.set_host_network(network);
 }
 
-/// The custom proxy a request to `url` goes through, as a message says it
-/// ("the HTTP proxy at proxy.example.com:3128"); none when it goes
-/// directly or through the system's.
-pub fn custom_proxy_for(url: &str) -> Option<String> {
+/// The proxy a request to `url` goes through, as a message says it ("the
+/// HTTP proxy at proxy.example.com:3128"); none when it goes directly or
+/// through the system's.
+pub fn proxy_for_requests(url: &str) -> Option<String> {
     let host = reqwest::Url::parse(url).ok()?.host_str()?.to_string();
     if on_this_computer(&host) {
         return None;
     }
-    let state = NET.lock();
-    let proxy = state.settings.custom_in_use()?;
-    let kind = match proxy.kind {
-        ProxyKind::Http => "HTTP",
-        ProxyKind::Socks5 => "SOCKS5",
-    };
-    Some(format!("the {kind} proxy at {}", proxy.address()))
+    match effective(&NET.lock()).way {
+        Way::Proxy(proxy) => Some(described(&proxy)),
+        _ => None,
+    }
 }
 
 /// An error and what caused it: a request's says only "error sending
@@ -291,7 +362,7 @@ impl Net {
             let mut state = self.lock();
             state.file = Some(file);
             state.source = Some(source);
-            state.password_due = true;
+            state.passwords.clear();
             state.password_not_before = None;
         }
         self.follow(true);
@@ -299,13 +370,9 @@ impl Net {
 
     fn view(&self) -> NetworkView {
         self.follow(true);
-        let (settings, password_saved) = {
-            let state = self.lock();
-            (state.settings.clone(), state.password_saved)
-        };
+        let settings = self.lock().settings.clone();
         NetworkView {
             settings,
-            password_saved,
             system: system_proxy(),
             default_timeout_secs: DEFAULT_TIMEOUT_SECS,
             min_timeout_secs: MIN_TIMEOUT_SECS,
@@ -313,41 +380,54 @@ impl Net {
         }
     }
 
-    fn save(&self, settings: NetworkSettings) -> Result<(), String> {
-        let settings = settings.normalized();
-        settings.check()?;
+    fn save(
+        &self,
+        settings: NetworkSettings,
+        passwords: &HashMap<String, Option<Secret>>,
+    ) -> Result<(), String> {
+        check(&settings, passwords)?;
+        let mut settings = settings.normalized();
         let mut state = self.lock();
+        // Whether a password is saved is what the app did, not what the
+        // page says.
+        for proxy in &mut settings.proxies {
+            proxy.password_saved = match passwords.get(&proxy.id) {
+                Some(password) => password.is_some(),
+                None => state
+                    .settings
+                    .proxy(&proxy.id)
+                    .is_some_and(|saved| saved.password_saved),
+            };
+        }
+        let passwords_changed = if passwords.is_empty() {
+            state.passwords_changed
+        } else {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            Some(now.max(state.passwords_changed.map_or(0, |c| c + 1)))
+        };
         let saved = Saved {
             settings: settings.clone(),
-            password_saved: state.password_saved,
-            password_changed: state.password_changed,
+            passwords_changed,
         };
         write(&mut state, &saved)?;
-        if state.settings != settings {
-            state.settings = settings;
-            state.generation += 1;
+        state.passwords_changed = passwords_changed;
+        let mut changed = state.settings != settings;
+        for (id, password) in passwords {
+            if state
+                .passwords
+                .insert(id.clone(), password.clone())
+                .as_ref()
+                != Some(password)
+            {
+                changed = true;
+            }
         }
-        Ok(())
-    }
-
-    fn password_saved(&self, password: Option<Secret>) -> Result<(), String> {
-        let mut state = self.lock();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-        let changed = now.max(state.password_changed.map_or(0, |c| c + 1));
-        let saved = Saved {
-            settings: state.settings.clone(),
-            password_saved: password.is_some(),
-            password_changed: Some(changed),
-        };
-        write(&mut state, &saved)?;
-        state.password_saved = password.is_some();
-        state.password_changed = Some(changed);
-        state.password_due = false;
-        state.password_not_before = None;
-        if state.password != password {
-            state.password = password;
+        let kept: HashSet<String> = settings.proxies.iter().map(|p| p.id.clone()).collect();
+        state.passwords.retain(|id, _| kept.contains(id));
+        state.settings = settings;
+        if changed {
             state.generation += 1;
         }
         Ok(())
@@ -397,60 +477,79 @@ impl Net {
             state.settings = settings;
             state.generation += 1;
         }
-        state.password_saved = saved.password_saved;
-        if saved.password_changed != state.password_changed {
-            state.password_changed = saved.password_changed;
-            state.password_due = true;
+        if saved.passwords_changed != state.passwords_changed {
+            state.passwords_changed = saved.passwords_changed;
+            state.passwords.clear();
             state.password_not_before = None;
         }
     }
 
-    /// Reads the password, when the custom proxy in use signs in and it's
-    /// due: off the async threads.
-    async fn read_password(&self) {
-        let source = {
+    /// Reads the passwords the routes need and aren't read yet: off the
+    /// async threads.
+    async fn read_passwords(&self) {
+        let (source, wanted) = {
             let mut state = self.lock();
-            let needed = state
-                .settings
-                .custom_in_use()
-                .is_some_and(|p| p.username.is_some());
-            if !state.password_due || !needed {
-                return;
-            }
             if state
                 .password_not_before
                 .is_some_and(|t| Instant::now() < t)
             {
                 return;
             }
+            let wanted = needed(&state);
+            if wanted.is_empty() {
+                return;
+            }
             let Some(source) = state.source.clone() else {
-                state.password_due = false;
+                // Nothing to read them with: none saved.
+                for id in wanted {
+                    state.passwords.insert(id, None);
+                }
                 return;
             };
             // The others go on with what there is meanwhile.
             state.password_not_before = Some(Instant::now() + PASSWORD_RETRY);
-            source
+            (source, wanted)
         };
-        let read = crate::rt::spawn_blocking(move || source())
-            .await
-            .unwrap_or_else(|e| Err(e.to_string()));
+        let read = crate::rt::spawn_blocking(move || {
+            wanted
+                .into_iter()
+                .map(|id| {
+                    let password = source(&id);
+                    (id, password)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await;
         let mut state = self.lock();
-        match read {
-            Ok(password) => {
-                state.password_due = false;
-                state.password_not_before = None;
-                if state.password != password {
-                    state.password = password;
-                    state.generation += 1;
+        let read = match read {
+            Ok(read) => read,
+            Err(e) => {
+                log::warn!("network: the proxies' passwords couldn't be read: {e}");
+                return;
+            }
+        };
+        let mut failed = false;
+        for (id, password) in read {
+            match password {
+                Ok(password) => {
+                    if state.passwords.insert(id, password.clone()) != Some(password) {
+                        state.generation += 1;
+                    }
+                }
+                Err(e) => {
+                    failed = true;
+                    log::warn!("network: the proxy {id}'s password couldn't be read: {e}");
                 }
             }
-            Err(e) => log::warn!("network: the proxy's password couldn't be read: {e}"),
+        }
+        if !failed {
+            state.password_not_before = None;
         }
     }
 
     async fn current(&self) {
         self.follow(false);
-        self.read_password().await;
+        self.read_passwords().await;
     }
 
     async fn client(&self) -> reqwest::Client {
@@ -507,34 +606,89 @@ impl Net {
     }
 
     async fn browser_proxy(&self) -> Option<BrowserProxy> {
-        if let Some(hosted) = self.lock().hosted_browser.clone() {
-            return hosted;
+        if let Some(hosted) = self.lock().hosted.clone() {
+            return hosted.browser.as_ref().map(BrowserProxy::of_route);
         }
         self.current().await;
-        self.proxy_for_browsers(BrowserPlaces::local)
-    }
-
-    async fn cloud_browser_proxy(&self) -> Option<BrowserProxy> {
-        self.current().await;
-        self.proxy_for_browsers(BrowserPlaces::cloud)
-    }
-
-    /// The proxy for the browsers `covers` picks, when the settings send
-    /// them through one.
-    fn proxy_for_browsers(&self, covers: fn(BrowserPlaces) -> bool) -> Option<BrowserProxy> {
-        let wanted = |state: &State| {
-            let settings = &state.settings;
-            settings.proxied() && settings.browser && covers(settings.browser_places)
-        };
-        if !wanted(&self.lock()) {
-            return None;
+        let route = self.lock().settings.routes.browser.clone();
+        match route {
+            Route::Own | Route::Auto => None,
+            Route::Direct => Some(BrowserProxy::direct()),
+            // As this computer's requests find it; none set: directly.
+            Route::System => Some(
+                system_for_browser(&Matcher::from_system()).unwrap_or_else(BrowserProxy::direct),
+            ),
+            Route::Proxy(id) => {
+                let state = self.lock();
+                Some(match state.settings.proxy(&id) {
+                    Some(proxy) => BrowserProxy::of(&endpoint_of(&state, proxy)),
+                    None => BrowserProxy::nowhere(),
+                })
+            }
         }
-        // Found before the lock is taken again: it may ask the system.
-        let system = Matcher::from_system();
+    }
+
+    async fn host_network(&self) -> HostNetwork {
+        self.current().await;
         let state = self.lock();
-        wanted(&state)
-            .then(|| proxy_for_browser(&state, &system))
-            .flatten()
+        let settings = &state.settings;
+        let route = |row: Row| match settings.routes.get(row) {
+            Route::Direct => Some(ProxyRoute::Direct),
+            Route::Proxy(id) => Some(match settings.proxy(id) {
+                Some(proxy) => ProxyRoute::Proxy(endpoint_of(&state, proxy)),
+                None => ProxyRoute::Proxy(nowhere_endpoint()),
+            }),
+            Route::Own | Route::Auto | Route::System => None,
+        };
+        HostNetwork {
+            timeout_secs: settings.timeout_secs,
+            models: route(Row::HostModels),
+            browser: route(Row::HostBrowser),
+        }
+    }
+
+    fn set_host_network(&self, network: Option<HostNetwork>) {
+        let mut state = self.lock();
+        if state.hosted != network {
+            state.hosted = network;
+            state.generation += 1;
+        }
+    }
+}
+
+/// The ids of the proxies whose password a route needs and that aren't
+/// read yet: those that sign in, with a password saved.
+fn needed(state: &State) -> Vec<String> {
+    let mut ids: Vec<String> = Row::ALL
+        .into_iter()
+        .filter_map(|row| state.settings.proxy_for(row))
+        .filter(|proxy| {
+            proxy.username.is_some()
+                && proxy.password_saved
+                && !state.passwords.contains_key(&proxy.id)
+        })
+        .map(|proxy| proxy.id.clone())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// A saved proxy, signed in to with its password as read.
+fn endpoint_of(state: &State, proxy: &SavedProxy) -> ProxyEndpoint {
+    let password = state.passwords.get(&proxy.id).cloned().flatten();
+    proxy.endpoint(password)
+}
+
+/// A proxy that can't be reached, for what has to go through one that
+/// isn't there.
+fn nowhere_endpoint() -> ProxyEndpoint {
+    ProxyEndpoint {
+        kind: ProxyKind::Http,
+        host: "proxy.invalid".into(),
+        port: 9,
+        username: None,
+        password: None,
     }
 }
 
@@ -560,41 +714,60 @@ fn slept(before: (SystemTime, Instant), now: (SystemTime, Instant)) -> bool {
     wall > monotonic + SLEPT_BY
 }
 
+/// What the requests to model providers and the downloads are built from:
+/// on a cloud host the way the app said, in the app its settings' way.
 fn effective(state: &State) -> Effective {
+    if let Some(hosted) = &state.hosted {
+        let way = match &hosted.models {
+            None => Way::System,
+            Some(ProxyRoute::Direct) => Way::Direct,
+            Some(ProxyRoute::Proxy(proxy)) => Way::Proxy(proxy.clone()),
+        };
+        return Effective {
+            timeout: settings::timeout_of(hosted.timeout_secs),
+            way,
+        };
+    }
     let settings = &state.settings;
-    let route = match settings.custom_in_use() {
-        Some(proxy) => Route::Custom(proxy.clone(), state.password.clone()),
-        None if !settings.proxied() => Route::Direct,
-        None => Route::System,
+    let way = match &settings.routes.models {
+        Route::Direct => Way::Direct,
+        Route::Proxy(id) => match settings.proxy(id) {
+            Some(proxy) => Way::Proxy(endpoint_of(state, proxy)),
+            None => Way::Nowhere,
+        },
+        Route::Auto | Route::System | Route::Own => Way::System,
     };
     Effective {
         timeout: settings.timeout(),
-        route,
+        way,
     }
 }
 
-/// The settings' timeout and proxy. The system's proxy is reqwest's own,
+/// The settings' timeout and way. The system's proxy is reqwest's own,
 /// found as the client is built.
 fn base_builder(effective: &Effective) -> reqwest::ClientBuilder {
     let builder = reqwest::Client::builder().connect_timeout(effective.timeout);
-    let (proxy, password) = match &effective.route {
-        // Not even the system's.
-        Route::Direct => return builder.no_proxy(),
-        Route::System => return builder,
-        Route::Custom(proxy, password) => (proxy, password),
-    };
     let on_this_computer = || reqwest::NoProxy::from_string(settings::ON_THIS_COMPUTER);
-    match proxy
-        .url(password.as_ref())
+    let nowhere = || {
+        let nowhere = reqwest::Proxy::all(NOWHERE).expect("a proxy's URL");
+        nowhere.no_proxy(on_this_computer())
+    };
+    let proxy = match &effective.way {
+        // Not even the system's.
+        Way::Direct => return builder.no_proxy(),
+        Way::System => return builder,
+        Way::Nowhere => return builder.proxy(nowhere()),
+        Way::Proxy(proxy) => proxy,
+    };
+    match settings::proxy_url(proxy)
         .and_then(|url| reqwest::Proxy::all(url).map_err(|e| e.to_string()))
     {
-        Ok(custom) => builder.proxy(custom.no_proxy(on_this_computer())),
+        Ok(proxy) => builder.proxy(proxy.no_proxy(on_this_computer())),
         Err(e) => {
             // Checked as they're saved and read, so not reached: and then
             // nothing goes around the proxy chosen, it fails to connect.
-            log::warn!("network: the custom proxy can't be used: {e}");
-            let nowhere = reqwest::Proxy::all("http://proxy.invalid:9").expect("a proxy's URL");
-            builder.proxy(nowhere.no_proxy(on_this_computer()))
+            log::warn!("network: the proxy can't be used: {e}");
+            builder.proxy(nowhere())
         }
     }
 }
@@ -612,21 +785,10 @@ fn build_shared(effective: &Effective) -> reqwest::Client {
         })
 }
 
-/// The proxy in use, as Chrome takes it: the custom one, or the system's
-/// (`system`) as this computer's requests find it, with the credentials
-/// its URL has; none when it has none.
-fn proxy_for_browser(state: &State, system: &Matcher) -> Option<BrowserProxy> {
-    if let Some(proxy) = state.settings.custom_in_use() {
-        let scheme = match proxy.kind {
-            ProxyKind::Http => "http",
-            ProxyKind::Socks5 => "socks5",
-        };
-        return Some(BrowserProxy {
-            server: format!("{scheme}://{}", proxy.address()),
-            username: proxy.username.clone(),
-            password: proxy.username.as_ref().and(state.password.clone()),
-        });
-    }
+/// The system's proxy (`system`) as Chrome takes it, as this computer's
+/// requests find it, with the credentials its URL has; none when it has
+/// none.
+fn system_for_browser(system: &Matcher) -> Option<BrowserProxy> {
     let destination: http::Uri = "https://example.com".parse().expect("a URL");
     let found = system.intercept(&destination)?;
     let uri = found.uri();
@@ -660,25 +822,35 @@ fn proxy_for_browser(state: &State, system: &Matcher) -> Option<BrowserProxy> {
 
 /// How a cloud host's SSH connection gets there.
 fn cloud_hop(state: &State, host: &str, port: u16) -> Result<Hop, String> {
-    let settings = &state.settings;
-    if !settings.proxied() || !settings.cloud_hosts || on_this_computer(host) {
+    if on_this_computer(host) {
         return Ok(Hop::Direct);
     }
-    match state.settings.custom_in_use() {
-        Some(proxy) => {
-            let user = proxy.username.as_deref();
-            let password = state.password.as_ref().map_or("", |p| p.0.as_str());
-            Ok(match proxy.kind {
-                ProxyKind::Http => Hop::http(&proxy.host, proxy.port, user, password),
-                ProxyKind::Socks5 => Hop::Socks5 {
-                    host: proxy.host.clone(),
-                    port: proxy.port,
-                    auth: user.map(|user| (user.to_string(), password.to_string())),
-                    remote_names: true,
-                },
-            })
-        }
-        None => system_hop(host, port),
+    let settings = &state.settings;
+    match &settings.routes.ssh {
+        Route::System => system_hop(host, port),
+        Route::Proxy(id) => match settings.proxy(id) {
+            Some(proxy) => Ok(hop_of(&endpoint_of(state, proxy))),
+            None => Err(format!(
+                "{} goes through a proxy that isn't saved.",
+                Row::Ssh.name()
+            )),
+        },
+        Route::Direct | Route::Auto | Route::Own => Ok(Hop::Direct),
+    }
+}
+
+/// A tunnel through `proxy`, signed in to as it says.
+fn hop_of(proxy: &ProxyEndpoint) -> Hop {
+    let user = proxy.username.as_deref();
+    let password = proxy.password.as_ref().map_or("", |p| p.0.as_str());
+    match proxy.kind {
+        ProxyKind::Http => Hop::http(&proxy.host, proxy.port, user, password),
+        ProxyKind::Socks5 => Hop::Socks5 {
+            host: proxy.host.clone(),
+            port: proxy.port,
+            auth: user.map(|user| (user.to_string(), password.to_string())),
+            remote_names: true,
+        },
     }
 }
 
@@ -715,14 +887,12 @@ fn system_hop(host: &str, port: u16) -> Result<Hop, String> {
             remote_names: scheme == "socks5h",
         }),
         Some("https") => Err(format!(
-            "The system's proxy, {shown}, is reached over HTTPS, which a cloud host's \
-             connection can't go through: choose a custom proxy, or don't use the proxy \
-             for cloud hosts."
+            "The system's proxy, {shown}, is reached over HTTPS, which an SSH connection \
+             can't go through: choose a saved proxy for SSH to cloud hosts, or no proxy."
         )),
         _ => Err(format!(
-            "The system's proxy, {shown}, isn't one a cloud host's connection can go \
-             through: choose a custom HTTP or SOCKS5 proxy, or don't use the proxy for \
-             cloud hosts."
+            "The system's proxy, {shown}, isn't one an SSH connection can go through: \
+             choose a saved HTTP or SOCKS5 proxy for SSH to cloud hosts, or no proxy."
         )),
     }
 }

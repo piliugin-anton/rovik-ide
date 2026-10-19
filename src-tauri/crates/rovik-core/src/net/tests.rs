@@ -1,6 +1,7 @@
 //! Settings → Network: the settings and their file, the shared client's
-//! connections, and connections through proxies, against servers and
-//! proxies made here. Each test has a `Net` of its own, not the process's.
+//! connections, the way each kind of connection goes, here and on a cloud
+//! host, and connections through proxies, against servers and proxies made
+//! here. Each test has a `Net` of its own, not the process's.
 
 use super::tunnel::{self, Hop};
 use super::*;
@@ -8,22 +9,41 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-fn proxy(kind: ProxyKind, host: &str, port: u16, username: Option<&str>) -> CustomProxy {
-    CustomProxy {
+fn proxy(id: &str, kind: ProxyKind, host: &str, port: u16, username: Option<&str>) -> SavedProxy {
+    SavedProxy {
+        id: id.into(),
         kind,
         host: host.into(),
         port,
         username: username.map(String::from),
+        password_saved: false,
     }
 }
 
-fn custom(proxy: CustomProxy, cloud_hosts: bool) -> NetworkSettings {
+/// `proxies`, this computer's requests going through the first.
+fn through(proxies: Vec<SavedProxy>) -> NetworkSettings {
+    let routes = Routes {
+        models: Route::Proxy(proxies[0].id.clone()),
+        ..Routes::default()
+    };
     NetworkSettings {
-        proxy: Some(ProxyMode::Custom),
-        custom: Some(proxy),
-        cloud_hosts,
+        proxies,
+        routes,
         ..NetworkSettings::default()
     }
+}
+
+/// Passwords saved (some) or forgotten (none), by proxy.
+fn passwords(pairs: &[(&str, Option<&str>)]) -> HashMap<String, Option<Secret>> {
+    pairs
+        .iter()
+        .map(|(id, password)| (id.to_string(), password.map(secret)))
+        .collect()
+}
+
+/// No password changed.
+fn none() -> HashMap<String, Option<Secret>> {
+    HashMap::new()
 }
 
 fn secret(text: &str) -> Secret {
@@ -284,6 +304,16 @@ fn settings_are_checked_and_tidied() {
     let defaults = NetworkSettings::default();
     assert_eq!(defaults.timeout(), Duration::from_secs(30));
     assert_eq!(defaults.check(), Ok(()));
+    assert_eq!(
+        defaults.routes,
+        Routes {
+            models: Route::Auto,
+            ssh: Route::Direct,
+            browser: Route::Own,
+            host_models: Route::Own,
+            host_browser: Route::Own,
+        }
+    );
 
     let timeout = |secs| NetworkSettings {
         timeout_secs: Some(secs),
@@ -298,27 +328,18 @@ fn settings_are_checked_and_tidied() {
         );
     }
 
-    let none = NetworkSettings {
-        proxy: Some(ProxyMode::Custom),
-        ..NetworkSettings::default()
-    };
-    assert_eq!(
-        none.check().unwrap_err(),
-        "Enter the proxy's host and port."
-    );
-
-    let check = |host: &str, port: u16| {
-        custom(proxy(ProxyKind::Http, host, port, None), false)
+    let checked = |host: &str, port: u16| {
+        through(vec![proxy("p", ProxyKind::Http, host, port, None)])
             .normalized()
             .check()
     };
-    assert_eq!(check("proxy.example.com", 3128), Ok(()));
-    assert_eq!(check("10.0.0.1", 8080), Ok(()));
-    assert_eq!(check("::1", 8080), Ok(()));
-    assert_eq!(check("[2001:db8::1]", 8080), Ok(()));
-    assert_eq!(check("  ", 3128).unwrap_err(), "Enter the proxy's host.");
+    assert_eq!(checked("proxy.example.com", 3128), Ok(()));
+    assert_eq!(checked("10.0.0.1", 8080), Ok(()));
+    assert_eq!(checked("::1", 8080), Ok(()));
+    assert_eq!(checked("[2001:db8::1]", 8080), Ok(()));
+    assert_eq!(checked("  ", 3128).unwrap_err(), "Enter the proxy's host.");
     assert_eq!(
-        check("proxy.example.com", 0).unwrap_err(),
+        checked("proxy.example.com", 0).unwrap_err(),
         "Enter the proxy's port."
     );
     for with_more in [
@@ -327,136 +348,205 @@ fn settings_are_checked_and_tidied() {
         "me@proxy",
     ] {
         assert_eq!(
-            check(with_more, 3128).unwrap_err(),
+            checked(with_more, 3128).unwrap_err(),
             "Enter only the proxy's name or address, such as proxy.example.com."
         );
     }
     assert_eq!(
-        check("proxy.example.com:3128", 3128).unwrap_err(),
+        checked("proxy.example.com:3128", 3128).unwrap_err(),
         "Enter the proxy's port in its own field."
     );
     assert_eq!(
-        check("proxy example", 3128).unwrap_err(),
+        checked("proxy example", 3128).unwrap_err(),
         "The proxy's host can't have spaces in it."
     );
 
-    let tidied = custom(
-        proxy(ProxyKind::Socks5, "  socks.example.com ", 1080, Some("   ")),
-        true,
-    )
+    let tidied = through(vec![proxy(
+        "p",
+        ProxyKind::Socks5,
+        "  socks.example.com ",
+        1080,
+        Some("   "),
+    )])
     .normalized();
     assert_eq!(
-        tidied.custom,
-        Some(proxy(ProxyKind::Socks5, "socks.example.com", 1080, None))
+        tidied.proxies,
+        [proxy(
+            "p",
+            ProxyKind::Socks5,
+            "socks.example.com",
+            1080,
+            None
+        )]
     );
 
     // SOCKS5 takes 255 bytes of each; HTTP has no such limit.
     let long = "u".repeat(256);
-    let socks = proxy(ProxyKind::Socks5, "socks.example.com", 1080, Some(&long));
+    let socks = proxy(
+        "s",
+        ProxyKind::Socks5,
+        "socks.example.com",
+        1080,
+        Some(&long),
+    );
     assert_eq!(
         socks.check().unwrap_err(),
         "A SOCKS5 proxy takes a username of 255 bytes at most."
     );
-    let http = proxy(ProxyKind::Http, "proxy.example.com", 3128, Some(&long));
+    let http = proxy("h", ProxyKind::Http, "proxy.example.com", 3128, Some(&long));
     assert_eq!(http.check(), Ok(()));
     assert!(http.check_password(&secret(&long)).is_ok());
-    let socks = proxy(ProxyKind::Socks5, "socks.example.com", 1080, Some("me"));
+    let socks = through(vec![proxy(
+        "s",
+        ProxyKind::Socks5,
+        "socks.example.com",
+        1080,
+        Some("me"),
+    )]);
+    assert_eq!(check(&socks, &passwords(&[("s", Some("pw"))])), Ok(()));
     assert_eq!(
-        socks.check_password(&secret(&long)).unwrap_err(),
+        check(&socks, &passwords(&[("s", Some(&long))])).unwrap_err(),
         "A SOCKS5 proxy takes a password of 255 bytes at most."
     );
+    assert_eq!(
+        check(&socks, &passwords(&[("other", Some("pw"))])).unwrap_err(),
+        "A password came for a proxy that isn't saved."
+    );
+
+    // Ids: plain, short, one each.
+    for wrong in ["", "has space", "a/b", &"x".repeat(41)] {
+        let settings = through(vec![proxy(wrong, ProxyKind::Http, "p.example", 1, None)]);
+        assert!(
+            settings.check().unwrap_err().contains("isn't a proxy's id"),
+            "{wrong:?}"
+        );
+    }
+    let twice = NetworkSettings {
+        proxies: vec![
+            proxy("p", ProxyKind::Http, "a.example", 1, None),
+            proxy("p", ProxyKind::Http, "b.example", 2, None),
+        ],
+        ..NetworkSettings::default()
+    };
+    assert_eq!(twice.check().unwrap_err(), "Two proxies have the id \"p\".");
+
+    // Each row takes its own ways, and only the proxies saved.
+    let routed = |routes: Routes| NetworkSettings {
+        proxies: vec![proxy("p", ProxyKind::Http, "proxy.example.com", 3128, None)],
+        routes,
+        ..NetworkSettings::default()
+    };
+    let refused = |routes: Routes| routed(routes).check().unwrap_err();
+    assert_eq!(
+        refused(Routes {
+            ssh: Route::Own,
+            ..Routes::default()
+        }),
+        "SSH to cloud hosts can't go that way."
+    );
+    assert_eq!(
+        refused(Routes {
+            host_models: Route::System,
+            ..Routes::default()
+        }),
+        "Model providers and downloads on cloud hosts can't go that way."
+    );
+    assert_eq!(
+        refused(Routes {
+            browser: Route::Auto,
+            ..Routes::default()
+        }),
+        "The agent's browser on this computer can't go that way."
+    );
+    assert_eq!(
+        refused(Routes {
+            host_browser: Route::Proxy("gone".into()),
+            ..Routes::default()
+        }),
+        "The agent's browser on cloud hosts goes through a proxy that isn't saved."
+    );
+    let all = Routes {
+        models: Route::Proxy("p".into()),
+        ssh: Route::System,
+        browser: Route::Direct,
+        host_models: Route::Proxy("p".into()),
+        host_browser: Route::Direct,
+    };
+    assert_eq!(routed(all.clone()).check(), Ok(()));
+    assert_eq!(routed(all).uses("p"), [Row::Models, Row::HostModels]);
 }
 
 #[test]
 fn the_file_keeps_its_form() {
+    let mut settings = through(vec![proxy(
+        "corp",
+        ProxyKind::Http,
+        "proxy.example.com",
+        3128,
+        Some("alice"),
+    )]);
+    settings.timeout_secs = Some(45);
+    settings.proxies[0].password_saved = true;
+    settings.routes.host_browser = Route::Direct;
     let saved = Saved {
-        settings: NetworkSettings {
-            timeout_secs: Some(45),
-            ..custom(
-                proxy(ProxyKind::Http, "proxy.example.com", 3128, Some("alice")),
-                true,
-            )
-        },
-        password_saved: true,
-        password_changed: Some(7),
+        settings,
+        passwords_changed: Some(7),
     };
     assert_eq!(
         serde_json::to_value(&saved).unwrap(),
         serde_json::json!({
             "timeoutSecs": 45,
-            "proxy": "custom",
-            "custom": {"kind": "http", "host": "proxy.example.com", "port": 3128, "username": "alice"},
-            "cloudHosts": true,
-            "browser": false,
-            "browserPlaces": "local",
-            "passwordSaved": true,
-            "passwordChanged": 7,
+            "proxies": [{"id": "corp", "kind": "http", "host": "proxy.example.com", "port": 3128, "username": "alice", "passwordSaved": true}],
+            "routes": {"models": {"proxy": "corp"}, "ssh": "direct", "browser": "own", "hostModels": "own", "hostBrowser": "direct"},
+            "passwordsChanged": 7,
         })
     );
     assert_eq!(
         serde_json::to_value(Saved::default()).unwrap(),
         serde_json::json!({
-            "cloudHosts": false,
-            "browser": false,
-            "browserPlaces": "local",
+            "proxies": [],
+            "routes": {"models": "auto", "ssh": "direct", "browser": "own", "hostModels": "own", "hostBrowser": "own"},
         })
     );
     let read: Saved = serde_json::from_str("{}").unwrap();
     assert_eq!(read.settings, NetworkSettings::default());
-    assert!(!read.password_saved);
-}
-
-/// Until a proxy is chosen, the system's is used, which is none while the
-/// system has none set; saving the rest chooses none. A process without
-/// settings of its own, a cloud host's daemon, does the same.
-#[test]
-fn until_a_proxy_is_chosen_the_systems_is_used() {
-    let unchosen = NetworkSettings::default();
-    assert_eq!(unchosen.proxy, None);
-    assert_eq!(unchosen.mode(), ProxyMode::System);
-    assert!(unchosen.proxied());
-    assert_eq!(unchosen.custom_in_use(), None);
-    assert_eq!(Net::default().lock().settings, unchosen);
-
-    let dir = crate::testing::temp_dir();
-    let file = dir.0.join("network-settings.json");
-    let written =
-        || -> serde_json::Value { serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap() };
-    let net = Net::default();
-    net.init(file.clone(), Arc::new(|| Ok(None)));
-    assert_eq!(net.view().settings, unchosen, "no file yet");
-    net.save(NetworkSettings {
-        timeout_secs: Some(60),
-        ..unchosen.clone()
-    })
-    .unwrap();
-    assert_eq!(written().get("proxy"), None, "the rest saved, none chosen");
-    assert_eq!(net.lock().settings.mode(), ProxyMode::System);
-
-    for (chosen, said) in [(ProxyMode::Direct, "direct"), (ProxyMode::System, "system")] {
-        net.save(NetworkSettings {
-            proxy: Some(chosen),
-            ..unchosen.clone()
-        })
-        .unwrap();
-        assert_eq!(written()["proxy"], said);
-        assert_eq!(net.lock().settings.mode(), chosen, "kept as chosen");
-    }
+    // A row left out goes its default way.
+    let read: Saved = serde_json::from_str(r#"{"routes": {"ssh": "system"}}"#).unwrap();
+    assert_eq!(
+        read.settings.routes,
+        Routes {
+            ssh: Route::System,
+            ..Routes::default()
+        }
+    );
 }
 
 #[test]
-fn a_custom_proxy_is_signed_in_to_by_its_url() {
-    let http = proxy(ProxyKind::Http, "proxy.example.com", 3128, Some("al ice"));
-    let url = http.url(Some(&secret("p@ss:w/rd"))).unwrap();
+fn a_proxy_is_signed_in_to_by_its_url() {
+    let http = proxy(
+        "p",
+        ProxyKind::Http,
+        "proxy.example.com",
+        3128,
+        Some("al ice"),
+    );
+    let url = settings::proxy_url(&http.endpoint(Some(secret("p@ss:w/rd")))).unwrap();
     assert_eq!(url.scheme(), "http");
     assert_eq!(url.host_str(), Some("proxy.example.com"));
     assert_eq!(url.port(), Some(3128));
     assert_eq!(url.username(), "al%20ice");
     assert_eq!(url.password(), Some("p%40ss%3Aw%2Frd"));
+    assert_eq!(
+        described(&http.endpoint(None)),
+        "the HTTP proxy at proxy.example.com:3128"
+    );
 
-    // The proxy looks the names up, and an address in brackets.
-    let socks = proxy(ProxyKind::Socks5, "::1", 1080, None);
-    let url = socks.url(None).unwrap();
+    // The proxy looks the names up, and an address in brackets; without a
+    // username no password goes.
+    let socks = proxy("s", ProxyKind::Socks5, "::1", 1080, None);
+    let endpoint = socks.endpoint(Some(secret("unused")));
+    assert_eq!(endpoint.password, None);
+    let url = settings::proxy_url(&endpoint).unwrap();
     assert_eq!(url.as_str(), "socks5h://[::1]:1080");
     assert_eq!(socks.address(), "[::1]:1080");
 }
@@ -504,14 +594,14 @@ fn a_sleep_is_told_by_the_clocks() {
 #[tokio::test]
 async fn the_shared_client_keeps_its_connection() {
     let (port, connections) = server("ok").await;
-    // A custom proxy, which this computer's server goes around: whatever
-    // proxy this machine has set doesn't count.
+    // Through a saved proxy, which this computer's server goes around:
+    // whatever proxy this machine has set doesn't count.
     let unused = closed_port().await;
     let net = Net::default();
-    net.save(custom(
-        proxy(ProxyKind::Http, "127.0.0.1", unused, None),
-        false,
-    ))
+    net.save(
+        through(vec![proxy("p", ProxyKind::Http, "127.0.0.1", unused, None)]),
+        &none(),
+    )
     .unwrap();
     let url = format!("http://127.0.0.1:{port}/");
     let count = || connections.load(Ordering::SeqCst);
@@ -529,11 +619,11 @@ async fn the_shared_client_keeps_its_connection() {
 
     let mut longer = net.lock().settings.clone();
     longer.timeout_secs = Some(60);
-    net.save(longer.clone()).unwrap();
+    net.save(longer.clone(), &none()).unwrap();
     assert_eq!(get(&net, &url).await.unwrap(), "ok");
     assert_eq!(count(), 3, "after the settings changed");
     // Saved again as they are: nothing to connect afresh for.
-    net.save(longer).unwrap();
+    net.save(longer, &none()).unwrap();
     assert_eq!(get(&net, &url).await.unwrap(), "ok");
     assert_eq!(count(), 3);
 
@@ -550,18 +640,23 @@ async fn the_shared_client_keeps_its_connection() {
     assert_eq!(count(), 5, "once ten minutes old");
 }
 
-/// Requests go through a custom HTTP proxy, signed in to with the saved
-/// password, but nothing on this computer does.
+/// Requests go through a saved HTTP proxy, signed in to with its password,
+/// but nothing on this computer does.
 #[tokio::test]
-async fn a_custom_http_proxy_carries_requests_and_signs_in() {
+async fn a_saved_http_proxy_carries_requests_and_signs_in() {
     let (proxy_port, heads) = http_proxy("through the proxy").await;
     let net = Net::default();
-    net.save(custom(
-        proxy(ProxyKind::Http, "127.0.0.1", proxy_port, Some("alice")),
-        false,
-    ))
+    net.save(
+        through(vec![proxy(
+            "p",
+            ProxyKind::Http,
+            "127.0.0.1",
+            proxy_port,
+            Some("alice"),
+        )]),
+        &passwords(&[("p", Some("s3cret"))]),
+    )
     .unwrap();
-    net.password_saved(Some(secret("s3cret"))).unwrap();
 
     assert_eq!(
         get(&net, "http://provider.invalid/v1/models")
@@ -596,16 +691,21 @@ async fn a_custom_http_proxy_carries_requests_and_signs_in() {
 
 /// A SOCKS5 proxy is given the names to look up, and signed in to.
 #[tokio::test]
-async fn a_custom_socks5_proxy_carries_requests_by_name() {
+async fn a_saved_socks5_proxy_carries_requests_by_name() {
     let (port, _) = server("by socks").await;
     let (proxy_port, asked) = socks5_proxy(Some(("bob", "pw")), port, None).await;
     let net = Net::default();
-    net.save(custom(
-        proxy(ProxyKind::Socks5, "127.0.0.1", proxy_port, Some("bob")),
-        false,
-    ))
+    net.save(
+        through(vec![proxy(
+            "s",
+            ProxyKind::Socks5,
+            "127.0.0.1",
+            proxy_port,
+            Some("bob"),
+        )]),
+        &passwords(&[("s", Some("pw"))]),
+    )
     .unwrap();
-    net.password_saved(Some(secret("pw"))).unwrap();
 
     assert_eq!(
         get(&net, "http://provider.invalid:8000/").await.unwrap(),
@@ -616,13 +716,53 @@ async fn a_custom_socks5_proxy_carries_requests_by_name() {
     assert_eq!(asked.users, [("bob".to_string(), "pw".to_string())]);
 }
 
-/// "No proxy" goes around the system's proxy, which "System proxy" goes
-/// through, as do the settings while none is chosen. The system's proxy is
-/// the process's variables here, so this runs in a process of its own.
+/// On a cloud host, requests go the way the app said: through its proxy,
+/// signed in to, with its timeout; its own settings once it says none.
+#[tokio::test]
+async fn on_a_cloud_host_requests_go_the_way_the_app_said() {
+    let (proxy_port, heads) = http_proxy("through the proxy sent").await;
+    let net = Net::default();
+    let sent = ProxyEndpoint {
+        kind: ProxyKind::Http,
+        host: "127.0.0.1".into(),
+        port: proxy_port,
+        username: Some("alice".into()),
+        password: Some(secret("pw")),
+    };
+    net.set_host_network(Some(HostNetwork {
+        timeout_secs: Some(45),
+        models: Some(ProxyRoute::Proxy(sent)),
+        browser: None,
+    }));
+    assert_eq!(
+        get(&net, "http://provider.invalid/v1/models")
+            .await
+            .unwrap(),
+        "through the proxy sent"
+    );
+    let head = heads.lock().unwrap()[0].clone();
+    assert_eq!(
+        header(&head, "proxy-authorization"),
+        Some(tunnel::basic("alice", "pw").as_str())
+    );
+    assert_eq!(effective(&net.lock()).timeout, Duration::from_secs(45));
+
+    net.set_host_network(Some(HostNetwork::default()));
+    let now = effective(&net.lock());
+    assert_eq!(now.way, Way::System, "the host's own");
+    assert_eq!(now.timeout, Duration::from_secs(30));
+}
+
+/// The system's proxy, which "Automatic" and "System proxy" go through and
+/// "No proxy" goes around, here and on a cloud host. It's the process's
+/// variables here, so this runs in a process of its own.
 #[test]
-fn no_proxy_goes_around_the_systems_proxy() {
+fn the_systems_proxy_is_used_where_it_is_chosen() {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "net::tests::no_proxy_in_a_process_of_its_own"])
+        .args([
+            "--exact",
+            "net::tests::the_systems_proxy_in_a_process_of_its_own",
+        ])
         .args(["--ignored", "--test-threads=1"])
         .output()
         .unwrap();
@@ -633,8 +773,8 @@ fn no_proxy_goes_around_the_systems_proxy() {
 }
 
 #[tokio::test]
-#[ignore = "run in a process of its own by no_proxy_goes_around_the_systems_proxy"]
-async fn no_proxy_in_a_process_of_its_own() {
+#[ignore = "run in a process of its own by the_systems_proxy_is_used_where_it_is_chosen"]
+async fn the_systems_proxy_in_a_process_of_its_own() {
     let (proxy_port, heads) = http_proxy("through the system's proxy").await;
     let (port, connections) = server("directly").await;
     // This process's system proxy, for this computer's addresses too.
@@ -656,37 +796,47 @@ async fn no_proxy_in_a_process_of_its_own() {
     // Set, so that no list of the system's takes its place (Windows).
     std::env::set_var("NO_PROXY", "nothing.invalid");
     let url = format!("http://127.0.0.1:{port}/");
-    let through = || heads.lock().unwrap().len();
+    let through_system = || heads.lock().unwrap().len();
+    let set = |routes: Routes| NetworkSettings {
+        routes,
+        ..NetworkSettings::default()
+    };
 
     let net = Net::default();
     assert_eq!(
         get(&net, &url).await.unwrap(),
         "through the system's proxy",
-        "none chosen"
+        "automatic"
     );
-    assert_eq!(through(), 1);
+    assert_eq!(through_system(), 1);
 
-    net.save(NetworkSettings {
-        proxy: Some(ProxyMode::Direct),
-        ..NetworkSettings::default()
-    })
+    net.save(
+        set(Routes {
+            models: Route::Direct,
+            ..Routes::default()
+        }),
+        &none(),
+    )
     .unwrap();
     assert_eq!(get(&net, &url).await.unwrap(), "directly", "no proxy");
     let download = net.builder().await.build().unwrap();
     let body = download.get(&url).send().await.unwrap().text().await;
     assert_eq!(body.unwrap(), "directly", "a download's client too");
-    assert_eq!(through(), 1);
+    assert_eq!(through_system(), 1);
     assert_eq!(connections.load(Ordering::SeqCst), 2);
 
-    let system_proxy = NetworkSettings {
-        proxy: Some(ProxyMode::System),
-        cloud_hosts: true,
-        browser: true,
-        ..NetworkSettings::default()
-    };
-    net.save(system_proxy.clone()).unwrap();
+    net.save(
+        set(Routes {
+            models: Route::System,
+            ssh: Route::System,
+            browser: Route::System,
+            ..Routes::default()
+        }),
+        &none(),
+    )
+    .unwrap();
     assert_eq!(get(&net, &url).await.unwrap(), "through the system's proxy");
-    assert_eq!(through(), 2);
+    assert_eq!(through_system(), 2);
     assert_eq!(
         cloud_hop(&net.lock(), "build.example.com", 22),
         Ok(Hop::Http {
@@ -695,112 +845,144 @@ async fn no_proxy_in_a_process_of_its_own() {
             auth: None,
         })
     );
-    assert_eq!(net.browser_proxy().await.map(|p| p.server), Some(system));
+    assert_eq!(
+        net.browser_proxy().await.map(|p| p.server),
+        Some(system.clone())
+    );
 
-    // No proxy again: none of it, though the boxes are kept.
-    net.save(NetworkSettings {
-        proxy: Some(ProxyMode::Direct),
-        ..system_proxy
-    })
+    // No proxy for each: none goes through it.
+    net.save(
+        set(Routes {
+            models: Route::Direct,
+            ssh: Route::Direct,
+            browser: Route::Direct,
+            ..Routes::default()
+        }),
+        &none(),
+    )
     .unwrap();
     assert_eq!(get(&net, &url).await.unwrap(), "directly");
-    assert_eq!(through(), 2);
     assert_eq!(
         cloud_hop(&net.lock(), "build.example.com", 22),
         Ok(Hop::Direct)
     );
-    assert_eq!(net.browser_proxy().await, None);
+    assert_eq!(net.browser_proxy().await, Some(BrowserProxy::direct()));
+    assert_eq!(through_system(), 2);
+
+    // On a cloud host: its own settings are its proxy; no proxy goes
+    // around it.
+    let host = Net::default();
+    host.set_host_network(Some(HostNetwork::default()));
+    assert_eq!(
+        get(&host, &url).await.unwrap(),
+        "through the system's proxy",
+        "the host's own"
+    );
+    host.set_host_network(Some(HostNetwork {
+        models: Some(ProxyRoute::Direct),
+        ..HostNetwork::default()
+    }));
+    assert_eq!(
+        get(&host, &url).await.unwrap(),
+        "directly",
+        "no proxy there"
+    );
+    assert_eq!(through_system(), 3);
 }
 
-/// Another window's save is followed, and the password read again when
-/// it says it changed; this window's own changes need no reading.
+/// Another window's save is followed, and the passwords read again when it
+/// says one changed; this window's own changes need no reading.
 #[tokio::test]
 async fn another_windows_change_is_followed() {
     let dir = crate::testing::temp_dir();
     let file = dir.0.join("network-settings.json");
-    let reads = Arc::new(AtomicUsize::new(0));
-    let counted = reads.clone();
+    let reads = Arc::new(Mutex::new(Vec::<String>::new()));
+    let noted = reads.clone();
     let net = Net::default();
     net.init(
         file.clone(),
-        Arc::new(move || {
-            counted.fetch_add(1, Ordering::SeqCst);
+        Arc::new(move |id: &str| {
+            noted.lock().unwrap().push(id.to_string());
             Ok(Some(Secret("from the keychain".into())))
         }),
     );
-    let settings = custom(
-        proxy(ProxyKind::Http, "proxy.example.com", 3128, Some("alice")),
-        true,
+    let written =
+        || -> serde_json::Value { serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap() };
+    let settings = through(vec![proxy(
+        "corp",
+        ProxyKind::Http,
+        "proxy.example.com",
+        3128,
+        Some("alice"),
+    )]);
+    net.save(settings, &passwords(&[("corp", Some("typed"))]))
+        .unwrap();
+    assert_eq!(written()["proxies"][0]["passwordSaved"], true);
+    // This window's own: kept as typed, nothing to read.
+    net.read_passwords().await;
+    assert!(reads.lock().unwrap().is_empty());
+    assert_eq!(
+        net.lock().passwords.get("corp"),
+        Some(&Some(secret("typed")))
     );
-    net.save(settings.clone()).unwrap();
-    let written: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    assert_eq!(written["custom"]["host"], "proxy.example.com");
+    let stamp = written()["passwordsChanged"].as_u64().unwrap();
 
-    // Read once a proxy that signs in is in use, then kept.
-    net.read_password().await;
-    net.read_password().await;
-    assert_eq!(reads.load(Ordering::SeqCst), 1);
-    assert_eq!(net.lock().password, Some(secret("from the keychain")));
-
-    // Another window: a longer timeout, and a password changed.
-    let other = serde_json::json!({
-        "timeoutSecs": 90,
-        "proxy": "custom",
-        "custom": {"kind": "http", "host": "proxy.example.com", "port": 3128, "username": "alice"},
-        "cloudHosts": true,
-        "passwordSaved": true,
-        "passwordChanged": 12,
-    });
+    // Another window: a longer timeout, and the password changed.
+    let mut other = written();
+    other["timeoutSecs"] = 90.into();
+    other["passwordsChanged"] = (stamp + 1).into();
     std::fs::write(&file, serde_json::to_vec(&other).unwrap()).unwrap();
     net.follow(true);
     assert_eq!(net.lock().settings.timeout_secs, Some(90));
-    assert!(net.view().password_saved);
-    net.read_password().await;
+    net.read_passwords().await;
+    net.read_passwords().await;
+    assert_eq!(*reads.lock().unwrap(), ["corp"], "read again, once");
     assert_eq!(
-        reads.load(Ordering::SeqCst),
-        2,
-        "read again after its change"
+        net.lock().passwords.get("corp"),
+        Some(&Some(secret("from the keychain")))
     );
 
-    // This window's own: no read, and the file says so for the others.
-    net.password_saved(None).unwrap();
-    net.follow(true);
-    net.read_password().await;
-    assert_eq!(reads.load(Ordering::SeqCst), 2);
-    assert_eq!(net.lock().password, None);
-    let written: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    assert!(written.get("passwordSaved").is_none());
-    assert!(written["passwordChanged"].as_u64().unwrap() > 12);
+    // Forgotten here: none, and the file says so for the others.
+    let settings = net.lock().settings.clone();
+    net.save(settings, &passwords(&[("corp", None)])).unwrap();
+    assert_eq!(net.lock().passwords.get("corp"), Some(&None));
+    assert!(written()["proxies"][0].get("passwordSaved").is_none());
+    assert!(written()["passwordsChanged"].as_u64().unwrap() > stamp + 1);
+    net.read_passwords().await;
+    assert_eq!(reads.lock().unwrap().len(), 1, "none saved: none to read");
+
+    // Removed: its password goes with it.
+    net.save(NetworkSettings::default(), &none()).unwrap();
+    assert!(net.lock().passwords.is_empty());
 
     // A file that isn't settings changes nothing.
     std::fs::write(&file, b"{ not json").unwrap();
     net.follow(true);
-    assert_eq!(net.lock().settings.timeout_secs, Some(90));
+    assert_eq!(net.lock().settings, NetworkSettings::default());
 }
 
 #[test]
-fn cloud_hosts_go_through_the_proxy_only_when_set_to() {
+fn ssh_to_cloud_hosts_goes_the_way_it_is_set() {
     let net = Net::default();
     let hop = |net: &Net, host: &str| cloud_hop(&net.lock(), host, 22);
-    assert_eq!(hop(&net, "build.example.com"), Ok(Hop::Direct));
+    assert_eq!(hop(&net, "build.example.com"), Ok(Hop::Direct), "at first");
 
-    net.save(custom(
-        proxy(ProxyKind::Http, "proxy.example.com", 3128, Some("alice")),
-        false,
-    ))
-    .unwrap();
-    net.password_saved(Some(secret("pw"))).unwrap();
-    assert_eq!(
-        hop(&net, "build.example.com"),
-        Ok(Hop::Direct),
-        "not for cloud hosts"
-    );
-
-    let mut settings = net.lock().settings.clone();
-    settings.cloud_hosts = true;
-    net.save(settings.clone()).unwrap();
+    let mut settings = NetworkSettings {
+        proxies: vec![
+            proxy(
+                "http",
+                ProxyKind::Http,
+                "proxy.example.com",
+                3128,
+                Some("alice"),
+            ),
+            proxy("socks", ProxyKind::Socks5, "socks.example.com", 1080, None),
+        ],
+        ..NetworkSettings::default()
+    };
+    settings.routes.ssh = Route::Proxy("http".into());
+    net.save(settings.clone(), &passwords(&[("http", Some("pw"))]))
+        .unwrap();
     assert_eq!(
         hop(&net, "build.example.com"),
         Ok(Hop::Http {
@@ -811,8 +993,8 @@ fn cloud_hosts_go_through_the_proxy_only_when_set_to() {
     );
     assert_eq!(hop(&net, "127.0.0.1"), Ok(Hop::Direct), "this computer");
 
-    settings.custom = Some(proxy(ProxyKind::Socks5, "socks.example.com", 1080, None));
-    net.save(settings).unwrap();
+    settings.routes.ssh = Route::Proxy("socks".into());
+    net.save(settings.clone(), &none()).unwrap();
     assert_eq!(
         hop(&net, "build.example.com"),
         Ok(Hop::Socks5 {
@@ -822,106 +1004,90 @@ fn cloud_hosts_go_through_the_proxy_only_when_set_to() {
             remote_names: true,
         })
     );
+
+    // The other rows' ways aren't SSH's.
+    settings.routes.ssh = Route::Direct;
+    settings.routes.models = Route::Proxy("http".into());
+    settings.routes.host_models = Route::Proxy("socks".into());
+    net.save(settings, &none()).unwrap();
+    assert_eq!(hop(&net, "build.example.com"), Ok(Hop::Direct));
 }
 
-/// "Use proxy for browser": the browser here, the cloud hosts', or both,
-/// go through the proxy in use; without it, Chrome's own settings.
+/// The browser here starts the way its row says, and on a cloud host the
+/// way the app said there.
 #[tokio::test]
-async fn the_browsers_get_the_proxy_where_it_is_set_for() {
+async fn the_browser_starts_the_way_it_is_set() {
     let net = Net::default();
-    let mut settings = custom(
-        proxy(ProxyKind::Http, "proxy.example.com", 3128, Some("alice")),
-        false,
-    );
-    net.save(settings.clone()).unwrap();
-    net.password_saved(Some(secret("s3cret"))).unwrap();
-    assert_eq!(net.browser_proxy().await, None, "not for the browser");
-    assert_eq!(net.cloud_browser_proxy().await, None);
+    assert_eq!(net.browser_proxy().await, None, "its own settings at first");
+    let mut settings = NetworkSettings {
+        proxies: vec![
+            proxy(
+                "http",
+                ProxyKind::Http,
+                "proxy.example.com",
+                3128,
+                Some("alice"),
+            ),
+            proxy("socks", ProxyKind::Socks5, "::1", 1080, None),
+        ],
+        ..NetworkSettings::default()
+    };
+    settings.routes.browser = Route::Direct;
+    net.save(settings.clone(), &passwords(&[("http", Some("s3cret"))]))
+        .unwrap();
+    assert_eq!(net.browser_proxy().await, Some(BrowserProxy::direct()));
 
-    let theirs = Some(BrowserProxy {
-        server: "http://proxy.example.com:3128".into(),
-        username: Some("alice".into()),
-        password: Some(secret("s3cret")),
-    });
-    settings.browser = true;
-    for (places, here, cloud) in [
-        (BrowserPlaces::Local, true, false),
-        (BrowserPlaces::Cloud, false, true),
-        (BrowserPlaces::Both, true, true),
-    ] {
-        settings.browser_places = places;
-        net.save(settings.clone()).unwrap();
-        let expect = |yes: bool| if yes { theirs.clone() } else { None };
-        assert_eq!(net.browser_proxy().await, expect(here), "{places:?} here");
-        assert_eq!(
-            net.cloud_browser_proxy().await,
-            expect(cloud),
-            "{places:?} in the cloud"
-        );
-    }
+    settings.routes.browser = Route::Proxy("http".into());
+    net.save(settings.clone(), &none()).unwrap();
+    assert_eq!(
+        net.browser_proxy().await,
+        Some(BrowserProxy {
+            server: "http://proxy.example.com:3128".into(),
+            username: Some("alice".into()),
+            password: Some(secret("s3cret")),
+        })
+    );
     let shown = format!("{:?}", net.browser_proxy().await);
     assert!(!shown.contains("s3cret"), "no password in a log: {shown}");
 
-    settings.custom = Some(proxy(ProxyKind::Socks5, "::1", 1080, None));
-    net.save(settings).unwrap();
+    settings.routes.browser = Route::Proxy("socks".into());
+    net.save(settings, &none()).unwrap();
     let socks = net.browser_proxy().await.unwrap();
     assert_eq!(socks.server, "socks5://[::1]:1080");
     assert_eq!((socks.username, socks.password), (None, None));
 
-    // On a cloud host, the one the app sent, whatever its own settings.
-    let sent = BrowserProxy {
-        server: "http://egress.example.com:8080".into(),
+    // On a cloud host, the way the app said, whatever its own settings.
+    let sent = ProxyEndpoint {
+        kind: ProxyKind::Http,
+        host: "egress.example.com".into(),
+        port: 8080,
         username: None,
         password: None,
     };
-    net.lock().hosted_browser = Some(Some(sent.clone()));
-    assert_eq!(net.browser_proxy().await, Some(sent));
-    net.lock().hosted_browser = Some(None);
-    assert_eq!(net.browser_proxy().await, None);
-}
-
-/// "No proxy": the proxy kept for later isn't used, by cloud hosts and the
-/// browsers neither, whatever their boxes say; back to it, all of it is.
-#[tokio::test]
-async fn no_proxy_keeps_the_rest_for_later() {
-    let net = Net::default();
-    let mut settings = custom(
-        proxy(ProxyKind::Http, "proxy.example.com", 3128, None),
-        true,
-    );
-    settings.browser = true;
-    settings.browser_places = BrowserPlaces::Both;
-    settings.proxy = Some(ProxyMode::Direct);
-    net.save(settings.clone()).unwrap();
-    assert!(matches!(effective(&net.lock()).route, Route::Direct));
+    net.set_host_network(Some(HostNetwork {
+        browser: Some(ProxyRoute::Proxy(sent)),
+        ..HostNetwork::default()
+    }));
     assert_eq!(
-        cloud_hop(&net.lock(), "build.example.com", 22),
-        Ok(Hop::Direct)
+        net.browser_proxy().await.map(|p| p.server),
+        Some("http://egress.example.com:8080".to_string())
     );
+    net.set_host_network(Some(HostNetwork {
+        browser: Some(ProxyRoute::Direct),
+        ..HostNetwork::default()
+    }));
+    assert_eq!(net.browser_proxy().await, Some(BrowserProxy::direct()));
+    net.set_host_network(Some(HostNetwork::default()));
     assert_eq!(net.browser_proxy().await, None);
-    assert_eq!(net.cloud_browser_proxy().await, None);
-
-    settings.proxy = Some(ProxyMode::Custom);
-    net.save(settings).unwrap();
-    assert!(matches!(effective(&net.lock()).route, Route::Custom(..)));
-    assert!(matches!(
-        cloud_hop(&net.lock(), "build.example.com", 22),
-        Ok(Hop::Http { .. })
-    ));
-    let server = Some("http://proxy.example.com:3128".to_string());
-    assert_eq!(net.browser_proxy().await.map(|p| p.server), server);
-    assert_eq!(net.cloud_browser_proxy().await.map(|p| p.server), server);
 }
 
 /// The system's proxy goes to the browser as this computer's requests
 /// find it, signed in to with what its URL has.
 #[test]
 fn the_systems_proxy_is_given_to_the_browser_with_its_sign_in() {
-    let net = Net::default();
     let system = |url: &str| Matcher::builder().all(url.to_string()).build();
-    let state = net.lock();
     assert_eq!(
-        proxy_for_browser(&state, &system("http://alice:p%40ss@proxy.corp:3128")),
+        system_for_browser(&system("http://alice:p%40ss@proxy.corp:3128")),
         Some(BrowserProxy {
             server: "http://proxy.corp:3128".into(),
             username: Some("alice".into()),
@@ -929,7 +1095,7 @@ fn the_systems_proxy_is_given_to_the_browser_with_its_sign_in() {
         })
     );
     assert_eq!(
-        proxy_for_browser(&state, &system("socks5h://bob:pw@socks.corp:1080")),
+        system_for_browser(&system("socks5h://bob:pw@socks.corp:1080")),
         Some(BrowserProxy {
             server: "socks5://socks.corp:1080".into(),
             username: Some("bob".into()),
@@ -937,11 +1103,45 @@ fn the_systems_proxy_is_given_to_the_browser_with_its_sign_in() {
         })
     );
     assert_eq!(
-        proxy_for_browser(&state, &system("http://plain.corp:8080"))
+        system_for_browser(&system("http://plain.corp:8080"))
             .map(|p| (p.server, p.username, p.password)),
         Some(("http://plain.corp:8080".into(), None, None))
     );
-    assert_eq!(proxy_for_browser(&state, &Matcher::builder().build()), None);
+    assert_eq!(system_for_browser(&Matcher::builder().build()), None);
+}
+
+/// What cloud hosts are told: the timeout, and their rows' ways with the
+/// proxies' passwords; nothing where they go their own way.
+#[tokio::test]
+async fn cloud_hosts_are_told_their_way() {
+    let net = Net::default();
+    assert_eq!(net.host_network().await, HostNetwork::default());
+    let mut settings = through(vec![proxy(
+        "corp",
+        ProxyKind::Http,
+        "proxy.example.com",
+        3128,
+        Some("alice"),
+    )]);
+    settings.timeout_secs = Some(45);
+    settings.routes.host_models = Route::Proxy("corp".into());
+    settings.routes.host_browser = Route::Direct;
+    net.save(settings, &passwords(&[("corp", Some("pw"))]))
+        .unwrap();
+    assert_eq!(
+        net.host_network().await,
+        HostNetwork {
+            timeout_secs: Some(45),
+            models: Some(ProxyRoute::Proxy(ProxyEndpoint {
+                kind: ProxyKind::Http,
+                host: "proxy.example.com".into(),
+                port: 3128,
+                username: Some("alice".into()),
+                password: Some(secret("pw")),
+            })),
+            browser: Some(ProxyRoute::Direct),
+        }
+    );
 }
 
 /// SSH's server talks first: what it says right after the proxy's answer

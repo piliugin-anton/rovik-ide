@@ -217,7 +217,7 @@ impl Harness {
                 approval_profiles: Vec::new(),
                 subagents: Default::default(),
                 autopilot: Default::default(),
-                browser_proxy: None,
+                network: None,
             }),
             isolate: Some(false),
             project_settings: None,

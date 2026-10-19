@@ -81,15 +81,20 @@ pub fn run() {
             // file in its place, out of ai-settings.json (H06).
             let secrets = Arc::new(SecretStore::open(config.join("secrets.json")));
             // Settings → Network (rovik_core::net) before anything connects:
-            // its file beside the AI settings, the proxy's password in the
-            // keychain, read once a proxy that signs in is used.
+            // its file beside the AI settings, the proxies' passwords in the
+            // keychain, each read once a route that signs in to it is used.
             let store = secrets.clone();
             rovik_core::net::init(
                 config.join("network-settings.json"),
-                Arc::new(move || match store.get(&SecretName::ProxyPassword) {
-                    Ok(password) => Ok(Some(password)),
-                    Err(SecretError::Missing(_)) => Ok(None),
-                    Err(e) => Err(e.to_string()),
+                Arc::new(move |proxy: &str| {
+                    let name = SecretName::ProxyPassword {
+                        proxy: proxy.to_string(),
+                    };
+                    match store.get(&name) {
+                        Ok(password) => Ok(Some(password)),
+                        Err(SecretError::Missing(_)) => Ok(None),
+                        Err(e) => Err(e.to_string()),
+                    }
                 }),
             );
             app.manage(secrets.clone());

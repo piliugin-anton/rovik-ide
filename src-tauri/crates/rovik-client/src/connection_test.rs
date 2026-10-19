@@ -237,9 +237,8 @@ async fn build(ssh: &Ssh, options: &TestOptions, user: &str) -> Step {
 }
 
 /// The name, then a TCP connection to the SSH port at one of its
-/// addresses; or, where cloud hosts' connections go through a proxy
-/// (Settings → Network), a connection through it, the proxy looking the
-/// name up.
+/// addresses; or, where SSH to cloud hosts goes through a proxy (Settings
+/// → Network), a connection through it, the proxy looking the name up.
 async fn reach(host: &str, port: u16) -> Step {
     let step = |outcome, message: String| Step::new(Check::Address, outcome, message);
     match rovik_core::net::cloud_host_proxy(host, port).await {
@@ -629,8 +628,9 @@ mod tests {
         }
     }
 
-    /// Settings → Network's proxy for cloud hosts: the SSH connection and
-    /// the test's first step go through it, the proxy looking the name up.
+    /// Settings → Network's SSH to cloud hosts through a proxy: the SSH
+    /// connection and the test's first step go through it, the proxy
+    /// looking the name up.
     /// In a process of its own, as it sets the process's network settings.
     #[test]
     fn a_cloud_host_is_reached_through_the_proxy() {
@@ -651,10 +651,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "run in a process of its own by a_cloud_host_is_reached_through_the_proxy"]
     async fn through_the_proxy_in_a_process_of_its_own() {
-        use rovik_core::net::{CustomProxy, NetworkSettings, ProxyKind, ProxyMode};
+        use rovik_core::net::{NetworkSettings, ProxyKind, Route, Routes, SavedProxy};
         use rovik_protocol::Secret;
         use russh::keys::ssh_key::private::Ed25519Keypair;
         use russh::keys::PrivateKey;
+        use std::collections::HashMap;
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::{TcpListener, TcpStream};
@@ -713,17 +714,21 @@ mod tests {
         });
 
         let through_the_proxy = NetworkSettings {
-            proxy: Some(ProxyMode::Custom),
-            custom: Some(CustomProxy {
+            proxies: vec![SavedProxy {
+                id: "test".into(),
                 kind: ProxyKind::Http,
                 host: "127.0.0.1".into(),
                 port: proxy_port,
                 username: None,
-            }),
-            cloud_hosts: true,
+                password_saved: false,
+            }],
+            routes: Routes {
+                ssh: Route::Proxy("test".into()),
+                ..Routes::default()
+            },
             ..NetworkSettings::default()
         };
-        rovik_core::net::save(through_the_proxy.clone()).unwrap();
+        rovik_core::net::save(through_the_proxy.clone(), &HashMap::new()).unwrap();
         // A name only the proxy knows.
         let target = SshTarget {
             host: "build.example.invalid".into(),
@@ -751,11 +756,18 @@ mod tests {
             )
         );
 
-        // Not for cloud hosts: directly, where the name isn't found.
-        rovik_core::net::save(NetworkSettings {
-            cloud_hosts: false,
-            ..through_the_proxy
-        })
+        // SSH directly: where the name isn't found.
+        let directly = Routes {
+            ssh: Route::Direct,
+            ..Routes::default()
+        };
+        rovik_core::net::save(
+            NetworkSettings {
+                routes: directly,
+                ..through_the_proxy
+            },
+            &HashMap::new(),
+        )
         .unwrap();
         let direct = reach("build.example.invalid", 22).await;
         assert_eq!(direct.outcome, Outcome::Failed);

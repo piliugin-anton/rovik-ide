@@ -1,62 +1,94 @@
 // NetworkSettings.tsx
 //
-// Settings → Network: how long connecting may take, the proxy the app's
-// connections go through (none, the system's, or a custom HTTP or SOCKS5
-// one; until one is chosen, "System proxy" while this computer has a proxy
-// set, else "No proxy"), and whether cloud hosts' SSH connections and the
-// agent's browsers (this computer's, the cloud hosts', or both) go through
-// it too, which only shows while there's a proxy. Each change applies at
-// once (lib/network.ts, kept by the backend). The custom proxy is saved
-// once it has a host and a port; until then the page says what's in use.
-// Its password goes to the keychain.
+// Settings → Network: how long connecting may take; the proxies Rovik can
+// use, each typed once, its password in the keychain; and where each kind
+// of connection goes, from this computer (model providers and downloads,
+// SSH to cloud hosts, the agent's browser) and from cloud hosts (their
+// requests and their browsers): automatically, by its own settings, with
+// no proxy, through this computer's proxy, or through a saved one. A route
+// applies as it's chosen, a proxy once it's saved (lib/network.ts, kept by
+// the backend). Notes show only while they apply.
 
-import { createResource, createSignal, Show } from 'solid-js';
+import { createResource, createSignal, For, Show } from 'solid-js';
 import {
   KIND_LABEL,
-  PLACES_LABEL,
+  ROWS,
   USUAL_PORT,
   networkSettings,
+  newProxyId,
   portOf,
   proxyAddress,
-  proxyChoice,
+  proxyUses,
+  routeOf,
+  routeProxy,
+  routeValue,
+  rowOptions,
   saveNetwork,
   splitProxyAddress,
   systemHasProxy,
   systemProxyLine,
-  type BrowserPlaces,
-  type CustomProxy,
   type NetworkSettings as Settings,
   type NetworkView,
   type ProxyKind,
+  type RouteRow,
+  type SavedProxy,
 } from '../lib/network';
 import { unlockSecrets } from '../lib/hosts';
 import { NumberField, Segmented, SettingStatus } from './SettingsControls';
 
-/** The custom proxy's fields as typed. */
+/** The proxy editor's fields as typed. */
 interface Draft {
+  id: string;
+  /** Not saved yet: Save adds it. */
+  isNew: boolean;
   kind: ProxyKind;
   host: string;
   port: string;
   username: string;
+  /** A new password; empty keeps the saved one. */
+  password: string;
 }
 
-function draftOf(proxy: CustomProxy | undefined): Draft {
+const EMPTY: Draft = {
+  id: '',
+  isNew: true,
+  kind: 'http',
+  host: '',
+  port: '',
+  username: '',
+  password: '',
+};
+
+function draftOf(proxy: SavedProxy): Draft {
   return {
-    kind: proxy?.kind ?? 'http',
-    host: proxy?.host ?? '',
-    port: proxy ? String(proxy.port) : '',
-    username: proxy?.username ?? '',
+    id: proxy.id,
+    isNew: false,
+    kind: proxy.kind,
+    host: proxy.host,
+    port: String(proxy.port),
+    username: proxy.username ?? '',
+    password: '',
   };
 }
 
 /** The proxy the fields make, once they have a host and a port. */
-function proxyOf(draft: Draft): CustomProxy | null {
+function proxyOf(draft: Draft): SavedProxy | null {
   const host = draft.host.trim();
   const port = portOf(draft.port);
   if (!host || port === undefined) return null;
   const username = draft.username.trim();
-  return { kind: draft.kind, host, port, ...(username ? { username } : {}) };
+  return { id: draft.id, kind: draft.kind, host, port, ...(username ? { username } : {}) };
 }
+
+/** Kinds of connection in a few words: "model providers and the browser". */
+function namesOf(rows: RouteRow[]): string {
+  const names = rows.map((row) => ROWS.find((r) => r.row === row)!.name);
+  if (names.length < 2) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/** This computer's kinds of connection, which "System proxy" can be for. */
+const HERE: RouteRow[] = ['models', 'ssh', 'browser'];
 
 export default function NetworkSettings() {
   const [loadError, setLoadError] = createSignal<string | null>(null);
@@ -66,66 +98,83 @@ export default function NetworkSettings() {
       return null;
     })
   );
+  // A route's or the timeout's save, refused.
   const [error, setError] = createSignal<string | null>(null);
-  // The fields as typed, while they differ from what's saved.
+  // The proxy being added or edited, and why its save was refused.
   const [draft, setDraft] = createSignal<Draft | null>(null);
-  // Custom chosen before it has a host and a port.
-  const [wantsCustom, setWantsCustom] = createSignal(false);
-  const [password, setPassword] = createSignal('');
+  const [draftError, setDraftError] = createSignal<string | null>(null);
+  const [busy, setBusy] = createSignal(false);
   const [passphrase, setPassphrase] = createSignal('');
   const [unlockError, setUnlockError] = createSignal<string | null>(null);
 
-  const saved = () => view()!.settings;
-  const mode = () => (wantsCustom() ? 'custom' : proxyChoice(view()!));
-  // No proxy chosen yet: the radio checked is what this computer has.
-  const automatic = () => saved().proxy === undefined && !wantsCustom();
-  const fields = () => draft() ?? draftOf(saved().custom);
+  const settings = () => view()!.settings;
 
-  async function save(next: Settings, passwordChange?: string): Promise<boolean> {
+  async function save(next: Settings): Promise<void> {
     setError(null);
     try {
-      mutate(await saveNetwork(next, passwordChange));
-      return true;
+      mutate(await saveNetwork(next));
     } catch (e) {
       setError(String(e));
-      return false;
     }
   }
 
-  /** A field changed: saved once the proxy has a host and a port. */
-  async function edit(patch: Partial<Draft>) {
-    const next = { ...fields(), ...patch };
-    setDraft(next);
-    const proxy = proxyOf(next);
-    if (!proxy) return;
-    const choice = mode();
-    if (await save({ ...saved(), custom: proxy, proxy: choice })) {
+  const choose = (row: RouteRow, value: string) =>
+    void save({ ...settings(), routes: { ...settings().routes, [row]: routeOf(value) } });
+
+  function add() {
+    setDraft({ ...EMPTY, id: newProxyId(settings().proxies.map((p) => p.id)) });
+    setDraftError(null);
+  }
+
+  function edit(proxy: SavedProxy) {
+    setDraft(draftOf(proxy));
+    setDraftError(null);
+  }
+
+  const change = (patch: Partial<Draft>) => setDraft({ ...(draft() ?? EMPTY), ...patch });
+
+  function cancel() {
+    setDraft(null);
+    setDraftError(null);
+    setUnlockError(null);
+  }
+
+  /** Saves the proxy the editor has, with the password typed. */
+  async function saveDraft() {
+    const typed = draft();
+    const proxy = typed && proxyOf(typed);
+    if (!typed || !proxy || busy()) return;
+    const proxies = typed.isNew
+      ? [...settings().proxies, proxy]
+      : settings().proxies.map((p) => (p.id === proxy.id ? proxy : p));
+    const passwords = typed.password ? { [typed.id]: typed.password } : undefined;
+    setBusy(true);
+    setDraftError(null);
+    try {
+      mutate(await saveNetwork({ ...settings(), proxies }, passwords));
       setDraft(null);
-      setWantsCustom(false);
+    } catch (e) {
+      setDraftError(String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
-  /** No proxy, or the system's: the custom one is kept for later. */
-  async function chooseMode(proxy: 'direct' | 'system') {
-    setWantsCustom(false);
-    if (saved().proxy !== proxy) await save({ ...saved(), proxy });
-  }
-
-  async function chooseCustom() {
-    const proxy = proxyOf(fields());
-    if (!proxy) {
-      setWantsCustom(true);
-      return;
+  async function forget(id: string) {
+    setDraftError(null);
+    try {
+      mutate(await saveNetwork(settings(), { [id]: '' }));
+    } catch (e) {
+      setDraftError(String(e));
     }
-    await save({ ...saved(), proxy: 'custom', custom: proxy });
   }
 
-  async function savePassword() {
-    if (!password()) return;
-    if (await save(saved(), password())) setPassword('');
+  async function remove(id: string) {
+    if (draft()?.id === id) cancel();
+    await save({ ...settings(), proxies: settings().proxies.filter((p) => p.id !== id) });
   }
 
-  /** The encrypted file in the keychain's place: unlocked, the password typed is saved. */
+  /** The encrypted file in the keychain's place: unlocked, the proxy is saved again. */
   const locked = (v: NetworkView) => v.store?.kind === 'file' && !v.store.unlocked;
   async function unlock() {
     setUnlockError(null);
@@ -133,31 +182,199 @@ export default function NetworkSettings() {
       await unlockSecrets(passphrase());
       setPassphrase('');
       mutate(await networkSettings());
-      setError(null);
-      await savePassword();
+      await saveDraft();
     } catch (e) {
       setUnlockError(String(e));
     }
   }
 
-  /** What connections do while the custom proxy isn't complete. */
-  const meanwhile = (v: NetworkView) => {
-    const now = proxyChoice(v);
-    if (now === 'custom' && v.settings.custom) {
-      return `connections use the saved one, ${proxyAddress(v.settings.custom)}`;
-    }
-    return now === 'system' ? 'connections use the system’s proxy' : 'connections go directly';
+  // What the notes are about.
+  const cloudProxy = (v: NetworkView) =>
+    routeProxy(v.settings.routes.hostModels) !== undefined ||
+    routeProxy(v.settings.routes.hostBrowser) !== undefined;
+  /** The SOCKS5 proxies a browser would have to sign in to, which it can't. */
+  const socksSignIns = (v: NetworkView) => {
+    const ids = [v.settings.routes.browser, v.settings.routes.hostBrowser].map(routeProxy);
+    return v.settings.proxies.filter(
+      (p) => ids.includes(p.id) && p.kind === 'socks5' && Boolean(p.username)
+    );
   };
-  const noSystemProxy = (v: NetworkView) => !systemHasProxy(v);
+  const systemNone = (v: NetworkView) =>
+    !systemHasProxy(v) && HERE.some((row) => v.settings.routes[row] === 'system');
+
+  const proxyRow = (proxy: SavedProxy) => {
+    const uses = () => proxyUses(settings(), proxy.id);
+    return (
+      <div class="profile-row network-proxy">
+        <div class="profile-row-info">
+          <span class="profile-row-label">
+            {KIND_LABEL[proxy.kind]} {proxyAddress(proxy)}
+          </span>
+          <span class="profile-row-sub">
+            {proxy.username
+              ? `Signs in as ${proxy.username}${proxy.passwordSaved ? '' : ', no password saved'}`
+              : 'No sign-in'}
+            {uses().length > 0 ? ` · In use: ${namesOf(uses())}` : ''}
+          </span>
+        </div>
+        <div class="profile-row-actions">
+          <button onClick={() => edit(proxy)}>Edit</button>
+          <button
+            disabled={uses().length > 0}
+            title={
+              uses().length > 0
+                ? `In use: ${namesOf(uses())}. Choose something else there first.`
+                : undefined
+            }
+            onClick={() => void remove(proxy.id)}
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const editor = () => {
+    const d = () => draft() ?? EMPTY;
+    const saved = () => settings().proxies.find((p) => p.id === d().id);
+    return (
+      <div class="profile-form network-proxy-form">
+        <div class="network-proxy-kind">
+          <span>Type</span>
+          <Segmented
+            label="Proxy type"
+            value={d().kind}
+            options={[
+              {
+                value: 'http',
+                label: KIND_LABEL.http,
+                title: 'HTTPS and SSH go through it by CONNECT',
+              },
+              {
+                value: 'socks5',
+                label: KIND_LABEL.socks5,
+                title: 'The proxy looks the names up itself',
+              },
+            ]}
+            onChange={(kind) => change({ kind })}
+          />
+        </div>
+        <div class="network-proxy-row">
+          <label class="network-proxy-host">
+            Host
+            <input
+              value={d().host}
+              placeholder="proxy.example.com"
+              spellcheck={false}
+              autocomplete="off"
+              onInput={(e) => change({ host: e.currentTarget.value })}
+              onChange={(e) => {
+                // A proxy's URL pasted whole gives its kind and port.
+                const { host, port, kind } = splitProxyAddress(e.currentTarget.value);
+                change({
+                  host,
+                  ...(port !== undefined ? { port: String(port) } : {}),
+                  ...(kind ? { kind } : {}),
+                });
+              }}
+            />
+          </label>
+          <label class="network-proxy-port">
+            Port
+            <input
+              type="number"
+              min="1"
+              max="65535"
+              value={d().port}
+              placeholder={String(USUAL_PORT[d().kind])}
+              onInput={(e) => change({ port: e.currentTarget.value })}
+            />
+          </label>
+        </div>
+        <div class="network-proxy-row">
+          <label>
+            Username
+            <input
+              value={d().username}
+              placeholder="Only if the proxy asks for one"
+              spellcheck={false}
+              autocomplete="off"
+              onInput={(e) => change({ username: e.currentTarget.value })}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={d().password}
+              placeholder={
+                saved()?.passwordSaved
+                  ? 'Saved: leave empty to keep it'
+                  : 'Only if the proxy asks for one'
+              }
+              autocomplete="off"
+              onInput={(e) => change({ password: e.currentTarget.value })}
+            />
+          </label>
+        </div>
+        <Show when={saved()?.passwordSaved}>
+          <button class="link-button network-forget" onClick={() => void forget(d().id)}>
+            Forget the saved password
+          </button>
+        </Show>
+        <Show when={locked(view()!) && Boolean(d().password || d().username.trim())}>
+          <p class="settings-hint">
+            This computer has no keychain, so the password goes in a file encrypted under a
+            passphrase, with the API keys. It’s locked: enter its passphrase to save the password.
+            The first time, the passphrase you choose here makes the file.
+          </p>
+          <div class="host-unlock">
+            <input
+              type="password"
+              value={passphrase()}
+              onInput={(e) => setPassphrase(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && passphrase()) void unlock();
+              }}
+              placeholder="Passphrase"
+              aria-label="passphrase of the secrets file"
+            />
+            <button
+              class="chat-action-button primary"
+              disabled={!passphrase()}
+              onClick={() => void unlock()}
+            >
+              Unlock
+            </button>
+          </div>
+          <Show when={unlockError()}>
+            <SettingStatus warning>{unlockError()}</SettingStatus>
+          </Show>
+        </Show>
+        <Show when={draftError()}>
+          <SettingStatus warning>{draftError()}</SettingStatus>
+        </Show>
+        <div class="profile-form-actions">
+          <button onClick={cancel}>Cancel</button>
+          <button
+            class="primary"
+            disabled={!proxyOf(d()) || busy()}
+            onClick={() => void saveDraft()}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div class="permissions-settings network-settings">
       <p class="settings-hint">
-        How Rovik connects out: to model providers, to the servers it downloads from (rust-analyzer,
-        the agent’s browser, the virtual files’ driver, Rovik for a cloud host), and if you choose,
-        to cloud hosts. A provider’s connections are kept open and used again while chats are busy,
-        and made afresh after a pause. Git and the commands chats run keep their own proxy settings.
-        Applies to this computer only.
+        How Rovik connects out, from this computer and from cloud hosts: the proxies it can use, and
+        which connections go through which. Git and the commands chats run keep their own proxy
+        settings.
       </p>
 
       <Show when={loadError()}>
@@ -182,283 +399,109 @@ export default function NetworkSettings() {
                   placeholder={v().defaultTimeoutSecs}
                   min={v().minTimeoutSecs}
                   max={v().maxTimeoutSecs}
-                  onChange={(timeoutSecs) => void save({ ...saved(), timeoutSecs })}
+                  onChange={(timeoutSecs) => void save({ ...settings(), timeoutSecs })}
                 />
               </div>
               <p class="settings-hint setting-explain">
-                How long to wait for a server, a proxy or a cloud host to take a connection before
-                trying again: {v().minTimeoutSecs} to {v().maxTimeoutSecs} seconds,{' '}
-                {v().defaultTimeoutSecs} when empty. How long a model may take to start answering is
+                How long to wait for a server, a proxy or a cloud host to take a connection:{' '}
+                {v().minTimeoutSecs} to {v().maxTimeoutSecs} seconds, {v().defaultTimeoutSecs} when
+                empty. Cloud hosts are given it too. How long a model may take to start answering is
                 set per model, in Model providers.
               </p>
             </section>
 
             <section class="settings-section">
-              <div class="settings-section-title">Proxy</div>
-              <div role="radiogroup" aria-label="Proxy">
-                <label class="setting-checkbox">
-                  <input
-                    type="radio"
-                    name="network-proxy"
-                    checked={mode() === 'direct'}
-                    onChange={() => void chooseMode('direct')}
-                  />
-                  <span>
-                    No proxy
-                    <span class="setting-checkbox-sub">
-                      Connections go directly, even when this computer is set to use a proxy. The
-                      agent’s browser follows its own computer’s settings.
-                    </span>
-                  </span>
-                </label>
-                <label class="setting-checkbox">
-                  <input
-                    type="radio"
-                    name="network-proxy"
-                    checked={mode() === 'system'}
-                    onChange={() => void chooseMode('system')}
-                  />
-                  <span>
-                    System proxy
-                    <span class="setting-checkbox-sub">
-                      The one this computer is set to use, in its network settings on macOS and
-                      Windows, or in the HTTPS_PROXY, HTTP_PROXY and ALL_PROXY variables. Now:{' '}
-                      {systemProxyLine(v())}
-                    </span>
-                  </span>
-                </label>
-                <label class="setting-checkbox">
-                  <input
-                    type="radio"
-                    name="network-proxy"
-                    checked={mode() === 'custom'}
-                    onChange={() => void chooseCustom()}
-                  />
-                  <span>
-                    Custom
-                    <span class="setting-checkbox-sub">
-                      A proxy for Rovik alone: HTTP or SOCKS5.
-                    </span>
-                  </span>
-                </label>
+              <div class="settings-section-title">Proxies</div>
+              <div class="network-proxies">
+                <For each={v().settings.proxies}>
+                  {(proxy) => (
+                    <Show
+                      when={draft()?.id === proxy.id && !draft()?.isNew}
+                      fallback={proxyRow(proxy)}
+                    >
+                      {editor()}
+                    </Show>
+                  )}
+                </For>
               </div>
-              <Show when={automatic()}>
-                <p class="settings-hint setting-explain network-proxy-automatic">
-                  Chosen automatically: System proxy while this computer has a proxy set, No proxy
-                  while it hasn’t. Choosing one keeps it.
+              <Show when={draft()?.isNew}>{editor()}</Show>
+              <Show when={!draft()}>
+                <Show when={v().settings.proxies.length === 0}>
+                  <p class="settings-hint">None yet: add one to send connections through it.</p>
+                </Show>
+                <button class="add-profile-button network-add-proxy" onClick={add}>
+                  + Add a proxy
+                </button>
+              </Show>
+              <p class="settings-hint network-system-line">
+                This computer’s proxy, for “System proxy”: {systemProxyLine(v())}.
+                <Show when={v().settings.proxies.length > 0}>
+                  {' '}
+                  Addresses on this computer (localhost) are reached directly, around saved proxies.
+                </Show>
+              </p>
+            </section>
+
+            <section class="settings-section">
+              <div class="settings-section-title">Where connections go</div>
+              <For each={['here', 'cloud'] as const}>
+                {(place) => (
+                  <div class="network-route-group">
+                    <div class="network-route-group-title">
+                      {place === 'here' ? 'This computer' : 'Cloud hosts'}
+                    </div>
+                    <For each={ROWS.filter((r) => r.place === place)}>
+                      {(info) => {
+                        const value = () => routeValue(v().settings.routes[info.row]);
+                        return (
+                          <label class="network-route">
+                            <span class="network-route-label">{info.label}</span>
+                            <select
+                              class="settings-select"
+                              aria-label={info.ariaLabel}
+                              value={value()}
+                              onChange={(e) => choose(info.row, e.currentTarget.value)}
+                            >
+                              <For each={rowOptions(v(), info.row)}>
+                                {(option) => (
+                                  <option value={option.value} selected={option.value === value()}>
+                                    {option.label}
+                                  </option>
+                                )}
+                              </For>
+                            </select>
+                          </label>
+                        );
+                      }}
+                    </For>
+                  </div>
+                )}
+              </For>
+
+              <Show when={cloudProxy(v())}>
+                <p class="settings-hint network-note">
+                  Cloud hosts are given the proxy, and its password, each time this computer
+                  connects to them, and keep the password in memory only. They have to be able to
+                  reach it; a host other computers use follows the last one to connect.
                 </p>
               </Show>
-
-              <Show when={mode() === 'custom'}>
-                <div class="profile-form network-proxy-form">
-                  <div class="network-proxy-kind">
-                    <span>Type</span>
-                    <Segmented
-                      label="Proxy type"
-                      value={fields().kind}
-                      options={[
-                        {
-                          value: 'http',
-                          label: KIND_LABEL.http,
-                          title: 'HTTPS goes through it by CONNECT',
-                        },
-                        {
-                          value: 'socks5',
-                          label: KIND_LABEL.socks5,
-                          title: 'The proxy looks the names up itself',
-                        },
-                      ]}
-                      onChange={(kind) => void edit({ kind })}
-                    />
-                  </div>
-                  <div class="network-proxy-row">
-                    <label class="network-proxy-host">
-                      Host
-                      <input
-                        value={fields().host}
-                        placeholder="proxy.example.com"
-                        spellcheck={false}
-                        autocomplete="off"
-                        onInput={(e) => setDraft({ ...fields(), host: e.currentTarget.value })}
-                        onChange={(e) => {
-                          // A proxy's URL pasted whole gives its kind and port.
-                          const { host, port, kind } = splitProxyAddress(e.currentTarget.value);
-                          void edit({
-                            host,
-                            ...(port !== undefined ? { port: String(port) } : {}),
-                            ...(kind ? { kind } : {}),
-                          });
-                        }}
-                      />
-                    </label>
-                    <label class="network-proxy-port">
-                      Port
-                      <input
-                        type="number"
-                        min="1"
-                        max="65535"
-                        value={fields().port}
-                        placeholder={String(USUAL_PORT[fields().kind])}
-                        onInput={(e) => setDraft({ ...fields(), port: e.currentTarget.value })}
-                        onChange={(e) => void edit({ port: e.currentTarget.value })}
-                      />
-                    </label>
-                  </div>
-                  <div class="network-proxy-row">
-                    <label>
-                      Username
-                      <input
-                        value={fields().username}
-                        placeholder="Only if the proxy asks for one"
-                        spellcheck={false}
-                        autocomplete="off"
-                        onInput={(e) => setDraft({ ...fields(), username: e.currentTarget.value })}
-                        onChange={(e) => void edit({ username: e.currentTarget.value })}
-                      />
-                    </label>
-                    <label>
-                      Password
-                      <input
-                        type="password"
-                        value={password()}
-                        placeholder={
-                          v().passwordSaved
-                            ? 'Saved: leave empty to keep it'
-                            : 'Only if the proxy asks for one'
-                        }
-                        autocomplete="off"
-                        onInput={(e) => setPassword(e.currentTarget.value)}
-                        onChange={() => void savePassword()}
-                      />
-                    </label>
-                  </div>
-                  <Show when={locked(v())}>
-                    <p class="settings-hint">
-                      This computer has no keychain, so the password goes in a file encrypted under
-                      a passphrase, with the API keys. It’s locked: enter its passphrase to save the
-                      password. The first time, the passphrase you choose here makes the file.
-                    </p>
-                    <div class="host-unlock">
-                      <input
-                        type="password"
-                        value={passphrase()}
-                        onInput={(e) => setPassphrase(e.currentTarget.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && passphrase()) void unlock();
-                        }}
-                        placeholder="Passphrase"
-                        aria-label="passphrase of the secrets file"
-                      />
-                      <button
-                        class="chat-action-button primary"
-                        disabled={!passphrase()}
-                        onClick={() => void unlock()}
-                      >
-                        Unlock
-                      </button>
-                    </div>
-                    <Show when={unlockError()}>
-                      <SettingStatus warning>{unlockError()}</SettingStatus>
-                    </Show>
-                  </Show>
-                  <Show when={v().passwordSaved}>
-                    <button
-                      class="link-button network-forget"
-                      onClick={() => void save(saved(), '')}
-                    >
-                      Forget the saved password
-                    </button>
-                  </Show>
-                  <Show when={!proxyOf(fields())}>
-                    <SettingStatus warning>
-                      Not in use yet: enter the proxy’s host and port. Until then, {meanwhile(v())}.
-                    </SettingStatus>
-                  </Show>
-                  <p class="settings-hint">
-                    Addresses on this computer (localhost) are always reached directly.
-                  </p>
-                  <Show
-                    when={
-                      v().settings.browser && fields().kind === 'socks5' && fields().username.trim()
-                    }
-                  >
-                    <p class="settings-hint">
-                      The agent’s browser can’t sign in to a SOCKS5 proxy, so the pages it opens
-                      won’t load through this one.
-                    </p>
-                  </Show>
-                </div>
+              <Show when={socksSignIns(v()).length > 0}>
+                <p class="settings-hint network-note">
+                  The agent’s browser can’t sign in to a SOCKS5 proxy, so pages it opens won’t load
+                  through {socksSignIns(v()).map(proxyAddress).join(' or ')}.
+                </p>
               </Show>
-
-              {/* What goes through the proxy besides: nothing to choose with none. */}
-              <Show when={mode() !== 'direct'}>
-                <label class="setting-checkbox network-cloud-hosts">
-                  <input
-                    type="checkbox"
-                    checked={v().settings.cloudHosts}
-                    onChange={(e) => void save({ ...saved(), cloudHosts: e.currentTarget.checked })}
-                  />
-                  <span>
-                    Use proxy for cloud hosts
-                    <span class="setting-checkbox-sub">
-                      SSH connections to cloud hosts go through the proxy too: an HTTP proxy by
-                      CONNECT, a SOCKS5 proxy as it is. Hosts set to use your system’s ssh follow
-                      its own settings (ProxyJump, ProxyCommand) instead.
-                    </span>
-                  </span>
-                </label>
-                <label class="setting-checkbox network-browser">
-                  <input
-                    type="checkbox"
-                    checked={v().settings.browser}
-                    onChange={(e) => void save({ ...saved(), browser: e.currentTarget.checked })}
-                  />
-                  <span>
-                    Use proxy for browser
-                    <span class="setting-checkbox-sub">
-                      The agent’s browser goes through the proxy too: the one on this computer
-                      (local), the ones cloud hosts start for the chats on them (cloud), or both.
-                      Otherwise a browser follows its own computer’s proxy settings.
-                    </span>
-                  </span>
-                </label>
-                <div class="network-browser-places">
-                  <select
-                    class="settings-select"
-                    aria-label="Which browsers"
-                    value={v().settings.browserPlaces}
-                    disabled={!v().settings.browser}
-                    onChange={(e) =>
-                      void save({
-                        ...saved(),
-                        browserPlaces: e.currentTarget.value as BrowserPlaces,
-                      })
-                    }
-                  >
-                    <option value="local">{PLACES_LABEL.local}</option>
-                    <option value="cloud">{PLACES_LABEL.cloud}</option>
-                    <option value="both">{PLACES_LABEL.both}</option>
-                  </select>
-                </div>
-                <Show when={v().settings.browser && v().settings.browserPlaces !== 'local'}>
-                  <p class="settings-hint setting-explain network-browser-note">
-                    A cloud host’s browser is given the proxy, and its password, each time this
-                    computer connects to the host: the host keeps the password in memory only, and
-                    has to be able to reach the proxy.
-                    {mode() === 'system' ? ' With the system’s proxy, that’s this computer’s.' : ''}
-                  </p>
-                </Show>
-                <Show
-                  when={
-                    (v().settings.cloudHosts || v().settings.browser) &&
-                    mode() === 'system' &&
-                    noSystemProxy(v())
-                  }
-                >
-                  <SettingStatus>No effect now: this computer has no proxy set.</SettingStatus>
-                </Show>
+              <Show when={v().settings.routes.ssh !== 'direct'}>
+                <p class="settings-hint network-note">
+                  Hosts set to use your system’s ssh follow its own settings (ProxyJump,
+                  ProxyCommand) instead.
+                </p>
               </Show>
-
+              <Show when={systemNone(v())}>
+                <SettingStatus>
+                  This computer has no proxy set, so “System proxy” goes directly for now.
+                </SettingStatus>
+              </Show>
               <Show when={error()}>
                 <SettingStatus warning>{error()}</SettingStatus>
               </Show>

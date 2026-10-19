@@ -252,8 +252,9 @@ fn no_browser() -> String {
 
 /// How the tools start the browser at `chrome`: headless, and on Unix over
 /// a pipe, with no DevTools port (D18). Through `proxy` when Settings →
-/// Network gives the browser one (eoka signs in to it); without, Chrome's
-/// own settings, which follow the system's proxy.
+/// Network gives the browser one (eoka signs in to it), or directly with
+/// `direct://`; without, Chrome's own settings, which follow the system's
+/// proxy.
 fn launch_config(chrome: &Path, proxy: Option<&crate::net::BrowserProxy>) -> StealthConfig {
     let mut config = StealthConfig {
         headless: true,
@@ -982,7 +983,7 @@ mod tests {
     }
 
     /// Settings → Network's proxy for the browser, which eoka signs in to;
-    /// none, Chrome's own settings.
+    /// no proxy, `direct://`; none, Chrome's own settings.
     #[test]
     fn chrome_is_given_the_proxy_it_was_set() {
         let chrome = Path::new("/opt/rovik/browser/155.0.8059.39/chrome");
@@ -998,6 +999,15 @@ mod tests {
         );
         assert_eq!(config.proxy_username.as_deref(), Some("alice"));
         assert_eq!(config.proxy_password.as_deref(), Some("pw"));
+        let config = launch_config(chrome, Some(&crate::net::BrowserProxy::direct()));
+        assert_eq!(
+            (
+                config.proxy.as_deref(),
+                config.proxy_username,
+                config.proxy_password
+            ),
+            (Some("direct://"), None, None)
+        );
         let config = launch_config(chrome, None);
         assert_eq!(
             (config.proxy, config.proxy_username, config.proxy_password),

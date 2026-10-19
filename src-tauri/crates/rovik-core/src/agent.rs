@@ -1941,7 +1941,7 @@ pub async fn list_models(
 
     let res = req.send().await.map_err(|e| {
         crate::net::refresh();
-        let through = crate::net::custom_proxy_for(&url)
+        let through = crate::net::proxy_for_requests(&url)
             .map(|proxy| format!(" through {proxy}"))
             .unwrap_or_default();
         format!(

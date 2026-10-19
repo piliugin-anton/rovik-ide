@@ -110,15 +110,15 @@ impl Daemon {
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
             Request::AgentStart(start) => self.start(computer, *start).await,
-            // Only this computer's configuration changes (D16). The browser
-            // here is the server's one: it takes the proxy the last computer
-            // to send one sent (Settings → Network, "Use proxy for browser").
+            // Only this computer's configuration changes (D16). How this
+            // server connects (Settings → Network's cloud hosts' rows) is
+            // the process's: the last computer to say has it.
             Request::AgentConfigure(config) => {
-                let browser = config.browser_proxy.clone();
+                let network = config.network.clone();
                 self.store
                     .configure(computer, config)
                     .map(|()| {
-                        rovik_core::net::set_hosted_browser_proxy(browser);
+                        rovik_core::net::set_host_network(network);
                         Response::Done
                     })
                     .map_err(|e| Fail::new(FailCode::Internal, e))
