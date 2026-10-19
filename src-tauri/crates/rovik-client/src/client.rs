@@ -34,6 +34,8 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 pub const POST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long the daemon has to answer `Hello`.
 const WELCOME_WAIT: Duration = Duration::from_secs(10);
+/// The daemon's answer to a token it doesn't take.
+const TOKEN_REFUSED: &str = "The daemon doesn't know this computer's token: deploy again.";
 /// After a lost link, the client waits this long before connecting again,
 /// twice as long after each failed try, up to `MAX_BACKOFF` (6.10).
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
@@ -65,8 +67,14 @@ pub enum HostState {
     Ready,
     /// Not reachable: the client tries again, waiting longer each time.
     Offline,
-    /// The daemon serves only apps newer than this one (4.5).
+    /// The daemon serves only apps newer than this one (4.5). The client
+    /// asks again now and then, quietly, at the slowest pace.
     VersionMismatch,
+    /// The host turned this computer away for a reason trying again won't
+    /// fix: its key changed, the credentials, Rovik's install there, this
+    /// computer's token. Not tried again: the host's settings, a deploy or
+    /// a trusted build connect it anew. `Client::refusal` says why.
+    Refused,
 }
 
 /// What the daemon said of itself, in its `Welcome`.
@@ -133,6 +141,8 @@ struct Link {
     /// The last event's boot and number, where the next `Subscribe` goes
     /// on from.
     since: Option<(String, u64)>,
+    /// Why the host turned this computer away (`HostState::Refused`).
+    refusal: Option<String>,
 }
 
 impl Client {
@@ -164,6 +174,12 @@ impl Client {
 
     pub fn state(&self) -> HostState {
         self.shared.lock().state
+    }
+
+    /// Why the host turned this computer away, once it did: the client
+    /// doesn't try again (`HostState::Refused`).
+    pub fn refusal(&self) -> Option<String> {
+        self.shared.lock().refusal.clone()
     }
 
     /// What the user calls the host: its settings' name (`Identity::host`).
@@ -394,7 +410,10 @@ impl Shared {
 /// How a session ended.
 enum Ended {
     /// The daemon serves only newer apps.
-    Refused,
+    TooOld,
+    /// The host turned this computer away, and why: trying again won't
+    /// change that (`Connector`).
+    Refused(String),
     /// The link dropped, or never came up; `served` when it was ready.
     Lost { served: bool },
     /// The computer slept.
@@ -406,7 +425,12 @@ enum Ended {
 async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
     let mut wait = FIRST_BACKOFF;
     loop {
-        shared.set_state(HostState::Connecting);
+        // A daemon that serves only newer apps is asked again without
+        // showing Connecting each time: it's the same answer until the app
+        // or the daemon changes.
+        if shared.lock().state != HostState::VersionMismatch {
+            shared.set_state(HostState::Connecting);
+        }
         let ended = tokio::select! {
             ended = session(&shared) => ended,
             _ = slept(CLOCK_TICK, SystemTime::now) => Ended::Slept,
@@ -414,7 +438,19 @@ async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
         };
         shared.end_session();
         match ended {
-            Ended::Refused => shared.set_state(HostState::VersionMismatch),
+            Ended::TooOld => {
+                shared.set_state(HostState::VersionMismatch);
+                wait = MAX_BACKOFF;
+            }
+            Ended::Refused(why) => {
+                shared.lock().refusal = Some(why);
+                shared.set_state(HostState::Refused);
+                // Not again: it would be turned away the same way, after
+                // the credentials went once more. The client waits to be
+                // let go of, or put in place of (`Hosts::connect`).
+                let _ = stop.changed().await;
+                break;
+            }
             Ended::Lost { served } => {
                 shared.set_state(HostState::Offline);
                 if served {
@@ -468,14 +504,22 @@ async fn slept(tick: Duration, wall: impl Fn() -> SystemTime) {
 async fn session(shared: &Shared) -> Ended {
     let lost = Ended::Lost { served: false };
     let identity = &shared.identity;
-    let Ok(io) = shared.connector.connect().await else {
-        return lost;
+    let io = match shared.connector.connect().await {
+        Ok(io) => io,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Ended::Refused(e.to_string())
+        }
+        Err(_) => return lost,
     };
     let uri: Uri = "ws://rovik-agentd/rpc".parse().expect("a URI");
     let request = ClientRequestBuilder::new(uri)
         .with_header("Authorization", format!("Bearer {}", identity.token.0));
-    let Ok((mut socket, _)) = tokio_tungstenite::client_async(request, io).await else {
-        return lost;
+    let mut socket = match tokio_tungstenite::client_async(request, io).await {
+        Ok((socket, _)) => socket,
+        Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
+            return Ended::Refused(TOKEN_REFUSED.into())
+        }
+        Err(_) => return lost,
     };
     let hello = Frame::Hello {
         protocol: PROTOCOL,
@@ -504,7 +548,7 @@ async fn session(shared: &Shared) -> Ended {
         features,
     });
     if PROTOCOL < min_protocol {
-        return Ended::Refused;
+        return Ended::TooOld;
     }
 
     let (since, same_boot) = shared.resume_from(&boot);
@@ -559,10 +603,7 @@ pub async fn welcome(connector: &dyn Connector, identity: &Identity) -> Result<D
     let mut socket = match tokio_tungstenite::client_async(request, io).await {
         Ok((socket, _)) => socket,
         Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
-            return Err(Fail::new(
-                FailCode::BadRequest,
-                "The daemon doesn't know this computer's token.",
-            ))
+            return Err(Fail::new(FailCode::BadRequest, TOKEN_REFUSED))
         }
         Err(e) => return Err(lost(e.to_string())),
     };

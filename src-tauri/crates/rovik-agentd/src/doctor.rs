@@ -53,7 +53,11 @@ pub struct Server {
     /// /proc, for other users' daemons, and /proc/sys, for user namespaces.
     pub proc: PathBuf,
     pub sys: PathBuf,
+    /// /sys/fs/cgroup, where systemd keeps the daemons' units.
+    pub cgroups: PathBuf,
     pub uid: u32,
+    /// This account's name.
+    pub user: String,
     /// The virtual files' driver and version, or why there are none.
     pub virtual_files: Result<String, String>,
     pub chrome: Option<PathBuf>,
@@ -72,7 +76,9 @@ impl Server {
             admin_file: PathBuf::from(ADMIN_FILE),
             proc: PathBuf::from("/proc"),
             sys: PathBuf::from("/proc/sys"),
+            cgroups: PathBuf::from("/sys/fs/cgroup"),
             uid: home::uid(),
+            user: home::passwd().map(|p| p.name).unwrap_or_default(),
             virtual_files: match fuse.detail {
                 None => Ok(
                     format!("{} {}", fuse.driver, fuse.version.unwrap_or_default())
@@ -161,7 +167,8 @@ pub fn gather(server: &Server) -> Doctor {
             (None, AdminFile::default())
         }
     };
-    let other_daemons = host::other_daemons(&server.proc, server.uid);
+    let other_daemons =
+        host::other_daemons(&server.cgroups, &server.proc, server.uid, &server.user);
     let slots = admin.slots(user_slots, other_daemons);
     let disks = home
         .folders()
@@ -428,7 +435,9 @@ mod tests {
             admin_file,
             proc,
             sys,
+            cgroups: dir.0.join("cgroup"),
             uid: 1000,
+            user: "ann".into(),
             virtual_files: Ok("fuse3 3.14.0".into()),
             chrome: None,
             git: Some("2.43.0".into()),

@@ -226,6 +226,13 @@ test('a chat on an offline host is read-only, and its input says why (6.10)', ()
     { id: 'h1', name: 'Build', deployed: true, state: 'version-mismatch' },
   ];
   assert.match(readOnlyReason({ kind: 'host', host: 'h1' }, old)!, /newer versions of this app/);
+  // A host that turned this computer away isn't tried again: the reason is
+  // on the hosts page.
+  const refused: HostSummary[] = [{ id: 'h1', name: 'Build', deployed: true, state: 'refused' }];
+  assert.match(
+    readOnlyReason({ kind: 'host', host: 'h1' }, refused)!,
+    /turned this computer away: .*Settings → Cloud hosts/
+  );
   const connecting: HostSummary[] = [
     { id: 'h1', name: 'Build', deployed: true, state: 'connecting' },
   ];

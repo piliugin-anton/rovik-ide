@@ -18,7 +18,9 @@ pub type Stream = Box<dyn Io>;
 /// A stream on its way.
 pub type Connecting<'a> = Pin<Box<dyn Future<Output = io::Result<Stream>> + Send + 'a>>;
 
-/// Opens a new stream to the daemon.
+/// Opens a new stream to the daemon. An error of kind `PermissionDenied`
+/// says the host turned this computer away for a reason trying again
+/// won't fix: the client shows it and stops trying (`HostState::Refused`).
 pub trait Connector: Send + Sync + 'static {
     fn connect(&self) -> Connecting<'_>;
 }

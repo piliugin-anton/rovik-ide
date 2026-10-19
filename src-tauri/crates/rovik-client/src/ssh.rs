@@ -751,9 +751,23 @@ async fn interactively(
                     prompts: prompts.into_iter().map(|p| (p.prompt, p.echo)).collect(),
                 };
                 let count = questions.prompts.len();
-                let answers = answer(questions)
-                    .await
-                    .ok_or_else(|| SshError::Denied("the questions weren't answered.".into()))?;
+                let asked: Vec<String> = (questions.prompts.iter())
+                    .map(|(prompt, _)| prompt.trim().trim_end_matches(':').trim().to_string())
+                    .filter(|prompt| !prompt.is_empty())
+                    .collect();
+                let unanswered = || match asked.as_slice() {
+                    [] => SshError::Denied("the questions weren't answered.".into()),
+                    asked => SshError::Denied(format!(
+                        "it asks for {}, which only you can answer: Rovik answers only its \
+                         password prompts. Log in with your system ssh to answer it yourself.",
+                        asked
+                            .iter()
+                            .map(|a| format!("\"{a}\""))
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    )),
+                };
+                let answers = answer(questions).await.ok_or_else(unanswered)?;
                 if answers.len() != count {
                     return Err(SshError::Denied(
                         "each of the host's questions needs an answer.".into(),
@@ -854,9 +868,11 @@ impl SshConnector {
             let releases = self.releases.as_ref();
             let user = &self.target.user;
             let checked = crate::deploy::check_install(&ssh, known, releases, user, &layout);
-            checked
-                .await
-                .map_err(|e| SshError::Install(e.to_string()))?;
+            checked.await.map_err(|e| match e {
+                // The check couldn't be made now: no verdict on the install.
+                crate::deploy::DeployError::Failed(why) => SshError::Failed(why),
+                e => SshError::Install(e.to_string()),
+            })?;
         }
         *session = Some(Arc::clone(&ssh));
         Ok(ssh)
@@ -875,8 +891,9 @@ impl Connector for SshConnector {
     }
 }
 
-/// The error a `Client` sees: one that trying again won't fix reads as
-/// permission denied.
+/// The error a `Client` sees: one that trying again won't fix (the host's
+/// key, the credentials, the key file or agent, Rovik's install) reads as
+/// permission denied, and the client stops trying (`Connector`).
 fn io_error(e: SshError) -> io::Error {
     let kind = match e {
         SshError::Unreachable(_) | SshError::Failed(_) => io::ErrorKind::ConnectionRefused,

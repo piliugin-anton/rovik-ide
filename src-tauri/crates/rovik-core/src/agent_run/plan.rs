@@ -627,6 +627,31 @@ fn join(root: &str, rel: &str) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Whether `path` names a plan's file as `save_plan_file` makes them: a
+/// Markdown file in a `.rovik/plans` folder (`PLANS_DIR`), reached through
+/// no link. A chat's rows may come from a server (its mirror, a chat moved
+/// back), so the file they name is read, sent to a model or written only
+/// when it's one: never another of this computer's files.
+pub fn is_plan_file(path: &str) -> bool {
+    let file = Path::new(path);
+    let named = file.parent().is_some_and(|dir| dir.ends_with(PLANS_DIR))
+        && file
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    if !named {
+        return false;
+    }
+    if std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return false;
+    }
+    // Where its folder really is: a plans folder too. One not made yet
+    // holds nothing to read, and a save makes it.
+    match file.parent().map(std::fs::canonicalize) {
+        Some(Ok(dir)) => dir.ends_with(PLANS_DIR),
+        _ => true,
+    }
+}
+
 /// Saves a plan and returns its path. `existing`: the chat's earlier plan
 /// file, which a revision replaces; otherwise a new name that's free.
 pub fn save_plan_file(
@@ -745,6 +770,11 @@ pub fn expand_implementation(
         Some(root) if !Path::new(&path).is_absolute() => join(root, &path),
         _ => path,
     };
+    if !is_plan_file(&file) {
+        return Err(format!(
+            "{file} isn't a plan's file: plans are saved in {PLANS_DIR}."
+        ));
+    }
     let text = std::fs::read_to_string(&file)
         .map_err(|e| format!("The plan in {file} can't be read: {e}"))?;
     let shown = relative_plan_path(&file, root);
@@ -2308,9 +2338,16 @@ mod tests {
             expand_implementation(&mut m, Some(&root)).unwrap();
             assert_eq!(m.meta, Some(meta));
         }
-        let mut gone = message(json!({ "implementsPlan": true, "planPath": "missing.md" }));
+        let mut gone =
+            message(json!({ "implementsPlan": true, "planPath": ".rovik/plans/missing.md" }));
         let err = expand_implementation(&mut gone, Some(&root)).unwrap_err();
         assert!(err.contains("can't be read"), "{err}");
+        // A file that's no plan's isn't sent to the model as one: the
+        // message may name what a server wrote.
+        std::fs::write(dir.0.join("notes.md"), "private\n").unwrap();
+        let mut other = message(json!({ "implementsPlan": true, "planPath": "notes.md" }));
+        let err = expand_implementation(&mut other, Some(&root)).unwrap_err();
+        assert!(err.contains("isn't a plan's file"), "{err}");
     }
     use serde_json::json;
 
@@ -2899,6 +2936,38 @@ mod tests {
             p[0].starts_with("Step 1 names no file: give each step a \"Files:\" line"),
             "{p:?}"
         );
+    }
+
+    /// What a chat's rows name is a plan's file only when it's a Markdown
+    /// file in a `.rovik/plans` folder that no link leads out of: the rows
+    /// may be a server's, naming any file of this computer's.
+    #[test]
+    fn only_a_plans_own_file_is_a_plan_file() {
+        let dir = crate::testing::temp_dir();
+        let plans = dir.0.join(".rovik/plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        let file = plans.join("a.md");
+        std::fs::write(&file, "# A\n").unwrap();
+        let text = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        assert!(is_plan_file(&text(&file)));
+        assert!(is_plan_file(&text(&plans.join("new.md"))), "one to save");
+        assert!(!is_plan_file(&text(&plans.join("a.txt"))));
+        assert!(!is_plan_file(&text(&dir.0.join("a.md"))));
+        assert!(!is_plan_file("/home/user/.ssh/id_rsa"));
+        assert!(!is_plan_file(&format!("{}/../../x.md", text(&plans))));
+        #[cfg(unix)]
+        {
+            let secret = dir.0.join("secret");
+            std::fs::write(&secret, "s").unwrap();
+            let link = plans.join("link.md");
+            std::os::unix::fs::symlink(&secret, &link).unwrap();
+            assert!(!is_plan_file(&text(&link)), "a link out");
+            // A plans folder that's a link elsewhere.
+            let other = dir.0.join("other");
+            std::fs::create_dir_all(other.join(".rovik")).unwrap();
+            std::os::unix::fs::symlink(&dir.0, other.join(".rovik/plans")).unwrap();
+            assert!(!is_plan_file(&text(&other.join(".rovik/plans/secret.md"))));
+        }
     }
 
     /// Round 2: a plan written with CRLF is saved with LF only.

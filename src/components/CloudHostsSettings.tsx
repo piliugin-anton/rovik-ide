@@ -111,7 +111,7 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
     void refreshHosts();
   }
   onMount(refresh);
-  // A host's connection changing shows at once.
+  // A host's connection changing shows at once, with why it was refused.
   const stopEvents = onCloudEvent((event) => {
     if (event.type !== 'host') return;
     setList((current) =>
@@ -119,7 +119,7 @@ export default function CloudHostsSettings(props: CloudHostsSettingsProps) {
         ? {
             ...current,
             hosts: current.hosts.map((h) =>
-              h.id === event.host ? { ...h, state: event.state } : h
+              h.id === event.host ? { ...h, state: event.state, problem: event.problem } : h
             ),
           }
         : current

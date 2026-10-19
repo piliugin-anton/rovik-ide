@@ -625,6 +625,57 @@ async fn a_move_back_cut_short_after_its_release_finishes_at_the_next_start() {
     assert!(messages_in(&there, CHAT).is_empty(), "then it forgot them");
 }
 
+/// The release asked, its answer lost: the host let the chat go, so the
+/// move back isn't dropped, and the next start finishes it, as after a
+/// release it heard. "Cancel move" can't drop it meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_back_whose_release_answer_was_lost_finishes_at_the_next_start() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let app = app.restart(&setup).await;
+    let locked = app.test.core.db.write(|c| {
+        moves::lock_back(c, CHAT, HOST, "back-1")?;
+        moves::step(c, CHAT, moves::RELEASING)
+    });
+    locked.await.unwrap();
+    let release = Request::ChatRelease {
+        dialog_id: CHAT.into(),
+        move_id: None,
+    };
+    assert!(setup.client.request::<bool>(release).await.unwrap());
+    let refused = app.remote.cancel_move(CHAT).await.unwrap_err();
+    assert!(refused.message.contains("can't be cancelled"), "{refused}");
+    assert!(its_move(&app).await.is_some(), "kept");
+
+    let app = app.restart(&setup).await;
+    app.connect(&setup).await;
+    until_at(&app, Location::Here).await;
+    assert!(app.remote.host_of(CHAT).is_none());
+}
+
+/// The release asked, never taken: the move back is dropped once the host
+/// says so, and the chat stays there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_back_whose_release_never_reached_the_host_leaves_the_chat_there() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let app = app.restart(&setup).await;
+    let locked = app.test.core.db.write(|c| {
+        moves::lock_back(c, CHAT, HOST, "back-1")?;
+        moves::step(c, CHAT, moves::RELEASING)
+    });
+    locked.await.unwrap();
+
+    app.connect(&setup).await;
+    until_at(&app, Location::Host(HOST.into())).await;
+    assert_eq!(app.remote.host_of(CHAT).as_deref(), Some(HOST));
+    assert!(!owner_there(&setup).await.unwrap().released);
+}
+
 /// Cut short before the daemon let the chat go: the move back is dropped,
 /// and the chat stays there.
 #[tokio::test(flavor = "multi_thread")]

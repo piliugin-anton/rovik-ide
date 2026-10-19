@@ -141,6 +141,8 @@ async fn run(
         mount_virtual_files(&core, home.share.join("vfs")).await
     };
 
+    // A stop that gets as far as the end of its drain is a clean one (5.4).
+    let stops = store.clone();
     let daemon = Arc::new(Daemon {
         core: core.clone(),
         tokens,
@@ -153,6 +155,7 @@ async fn run(
         virtual_files_problem,
         imports: tokio::sync::Mutex::new(()),
         caps: limits.caps,
+        making: tokio::sync::Mutex::new(()),
     });
 
     // 7. What a killed process left: lock files on the repositories and
@@ -179,6 +182,7 @@ async fn run(
             let paused = agent_run::drain(&core, DRAIN_WAIT).await;
             log::info!("{paused} paused for the next start");
             core.shutdown().await;
+            stops.stopped_cleanly(now_ms());
             return Ok(());
         }
     }
@@ -208,6 +212,7 @@ async fn run(
         .await;
     log::info!("stopping");
     core.shutdown().await;
+    stops.stopped_cleanly(now_ms());
     let _ = std::fs::remove_file(&socket);
     served.map_err(|e| e.to_string())
 }
@@ -243,8 +248,13 @@ async fn mount_virtual_files(core: &Core, at: PathBuf) -> Option<String> {
 /// all. Other daemons are looked for each minute.
 async fn apply_slots(admin: AdminFile, user: Option<usize>) {
     let mut last = None;
+    let name = home::passwd().map(|p| p.name).unwrap_or_default();
     loop {
-        let others = rt::spawn_blocking(|| host::other_daemons(Path::new("/proc"), home::uid()));
+        let name = name.clone();
+        let others = rt::spawn_blocking(move || {
+            let (cgroups, proc) = (Path::new("/sys/fs/cgroup"), Path::new("/proc"));
+            host::other_daemons(cgroups, proc, home::uid(), &name)
+        });
         let slots = admin.slots(user, others.await.unwrap_or(0));
         if last != Some(slots) {
             log::info!("heavy-work slots: {slots:?}");

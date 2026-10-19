@@ -41,6 +41,31 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// A commit after a run's end, counted while it's to be made: uncounted
+/// once dropped, however its task ends (a panic too), so what waits for
+/// the chat's commits (`all_committed`) never waits for one that won't
+/// come.
+struct Committing {
+    results: Arc<Results>,
+    chat: String,
+}
+
+impl Committing {
+    fn new(results: &Arc<Results>, chat: &str) -> Committing {
+        results.counted(chat, 1);
+        Committing {
+            results: results.clone(),
+            chat: chat.to_string(),
+        }
+    }
+}
+
+impl Drop for Committing {
+    fn drop(&mut self) {
+        self.results.counted(&self.chat, -1);
+    }
+}
+
 pub struct Results {
     /// The chats' result indexes.
     dir: PathBuf,
@@ -90,12 +115,12 @@ impl Results {
             return;
         }
         let (results, chat, outcome) = (self.clone(), dialog_id.to_string(), outcome.to_string());
-        self.counted(&chat, 1);
+        let counted = Committing::new(self, &chat);
         rt::spawn(async move {
+            let _counted = counted;
             if let Err(fail) = results.commit_after(&chat, &outcome, autopilot).await {
                 log::warn!("{chat}'s result wasn't committed: {fail}");
             }
-            results.counted(&chat, -1);
         });
     }
 
@@ -165,6 +190,17 @@ impl Results {
                 ))
             }
         };
+        let branch = deliver::branch_name(&ask.title, &ask.task);
+        // The same result delivered already to this task's branch (a
+        // delivery whose report broke off, done again without it): where
+        // it went, not a second push and pull request.
+        if result.branch.as_deref() == Some(branch.as_str()) {
+            return Some(Pushed {
+                branch: Some(branch),
+                pr: result.pr.clone(),
+                problem: None,
+            });
+        }
         let Some(remote) = self.store.remote_of(chat) else {
             return failed(
                 "The project has no remote to push to: its `origin` wasn't set on the computer it came from"
@@ -175,7 +211,6 @@ impl Results {
             Ok((place, _)) => place.worktree,
             Err(fail) => return failed(fail.message),
         };
-        let branch = deliver::branch_name(&ask.title, &ask.task);
         let pushed = deliver::push(&worktree, &remote, &result.commit, &branch, &deploy_key).await;
         if let Err(e) = pushed {
             log::warn!("chat {chat}: the push of {branch} to {remote} failed: {e}");
@@ -705,7 +740,28 @@ fn internal(message: String) -> Fail {
 
 #[cfg(test)]
 mod tests {
-    use super::in_root;
+    use super::*;
+
+    /// H04: a commit whose task panicked isn't waited for: the delivery
+    /// and the rechecks after it go on.
+    #[tokio::test]
+    async fn a_commit_that_panicked_is_waited_for_no_more() {
+        let dir = rovik_core::testing::temp_dir();
+        let store = Arc::new(Store::open(&dir.0).unwrap());
+        let events = Events::new("boot".into(), Arc::new(|_: &str| None));
+        let results = Results::new(dir.0.join("results"), dir.0.join("config"), store, events);
+        let counted = Committing::new(&results, "chat");
+        let broke = tokio::spawn(async move {
+            let _counted = counted;
+            panic!("the commit broke");
+        });
+        assert!(broke.await.is_err());
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            results.all_committed("chat"),
+        );
+        assert!(waited.await.is_ok(), "nothing left to wait for");
+    }
 
     #[test]
     fn paths_from_the_worktree_are_named_from_the_chats_root() {

@@ -99,7 +99,9 @@ fn not_open_elsewhere(
 }
 
 /// A chat's plan (`meta.planFile`): a local chat's file, or a remote one's
-/// in its worktree on its host (K09).
+/// in its worktree on its host (K09). Here, a plan's file only, under
+/// `.rovik/plans/` as on the host: a chat moved back has its host's rows,
+/// which could name any file of this computer's.
 #[tauri::command]
 pub async fn chat_read_plan(
     remote: State<'_, Arc<Remote>>,
@@ -108,6 +110,9 @@ pub async fn chat_read_plan(
 ) -> Result<String, String> {
     if remote.host_of(&dialog_id).is_some() {
         return remote.read_plan(&dialog_id, &path).await;
+    }
+    if !rovik_core::agent_run::plan::is_plan_file(&path) {
+        return Err("Not a plan's file.".into());
     }
     std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))
 }

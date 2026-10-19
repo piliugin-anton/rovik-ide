@@ -272,6 +272,10 @@ impl Run {
         if !self.stopped() {
             super::autopilot::push_result(&self.core, &self.dialog_id, &mut facts).await;
         }
+        #[cfg(test)]
+        if super::autopilot::crashes(&self.dialog_id, super::autopilot::Crash::InReport) {
+            return Err("the report broke off".into());
+        }
         let mut reference = None;
         if !self.stopped() {
             self.add_harness(report_brief(&facts), "report").await?;

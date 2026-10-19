@@ -46,8 +46,11 @@ impl Host {
         }
         let installed = bin.join("rovik-agentd");
         std::os::unix::fs::symlink(BINARY, &installed).unwrap();
-        // What the installer copies, in place of 500 MB of debug build.
-        script(&bin.join("small"), "#!/bin/sh\nexit 0\n", ids);
+        // What the installer copies, in place of 500 MB of debug build: it
+        // says its version, as the installer names it by that.
+        let small =
+            "#!/bin/sh\n[ \"$1\" = version ] && echo 'rovik-agentd 0.0.1 (protocol 1)'\nexit 0\n";
+        script(&bin.join("small"), small, ids);
         let build = format!(
             "#!/bin/sh\n\
              # The build a deploy uploads: the real daemon, which installs a small file.\n\

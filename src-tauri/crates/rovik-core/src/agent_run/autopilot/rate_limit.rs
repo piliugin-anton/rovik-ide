@@ -139,6 +139,11 @@ pub(super) fn retry_later(
         if !here {
             return;
         }
+        // The daemon stops meanwhile: the wait stays as it is, and its next
+        // start arms it again (`go_on`).
+        if core.agents.draining() {
+            return;
+        }
         // It waits no more: its run goes on, the driver at work until it has.
         let _at_work = super::driver::AtWork::start(&core, &dialog_id);
         let gone_on = end_stage(&core, &dialog_id, &record, |r| {
@@ -153,8 +158,28 @@ pub(super) fn retry_later(
         // Started with the driver's turn still taken, as a resume starts
         // one: a resume meanwhile finds the run, never a stage to start.
         let request = settings.request(&dialog_id, StartKind::Retry);
-        if let Err(e) = crate::agent_run::start_run(&core, request).await {
-            stopped_by(&core, &dialog_id, &e);
+        let started = crate::agent_run::start_run(&core, request).await;
+        if let Some(why) = super::driver::not_started_why(started) {
+            // The daemon began to stop meanwhile: the wait comes back, for
+            // its next start to arm again.
+            let ended = match core.agents.draining() {
+                true => super::rows::patch_stage(&core, &dialog_id, &record, |r| {
+                    if let Some(kept) = r.rate_limit.as_mut() {
+                        kept.until = Some(until);
+                    }
+                })
+                .await
+                .map(drop),
+                // One that can't start leaves no stage under way that
+                // nothing runs: it ends as one whose run couldn't start,
+                // and the task goes on.
+                false => {
+                    super::driver::not_gone_on(&core, &dialog_id, &record, &why, &settings).await
+                }
+            };
+            if let Err(e) = ended {
+                stopped_by(&core, &dialog_id, &e);
+            }
         }
         drop(driving);
     });

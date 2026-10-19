@@ -3413,6 +3413,9 @@ fn plan_check_at_start(
         }
         None => chat_plan_file(recent)?,
     };
+    if !plan::is_plan_file(&file) {
+        return None;
+    }
     let text = std::fs::read_to_string(&file).ok()?;
     let problems = plan::plan_problems_in(&text, root.map(std::path::Path::new));
     (!problems.is_empty()).then_some((file, problems))
@@ -3438,15 +3441,17 @@ fn implemented_plan(messages: &[MessageRow]) -> Option<String> {
     Some(sent[start..end].trim().to_string())
 }
 
-/// The chat's plan file: the latest one a plan was saved to.
+/// The chat's plan file: the latest one a plan was saved to, if it's a
+/// plan's file (`plan::is_plan_file`): the rows may be a server's.
 pub(super) fn chat_plan_file(messages: &[MessageRow]) -> Option<String> {
-    messages.iter().rev().find_map(|m| {
+    let named = messages.iter().rev().find_map(|m| {
         m.meta
             .as_ref()?
             .get("planFile")?
             .as_str()
             .map(str::to_string)
-    })
+    })?;
+    plan::is_plan_file(&named).then_some(named)
 }
 
 /// The repository map's size: about 2% of the model's context window,
@@ -3660,12 +3665,21 @@ mod tests {
         let harness = row("user", Some(json!({ "harness": "verification" })));
         let messages = vec![
             user,
-            row("assistant", Some(json!({ "planFile": "/p/a.md" }))),
+            row(
+                "assistant",
+                Some(json!({ "planFile": "/p/.rovik/plans/a.md" })),
+            ),
             harness,
         ];
         assert_eq!(run_mode_for(&messages).as_deref(), Some("plan"));
         assert_eq!(last_user_wire_content(&messages).as_deref(), Some("wire"));
-        assert_eq!(chat_plan_file(&messages).as_deref(), Some("/p/a.md"));
+        assert_eq!(
+            chat_plan_file(&messages).as_deref(),
+            Some("/p/.rovik/plans/a.md")
+        );
+        // A file the rows name that's no plan's isn't the chat's plan.
+        let elsewhere = vec![row("assistant", Some(json!({ "planFile": "/p/.bashrc" })))];
+        assert_eq!(chat_plan_file(&elsewhere), None);
     }
 }
 

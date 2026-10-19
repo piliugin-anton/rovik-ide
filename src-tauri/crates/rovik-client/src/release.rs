@@ -30,6 +30,31 @@ pub struct Releases {
     key: Option<String>,
 }
 
+/// Why a release's file wasn't had.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Unfetched {
+    /// The release's answer: it hasn't the file, what came isn't what it
+    /// signed, or this build has no key to check it with.
+    Refused(String),
+    /// It couldn't be had now (the network, the server's answer, the
+    /// disk): asking again later may bring it.
+    Failed(String),
+}
+
+impl std::fmt::Display for Unfetched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unfetched::Refused(why) | Unfetched::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<Unfetched> for String {
+    fn from(e: Unfetched) -> String {
+        e.to_string()
+    }
+}
+
 /// A release's file, checked.
 #[derive(Clone, Debug)]
 pub struct Signed {
@@ -61,7 +86,7 @@ impl Releases {
     }
 
     /// The SHA-256 of `version`'s builds, as its signed list says.
-    pub async fn sums(&self, version: &str) -> Result<Vec<String>, String> {
+    pub async fn sums(&self, version: &str) -> Result<Vec<String>, Unfetched> {
         let list = self.fetch(version, release::SUMS, false).await?;
         let text = String::from_utf8_lossy(&list.bytes);
         Ok(release::sums(&text)
@@ -82,8 +107,8 @@ impl Releases {
 
     /// `version`'s file `name`, with its signature: the one kept, or else
     /// downloaded, gzipped when `packed`. Either way it's checked first.
-    async fn fetch(&self, version: &str, name: &str, packed: bool) -> Result<Signed, String> {
-        let key = self.key.as_deref().ok_or(NO_KEY)?;
+    async fn fetch(&self, version: &str, name: &str, packed: bool) -> Result<Signed, Unfetched> {
+        let key = (self.key.as_deref()).ok_or(Unfetched::Refused(NO_KEY.into()))?;
         let folder = self.cache.join(version);
         let path = folder.join(name);
         let sig_path = signature_of(&path);
@@ -105,16 +130,18 @@ impl Releases {
             true => {
                 let packed = format!("{url}{}", release::PACKED);
                 let bytes = download(&packed, BUILD_WAIT).await?;
-                unpacked(&bytes).map_err(|why| format!("{packed}: {why}"))?
+                unpacked(&bytes).map_err(|why| Unfetched::Refused(format!("{packed}: {why}")))?
             }
             false => download(&url, LIST_WAIT).await?,
         };
         if let Err(why) = release::verify(key, &bytes, &signature) {
-            return Err(format!("{url} isn't what Rovik's release signed. {why}"));
+            return Err(Unfetched::Refused(format!(
+                "{url} isn't what Rovik's release signed. {why}"
+            )));
         }
-        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-        keep(&path, &bytes)?;
-        keep(&sig_path, signature.as_bytes())?;
+        std::fs::create_dir_all(&folder).map_err(|e| Unfetched::Failed(e.to_string()))?;
+        keep(&path, &bytes).map_err(Unfetched::Failed)?;
+        keep(&sig_path, signature.as_bytes()).map_err(Unfetched::Failed)?;
         Ok(Signed {
             path,
             bytes,
@@ -175,26 +202,30 @@ fn keep(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-async fn download(url: &str, wait: Duration) -> Result<Vec<u8>, String> {
+async fn download(url: &str, wait: Duration) -> Result<Vec<u8>, Unfetched> {
     let client = reqwest::Client::builder()
         .timeout(wait)
         .user_agent(concat!("Rovik/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Unfetched::Failed(e.to_string()))?;
     let response = client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("{url} couldn't be reached: {e}"))?;
+        .map_err(|e| Unfetched::Failed(format!("{url} couldn't be reached: {e}")))?;
     match response.status() {
         status if status.is_success() => {}
         reqwest::StatusCode::NOT_FOUND => {
-            return Err(format!("{url} isn't there: the release doesn't have it."))
+            return Err(Unfetched::Refused(format!(
+                "{url} isn't there: the release doesn't have it."
+            )))
         }
-        status => return Err(format!("{url} answered {status}.")),
+        status => return Err(Unfetched::Failed(format!("{url} answered {status}."))),
     }
     let bytes = response.bytes().await;
-    Ok(bytes.map_err(|e| format!("{url}: {e}"))?.to_vec())
+    Ok(bytes
+        .map_err(|e| Unfetched::Failed(format!("{url}: {e}")))?
+        .to_vec())
 }
 
 #[cfg(test)]
@@ -325,8 +356,19 @@ mod tests {
         assert_eq!(keyless.build("9.9.8", "x86_64").await.unwrap_err(), NO_KEY);
         assert!(!keyless.has_key());
         let nowhere = Releases::at(dir.path().join("x"), "http://127.0.0.1:1", Some(KEY.into()));
+        // The network's failure isn't the release's answer: asking later
+        // may bring the list.
         let unreachable = nowhere.sums("9.9.8").await.unwrap_err();
-        assert!(unreachable.contains("couldn't be reached"), "{unreachable}");
+        assert!(
+            matches!(&unreachable, Unfetched::Failed(why) if why.contains("couldn't be reached")),
+            "{unreachable:?}"
+        );
+        let unlisted = releases.sums("9.9.7").await.unwrap_err();
+        assert!(matches!(unlisted, Unfetched::Refused(_)), "{unlisted:?}");
+        assert!(matches!(
+            keyless.sums("9.9.8").await,
+            Err(Unfetched::Refused(_))
+        ));
         assert!(unpacked(b"not gzip").unwrap_err().contains("isn't gzip"));
     }
 }

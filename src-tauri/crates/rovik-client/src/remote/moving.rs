@@ -246,6 +246,19 @@ impl Remote {
                 ),
             ));
         }
+        // Its host may have let it go: dropping the move would leave the
+        // chat nowhere. Settled once the host answers.
+        if let Some(back) = back.filter(|m| m.step == moves::RELEASING) {
+            let host = self.host_name(&back.host);
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                format!(
+                    "This chat's move back may be past its last step on {host}: it can't be \
+                     cancelled. It finishes, or stops with the chat still there, once {host} \
+                     is connected again."
+                ),
+            ));
+        }
         {
             let mut state = self.lock();
             if state.moving.contains_key(dialog_id) {

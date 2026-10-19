@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_rovik-agentd");
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 const NOBODY: u32 = 65534;
 
 /// A server under a folder, with systemd, and a small build to install in
@@ -103,9 +102,11 @@ fn someone_else() -> (String, u32) {
 #[test]
 fn install_puts_everything_in_place_and_starts_the_administrators_daemon() {
     let server = Server::installed();
+    // The build installed is named for the version it says it is, not this
+    // installer's.
     let link = std::fs::read_link(server.file("/opt/rovik/bin/rovik-agentd")).unwrap();
-    assert_eq!(link, Path::new(&format!("rovik-agentd-{VERSION}")));
-    let copy = server.file(&format!("/opt/rovik/bin/rovik-agentd-{VERSION}"));
+    assert_eq!(link, Path::new("rovik-agentd-0.1.0"));
+    let copy = server.file("/opt/rovik/bin/rovik-agentd-0.1.0");
     assert_eq!(
         std::fs::read(&copy).unwrap(),
         std::fs::read(&server.build).unwrap()
@@ -313,9 +314,7 @@ fn admin_commands_are_for_administrators() {
     assert!(said(&upgraded).contains("would run: systemctl try-restart rovik-agentd@*.service"));
     let link = std::fs::read_link(server.file("/opt/rovik/bin/rovik-agentd")).unwrap();
     assert_eq!(link, Path::new("rovik-agentd-9.9.9"));
-    assert!(server
-        .file(&format!("/opt/rovik/bin/rovik-agentd-{VERSION}"))
-        .exists());
+    assert!(server.file("/opt/rovik/bin/rovik-agentd-0.1.0").exists());
 
     // An older build goes in only when asked to, and never through a link,
     // whose target could be moved while root reads it.
@@ -377,6 +376,43 @@ fn admin_commands_are_for_administrators() {
     assert!(!server
         .file("/etc/systemd/system/rovik-agentd@.service")
         .exists());
+}
+
+/// root reads an administrator's build with the administrator's own
+/// access: a file they can't read isn't installed, even where unsigned
+/// builds are, so root copies nothing of theirs that they couldn't read.
+#[test]
+fn an_upgrade_reads_the_build_as_its_administrator() {
+    // SAFETY: geteuid can't fail.
+    if unsafe { libc::geteuid() } != 0 {
+        // Only root reads past a file's permissions.
+        return;
+    }
+    let server = Server::installed();
+    let path = server.file("/etc/rovik/agentd.toml");
+    let settings = std::fs::read_to_string(&path).unwrap() + "allow_unsigned = true\n";
+    std::fs::write(&path, settings).unwrap();
+    let private = server.dir.0.join("private");
+    script(&private, "9.9.9");
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let named = private.to_string_lossy().into_owned();
+    let refused = server.run(&["admin", "upgrade", &named], Some(NOBODY));
+    assert_eq!(refused.status.code(), Some(1), "{}", said(&refused));
+    assert!(
+        said(&refused).contains("Permission denied"),
+        "{}",
+        said(&refused)
+    );
+    let link = std::fs::read_link(server.file("/opt/rovik/bin/rovik-agentd")).unwrap();
+    assert_eq!(link, Path::new("rovik-agentd-0.1.0"));
+    assert!(!server.file("/opt/rovik/bin/rovik-agentd-9.9.9").exists());
+
+    // The same file, readable by them: in.
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let upgraded = server.run(&["admin", "upgrade", &named], Some(NOBODY));
+    assert!(upgraded.status.success(), "{}", said(&upgraded));
+    let link = std::fs::read_link(server.file("/opt/rovik/bin/rovik-agentd")).unwrap();
+    assert_eq!(link, Path::new("rovik-agentd-9.9.9"));
 }
 
 /// D19: install puts the Chrome for Testing Rovik pins in place for the

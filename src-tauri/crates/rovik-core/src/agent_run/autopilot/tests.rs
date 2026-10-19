@@ -493,7 +493,8 @@ fn row(id: &str, meta: Value) -> MessageRow {
 }
 
 /// The checks' record says what the implementing run's end says of
-/// them, with its last round's record for the round and the count.
+/// them, with its last round's record for the count. Its round is the
+/// stage's in the task, not its checks' round inside the run.
 #[test]
 fn the_checks_record_follows_how_the_implementation_ended() {
     let base = rec(Stage::Checks, Status::Skipped);
@@ -509,7 +510,7 @@ fn the_checks_record_follows_how_the_implementation_ended() {
     };
     let passed = round("passed", 2, json!({}));
     let r = checks_record(base.clone(), Some("verified"), Some(&passed), &config);
-    assert_eq!((r.status, r.round), (Status::Done, 2));
+    assert_eq!((r.status, r.round), (Status::Done, 1));
     assert_eq!(r.summary.as_deref(), Some("2 checks passed"));
     assert_eq!(r.reference.as_deref(), Some("v"));
 
@@ -567,7 +568,7 @@ fn a_reviews_record_is_its_last_review_of_its_kind() {
     ];
     let config = super::super::AgentConfig::default();
     let r = review_record(plan.clone(), &rows, &config);
-    assert_eq!((r.status, r.round), (Status::Done, 2));
+    assert_eq!((r.status, r.round), (Status::Done, 1), "the stage's round");
     assert_eq!(r.summary.as_deref(), Some("Clean"));
     assert_eq!(r.reference.as_deref(), Some("p2"));
     let r = review_record(change.clone(), &rows, &config);

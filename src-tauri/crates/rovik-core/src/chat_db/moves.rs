@@ -10,8 +10,10 @@
 //! A move back leaves the chat on its host until its flip, which puts it
 //! and its subagents' chats here and drops the mirror's row. One cut short
 //! before the host released the chat is dropped, the chat still there; one
-//! after is finished. Its row stays after the flip, step `forgetting`,
-//! until `ChatForget` reaches the host.
+//! after is finished. One cut short while the release was asked, its
+//! answer not heard, is settled by what the host says (`ChatOwner`). Its
+//! row stays after the flip, step `forgetting`, until `ChatForget` reaches
+//! the host.
 //!
 //! A remote chat deleted here leaves a tombstone, a move back's row at
 //! step `deleted`, until its host deletes the chat too (`ChatDelete`).
@@ -38,6 +40,9 @@ pub const CANCELLED: &str = "cancelled";
 /// its last result is in the chat's store here (`FETCHED`) before the host
 /// releases the chat, after which the move can only be finished.
 pub const FETCHED: &str = "fetched";
+/// The release asked of the host, its answer not heard yet: the host may
+/// have let the chat go, so the row stays until the host says.
+pub const RELEASING: &str = "releasing";
 pub const RELEASED: &str = "released";
 /// The chat is here again, and its host is yet to forget it.
 pub const FORGETTING: &str = "forgetting";

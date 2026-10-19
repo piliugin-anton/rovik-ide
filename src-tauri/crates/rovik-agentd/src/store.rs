@@ -38,6 +38,11 @@ pub struct State {
     /// The projects a computer carried here, by id (6.4).
     #[serde(default)]
     pub projects: BTreeMap<String, ProjectState>,
+    /// When the daemon last stopped cleanly, in epoch ms, until the next
+    /// start-up reads it: the runs that stop cut paused, waited for the
+    /// user or sat between two stages of a task, and none crashed (5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clean_stop: Option<i64>,
 }
 
 /// A project a computer carried here, as its last `ProjectEnsure` said.
@@ -721,6 +726,31 @@ impl Store {
                 chat.pending = None;
             }
         });
+    }
+
+    /// The daemon stops cleanly at `at`: the next start-up doesn't count
+    /// the runs it starts again as ones a crash cut (5.4).
+    pub fn stopped_cleanly(&self, at: i64) {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        inner.state.clean_stop = Some(at);
+        if let Err(e) = self.save(inner) {
+            log::error!("state.json: {e}");
+        }
+    }
+
+    /// Whether the daemon's last stop was clean, forgotten once asked: a
+    /// crash after this start counts again.
+    pub fn take_clean_stop(&self) -> bool {
+        let _writing = self.writing();
+        let mut inner = self.lock();
+        if inner.state.clean_stop.take().is_none() {
+            return false;
+        }
+        if let Err(e) = self.save(inner) {
+            log::error!("state.json: {e}");
+        }
+        true
     }
 
     /// The chats whose run was going when the daemon stopped.
