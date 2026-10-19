@@ -7064,6 +7064,19 @@ async fn a_stage_cut_after_its_run_paused_for_a_person_ends_at_the_resume() {
         (Status::Failed, Some("paused-checkpoint")),
         "{records:#?}"
     );
+    // A user who is there can still go on with it: a Continue opens the
+    // stage again, as after the same pause without a crash (U03).
+    let continued = StartKind::ContinueRun;
+    let again = super::autopilot::stage_for(&h.core, &h.dialog_id, &continued, Effort::Balanced)
+        .await
+        .unwrap()
+        .expect("the stage opens again");
+    assert_eq!(again.stage, Stage::Implement);
+    let last = stages(&h).await.pop().unwrap();
+    assert_eq!(
+        (last.name, last.status, last.round),
+        (Stage::Implement, Status::Running, 2)
+    );
 }
 
 /// S09: a delivery whose run broke off before it said what became of the

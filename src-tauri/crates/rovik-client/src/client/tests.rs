@@ -119,38 +119,122 @@ async fn a_daemon_for_newer_apps_is_a_version_mismatch() {
     assert_eq!(refused.code, FailCode::Unreachable);
 }
 
-/// A host that turns this computer away, counting each time it's asked.
-struct Turning(Arc<AtomicU64>);
+/// A host that turns this computer away, counting each time it's asked:
+/// for good (`may_pass` false: the credentials), or for now (Rovik's
+/// install there, until its release's list is published), letting the
+/// computer in from try `lets_in_at` on.
+struct Turning {
+    tries: Arc<AtomicU64>,
+    may_pass: bool,
+    lets_in_at: u64,
+}
 
-impl Connector for Turning {
-    fn connect(&self) -> Connecting<'_> {
-        self.0.fetch_add(1, Ordering::Relaxed);
-        Box::pin(async {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "This host's key changed.",
-            ))
-        })
+impl Turning {
+    fn for_good(tries: &Arc<AtomicU64>) -> Turning {
+        Turning {
+            tries: tries.clone(),
+            may_pass: false,
+            lets_in_at: u64::MAX,
+        }
     }
 }
 
-/// A host that turns this computer away (its key changed, the password,
-/// a tampered install) is refused, says why, and isn't asked again: the
-/// next try would send the credentials once more for the same answer.
+impl Connector for Turning {
+    fn connect(&self) -> Connecting<'_> {
+        let tries = self.tries.fetch_add(1, Ordering::Relaxed) + 1;
+        if tries >= self.lets_in_at {
+            return Box::pin(async {
+                let (client, server) = tokio::io::duplex(1 << 16);
+                tokio::spawn(serve(server, PROTOCOL, PROTOCOL));
+                Ok(Box::new(client) as Io)
+            });
+        }
+        let refusal = Refusal {
+            why: match self.may_pass {
+                true => "Rovik on this server isn't the build you trusted.".into(),
+                false => "The host didn't let you in: that password isn't the way in.".into(),
+            },
+            may_pass: self.may_pass,
+        };
+        Box::pin(async move { Err(refusal.into_error()) })
+    }
+}
+
+/// A host that turns this computer away for what only the user can
+/// change (the credentials, a host key to pin, the token) is refused,
+/// says why, and isn't asked again: the next try would send the
+/// credentials once more for the same answer.
 #[tokio::test]
 async fn a_host_that_turns_the_app_away_is_refused_and_not_asked_again() {
     let tries = Arc::new(AtomicU64::new(0));
-    let (client, mut heard) = client(Turning(tries.clone()));
+    let (client, mut heard) = client(Turning::for_good(&tries));
     until_state(&mut heard, HostState::Refused).await;
     assert_eq!(
         client.refusal().as_deref(),
-        Some("This host's key changed.")
+        Some("The host didn't let you in: that password isn't the way in.")
     );
-    // Past the first waits between tries, which a lost link would take.
+    // Past the first waits between tries, which a lost link would take,
+    // and the wait of a refusal that may pass.
     tokio::time::sleep(FIRST_BACKOFF * 3).await;
     assert_eq!(tries.load(Ordering::Relaxed), 1, "asked once");
     let refused = client.call(Request::AgentStatus).await.unwrap_err();
     assert_eq!(refused.code, FailCode::Unreachable);
+}
+
+/// A refusal that may come right on its own (Rovik's install there, whose
+/// release's list of builds isn't published yet) is asked again now and
+/// then, quietly, Refused meanwhile, and the host connects once it passes.
+#[tokio::test]
+async fn a_refusal_that_may_pass_is_asked_again_quietly_until_it_does() {
+    let tries = Arc::new(AtomicU64::new(0));
+    let (client, mut heard) = client(Turning {
+        tries: tries.clone(),
+        may_pass: true,
+        lets_in_at: 3,
+    });
+    until_state(&mut heard, HostState::Refused).await;
+    let why = client.refusal().unwrap();
+    assert!(
+        why.starts_with("Rovik on this server isn't the build you trusted.")
+            && why.contains("Rovik tries again every 10 minutes."),
+        "{why}"
+    );
+    // The next state is Ready, without Connecting at each try between.
+    let next = loop {
+        match tokio::time::timeout(Duration::from_secs(10), heard.recv()).await {
+            Ok(Some(Incoming::State(state))) => break state,
+            Ok(Some(_)) => continue,
+            _ => panic!("never connected"),
+        }
+    };
+    assert_eq!(next, HostState::Ready);
+    assert_eq!(tries.load(Ordering::Relaxed), 3);
+    assert_eq!(client.refusal(), None, "the refusal went with it");
+    assert_eq!(client.call(Request::HostInfo).await, Ok(Response::Done));
+}
+
+/// What isn't a refusal is a link that didn't come up, tried again soon:
+/// the SSH agent not up yet, a key file on a drive not mounted, or the
+/// system's own "permission denied" on a socket.
+#[tokio::test]
+async fn an_error_that_isnt_a_refusal_is_tried_again() {
+    struct Denied(Arc<AtomicU64>);
+    impl Connector for Denied {
+        fn connect(&self) -> Connecting<'_> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Err(std::io::ErrorKind::PermissionDenied.into()) })
+        }
+    }
+    let tries = Arc::new(AtomicU64::new(0));
+    let (client, mut heard) = client(Denied(tries.clone()));
+    until_state(&mut heard, HostState::Offline).await;
+    assert_eq!(client.refusal(), None);
+    let deadline = Instant::now() + FIRST_BACKOFF * 5;
+    while tries.load(Ordering::Relaxed) < 2 {
+        assert!(Instant::now() < deadline, "not tried again");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_ne!(client.state(), HostState::Refused);
 }
 
 /// 4.5: a daemon that serves only newer apps is asked again at the

@@ -23,6 +23,11 @@ use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::{api, attachments, projects, store, sync};
 use rovik_protocol::sync::{ChatBundle, Imported};
 use rovik_protocol::{Fail, FailCode, Response};
+use std::time::Duration;
+
+/// How long a release waits for the chat's Autopilot driver to be done
+/// with its turn: recording the stage its paused run left, a moment.
+const DRIVER_WAIT: Duration = Duration::from_secs(10);
 
 /// Imports the chat `computer` moves here with `move_id`.
 pub async fn import(
@@ -58,14 +63,17 @@ pub async fn import(
             "This chat's run is still going on the server.",
         ));
     }
+    // Room for its worktree, and Rovik's folders under the disk cap (5.5),
+    // measured now: before anything is written, the project's repository
+    // either. A move sent again was answered above, whatever the disk.
+    work::room_for_worktree(daemon, &chat).await?;
     let project = bundle.project.clone();
     let excludes = bundle.excludes.clone();
     let repository =
         work::repository_with(daemon, &project.id, excludes.clone(), base, changes).await?;
     // What could still refuse the import, before anything of the chat's
-    // earlier stay goes: the room for its worktree, and rows another chat
-    // here has under the bundle's ids (its own earlier rows go with it).
-    work::room_for_worktree(daemon, &chat).await?;
+    // earlier stay goes: rows another chat here has under the bundle's ids
+    // (its own earlier rows go with it).
     let (lead, rows) = (chat.clone(), bundle.rows.clone());
     daemon
         .core
@@ -143,6 +151,12 @@ pub async fn release(
     dialog_id: &str,
     move_id: Option<String>,
 ) -> Result<Response, Fail> {
+    // Its task's driver between two stages would start the next one here
+    // once the chat had gone back: the release waits for its turn to be
+    // over, and keeps it until the chat is released.
+    let _driver = rovik_core::agent_run::hold_driver(dialog_id, DRIVER_WAIT)
+        .await
+        .map_err(|why| Fail::new(FailCode::Busy, why))?;
     // Never between an import's clearing and its rows.
     let _one = daemon.imports.lock().await;
     let Some(owned) = daemon.store.ownership(dialog_id) else {
@@ -158,14 +172,6 @@ pub async fn release(
         return Err(Fail::new(
             FailCode::Busy,
             "This chat's run is still going on the server: pause it first.",
-        ));
-    }
-    // Its task's driver between two stages would start the next one here
-    // once the chat had gone back.
-    if daemon.core.agents.is_driving(dialog_id) {
-        return Err(Fail::new(
-            FailCode::Busy,
-            "This chat's task is between two stages on the server: try again in a moment.",
         ));
     }
     let id = dialog_id.to_string();

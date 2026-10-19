@@ -22,7 +22,7 @@
 //! (`SSH_AUTH_SOCK`; on Windows the OpenSSH agent's pipe, then Pageant), a
 //! password, or the server's own questions (keyboard-interactive).
 
-use crate::connector::{Connecting, Connector, Stream};
+use crate::connector::{Connecting, Connector, Refusal, Stream};
 use rovik_protocol::Secret;
 use russh::client::{self, AuthResult, Handle, Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::agent::client::AgentClient;
@@ -664,12 +664,13 @@ async fn with_agent(
         .await
         .map_err(dropped)?
         .flatten();
-    let mut last_error = None;
+    let (mut last_error, mut offered) = (None, false);
     for identity in identities {
         // Certificates are the user's own ssh's (H03).
         let AgentIdentity::PublicKey { key, .. } = identity else {
             continue;
         };
+        offered = true;
         // A key the agent won't sign with (a security key not touched in
         // time, a confirmation declined) leaves the others to try.
         let tried = match handle
@@ -685,6 +686,15 @@ async fn with_agent(
         if tried.success() {
             return Ok(());
         }
+    }
+    // None went to the host: an agent whose keys aren't added yet, which
+    // trying again later may find there.
+    if !offered {
+        return Err(SshError::Key(
+            "the SSH agent holds no key to log in with (its certificates are your system \
+             ssh's): add yours to it, with ssh-add."
+                .into(),
+        ));
     }
     Err(SshError::Denied(match last_error {
         Some(e) => {
@@ -891,13 +901,65 @@ impl Connector for SshConnector {
     }
 }
 
-/// The error a `Client` sees: one that trying again won't fix (the host's
-/// key, the credentials, the key file or agent, Rovik's install) reads as
-/// permission denied, and the client stops trying (`Connector`).
+/// The error a `Client` sees (`Connector`). The host turning this computer
+/// away is a `Refusal`: the credentials and a host key never pinned wait
+/// for the user, as trying again would send the credentials for the same
+/// answer; a host key other than the one pinned (the network the computer
+/// is on) and Rovik's install there (a release's list of builds not yet
+/// published) may come right on their own, and are tried again now and
+/// then. The key file and the agent are this computer's (an agent not up
+/// yet, a drive not mounted): a link that didn't come up, tried again soon.
 fn io_error(e: SshError) -> io::Error {
-    let kind = match e {
-        SshError::Unreachable(_) | SshError::Failed(_) => io::ErrorKind::ConnectionRefused,
-        _ => io::ErrorKind::PermissionDenied,
+    let may_pass = match &e {
+        SshError::Denied(_) | SshError::UnknownHostKey { .. } => false,
+        SshError::HostKeyChanged { .. } | SshError::Install(_) => true,
+        SshError::Unreachable(_) | SshError::Failed(_) | SshError::Key(_) => {
+            return io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string())
+        }
     };
-    io::Error::new(kind, e.to_string())
+    Refusal {
+        why: e.to_string(),
+        may_pass,
+    }
+    .into_error()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the client sees of each failure: the credentials and a key to
+    /// pin refuse for good; a changed host key and Rovik's install refuse
+    /// for now; the key file, the agent and the network are no refusal.
+    #[test]
+    fn only_the_hosts_answers_are_refusals_and_some_may_pass() {
+        let refusal = |e: SshError| {
+            let e = io_error(e);
+            Refusal::of(&e).map(|r| r.may_pass)
+        };
+        assert_eq!(
+            refusal(SshError::Denied("that password".into())),
+            Some(false)
+        );
+        let unknown = SshError::UnknownHostKey {
+            key: String::new(),
+            fingerprint: "SHA256:x".into(),
+        };
+        assert_eq!(refusal(unknown), Some(false));
+        let changed = SshError::HostKeyChanged {
+            pinned: "SHA256:a".into(),
+            found: "SHA256:b".into(),
+        };
+        assert_eq!(refusal(changed), Some(true));
+        assert_eq!(refusal(SshError::Install("changed".into())), Some(true));
+        for passing in [
+            SshError::Key("no SSH agent answered: not found".into()),
+            SshError::Key("/media/usb/id_ed25519: not found".into()),
+            SshError::Unreachable("no route".into()),
+            SshError::Failed("dropped".into()),
+        ] {
+            let shown = passing.to_string();
+            assert_eq!(refusal(passing), None, "{shown}");
+        }
+    }
 }

@@ -1236,6 +1236,57 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
 
+/// 6.8: a pause for a move asked while the chat's Autopilot driver is
+/// between two of its task's stages waits for the driver's turn, and
+/// pauses the run that turn started: none goes on after the pause, and a
+/// move back finds no run going.
+#[tokio::test]
+async fn a_move_pause_waits_out_the_drivers_turn_and_pauses_the_run_it_started() {
+    let h = harness(&[("a.txt", "x")]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "bash",
+            args: json!({ "command": list("") }),
+        },
+        Reply::Text("All done."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec![list("")],
+        ..ask_approval("commands")
+    };
+    // The driver between two stages: its turn taken, at work.
+    let turn = super::autopilot::drive_lock(&h.dialog_id).await;
+    let at_work = super::autopilot::AtWork::start(&h.core, &h.dialog_id);
+    let (core, chat) = (h.core.clone(), h.dialog_id.clone());
+    let pausing = tokio::spawn(async move { agent_pause(&core, chat, "").await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!pausing.is_finished(), "it waits for the driver's turn");
+    // In its turn, the driver starts the next stage's run, then is done.
+    let request = h.request(&url, Harness::send("The next stage"), permissions);
+    super::start_run(&h.core, request).await.unwrap();
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    drop(at_work);
+    drop(turn);
+    let asked = || h.core.agents.pause_asked(&h.dialog_id).is_some();
+    for _ in 0..500 {
+        if asked() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(asked(), "the pause reached the run the turn started");
+    let (core, chat) = (h.core.clone(), h.dialog_id.clone());
+    let approved = agent_resolve_approval(&core, chat, "r1".into(), ApprovalDecision::Allow);
+    assert!(approved.await);
+    let paused = within("the pause", pausing).await.unwrap();
+    assert!(paused, "it paused for the move");
+    assert_eq!(h.run_end().await, "paused-move");
+    assert_eq!(seen.lock().unwrap().len(), 1, "no request after the pause");
+}
+
 /// Stop ends a run that is pausing for a move at once, as any other.
 #[tokio::test]
 async fn stop_still_ends_a_run_pausing_for_a_move() {

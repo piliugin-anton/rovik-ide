@@ -3,7 +3,7 @@
 //! packs, and a new connection whenever the link drops, waiting longer
 //! each time (6.10).
 
-use crate::connector::Connector;
+use crate::connector::{Connector, Refusal};
 use crate::{http, packs};
 use futures_util::{SinkExt, Stream, StreamExt};
 use git2::Oid;
@@ -45,6 +45,13 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// the client connects again at once (6.10). Looked at every `CLOCK_TICK`.
 const SLEPT: Duration = Duration::from_secs(30);
 const CLOCK_TICK: Duration = Duration::from_secs(5);
+/// A refusal that may come right on its own (`Refusal::may_pass`) is
+/// tried again this many minutes after, quietly.
+const REFUSED_AGAIN_MINUTES: u64 = 10;
+#[cfg(not(test))]
+const REFUSED_AGAIN: Duration = Duration::from_secs(REFUSED_AGAIN_MINUTES * 60);
+#[cfg(test)]
+const REFUSED_AGAIN: Duration = Duration::from_millis(300);
 
 /// Who connects, to which host.
 #[derive(Clone, Debug)]
@@ -70,10 +77,13 @@ pub enum HostState {
     /// The daemon serves only apps newer than this one (4.5). The client
     /// asks again now and then, quietly, at the slowest pace.
     VersionMismatch,
-    /// The host turned this computer away for a reason trying again won't
-    /// fix: its key changed, the credentials, Rovik's install there, this
-    /// computer's token. Not tried again: the host's settings, a deploy or
-    /// a trusted build connect it anew. `Client::refusal` says why.
+    /// The host turned this computer away: the credentials, its key,
+    /// Rovik's install there, this computer's token. `Client::refusal`
+    /// says why. What only the user can change (the credentials, a key to
+    /// pin, the token) isn't tried again: the host's settings, a deploy or
+    /// a test that gets through connect it anew. What may come right on
+    /// its own (Rovik's install, the host's pinned key back) is tried again
+    /// every `REFUSED_AGAIN_MINUTES`, quietly, Refused meanwhile.
     Refused,
 }
 
@@ -176,8 +186,8 @@ impl Client {
         self.shared.lock().state
     }
 
-    /// Why the host turned this computer away, once it did: the client
-    /// doesn't try again (`HostState::Refused`).
+    /// Why the host turned this computer away, while it does
+    /// (`HostState::Refused`).
     pub fn refusal(&self) -> Option<String> {
         self.shared.lock().refusal.clone()
     }
@@ -379,10 +389,32 @@ impl Shared {
         self.link.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The connection's state. Out of `Refused`, its refusal goes.
     fn set_state(&self, state: HostState) {
-        let before = std::mem::replace(&mut self.lock().state, state);
+        let before = {
+            let mut link = self.lock();
+            if state != HostState::Refused {
+                link.refusal = None;
+            }
+            std::mem::replace(&mut link.state, state)
+        };
         if before != state {
             (self.sink)(Incoming::State(state));
+        }
+    }
+
+    /// The host turned this computer away, for `why`: told again when why
+    /// changed, as on a later try.
+    fn refused(&self, why: String) {
+        let told = {
+            let mut link = self.lock();
+            let same = link.state == HostState::Refused && link.refusal.as_ref() == Some(&why);
+            link.refusal = Some(why);
+            link.state = HostState::Refused;
+            same
+        };
+        if !told {
+            (self.sink)(Incoming::State(HostState::Refused));
         }
     }
 
@@ -411,9 +443,8 @@ impl Shared {
 enum Ended {
     /// The daemon serves only newer apps.
     TooOld,
-    /// The host turned this computer away, and why: trying again won't
-    /// change that (`Connector`).
-    Refused(String),
+    /// The host turned this computer away, and why (`Refusal`).
+    Refused { why: String, may_pass: bool },
     /// The link dropped, or never came up; `served` when it was ready.
     Lost { served: bool },
     /// The computer slept.
@@ -425,10 +456,11 @@ enum Ended {
 async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
     let mut wait = FIRST_BACKOFF;
     loop {
-        // A daemon that serves only newer apps is asked again without
-        // showing Connecting each time: it's the same answer until the app
-        // or the daemon changes.
-        if shared.lock().state != HostState::VersionMismatch {
+        // A daemon that serves only newer apps, or a host that turned
+        // this computer away, is asked again without showing Connecting
+        // each time: it's the same answer until something changes.
+        let quiet = [HostState::VersionMismatch, HostState::Refused];
+        if !quiet.contains(&shared.lock().state) {
             shared.set_state(HostState::Connecting);
         }
         let ended = tokio::select! {
@@ -442,14 +474,20 @@ async fn run(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
                 shared.set_state(HostState::VersionMismatch);
                 wait = MAX_BACKOFF;
             }
-            Ended::Refused(why) => {
-                shared.lock().refusal = Some(why);
-                shared.set_state(HostState::Refused);
-                // Not again: it would be turned away the same way, after
-                // the credentials went once more. The client waits to be
-                // let go of, or put in place of (`Hosts::connect`).
-                let _ = stop.changed().await;
-                break;
+            Ended::Refused { why, may_pass } => {
+                if !may_pass {
+                    shared.refused(why);
+                    // Not again: it would be turned away the same way,
+                    // after the credentials went once more. The client
+                    // waits to be let go of, or put in place of
+                    // (`Hosts::connect`).
+                    let _ = stop.changed().await;
+                    break;
+                }
+                shared.refused(format!(
+                    "{why} Rovik tries again every {REFUSED_AGAIN_MINUTES} minutes."
+                ));
+                wait = REFUSED_AGAIN;
             }
             Ended::Lost { served } => {
                 shared.set_state(HostState::Offline);
@@ -506,10 +544,15 @@ async fn session(shared: &Shared) -> Ended {
     let identity = &shared.identity;
     let io = match shared.connector.connect().await {
         Ok(io) => io,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Ended::Refused(e.to_string())
+        Err(e) => {
+            return match Refusal::of(&e) {
+                Some(refusal) => Ended::Refused {
+                    why: refusal.why.clone(),
+                    may_pass: refusal.may_pass,
+                },
+                None => lost,
+            }
         }
-        Err(_) => return lost,
     };
     let uri: Uri = "ws://rovik-agentd/rpc".parse().expect("a URI");
     let request = ClientRequestBuilder::new(uri)
@@ -517,7 +560,10 @@ async fn session(shared: &Shared) -> Ended {
     let mut socket = match tokio_tungstenite::client_async(request, io).await {
         Ok((socket, _)) => socket,
         Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
-            return Ended::Refused(TOKEN_REFUSED.into())
+            return Ended::Refused {
+                why: TOKEN_REFUSED.into(),
+                may_pass: false,
+            }
         }
         Err(_) => return lost,
     };
