@@ -473,8 +473,10 @@ JSON goes in `<data_dir>/packages/rustdoc/<name>@<version>.json.gz`.
 - **Checked** before use, against the lock file: npm's `integrity` (SRI,
   SHA-512), Cargo.lock's `checksum` (SHA-256). No checksum in the lock
   file, no download. A mismatch leaves nothing behind.
-- **Limits**: 50 MB downloaded, 300 MB and 20,000 files unpacked, and
-  `pinned_browser::archive`'s stall timeout.
+- **Limits**: 50 MB downloaded, 300 MB and 20,000 files unpacked, and 15
+  seconds in all, not the browser download's 60-second stall limit: a bad
+  network mustn't hold up a turn. Offline, it fails at once and the answer
+  is L1's.
 - **Unpacking**: tar.gz (adds the `tar` crate; `flate2` is in the
   workspace) and zip (rovik-core has it). Entries with `..`, absolute paths
   or links out of the folder are skipped, as `archive::unpack` does.
@@ -661,8 +663,10 @@ downloaded.
 - **Several versions**: `node_modules/a/node_modules/b` beside
   `node_modules/b`. With `from`, resolution starts at that file's folder,
   as Node's does.
-- **Big packages**: `typescript` (its `lib.*.d.ts` are the ES and DOM
-  APIs), `@types/node`, SDKs with hundreds of files. The index's caps
+- **Big packages**: `typescript` (TypeScript 5 keeps the ES and DOM
+  declarations, `lib.*.d.ts`, in it; TypeScript 7 in its per-platform
+  package, `@typescript/typescript-<platform>/lib/`), `@types/node`, SDKs
+  with hundreds of files. The index's caps
   (200 reachable files; outlines within `outline`'s size and time limits)
   hold, and the answer says when one was hit.
 - **Deno and JSR** packages are another ecosystem, later (`jsr:`).
@@ -788,11 +792,14 @@ Signatures from the JSON's `inner` are later.
   `from`, the member that file belongs to.
 - **Proc-macro crates**: their docs describe the macros; the expansion
   isn't readable.
-- **The standard library** (`std::`, `core::`, `alloc::`): from the
-  toolchain's `rust-src` component when it's installed
-  (`$(rustc --print sysroot)/lib/rustlib/src/rust/library/`), as a package
-  whose version is the toolchain's. It's later (open question 4), and so is
-  TypeScript's `lib.*.d.ts`, which `typescript`'s package already holds.
+- **The standard library** (`std::`, `core::`, `alloc::`) is a package of
+  the toolchain (open question 4), found by reading files, since running
+  `rustc --print sysroot` would start a program (D8). The toolchain is the
+  one `rust-toolchain.toml`, rustup's directory overrides or its default
+  name (`~/.rustup/settings.toml`); its version is in
+  `~/.rustup/toolchains/<toolchain>/lib/rustlib/multirust-channel-manifest.toml`
+  (`[pkg.rustc] version`); its sources, when the `rust-src` component is
+  installed, in `lib/rustlib/src/rust/library/` beside it.
 
 ## 6. Adding an ecosystem
 
@@ -974,22 +981,62 @@ differently.
 
 ## 10. Open questions
 
-1. **Downloads on by default?** Proposed: yes, since installs reach the
-   same registries.
-2. **The dependency line on by default before P16 measures it?** Proposed:
-   on, and P16 decides.
-3. **Its order**: by how many of the project's files import a package (the
-   editor's typings scan reads the imports already) instead of manifest
-   order, so that a dev dependency the code relies on can come first?
-4. **Standard libraries as packages**: Rust's `rust-src`, TypeScript's
-   `lib.*.d.ts`, Python's standard library, each with the toolchain's
-   version. Proposed: after P17.
-5. **YAML** for `pnpm-lock.yaml` and Berry's `yarn.lock`: a crate, or a
-   small reader for the few keys needed?
-6. **`cargo metadata`** would give Cargo's own answer for every folder and
-   the features unified over the build. Worth running where the run may
-   run commands anyway (not Plan mode), with the wrapper and toolchain
-   settings overridden, if file reading proves wrong in practice?
+Each has a proposed answer. The ones agreed move to the Decisions table.
+
+1. **Downloads on by default?** Proposed: yes. They only happen for a
+   package that isn't installed, and there they replace slower paths
+   (`browse_url` pages, an install the default command list refuses, or
+   the model's memory) with one checked download. In a test, solid-js,
+   `@tauri-apps/api`, tokio and serde took 0.07 to 0.5 seconds each, and
+   unpacking tokio 46 ms. A download has 15 seconds in all (3.7).
+2. **The dependency line on by default before P16 measures it?**
+   Proposed: measure before P09 merges, since every merge to master is
+   released. Move P16's comparison of the line on and off to the end of
+   phase 1, on the branch: about 10 new tasks that need a dependency's API
+   and 10 of the existing 30 (which alone can only show the line's cost),
+   3 runs each, line on and off: about 120 runs, around $100 at the
+   baseline's rate. If it must ship before that: on. For this repository
+   the line is 621 characters, about 160 to 200 tokens: 3 to 4% of the
+   system prompt and tool schemas, in the part of a request providers
+   cache.
+3. **Its order?** Proposed: give the "Stack:" line versions too, for what
+   the profile already names there (`project_profile.rs` maps
+   `typescript`, `react`, `solid-js`, `vue`, `svelte`, `next`, `vite`,
+   `@tauri-apps/api` and `express` to stack names), and for Rust the
+   toolchain's version and the edition, from rustup's files (5.9) and
+   `Cargo.toml`: "Stack: TypeScript 7.0.2, Solid 1.9.17, Vite 8.3.4,
+   Tauri 2.12.2, Rust 1.97.0 (edition 2021)". Those versions change how
+   all the code is written, and the dependency line's cap can't cut them.
+   The dependency line keeps its simple order: ranking by imports would
+   need an import reader per language. Look again if the agent log shows
+   lookups of packages the line left out.
+4. **Standard libraries as packages?** Proposed: yes, for Rust and
+   TypeScript, soon after phase 1 rather than after P17. They change on
+   their own schedule (a Rust release every six weeks, ES and the DOM every
+   year), and need only L2: no lock file, no download.
+   - Rust: `std`, `core` and `alloc` from `rust-src`, at the toolchain's
+     version (5.9). Without the component (rustup's minimal profile has
+     none, as on the machine this plan was written on), an L1 answer: the
+     versioned docs, `https://doc.rust-lang.org/<version>/std/`, and
+     `rustup component add rust-src`.
+   - TypeScript: the installed compiler's `lib.*.d.ts`, spelled
+     `typescript/lib`: in the `typescript` package for TypeScript 5, in
+     its per-platform package for TypeScript 7
+     (`@typescript/typescript-linux-x64/lib/` holds 107 in 7.0.2).
+   - Python's standard library comes with the PyPI ecosystem.
+5. **YAML: a crate or a small reader?** Proposed: a crate, `yaml-rust2`, a
+   maintained YAML 1.2 parser with a stable API and an untyped document
+   (`serde_yaml` was archived in 2024), and only in P15, where it's
+   needed. A lock file is the repository's text, so it's read as parser
+   events, anchors and aliases are refused (a lock file never needs them,
+   and aliases can expand a small file into gigabytes), and the file is
+   capped at 64 MB.
+6. **`cargo metadata`?** Proposed: no. Reading files finds registry, git,
+   vendored and path sources. What it can't give, the features other
+   crates turn on, is what code shouldn't rely on anyway: code that needs a
+   feature should turn it on in the project's own `Cargo.toml`, which is
+   what the overview shows. If the agent log shows Cargo packages the tool
+   can't find, look again then.
 
 ## Sources
 
