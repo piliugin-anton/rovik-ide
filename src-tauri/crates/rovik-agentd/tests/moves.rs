@@ -420,6 +420,41 @@ async fn a_released_chats_worktree_goes_after_its_week_even_unforgotten() {
     );
     assert_eq!(forget(&setup.client, CHAT).await, Ok(true));
     assert!(ids(&setup).is_empty());
+    // Its worktree gone and its rows forgotten, state.json lets it go too.
+    let cleaned = setup.client.request::<Storage>(Request::CleanUp).await;
+    cleaned.unwrap();
+    assert!(
+        setup.daemon.state()["chats"].get(CHAT).is_none(),
+        "{}",
+        setup.daemon.state()
+    );
+}
+
+/// 6.8, 5.4: a chat its computer took back is never started here again,
+/// whatever state.json says of its run: its computer runs it now.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_released_chat_isnt_restarted_here() {
+    let mut setup = Setup::new().await;
+    let bundle = bundle(&setup, rows("Moved", vec![row("u1", "user", "Go")]).await).await;
+    import(&setup.client, "move-1", &bundle).await.unwrap();
+    run(&setup, vec![Reply::Text("Done.")]).await;
+    assert_eq!(release(&setup.client, None).await, Ok(true));
+    setup.daemon.kill().await;
+    let mut state = setup.daemon.state();
+    state["chats"][CHAT]["running"] = json!(true);
+    std::fs::write(setup.daemon.data.join("state.json"), state.to_string()).unwrap();
+    setup.daemon.restart().await;
+    let chat = &setup.daemon.state()["chats"][CHAT];
+    assert_eq!(chat["running"], false, "{chat}");
+    assert!(
+        setup
+            .daemon
+            .log()
+            .contains("went back to its computer, so not restarted here"),
+        "{}",
+        setup.daemon.log()
+    );
+    assert_eq!(ids(&setup).len(), 3, "no row from a run here");
 }
 
 /// R01: "Clean up now" takes a forgotten chat's worktree at once.

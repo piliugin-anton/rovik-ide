@@ -392,6 +392,17 @@ pub(super) async fn end_run_stage(
     if run.harness() {
         let ended = record.record.status != Status::Running;
         let failure = failure_of(outcome).filter(|f| matches!(*f, "stopped" | "budget"));
+        // S09: a delivery whose run broke off before it said what became of
+        // the result still delivers, as one whose run couldn't start does:
+        // without its report, the result pushed where the server pushes.
+        if run.stage == Stage::Deliver && !ended && failure.is_none() {
+            let task: Vec<Recorded> = (all.iter())
+                .filter(|r| r.record.task == run.task)
+                .cloned()
+                .collect();
+            let round = record.record.round;
+            return deliver(core, dialog_id, &task, round, Some(run.record.clone())).await;
+        }
         let summary = match failure {
             Some(f) => Some(failed_line(f)),
             None if ended => None,
@@ -732,6 +743,43 @@ pub(super) async fn start_implement(
     }
 }
 
+/// A stage under way whose run couldn't go on (`why`), as after a wait for
+/// the provider's rate limit: it ends as a stage whose run couldn't start
+/// ends (the IDE's own skipped, the delivery done without its report, the
+/// rest failed), and the task goes on from there.
+pub(super) async fn not_gone_on(
+    core: &Core,
+    dialog_id: &str,
+    record: &str,
+    why: &str,
+    settings: &Settings,
+) -> Result<(), String> {
+    let Some((task, records)) = current_task(core, dialog_id).await? else {
+        return Ok(());
+    };
+    let Some(at) = records.iter().find(|r| r.id == record) else {
+        return Ok(());
+    };
+    let run = StageRun::of(at);
+    if run.stage == Stage::Deliver {
+        let round = at.record.round;
+        return deliver(core, dialog_id, &records, round, Some(record.to_string())).await;
+    }
+    match run.harness() {
+        true => {
+            end_stage(core, dialog_id, record, |r| {
+                r.status = Status::Skipped;
+                r.summary = Some(why.to_string());
+            })
+            .await?;
+        }
+        false => {
+            not_started(core, dialog_id, record, why).await?;
+        }
+    }
+    advance(core, dialog_id, &task, settings).await
+}
+
 /// The implementation's record when its run couldn't start: failed, and
 /// why. False: no run started.
 pub(super) async fn not_started(
@@ -852,8 +900,22 @@ pub(in crate::agent_run) async fn go_on(
     }
     let start = match recovery::after_crash(core, dialog_id).await? {
         Recovery::Start(kind) => kind,
-        // It paused for the user's Continue, as it would have without a crash.
-        Recovery::Paused => return Ok(Some(None)),
+        // Paused, and cut before its stage ended. For a move, the run goes
+        // on where the chat went. Any other pause is one for a person, who
+        // isn't there (U03): its stage ends as the run's end would have
+        // ended it, and the task goes on to its delivery.
+        Recovery::Paused => {
+            let kind = recent
+                .last()
+                .and_then(|m| m.meta.as_ref()?.pointer("/paused/kind")?.as_str());
+            let outcome = format!("paused-{}", kind.unwrap_or_default());
+            if run_continues(&outcome) {
+                return Ok(Some(None));
+            }
+            end_run_stage(core, dialog_id, &StageRun::of(last), &outcome, &settings).await?;
+            advance(core, dialog_id, &task, &settings).await?;
+            return Ok(Some(None));
+        }
         Recovery::Interrupted => {
             let started = run_started(core, dialog_id, last).await?;
             // An implementation by candidates is the IDE's run, which a
@@ -894,6 +956,9 @@ pub(in crate::agent_run) enum Crash {
     /// After the pick took its winner's change, before its record says so;
     /// on the task's chat. The run goes no further.
     AfterAdopt,
+    /// The delivery's run breaks off (an error) after its push, before
+    /// its report and its record's end.
+    InReport,
 }
 
 /// Tests: the crash each chat has coming (tests run side by side).

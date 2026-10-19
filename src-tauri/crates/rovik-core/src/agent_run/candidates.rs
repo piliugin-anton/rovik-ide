@@ -1047,7 +1047,9 @@ pub(super) async fn stage_record(
         return Ok(None);
     }
     let first = &records[0].record;
-    let base = StageRecord::ended(&first.task, stage, 1, first.effort, Status::Skipped);
+    // The stage's round in the task, as `done_in_run` has it.
+    let round = records.iter().filter(|r| r.record.name == stage).count() as u32 + 1;
+    let base = StageRecord::ended(&first.task, stage, round, first.effort, Status::Skipped);
     if stage == Stage::Acceptance {
         let Some(w) = winner(core, dialog_id, records).await? else {
             return Ok(Some(base.with_summary("No candidate was picked")));
@@ -1070,6 +1072,7 @@ pub(super) async fn stage_record(
                         .unwrap_or_else(|| status_word(r.record.status).into())
                 )),
                 spent: None,
+                round,
                 ..r.record.clone()
             },
             None => base.with_summary(format!("{}: not checked", w.letter)),

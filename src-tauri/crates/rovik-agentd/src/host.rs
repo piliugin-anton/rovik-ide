@@ -24,13 +24,17 @@ pub async fn info(daemon: &Daemon) -> HostInfo {
         min_protocol: MIN_PROTOCOL,
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
+        other_daemons: {
+            let user = home::passwd().map(|p| p.name).unwrap_or_default();
+            let (cgroups, proc) = (Path::new("/sys/fs/cgroup"), Path::new("/proc"));
+            other_daemons(cgroups, proc, home::uid(), &user)
+        },
         user: home::passwd().map(|p| p.name).unwrap_or_default(),
         virtual_files: mounted,
         virtual_files_problem: problem,
         chrome: rovik_core::browser_tools::chrome_path().map(|p| p.to_string_lossy().into_owned()),
         user_namespaces: user_namespaces(Path::new("/proc/sys")),
         install: install(Path::new(ADMIN_FILE)),
-        other_daemons: other_daemons(Path::new("/proc"), home::uid()),
     })
     .await
     .unwrap_or_default()
@@ -81,9 +85,51 @@ pub fn install(config: &Path) -> Option<Install> {
     })
 }
 
-/// Daemons of other users: processes named rovik-agentd whose user isn't
-/// `uid`, found through `proc` (5.5).
-pub fn other_daemons(proc: &Path, uid: u32) -> u32 {
+/// Daemons of other users (5.5). With systemd, the units of `rovik.slice`
+/// under `cgroups` that hold a process, but `user`'s own: only root puts a
+/// process there, and a `proc` mounted with `hidepid` hides none of them.
+/// Without, processes named rovik-agentd whose user isn't `uid`, found
+/// through `proc`, which any user can name a process (a few slots less, at
+/// worst) and `hidepid` hides.
+pub fn other_daemons(cgroups: &Path, proc: &Path, uid: u32, user: &str) -> u32 {
+    match units_running(cgroups, user) {
+        Some(units) => units,
+        None => processes_named(proc, uid),
+    }
+}
+
+/// The populated `rovik-agentd@*.service` units in `rovik.slice`, but
+/// `user`'s; None where there's no such slice (no systemd, or Rovik isn't
+/// installed for everyone).
+fn units_running(cgroups: &Path, user: &str) -> Option<u32> {
+    // cgroup v2, then v1's unified and systemd hierarchies.
+    let slice = ["rovik.slice", "unified/rovik.slice", "systemd/rovik.slice"]
+        .iter()
+        .map(|at| cgroups.join(at))
+        .find(|at| at.is_dir())?;
+    let mine = crate::installer::instance(user);
+    let units = std::fs::read_dir(slice).ok()?;
+    let others = units.flatten().filter(|unit| {
+        let name = unit.file_name().to_string_lossy().into_owned();
+        name.starts_with("rovik-agentd@")
+            && name.ends_with(".service")
+            && name != mine
+            && populated(&unit.path())
+    });
+    Some(others.count() as u32)
+}
+
+/// Whether a unit's cgroup holds a process: `populated 1` in v2's events,
+/// else a process in it.
+fn populated(cgroup: &Path) -> bool {
+    if let Ok(events) = std::fs::read_to_string(cgroup.join("cgroup.events")) {
+        return events.lines().any(|l| l.trim() == "populated 1");
+    }
+    std::fs::read_to_string(cgroup.join("cgroup.procs")).is_ok_and(|p| !p.trim().is_empty())
+}
+
+/// Processes named rovik-agentd whose user isn't `uid`, by their users.
+fn processes_named(proc: &Path, uid: u32) -> u32 {
     let Ok(entries) = std::fs::read_dir(proc) else {
         return 0;
     };
@@ -171,6 +217,38 @@ mod tests {
         process("13", "bash", 1002);
         process("14", "rovik-agentd", 500);
         fs::create_dir_all(dir.0.join("self")).unwrap();
-        assert_eq!(other_daemons(&dir.0, 500), 2);
+        // No rovik.slice: the processes, by name.
+        let cgroups = dir.0.join("cgroup");
+        assert_eq!(other_daemons(&cgroups, &dir.0, 500, "ann"), 2);
+    }
+
+    /// 5.5: with systemd, the slice's units are counted, which only root
+    /// can put a process in: not a process anyone named rovik-agentd, nor
+    /// a unit that holds none, nor the user's own.
+    #[test]
+    fn with_systemd_the_slices_units_are_counted() {
+        let dir = rovik_core::testing::temp_dir();
+        let proc = dir.0.join("proc");
+        let spoof = proc.join("20");
+        fs::create_dir_all(&spoof).unwrap();
+        fs::write(spoof.join("status"), "Name:\trovik-agentd\nUid:\t1003\n").unwrap();
+        let slice = dir.0.join("cgroup/rovik.slice");
+        let unit = |name: &str, events: &str| {
+            let at = slice.join(name);
+            fs::create_dir_all(&at).unwrap();
+            fs::write(at.join("cgroup.events"), events).unwrap();
+        };
+        unit("rovik-agentd@ann.service", "populated 1\nfrozen 0\n");
+        unit("rovik-agentd@bo.service", "populated 1\nfrozen 0\n");
+        unit("rovik-agentd@cy.service", "populated 0\nfrozen 0\n");
+        let cgroups = dir.0.join("cgroup");
+        assert_eq!(other_daemons(&cgroups, &proc, 500, "ann"), 1, "bo's");
+        // v1: the processes the unit holds.
+        let v1 = dir
+            .0
+            .join("v1/systemd/rovik.slice/rovik-agentd@dee.service");
+        fs::create_dir_all(&v1).unwrap();
+        fs::write(v1.join("cgroup.procs"), "4242\n").unwrap();
+        assert_eq!(other_daemons(&dir.0.join("v1"), &proc, 500, "ann"), 1);
     }
 }

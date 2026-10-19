@@ -160,6 +160,14 @@ pub async fn release(
             "This chat's run is still going on the server: pause it first.",
         ));
     }
+    // Its task's driver between two stages would start the next one here
+    // once the chat had gone back.
+    if daemon.core.agents.is_driving(dialog_id) {
+        return Err(Fail::new(
+            FailCode::Busy,
+            "This chat's task is between two stages on the server: try again in a moment.",
+        ));
+    }
     let id = dialog_id.to_string();
     daemon
         .core

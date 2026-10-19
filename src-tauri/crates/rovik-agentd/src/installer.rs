@@ -193,34 +193,18 @@ impl System {
     }
 
     /// Writes a file all at once: a new one beside it, renamed over it.
+    /// The new one is root's alone until it's whole and has its `mode`.
     fn write(&self, absolute: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
+        use std::io::Write;
         let (temp, path) = self.beside(absolute)?;
-        let written = std::fs::write(&temp, bytes)
+        let written = private_file(&temp)
+            .and_then(|mut file| file.write_all(bytes))
             .and_then(|()| std::fs::set_permissions(&temp, PermissionsExt::from_mode(mode)))
             .and_then(|()| std::fs::rename(&temp, &path));
         written.map_err(|e| {
             let _ = std::fs::remove_file(&temp);
             format!("{}: {e}", path.display())
         })
-    }
-
-    /// Copies `from` to `absolute`, the same way.
-    fn copy(&self, from: &Path, absolute: &str, mode: u32) -> Result<(), String> {
-        let (temp, path) = self.beside(absolute)?;
-        let copied = std::fs::copy(from, &temp)
-            .and_then(|_| std::fs::set_permissions(&temp, PermissionsExt::from_mode(mode)))
-            .and_then(|()| std::fs::rename(&temp, &path));
-        copied.map_err(|e| {
-            let _ = std::fs::remove_file(&temp);
-            format!("{} to {}: {e}", from.display(), path.display())
-        })
-    }
-
-    /// Moves `from` to `absolute`, both under the root.
-    fn rename(&self, from: &str, absolute: &str) -> Result<(), String> {
-        let (from, to) = (self.path(from), self.path(absolute));
-        std::fs::rename(&from, &to)
-            .map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))
     }
 
     /// Points the link `absolute` at `target`, the same way.
@@ -272,11 +256,20 @@ pub fn install(sys: &System, admin: &str, binary: Option<PathBuf>) -> Result<(),
         ));
     }
     let account = regular_user(admin)?;
-    let from = match binary {
-        Some(file) => file,
-        None => std::env::current_exe().map_err(|e| e.to_string())?,
+    // Another build is named for the version it says it is, asked as the
+    // administrator: this one is VERSION.
+    let (bytes, version) = match binary {
+        Some(file) => {
+            let bytes = read_build(&file, None)?;
+            let version = version_of(&bytes, &file, &account)?;
+            (bytes, version)
+        }
+        None => {
+            let this = std::env::current_exe().map_err(|e| e.to_string())?;
+            (read_build(&this, None)?, VERSION.to_string())
+        }
     };
-    install_binary(sys, &from, VERSION)?;
+    install_build(sys, &bytes, &version)?;
     let mut file = match AdminFile::read(&sys.path(ADMIN_FILE))? {
         Some(file) => file,
         None => AdminFile::sized_for(&account.name, total_memory()),
@@ -291,12 +284,12 @@ pub fn install(sys: &System, admin: &str, binary: Option<PathBuf>) -> Result<(),
         sys.run("systemctl", &["daemon-reload"])?;
         sys.run("systemctl", &["enable", "--now", &instance(&account.name)])?;
         println!(
-            "Rovik {VERSION} is installed, and {}'s daemon runs.",
+            "Rovik {version} is installed, and {}'s daemon runs.",
             account.name
         );
     } else {
         println!(
-            "Rovik {VERSION} is installed. There's no systemd here: the app starts each \
+            "Rovik {version} is installed. There's no systemd here: the app starts each \
              user's daemon when it connects."
         );
     }
@@ -404,14 +397,19 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
 /// them (R02, 5.4). A release's build comes with its signature beside it,
 /// `FILE.sig`, checked with the key this binary was built with, so a new
 /// build can't vouch for itself (B02); a build of one's own goes in only
-/// where `agentd.toml` allows unsigned builds (B03).
+/// where `agentd.toml` allows unsigned builds (B03). That build is what
+/// sudo runs as root for everyone afterwards, and the upgrade runs it as
+/// root at once (`admin browser`): allowing unsigned builds gives each
+/// administrator root on the server.
 ///
-/// FILE is the administrator's own file, read once: what was read is what's
-/// checked, asked its version and installed, so a file put in its place
-/// meanwhile is never the one root installs. Its version is asked of the
-/// copy under `/opt/rovik/bin`, run as the administrator, never as root.
-/// A build older than the installed one is refused unless the command says
-/// `--allow-downgrade`.
+/// FILE is the administrator's own file, read once, with their own access
+/// to it: root reads nothing for them that they couldn't read themselves.
+/// What was read is what's checked, asked its version and installed, so a
+/// file put in its place meanwhile is never the one root installs. Its
+/// version is asked of a copy in memory, run as the administrator, never
+/// as root, and the copy under `/opt/rovik/bin` is root's alone until it
+/// has passed. A build older than the installed one is refused unless the
+/// command says `--allow-downgrade`.
 fn upgrade(
     sys: &System,
     file: &AdminFile,
@@ -419,28 +417,32 @@ fn upgrade(
     caller: &Passwd,
     allow_downgrade: bool,
 ) -> Result<(), String> {
-    let bytes = read_build(from)?;
-    match signed(from, &bytes) {
+    let bytes = read_build(from, Some(caller))?;
+    match signed(from, &bytes, caller) {
         Ok(true) => {}
         Ok(false) if file.allow_unsigned => {}
         Ok(false) => {
             return Err(format!(
                 "{} isn't signed with Rovik's release key. To install a build of your own, \
-                 set allow_unsigned = true in {ADMIN_FILE}.",
+                 set allow_unsigned = true in {ADMIN_FILE}, which lets each of Rovik's \
+                 administrators run their own program as root here.",
                 from.display()
             ))
         }
         Err(why) => return Err(format!("{}: {why} It wasn't installed.", from.display())),
     }
-    let staged = format!("{BIN_DIR}/.rovik-agentd.upgrade.{}", std::process::id());
-    sys.write(&staged, &bytes, 0o755)?;
-    let version = match place_build(sys, &staged, from, caller, allow_downgrade) {
-        Ok(version) => version,
-        Err(why) => {
-            let _ = std::fs::remove_file(sys.path(&staged));
-            return Err(why);
+    let version = version_of(&bytes, from, caller)?;
+    if !allow_downgrade {
+        if let Some(installed) = installed_version(sys) {
+            if older(&version, &installed) == Some(true) {
+                return Err(format!(
+                    "Rovik {version} is older than the installed {installed}. To install it \
+                     anyway, add --allow-downgrade."
+                ));
+            }
         }
-    };
+    }
+    install_build(sys, &bytes, &version)?;
     // The new build's browser, before the daemons start on it: its pin may
     // be a newer version. One that can't be installed stops nothing else.
     match sys.run(INSTALLED, &["admin", "browser"]) {
@@ -457,46 +459,26 @@ fn upgrade(
     Ok(())
 }
 
-/// The build staged under `/opt/rovik/bin` as `rovik-agentd-<version>`,
-/// the link moved to it: its version. `named` is the file it came from,
-/// for the messages.
-fn place_build(
-    sys: &System,
-    staged: &str,
-    named: &Path,
-    caller: &Passwd,
-    allow_downgrade: bool,
-) -> Result<String, String> {
-    let version = version_of(sys, &sys.path(staged), named, caller)?;
-    if !allow_downgrade {
-        if let Some(installed) = installed_version(sys) {
-            if older(&version, &installed) == Some(true) {
-                return Err(format!(
-                    "Rovik {version} is older than the installed {installed}. To install it \
-                     anyway, add --allow-downgrade."
-                ));
-            }
-        }
-    }
-    let name = format!("rovik-agentd-{version}");
-    sys.rename(staged, &format!("{BIN_DIR}/{name}"))?;
-    sys.link(INSTALLED, &name)?;
-    Ok(version)
-}
-
 /// FILE's bytes, read once from the regular file it is. Not through a
-/// link, whose target its owner could move meanwhile.
-fn read_build(from: &Path) -> Result<Vec<u8>, String> {
+/// link, whose target its owner could move meanwhile. With `user`, opened
+/// with their ids and groups: what they can read, and nothing else.
+fn read_build(from: &Path, user: Option<&Passwd>) -> Result<Vec<u8>, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(from)
-        .map_err(|e| match e.raw_os_error() {
-            Some(libc::ELOOP) => format!("{} is a link: name the build itself.", from.display()),
-            _ => format!("{}: {e}", from.display()),
-        })?;
+    let open = || {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(from)
+    };
+    let opened = match user {
+        Some(user) => as_user(user, open)?,
+        None => open(),
+    };
+    let mut file = opened.map_err(|e| match e.raw_os_error() {
+        Some(libc::ELOOP) => format!("{} is a link: name the build itself.", from.display()),
+        _ => format!("{}: {e}", from.display()),
+    })?;
     let meta = file
         .metadata()
         .map_err(|e| format!("{}: {e}", from.display()))?;
@@ -580,10 +562,12 @@ fn uninstall(sys: &System) -> Result<(), String> {
     Ok(())
 }
 
-/// The binary at `from` as `rovik-agentd-<version>`, and the link to it.
-fn install_binary(sys: &System, from: &Path, version: &str) -> Result<(), String> {
+/// `bytes`, the build that says it's `version`, as
+/// `rovik-agentd-<version>`, and the link moved to it. It's root's alone
+/// until it's whole, and then everyone's to run: each user's daemon is it.
+fn install_build(sys: &System, bytes: &[u8], version: &str) -> Result<(), String> {
     let name = format!("rovik-agentd-{version}");
-    sys.copy(from, &format!("{BIN_DIR}/{name}"), 0o755)?;
+    sys.write(&format!("{BIN_DIR}/{name}"), bytes, 0o755)?;
     sys.link(INSTALLED, &name)
 }
 
@@ -712,20 +696,36 @@ fn regular_user(name: &str) -> Result<Passwd, String> {
     Ok(account)
 }
 
-/// What `run version` says, run as the administrator whenever this process
-/// is root: a build that isn't a release's is the administrator's own
-/// program. `named` is the file as the administrator gave it, for the
-/// messages.
-fn version_of(sys: &System, run: &Path, named: &Path, caller: &Passwd) -> Result<String, String> {
-    let _ = sys;
-    let mut command = Command::new(run);
-    command.arg("version");
-    if euid() == 0 {
-        command.uid(caller.uid).gid(caller.gid);
-    }
-    let out = command
-        .output()
+/// What the build `bytes` says its version is, asked of a copy in
+/// memory, which no one else can open, and run as `user` whenever this
+/// process is root: a build that isn't a release's is the administrator's
+/// own program. `named` is the file it came from, for the messages.
+#[cfg(target_os = "linux")]
+fn version_of(bytes: &[u8], named: &Path, user: &Passwd) -> Result<String, String> {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    let copy = runnable_memory().map_err(|e| {
+        let why = match e.raw_os_error() {
+            Some(libc::EACCES) => {
+                "this system runs no program from memory (vm.memfd_noexec = 2)".to_string()
+            }
+            _ => e.to_string(),
+        };
+        format!("{}: its version can't be asked: {why}", named.display())
+    })?;
+    (&copy)
+        .write_all(bytes)
         .map_err(|e| format!("{}: {e}", named.display()))?;
+    // The copy's descriptor is the child's too, where /proc/self/fd names
+    // it, for the kernel and for a script's interpreter.
+    let mut command = Command::new(format!("/proc/self/fd/{}", copy.as_raw_fd()));
+    command.arg("version").current_dir("/");
+    if euid() == 0 {
+        command.uid(user.uid).gid(user.gid);
+    }
+    let out = command.output();
+    drop(copy);
+    let out = out.map_err(|e| format!("{}: {e}", named.display()))?;
     let text = String::from_utf8_lossy(&out.stdout);
     let version = text
         .strip_prefix("rovik-agentd ")
@@ -738,13 +738,171 @@ fn version_of(sys: &System, run: &Path, named: &Path, caller: &Passwd) -> Result
     Ok(version.to_string())
 }
 
+/// Servers run Linux (D16): elsewhere, a build's version isn't asked.
+#[cfg(not(target_os = "linux"))]
+fn version_of(_bytes: &[u8], named: &Path, _user: &Passwd) -> Result<String, String> {
+    Err(format!(
+        "{}: builds are installed on Linux servers.",
+        named.display()
+    ))
+}
+
+/// A file in memory a program can run from. MFD_EXEC where the kernel
+/// knows it (6.3 on), so a system that makes such files unrunnable unless
+/// asked (vm.memfd_noexec = 1) runs this one; it isn't closed on exec,
+/// so the child that runs it has it.
+#[cfg(target_os = "linux")]
+fn runnable_memory() -> std::io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    let name = c"rovik-agentd-build";
+    // SAFETY: memfd_create takes a NUL-terminated name and flags.
+    let mut fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_EXEC) };
+    if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        // SAFETY: as above, on a kernel without MFD_EXEC.
+        fd = unsafe { libc::memfd_create(name.as_ptr(), 0) };
+    }
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a new descriptor that nothing else owns.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// `f`, with `user`'s ids and groups as the ones the kernel checks what
+/// it opens against, so it opens only what `user` could; root's come back
+/// after. Not root (`--root` in a test), `f` runs as this process is.
+#[cfg(target_os = "linux")]
+fn as_user<T>(user: &Passwd, f: impl FnOnce() -> T) -> Result<T, String> {
+    if euid() != 0 {
+        return Ok(f());
+    }
+    let groups = groups_of(user)?;
+    let _root = Ids::switch_to(user, &groups)?;
+    Ok(f())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn as_user<T>(_user: &Passwd, f: impl FnOnce() -> T) -> Result<T, String> {
+    match euid() {
+        0 => Err("Builds are installed on Linux servers.".into()),
+        _ => Ok(f()),
+    }
+}
+
+/// The groups `user` is in, their own first.
+#[cfg(target_os = "linux")]
+fn groups_of(user: &Passwd) -> Result<Vec<libc::gid_t>, String> {
+    let name = std::ffi::CString::new(user.name.as_str()).map_err(|e| e.to_string())?;
+    let mut groups: Vec<libc::gid_t> = vec![0; 64];
+    loop {
+        let mut count = groups.len() as libc::c_int;
+        // SAFETY: `groups` has room for `count` ids; the call says how
+        // many it needs when that's too few.
+        let found =
+            unsafe { libc::getgrouplist(name.as_ptr(), user.gid, groups.as_mut_ptr(), &mut count) };
+        if found >= 0 {
+            groups.truncate(count.max(0) as usize);
+            return Ok(groups);
+        }
+        if count as usize <= groups.len() {
+            return Err(format!("{}'s groups can't be read.", user.name));
+        }
+        groups.resize(count as usize, 0);
+    }
+}
+
+/// Root's effective group and groups, put back with root's effective id
+/// when dropped: the saved set-user-ID stays 0, so root can come back.
+#[cfg(target_os = "linux")]
+struct Ids {
+    gid: libc::gid_t,
+    groups: Vec<libc::gid_t>,
+}
+
+#[cfg(target_os = "linux")]
+impl Ids {
+    fn switch_to(user: &Passwd, groups: &[libc::gid_t]) -> Result<Ids, String> {
+        // SAFETY: getgroups with 0 says how many there are, then fills a
+        // buffer that size.
+        let mut saved: Vec<libc::gid_t> =
+            vec![0; unsafe { libc::getgroups(0, std::ptr::null_mut()) }.max(0) as usize];
+        let count = unsafe { libc::getgroups(saved.len() as libc::c_int, saved.as_mut_ptr()) };
+        if count < 0 {
+            return Err(format!(
+                "root's groups: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        saved.truncate(count as usize);
+        let root = Ids {
+            // SAFETY: getegid can't fail.
+            gid: unsafe { libc::getegid() },
+            groups: saved,
+        };
+        // The groups and the group first: once the user's id is in
+        // effect, they can't be changed. A step that fails puts back
+        // what came before it, when `root` drops.
+        // SAFETY: plain system calls on this process's ids.
+        let switched = unsafe {
+            libc::setgroups(groups.len(), groups.as_ptr()) == 0
+                && libc::setegid(user.gid) == 0
+                && libc::seteuid(user.uid) == 0
+        };
+        match switched {
+            true => Ok(root),
+            false => Err(format!(
+                "{}'s ids couldn't be taken on: {}",
+                user.name,
+                std::io::Error::last_os_error()
+            )),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Ids {
+    fn drop(&mut self) {
+        // SAFETY: plain system calls on this process's ids.
+        let back = unsafe {
+            libc::seteuid(0) == 0
+                && libc::setegid(self.gid) == 0
+                && libc::setgroups(self.groups.len(), self.groups.as_ptr()) == 0
+        };
+        if !back {
+            // Going on with someone else's ids would do root's work as them.
+            eprintln!(
+                "rovik-agentd: root's ids couldn't be put back: {}",
+                std::io::Error::last_os_error()
+            );
+            std::process::abort();
+        }
+    }
+}
+
+/// A new file at `path` that only its owner, root, can read, in place of
+/// any left there before.
+fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
 /// Whether `from`, read as `bytes`, comes with a signature, `<from>.sig`,
 /// that this binary's release key checks; an error when it has one that
-/// doesn't. Without a key, nothing is taken as signed.
-fn signed(from: &Path, bytes: &[u8]) -> Result<bool, String> {
+/// doesn't. Without a key, nothing is taken as signed. The signature is
+/// read with `user`'s access, as the build was.
+fn signed(from: &Path, bytes: &[u8], user: &Passwd) -> Result<bool, String> {
     let mut signature = from.as_os_str().to_owned();
     signature.push(release::SIGNATURE);
-    let Ok(signature) = std::fs::read_to_string(PathBuf::from(signature)) else {
+    let read = as_user(user, || std::fs::read_to_string(PathBuf::from(signature)))?;
+    let Ok(signature) = read else {
         return Ok(false);
     };
     let Some(key) = release::key() else {

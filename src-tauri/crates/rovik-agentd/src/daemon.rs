@@ -51,6 +51,9 @@ pub struct Daemon {
     pub imports: tokio::sync::Mutex<()>,
     /// A team server's caps on this user's worktrees and disk (5.5).
     pub caps: Caps,
+    /// One worktree made at a time: the caps are checked, and the worktree
+    /// made, under it, so two at once can't both take the last place.
+    pub making: tokio::sync::Mutex<()>,
 }
 
 impl Daemon {
@@ -335,8 +338,13 @@ impl Daemon {
     }
 
     /// Starts the chat's run, which follows its computer's configuration
-    /// (`config_for`), never another's.
+    /// (`config_for`), never another's. Never a chat its computer took
+    /// back (6.8), whatever starts it: a request, a restart or a task.
     pub async fn run(&self, mut start: StartRequest) -> Result<Response, Fail> {
+        if self.store.is_released(&start.dialog_id) {
+            let why = rovik_core::refusal(&Location::Released, Access::Write);
+            return Err(Fail::new(FailCode::NotOwner, why.unwrap_or_default()));
+        }
         start.config = None;
         // The daemon works in its own copy, never in an overlay: the
         // chat's worktree, whatever folder the start names (D8).

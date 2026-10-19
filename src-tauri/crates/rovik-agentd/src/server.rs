@@ -265,6 +265,9 @@ async fn put_blob(
     if declared.is_some_and(|n| n > MAX_BLOB) {
         return too_large();
     }
+    if let Err(fail) = room_on_disk(&daemon).await {
+        return failed(fail);
+    }
     let body = tokio::time::timeout(
         BODY_WAIT,
         axum::body::to_bytes(request.into_body(), MAX_BLOB),
@@ -329,6 +332,9 @@ async fn push_pack(
             return failed(fail);
         }
     }
+    if let Err(fail) = room_on_disk(&daemon).await {
+        return failed(fail);
+    }
     let (pieces, mut taken) = mpsc::channel::<Vec<u8>>(PIECES);
     let projects = daemon.projects.clone();
     let receiving = rt::spawn_blocking(move || {
@@ -347,6 +353,15 @@ async fn push_pack(
         Ok(Err(fail)) => failed(fail),
         Err(e) => failed(Fail::new(FailCode::Internal, e.to_string())),
     }
+}
+
+/// Whether Rovik's folders are under the server's disk cap (5.5): a push or
+/// an upload adds to them only then.
+async fn room_on_disk(daemon: &Daemon) -> Result<(), Fail> {
+    let caps = daemon.caps.clone();
+    let room = rt::spawn_blocking(move || caps.room_on_disk()).await;
+    let room = room.map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
+    room.map_err(|why| Fail::new(FailCode::Busy, why))
 }
 
 /// The chat whose refs these are: `refs/rovik/chats/<chat>/...`.

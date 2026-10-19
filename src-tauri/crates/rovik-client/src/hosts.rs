@@ -43,6 +43,12 @@ impl Hosts {
             .collect()
     }
 
+    /// Why the host turned this computer away, when it did
+    /// (`HostState::Refused`).
+    pub fn refusal(&self, host: &str) -> Option<String> {
+        self.lock().get(host).and_then(Client::refusal)
+    }
+
     /// Each host's state, by its id.
     pub fn states(&self) -> Vec<(String, HostState)> {
         let clients = self.lock();

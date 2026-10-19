@@ -5,7 +5,7 @@
 
 use super::config::run_config;
 use super::outcome::{failure_summary, plural};
-use super::stage::{Recorded, Stage, StageRecord, Status};
+use super::stage::{next_round, Recorded, Stage, StageRecord, Status};
 use crate::chat_db::store::{self, MessageRow};
 use crate::core::Core;
 use serde_json::Value;
@@ -57,10 +57,14 @@ pub(super) async fn done_in_run(
         .await?;
     // The configuration the run had: Autopilot's.
     let config = run_config(core.agents.config_for(dialog_id), run.record.effort);
+    // The stage's round in the task, as a stage with a run of its own has
+    // it: the rounds of its review or its checks inside the run are its
+    // record's (`reference`) and its line's.
+    let round = next_round(records.iter().map(|r| &r.record), stage);
     let base = StageRecord::ended(
         &run.record.task,
         stage,
-        1,
+        round,
         run.record.effort,
         Status::Skipped,
     );
@@ -180,7 +184,6 @@ pub(super) fn acceptance_record(base: StageRecord, last: Option<&MessageRow>) ->
     };
     StageRecord {
         status,
-        round,
         outcome,
         reference: Some(row.id.clone()),
         ..base.with_summary(summary)
@@ -198,7 +201,6 @@ pub(super) fn checks_record(
     let field = |key: &str| last.and_then(|m| m.meta.as_ref()?.get("verification")?.get(key));
     let ended = |status: Status, summary: String| StageRecord {
         status,
-        round: field("round").and_then(Value::as_u64).unwrap_or(1) as u32,
         reference: last.map(|m| m.id.clone()),
         ..base.clone().with_summary(summary)
     };
@@ -261,7 +263,6 @@ pub(super) fn review_record(
         };
         return StageRecord {
             status: Status::Failed,
-            round,
             reference: Some(row.id.clone()),
             outcome: Some(outcome.into()),
             ..base.with_summary(format!(
@@ -284,7 +285,6 @@ pub(super) fn review_record(
     };
     StageRecord {
         status,
-        round: review["round"].as_u64().unwrap_or(1) as u32,
         reference: Some(row.id.clone()),
         ..base.with_summary(summary)
     }

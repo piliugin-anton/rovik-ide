@@ -33,6 +33,8 @@ function unavailable(host: HostSummary | undefined): string | null {
       return 'offline';
     case 'version-mismatch':
       return 'needs a newer app';
+    case 'refused':
+      return 'refused the connection';
     default:
       return 'connecting';
   }

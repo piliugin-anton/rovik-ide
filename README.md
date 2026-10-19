@@ -317,7 +317,11 @@ PuTTYgen `.ppk` files, so an existing PuTTY key works as it is.
 
 On a server several people share, whoever deploys Rovik there first becomes
 its administrator, and that account needs `sudo`. Everyone else only needs
-their own account with their key in it.
+their own account with their key in it. Deploying where Rovik is installed
+already, the app trusts the installed build when it's one of Rovik's
+releases. Any other build, such as an administrator's own, shows in
+**Test connection** with its SHA-256, and the app connects once you click
+**Trust this build**.
 
 ### A terminal on a cloud host
 

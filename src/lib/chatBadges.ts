@@ -52,6 +52,13 @@ export function chatBadges(
           title: `${name} serves only newer versions of this app.`,
         });
         break;
+      case 'refused':
+        badges.push({
+          kind: 'offline',
+          label: `${name} · refused`,
+          title: `${name} turned this computer away: Settings → Cloud hosts says why.`,
+        });
+        break;
       default:
         badges.push({ kind: 'cloud', label: name, title: `This chat runs on ${name}.` });
     }

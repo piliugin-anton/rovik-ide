@@ -223,11 +223,16 @@ export function currentTask(messages: ChatMessage[]): StageRow[] | null {
   return task;
 }
 
-/** Whether a task is over: delivered, or stopped by the user. */
+/**
+ * Whether a task is over: delivered, or stopped by the user. A candidate's
+ * records (T05) are over at a failed stage: its task's chat goes on from
+ * there, as the backend's `next_stage` has it.
+ */
 export function taskOver(rows: StageRow[]): boolean {
   const last = rows[rows.length - 1]?.stage;
   if (!last) return true;
   if (last.status === 'running') return false;
+  if (last.status === 'failed' && rows[0].stage.candidate) return true;
   return last.name === 'deliver' || (last.status === 'failed' && last.outcome === 'stopped');
 }
 
@@ -329,7 +334,9 @@ const SKIPPED = ['skipped', 'unverified'];
  * only goes forward so, never back. The same until the driver has recorded
  * each (one after another, once the run ended). Only `messages` after the
  * run's record (all of them when it isn't held: the newest are the run's),
- * and only `messages` that reach the chat's newest.
+ * and only `messages` that reach the chat's newest. Each has its stage's
+ * round in the task, as the driver records it (inside.rs), and the one
+ * going on waits out the provider's rate limit while the run does (H07).
  */
 export function withLiveStages(rows: StageRow[], messages: ChatMessage[]): StageRow[] {
   let at = rows.length - 1;
@@ -350,14 +357,23 @@ export function withLiveStages(rows: StageRow[], messages: ChatMessage[]): Stage
   const reached = inside.filter(({ name }) => latest.has(name)).map(({ name }) => name);
   if (!reached.length) return rows;
   const furthest = reached[reached.length - 1];
+  const waiting = waitsOutRateLimit(run.stage) ? run.stage.rateLimit : undefined;
   const live = reached
     .filter((name) => !after.some((r) => r.stage.name === name))
     .map((name): StageRow => {
       const { id, record } = latest.get(name)!;
       const skipped = SKIPPED.includes(record.status);
       const status = skipped ? 'skipped' : name === furthest ? 'running' : 'done';
-      const round = record.round ?? 1;
-      return { id, stage: { task: run.stage.task, name, status, round, effort: run.stage.effort } };
+      const round = rows.filter((r) => r.stage.name === name).length + 1;
+      const stage: StageMeta = {
+        task: run.stage.task,
+        name,
+        status,
+        round,
+        effort: run.stage.effort,
+      };
+      if (status === 'running' && waiting) stage.rateLimit = waiting;
+      return { id, stage };
     });
   const own =
     run.stage.status === 'running'

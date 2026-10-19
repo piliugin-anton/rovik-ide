@@ -217,9 +217,9 @@ pub struct Deployed {
     pub token: Secret,
     /// What answered `Welcome`.
     pub daemon: DaemonInfo,
-    /// The hash of the build the server runs, which `check_install` knows
-    /// from then on: the one uploaded, or on a server another user
-    /// installed, theirs.
+    /// The hash of the build `check_install` knows from then on: the one
+    /// the server runs, installed by this deploy; on a server another user
+    /// installed, the one uploaded, as theirs isn't taken on trust.
     pub sha256: String,
 }
 
@@ -270,19 +270,28 @@ pub async fn deploy(
         client: format!("rovik-client {}", env!("CARGO_PKG_VERSION")),
     };
     let daemon = confirm(connector, &identity).await?;
-    // The build the server runs is trusted from now on, as the user chose
-    // to deploy there: theirs, or the one already installed.
-    let (installed, _) = installed(&ssh, &probe.user, layout).await?;
-    let installed = installed.ok_or_else(|| {
-        DeployError::Failed(format!(
-            "Rovik's binary isn't on the server at {}.",
-            layout.installed
-        ))
-    })?;
+    // The build trusted from now on (D5). Installed now, the one the
+    // server runs. Installed before, by someone else, the one that went
+    // up: theirs passes each connection's check (`check_install`) as that
+    // build or one its version's release signed; any other the user
+    // compares and trusts, as after an administrator's upgrade.
+    let sha256 = match probe.install {
+        Some(_) => binary.sha256.clone(),
+        None => {
+            let (installed, _) = installed(&ssh, &probe.user, layout).await?;
+            let installed = installed.ok_or_else(|| {
+                DeployError::Failed(format!(
+                    "Rovik's binary isn't on the server at {}.",
+                    layout.installed
+                ))
+            })?;
+            installed.sha256
+        }
+    };
     Ok(Deployed {
         token,
         daemon,
-        sha256: installed.sha256,
+        sha256,
     })
 }
 
@@ -448,9 +457,16 @@ pub async fn check_install(
         return Ok(build);
     }
     if let (Some(releases), Some(version)) = (releases, &build.version) {
-        let listed = releases.sums(version).await;
-        if listed.is_ok_and(|sums| sums.contains(&build.sha256)) {
-            return Ok(build);
+        match releases.sums(version).await {
+            Ok(sums) if sums.contains(&build.sha256) => return Ok(build),
+            // The list couldn't be had now (the network, as the computer
+            // wakes): no verdict on the build, and a later look may pass.
+            Err(crate::release::Unfetched::Failed(why)) => {
+                return Err(DeployError::Failed(format!(
+                    "The release's list of builds couldn't be had to check Rovik there: {why}"
+                )))
+            }
+            _ => {}
         }
     }
     Err(DeployError::Changed(build))

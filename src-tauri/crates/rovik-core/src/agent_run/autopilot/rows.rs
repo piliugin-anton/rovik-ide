@@ -260,6 +260,8 @@ pub(in crate::agent_run) async fn append(
 /// The chat's latest task, with its records, while it's the chat's current
 /// request: no message of the user's came after it. A new message takes
 /// over from a task that's still unfinished; its records stay as they were.
+/// One that never started (marked failed, its draft given back) takes over
+/// from nothing, as the strip has it (autopilot.ts `currentTask`).
 pub async fn current_task(
     core: &Core,
     dialog_id: &str,
@@ -274,7 +276,7 @@ pub async fn current_task(
         .db
         .read(move |c| store::role_messages_after(c, &id, "user", since))
         .await?;
-    if later.iter().any(|m| !plan::is_harness(m)) {
+    if later.iter().any(|m| !plan::is_harness(m) && !m.failed) {
         return Ok(None);
     }
     Ok(Some((task, records)))

@@ -14,6 +14,7 @@ use crate::store::{Place, ProjectState};
 use crate::sync::{self, Merged};
 use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, WorktreeAddOptions, WorktreePruneOptions};
+use rovik_core::agent_run::FilesHold;
 use rovik_core::chat_db::{projects, store};
 use rovik_core::{project_profile, rt};
 use rovik_protocol::packs::{snapshot_ref, PUSHED_REFS};
@@ -73,8 +74,9 @@ pub async fn sync(
     })?;
     let base = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
     if let Some(root) = root(daemon, chat) {
-        // A run writes the worktree's files: a merge under it would race it.
-        idle(daemon, chat)?;
+        // A run writes the worktree's files: a merge under it would race
+        // it, and none starts while it merges.
+        let _files = hold_files(daemon, chat)?;
         let merged = merge_into(daemon, chat, project, base, excludes, mark).await?;
         return Ok(Response::Synced(Synced {
             root: text(&root),
@@ -118,8 +120,10 @@ pub async fn recheck(
     let root = root(daemon, chat)
         .ok_or_else(|| bad_request("This chat has no worktree on this server."))?;
     let snapshot = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
-    idle(daemon, chat)?;
+    let files = hold_files(daemon, chat)?;
     let merged = merge_into(daemon, chat, project, snapshot, excludes, false).await?;
+    // The checks' run starts on what merged.
+    drop(files);
     if merged.state == SyncState::Synced {
         if merged.files.is_empty() {
             daemon.results.recommit(chat).await?;
@@ -193,6 +197,7 @@ pub async fn new_worktree(
     changes: Option<Oid>,
     excludes: Vec<String>,
 ) -> Result<(PathBuf, PathBuf), Fail> {
+    let _making = daemon.making.lock().await;
     room_for_worktree(daemon, chat).await?;
     let worktree = daemon.worktrees.join(chat);
     let (projects, id, name, at) = (
@@ -236,6 +241,7 @@ pub async fn candidate_worktree(
     if !plain(chat) {
         return Err(bad_request("Not a chat's id."));
     }
+    let _making = daemon.making.lock().await;
     room_for_worktree(daemon, chat).await?;
     let state = daemon
         .store
@@ -294,7 +300,8 @@ pub async fn remove_candidate(daemon: &Daemon, project: &str, chat: &str) {
     }
 }
 
-/// Whether a new worktree for the chat fits the server's limits (5.5).
+/// Whether a new worktree for the chat fits the server's limits (5.5). The
+/// worktree is made under `Daemon::making`, which the check is under too.
 pub async fn room_for_worktree(daemon: &Daemon, chat: &str) -> Result<(), Fail> {
     let (caps, worktrees, name) = (
         daemon.caps.clone(),
@@ -307,15 +314,17 @@ pub async fn room_for_worktree(daemon: &Daemon, chat: &str) -> Result<(), Fail> 
         .map_err(|why| Fail::new(FailCode::Busy, why))
 }
 
-/// What changes the chat's files waits for its run to end.
-fn idle(daemon: &Daemon, chat: &str) -> Result<(), Fail> {
-    if daemon.core.agents.is_running(chat) {
-        return Err(Fail::new(
+/// The chat's files, for what changes them outside its runs (a merge,
+/// changes thrown away or taken back): refused while its run goes, and no
+/// run of the chat starts until it's let go, whatever starts it (its task's
+/// next stage, say), which waits.
+pub fn hold_files(daemon: &Daemon, chat: &str) -> Result<FilesHold, Fail> {
+    daemon.core.agents.hold_files(chat).ok_or_else(|| {
+        Fail::new(
             FailCode::Busy,
             "This chat's run is still going: stop it first.",
-        ));
-    }
-    Ok(())
+        )
+    })
 }
 
 /// The project's repository, made with the client's ignore rules as
@@ -432,8 +441,9 @@ async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) {
 /// `released_before`. A chat taken back but not forgotten keeps them for
 /// its week: its computer may still finish taking it back (K51). Released
 /// longer ago than that, whatever `released_before` says, its worktree
-/// goes while its rows stay for that computer's last pull (6.8). How many
-/// went.
+/// goes while its rows stay for that computer's last pull (6.8). One taken
+/// back, without a worktree and forgotten, goes from state.json. How many
+/// worktrees went.
 pub async fn collect_chats(daemon: &Daemon, released_before: i64) -> usize {
     let mut removed = 0;
     let week_over = store::now_ms() - crate::gc::KEEP_RELEASED_MS;
@@ -457,6 +467,24 @@ pub async fn collect_chats(daemon: &Daemon, released_before: i64) -> usize {
             clear(daemon, &chat, None).await;
             daemon.store.worktree_gone(&chat);
             removed += 1;
+        }
+    }
+    // A chat taken back whose worktree went and whose rows its computer
+    // had forgotten (`ChatForget`): nothing of it is kept, not even what
+    // state.json had. A later move here starts it anew all the same.
+    for chat in daemon.store.chats() {
+        if !daemon.store.is_released(&chat) || daemon.store.place(&chat).is_some() {
+            continue;
+        }
+        let id = chat.clone();
+        let row = daemon
+            .core
+            .db
+            .read(move |c| store::get_dialog(c, &id))
+            .await;
+        if matches!(row, Ok(None)) {
+            log::info!("{chat} went back to its computer and its rows went: forgotten here");
+            daemon.store.forget(&chat);
         }
     }
     removed

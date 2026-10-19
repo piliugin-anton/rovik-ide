@@ -24,7 +24,8 @@ pub(super) async fn saved_plan(
         .await?;
     Ok(rows.iter().rev().find_map(|m| {
         let file = m.meta.as_ref()?.get("planFile")?.as_str()?;
-        Some((m.id.clone(), file.to_string()))
+        // A plan's file only: the rows may be a server's (`is_plan_file`).
+        plan::is_plan_file(file).then(|| (m.id.clone(), file.to_string()))
     }))
 }
 

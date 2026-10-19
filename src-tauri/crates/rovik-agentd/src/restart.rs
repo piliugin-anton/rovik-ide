@@ -1,10 +1,12 @@
 //! Runs that a crash, a kill or the daemon's stop cut or paused (5.4): at
 //! start-up, each chat whose run was going picks up where its stored rows
-//! say, unless a crash cut it twice within the hour. An Autopilot task
-//! (agent_run/autopilot/) goes on too: cut where no start picks its run
-//! up, or between two of its stages, which no run's restart reaches.
-//! Start-up's events reach the clients that subscribe from the start of
-//! this boot.
+//! say, unless a crash cut it twice within the hour. A clean stop (an
+//! upgrade, a restart) counts as none: its runs paused, waited for the
+//! user or sat between two stages. An Autopilot task (agent_run/autopilot/)
+//! goes on too: cut where no start picks its run up, or between two of its
+//! stages, which no run's restart reaches. A chat its computer took back
+//! (6.8) is never started here again. Start-up's events reach the clients
+//! that subscribe from the start of this boot.
 
 use crate::daemon::Daemon;
 use rovik_core::agent_run::autopilot;
@@ -18,18 +20,24 @@ use rovik_protocol::Response;
 pub const INTERRUPTED: &str = "interrupted";
 
 /// Each chat that was running when the daemon stopped, then each whose
-/// Autopilot task was cut between two stages.
+/// Autopilot task was cut between two stages: not those their computers
+/// took back, which go on there.
 pub async fn restart_interrupted(daemon: &Daemon) {
+    // Taken first: a crash while these start counts at the next start.
+    let clean = daemon.store.take_clean_stop();
     let running = daemon.store.running();
     for dialog_id in &running {
-        restart(daemon, dialog_id).await;
+        restart(daemon, dialog_id, clean).await;
     }
     for dialog_id in daemon.store.chats() {
-        if running.contains(&dialog_id) || daemon.core.agents.is_running(&dialog_id) {
+        if running.contains(&dialog_id)
+            || daemon.core.agents.is_running(&dialog_id)
+            || daemon.store.is_released(&dialog_id)
+        {
             continue;
         }
         if has_task(daemon, &dialog_id).await {
-            resume_task(daemon, &dialog_id).await;
+            resume_task(daemon, &dialog_id, clean).await;
         }
     }
 }
@@ -45,13 +53,14 @@ async fn has_task(daemon: &Daemon, dialog_id: &str) -> bool {
 }
 
 /// Goes on with the chat's Autopilot task as a Resume does, counted as a
-/// restart. False: it doesn't go on, and the chat waits.
-async fn resume_task(daemon: &Daemon, dialog_id: &str) -> bool {
+/// restart unless the daemon's stop was `clean`. False: it doesn't go on,
+/// and the chat waits.
+async fn resume_task(daemon: &Daemon, dialog_id: &str, clean: bool) -> bool {
     if let Err(fail) = daemon.can_run(dialog_id) {
         log::warn!("chat {dialog_id}: its task isn't resumed: {fail}");
         return false;
     }
-    if !counted(daemon, dialog_id) {
+    if !clean && !counted(daemon, dialog_id) {
         return false;
     }
     let Some(request) = daemon.store.restart_request(dialog_id, StartKind::Resume) else {
@@ -88,14 +97,21 @@ fn counted(daemon: &Daemon, dialog_id: &str) -> bool {
     false
 }
 
-async fn restart(daemon: &Daemon, dialog_id: &str) {
+async fn restart(daemon: &Daemon, dialog_id: &str, clean: bool) {
+    // Its computer took it back: whatever its run was, it goes on there.
+    if daemon.store.is_released(dialog_id) {
+        log::info!("chat {dialog_id}: went back to its computer, so not restarted here");
+        return daemon.store.ended(dialog_id, None);
+    }
     let start = match recovery::after_crash(&daemon.core, dialog_id).await {
         Ok(Recovery::Start(start)) => start,
         Ok(Recovery::Paused) => return daemon.store.ended(dialog_id, None),
         // Cut where no start picks it up: an Autopilot task's run is
         // started again, as a Resume of its task does it.
         Ok(Recovery::Interrupted) => {
-            if !(has_task(daemon, dialog_id).await && resume_task(daemon, dialog_id).await) {
+            let resumed =
+                has_task(daemon, dialog_id).await && resume_task(daemon, dialog_id, clean).await;
+            if !resumed {
                 interrupted(daemon, dialog_id);
             }
             return;
@@ -109,10 +125,11 @@ async fn restart(daemon: &Daemon, dialog_id: &str) {
         log::warn!("chat {dialog_id}: not restarted: {fail}");
         return interrupted(daemon, dialog_id);
     }
-    // A run the daemon's stop paused (R02) went down cleanly: it doesn't
-    // count against the restarts a crashing run is allowed.
+    // A run the daemon's stop paused (R02), or one a clean stop found
+    // waiting for the user, went down cleanly: it doesn't count against
+    // the restarts a crashing run is allowed.
     let drained = start == StartKind::ContinueRun;
-    if !drained && !counted(daemon, dialog_id) {
+    if !drained && !clean && !counted(daemon, dialog_id) {
         return interrupted(daemon, dialog_id);
     }
     let Some(request) = daemon.store.restart_request(dialog_id, start.clone()) else {

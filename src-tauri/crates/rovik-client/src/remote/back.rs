@@ -10,7 +10,8 @@
 //!    before the release, so a failure up to here leaves the chat on its
 //!    host as it was.
 //! 4. `ChatRelease`: the host refuses the chat's writes from now on, and the
-//!    move can only be finished.
+//!    move can only be finished. Its step is kept before it's asked: an
+//!    answer lost on the way is settled by what the host says it did.
 //! 5. A last pull, complete: nothing changes there any more.
 //! 6. The flip: the chat is here, and its mirror's row goes. Its changes
 //!    wait as a local isolated chat's do, or land first where its runs here
@@ -21,7 +22,8 @@
 //!
 //! A move back cut short is settled once its host says whether it released
 //! the chat (`ChatOwner`): finished from step 5 if it did, dropped if not,
-//! the chat still there.
+//! the chat still there. So is a release whose answer was lost, at once
+//! when the host still answers, else once it's next connected.
 
 use super::results::Job;
 use super::{internal, CloudEvent, Remote};
@@ -110,11 +112,7 @@ impl Remote {
                 return Err(self.give_up(&host, dialog_id, fail).await);
             }
             self.moving_back(dialog_id, "releasing", None);
-            let release = Request::ChatRelease {
-                dialog_id: dialog_id.to_string(),
-                move_id: None,
-            };
-            if let Err(fail) = client.request::<bool>(release).await {
+            if let Err(fail) = self.release_there(&client, dialog_id).await {
                 return Err(self.give_up(&host, dialog_id, fail).await);
             }
         }
@@ -154,6 +152,39 @@ impl Remote {
         self.not_cancelled(dialog_id)
     }
 
+    /// Step 4: `ChatRelease`, its step kept first. Its answer lost (the link,
+    /// a timeout), the host says whether it let the chat go: if it did, the
+    /// move goes on; if it can't say, the move stays at its release, settled
+    /// once the host is next connected. A host that refused keeps the chat,
+    /// as it was.
+    async fn release_there(&self, client: &Client, dialog_id: &str) -> Result<(), Fail> {
+        self.step(dialog_id, moves::RELEASING).await?;
+        let release = Request::ChatRelease {
+            dialog_id: dialog_id.to_string(),
+            move_id: None,
+        };
+        let fail = match client.request::<bool>(release).await {
+            Ok(_) => return Ok(()),
+            Err(fail) => fail,
+        };
+        let refused = matches!(
+            fail.code,
+            FailCode::Busy | FailCode::NotOwner | FailCode::BadRequest
+        );
+        if !refused {
+            match self.ownership(client, dialog_id).await {
+                // Released, or not there at all: what's here is all of it.
+                Ok(owned) if owned.as_ref().is_none_or(|o| o.released) => return Ok(()),
+                Ok(_) => {}
+                // Can't tell: settled once the host is next connected.
+                Err(_) => return Err(fail),
+            }
+        }
+        // Not released: the chat stays there, and the move can be dropped.
+        self.step(dialog_id, moves::FETCHED).await?;
+        Err(fail)
+    }
+
     /// Steps 5 to 7, once the host released the chat. A failure before the
     /// flip leaves the move at its release, to be finished when the host is
     /// next connected.
@@ -169,7 +200,7 @@ impl Remote {
         self.let_go(dialog_id);
         if let Err(fail) = flipped {
             let message = format!(
-                "{} It finishes once {} is connected again.",
+                "{} It finishes once {} is connected again, or now when you move it back again.",
                 fail.message,
                 self.host_name(host)
             );
@@ -203,12 +234,15 @@ impl Remote {
     /// A move back that failed or was cancelled before the host released
     /// the chat: it stays there, as it was, and the results that came
     /// meanwhile, passed over for the move, are asked for again. One the
-    /// host may have released, cut short there and taken up again, keeps
-    /// its row, to be finished when the host is next connected.
+    /// host may have released (cut short there and taken up again, or its
+    /// release's answer lost) keeps its row, to be settled when the host is
+    /// next connected, and says so.
     async fn give_up(&self, host: &str, dialog_id: &str, fail: Fail) -> Fail {
         let id = dialog_id.to_string();
         let dropped = self.core.db.write(move |c| match moves::of_chat(c, &id)? {
-            Some(going) if going.step == moves::RELEASED => Ok(false),
+            Some(going) if matches!(going.step.as_str(), moves::RELEASED | moves::RELEASING) => {
+                Ok(false)
+            }
             _ => moves::forget(c, &id).map(|()| true),
         });
         let dropped = dropped.await.unwrap_or_else(|e| {
@@ -218,7 +252,7 @@ impl Remote {
         self.let_go(dialog_id);
         if !dropped {
             let message = format!(
-                "{} It finishes once {} is connected again.",
+                "{} It finishes once {} is connected again, or now when you move it back again.",
                 fail.message,
                 self.host_name(host)
             );
@@ -418,6 +452,7 @@ impl Remote {
             None => true,
         };
         if !released {
+            // Before the release, or asked and not taken: the chat stays.
             if going.step != moves::RELEASED {
                 let id = chat.to_string();
                 let dropped = self.core.db.write(move |c| moves::forget(c, &id));

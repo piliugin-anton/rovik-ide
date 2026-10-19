@@ -1324,7 +1324,8 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
     );
     let review = &records[1];
     assert_eq!(review.outcome.as_deref(), Some("plan-blocked"));
-    assert_eq!(review.round, 3);
+    // The stage's round in the task; its reviews' rounds are its line's.
+    assert_eq!(review.round, 1);
     assert_eq!(
         review.summary.as_deref(),
         Some("Blocked after 3 reviews: 1 high finding open")
@@ -4423,7 +4424,7 @@ async fn an_unsatisfied_criterion_gets_one_more_round_and_a_second_check() {
     assert_eq!(names(&records), expected, "{records:#?}");
     assert_eq!(records[4].outcome.as_deref(), Some("verified"));
     assert_eq!(records[7].summary.as_deref(), Some("The criterion is met"));
-    assert_eq!(records[7].round, 2);
+    assert_eq!(records[7].round, 1, "the stage's round, not its checks'");
 
     let messages = h.messages().await;
     let checks = acceptances(&messages);
@@ -5912,7 +5913,8 @@ async fn thorough_plan_reviews_go_on_by_progress_and_end_after_two_without() {
         (Stage::PlanReview, Status::Failed, Some("plan-blocked")),
         "{records:#?}"
     );
-    assert_eq!(review.round, 4, "past Balanced's three");
+    assert_eq!(review.round, 1, "the stage's round");
+    // Past Balanced's three reviews.
     assert_eq!(
         review.summary.as_deref(),
         Some("Blocked after 4 reviews: 1 high finding open")
@@ -6130,7 +6132,14 @@ async fn thorough_acceptance_checks_go_on_by_progress() {
         (Status::Failed, Some("unmet")),
         "{records:#?}"
     );
-    assert_eq!(acceptance.round, 4, "past Balanced's two");
+    assert_eq!(acceptance.round, 1, "the stage's round");
+    assert!(
+        acceptance
+            .summary
+            .as_deref()
+            .is_some_and(|s| s.ends_with("after 4 checks")),
+        "past Balanced's two: {acceptance:?}"
+    );
     let messages = h.messages().await;
     let checks = acceptances(&messages);
     let unsatisfied: Vec<usize> = checks
@@ -6983,4 +6992,184 @@ async fn a_rate_limited_candidate_waits_it_out_and_goes_on() {
     );
     assert_eq!(log_lines(&h, "rateLimitWait").await.len(), 1);
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+}
+
+/*
+ * A task's stage left under way that nothing would end
+ */
+
+/// A task's records up to its implementation as a crash would leave them:
+/// its message, its stages before the implementation done, `implementing`
+/// recorded, and the IDE's message that started it, then `after`. The
+/// implementation's record.
+async fn cut_at_the_implementation(
+    h: &Harness,
+    task: &str,
+    implementing: StageRecord,
+    after: Vec<store::NewMessage>,
+) -> String {
+    use super::autopilot::add_stage;
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    let asked = vec![store::NewMessage {
+        id: task.into(),
+        meta: Some(json!({ "mode": "autopilot" })),
+        ..run::new_message("user", "Make the test pass")
+    }];
+    db.write(move |c| store::append_messages(c, &id, &asked).map(|_| ()))
+        .await
+        .unwrap();
+    for name in [Stage::Plan, Stage::PlanReview, Stage::Prepare, Stage::Tests] {
+        let done = StageRecord::ended(task, name, 1, Effort::Balanced, Status::Done);
+        add_stage(&h.core, &h.dialog_id, &done).await.unwrap();
+    }
+    let implement = add_stage(&h.core, &h.dialog_id, &implementing)
+        .await
+        .unwrap();
+    let mut rows = vec![store::NewMessage {
+        meta: Some(json!({
+            "harness": "autopilot",
+            "implementsPlan": true,
+            "autopilot": { "task": task, "stage": "implement", "record": implement },
+        })),
+        ..run::new_message("user", "Implement this plan.")
+    }];
+    rows.extend(after);
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    db.write(move |c| store::append_messages(c, &id, &rows).map(|_| ()))
+        .await
+        .unwrap();
+    implement
+}
+
+/// U03: a run that paused for a person (its tool-call checkpoint), cut
+/// before its stage ended: nobody presses Continue in Autopilot, so the
+/// resume ends the stage as the run's end would have, and the task
+/// delivers instead of waiting for good.
+#[tokio::test]
+async fn a_stage_cut_after_its_run_paused_for_a_person_ends_at_the_resume() {
+    let h = harness(&[("ok.txt", "no")]).await;
+    let implementing = StageRecord::running("u-task", Stage::Implement, 1, Effort::Balanced);
+    let paused = store::NewMessage {
+        meta: Some(json!({ "paused": { "kind": "checkpoint" } })),
+        ..run::new_message("assistant", "Paused at the tool-call checkpoint.")
+    };
+    cut_at_the_implementation(&h, "u-task", implementing, vec![paused]).await;
+
+    let (url, _) = model(vec![Reply::Text("The report.")]).await;
+    h.start(resume_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(
+        (implement.status, implement.outcome.as_deref()),
+        (Status::Failed, Some("paused-checkpoint")),
+        "{records:#?}"
+    );
+}
+
+/// S09: a delivery whose run broke off before it said what became of the
+/// result is done all the same, without its report, as one whose run
+/// couldn't start: not left "didn't finish", with the task over.
+#[tokio::test]
+async fn a_delivery_whose_run_broke_off_still_delivers() {
+    use super::autopilot::add_stage;
+    let h = harness(&[("ok.txt", "no")]).await;
+    let done = StageRecord {
+        outcome: Some("done".into()),
+        ..StageRecord::ended(
+            "u-task",
+            Stage::Implement,
+            1,
+            Effort::Balanced,
+            Status::Done,
+        )
+    };
+    cut_at_the_implementation(&h, "u-task", done, Vec::new()).await;
+    for name in [Stage::Review, Stage::Checks, Stage::Acceptance] {
+        let skipped = StageRecord::ended("u-task", name, 1, Effort::Balanced, Status::Skipped);
+        add_stage(&h.core, &h.dialog_id, &skipped).await.unwrap();
+    }
+    crash_at(&h.dialog_id, Crash::InReport);
+
+    let (url, _) = model(vec![Reply::Text("Not asked for.")]).await;
+    h.start(resume_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let deliver = records.last().unwrap();
+    assert_eq!(deliver.name, Stage::Deliver, "{records:#?}");
+    assert_ne!(deliver.status, Status::Skipped, "{records:#?}");
+    let summary = deliver.summary.clone().unwrap_or_default();
+    assert!(!summary.starts_with("It didn't finish"), "{summary}");
+    assert!(!h
+        .messages()
+        .await
+        .iter()
+        .any(|m| m.meta.as_ref().is_some_and(|x| x.get("report").is_some())));
+}
+
+/// H07: a stage whose run can't start again once its wait for the
+/// provider's rate limit is over doesn't stay under way with nothing to
+/// run it: it ends as a stage whose run couldn't start, and the task
+/// delivers.
+#[tokio::test]
+async fn a_rate_limited_stage_whose_run_cant_start_again_ends() {
+    let h = harness(&[("ok.txt", "no")]).await;
+    let until = store::now_ms() + 500;
+    let waiting = StageRecord {
+        rate_limit: Some(super::autopilot::RateLimitWait {
+            until: Some(until),
+            waits: 1,
+            waited_ms: 60_000,
+        }),
+        ..StageRecord::running("u-task", Stage::Implement, 1, Effort::Balanced)
+    };
+    cut_at_the_implementation(&h, "u-task", waiting, Vec::new()).await;
+    let (url, _) = model(vec![Reply::Text("Not asked for.")]).await;
+    // The resume arms the wait; then the chat goes to another project, so
+    // its run can't start here when the wait is over.
+    h.start(resume_request(&h, &url)).await;
+    let id = h.dialog_id.clone();
+    h.core
+        .db
+        .write(move |c| {
+            let elsewhere = std::path::Path::new("/elsewhere");
+            crate::chat_db::projects::ensure(c, "p-other", "other", elsewhere)?;
+            store::set_dialog_project(c, &id, Some("p-other"))
+        })
+        .await
+        .unwrap();
+
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
+    assert_eq!(implement.status, Status::Failed, "{records:#?}");
+    let summary = implement.summary.clone().unwrap_or_default();
+    assert!(summary.starts_with("It couldn't start"), "{summary}");
+}
+
+/// A message of the user's that never started (marked failed, its draft
+/// given back) doesn't take over from the chat's task, as the strip has
+/// it (autopilot.ts `currentTask`); one that started does.
+#[tokio::test]
+async fn a_message_that_never_started_doesnt_end_the_current_task() {
+    let h = harness(&[]).await;
+    let implementing = StageRecord::running("u-task", Stage::Implement, 1, Effort::Balanced);
+    let failed = store::NewMessage {
+        failed: true,
+        ..run::new_message("user", "And another thing")
+    };
+    cut_at_the_implementation(&h, "u-task", implementing, vec![failed]).await;
+    let current = super::autopilot::current_task(&h.core, &h.dialog_id).await;
+    assert_eq!(
+        current.unwrap().map(|(task, _)| task).as_deref(),
+        Some("u-task")
+    );
+
+    let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+    let sent = vec![run::new_message("user", "Something else")];
+    db.write(move |c| store::append_messages(c, &id, &sent).map(|_| ()))
+        .await
+        .unwrap();
+    let current = super::autopilot::current_task(&h.core, &h.dialog_id).await;
+    assert!(
+        current.unwrap().is_none(),
+        "a message that started takes over"
+    );
 }

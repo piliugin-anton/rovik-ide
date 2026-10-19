@@ -162,7 +162,13 @@ what Rovik's folders take.
   away. The agent's commands there and anyone with root on it can read
   them." Each user can remove them there from Settings → Cloud hosts.
 - Administrators can read the same things as before they became
-  administrators, and nothing more.
+  administrators, and nothing more, as long as `agentd.toml` says
+  `allow_unsigned = false`, as it does unless someone changes it. With
+  `allow_unsigned = true`, each administrator can install a build of their
+  own, and that build is what sudo runs as root for every user's `user`
+  and `admin` commands, and the upgrade runs it as root at once: each
+  administrator has root on the server. Allow unsigned builds only where
+  every administrator may have root.
 
 ## Ports are shared
 
@@ -201,12 +207,16 @@ runs first and continue them on the new build. A release's build comes
 with its signature in `FILE.sig`, which the installed binary checks with
 the release key built into it, so a new build can't vouch for itself. The
 app uploads both. A build of your own has no signature: it goes in only
-once you allow that by setting `allow_unsigned = true` in `agentd.toml`.
+once you allow that by setting `allow_unsigned = true` in `agentd.toml`,
+which gives every administrator root on the server (see
+[What can read what](#what-can-read-what)).
 A build older than the installed one is refused unless the command says
-`--allow-downgrade`. The installer reads FILE once, and installs what it
-read: a file in your home is yours to change meanwhile, so it never goes
-back to it, and asks the copy under `/opt/rovik/bin` its version, as you
-rather than as root. Before the daemons start again, the new build installs
+`--allow-downgrade`. The installer reads FILE once, with your own access
+to it, so it reads nothing you couldn't, and installs what it read: a file
+in your home is yours to change meanwhile, so it never goes back to it. It
+asks a copy in memory its version, as you rather than as root, and the
+copy under `/opt/rovik/bin` is root's alone until it has passed. Each
+build is named for the version it says it is. Before the daemons start again, the new build installs
 the browser it pins if it's missing, and the other versions go. An upgrade
 from the app does the same for a server whose installed build is older
 than that.

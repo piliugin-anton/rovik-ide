@@ -357,6 +357,45 @@ async fn a_run_waiting_for_its_user_doesnt_hold_the_stop_up() {
     assert_eq!(stopped, Ok(Response::Bool(true)));
 }
 
+/// 5.4: the daemon's clean stops (an upgrade, a restart) while a run waits
+/// for its user aren't a crashing run's restarts: after three within the
+/// hour, the run still waits for its approval. A crash still counts.
+#[tokio::test(flavor = "multi_thread")]
+async fn clean_stops_while_a_run_waits_for_its_user_dont_count() {
+    let mut daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let (url, _) = model(vec![slow_command(), Reply::Text("Done.")]).await;
+    let asks = Permissions {
+        command_approval: ApprovalRule {
+            required: true,
+            by: Approver::User,
+        },
+        ..unattended()
+    };
+    started(&daemon, start(&url, &project, asks)).await;
+    assert_eq!(waiting_approval(&daemon).await.tool_call_id, "c1");
+    for _ in 0..3 {
+        daemon.stop().await;
+        assert!(daemon.state()["cleanStop"].is_i64(), "{}", daemon.state());
+        daemon.restart().await;
+        assert_eq!(waiting_approval(&daemon).await.tool_call_id, "c1");
+        assert_eq!(restarts(&daemon), 0, "a clean stop isn't a crash");
+        assert!(daemon.state()["cleanStop"].is_null(), "read once");
+    }
+    daemon.kill().await;
+    daemon.restart().await;
+    waiting_approval(&daemon).await;
+    assert_eq!(restarts(&daemon), 1, "a crash counts");
+    let mut session = daemon.session().await;
+    let stopped = session
+        .call(Request::AgentStop {
+            dialog_id: CHAT.into(),
+        })
+        .await;
+    assert_eq!(stopped, Ok(Response::Bool(true)));
+    assert!(!project.join("runs").exists(), "nothing ran");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_chat_cut_twice_within_the_hour_isnt_restarted_again() {
     let mut daemon = Daemon::start(&["--same-machine"]).await;

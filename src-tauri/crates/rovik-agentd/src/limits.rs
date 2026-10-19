@@ -22,6 +22,13 @@
 use serde::Deserialize;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long a measure of Rovik's folders stands for what adds to them
+/// without a worktree (a push, an upload): a push comes before each
+/// message, and the folders are walked whole.
+const MEASURE_AGAIN: Duration = Duration::from_secs(30);
 
 /// Where it is.
 pub const ADMIN_FILE: &str = "/etc/rovik/agentd.toml";
@@ -46,7 +53,8 @@ pub struct AdminFile {
     pub total_cpu_quota: Option<String>,
     /// `admin upgrade` takes a build that isn't signed with the release
     /// key: a build of one's own (B03). A release's signed build goes in
-    /// either way.
+    /// either way. sudo runs the installed build as root for everyone, so
+    /// this gives each administrator root on the server.
     #[serde(default)]
     pub allow_unsigned: bool,
 }
@@ -241,7 +249,8 @@ pub struct Slots {
 
 /// What a daemon enforces of the administrators' limits itself, besides the
 /// slots: the worktrees its user keeps, and the disk Rovik's two folders
-/// take (5.5).
+/// take (5.5). Each is checked before what would add to it: a worktree, a
+/// push, an upload, an import.
 #[derive(Clone, Debug, Default)]
 pub struct Caps {
     pub max_worktrees: Option<usize>,
@@ -250,6 +259,9 @@ pub struct Caps {
     pub folders: Vec<PathBuf>,
     /// Whom to ask for more.
     pub admins: Vec<String>,
+    /// The folders' last measure, and when it was taken: shared by the
+    /// clones.
+    measured: Arc<Mutex<Option<(Instant, u64)>>>,
 }
 
 impl Caps {
@@ -259,15 +271,60 @@ impl Caps {
             max_disk_gb: file.max_disk_gb,
             folders,
             admins: file.admins.clone(),
+            measured: Arc::default(),
         }
     }
 
-    /// Whether a new worktree for `chat` fits, the one it had aside.
-    pub fn room_for_worktree(&self, worktrees: &Path, chat: &str) -> Result<(), String> {
-        let ask = match self.admins.as_slice() {
+    /// Whom to ask for more.
+    fn ask(&self) -> String {
+        match self.admins.as_slice() {
             [] => "the server's administrators".to_string(),
             admins => admins.join(" or "),
+        }
+    }
+
+    /// Whether Rovik's folders are under the disk cap, as measured within
+    /// `MEASURE_AGAIN`: for what adds to them without a worktree.
+    pub fn room_on_disk(&self) -> Result<(), String> {
+        self.under_disk_cap(false)
+    }
+
+    /// The disk cap, against a measure taken now when `fresh`.
+    fn under_disk_cap(&self, fresh: bool) -> Result<(), String> {
+        let Some(most) = self.max_disk_gb else {
+            return Ok(());
         };
+        let used = self.used(fresh);
+        if used >= most << 30 {
+            return Err(format!(
+                "Rovik's folders take {} GB of the {most} GB this server allows you: \
+                 delete chats you're done with, or ask {} for more.",
+                used >> 30,
+                self.ask()
+            ));
+        }
+        Ok(())
+    }
+
+    /// What Rovik's folders take: measured again when `fresh` or when the
+    /// last measure is too old. One measure at a time.
+    fn used(&self, fresh: bool) -> u64 {
+        let mut measured = self.measured.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, used)) = *measured {
+            if !fresh && at.elapsed() < MEASURE_AGAIN {
+                return used;
+            }
+        }
+        let used = self.folders.iter().map(|f| size_of(f)).sum();
+        *measured = Some((Instant::now(), used));
+        used
+    }
+
+    /// Whether a new worktree for `chat` fits, the one it had aside. The
+    /// caller makes worktrees one at a time, so two can't both fit the
+    /// last place.
+    pub fn room_for_worktree(&self, worktrees: &Path, chat: &str) -> Result<(), String> {
+        let ask = self.ask();
         if let Some(most) = self.max_worktrees {
             let kept = std::fs::read_dir(worktrees)
                 .into_iter()
@@ -282,17 +339,7 @@ impl Caps {
                 ));
             }
         }
-        if let Some(most) = self.max_disk_gb {
-            let used: u64 = self.folders.iter().map(|f| size_of(f)).sum();
-            if used >= most << 30 {
-                return Err(format!(
-                    "Rovik's folders take {} GB of the {most} GB this server allows you: \
-                     delete chats you're done with, or ask {ask} for more.",
-                    used >> 30
-                ));
-            }
-        }
-        Ok(())
+        self.under_disk_cap(true)
     }
 }
 
@@ -427,6 +474,35 @@ mod tests {
             ..caps
         };
         assert!(disk.room_for_worktree(&work, "c3").is_ok(), "3 MB of 1 GB");
+        assert!(disk.room_on_disk().is_ok());
+    }
+
+    /// 5.5: what adds to Rovik's folders without a worktree (a push, an
+    /// upload) is refused at the disk cap too, measured again now and then;
+    /// a new worktree measures them at once.
+    #[test]
+    fn pushes_and_uploads_stop_at_the_disk_cap() {
+        let dir = rovik_core::testing::temp_dir();
+        let file = AdminFile {
+            admins: vec!["ann".into()],
+            max_disk_gb: Some(1),
+            ..AdminFile::default()
+        };
+        let caps = Caps::new(&file, vec![dir.0.clone()]);
+        assert!(caps.room_on_disk().is_ok());
+        // A file of a gigabyte that takes no room: its length counts.
+        let big = std::fs::File::create(dir.0.join("big")).unwrap();
+        big.set_len(1 << 30).unwrap();
+        assert!(caps.room_on_disk().is_ok(), "the last measure still stands");
+        let full = caps
+            .room_for_worktree(&dir.0.join("work"), "c1")
+            .unwrap_err();
+        assert!(
+            full.contains("1 GB of the 1 GB") && full.contains("ask ann"),
+            "{full}"
+        );
+        // That measure stands for the others, the clones' too.
+        assert!(caps.clone().room_on_disk().is_err());
     }
 
     /// H07: the administrators' `max_slots` wins over the user's number,

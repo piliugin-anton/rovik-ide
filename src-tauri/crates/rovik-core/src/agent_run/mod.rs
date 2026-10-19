@@ -244,6 +244,10 @@ struct Inner {
     /// The chats whose Autopilot driver is at work, by how many of its
     /// turns are (autopilot::AtWork).
     driving: HashMap<String, usize>,
+    /// Chats whose files change outside any run, as a server's merge of a
+    /// newer snapshot changes them (6.7): no run of one starts until the
+    /// hold goes, and a start waits for that. Its sender goes with it.
+    files_held: HashMap<String, watch::Sender<()>>,
 }
 
 /// T05: what a candidate's chat implements for.
@@ -277,6 +281,37 @@ impl Drop for Registered {
     fn drop(&mut self) {
         self.state.unregister(&self.dialog_id, &self.run_id);
     }
+}
+
+/// A chat's files held for a change outside any run (`AgentState::hold_files`),
+/// let go when dropped.
+pub struct FilesHold {
+    state: AgentState,
+    dialog_id: String,
+}
+
+impl Drop for FilesHold {
+    fn drop(&mut self) {
+        self.state.lock().files_held.remove(&self.dialog_id);
+    }
+}
+
+/// Whether the chat's run goes, or a subagent's of it, or one of its task's
+/// candidates' (T05).
+fn running_in(inner: &Inner, dialog_id: &str) -> bool {
+    let candidate = |chat: &str| {
+        inner
+            .candidates
+            .get(chat)
+            .is_some_and(|c| c.main == dialog_id)
+    };
+    inner.runs.contains_key(dialog_id)
+        || inner.runs.iter().any(|(chat, r)| {
+            r.parent.as_deref() == Some(dialog_id)
+                // T05: its task's candidates implement for it.
+                || candidate(chat)
+                || r.parent.as_deref().is_some_and(candidate)
+        })
 }
 
 /// Runs in progress (one per chat at most), what they wait on, and the settings.
@@ -529,7 +564,7 @@ impl AgentState {
         // Held first: another process at work on the chat keeps it.
         let hold = crate::chat_hold::take(dialog_id)?;
         let mut inner = self.lock();
-        if inner.runs.contains_key(dialog_id) {
+        if inner.runs.contains_key(dialog_id) || inner.files_held.contains_key(dialog_id) {
             return None;
         }
         let run_id = uuid::Uuid::new_v4().to_string();
@@ -707,20 +742,42 @@ impl AgentState {
 
     /// Whether the chat has a run going (a lead's subagents count as its own).
     pub fn is_running(&self, dialog_id: &str) -> bool {
-        let inner = self.lock();
-        let candidate = |chat: &str| {
-            inner
-                .candidates
-                .get(chat)
-                .is_some_and(|c| c.main == dialog_id)
-        };
-        inner.runs.contains_key(dialog_id)
-            || inner.runs.iter().any(|(chat, r)| {
-                r.parent.as_deref() == Some(dialog_id)
-                    // T05: its task's candidates implement for it.
-                    || candidate(chat)
-                    || r.parent.as_deref().is_some_and(candidate)
-            })
+        running_in(&self.lock(), dialog_id)
+    }
+
+    /// Holds the chat's files for a change outside any run, as a server's
+    /// merge of a newer snapshot into its worktree (6.7): None while one of
+    /// its runs goes (or its task's candidates), or another hold has them.
+    /// Until the hold drops, a run of the chat waits to start, whatever
+    /// starts it: a message, a restart, its task's next stage.
+    pub fn hold_files(&self, dialog_id: &str) -> Option<FilesHold> {
+        let mut inner = self.lock();
+        if running_in(&inner, dialog_id) || inner.files_held.contains_key(dialog_id) {
+            return None;
+        }
+        let (held, _) = watch::channel(());
+        inner.files_held.insert(dialog_id.to_string(), held);
+        Some(FilesHold {
+            state: self.clone(),
+            dialog_id: dialog_id.to_string(),
+        })
+    }
+
+    /// Whether a hold has the chat's files (`hold_files`).
+    fn files_held(&self, dialog_id: &str) -> bool {
+        self.lock().files_held.contains_key(dialog_id)
+    }
+
+    /// Once no hold has the chat's files.
+    async fn files_let_go(&self, dialog_id: &str) {
+        loop {
+            let held = self.lock().files_held.get(dialog_id).map(|h| h.subscribe());
+            let Some(mut held) = held else {
+                return;
+            };
+            // Ends once the hold's sender goes with it.
+            while held.changed().await.is_ok() {}
+        }
     }
 
     /// T05: `candidate` is a chat implementing `main`'s task, in a copy of
@@ -1202,15 +1259,22 @@ pub(super) async fn start_run(
         // "Implement this plan": the plan's text, from its file (A04).
         plan::expand_implementation(message, request.root.as_deref())?;
     }
-    if state.draining() {
-        return Err(RESTARTING.into());
-    }
-    if crate::chat_hold::elsewhere(&dialog_id) {
-        return Err(crate::chat_hold::AT_WORK_ELSEWHERE.into());
-    }
-    let Some(controls) = state.register(&dialog_id, &request.profile.id, request.options.clone())
-    else {
-        return Err("The agent is already working in this chat.".into());
+    // A change to the chat's files outside any run (a server's merge)
+    // ends first: the run starts on them as they're left.
+    let controls = loop {
+        state.files_let_go(&dialog_id).await;
+        if state.draining() {
+            return Err(RESTARTING.into());
+        }
+        if crate::chat_hold::elsewhere(&dialog_id) {
+            return Err(crate::chat_hold::AT_WORK_ELSEWHERE.into());
+        }
+        match state.register(&dialog_id, &request.profile.id, request.options.clone()) {
+            Some(controls) => break controls,
+            // Held again since the wait: wait again.
+            None if state.files_held(&dialog_id) => continue,
+            None => return Err("The agent is already working in this chat.".into()),
+        }
     };
     let run_id = controls.run_id.clone();
 
@@ -1690,6 +1754,41 @@ mod run_control_tests {
         assert!(state.take_carry("chat", "old").is_none());
         assert!(state.has_carry("chat"), "an older record's take leaves it");
         assert!(state.take_carry("chat", "new").is_some());
+    }
+
+    /// 6.7: a hold on a chat's files is refused while its run goes, and
+    /// while held, no run of the chat registers; let go, one does.
+    #[test]
+    fn a_chats_files_held_keep_its_runs_from_starting() {
+        let state = super::AgentState::default();
+        let run = state.register_in("chat", None, "m", None).unwrap();
+        assert!(state.hold_files("chat").is_none(), "its run goes");
+        state.unregister("chat", &run.run_id);
+        let held = state.hold_files("chat").unwrap();
+        assert!(state.hold_files("chat").is_none(), "held once");
+        assert!(state.register_in("chat", None, "m", None).is_none());
+        assert!(state.files_held("chat"));
+        drop(held);
+        assert!(!state.files_held("chat"));
+        assert!(state.register_in("chat", None, "m", None).is_some());
+    }
+
+    /// 6.7: a start waits for the hold to go.
+    #[tokio::test]
+    async fn a_start_waits_for_the_chats_files_to_be_let_go() {
+        let state = super::AgentState::default();
+        let held = state.hold_files("chat").unwrap();
+        let waiting = {
+            let state = state.clone();
+            tokio::spawn(async move { state.files_let_go("chat").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished(), "held");
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+            .await
+            .expect("let go")
+            .unwrap();
     }
 
     /// Round 2 (section 4.2): run A's guard, dropped after run B started in

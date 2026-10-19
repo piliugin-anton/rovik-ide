@@ -43,8 +43,13 @@ export const autonomyOf = (host: Host): AutonomySettings => host.autonomy ?? DEF
 export type DeployState =
   { state: 'notDeployed' } | { state: 'deployed'; version: string; sha256?: string };
 
-/** A host's connection, once deployed. */
-export type HostState = 'connecting' | 'ready' | 'offline' | 'version-mismatch';
+/**
+ * A host's connection, once deployed. `refused`: the host turned this computer
+ * away (its key changed, the credentials, Rovik's install there), and the app
+ * doesn't try again until the host's settings, a deploy or a passing test change
+ * that; the row's `problem` says why.
+ */
+export type HostState = 'connecting' | 'ready' | 'offline' | 'version-mismatch' | 'refused';
 
 export interface Host {
   id: string;
@@ -357,7 +362,7 @@ export const AUTH_HINTS: Record<AuthKind, string> = {
   password:
     'Your account’s password on the server. If the server refuses the right password, it may only take one when it asks for it: choose “A password the server asks for”.',
   'keyboard-interactive':
-    'For servers that take a password only at their own prompts. Rovik answers each prompt with the password below, so a server that also asks for a two-factor code won’t let you in.',
+    'For servers that take a password only at their own prompts. Rovik answers their password prompts with the password below, and no other prompt: for a server that also asks for a two-factor code, use your system ssh.',
   'system-ssh':
     'Your own ssh connects, with your configuration: jump hosts, security keys and certificates. Testing and deploying need one of the other ways in, which Rovik runs its setup commands through.',
 };
@@ -390,6 +395,8 @@ export function hostStatus(row: Pick<HostRow, 'deploy' | 'state'>): { label: str
       return { label: 'Offline', tone: 'error' };
     case 'version-mismatch':
       return { label: 'Needs a newer app', tone: 'error' };
+    case 'refused':
+      return { label: 'Refused', tone: 'error' };
     default:
       return { label: 'Connecting…', tone: 'warn' };
   }

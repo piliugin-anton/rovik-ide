@@ -38,7 +38,8 @@ export type CloudEvent =
       step: string;
       message?: string;
     }
-  | { type: 'host'; host: string; state: HostState }
+  /** A host's connection changed; one that turned this computer away says why. */
+  | { type: 'host'; host: string; state: HostState; problem?: string }
   /** The chats mirrored from the host have pulled since it connected (K23). */
   | { type: 'caughtUp'; host: string };
 
@@ -371,6 +372,12 @@ export function placeLabel(
             tone: 'error',
             title: `${name} serves only newer versions of this app: update it to reach this chat.`,
           };
+        case 'refused':
+          return {
+            label: `${name} (refused)`,
+            tone: 'error',
+            title: `${name} turned this computer away: Settings → Cloud hosts says why. What this chat does there shows once it's fixed.`,
+          };
         default:
           return { label: name, tone: 'warn', title: `Connecting to ${name}…` };
       }
@@ -396,6 +403,8 @@ export function readOnlyReason(place: ChatPlace | undefined, hosts: HostSummary[
           return `${name} is offline: this chat is read-only until it’s back.`;
         case 'version-mismatch':
           return `${name} serves only newer versions of this app: update it to write in this chat.`;
+        case 'refused':
+          return `${name} turned this computer away: this chat is read-only until that's fixed in Settings → Cloud hosts.`;
         default:
           return null;
       }

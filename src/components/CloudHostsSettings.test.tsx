@@ -528,7 +528,10 @@ test('a host’s form: under “Log in with”, a hint says what each way in tak
     ['key', /whose public key is in ~\/\.ssh\/authorized_keys on the server/],
     ['agent', /The key never leaves the agent/],
     ['password', /choose “A password the server asks for”/],
-    ['keyboard-interactive', /also asks for a two-factor code won’t let you in/],
+    [
+      'keyboard-interactive',
+      /and no other prompt: for a server that also asks for a two-factor code, use your system ssh/,
+    ],
     ['system-ssh', /Testing and deploying need one of the other ways in/],
   ];
   for (const [kind, says] of hints) {

@@ -94,8 +94,13 @@ pub enum CloudEvent {
         message: Option<String>,
     },
     /// A host's connection changed: the hosts page and its chats' badges
-    /// show it.
-    Host { host: String, state: HostState },
+    /// show it. A host that turned this computer away says why.
+    Host {
+        host: String,
+        state: HostState,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
+    },
     /// The chats mirrored from a host have pulled since it connected: only
     /// now can a message sent before a restart be judged unanswered (K23).
     CaughtUp { host: String },
@@ -403,6 +408,11 @@ impl Remote {
     /// Each host's connection, by its id.
     pub fn states(&self) -> Vec<(String, HostState)> {
         self.hosts.states()
+    }
+
+    /// Why the host turned this computer away, when it did.
+    pub fn refusal(&self, host: &str) -> Option<String> {
+        self.hosts.refusal(host)
     }
 
     /// Whether the chats mirrored from `host` pulled since it connected, as
@@ -982,8 +992,16 @@ impl Remote {
                     self.lock().caught_up.remove(host);
                 }
                 if let Some(cloud) = self.cloud() {
+                    let problem = match state {
+                        HostState::Refused => self.hosts.refusal(host),
+                        _ => None,
+                    };
                     let host = host.to_string();
-                    cloud(CloudEvent::Host { host, state });
+                    cloud(CloudEvent::Host {
+                        host,
+                        state,
+                        problem,
+                    });
                 }
             }
             Incoming::Subscribed { complete } => {

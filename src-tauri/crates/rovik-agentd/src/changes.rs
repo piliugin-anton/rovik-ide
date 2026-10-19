@@ -8,6 +8,7 @@ use crate::daemon::Daemon;
 use crate::results::{self, move_base, set_base};
 use crate::store::{Kept, Place};
 use crate::sync::Replaced;
+use crate::work;
 use git2::build::CheckoutBuilder;
 use git2::{FileMode, ObjectType, Oid, Repository, ResetType, Tree};
 use rovik_core::overlay::markers;
@@ -52,7 +53,7 @@ pub async fn file(
 /// the chat made; the ones an ignore rule matches stay.
 pub async fn discard(daemon: &Daemon, computer: &str, chat: &str) -> Result<Response, Fail> {
     daemon.store.check_owner(computer, chat)?;
-    idle(daemon, chat)?;
+    let _files = work::hold_files(daemon, chat)?;
     let _base = daemon.results.hold_base().await;
     let (place, base, _) = place(daemon, chat)?;
     let reset = rt::spawn_blocking(move || {
@@ -82,7 +83,7 @@ pub async fn to_chat(
     files: Vec<String>,
 ) -> Result<Response, Fail> {
     daemon.store.check_owner(computer, chat)?;
-    idle(daemon, chat)?;
+    let _files = work::hold_files(daemon, chat)?;
     let snapshot = Oid::from_str(snapshot).map_err(|_| bad_request("Not a commit's id."))?;
     for path in &files {
         check(path)?;
@@ -145,7 +146,7 @@ pub async fn undo_merge(
     files: Option<Vec<String>>,
 ) -> Result<Response, Fail> {
     daemon.store.check_owner(computer, chat)?;
-    idle(daemon, chat)?;
+    let _files = work::hold_files(daemon, chat)?;
     for path in files.iter().flatten() {
         check(path)?;
     }
@@ -252,17 +253,6 @@ fn place(daemon: &Daemon, chat: &str) -> Result<(Place, String, String), Fail> {
         .unwrap_or_default()
         .subpath;
     Ok((place, base, subpath))
-}
-
-/// What changes the chat's files waits for its run to end.
-fn idle(daemon: &Daemon, chat: &str) -> Result<(), Fail> {
-    if daemon.core.agents.is_running(chat) {
-        return Err(Fail::new(
-            FailCode::Busy,
-            "This chat's run is still going: stop it first.",
-        ));
-    }
-    Ok(())
 }
 
 /// A path in the project's folder, and nowhere else.

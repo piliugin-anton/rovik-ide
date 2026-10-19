@@ -119,6 +119,55 @@ async fn a_daemon_for_newer_apps_is_a_version_mismatch() {
     assert_eq!(refused.code, FailCode::Unreachable);
 }
 
+/// A host that turns this computer away, counting each time it's asked.
+struct Turning(Arc<AtomicU64>);
+
+impl Connector for Turning {
+    fn connect(&self) -> Connecting<'_> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "This host's key changed.",
+            ))
+        })
+    }
+}
+
+/// A host that turns this computer away (its key changed, the password,
+/// a tampered install) is refused, says why, and isn't asked again: the
+/// next try would send the credentials once more for the same answer.
+#[tokio::test]
+async fn a_host_that_turns_the_app_away_is_refused_and_not_asked_again() {
+    let tries = Arc::new(AtomicU64::new(0));
+    let (client, mut heard) = client(Turning(tries.clone()));
+    until_state(&mut heard, HostState::Refused).await;
+    assert_eq!(
+        client.refusal().as_deref(),
+        Some("This host's key changed.")
+    );
+    // Past the first waits between tries, which a lost link would take.
+    tokio::time::sleep(FIRST_BACKOFF * 3).await;
+    assert_eq!(tries.load(Ordering::Relaxed), 1, "asked once");
+    let refused = client.call(Request::AgentStatus).await.unwrap_err();
+    assert_eq!(refused.code, FailCode::Unreachable);
+}
+
+/// 4.5: a daemon that serves only newer apps is asked again at the
+/// slowest pace, without the state going back to Connecting each time.
+#[tokio::test]
+async fn a_version_mismatch_is_asked_again_quietly() {
+    let (_client, mut heard) = client(Fake::speaking(PROTOCOL + 1));
+    until_state(&mut heard, HostState::VersionMismatch).await;
+    tokio::time::sleep(FIRST_BACKOFF * 3).await;
+    while let Ok(incoming) = heard.try_recv() {
+        assert!(
+            !matches!(incoming, Incoming::State(_)),
+            "no state flaps: {incoming:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn without_a_daemon_calls_fail_as_unreachable() {
     let (client, mut heard) = client(Nowhere);

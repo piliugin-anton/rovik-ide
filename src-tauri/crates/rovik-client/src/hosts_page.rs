@@ -11,7 +11,7 @@
 //! way in first.
 
 use crate::client::{HostState, Identity};
-use crate::connection_test::{test_connection, Step, TestOptions};
+use crate::connection_test::{test_connection, Outcome, Step, TestOptions};
 use crate::deploy::{self, Builds, DeployError, Layout, Removal, SetupRun};
 use crate::host_settings::{AuthKind, DeployState, Host, HostSettings};
 use crate::release::Releases;
@@ -557,7 +557,10 @@ impl HostsPage {
         let mut hosts = Vec::new();
         for host in settings.hosts {
             let id = host.id.clone();
-            let problem = unconnected.get(&id).cloned();
+            let problem = unconnected
+                .get(&id)
+                .cloned()
+                .or_else(|| self.remote.refusal(&id));
             hosts.push(HostRow {
                 state: states
                     .get(&id)
@@ -683,7 +686,20 @@ impl HostsPage {
             layout: Layout::default(),
             releases: Some(self.releases()),
         };
-        Ok(test_connection(&connector, &options, report).await)
+        let steps = test_connection(&connector, &options, report).await;
+        // A host that turned the app away isn't tried again on its own:
+        // once the test gets through, as after a fix on the server, the
+        // app connects again.
+        let through = steps
+            .iter()
+            .all(|step| !matches!(step.outcome, Outcome::Failed | Outcome::Confirm));
+        let refused = self.remote.refusal(id).is_some();
+        if through && refused && options.deployed {
+            if let Err(e) = self.connect(&self.settings()?.computer, &host) {
+                log::warn!("{}: {e}", host.name);
+            }
+        }
+        Ok(steps)
     }
 
     /// Pins the host's key, once the user compared its fingerprint.
@@ -997,16 +1013,52 @@ fn system_ssh(host: &Host) -> SystemSsh {
     }
 }
 
-/// Answers each of the server's questions with the saved password, or
-/// gives up without one.
+/// Answers the server's questions with the saved password: a round whose
+/// every prompt asks for a password, and a round with no prompt (only its
+/// instructions). Any other (a verification code, a one-time password)
+/// gives up: only the user can answer it, and the password goes to no
+/// other prompt. Without a saved password, it gives up too.
 fn answering(password: Option<Secret>) -> Answerer {
     Arc::new(move |questions: Questions| {
         let password = password.clone();
         Box::pin(async move {
+            if questions.prompts.is_empty() {
+                return Some(Vec::new());
+            }
             let password = password?;
-            Some(questions.prompts.iter().map(|_| password.clone()).collect())
+            let all = questions.prompts.iter();
+            if !all
+                .clone()
+                .all(|(prompt, echo)| asks_password(prompt, *echo))
+            {
+                return None;
+            }
+            Some(all.map(|_| password.clone()).collect())
         })
     })
+}
+
+/// Whether a keyboard-interactive prompt asks for the account's password:
+/// typed hidden, it names a password, and no one-time code.
+fn asks_password(prompt: &str, echo: bool) -> bool {
+    let prompt = prompt.to_lowercase();
+    let code = [
+        "one-time",
+        "one time",
+        "otp",
+        "oath",
+        "verification",
+        "code",
+        "token",
+        "passcode",
+        "pin",
+        "authenticator",
+        "2fa",
+        "factor",
+        "duo",
+        "yubi",
+    ];
+    !echo && prompt.contains("password") && !code.iter().any(|word| prompt.contains(word))
 }
 
 /// Whether version `a` comes before version `b`, part by part.
@@ -1034,6 +1086,42 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 mod tests {
     use super::*;
     use crate::secrets::Kdf;
+
+    /// Keyboard-interactive: the saved password answers the server's
+    /// password prompts and nothing else, a two-factor code's least of all.
+    #[tokio::test]
+    async fn the_password_answers_only_password_prompts() {
+        let answer = answering(Some(Secret("hunter2".into())));
+        let round = |prompts: &[(&str, bool)]| Questions {
+            name: String::new(),
+            instructions: String::new(),
+            prompts: prompts.iter().map(|(p, e)| (p.to_string(), *e)).collect(),
+        };
+        let answered = answer(round(&[("Password: ", false)])).await;
+        assert_eq!(answered, Some(vec![Secret("hunter2".into())]));
+        let theirs = answer(round(&[("ann@build's password:", false)])).await;
+        assert!(theirs.is_some());
+        assert_eq!(
+            answer(round(&[])).await,
+            Some(Vec::new()),
+            "instructions only"
+        );
+        for prompt in [
+            ("Verification code: ", false),
+            ("One-time password (OATH) for `ann': ", false),
+            ("Passcode or option (1-3): ", false),
+            ("Password: ", true),
+            ("Username: ", true),
+        ] {
+            assert_eq!(answer(round(&[prompt])).await, None, "{prompt:?}");
+        }
+        let both = answer(round(&[
+            ("Password: ", false),
+            ("Verification code: ", false),
+        ]));
+        assert_eq!(both.await, None);
+        assert_eq!(answering(None)(round(&[("Password: ", false)])).await, None);
+    }
     use rovik_core::chat_db::store::{self, NewDialog};
     use rovik_core::testing::TestCore;
 

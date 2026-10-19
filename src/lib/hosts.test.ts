@@ -29,6 +29,10 @@ test('a host’s status: deployed or not, then its connection', () => {
     hostStatus({ deploy: deployed, state: 'version-mismatch' }).label,
     'Needs a newer app'
   );
+  assert.deepEqual(hostStatus({ deploy: deployed, state: 'refused' }), {
+    label: 'Refused',
+    tone: 'error',
+  });
   assert.equal(hostStatus({ deploy: deployed }).label, 'Connecting…');
 });
 

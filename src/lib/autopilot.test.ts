@@ -117,6 +117,39 @@ test('autopilot: a task is over once delivered or stopped, unfinished otherwise'
   assert.equal(over(stage('t', 'deliver', 'running')), false);
   assert.equal(over(stage('t', 'deliver', 'done')), true);
   assert.equal(over(stage('t', 'deliver', 'failed')), true);
+  // T05: a candidate's records end at a failed stage; its task's chat goes on.
+  const theirs = (status: 'done' | 'failed') =>
+    over(
+      stage('t', 'implement', status, { candidate: 'a', outcome: 'error' }),
+      stage('t', 'review', 'skipped', { candidate: 'a' })
+    );
+  assert.equal(theirs('done'), false);
+  assert.equal(
+    over(stage('t', 'implement', 'failed', { candidate: 'a', outcome: 'error' })),
+    true,
+    'not waiting to go on'
+  );
+});
+
+test('the strip: a rate limit the implementation waits out shows on the stage it got to (H07)', () => {
+  const before = [stage('t', 'plan', 'done'), stage('t', 'planReview', 'done')];
+  const until = Date.now() + 60_000;
+  const implement = stage('t', 'implement', 'running', {
+    rateLimit: { until, waits: 1, waitedMs: 60_000 },
+  });
+  const rows = withLiveStages(stageRows([...before, implement]), [
+    ...before,
+    implement,
+    review('findings'),
+  ]);
+  assert.equal(taskWaits(rows), true);
+  assert.equal(
+    taskLine(rows, false),
+    'Autopilot: change review waits out the provider’s rate limit'
+  );
+  const shown = stripStages(rows).find((s) => s.name === 'review')!;
+  assert.equal(shown.waiting, true);
+  assert.equal(shownStatus(shown.status, false, shown.waiting), 'waiting');
 });
 
 /*
@@ -411,14 +444,15 @@ test('the strip: the stages done inside the implementation show as its run gets 
   now = shown(review('findings'), checks('failed'), checks('passed', 2), review('running'));
   assert.equal(now.line, 'Autopilot: checks…');
   assert.equal(now.statuses.review, 'done');
-  // The acceptance check at work: the checks done, at their round 2.
+  // The acceptance check at work: the checks done, in the stage's first
+  // round in the task (their second round of checks is their record's).
   now = shown(review('clean'), checks('failed'), checks('passed', 2), acceptance('running'));
   assert.equal(now.line, 'Autopilot: acceptance…');
   assert.deepEqual(
     stripStages(now.rows)
       .filter((s) => s.name === 'checks')
       .map((s) => [s.status, s.round]),
-    [['done', 2]]
+    [['done', undefined]]
   );
   // A click goes to the record at work.
   const acceptanceRow = now.rows[now.rows.length - 1];

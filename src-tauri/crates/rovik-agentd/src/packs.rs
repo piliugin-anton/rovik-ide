@@ -119,11 +119,10 @@ impl Projects {
         let file = repo.path().join("info/exclude");
         if std::fs::read_to_string(&file).ok().as_deref() != Some(rules.as_str()) {
             // Whole at once: a staging that reads it half-written would
-            // commit an ignored file into a result.
-            let temp = repo.path().join("info/.exclude.new");
-            std::fs::create_dir_all(repo.path().join("info"))
-                .and_then(|()| std::fs::write(&temp, rules))
-                .and_then(|()| std::fs::rename(&temp, &file))
+            // commit an ignored file into a result. Through a file of its
+            // own: two syncs at once never move each other's half-written
+            // one into place.
+            rovik_core::atomic_file::write_atomic(&file, rules.as_bytes())
                 .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
         }
         Ok(repo)
