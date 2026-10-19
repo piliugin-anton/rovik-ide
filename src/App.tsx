@@ -192,6 +192,13 @@ export default function App() {
   // The panel's full-window mode: the floating toggle in Resizable sets it,
   // and the `sidebar-expanded` class on `.app` hides the right pane.
   const [sidebarExpanded, setSidebarExpanded] = createSignal(false);
+  /**
+   * What the chat was asked to open, a file or a comparison tab (an
+   * isolated chat's change that hasn't landed, say), is seen: the panel
+   * gives the window back to the editor. Not for what opens by itself (the
+   * agent's edits), which leaves the panel as it is.
+   */
+  const showEditor = () => setSidebarExpanded(false);
 
   // App-wide Settings (the gear next to the project selector): a virtual
   // files notification's "Show steps" opens its page directly.
@@ -584,6 +591,7 @@ export default function App() {
   // "Review in editor" (explicit) always opens it.
   const stopReveal = onRevealEdit((path, explicit) => {
     if (!explicit && !editorSettings().openFilesAfterAgentEdits) return;
+    if (explicit) showEditor();
     void openPath(path);
   });
   const stopWritten = onFileWritten((path, content) => {
@@ -668,6 +676,7 @@ export default function App() {
     setGitBase(request.id, request.fileName, request.before);
     setOpenFiles((prev) => [...prev.filter((f) => f.path !== request.id), tab]);
     setActivePath(request.id);
+    if (!request.background) showEditor();
   });
   onCleanup(stopCompareRequests);
 
@@ -712,6 +721,7 @@ export default function App() {
         target = text !== null ? (findSnippetLine(text, snippet) ?? undefined) : undefined;
       }
       if (target === undefined && base !== undefined) target = await firstChangeLine(abs, base);
+      showEditor();
       if (target === undefined) await openPath(abs);
       else await openPathAtLine(abs, target);
     })();

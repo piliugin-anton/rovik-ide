@@ -137,7 +137,7 @@ export function registerApproval(request: ApprovalRequest, reveal = true) {
   if (edit && remote) {
     const { relPath, current, proposed } = edit;
     setState('pending', key, { ...rest, remoteEdit: { relPath, current, proposed } });
-    if (reveal) showRemoteEdit(request.dialogId, request.toolCallId);
+    if (reveal) showRemoteEdit(request.dialogId, request.toolCallId, false);
     return;
   }
   const review = edit
@@ -318,8 +318,12 @@ export function revealEdit(dialogId: string, toolCallId: string, explicit = fals
   for (const listener of revealListeners) listener(edit.absPath, explicit);
 }
 
-/** A remote chat's edit, in a read-only tab comparing the file before and after it. */
-export function showRemoteEdit(dialogId: string, toolCallId: string) {
+/**
+ * A remote chat's edit, in a read-only tab comparing the file before and
+ * after it. `asked`: the user clicked for it; else it opens by itself as
+ * its approval comes, in the background.
+ */
+export function showRemoteEdit(dialogId: string, toolCallId: string, asked = true) {
   const edit = state.pending[keyOf(dialogId, toolCallId)]?.remoteEdit;
   if (!edit) return;
   const name = edit.relPath.split(/[\\/]/).pop() || edit.relPath;
@@ -329,6 +333,7 @@ export function showRemoteEdit(dialogId: string, toolCallId: string) {
     fileName: edit.relPath,
     before: edit.current,
     after: edit.proposed,
+    ...(asked ? {} : { background: true }),
   });
 }
 

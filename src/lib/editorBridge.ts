@@ -86,6 +86,12 @@ export interface CompareRequest {
   fileName: string;
   before: string;
   after: string;
+  /**
+   * Opened by itself, not asked for (a remote chat's edit, as its approval
+   * comes): the chat over the whole window stays. Asked for, it gives the
+   * window back to the editor.
+   */
+  background?: boolean;
 }
 
 const compareListeners = new Set<(request: CompareRequest) => void>();
