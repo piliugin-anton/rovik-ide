@@ -687,9 +687,10 @@ impl HostsPage {
             releases: Some(self.releases()),
         };
         let steps = test_connection(&connector, &options, report).await;
-        // A host that turned the app away isn't tried again on its own:
-        // once the test gets through, as after a fix on the server, the
-        // app connects again.
+        // A host that turned the app away is tried again on its own only
+        // now and then, or not at all (`HostState::Refused`): once the test
+        // gets through, as after a fix on the server, the app connects
+        // again at once.
         let through = steps
             .iter()
             .all(|step| !matches!(step.outcome, Outcome::Failed | Outcome::Confirm));

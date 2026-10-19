@@ -45,9 +45,10 @@ export type DeployState =
 
 /**
  * A host's connection, once deployed. `refused`: the host turned this computer
- * away (its key changed, the credentials, Rovik's install there), and the app
- * doesn't try again until the host's settings, a deploy or a passing test change
- * that; the row's `problem` says why.
+ * away, and the row's `problem` says why. After the credentials, a key to pin or
+ * this computer's token, the app doesn't try again until the host's settings, a
+ * deploy or a passing test change that; after Rovik's install there or a changed
+ * host key, which may come right on their own, it tries again every 10 minutes.
  */
 export type HostState = 'connecting' | 'ready' | 'offline' | 'version-mismatch' | 'refused';
 

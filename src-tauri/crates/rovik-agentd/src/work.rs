@@ -14,7 +14,7 @@ use crate::store::{Place, ProjectState};
 use crate::sync::{self, Merged};
 use git2::build::CheckoutBuilder;
 use git2::{BranchType, Oid, Repository, WorktreeAddOptions, WorktreePruneOptions};
-use rovik_core::agent_run::FilesHold;
+use rovik_core::agent_run::{FilesHold, NotHeld};
 use rovik_core::chat_db::{projects, store};
 use rovik_core::{project_profile, rt};
 use rovik_protocol::packs::{snapshot_ref, PUSHED_REFS};
@@ -315,15 +315,20 @@ pub async fn room_for_worktree(daemon: &Daemon, chat: &str) -> Result<(), Fail> 
 }
 
 /// The chat's files, for what changes them outside its runs (a merge,
-/// changes thrown away or taken back): refused while its run goes, and no
-/// run of the chat starts until it's let go, whatever starts it (its task's
-/// next stage, say), which waits.
+/// changes thrown away or taken back): refused while its run goes or
+/// another such change has them, and no run of the chat starts until
+/// they're let go, whatever starts it (its task's next stage, say), which
+/// waits.
 pub fn hold_files(daemon: &Daemon, chat: &str) -> Result<FilesHold, Fail> {
-    daemon.core.agents.hold_files(chat).ok_or_else(|| {
-        Fail::new(
-            FailCode::Busy,
-            "This chat's run is still going: stop it first.",
-        )
+    daemon.core.agents.hold_files(chat).map_err(|why| {
+        let message = match why {
+            NotHeld::Running => "This chat's run is still going: stop it first.",
+            NotHeld::Held => {
+                "This chat's files are changing on the server (a newer snapshot merging \
+                 into them, or changes thrown away or taken back): try again in a moment."
+            }
+        };
+        Fail::new(FailCode::Busy, message)
     })
 }
 

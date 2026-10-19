@@ -296,6 +296,15 @@ impl Drop for FilesHold {
     }
 }
 
+/// Why a chat's files couldn't be held (`AgentState::hold_files`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotHeld {
+    /// One of its runs goes, a subagent's of it, or its task's candidates'.
+    Running,
+    /// Another change outside its runs has them (a merge, say).
+    Held,
+}
+
 /// Whether the chat's run goes, or a subagent's of it, or one of its task's
 /// candidates' (T05).
 fn running_in(inner: &Inner, dialog_id: &str) -> bool {
@@ -746,18 +755,21 @@ impl AgentState {
     }
 
     /// Holds the chat's files for a change outside any run, as a server's
-    /// merge of a newer snapshot into its worktree (6.7): None while one of
-    /// its runs goes (or its task's candidates), or another hold has them.
-    /// Until the hold drops, a run of the chat waits to start, whatever
-    /// starts it: a message, a restart, its task's next stage.
-    pub fn hold_files(&self, dialog_id: &str) -> Option<FilesHold> {
+    /// merge of a newer snapshot into its worktree (6.7): refused while one
+    /// of its runs goes (or its task's candidates), or another hold has
+    /// them. Until the hold drops, a run of the chat waits to start,
+    /// whatever starts it: a message, a restart, its task's next stage.
+    pub fn hold_files(&self, dialog_id: &str) -> Result<FilesHold, NotHeld> {
         let mut inner = self.lock();
-        if running_in(&inner, dialog_id) || inner.files_held.contains_key(dialog_id) {
-            return None;
+        if running_in(&inner, dialog_id) {
+            return Err(NotHeld::Running);
+        }
+        if inner.files_held.contains_key(dialog_id) {
+            return Err(NotHeld::Held);
         }
         let (held, _) = watch::channel(());
         inner.files_held.insert(dialog_id.to_string(), held);
-        Some(FilesHold {
+        Ok(FilesHold {
             state: self.clone(),
             dialog_id: dialog_id.to_string(),
         })
@@ -1409,29 +1421,65 @@ pub fn agent_set_effort(
         .set_effort(&profile_id, options, dialog_id.as_deref())
 }
 
+/// How long a pause for a move waits for the chat's Autopilot driver to
+/// be done with its turn: a moment between two stages, longer while it
+/// delivers the task.
+const PAUSE_DRIVER_WAIT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Pauses the chat's run for a move to `host` (6.8), or back to its
 /// computer when `host` is empty: at its next safe point, where a
 /// checkpoint pause happens, once its subagents are done, and with no
 /// summary asked of the model (K29). Stop still stops it at once. Returns
 /// when the run has ended: whether it paused for the move, which
 /// `ContinueRun` then continues. False when no run went.
+///
+/// The chat's Autopilot driver between two of its task's stages starts
+/// the next one's run in its turn: the pause waits for that turn to be
+/// over, and the run it started pauses too, so none goes on after it.
 pub async fn agent_pause(core: &Core, dialog_id: String, host: String) -> Result<bool, String> {
     let request = PauseRequest {
         kind: MOVE,
         host: Some(host).filter(|h| !h.is_empty()),
     };
-    if !core.agents.pause(&dialog_id, request) {
-        // No run of its own, but subagents a run that ended left behind may
-        // still be writing its rows: they end before the move takes them
-        // (K21), as Stop ends them.
-        if core.agents.is_running(&dialog_id) {
-            core.agents.stop_children(core, &dialog_id);
-            ended(core, &dialog_id).await;
+    loop {
+        if core.agents.is_driving(&dialog_id) {
+            drop(autopilot::driver_turn(&dialog_id, PAUSE_DRIVER_WAIT).await?);
         }
-        return Ok(false);
+        if !core.agents.pause(&dialog_id, request.clone()) {
+            // No run of its own, but subagents a run that ended left
+            // behind may still be writing its rows: they end before the
+            // move takes them (K21), as Stop ends them.
+            if core.agents.is_running(&dialog_id) {
+                core.agents.stop_children(core, &dialog_id);
+                ended(core, &dialog_id).await;
+            }
+            return Ok(false);
+        }
+        ended(core, &dialog_id).await;
+        if last_paused_for(core, &dialog_id, MOVE).await? {
+            return Ok(true);
+        }
+        // It ended without seeing the pause, as it was ending anyway: its
+        // driver, at work since, may start the task's next stage.
+        if !core.agents.is_driving(&dialog_id) {
+            return Ok(false);
+        }
     }
-    ended(core, &dialog_id).await;
-    last_paused_for(core, &dialog_id, MOVE).await
+}
+
+/// The chat's Autopilot driver's turn, held (`hold_driver`): it starts no
+/// stage until this is dropped.
+pub struct DriverHeld {
+    _turn: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// The chat's Autopilot driver's turn, once the driver is done with the
+/// one it's at (recording a stage, starting the next: a moment), `wait`
+/// at most, `DRIVER_BUSY` past it. For what mustn't interleave with the
+/// driver starting a stage: a chat going back to its computer (6.8).
+pub async fn hold_driver(dialog_id: &str, wait: std::time::Duration) -> Result<DriverHeld, String> {
+    let turn = autopilot::driver_turn(dialog_id, wait).await?;
+    Ok(DriverHeld { _turn: turn })
 }
 
 /// Pauses every run as the daemon stops, for an upgrade or a restart of
@@ -1762,10 +1810,12 @@ mod run_control_tests {
     fn a_chats_files_held_keep_its_runs_from_starting() {
         let state = super::AgentState::default();
         let run = state.register_in("chat", None, "m", None).unwrap();
-        assert!(state.hold_files("chat").is_none(), "its run goes");
+        let refused = state.hold_files("chat").err();
+        assert_eq!(refused, Some(super::NotHeld::Running), "its run goes");
         state.unregister("chat", &run.run_id);
         let held = state.hold_files("chat").unwrap();
-        assert!(state.hold_files("chat").is_none(), "held once");
+        let refused = state.hold_files("chat").err();
+        assert_eq!(refused, Some(super::NotHeld::Held), "held once");
         assert!(state.register_in("chat", None, "m", None).is_none());
         assert!(state.files_held("chat"));
         drop(held);
