@@ -831,10 +831,8 @@ export function GitPanel(props: GitPanelProps) {
   // when the view opens; only a name that's actually in the branch list is
   // sent (anything else — detached HEAD, still loading — means HEAD).
   const [newBranchFrom, setNewBranchFrom] = createSignal('');
-  // Rebase: the search over the branches to rebase onto, the row the arrow
-  // keys are on, and what a pick said when it had nothing to do.
-  const [rebaseQuery, setRebaseQuery] = createSignal('');
-  const [rebaseCursor, setRebaseCursor] = createSignal(0);
+  // Rebase: what a pick said when it had nothing to do (its search over the
+  // branches to rebase onto is `rebaseSearch`, below).
   const [rebaseNote, setRebaseNote] = createSignal<string | null>(null);
   const [stashMessage, setStashMessage] = createSignal('');
   const [stashes, setStashes] = createSignal<GitStashEntry[]>([]);
@@ -942,8 +940,7 @@ export function GitPanel(props: GitPanelProps) {
       void loadBranches();
     }
     if (view === 'rebase') {
-      setRebaseQuery('');
-      setRebaseCursor(0);
+      rebaseSearch.reset();
       setRebaseNote(null);
       void loadBranches();
     }
@@ -960,17 +957,6 @@ export function GitPanel(props: GitPanelProps) {
     if (!branch || branch.startsWith('detached@')) return 'Check out a branch to rebase it';
     return null;
   };
-
-  /** The branches the current one can be rebased onto, local ones first,
-   *  that have every word of the search in their name. */
-  const rebaseTargets = createMemo(() => {
-    const current = status()?.branch;
-    const words = rebaseQuery().toLowerCase().split(/\s+/).filter(Boolean);
-    return branches().filter(
-      (b) =>
-        (b.is_remote || b.name !== current) && words.every((w) => b.name.toLowerCase().includes(w))
-    );
-  });
 
   /** Rebases the current branch onto `b`, asking first when that rewrites
    *  commits already pushed (Rovik doesn't force a push). Conflicts open
@@ -1003,35 +989,116 @@ export function GitPanel(props: GitPanelProps) {
     });
   };
 
-  /** The search's keys: arrows move along the list, Enter rebases onto the
-   *  row they're on, Escape clears the search (then closes the menu). */
-  const onRebaseSearchKey = (e: KeyboardEvent) => {
-    const targets = rebaseTargets();
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const by = e.key === 'ArrowDown' ? 1 : -1;
-      setRebaseCursor((i) => Math.max(0, Math.min(targets.length - 1, i + by)));
-      queueMicrotask(() =>
-        document
-          .querySelector('.git-more-dropdown .git-menu-cursor')
-          ?.scrollIntoView({ block: 'nearest' })
-      );
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      const pick = targets[Math.min(rebaseCursor(), targets.length - 1)];
-      if (pick) void rebaseOnto(pick);
-    } else if (e.key === 'Escape' && rebaseQuery() !== '') {
-      e.stopPropagation();
-      setRebaseQuery('');
-      setRebaseCursor(0);
-    }
-  };
+  /**
+   * A search over branches, as the branch menu and Rebase… have it: every
+   * word of it in a branch's name, local branches first. The arrow keys
+   * move a cursor along both sections, Enter picks its row, Escape clears
+   * the search (a second one closes the menu).
+   */
+  interface BranchSearch {
+    query: () => string;
+    /** Typed into the box: the cursor goes back to the first row. */
+    edit: (value: string) => void;
+    reset: () => void;
+    /** What matches, local branches first, as the sections show them. */
+    targets: () => GitBranch[];
+    cursor: () => number;
+    setCursor: (row: number) => void;
+    pick: (b: GitBranch) => void;
+    onKey: (e: KeyboardEvent) => void;
+  }
 
-  /** The rebase view's local or remote branches, under their label. */
-  const rebaseSection = (remote: boolean) => {
-    const rows = () => rebaseTargets().filter((b) => b.is_remote === remote);
+  function branchSearch(candidates: () => GitBranch[], pick: (b: GitBranch) => void): BranchSearch {
+    const [query, setQuery] = createSignal('');
+    const [cursor, setCursor] = createSignal(0);
+    const targets = createMemo(() => {
+      const words = query().toLowerCase().split(/\s+/).filter(Boolean);
+      const found = candidates().filter((b) =>
+        words.every((w) => b.name.toLowerCase().includes(w))
+      );
+      return [...found.filter((b) => !b.is_remote), ...found.filter((b) => b.is_remote)];
+    });
+    const reset = () => {
+      setQuery('');
+      setCursor(0);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const rows = targets();
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const by = e.key === 'ArrowDown' ? 1 : -1;
+        setCursor((i) => Math.max(0, Math.min(rows.length - 1, i + by)));
+        const menu = (e.target as HTMLElement).closest('.git-branch-dropdown');
+        queueMicrotask(() =>
+          menu?.querySelector('.git-menu-cursor')?.scrollIntoView({ block: 'nearest' })
+        );
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const row = rows[Math.min(cursor(), rows.length - 1)];
+        if (row) pick(row);
+      } else if (e.key === 'Escape' && query() !== '') {
+        e.stopPropagation();
+        reset();
+      }
+    };
+    return {
+      query,
+      edit: (value) => {
+        setQuery(value);
+        setCursor(0);
+      },
+      reset,
+      targets,
+      cursor,
+      setCursor,
+      pick,
+      onKey,
+    };
+  }
+
+  /** A branch search's box, focused as it shows; `onEdit` runs as it's typed in. */
+  const branchSearchBox = (search: BranchSearch, label: string, onEdit?: () => void) => (
+    <div class="git-history-search-row">
+      <div class="git-history-search-wrap">
+        <input
+          ref={(el) => queueMicrotask(() => el.focus())}
+          class="tree-row-input git-more-input git-history-search"
+          placeholder="Search branches"
+          value={search.query()}
+          spellcheck={false}
+          autocomplete="off"
+          aria-label={label}
+          onInput={(e) => {
+            search.edit(e.currentTarget.value);
+            onEdit?.();
+          }}
+          onKeyDown={search.onKey}
+          disabled={busy()}
+        />
+        <Show when={search.query() !== ''}>
+          <button
+            type="button"
+            class="git-history-clear"
+            title="Clear search"
+            aria-label="Clear branch search"
+            onClick={search.reset}
+          >
+            ✕
+          </button>
+        </Show>
+      </div>
+    </div>
+  );
+
+  /** A branch search's local or remote rows, under their label. */
+  const branchSection = (
+    search: BranchSearch,
+    remote: boolean,
+    row: { title: (b: GitBranch) => string | undefined; active?: (b: GitBranch) => boolean }
+  ) => {
+    const rows = () => search.targets().filter((b) => b.is_remote === remote);
     // Rows are counted across both sections, local ones first.
-    const first = () => (remote ? rebaseTargets().filter((b) => !b.is_remote).length : 0);
+    const first = () => (remote ? search.targets().filter((b) => !b.is_remote).length : 0);
     return (
       <Show when={rows().length > 0}>
         <div class="git-menu-section-label">{remote ? 'Remote' : 'Local'}</div>
@@ -1040,10 +1107,13 @@ export function GitPanel(props: GitPanelProps) {
             {(b, i) => (
               <li
                 class="context-menu-item"
-                classList={{ 'git-menu-cursor': first() + i() === rebaseCursor() }}
-                title={`Rebase ${status()?.branch ?? 'this branch'} onto ${b.name}`}
-                onMouseMove={() => setRebaseCursor(first() + i())}
-                onClick={() => void rebaseOnto(b)}
+                classList={{
+                  'git-menu-cursor': first() + i() === search.cursor(),
+                  'git-branch-item-active': !!row.active?.(b),
+                }}
+                title={row.title(b)}
+                onMouseMove={() => search.setCursor(first() + i())}
+                onClick={() => search.pick(b)}
               >
                 <IconBranch />
                 <span>{b.name}</span>
@@ -1054,6 +1124,18 @@ export function GitPanel(props: GitPanelProps) {
       </Show>
     );
   };
+
+  const rebaseTitle = (b: GitBranch) =>
+    `Rebase ${status()?.branch ?? 'this branch'} onto ${b.name}`;
+
+  // The branch menu's search: every branch, the current one marked; a pick
+  // switches to it.
+  const switchSearch = branchSearch(branches, (b) => void switchBranch(b.name));
+  // Rebase…'s: the branches the current one can be rebased onto.
+  const rebaseSearch = branchSearch(
+    () => branches().filter((b) => b.is_remote || b.name !== status()?.branch),
+    (b) => void rebaseOnto(b)
+  );
 
   const sameStashes = (a: GitStashEntry[], b: GitStashEntry[]) =>
     a.length === b.length &&
@@ -1353,7 +1435,10 @@ export function GitPanel(props: GitPanelProps) {
     setBranchOpen(next);
     setMoreOpen(false);
     setHistoryOpen(false);
-    if (next) loadBranches();
+    if (next) {
+      switchSearch.reset();
+      loadBranches();
+    }
   };
 
   // Close header dropdowns on a click outside the header (same pattern
@@ -1584,6 +1669,7 @@ export function GitPanel(props: GitPanelProps) {
 
           <Show when={branchOpen()}>
             <div class="git-branch-dropdown context-menu">
+              {branchSearchBox(switchSearch, 'Search branches to switch to')}
               {/* Only while there's nothing to list yet: over the rows, it
                   moved them all down and back while they refreshed. */}
               <Show when={branchesLoading() && branches().length === 0}>
@@ -1591,40 +1677,18 @@ export function GitPanel(props: GitPanelProps) {
                   <IconSpinner /> <span>Loading branches...</span>
                 </div>
               </Show>
-              <Show when={branches().filter((b) => !b.is_remote).length > 0}>
-                <div class="git-menu-section-label">Local</div>
-                <ul class="context-menu-list">
-                  <For each={branches().filter((b) => !b.is_remote)}>
-                    {(b) => (
-                      <li
-                        class="context-menu-item"
-                        classList={{ 'git-branch-item-active': b.name === status()?.branch }}
-                        onClick={() => switchBranch(b.name)}
-                      >
-                        <IconBranch />
-                        <span>{b.name}</span>
-                      </li>
-                    )}
-                  </For>
-                </ul>
+              <Show
+                when={switchSearch.query().trim() !== '' && switchSearch.targets().length === 0}
+              >
+                <div class="git-more-note">No branch matches.</div>
               </Show>
-              <Show when={branches().filter((b) => b.is_remote).length > 0}>
-                <div class="git-menu-section-label">Remote</div>
-                <ul class="context-menu-list">
-                  <For each={branches().filter((b) => b.is_remote)}>
-                    {(b) => (
-                      <li
-                        class="context-menu-item"
-                        title={`Check out as a local tracking branch`}
-                        onClick={() => switchBranch(b.name)}
-                      >
-                        <IconBranch />
-                        <span>{b.name}</span>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              </Show>
+              {branchSection(switchSearch, false, {
+                title: () => undefined,
+                active: (b) => b.name === status()?.branch,
+              })}
+              {branchSection(switchSearch, true, {
+                title: () => 'Check out as a local tracking branch',
+              })}
             </div>
           </Show>
 
@@ -1812,40 +1876,9 @@ export function GitPanel(props: GitPanelProps) {
                   <IconBack />
                   <span>Rebase {status()?.branch} onto</span>
                 </button>
-                <div class="git-history-search-row">
-                  <div class="git-history-search-wrap">
-                    <input
-                      ref={(el) => queueMicrotask(() => el.focus())}
-                      class="tree-row-input git-more-input git-history-search"
-                      placeholder="Search branches"
-                      value={rebaseQuery()}
-                      spellcheck={false}
-                      autocomplete="off"
-                      aria-label="Search branches to rebase onto"
-                      onInput={(e) => {
-                        setRebaseQuery(e.currentTarget.value);
-                        setRebaseCursor(0);
-                        setRebaseNote(null);
-                      }}
-                      onKeyDown={onRebaseSearchKey}
-                      disabled={busy()}
-                    />
-                    <Show when={rebaseQuery() !== ''}>
-                      <button
-                        type="button"
-                        class="git-history-clear"
-                        title="Clear search"
-                        aria-label="Clear branch search"
-                        onClick={() => {
-                          setRebaseQuery('');
-                          setRebaseCursor(0);
-                        }}
-                      >
-                        ✕
-                      </button>
-                    </Show>
-                  </div>
-                </div>
+                {branchSearchBox(rebaseSearch, 'Search branches to rebase onto', () =>
+                  setRebaseNote(null)
+                )}
                 <Show when={rebaseNote()}>
                   <div class="git-more-note git-rebase-note">{rebaseNote()}</div>
                 </Show>
@@ -1856,17 +1889,18 @@ export function GitPanel(props: GitPanelProps) {
                 </Show>
                 <Show
                   when={
-                    !(branchesLoading() && branches().length === 0) && rebaseTargets().length === 0
+                    !(branchesLoading() && branches().length === 0) &&
+                    rebaseSearch.targets().length === 0
                   }
                 >
                   <div class="git-more-note">
-                    {rebaseQuery().trim()
+                    {rebaseSearch.query().trim()
                       ? 'No branch matches.'
                       : 'No other branches to rebase onto.'}
                   </div>
                 </Show>
-                {rebaseSection(false)}
-                {rebaseSection(true)}
+                {branchSection(rebaseSearch, false, { title: rebaseTitle })}
+                {branchSection(rebaseSearch, true, { title: rebaseTitle })}
               </Show>
 
               {/* Delete branch */}
