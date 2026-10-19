@@ -3,6 +3,7 @@
 import { container } from '../test/dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import SubagentSettings from './SubagentSettings';
 import { AUTOPILOT_KINDS } from '../lib/autopilotSettings';
@@ -189,12 +190,13 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
   // Off on the page, and subagents off: Autopilot's chats still send it there.
   assert.equal(warning('reviewer'), 'In Autopilot, code will also be sent to Beta.');
   assert.equal(warning('scout'), undefined, 'nothing uses an off scout');
-  // T09: a judging row on Default starts on another provider than the chat's.
-  assert.equal(warning('judge'), 'In Autopilot, code will also be sent to Beta.');
-  assert.equal(warning('triage'), undefined, 'not a judging row');
+  // T09: nothing picks another provider's model for a row on Default.
+  assert.equal(warning('acceptance'), undefined);
+  assert.equal(warning('judge'), undefined, 'no model chosen: none to send code to');
+  assert.equal(warning('triage'), undefined);
   assert.ok(
-    root.textContent?.includes('they start on a model of a provider other than the chat’s'),
-    'the hint says why'
+    root.textContent?.includes('Thorough tasks don’t start until each has one'),
+    'the hint says Thorough’s kinds need a model chosen'
   );
   // Subagents off: a kind Autopilot uses keeps its model and effort to set,
   // its switch (ordinary chats') doesn't; the others are greyed out whole.
@@ -219,4 +221,94 @@ test('subagent settings: the kinds Autopilot uses say so, and where their code g
     controls.every((c) => !c.disabled),
     'and on'
   );
+});
+
+test('subagent settings: Thorough’s kinds have no Default, and say a model is still to choose (T09)', () => {
+  const [providers, setProviders] = createSignal([
+    {
+      id: 'a',
+      name: 'Alpha',
+      baseUrl: 'http://a',
+      apiKey: '',
+      stream: true,
+      models: [{ id: 'm', enabled: true }],
+    },
+    {
+      id: 'b',
+      name: 'Beta',
+      baseUrl: 'http://b',
+      apiKey: '',
+      stream: true,
+      models: [{ id: 'other', enabled: true }],
+    },
+  ] as Provider[]);
+  const kinds = DEFAULT_SUBAGENT_SETTINGS.kinds;
+  const [settings, setSettings] = createSignal<Settings>({
+    ...DEFAULT_SUBAGENT_SETTINGS,
+    autopilot: { effort: 'thorough' },
+    // Saved before: "Same as the chat" is no choice for it now.
+    kinds: { ...kinds, breaker: { ...kinds.breaker, model: 'chat' } },
+  });
+  const root = container();
+  render(
+    () => (
+      <SubagentSettings
+        settings={settings()}
+        providers={providers()}
+        chatModel={{ providerId: 'a', modelId: 'm' }}
+        onChange={setSettings}
+        onOpenPage={() => {}}
+      />
+    ),
+    root
+  );
+  const row = (id: string) =>
+    [...root.querySelectorAll('.subagent-kind-row')][SUBAGENT_KINDS.findIndex((k) => k.id === id)];
+  const picker = (id: string) => row(id).querySelector('select') as HTMLSelectElement;
+  const options = (id: string) => [...picker(id).options].map((o) => o.textContent);
+  const choose = (id: string) =>
+    [...row(id).querySelectorAll('.setting-explain')].find((p) =>
+      p.textContent?.startsWith('Choose a model for it')
+    );
+  for (const id of ['planner', 'judge', 'breaker']) {
+    assert.deepEqual(options(id), ['Choose a model…', 'Alpha/m', 'Beta/other'], id);
+    assert.equal(picker(id).selectedOptions[0]?.textContent, 'Choose a model…', id);
+    assert.ok(picker(id).selectedOptions[0]?.disabled, `${id}: the placeholder can't be chosen`);
+    const hint = choose(id);
+    assert.equal(
+      hint?.textContent,
+      'Choose a model for it: Thorough tasks don’t start until it has one.'
+    );
+    assert.ok(hint!.classList.contains('warning'), `${id}: a warning, the effort being Thorough`);
+  }
+  // The others keep Default and "Same as the chat".
+  assert.deepEqual(options('acceptance').slice(0, 2), ['Default', 'Same as the chat']);
+  assert.equal(choose('acceptance'), undefined);
+  // Chosen: the hint goes, and the warning says where its code goes.
+  const judge = picker('judge');
+  judge.value = [...judge.options].find((o) => o.textContent === 'Beta/other')!.value;
+  judge.dispatchEvent(new Event('change', { bubbles: true }));
+  assert.deepEqual(settings().kinds.judge.model, { providerId: 'b', modelId: 'other' });
+  assert.equal(choose('judge'), undefined);
+  assert.equal(
+    row('judge').querySelector('.warning')?.textContent,
+    'In Autopilot, code will also be sent to Beta.'
+  );
+  // Balanced: still said, though not as a warning.
+  setSettings({ ...settings(), autopilot: { effort: 'balanced' } });
+  assert.equal(choose('planner')!.classList.contains('warning'), false);
+  // Its model turned off: nothing but its own fallbacks stands in for it.
+  setProviders(
+    providers().map((p) =>
+      p.id === 'b' ? { ...p, models: p.models.map((m) => ({ ...m, enabled: false })) } : p
+    )
+  );
+  const off = [...row('judge').querySelectorAll('.setting-explain')].map((p) => p.textContent);
+  assert.ok(
+    off.includes(
+      'This model is turned off, removed, or can’t use tools, so it’s skipped: only the fallbacks here stand in for it.'
+    ),
+    off.join(' | ')
+  );
+  assert.ok(choose('judge'), 'and a model is to choose again');
 });

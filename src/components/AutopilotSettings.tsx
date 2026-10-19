@@ -22,11 +22,13 @@ import {
   type AutopilotBudget,
   type AutopilotSettings as Settings,
 } from '../lib/autopilotSettings';
-import { SUBAGENT_KINDS } from '../lib/subagentSettings';
+import { kindNames, SUBAGENT_KINDS, type SubagentKindId } from '../lib/subagentSettings';
 import { NumberField } from './SettingsControls';
 
 interface AutopilotSettingsProps {
   settings: Settings;
+  /** Thorough's kinds with no model chosen (Subagents): its tasks don't start (T09). */
+  withoutModel: SubagentKindId[];
   onChange: (settings: Settings) => void;
   onOpenPage: (page: SettingsPage) => void;
 }
@@ -99,6 +101,19 @@ export default function AutopilotSettings(props: AutopilotSettingsProps) {
             )}
           </For>
         </div>
+        <Show when={props.withoutModel.length > 0}>
+          <p
+            class="settings-hint setting-explain"
+            classList={{ warning: s().effort === 'thorough' }}
+          >
+            Thorough tasks don’t start until {kindNames(props.withoutModel)}{' '}
+            {props.withoutModel.length > 1 ? 'have' : 'has'} a model chosen in{' '}
+            <button class="link-button" onClick={() => props.onOpenPage('subagents')}>
+              Subagents
+            </button>
+            .
+          </p>
+        </Show>
       </section>
 
       <section class="settings-section">

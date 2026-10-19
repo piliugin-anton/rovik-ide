@@ -16,6 +16,7 @@ import {
   readOnlyReason,
   refreshHosts,
   startMove,
+  taskEffort,
   worksOnItsOwn,
   type CloudEvent,
   type HostSummary,
@@ -126,6 +127,19 @@ test('a chat on a host that works on its own, and only there, goes in Autopilot 
   assert.equal(worksOnItsOwn({ kind: 'moving', host: 'own' }, hosts), false, 'not there yet');
   assert.equal(worksOnItsOwn(undefined, hosts), false);
   assert.equal(worksOnItsOwn({ kind: 'host', host: 'gone' }, hosts), false);
+});
+
+test('a task takes its host’s effort when the host works on its own and sets one (H01)', () => {
+  const hosts: HostSummary[] = [
+    ...HOSTS,
+    { id: 'own', name: 'Own', deployed: true, autonomous: true, effort: 'thorough' },
+    { id: 'plain', name: 'Plain', deployed: true, autonomous: true },
+  ];
+  assert.equal(taskEffort({ kind: 'host', host: 'own' }, hosts, 'balanced'), 'thorough');
+  assert.equal(taskEffort({ kind: 'host', host: 'plain' }, hosts, 'balanced'), 'balanced');
+  assert.equal(taskEffort({ kind: 'host', host: 'h1' }, hosts, 'thorough'), 'thorough');
+  assert.equal(taskEffort(undefined, hosts, 'thorough'), 'thorough', 'this computer’s chat');
+  assert.equal(taskEffort({ kind: 'moving', host: 'own' }, hosts, 'balanced'), 'balanced');
 });
 
 test('a moving chat is read-only, there and back; one on a host isn’t', () => {

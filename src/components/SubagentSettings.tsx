@@ -6,7 +6,8 @@
 // default; with the master switch off, chats work exactly as without
 // subagents and the rows keep their choices, greyed out, except those
 // Autopilot uses for its own chats (Settings → Autopilot, D17): their
-// model and effort stay to set.
+// model and effort stay to set. The kinds Thorough adds have no Default:
+// their models are chosen here, or Thorough tasks don't start (T09).
 import { createResource, createSignal, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import type { SettingsPage } from '../lib/appSettings';
@@ -14,8 +15,9 @@ import ModelWithFallbacks from './ModelWithFallbacks';
 import { NumberField } from './SettingsControls';
 import { vfsStatus } from '../lib/virtualFiles';
 import { EFFORTS, type Effort } from '../lib/reasoning';
-import { AUTOPILOT_KINDS, autopilotKindTag } from '../lib/autopilotSettings';
+import { AUTOPILOT_KINDS, autopilotKindTag, THOROUGH_KINDS } from '../lib/autopilotSettings';
 import {
+  kindsWithoutModel,
   LIMIT_FIELDS,
   LIMITS,
   otherProviders,
@@ -107,9 +109,9 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
           ).
         </p>
         <p class="settings-hint">
-          The planner, the judge, the acceptance checker and the adversarial tester judge others’
-          work: left on Default, they start on a model of a provider other than the chat’s, when one
-          is set up, so another model family checks what the chat’s model did.
+          The planner, the judge and the adversarial tester, which Autopilot’s Thorough adds, judge
+          what the chat’s model did: they run only on the models chosen for them here, best of
+          another model family than your chats’, and Thorough tasks don’t start until each has one.
         </p>
         <For each={SUBAGENT_KINDS}>
           {(kind) => {
@@ -117,6 +119,10 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
             const others = () => otherProviders(props.providers, s(), kind.id, props.chatModel);
             const autopilot = AUTOPILOT_KINDS.includes(kind.id);
             const tag = autopilotKindTag(kind.id);
+            // Thorough's kinds: no Default, a model of the user's choosing (T09).
+            const chosenOnly = THOROUGH_KINDS.includes(kind.id);
+            const unchosen = () =>
+              chosenOnly && kindsWithoutModel(s(), props.providers).includes(kind.id);
             // Its switch is for ordinary chats; Autopilot's use its model either way.
             const locked = () => off() && !autopilot;
             return (
@@ -143,10 +149,15 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                     providers={props.providers}
                     label={`${kind.label} model`}
                     value={k().model}
-                    specials={[
-                      { value: 'default', label: 'Default' },
-                      { value: 'chat', label: 'Same as the chat' },
-                    ]}
+                    specials={
+                      chosenOnly
+                        ? []
+                        : [
+                            { value: 'default', label: 'Default' },
+                            { value: 'chat', label: 'Same as the chat' },
+                          ]
+                    }
+                    unset="Choose a model…"
                     fallbacks={k().fallbacks}
                     disabled={locked()}
                     onChange={(model: KindModel) => patchKind(kind.id, { model })}
@@ -169,6 +180,14 @@ export default function SubagentSettings(props: SubagentSettingsProps) {
                       )}
                     </For>
                   </select>
+                  <Show when={unchosen()}>
+                    <p
+                      class="settings-hint setting-explain"
+                      classList={{ warning: s().autopilot.effort === 'thorough' }}
+                    >
+                      Choose a model for it: Thorough tasks don’t start until it has one.
+                    </p>
+                  </Show>
                   <Show when={(k().enabled || autopilot) && others().length > 0}>
                     <p class="settings-hint setting-explain warning">
                       {k().enabled ? 'Code' : 'In Autopilot, code'} will also be sent to{' '}

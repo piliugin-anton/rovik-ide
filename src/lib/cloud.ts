@@ -16,6 +16,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { createStore, produce } from 'solid-js/store';
 import type { StartRequest } from './agentRuns';
+import type { AutopilotEffort } from './autopilot';
 import { chatStore } from './chatStore';
 import type { HostState, Tone } from './hosts';
 import type { ChatPlace } from '../types';
@@ -123,6 +124,8 @@ export interface HostSummary {
   terminal?: boolean;
   /** It works on its own (H02): its chats start in Autopilot. */
   autonomous?: boolean;
+  /** The effort its tasks take while it works on its own, when it sets one (H01). */
+  effort?: AutopilotEffort;
 }
 
 export const hostSummaries = () => invoke<HostSummary[]>('hosts_summaries');
@@ -322,6 +325,20 @@ export async function startMove(
 export function worksOnItsOwn(place: ChatPlace | undefined, hosts: HostSummary[]): boolean {
   if (place?.kind !== 'host') return false;
   return !!hosts.find((h) => h.id === place.host)?.autonomous;
+}
+
+/**
+ * The effort an Autopilot task started in the chat at `place` takes: on a
+ * host that works on its own and sets one, the host's (H01); else `own`,
+ * this computer's settings.
+ */
+export function taskEffort(
+  place: ChatPlace | undefined,
+  hosts: HostSummary[],
+  own: AutopilotEffort
+): AutopilotEffort {
+  if (place?.kind !== 'host') return own;
+  return hosts.find((h) => h.id === place.host)?.effort ?? own;
 }
 
 /** A host's name, or its id when this app doesn't know it. */
