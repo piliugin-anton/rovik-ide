@@ -249,10 +249,14 @@ pub(crate) fn launch_chrome_with_pipe(
 }
 
 /// The last lines Chrome wrote to stderr. Chrome's stderr is read to its end,
-/// so Chrome never blocks writing it.
+/// on a thread of its own, so Chrome never blocks writing it.
 #[cfg(unix)]
 #[derive(Clone, Default)]
-pub(crate) struct StderrTail(Arc<Mutex<VecDeque<String>>>);
+pub(crate) struct StderrTail {
+    lines: Arc<Mutex<VecDeque<String>>>,
+    /// The reader is done: Chrome's stderr closed (it exited), or reading failed.
+    ended: Arc<AtomicBool>,
+}
 
 #[cfg(unix)]
 impl StderrTail {
@@ -263,7 +267,7 @@ impl StderrTail {
             match line {
                 Ok(line) => {
                     tracing::trace!("Chrome stderr: {}", line);
-                    let mut lines = self.0.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
                     if lines.len() == Self::LINES {
                         lines.pop_front();
                     }
@@ -271,15 +275,27 @@ impl StderrTail {
                 }
                 Err(error) => {
                     tracing::warn!("Chrome stderr reader failed: {error}");
-                    return;
+                    break;
                 }
             }
+        }
+        self.ended.store(true, Ordering::Release);
+    }
+
+    /// Once the reader has read all Chrome wrote, its stderr closed, or once
+    /// `wait` has passed. A Chrome that exited may have written its last
+    /// lines just before: they're read by now, which its exit alone doesn't
+    /// say, the reader being a thread of its own.
+    pub(crate) async fn drained(&self, wait: Duration) {
+        let deadline = tokio::time::Instant::now() + wait;
+        while !self.ended.load(Ordering::Acquire) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
     /// For an error message: what Chrome last wrote to stderr.
     pub(crate) fn describe(&self) -> String {
-        let lines = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
         if lines.is_empty() {
             "Chrome wrote nothing to stderr".to_string()
         } else {
