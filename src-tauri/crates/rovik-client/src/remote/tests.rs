@@ -845,7 +845,17 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
     fake.requests.lock().unwrap().clear();
     remote.set_policy(HOST, ApprovalPolicy::WaitForMe);
     remote.reconfigure(HOST).await;
-    let requests = fake.requests.lock().unwrap().clone();
+    // What reconfiguring sent, among the pulls of the chat its starts may
+    // still have going.
+    let requests: Vec<Request> = (fake.requests.lock().unwrap().iter())
+        .filter(|r| {
+            matches!(
+                r,
+                Request::AgentConfigure(_) | Request::AutonomyConfigure(_)
+            )
+        })
+        .cloned()
+        .collect();
     let Request::AgentConfigure(waiting) = &requests[0] else {
         panic!("{requests:?}");
     };
