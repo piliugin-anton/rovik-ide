@@ -15,9 +15,11 @@
 //! them: they act on the daemon of the user sudo runs them for
 //! (`SUDO_UID`), and on no one else's.
 //!
-//! `admin limits|add|remove|upgrade|uninstall`, through sudo, which lets
-//! the `rovik-admin` group run them; the caller must also be one of the
-//! administrators `agentd.toml` names.
+//! `admin limits|add|remove|browser|upgrade|uninstall`, through sudo, which
+//! lets the `rovik-admin` group run them; the caller must also be one of
+//! the administrators `agentd.toml` names. `browser` installs the Chrome
+//! for Testing Rovik pins for the browser tools (`installer/browser.rs`),
+//! as `install` does too, and `upgrade` with the new build.
 //!
 //! Without systemd, as in a container, the binary and the settings are
 //! installed, and the app starts the daemon when it connects. `--root DIR`
@@ -32,6 +34,8 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+mod browser;
 
 pub const BIN_DIR: &str = "/opt/rovik/bin";
 /// The installed binary, a link to the current version.
@@ -297,6 +301,7 @@ pub fn install(sys: &System, admin: &str, binary: Option<PathBuf>) -> Result<(),
         );
     }
     println!("Its administrators: {}.", file.admins.join(", "));
+    browser::ensure_or_say(sys);
     Ok(())
 }
 
@@ -382,11 +387,12 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
             write_settings(sys, &file)?;
             leave_group(sys, user)
         }
+        ["browser"] => browser::ensure(sys),
         ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller, allow_downgrade),
         ["uninstall"] => uninstall(sys),
         _ => Err(
-            "admin takes: limits [name=value ...], add USER, remove USER, upgrade FILE \
-             [--allow-downgrade], uninstall"
+            "admin takes: limits [name=value ...], add USER, remove USER, browser, \
+             upgrade FILE [--allow-downgrade], uninstall"
                 .into(),
         ),
     }
@@ -435,6 +441,12 @@ fn upgrade(
             return Err(why);
         }
     };
+    // The new build's browser, before the daemons start on it: its pin may
+    // be a newer version. One that can't be installed stops nothing else.
+    match sys.run(INSTALLED, &["admin", "browser"]) {
+        Ok(said) => print!("{said}"),
+        Err(why) => println!("{}", browser::not_installed(&why)),
+    }
     if sys.systemd() {
         sys.run("systemctl", &["try-restart", "rovik-agentd@*.service"])?;
     }

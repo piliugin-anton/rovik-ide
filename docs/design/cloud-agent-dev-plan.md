@@ -54,6 +54,7 @@ decisions in the form this plan builds them, or follow from them.
 | D16 | **Servers run Linux on x86_64 or aarch64. Clients run Linux, macOS or Windows.** A daemon can serve several of its person's computers. Each chat belongs to the computer that moved it: the daemon sends a computer only its own chats' events and status, takes a chat's writes only from its computer, and keeps one `AgentConfig` per computer, which that computer's chats run with.                                                                                                                                                                                                                                                                                                           | §7. One computer's settings and approval policy must never change another's runs (K27). Adopting another computer's chats would be the "every device sees every chat" design (M2), which wasn't chosen.                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | D17 | **Rovik is installed once per server, by its first user, who becomes its administrator** _(new)_. On a server without `/etc/rovik/agentd.toml`, the first deploy installs with `sudo`: one root-owned copy of the binary in `/opt/rovik/bin`, its signature checked; the limits in `/etc/rovik/agentd.toml`; a system unit, `rovik-agentd@.service`, that runs each person's daemon as that person, in `rovik.slice`; and a sudoers rule that lets each user start only their own daemon, and the administrators run Rovik's admin commands. Without sudo, the deploy stops and shows the command for someone with root to run. The administrator sets the limits and upgrades Rovik for everyone. | Neither a user nor the agent's commands can swap a root-owned binary, and the binary already installed checks every upgrade's signature. Limits on system units can't be overridden by users, cover the daemon and everything it starts, and leave alone everything else the user runs. System units need no lingering, and give each daemon a private `/tmp`.                                                                                                                                                                                                                                                                    |
 | D18 | **The agent's Chrome is driven over a pipe, not a port** _(new)_. Rovik carries a fork of `eoka` with a pipe transport (`--remote-debugging-pipe`), offered upstream, and uses it on Linux and macOS.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | eoka opens Chrome's DevTools on a `127.0.0.1` port with no password, which every user of a shared server can reach, and the browser runs as you (K52). The pipe leaves eoka's stealth as it is. The pipe switch turns on the same "automation controlled" flag that headless mode and eoka's port 0 already turn on, and eoka's `--disable-blink-features=AutomationControlled` turns it off after them (Chromium's `content/child/runtime_features.cc`). The rest of its stealth (patched strings in Chrome, injected scripts, the CDP methods it avoids) doesn't depend on the transport, and pages lose a local port to probe. |
+| D19 | **The browser tools' browser is pinned: Chrome for Testing 155.0.8059.39** _(new)_. The version eoka's own CI pins, from Google's builds for Linux (x86_64, aarch64), macOS and Windows, each checked against a SHA-256 in `rovik_core::pinned_browser`. A cloud host's installer puts it in `/opt/rovik/browser/<version>` with the packages its archive lists, and `admin upgrade` installs a new build's when it's missing. The app downloads its own into its data folder when it starts, with a progress notification. The tools use it first, then Chromium, then Chrome.                                                                                                                    | eoka's stealth and tests are checked against one Chrome version, and Chrome and a distribution's Chromium move on their own (Ubuntu's Chromium is a snap). Chrome for Testing is the one build that can be held at a version on every CPU and system Rovik runs on. A browser that can't be installed stops nothing: the tools say what's missing when they're used.                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -1336,6 +1337,7 @@ of a decision or a task.
 - **The eoka fork.** Until upstream takes the pipe transport, Rovik
   carries a fork, and updating eoka means bringing the change along. It
   touches only how Chrome is launched and the transport.
+  `src-tauri/crates/eoka/FORK.md` lists the changes.
 - **Known limits of v1:**
   - Chats without a project don't move.
   - Submodules and nested repositories aren't carried.
@@ -2470,12 +2472,81 @@ Tasks add notes here when reality differs from the plan.
     (`hosts_trust_build`), as it shows a new host key, and stops there.
     The page says to test the connection when a deployed host is
     offline. Signed releases (B02) let the check take any release build.
-- **H08 is skipped for now, as asked.** The agent's Chrome stays on eoka
-  0.5.14's DevTools port on `127.0.0.1`, so on a shared server other users
-  can reach the browser that runs as you (K52). `docs/cloud-hosts.md`
-  says so and suggests leaving the browser tools off on servers shared
-  with people you don't trust. D18 and H08 stand as the plan for when the
-  pipe transport is taken up again.
+- **H08, Chrome over a pipe.**
+  - The fork is eoka 0.7.2, the latest release, not 0.5.14: vendored as
+    published in one commit, then changed in the next, so the change reads
+    as a diff. `browser_tools.rs` builds against 0.7.2 unchanged. FORK.md
+    in the crate lists what differs and how to drop the fork.
+  - `StealthConfig::pipe` (default off, as upstream would want it) starts
+    Chrome with `--remote-debugging-pipe`, its fds 3 and 4 two pipes made
+    close-on-exec, raised above 4 before `dup2` so neither end can be its
+    own target. The transport takes either link (`transport/link.rs`):
+    messages are queued whole and written cancel-safe, as the WebSocket's
+    buffer does, and shutdown closes the pipe's write end without the
+    writer lock, so Chrome reads EOF and exits (0.3 s, checked) while a
+    writer waiting for room fails at once. Readiness is the first
+    `Browser.getVersion` reply; a Chrome that never answers is reported
+    with its exit status and the end of its stderr, and stopped.
+  - `browser_tools.rs` sets `pipe` on Unix. eoka 0.7 gives Chrome a
+    folder of its own under the host's `/tmp` as `TMPDIR`, which snap
+    Chromium's private `/tmp` doesn't have: for the snap, that folder's
+    parent is `~/snap/chromium/common/rovik-ide-runtime`, beside the
+    profile. eoka 0.7 resolved `/snap/bin/chromium` to `/usr/bin/snap`,
+    which doesn't start Chromium under that name: the fork keeps that path
+    as given. Rovik's own snap check missed it the same way, and looks at
+    the path first now.
+  - Tests: the transport's tests run over both links (`name::websocket`
+    and `name::pipe`), but for the WebSocket's own frames (pings, close
+    frames, protocol errors, the upgrade); `tests/pipe.rs` checks the fds
+    and arguments Chrome gets and the failure reports with a script in
+    Chrome's place, and, with Chrome (ignored by default), that its
+    processes listen on no TCP port while a port launch's do, that
+    `navigator.webdriver` is false without evasions, that what pages see
+    is the same over both links, that the pipe gets through a wrapper
+    script, and that tabs and screenshots work. Upstream's browser suite
+    passes here on Chrome for Testing 155.0.8059.39 (Xvfb): all 85 tests
+    over the port, and 79 with the pipe on by default. The other 6 open a
+    debugging port themselves to attach a second client, which the pipe
+    refuses. `browser_tools.rs` has the same no-port check through
+    `browse_url` and `browser_screenshot`, run where Chrome is installed.
+    Snap Chromium and macOS weren't available to check here.
+  - The pipe never comes with a port. A launch with `pipe` and
+    `--remote-debugging-port` in `extra_args` fails, and one on a profile a
+    running Chrome holds fails rather than attach to it over its port. A
+    Chrome flags file can still add a port behind Rovik's back (a
+    distribution's `CHROMIUM_FLAGS`, a user's `chromium-flags.conf`), so on
+    Linux the browser tools look for TCP sockets listening in Chrome's
+    processes (`/proc`) once it's started, and close it if there are any.
+  - eoka 0.7 copies and patches Chrome into each launch's own folder, where
+    0.5.14 kept one patched copy: a launch takes about 2 s in a release
+    build (0.2 s unpatched), paid again after each idle shutdown. The pipe
+    adds nothing to it.
+- **D19, the pinned browser.**
+  - `rovik_core::pinned_browser` holds the pin: the version, and each
+    build's size and SHA-256 (`scripts/pin-browser.sh VERSION` prints
+    them). It downloads an archive, refusing one that isn't the pinned
+    build, unpacks it (the macOS bundle's links kept, as its signature
+    needs, but none that leads out), and removes other versions.
+    Chrome for Testing 153 was the first try, as the nearest to Chrome
+    152 with arm64 builds: its headless `--dump-dom` hung here, where 155
+    answers in a second.
+  - On a cloud host, `install` and `admin browser` install it as root
+    (`installer/browser.rs`), with the packages its `deb.deps` or
+    `rpm.deps` lists, before the folder takes its version's name, so a
+    version's folder is there only once all of it is. `admin upgrade`
+    runs the new build's `admin browser` before the daemons start again,
+    and the app's upgrade runs it too, for a server whose old build
+    doesn't. Checked live here (Ubuntu 24.04, x86_64): install, upgrade's
+    no-op, and the agent's tools on the installed browser.
+  - The app's copy goes in `<local data>/rovik-ide/browser`, which
+    `pinned_browser::app_root()` names without Tauri, so a daemon on the
+    same machine finds it too. `src/lib/browserStartup.ts` asks for it when
+    the app starts (`browser_status`, `browser_install`) and shows the
+    progress as rust-analyzer's download does. One of Rovik's processes
+    installs it at a time (`os_lock`, `.install.lock` beside the versions):
+    another window's waits, then finds it. Until it's ready, the tools use
+    an installed Chromium or Chrome, and with none, say it's still being
+    installed.
 - **U01, Settings → Cloud hosts.**
   - The page is `CloudHostsSettings`, a new `AiSettingsPage`, last in the
     menu. Unlike the other pages it saves as it goes, through `hosts_*`

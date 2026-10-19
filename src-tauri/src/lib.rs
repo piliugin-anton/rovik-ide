@@ -17,6 +17,7 @@ mod git_sync;
 mod instances;
 mod lsp;
 mod open_url;
+mod pinned_browser;
 mod project_files;
 mod remote_chats;
 mod shared_state;
@@ -308,6 +309,8 @@ pub fn run() {
             lsp::rust_analyzer::ra_install,
             lsp::rust_analyzer::ra_rust_src_status,
             lsp::rust_analyzer::ra_install_rust_src,
+            pinned_browser::browser_status,
+            pinned_browser::browser_install,
             commands::agent::send_chat_message,
             commands::agent::cancel_chat_request,
             commands::agent::agent_configure,

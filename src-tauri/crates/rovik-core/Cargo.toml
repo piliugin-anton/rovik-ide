@@ -20,12 +20,14 @@ walkdir.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros", "net", "io-util"] }
 uuid.workspace = true
 git2.workspace = true
-eoka = "0.5.14"
+eoka = "0.7.2"
 rand = "0.10"
 log.workspace = true
 base64 = "0.23.1"
 rusqlite.workspace = true
 sha2.workspace = true
+# The pinned Chrome for Testing's archive (pinned_browser.rs, D19).
+zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 grep-searcher = "0.1.17"
 grep-regex = "0.1.14"
 grep-matcher = "0.1.9"

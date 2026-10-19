@@ -112,6 +112,7 @@ import {
   vfsSettingsRequested,
   clearVfsSettingsRequest,
 } from './lib/virtualFilesStartup';
+import { startBrowser } from './lib/browserStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
 import { cloud, hostName, initCloud } from './lib/cloud';
 import SettingsDialog from './components/SettingsDialog';
@@ -141,6 +142,8 @@ export default function App() {
   onMount(() => void initAgentRuns());
   // The cloud hosts' connections and the chats' moves, likewise.
   onMount(() => void initCloud());
+  // The web tools' browser: downloaded if it's missing (in the background).
+  onMount(() => void startBrowser());
 
   // Load last opened project on startup: the folder the command line asked
   // for (`rovik-ide <folder>`, claimed for this window by the backend), else
