@@ -55,6 +55,11 @@ export interface StageMeta {
   rateLimit?: { until?: number; waits: number; waitedMs: number };
   /** U04: what the run under way spent so far, kept as it goes. */
   spending?: { ms: number; cost: number; uncosted: number; tokens?: number };
+  /**
+   * How many of a done stage's own steps failed, the task going on all the
+   * same: the Prepare stage's installs (S03). Shown as a warning, not a tick.
+   */
+  failures?: number;
 }
 
 /**
@@ -172,10 +177,25 @@ const STATUSES: StageStatus[] = ['running', 'done', 'failed', 'skipped'];
 
 /** A message's stage record, if it holds one that reads. */
 export function stageOf(m: ChatMessage): StageMeta | null {
-  const stage = m.role === 'assistant' ? m.meta?.stage : undefined;
+  return m.role === 'assistant' ? readStage(m.meta?.stage) : null;
+}
+
+/** `meta.stage`, if it reads as a stage record. */
+export function readStage(stage: StageMeta | null | undefined): StageMeta | null {
   if (!stage || typeof stage.task !== 'string') return null;
   if (!STAGES.includes(stage.name) || !STATUSES.includes(stage.status)) return null;
   return stage;
+}
+
+/**
+ * A record as a patch brings it (`next`), unless it would turn one that
+ * ended back into a running one. The backend never does that: a record
+ * is made running and ends once. But a remote chat's pull can read its host
+ * before a record ended there, and arrive after the live patch that ended
+ * it.
+ */
+export function keptStage(current: StageMeta | undefined, next: StageMeta): StageMeta {
+  return current && current.status !== 'running' && next.status === 'running' ? current : next;
 }
 
 /** The stage records among `messages`, oldest first. */
@@ -234,19 +254,28 @@ const isRequest = (m: ChatMessage) => m.role === 'user' && !m.meta?.harness && !
  * the read is the loaded one; a message of the user's after the task's last
  * record ends it as the current one. `newest`: the loaded messages reach
  * the chat's newest (not a page opened around a search hit), so the task
- * they end with is the chat's latest.
+ * they end with is the chat's latest. `patched`: records as patches brought
+ * them for messages the chat doesn't hold (lib/chatStore.ts
+ * `stagePatches`), newer than a remote chat's mirror, which a patch doesn't
+ * change: its implementation's record ends while the run's page is held.
  */
 export function taskRecords(
   stored: StageRow[] | null,
   messages: ChatMessage[],
-  newest = true
+  newest = true,
+  patched: Readonly<Record<string, StageMeta>> = {}
 ): StageRow[] | null {
   const loaded = newest ? currentTask(messages) : null;
   const task = loaded?.[0].stage.task ?? stored?.[0]?.stage.task;
   const fromStore = stored?.length && stored[0].stage.task === task ? stored : [];
   if (!task || (!loaded && !fromStore.length)) return null;
   const live = new Map(stageRows(messages).map((r) => [r.id, r]));
-  const rows = fromStore.map((r) => live.get(r.id) ?? r);
+  const rows = fromStore.map((r) => {
+    const held = live.get(r.id);
+    if (held) return held;
+    const patch = patched[r.id];
+    return patch ? { id: r.id, stage: keptStage(r.stage, patch) } : r;
+  });
   for (const r of loaded ?? []) if (!rows.some((x) => x.id === r.id)) rows.push(r);
   if (!loaded && newest) {
     // The newest messages held end with none of its records: current unless
@@ -259,21 +288,102 @@ export function taskRecords(
   return rows;
 }
 
+/** A record a stage done inside another's run leaves in the chat: how it is, its round. */
+type InsideRecord = { status: string; round?: number };
+
+/**
+ * The stages done inside another stage's run (stage.rs `Carrier::Inside`),
+ * by the run, each with the record it leaves in the chat as it goes: the
+ * plan's review inside the plan's run; the change review, the checks, the
+ * adversarial tester and the acceptance check inside the implementation's.
+ */
+const INSIDE: Partial<
+  Record<StageName, { name: StageName; of: (m: ChatMessage) => InsideRecord | undefined }[]>
+> = {
+  plan: [
+    {
+      name: 'planReview',
+      of: (m) => (m.meta?.review?.kind === 'plan' ? m.meta.review : undefined),
+    },
+  ],
+  implement: [
+    { name: 'review', of: (m) => (m.meta?.review?.kind === 'change' ? m.meta.review : undefined) },
+    { name: 'checks', of: (m) => m.meta?.verification },
+    { name: 'break', of: (m) => m.meta?.breaker },
+    { name: 'acceptance', of: (m) => m.meta?.acceptance },
+  ],
+};
+
+/** Its record says the stage didn't run (no reviewer, no checks to run). */
+const SKIPPED = ['skipped', 'unverified'];
+
+/**
+ * The strip's records while a stage's run carries out stages of its own
+ * (`INSIDE`): those are recorded only once the run ends (driver.rs
+ * `advance`), so the run's record, running, said "implement…" through the
+ * change review and the checks. They show from the records the run leaves
+ * in the chat as it goes, which come live, from a host too. The furthest
+ * the run got (in the stages' order) is the one going on, findings or a
+ * failed round being fixed included, and the line's; those before it are
+ * done, or skipped; the run's own stage is done once it got to one. A stage
+ * only goes forward so, never back. The same until the driver has recorded
+ * each (one after another, once the run ended). Only `messages` after the
+ * run's record (all of them when it isn't held: the newest are the run's),
+ * and only `messages` that reach the chat's newest.
+ */
+export function withLiveStages(rows: StageRow[], messages: ChatMessage[]): StageRow[] {
+  let at = rows.length - 1;
+  while (at >= 0 && !INSIDE[rows[at].stage.name]) at--;
+  if (at < 0) return rows;
+  const run = rows[at];
+  const inside = INSIDE[run.stage.name]!;
+  const after = rows.slice(at + 1);
+  // The task went on past them: as recorded.
+  if (after.some((r) => !inside.some(({ name }) => name === r.stage.name))) return rows;
+  const since = messages.slice(messages.findIndex((m) => m.id === run.id) + 1);
+  const latest = new Map<StageName, { id: string; record: InsideRecord }>();
+  for (const m of since)
+    for (const { name, of } of inside) {
+      const record = of(m);
+      if (record) latest.set(name, { id: m.id, record });
+    }
+  const reached = inside.filter(({ name }) => latest.has(name)).map(({ name }) => name);
+  if (!reached.length) return rows;
+  const furthest = reached[reached.length - 1];
+  const live = reached
+    .filter((name) => !after.some((r) => r.stage.name === name))
+    .map((name): StageRow => {
+      const { id, record } = latest.get(name)!;
+      const skipped = SKIPPED.includes(record.status);
+      const status = skipped ? 'skipped' : name === furthest ? 'running' : 'done';
+      const round = record.round ?? 1;
+      return { id, stage: { task: run.stage.task, name, status, round, effort: run.stage.effort } };
+    });
+  const own =
+    run.stage.status === 'running'
+      ? { id: run.id, stage: { ...run.stage, status: 'done' as const } }
+      : run;
+  return [...rows.slice(0, at), own, ...after, ...live];
+}
+
 /**
  * How a stage shows: as recorded, `pending` when not reached (yet), and,
  * when recorded running but nothing runs it (no run, nor the task's driver
  * at work between two of its runs: `running` is either), `waiting` while it waits out
  * the provider's rate limit (H07: its run goes on by itself), else
  * `stopped` (the app closed, or a crash, cut it; it goes on once the task
- * is resumed).
+ * is resumed). A done stage some of whose steps failed (`failures`: the
+ * Prepare stage's installs) shows a `warning`, not a tick.
  */
-export type StageShown = StageStatus | 'pending' | 'stopped' | 'waiting';
+export type StageShown = StageStatus | 'pending' | 'stopped' | 'waiting' | 'warning';
 
 export function shownStatus(
   status: StageStatus | 'pending',
   running: boolean,
-  waiting = false
+  waiting = false,
+  failures = 0
 ): StageShown {
+  if (status === 'done' && failures > 0) return 'warning';
   if (status !== 'running' || running) return status;
   return waiting ? 'waiting' : 'stopped';
 }
@@ -304,6 +414,8 @@ export interface StripStage {
   recordId?: string;
   /** Its latest record waits out the provider's rate limit (H07). */
   waiting?: boolean;
+  /** Its latest record's steps that failed, the task going on (`StageMeta.failures`). */
+  failures?: number;
 }
 
 /** The task's stages in order, each as its latest record says. */
@@ -320,6 +432,7 @@ export function stripStages(rows: StageRow[]): StripStage[] {
       ...(latest.stage.summary ? { summary: latest.stage.summary } : {}),
       recordId: latest.id,
       ...(waitsOutRateLimit(latest.stage) ? { waiting: true } : {}),
+      ...(latest.stage.failures ? { failures: latest.stage.failures } : {}),
     };
   });
 }
@@ -379,6 +492,7 @@ const STATUS_WORDS: Record<StageShown, string> = {
   stopped: 'didn’t finish',
   waiting: 'waiting',
   done: 'done',
+  warning: 'done, with failures',
   failed: 'failed',
   skipped: 'skipped',
 };
@@ -395,7 +509,7 @@ export function stageTitle(stage: Pick<StageMeta, 'name' | 'round'>): string {
 
 /** A stage's hover text on the strip: its status, and its summary. */
 export function stageHover(stage: StripStage, running: boolean): string {
-  const status = statusWord(shownStatus(stage.status, running, stage.waiting));
+  const status = statusWord(shownStatus(stage.status, running, stage.waiting, stage.failures));
   const title = stageTitle({ name: stage.name, round: stage.round ?? 1 });
   return stage.summary ? `${title}: ${status}. ${stage.summary}` : `${title}: ${status}`;
 }

@@ -3024,6 +3024,63 @@ async fn a_project_without_a_lockfile_is_installed_first() {
     assert!(rounds[0].get("environment").is_none());
 }
 
+/// S03: an install that fails doesn't end the task, nor is it a success:
+/// the Prepare stage is done, and its record counts the failed installs
+/// (`failures`), which the strip shows as a warning, not a tick.
+#[tokio::test]
+async fn a_failed_install_is_counted_in_its_stage() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    // The install's own script fails, as a native part that can't build
+    // does: no registry asked.
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "version": "1.0.0", "private": true, "scripts": { "test": "node check.js", "postinstall": "echo cannot build the native part >&2; exit 3" } }"#,
+        ),
+        (
+            "package-lock.json",
+            r#"{ "name": "t", "version": "1.0.0", "lockfileVersion": 3, "requires": true, "packages": { "": { "name": "t", "version": "1.0.0", "hasInstallScript": true } } }"#,
+        ),
+        (
+            "check.js",
+            "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }",
+        ),
+        ("ok.txt", "no"),
+    ])
+    .await;
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")])],
+        script_with_plan(TASK_PLAN),
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let mut expected = BALANCED_OK.to_vec();
+    expected[2] = (Stage::Prepare, Status::Done);
+    assert_eq!(names(&records), expected);
+    let prepare = &records[2];
+    assert_eq!(prepare.failures, 1);
+    assert_eq!(
+        prepare.summary.as_deref(),
+        Some("1 of 1 installs failed (`npm ci --no-audit --no-fund`): the checks will say what's missing")
+    );
+    // Stored so, for the strip; a stage with none failed has none.
+    let messages = h.messages().await;
+    let stage = |name: &str| {
+        messages
+            .iter()
+            .filter_map(|m| m.meta.as_ref()?.get("stage"))
+            .find(|s| s["name"] == name)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(stage("prepare")["failures"], 1);
+    assert!(stage("plan").get("failures").is_none());
+}
+
 /// V03 (D12): the check fails on its environment ("vitest: not found"),
 /// not on the change: the dependencies the lockfile names are installed,
 /// the checks run again at once, and the round isn't counted. The task is

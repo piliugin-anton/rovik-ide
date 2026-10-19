@@ -211,7 +211,10 @@ the context mode are chosen per chat, above its message box.
 
 When the agent runs commands from the IDE, they get the same `PATH` as your
 login shell, so tools like `npm`, `cargo` and Homebrew packages are found
-even when you start the app from a desktop icon.
+even when you start the app from a desktop icon. A tool installed after the
+app (or a cloud host's daemon) started, by a host's setup script for one, is
+found too: when an Autopilot install needs a program that isn't on that
+`PATH`, the login shell's is read again first.
 
 ---
 

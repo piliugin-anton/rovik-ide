@@ -30,6 +30,8 @@ import {
   tokensText,
   testsHeadline,
   unfinishedTask,
+  keptStage,
+  withLiveStages,
   type StageMeta,
   type StageRow,
 } from './autopilot';
@@ -172,6 +174,36 @@ test('the strip: a stage recorded running spins while a run goes, else it didn�
   assert.equal(stageHover(again, false), 'Plan, round 3: failed. The run ended without a plan');
 });
 
+test('the strip: a done stage some of whose steps failed shows a warning, not a tick', () => {
+  assert.equal(shownStatus('done', false, false, 3), 'warning');
+  assert.equal(shownStatus('done', true, false, 1), 'warning');
+  assert.equal(shownStatus('done', false, false, 0), 'done');
+  // Only a done stage: the others say how they are.
+  assert.equal(shownStatus('running', true, false, 1), 'running');
+  assert.equal(shownStatus('skipped', false, false, 1), 'skipped');
+  const summary = '3 of 3 installs failed (`npm ci`, `cargo fetch` in api): npm wasn’t found';
+  const rows = stageRows([
+    stage('t', 'plan', 'done'),
+    stage('t', 'planReview', 'done'),
+    stage('t', 'prepare', 'done', { failures: 3, summary }),
+  ]);
+  const prepare = stripStages(rows).find((s) => s.name === 'prepare')!;
+  assert.equal(prepare.failures, 3);
+  assert.equal(stageHover(prepare, true), `Prepare: done, with failures. ${summary}`);
+  // Installed: a tick, and no count.
+  const [, , installed] = stripStages(
+    stageRows([
+      stage('t', 'plan', 'done'),
+      stage('t', 'planReview', 'done'),
+      stage('t', 'prepare', 'done', { summary: 'Installed: `npm ci`' }),
+    ])
+  );
+  assert.equal(installed.failures, undefined);
+  assert.equal(stageHover(installed, true), 'Prepare: done. Installed: `npm ci`');
+  // It doesn't end the task: the strip's line goes on.
+  assert.equal(taskLine(rows, true), 'Autopilot');
+});
+
 test('the strip: a stage that waits out the provider’s rate limit waits, nothing cut it', () => {
   assert.equal(shownStatus('running', false, true), 'waiting');
   assert.equal(shownStatus('running', true, true), 'running');
@@ -286,6 +318,237 @@ test('the strip reads the stored records, with the loaded ones over them', () =>
   );
   // No task anywhere.
   assert.equal(taskRecords(null, [user('Hello')]), null);
+});
+
+test('the strip: a patch of a record the chat doesn’t hold is laid over the stored one', () => {
+  const plan = stage('t', 'plan', 'done');
+  const implement = stage('t', 'implement', 'running');
+  // A remote chat's mirror: the implementation's record as it began.
+  const stored = [rowOf(plan), rowOf(implement)];
+  // The page held is the run's replies; the record ended on the host since.
+  const held: ChatMessage[] = [{ id: 'a1', role: 'assistant', content: 'Done' }];
+  const ended = { ...implement.meta!.stage!, status: 'done' as const, outcome: 'verified' };
+  const rows = taskRecords(stored, held, true, { [implement.id]: ended })!;
+  assert.deepEqual(
+    rows.map((r) => [r.stage.name, r.stage.status]),
+    [
+      ['plan', 'done'],
+      ['implement', 'done'],
+    ]
+  );
+  // A pull that read the host before the record ended doesn't take it back.
+  const doneStored = [rowOf(plan), { id: implement.id, stage: ended }];
+  const stale = implement.meta!.stage!;
+  assert.equal(
+    taskRecords(doneStored, held, true, { [implement.id]: stale })![1].stage.status,
+    'done'
+  );
+});
+
+test('a record that ended never goes back to running', () => {
+  const running = stage('t', 'implement', 'running').meta!.stage!;
+  const done = { ...running, status: 'done' as const };
+  assert.equal(keptStage(running, done), done);
+  assert.equal(keptStage(done, running), done);
+  assert.equal(keptStage(undefined, running), running);
+  const failed = { ...running, status: 'failed' as const };
+  assert.equal(keptStage(done, failed), failed);
+});
+
+/** A record of the implementation's run: a change review, a check round, an acceptance check. */
+const inRun = (meta: ChatMessage['meta']): ChatMessage => ({
+  id: `r${++n}`,
+  role: 'assistant',
+  content: '',
+  meta,
+});
+const review = (status: string, kind = 'change') =>
+  inRun({ review: { kind, status, round: 1, findings: [] } as never });
+const checks = (status: string, round = 1) =>
+  inRun({ verification: { status, round, maxRounds: 3, checks: [], changedFiles: [] } as never });
+const acceptance = (status: string) =>
+  inRun({ acceptance: { status, round: 1, maxRounds: 2, criteria: [] } as never });
+
+test('the strip: the stages done inside the implementation show as its run gets to them', () => {
+  const before = [
+    stage('t', 'plan', 'done'),
+    stage('t', 'planReview', 'done'),
+    stage('t', 'prepare', 'skipped'),
+    stage('t', 'tests', 'skipped'),
+  ];
+  const implement = stage('t', 'implement', 'running');
+  const records = stageRows([...before, implement]);
+  const shown = (...run: ChatMessage[]) => {
+    const rows = withLiveStages(records, [...before, implement, ...run]);
+    const statuses = Object.fromEntries(stripStages(rows).map((s) => [s.name, s.status]));
+    return { line: taskLine(rows, true), statuses, rows };
+  };
+  const reply: ChatMessage = { id: 'a1', role: 'assistant', content: 'Changing it' };
+  // Writing the change: as recorded.
+  assert.equal(shown(reply).line, 'Autopilot: implement…');
+  assert.deepEqual(shown(reply).rows, records);
+  // The change review: its stage at work, the implementation done meanwhile.
+  let now = shown(reply, review('running'));
+  assert.equal(now.line, 'Autopilot: change review…');
+  assert.equal(now.statuses.implement, 'done');
+  assert.equal(now.statuses.review, 'running');
+  assert.equal(now.statuses.checks, 'pending');
+  // It found something, which the agent fixes: still the review's.
+  now = shown(reply, review('findings'), reply);
+  assert.equal(now.line, 'Autopilot: change review…');
+  assert.equal(now.statuses.implement, 'done');
+  assert.equal(now.statuses.review, 'running');
+  // The checks: the review is done.
+  now = shown(review('findings'), checks('running'));
+  assert.equal(now.line, 'Autopilot: checks…');
+  assert.equal(now.statuses.review, 'done');
+  assert.equal(now.statuses.checks, 'running');
+  // A round that failed, which the agent fixes: still the checks'.
+  now = shown(review('findings'), checks('failed'), reply);
+  assert.equal(now.line, 'Autopilot: checks…');
+  assert.equal(now.statuses.checks, 'running');
+  // Green after a fix, the reviewer reads the change again (R08): still the checks'.
+  now = shown(review('findings'), checks('failed'), checks('passed', 2), review('running'));
+  assert.equal(now.line, 'Autopilot: checks…');
+  assert.equal(now.statuses.review, 'done');
+  // The acceptance check at work: the checks done, at their round 2.
+  now = shown(review('clean'), checks('failed'), checks('passed', 2), acceptance('running'));
+  assert.equal(now.line, 'Autopilot: acceptance…');
+  assert.deepEqual(
+    stripStages(now.rows)
+      .filter((s) => s.name === 'checks')
+      .map((s) => [s.status, s.round]),
+    [['done', 2]]
+  );
+  // A click goes to the record at work.
+  const acceptanceRow = now.rows[now.rows.length - 1];
+  assert.equal(
+    stripStages(now.rows).find((s) => s.name === 'acceptance')!.recordId,
+    acceptanceRow.id
+  );
+  // A reviewer that didn't run: skipped, not ticked.
+  assert.equal(shown(review('skipped'), checks('running')).statuses.review, 'skipped');
+});
+
+test('the strip: the implementation’s stages stay as they showed while the driver records them', () => {
+  const before = [stage('t', 'plan', 'done'), stage('t', 'planReview', 'done')];
+  const implement = stage('t', 'implement', 'running');
+  const run = [review('clean'), checks('passed'), acceptance('satisfied')];
+  // The run ended: its record, then the driver's of the stages inside it,
+  // one after another.
+  const ended = { ...implement, meta: { stage: { ...implement.meta!.stage!, status: 'done' } } };
+  const messages = [...before, ended as ChatMessage, ...run];
+  const reviewed = stageRows([...before, ended as ChatMessage, stage('t', 'review', 'done')]);
+  const rows = withLiveStages(reviewed, messages);
+  assert.deepEqual(
+    stripStages(rows)
+      .filter((s) => ['implement', 'review', 'checks', 'acceptance'].includes(s.name))
+      .map((s) => [s.name, s.status]),
+    [
+      ['implement', 'done'],
+      ['review', 'done'],
+      ['checks', 'done'],
+      ['acceptance', 'running'],
+    ]
+  );
+  // The task went on: as recorded.
+  const delivering = stageRows([
+    ...before,
+    ended as ChatMessage,
+    stage('t', 'review', 'done'),
+    stage('t', 'checks', 'done'),
+    stage('t', 'acceptance', 'done'),
+    stage('t', 'deliver', 'running'),
+  ]);
+  assert.equal(withLiveStages(delivering, messages), delivering);
+});
+
+test('the strip: a stage only goes forward as the implementation’s run goes on', () => {
+  const before = [stage('t', 'plan', 'done'), stage('t', 'planReview', 'done')];
+  const implement = stage('t', 'implement', 'running');
+  const ended = { ...implement, meta: { stage: { ...implement.meta!.stage!, status: 'done' } } };
+  const reply = (): ChatMessage => ({ id: `a${++n}`, role: 'assistant', content: 'Fixing' });
+  const r1 = review('running');
+  const c1 = checks('running');
+  const c2 = checks('running', 2);
+  const r2 = review('running');
+  const a1 = acceptance('running');
+  const as = (m: ChatMessage, status: string) =>
+    ({
+      ...m,
+      meta: Object.fromEntries(
+        Object.entries(m.meta!).map(([k, v]) => [k, { ...(v as object), status }])
+      ),
+    }) as ChatMessage;
+  const records = (...more: ChatMessage[]) => stageRows([...before, ...more]);
+  // Each moment of the task: its records, and the messages the chat holds.
+  const states: [StageRow[], ChatMessage[]][] = [
+    [records(implement), [reply()]],
+    [records(implement), [r1]],
+    [records(implement), [as(r1, 'findings'), reply()]],
+    [records(implement), [as(r1, 'findings'), c1]],
+    [records(implement), [as(r1, 'findings'), as(c1, 'failed'), reply()]],
+    [records(implement), [as(r1, 'findings'), as(c1, 'failed'), c2]],
+    [records(implement), [as(r1, 'findings'), as(c1, 'failed'), as(c2, 'passed'), r2]],
+    [
+      records(implement),
+      [as(r1, 'findings'), as(c1, 'failed'), as(c2, 'passed'), as(r2, 'clean'), a1],
+    ],
+    [records(ended as ChatMessage), [as(r1, 'findings'), as(c2, 'passed'), as(a1, 'satisfied')]],
+    [
+      records(ended as ChatMessage, stage('t', 'review', 'done')),
+      [as(r1, 'findings'), as(c2, 'passed'), as(a1, 'satisfied')],
+    ],
+    [
+      records(ended as ChatMessage, stage('t', 'review', 'done'), stage('t', 'checks', 'done')),
+      [as(r1, 'findings'), as(c2, 'passed'), as(a1, 'satisfied')],
+    ],
+    [
+      records(
+        ended as ChatMessage,
+        stage('t', 'review', 'done'),
+        stage('t', 'checks', 'done'),
+        stage('t', 'acceptance', 'done'),
+        stage('t', 'deliver', 'running')
+      ),
+      [as(r1, 'findings'), as(c2, 'passed'), as(a1, 'satisfied')],
+    ],
+  ];
+  const rank = (status: string) => (status === 'pending' ? 0 : status === 'running' ? 1 : 2);
+  let was: Record<string, string> = {};
+  for (const [i, [rows, held]] of states.entries()) {
+    const shownRows = withLiveStages(rows, [
+      ...rows.map(
+        (r) =>
+          ({ id: r.id, role: 'assistant', content: '', meta: { stage: r.stage } }) as ChatMessage
+      ),
+      ...held,
+    ]);
+    const now = Object.fromEntries(
+      stripStages(shownRows).map((s) => [
+        s.name,
+        shownStatus(s.status, true, s.waiting, s.failures),
+      ])
+    );
+    for (const [name, status] of Object.entries(now))
+      assert.ok(
+        rank(status) >= rank(was[name] ?? 'pending'),
+        `state ${i}: ${name} went from ${was[name]} to ${status}`
+      );
+    was = now;
+  }
+  assert.equal(was.deliver, 'running');
+});
+
+test('the strip: the plan’s review shows as the plan’s run gets to it', () => {
+  const plan = stage('t', 'plan', 'running');
+  const rows = withLiveStages(stageRows([plan]), [plan, review('running', 'plan')]);
+  assert.equal(taskLine(rows, true), 'Autopilot: plan review…');
+  // A change review isn't the plan's.
+  assert.equal(
+    taskLine(withLiveStages(stageRows([plan]), [plan, review('running')]), true),
+    'Autopilot: plan…'
+  );
 });
 
 test('the strip: none of its records held, it’s current until a request of the user’s', () => {

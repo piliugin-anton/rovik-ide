@@ -5656,6 +5656,14 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--success);
 }
 
+.chat-stage.warning {
+  border-left-color: var(--warning);
+}
+
+.chat-stage.warning svg {
+  color: var(--warning);
+}
+
 .chat-stage.failed {
   border-left-color: var(--error);
 }
@@ -5743,6 +5751,10 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
 
 .autopilot-stage.done svg {
   color: var(--success);
+}
+
+.autopilot-stage.warning svg {
+  color: var(--warning);
 }
 
 .autopilot-stage.failed svg {

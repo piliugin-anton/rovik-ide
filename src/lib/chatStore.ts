@@ -14,6 +14,7 @@
 import { batch } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ChatMessage, ChatPlace, DialogCursor, DialogSummary, MessageStatus } from '../types';
+import { keptStage, readStage, type StageMeta } from './autopilot';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 import { sharedMap, type Entries } from './sharedState';
 
@@ -31,6 +32,13 @@ export interface OpenChat {
   hasNewer: boolean;
   loadingOlder: boolean;
   lastUsed: number;
+  /**
+   * Autopilot stage records as patches brought them, by message id, for
+   * messages the chat doesn't hold (lib/autopilot.ts `taskRecords`): the
+   * strip reads the task's records from the database, and a remote chat's
+   * mirror isn't written by a patch, only by the pull that follows it.
+   */
+  stagePatches?: Record<string, StageMeta>;
 }
 
 interface ChatState {
@@ -580,6 +588,15 @@ export function createChatStore() {
   function applyPatch(dialogId: string, messageId: string, patch: MessagePatch) {
     const i = indexOfMessage(dialogId, messageId);
     if (i < 0) {
+      // A stage record the open chat doesn't hold (the page held is a long
+      // task's last): kept for its strip.
+      const stage = readStage(patch.meta?.stage);
+      const open = state.open[dialogId];
+      if (stage && open) {
+        const kept = open.stagePatches?.[messageId];
+        if (keptStage(kept, stage) === stage)
+          setState('open', dialogId, 'stagePatches', (all) => ({ ...all, [messageId]: stage }));
+      }
       // Streaming into a chat that isn't open: still unseen activity.
       markUnreadIfUnseen(dialogId);
       return;
@@ -592,6 +609,10 @@ export function createChatStore() {
     // didn't say so).
     if (!fields.finalized && !message.finalized && message.role === 'assistant')
       next.pending = true;
+    // A stage record that ended stays ended: a late pull's copy from before
+    // its end isn't taken (`keptStage`).
+    const held = message.meta?.stage;
+    const stale = !!held && !!meta?.stage && keptStage(held, meta.stage) === held;
     batch(() => {
       setState('open', dialogId, 'messages', i, next);
       // Merged into what's there, not swapped for new objects: the parts
@@ -601,7 +622,8 @@ export function createChatStore() {
       // landing as a patch came in otherwise missed.
       if ('toolCalls' in patch)
         setState('open', dialogId, 'messages', i, 'toolCalls', merged(toolCalls));
-      if ('meta' in patch) setState('open', dialogId, 'messages', i, 'meta', merged(meta));
+      if ('meta' in patch && !stale)
+        setState('open', dialogId, 'messages', i, 'meta', merged(meta));
     });
 
     const content = fields.content ?? message.content;

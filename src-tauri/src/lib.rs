@@ -536,12 +536,9 @@ fn new_window() -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // Not ended with this one's terminal, if it was started from one.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    // Out of this one's terminal, if it was started from one: neither
+    // stopped by it nor ended with it (process::own_session).
+    process::own_session(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Couldn't start another Rovik: {e}"))?;
