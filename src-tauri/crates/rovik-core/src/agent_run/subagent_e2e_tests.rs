@@ -5245,8 +5245,10 @@ async fn a_conflict_lands_the_rest_and_keeps_every_copy() {
     );
     assert!(crate::overlay::chats::get(&w2.id).is_none());
     assert!(!crate::overlay::chats::children_of(&h.dialog_id).contains(&w2.id));
-    assert_eq!(in_view("src/posts.rs").as_deref(), Some("posts again\n"));
+    // This run lands as it ends, right after, and the view closes with it:
+    // the new work is in the project.
     h.run_end().await;
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts again\n"));
 }
 
 /// A group run whose step 3 (w2) fails half way through landing
@@ -7633,12 +7635,10 @@ async fn a_path_granted_to_one_group_member_isnt_granted_to_another() {
     .await;
     h.start(h.implement_isolated(&url, false)).await;
     h.result_when_ready("g1").await;
-    let view = crate::overlay::chats::get(&h.dialog_id)
-        .unwrap()
-        .view
-        .clone();
-    let shared = std::fs::read_to_string(view.join("src/shared.rs")).unwrap();
+    // What the join landed in the chat's view lands in the project as the
+    // lead ends right after, its view closing with it: read there.
     h.run_end().await;
+    let shared = h.file("src/shared.rs").unwrap();
     let w2 = h.child_of("g1#w2").await;
     let work = h.messages_of(&w2.id).await;
     let result = |id: &str| {
@@ -9553,14 +9553,16 @@ async fn grants_make_a_path_in_scope_at_landing() {
     .await;
     h.start(h.implement_isolated(&url, false)).await;
     let result = h.result_when_ready("g1").await;
+    // The lead ends right after: what landed in its view lands in the
+    // project, the view closing with it, so it's read there.
+    h.run_end().await;
     assert_eq!(
-        in_view(&h, "src/shared.rs").as_deref(),
+        h.file("src/shared.rs").as_deref(),
         Some("by w1\n"),
         "{}",
         result.content
     );
-    assert_eq!(in_view(&h, "src/posts.rs").as_deref(), Some("posts\n"));
-    h.run_end().await;
+    assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts\n"));
 }
 
 /// A worker with both a conflict and a side effect: both are named, the
@@ -9755,8 +9757,11 @@ async fn an_unformatted_group_worker_isnt_landed_until_the_lead_says_so() {
         "{}",
         continued.content
     );
-    assert_eq!(in_view(&h, "src/users.rs").as_deref(), Some("users\n"));
+    // The lead ends right after: its changes land in the project, and its
+    // view closes with them, maybe before it could be read. The landed
+    // copy is in what landed, the project's file at its run's end.
     h.run_end().await;
+    assert_eq!(h.file("src/users.rs").as_deref(), Some("users\n"));
 }
 
 /// A group worker whose only change was outside its scope changed nothing
@@ -9850,14 +9855,17 @@ async fn a_busy_landing_is_retried_then_kept() {
             .remove(&view)
             .unwrap();
         if lands {
+            assert_eq!(calls, 3, "one retry");
+            // The copies landed in the chat's view, which lands in the
+            // project as the lead ends right after, closing: read there.
+            h.run_end().await;
             assert_eq!(
-                in_view(&h, "src/users.rs").as_deref(),
+                h.file("src/users.rs").as_deref(),
                 Some("users\n"),
                 "{}",
                 result.content
             );
-            assert_eq!(in_view(&h, "src/posts.rs").as_deref(), Some("posts\n"));
-            assert_eq!(calls, 3, "one retry");
+            assert_eq!(h.file("src/posts.rs").as_deref(), Some("posts\n"));
         } else {
             assert_eq!(calls, 8, "4 tries for each of the two");
             assert!(
@@ -9874,8 +9882,8 @@ async fn a_busy_landing_is_retried_then_kept() {
             );
             assert_eq!(in_view(&h, "src/users.rs").as_deref(), Some("// users\n"));
             assert!(!landing_interrupted(&h.dialog_id));
+            h.run_end().await;
         }
-        h.run_end().await;
     }
 }
 
