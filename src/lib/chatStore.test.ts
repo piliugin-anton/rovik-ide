@@ -91,3 +91,31 @@ test('a patch keeps the objects of the tool calls and checks it doesn’t change
   store.applyPatch('chat', 'm1', { toolCalls: undefined });
   assert.equal(message().toolCalls, undefined);
 });
+
+test('a stage record the chat doesn’t hold is kept from its patch, and one that ended stays so', async () => {
+  const store = createChatStore();
+  await store.openChat({ id: 'chat', title: 'Chat', createdAt: 1, updatedAt: 1, messageCount: 1 });
+  const stage = (status: 'running' | 'done') => ({
+    task: 't',
+    name: 'implement' as const,
+    status,
+    round: 1,
+    effort: 'balanced' as const,
+  });
+  const kept = () => store.state.open.chat.stagePatches ?? {};
+  // A remote chat's record past the page held (m9) ends on the host: kept
+  // for the strip, which would read the mirror's older copy.
+  store.applyPatch('chat', 'm9', { meta: { stage: stage('done') } });
+  assert.equal(kept().m9?.status, 'done');
+  // A pull that read the host before it ended doesn't take it back.
+  store.applyPatch('chat', 'm9', { meta: { stage: stage('running') } });
+  assert.equal(kept().m9?.status, 'done');
+  // Nor for a record the chat holds.
+  store.applyPatch('chat', 'm1', { meta: { stage: stage('running') } });
+  store.applyPatch('chat', 'm1', { meta: { stage: stage('done') } });
+  store.applyPatch('chat', 'm1', { meta: { stage: stage('running') } });
+  assert.equal(store.messagesOf('chat')[0].meta?.stage?.status, 'done');
+  // Anything else past the page isn't kept.
+  store.applyPatch('chat', 'm8', { content: 'More' });
+  assert.equal(kept().m8, undefined);
+});

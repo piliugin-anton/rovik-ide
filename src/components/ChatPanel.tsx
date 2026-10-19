@@ -65,7 +65,7 @@ import {
 import TodoPanel from './TodoPanel';
 import IsolationBar from './IsolationBar';
 import AutopilotStrip from './AutopilotStrip';
-import { stageRows, taskRecords, taskWaits, type StageRow } from '../lib/autopilot';
+import { stageRows, taskRecords, taskWaits, withLiveStages, type StageRow } from '../lib/autopilot';
 import { autopilotConfig } from '../lib/autopilotSettings';
 import { overlayStatus } from '../lib/overlay';
 import {
@@ -2966,7 +2966,12 @@ export default function ChatPanel(props: ChatProps) {
   } | null>(null);
   const stagesKey = createMemo(() => {
     const records = stageRows(messages()).map((r) => `${r.id}:${r.stage.status}`);
-    return `${activeDialogId() ?? ''}|${sending()}|${records.join(',')}`;
+    // Patches of records the chat doesn't hold: a remote chat's mirror has
+    // them once the pull after them is done, and the read then is fresh.
+    const patched = Object.entries(activeChat()?.stagePatches ?? {}).map(
+      ([id, stage]) => `${id}:${stage.status}`
+    );
+    return `${activeDialogId() ?? ''}|${sending()}|${records.join(',')}|${patched.join(',')}`;
   });
   let stagesRead = 0;
   createEffect(
@@ -2987,7 +2992,17 @@ export default function ChatPanel(props: ChatProps) {
     const stored = storedStages();
     if (!chat) return null;
     const rows = stored && stored.dialogId === activeDialogId() ? stored.rows : null;
-    return taskRecords(rows, chat.messages, !chat.hasNewer);
+    return taskRecords(rows, chat.messages, !chat.hasNewer, chat.stagePatches);
+  });
+  /**
+   * The strip's records: the task's, with the stages its run carries out
+   * inside itself (the change review, the checks) as the run gets to them,
+   * when the newest messages are held (lib/autopilot.ts `withLiveStages`).
+   */
+  const stripRows = createMemo(() => {
+    const rows = taskStages();
+    const chat = activeChat();
+    return rows && chat && !chat.hasNewer ? withLiveStages(rows, chat.messages) : rows;
   });
   /**
    * The record of the stage the task's run carries out now, whatever page
@@ -3933,7 +3948,7 @@ export default function ChatPanel(props: ChatProps) {
         )}
       </Show>
       {/* The chat's Autopilot task: its stages, each with how it went. */}
-      <Show when={taskStages()}>
+      <Show when={stripRows()}>
         {(rows) => (
           <AutopilotStrip
             rows={rows()}

@@ -34,15 +34,91 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 }
 
 /// What a program the app starts needs changed in the environment it
-/// inherits: nothing, unless the app runs from an AppImage, whose
-/// launcher's changes are undone. Each variable to set, or to remove
-/// (None); for a command that isn't a [`Command`] (a pseudo-terminal's).
+/// inherits: the login shell's PATH when it was read again
+/// ([`refresh_login_path`]), and, when the app runs from an AppImage, its
+/// launcher's changes undone. Each variable to set, or to remove (None);
+/// for a command that isn't a [`Command`] (a pseudo-terminal's).
 pub fn child_env() -> Vec<(OsString, Option<OsString>)> {
+    let refreshed = refreshed_path();
     #[cfg(target_os = "linux")]
     if let Some(image) = appimage::current() {
-        return image.undo(&std::env::vars_os().collect::<Vec<_>>());
+        let mut vars: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        if let Some(path) = &refreshed {
+            match vars.iter_mut().find(|(key, _)| key == "PATH") {
+                Some((_, value)) => *value = path.clone(),
+                None => vars.push(("PATH".into(), path.clone())),
+            }
+        }
+        let mut changes = image.undo(&vars);
+        // One with none of the AppImage's folders is left as it is there.
+        if let Some(path) = refreshed {
+            if !changes.iter().any(|(key, _)| key == "PATH") {
+                changes.push(("PATH".into(), Some(path)));
+            }
+        }
+        return changes;
     }
-    Vec::new()
+    refreshed
+        .map(|path| vec![("PATH".into(), Some(path))])
+        .unwrap_or_default()
+}
+
+/// The login shell's PATH as read again since the process started
+/// ([`refresh_login_path`]), with ours after it: the PATH of what the app
+/// starts from then on. The process's own can't change once threads run.
+#[cfg(unix)]
+static REFRESHED_PATH: std::sync::RwLock<Option<OsString>> = std::sync::RwLock::new(None);
+
+#[cfg(unix)]
+fn refreshed_path() -> Option<OsString> {
+    REFRESHED_PATH
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+#[cfg(not(unix))]
+fn refreshed_path() -> Option<OsString> {
+    None
+}
+
+/// Reads the login shell's PATH again, for the programs the app starts
+/// from now on: a toolchain installed since the process started is found.
+/// The PATH it read as it started (`adopt_login_shell_path`) stays the
+/// process's own: a server's daemon starts before its host's setup script
+/// installs the toolchains, and runs for weeks. Blocking: up to 3 s, for a
+/// slow rc file. False when the login shell didn't say.
+#[cfg(unix)]
+pub fn refresh_login_path() -> bool {
+    let Some(login) = login_shell_path() else {
+        return false;
+    };
+    let ours = std::env::var_os("PATH").unwrap_or_default();
+    *REFRESHED_PATH.write().unwrap_or_else(|e| e.into_inner()) = merge_paths(&login, &ours);
+    true
+}
+
+/// Off Unix the PATH is the system's: nothing to read again.
+#[cfg(not(unix))]
+pub fn refresh_login_path() -> bool {
+    false
+}
+
+/// Whether `program` (a name, as a command line starts with it) is a file
+/// in a folder of the PATH the app's programs get ([`child_var`]).
+pub fn on_path(program: &str) -> bool {
+    let Some(path) = child_var("PATH") else {
+        return false;
+    };
+    let names: Vec<String> = if cfg!(windows) {
+        ["", ".exe", ".cmd", ".bat"]
+            .iter()
+            .map(|ext| format!("{program}{ext}"))
+            .collect()
+    } else {
+        vec![program.to_string()]
+    };
+    std::env::split_paths(&path).any(|dir| names.iter().any(|name| dir.join(name).is_file()))
 }
 
 /// `key` as a program the app starts gets it ([`child_env`]): the PATH to
@@ -86,6 +162,33 @@ pub fn ordinary_oom_score(cmd: &mut Command) -> &mut Command {
                     libc::write(fd, b"0".as_ptr().cast(), 1);
                     libc::close(fd);
                 }
+                Ok(())
+            });
+        }
+    }
+    cmd
+}
+
+/// Starts the command in a session of its own, with no controlling
+/// terminal. Started from a terminal, the app is in that terminal's
+/// session, and so is what it starts: an interactive shell there that isn't
+/// the terminal's foreground job stops its whole process group (SIGTTIN)
+/// until it is. The login shell `login_shell_path` asks for the PATH (`-i`,
+/// for the rc files that set it) stopped a new window that way, its own
+/// process group in the background, before it had a window; and the app
+/// itself, run as a background job (`rovik-ide &`). Out of the terminal's
+/// session, the command runs as it does under a desktop launcher, and
+/// doesn't end with that terminal either. Not with `process_group`, which
+/// makes the child a group leader, whom `setsid` refuses. No-op off Unix.
+pub fn own_session(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: between fork and exec it makes one async-signal-safe call,
+        // which can't fail there: a forked child leads no process group.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
                 Ok(())
             });
         }
@@ -184,7 +287,9 @@ fn login_shell_path() -> Option<String> {
             vec!["-l".to_string(), "-c".into(), posix],
         ),
     };
-    let mut child = command(&program)
+    // Out of the terminal the app may have been started from: an
+    // interactive shell would stop the app's process group otherwise.
+    let mut child = own_session(&mut command(&program))
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -271,6 +376,41 @@ mod tests {
         assert_eq!(shell_kind("/opt/homebrew/bin/fish"), ShellKind::Fish);
         assert_eq!(shell_kind("/usr/bin/nu"), ShellKind::OtherLogin);
         assert_eq!(shell_kind("/usr/bin/elvish"), ShellKind::Other);
+    }
+
+    /// A command of its own session leads it: out of ours, and out of the
+    /// terminal the app was started from, whose foreground it would wait
+    /// for (and stop the app's process group meanwhile) were it an
+    /// interactive shell in that terminal's session.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_command_in_a_session_of_its_own_leads_it() {
+        let out = own_session(&mut Command::new("sh"))
+            .args([
+                "-c",
+                "read -r _ _ _ _ _ sid _ < /proc/self/stat; echo \"$$ $sid\"",
+            ])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let ids: Vec<i32> = text
+            .split_whitespace()
+            .map(|n| n.parse().unwrap())
+            .collect();
+        let [pid, sid] = ids[..] else {
+            panic!("{text}");
+        };
+        assert_eq!(sid, pid, "it leads its session");
+        // SAFETY: getsid(0) only reads this process's session.
+        assert_ne!(sid, unsafe { libc::getsid(0) }, "not ours");
+    }
+
+    /// A program is on the PATH the app's programs get when a folder of it
+    /// has the file: `sh` is, a name nothing has isn't.
+    #[test]
+    fn a_program_is_found_on_the_path() {
+        assert!(on_path("sh"));
+        assert!(!on_path("rovik-no-such-program"));
     }
 
     #[test]

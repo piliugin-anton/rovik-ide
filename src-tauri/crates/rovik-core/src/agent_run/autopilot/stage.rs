@@ -219,6 +219,15 @@ pub struct StageRecord {
     /// stage's next run, after a crash, adds what was kept to `spent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spending: Option<Spent>,
+    /// How many of a done stage's own steps failed, the task going on all
+    /// the same: the Prepare stage's installs (S03). The strip shows such a
+    /// stage with a warning, not a tick.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub failures: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// H07: a stage's waits for the provider's rate limit, kept in its record
@@ -294,6 +303,7 @@ impl StageRecord {
             candidates: Vec::new(),
             rate_limit: None,
             spending: None,
+            failures: 0,
         }
     }
 

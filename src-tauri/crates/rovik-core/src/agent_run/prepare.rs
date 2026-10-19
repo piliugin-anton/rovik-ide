@@ -13,6 +13,10 @@
 //! `command_output::environment_failure`), once a run: that round isn't
 //! the change's failure, so it isn't counted, and the checks run again
 //! once the installs are done.
+//!
+//! A program an install runs that isn't on the PATH (`npm`, `cargo`) may
+//! have been installed since the app started, or a server's daemon: the
+//! login shell's PATH is read again before the installs (`find_programs`).
 
 use super::check_output;
 use super::command_output::{clean_output, focus_failures};
@@ -176,9 +180,47 @@ fn below_a_workspace(root: &Path) -> bool {
     false
 }
 
+/// The programs `installs` run (`npm` of `npm ci`) that aren't on the PATH
+/// the chat's commands get may have been installed since the app started,
+/// or since a server's daemon did: a host's setup script installs the
+/// toolchains after its daemon started, and the daemon read its login
+/// shell's PATH as it started. That PATH is read again then
+/// (`process::refresh_login_path`), for these installs and the commands
+/// after them: the checks, the agent's. Logs what it found.
+async fn find_programs(installs: &[Install]) {
+    let mut missing: Vec<String> = Vec::new();
+    for install in installs {
+        let Some(program) = install.command.split_whitespace().next() else {
+            continue;
+        };
+        if !missing.iter().any(|m| m == program) && !crate::process::on_path(program) {
+            missing.push(program.to_string());
+        }
+    }
+    if missing.is_empty() {
+        return;
+    }
+    let read = crate::rt::spawn_blocking(crate::process::refresh_login_path)
+        .await
+        .unwrap_or(false);
+    let found: Vec<&String> = missing
+        .iter()
+        .filter(|p| crate::process::on_path(p))
+        .collect();
+    let path = match read {
+        true => "read again",
+        false => "couldn't be read",
+    };
+    ::log::info!(
+        "prepare: {missing:?} not on the PATH; the login shell's PATH {path}; found now: {found:?}"
+    );
+}
+
 /// How installs went, in a line: what was installed, or which failed, and
 /// the programs they need that weren't found where the chat runs.
-pub(super) fn installs_line(done: &[InstallResult]) -> String {
+/// `on_server`: a daemon's run, where a program that isn't there is the
+/// server's to install, which its host's setup script does.
+pub(super) fn installs_line(done: &[InstallResult], on_server: bool) -> String {
     let named = |d: &InstallResult| match d.folder.as_str() {
         "" => format!("`{}`", d.command),
         folder => format!("`{}` in {folder}", d.command),
@@ -196,11 +238,19 @@ pub(super) fn installs_line(done: &[InstallResult]) -> String {
             missing.push(program);
         }
     }
+    let (place, it, them) = match on_server {
+        true => (
+            "on the server",
+            " (its setup script, in Settings → Cloud hosts, can install it)",
+            " (its setup script, in Settings → Cloud hosts, can install them)",
+        ),
+        false => ("where the chat runs", "", ""),
+    };
     let why = match missing.as_slice() {
         [] => "the checks will say what's missing".to_string(),
-        [program] => format!("{program} wasn't found where the chat runs"),
+        [program] => format!("{program} wasn't found {place}{it}"),
         [first @ .., last] => format!(
-            "{} and {last} weren't found where the chat runs",
+            "{} and {last} weren't found {place}{them}",
             first.join(", ")
         ),
     };
@@ -270,9 +320,9 @@ impl InstallResult {
 impl Run {
     /// S03 (4.3): the Prepare stage's run. The installs the packages need
     /// (`needed`) run where what they install isn't there, a record
-    /// showing each; the stage's record says how it went. "stopped" when
-    /// the user stopped it, else "done": a failed install doesn't end the
-    /// task.
+    /// showing each; the stage's record says how it went, and counts the
+    /// installs that failed (`failures`). "stopped" when the user stopped
+    /// it, else "done": a failed install doesn't end the task.
     pub(super) async fn prepare_stage(&mut self) -> Result<String, String> {
         use super::autopilot::Status;
         if self.stage.is_none() {
@@ -298,6 +348,7 @@ impl Run {
         row.meta = Some(meta("running", &done));
         let record_id = row.id.clone();
         self.append(vec![row]).await?;
+        find_programs(&installs).await;
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
                 done[i].status = "skipped";
@@ -335,8 +386,17 @@ impl Run {
         if self.stopped() {
             return Ok("stopped".into());
         }
-        self.end_own_stage(Status::Done, installs_line(&done), Some(record_id))
-            .await?;
+        // Done all the same (the checks say what's missing), but not a
+        // success to show: the failed installs are counted in the record.
+        let failures = failed.len() as u32;
+        let summary = installs_line(&done, self.core.agents.on_server());
+        self.end_own_stage_with(|r| {
+            r.status = Status::Done;
+            r.summary = Some(summary);
+            r.reference = Some(record_id);
+            r.failures = failures;
+        })
+        .await?;
         Ok("done".into())
     }
 
@@ -356,6 +416,7 @@ impl Run {
         if installs.is_empty() {
             return None;
         }
+        find_programs(&installs).await;
         let mut done: Vec<InstallResult> = installs.iter().map(InstallResult::pending).collect();
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
@@ -379,7 +440,7 @@ impl Run {
                 })).collect::<Vec<_>>(),
             }),
         );
-        Some(installs_line(&done))
+        Some(installs_line(&done, self.core.agents.on_server()))
     }
 
     /// V03 (D12): the round's checks failed on their environment
@@ -415,6 +476,7 @@ impl Run {
             )
         };
         self.update_meta(record_id, meta(&done)).await?;
+        find_programs(&installs).await;
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
                 done[i].status = "skipped";
@@ -801,7 +863,7 @@ mod tests {
             "sh: 1: npm: not found",
         );
         assert_eq!(
-            installs_line(std::slice::from_ref(&npm)),
+            installs_line(std::slice::from_ref(&npm), false),
             "1 of 1 installs failed (`npm ci --no-audit --no-fund`): npm wasn't found where the chat runs"
         );
         let cargo = ran("cargo fetch", "api", 127, "bash: cargo: command not found");
@@ -813,7 +875,7 @@ mod tests {
         );
         let uv = ran("uv sync", "py", 0, "");
         assert_eq!(
-            installs_line(&[npm, cargo, web, uv.clone()]),
+            installs_line(&[npm.clone(), cargo.clone(), web, uv.clone()], false),
             "3 of 4 installs failed (`npm ci --no-audit --no-fund`, `cargo fetch` in api, \
              `npm install --no-package-lock --no-audit --no-fund` in web): \
              npm and cargo weren't found where the chat runs"
@@ -827,10 +889,22 @@ mod tests {
         let other = ran("npm ci --no-audit --no-fund", "", 1, "npm ERR! code E404");
         for failed in [script, other] {
             assert_eq!(
-                installs_line(&[failed]),
+                installs_line(&[failed], false),
                 "1 of 1 installs failed (`npm ci --no-audit --no-fund`): the checks will say what's missing"
             );
         }
-        assert_eq!(installs_line(&[uv]), "Installed: `uv sync` in py");
+        assert_eq!(installs_line(&[uv], false), "Installed: `uv sync` in py");
+        // On a server, what isn't there is its setup script's to install.
+        assert_eq!(
+            installs_line(std::slice::from_ref(&npm), true),
+            "1 of 1 installs failed (`npm ci --no-audit --no-fund`): npm wasn't found on the server \
+             (its setup script, in Settings → Cloud hosts, can install it)"
+        );
+        assert_eq!(
+            installs_line(&[npm, cargo], true),
+            "2 of 2 installs failed (`npm ci --no-audit --no-fund`, `cargo fetch` in api): npm and \
+             cargo weren't found on the server (its setup script, in Settings → Cloud hosts, can \
+             install them)"
+        );
     }
 }
