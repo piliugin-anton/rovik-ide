@@ -353,7 +353,7 @@ this plan. A provider holds no state; the caches are generic (3.6).
       },
       "from": {
         "type": "string",
-        "description": "The project file that uses it, when workspace members use different versions."
+        "description": "The project file that imports it, e.g. \"src/App.tsx\". The package is found from there, as Node resolves the import, so a workspace member's or a nested copy is the one read. Without it: the copy the project root uses."
       }
     },
     "required": ["package"]
