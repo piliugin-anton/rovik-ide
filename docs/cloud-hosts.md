@@ -212,7 +212,10 @@ Every chat of a project moves there by itself when it first runs, as
 its results landing back in the project), and is shown as "This computer
 (WSL)"; a move that fails is the start's failure, with the cause. A chat
 without a project stays on this computer, where the agent's commands are
-refused, as they are until WSL is set up. When the distribution can't
+refused, as they are until WSL is set up. Deleting a project deletes its chats
+in WSL too; merging one into another brings its chats in WSL back to this
+computer first (and is refused, with why, while one is running or can't
+come back), and their next message takes them to WSL again. When the distribution can't
 start, the page and a notification say why in plain words for the known
 cases: virtualization turned off in the BIOS/UEFI or Windows' Virtual
 Machine Platform missing (`HCS_E_HYPERV_NOT_INSTALLED`, `0x80370102`),

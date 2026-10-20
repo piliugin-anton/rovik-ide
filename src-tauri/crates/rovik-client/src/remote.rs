@@ -1032,22 +1032,99 @@ impl Remote {
         }
     }
 
-    /// Refused while the project has chats on a host, or moving to one:
-    /// merging or deleting it would rewrite or orphan them (K38). `doing`
-    /// ends the sentence: "deleting it", "merging it".
-    pub async fn keep_project(&self, project_id: &str, doing: &str) -> Result<(), String> {
+    /// Before the project and its chats are deleted (K38): its chats on the
+    /// home host (WSL, `State::home`), which are this computer's, are
+    /// deleted there as each chat's delete would; one on a cloud host, or
+    /// moving, refuses it.
+    pub async fn before_deleting_project(&self, project_id: &str) -> Result<(), String> {
+        for chat in self.home_chats(project_id, "deleting it").await? {
+            self.delete(&chat).await.map_err(|fail| fail.message)?;
+        }
+        Ok(())
+    }
+
+    /// Before the project is merged into another (K38): its chats on the
+    /// home host come back to this computer first, their results as their
+    /// isolated changes, as the daemon keeps them under this project; their
+    /// next start takes them there again, under the project they're merged
+    /// into. One running there, one that can't come back (its folder
+    /// missing, conflicts waiting), one on a cloud host, or moving, refuses
+    /// it.
+    pub async fn before_merging_project(&self, project_id: &str) -> Result<(), String> {
+        let doing = "merging it";
+        let chats = self.home_chats(project_id, doing).await?;
+        let running = {
+            let state = self.lock();
+            chats.iter().any(|chat| state.running.contains_key(chat))
+        };
+        if running {
+            return Err(format!(
+                "A chat of this project is running in {}: stop it, or let it finish, before {doing}.",
+                self.home_name()
+            ));
+        }
+        for chat in chats {
+            if let Err(fail) = self.move_back(&chat, None).await {
+                return Err(format!(
+                    "A chat of this project runs in {} and has to come back to this computer \
+                     before {doing}, but it can't: {}",
+                    self.home_name(),
+                    fail.message
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The project's chats on the home host, or why the project can't
+    /// change now: it has a chat on a cloud host, which only the user moves
+    /// back, or one moving, to a host or back. `doing` ends the sentence:
+    /// "deleting it", "merging it".
+    async fn home_chats(&self, project_id: &str, doing: &str) -> Result<Vec<String>, String> {
         let id = project_id.to_string();
         let away = self
             .core
             .db
-            .read(move |c| location::project_has_chats_away(c, &id))
+            .read(move |c| location::project_chats_away(c, &id))
             .await?;
-        match away {
-            Some(host) => Err(format!(
-                "This project has chats on {host}. Move them back to this computer before {doing}."
-            )),
-            None => Ok(()),
+        let home = self.home();
+        let mut chats = Vec::new();
+        for (chat, at) in away {
+            match at {
+                Location::Host(host) if Some(&host) == home.as_ref() => {
+                    if self.is_moving_back(&chat) {
+                        return Err(format!(
+                            "A chat of this project is moving back from {}: wait for the move to \
+                             end before {doing}.",
+                            self.host_name(&host)
+                        ));
+                    }
+                    chats.push(chat);
+                }
+                Location::Host(host) => {
+                    return Err(format!(
+                        "This project has chats on {}. Move them back to this computer before \
+                         {doing}.",
+                        self.host_name(&host)
+                    ))
+                }
+                Location::Moving(host) => {
+                    return Err(format!(
+                        "A chat of this project is moving to {}: wait for the move to end before \
+                         {doing}.",
+                        self.host_name(&host)
+                    ))
+                }
+                Location::Here | Location::Released => {}
+            }
         }
+        Ok(chats)
+    }
+
+    /// What the user calls the home host: "WSL".
+    fn home_name(&self) -> String {
+        self.home()
+            .map_or_else(|| "WSL".to_string(), |home| self.host_name(&home))
     }
 
     /*

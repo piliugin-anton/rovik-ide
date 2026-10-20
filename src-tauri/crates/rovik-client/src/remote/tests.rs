@@ -598,32 +598,19 @@ async fn a_continue_doesnt_send_a_messages_text_again() {
     );
 }
 
-/// K38: a project with a remote chat isn't merged or deleted.
+/// K38: a project with a chat on a cloud host, or moving, isn't merged or
+/// deleted: only the user moves a chat off a server.
 #[tokio::test]
 async fn a_project_with_a_remote_chat_isnt_merged_or_deleted() {
     let app = App::new();
-    let folder = |name: &str| {
-        let path = app.dir.0.join(name);
-        std::fs::create_dir_all(&path).unwrap();
-        path.to_string_lossy().into_owned()
-    };
-    let project = |root: String| {
-        let db = &app.core.db;
-        async move {
-            let opened = rovik_core::chat_db::api::chat_open_project(db, root).await;
-            opened.unwrap().project.id
-        }
-    };
-    let (with_remote, all_local) = (project(folder("a")).await, project(folder("b")).await);
+    let (with_remote, all_local) = (project_in(&app, "a").await, project_in(&app, "b").await);
     app.chat("remote-chat", Some(&with_remote), Vec::new())
         .await;
     app.chat("local-chat", Some(&all_local), Vec::new()).await;
     let remote = Remote::new(app.core.clone());
     remote.place("remote-chat", HOST);
-    // Its location is queued before the writes after it: one waits for it.
-    let written = app.core.db.write(|_| Ok::<(), String>(()));
-    written.await.unwrap();
-    let refused = remote.keep_project(&with_remote, "merging it").await;
+    settled(&app).await;
+    let refused = remote.before_merging_project(&with_remote).await;
     assert_eq!(
         refused,
         Err(
@@ -631,65 +618,112 @@ async fn a_project_with_a_remote_chat_isnt_merged_or_deleted() {
                 .into()
         )
     );
-    assert_eq!(remote.keep_project(&all_local, "deleting it").await, Ok(()));
+    let refused = remote.before_deleting_project(&with_remote).await;
+    assert!(refused.unwrap_err().ends_with("before deleting it."));
+    // The home host's chats are this computer's: but not this one's, on
+    // a cloud host.
+    remote.set_home(Some("wsl"));
+    assert!(remote.before_deleting_project(&with_remote).await.is_err());
+    assert_eq!(remote.before_deleting_project(&all_local).await, Ok(()));
+    assert_eq!(remote.before_merging_project(&all_local).await, Ok(()));
+    // Moving there: wait.
+    let lock = |chat: &'static str| {
+        app.core
+            .db
+            .write(move |c| moves::lock(c, chat, HOST, "move-1"))
+    };
+    lock("local-chat").await.unwrap();
+    let refused = remote
+        .before_deleting_project(&all_local)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        "A chat of this project is moving to test-server: wait for the move to end before deleting it."
+    );
 }
 
-/// A computer whose chats run on its Linux side (WSL on Windows): a local
-/// chat of a project moves there before it starts, as "Move to" would, and
-/// a move that fails is the start's failure. A chat without a project
-/// folder here stays, as does one at work here. Removed, the host is
-/// nobody's home.
+/// K38 for the home host (WSL on Windows), whose chats are this
+/// computer's: deleting their project deletes them there too, as deleting
+/// each would; merging it brings them back first, and is refused, with
+/// why, while one can't come back.
 #[tokio::test]
-async fn a_chat_of_a_project_goes_home_before_it_starts() {
+async fn a_projects_chats_on_the_home_host_go_with_it() {
     let app = App::new();
-    let folder = app.dir.0.join("project");
-    std::fs::create_dir_all(&folder).unwrap();
-    let root = folder.to_string_lossy().into_owned();
-    let opened = rovik_core::chat_db::api::chat_open_project(&app.core.db, root.clone()).await;
-    let project = opened.unwrap().project.id;
-    app.chat("chat", Some(&project), Vec::new()).await;
-    app.chat("homeless", None, Vec::new()).await;
+    let project = project_in(&app, "a").await;
+    app.chat("in-wsl", Some(&project), Vec::new()).await;
+    app.chat("here", Some(&project), Vec::new()).await;
     let fake = Fake::default();
     *fake.features.lock().unwrap() = vec![features::MIRROR.into(), features::PROJECTS.into()];
     let (remote, fake) = connected_to(&app, fake).await;
-    assert_eq!(remote.goes_home("chat").await, Ok(true));
-    assert_eq!(remote.goes_home("homeless").await, Ok(false));
-
     remote.set_home(Some(HOST));
-    let told: Arc<Mutex<Vec<CloudEvent>>> = Arc::default();
-    let sink = told.clone();
-    remote.on_cloud(Arc::new(move |e| sink.lock().unwrap().push(e)));
-    let mut request = start("chat", StartKind::Retry, None);
-    request.root = Some(root);
-    // The fake daemon takes no packs: the move fails at the push, and so
-    // does the start, the chat here as it was.
-    let failed = remote.start(request).await.unwrap_err();
-    assert_ne!(failed.code, FailCode::Internal, "{failed}");
+    remote.place("in-wsl", HOST);
+    settled(&app).await;
+
+    // Its run going there: merging waits for it.
+    remote
+        .lock()
+        .running
+        .insert("in-wsl".into(), "run-1".into());
+    let refused = remote.before_merging_project(&project).await.unwrap_err();
+    assert_eq!(
+        refused,
+        "A chat of this project is running in test-server: stop it, or let it finish, before merging it."
+    );
+    remote.lock().running.remove("in-wsl");
+
+    // Its project's folder gone: it can't come back, so no merge.
+    let id = project.clone();
+    let folder = app
+        .core
+        .db
+        .read(move |c| rovik_core::chat_db::projects::summary(c, &id))
+        .await
+        .unwrap()
+        .unwrap()
+        .path;
+    std::fs::remove_dir_all(&folder).unwrap();
+    let refused = remote.before_merging_project(&project).await.unwrap_err();
+    assert!(
+        refused.starts_with(
+            "A chat of this project runs in test-server and has to come back to this computer \
+             before merging it, but it can't: "
+        ),
+        "{refused}"
+    );
+    assert_eq!(remote.host_of("in-wsl").as_deref(), Some(HOST));
+
+    // Deleted: there too, and here.
+    remote.before_deleting_project(&project).await.unwrap();
     let requests = fake.requests.lock().unwrap().clone();
     assert!(
-        requests
-            .iter()
-            .any(|r| matches!(r, Request::ProjectEnsure { .. })),
-        "the move didn't begin: {requests:?}"
+        requests.contains(&Request::ChatDelete {
+            dialog_id: "in-wsl".into()
+        }),
+        "{requests:?}"
     );
-    assert!(starts(&fake).is_empty(), "started without the move");
-    let at = app.core.db.read(|c| location::of_chat(c, "chat")).await;
-    assert_eq!(at, Ok(Location::Here));
-    assert_eq!(remote.host_of("chat"), None);
-    // The frontend saw the move, and its end.
-    let steps: Vec<String> = told
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|e| match e {
-            CloudEvent::Moving { step, .. } => Some(step.to_string()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(steps, ["pushing", "failed"]);
+    assert_eq!(remote.host_of("in-wsl"), None);
+    let gone = app.core.db.read(|c| store::get_dialog(c, "in-wsl")).await;
+    assert!(gone.unwrap().is_none());
+    // The local chat is the project's delete's to take.
+    let kept = app.core.db.read(|c| store::get_dialog(c, "here")).await;
+    assert!(kept.unwrap().is_some());
+}
 
-    remote.disconnect(HOST);
-    assert_eq!(remote.home(), None);
+/// A project of the folder `name` under the test's folder.
+async fn project_in(app: &App, name: &str) -> String {
+    let path = app.dir.0.join(name);
+    std::fs::create_dir_all(&path).unwrap();
+    let root = path.to_string_lossy().into_owned();
+    let opened = rovik_core::chat_db::api::chat_open_project(&app.core.db, root).await;
+    opened.unwrap().project.id
+}
+
+/// Every write queued so far is done: a chat's location, say, which
+/// `place` queues.
+async fn settled(app: &App) {
+    let written = app.core.db.write(|_| Ok::<(), String>(()));
+    written.await.unwrap();
 }
 
 /// 6.5: results land by themselves in the open project, which the user's
