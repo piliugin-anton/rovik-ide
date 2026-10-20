@@ -963,8 +963,10 @@ once; they touch different files. Everything else is sequential.
     and requires it: without it commands are refused (`refusal`); the
     .deb/.rpm depend on the package, the host installer adds it, and the
     desktop offers to at start (`status`, `install`, through `distro.rs`,
-    which the FUSE driver's installer shares). macOS and Windows have no
-    mechanism yet, and their modules say what to add. On Windows the
+    which the FUSE driver's installer shares). macOS has Seatbelt
+    (`sandbox-exec`, a generated profile with the folders passed as
+    `-D` parameters), required as bubblewrap is; it can't redirect, so an
+    isolated chat's commands there see the project read-only. On Windows the
     command check also reads commands as cmd.exe splits them
     (`permissions::Shell`), so a second command can't hide behind a `'`
     or a `\` the POSIX reading took for quoting.

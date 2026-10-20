@@ -21,12 +21,14 @@
 //! works here, found once, confines every command. Linux has bubblewrap
 //! (`bwrap`), which also hides the other processes, ends whatever a
 //! command leaves behind when it exits, and drops every capability, so a
-//! command can't undo its sandbox; there the sandbox is
-//! required, and without it commands are refused ([`refusal`]) and the app
-//! offers to install it ([`status`], [`install`]). macOS and Windows have no
-//! mechanism yet and say in their modules what the one to add would be;
-//! there [`available`] is false and the callers keep their text checks
-//! (chats.rs, server.rs). `ROVIK_CONFINE_COMMANDS=0` turns it all off, for
+//! command can't undo its sandbox; the app offers to install it
+//! ([`status`], [`install`]). macOS has Seatbelt (`sandbox-exec`), part of
+//! the system, which can't redirect a path: an isolated chat's commands
+//! there see the project read-only instead of the chat's view at its path,
+//! and the callers keep their text check for that (chats.rs, server.rs). On
+//! both the sandbox is required: without it commands are refused
+//! ([`refusal`]). Windows has none: its chats' commands run in WSL, under
+//! bubblewrap. `ROVIK_CONFINE_COMMANDS=0` turns it all off, for
 //! troubleshooting.
 
 use std::path::{Path, PathBuf};
@@ -156,6 +158,8 @@ pub fn secret_dirs() -> Vec<PathBuf> {
         ".config/gh",
         ".kube",
         ".docker",
+        // macOS: the keychains' files.
+        "Library/Keychains",
     ];
     let under_home = home()
         .into_iter()
@@ -191,6 +195,10 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
         ".local/share/uv",
         ".local/state",
         "go",
+        // macOS: the caches (Homebrew, pip, clang's modules) and Xcode's
+        // build products.
+        "Library/Caches",
+        "Library/Developer/Xcode/DerivedData",
     ];
     let mut dirs = vec![root.to_path_buf(), std::env::temp_dir()];
     dirs.extend(std::env::var_os("TMPDIR").map(PathBuf::from));
@@ -204,6 +212,11 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
             .into_iter()
             .flat_map(|home| UNDER_HOME.iter().map(move |rel| home.join(rel))),
     );
+    // macOS: the user's cache folder beside `TMPDIR` (/var/folders/…/C),
+    // where the developer tools keep theirs.
+    if cfg!(target_os = "macos") {
+        dirs.extend(std::env::temp_dir().parent().map(|d| d.join("C")));
+    }
     existing(dirs)
 }
 
@@ -226,7 +239,7 @@ trait Mechanism: Sync {
     fn command(&self, c: &Confine, program: &str, args: &[&str]) -> Command;
 
     /// Whether it can point the project's path at the view. A mechanism
-    /// that only hides (macOS's Seatbelt would be one) says false.
+    /// that only hides (macOS's Seatbelt) says false.
     fn can_redirect(&self) -> bool;
 }
 
@@ -333,11 +346,11 @@ pub fn hiding_if_available(root: &Path) -> Option<Confine> {
     available(&c).then_some(c)
 }
 
-/// Why no command of the agent's may run here, if none may: on Linux the
-/// sandbox is required, and its program is missing or can't make one; in
-/// the Windows app (`require`) commands run in the computer's Linux side
-/// (WSL), never here. None where the sandbox works, where it's turned off,
-/// and on systems without a mechanism yet (their text checks apply).
+/// Why no command of the agent's may run here, if none may: on Linux and
+/// macOS the sandbox is required, and its program is missing or can't make
+/// one; in the Windows app (`require`) commands run in the computer's Linux
+/// side (WSL), never here. None where the sandbox works, where it's turned
+/// off, and on systems without a mechanism (their text checks apply).
 pub fn refusal() -> Option<String> {
     refusal_if(REQUIRED.load(std::sync::atomic::Ordering::Relaxed))
 }
@@ -348,9 +361,9 @@ fn refusal_if(required: bool) -> Option<String> {
     if switched_off() {
         return None;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if chosen().is_none() {
-        return Some(linux::missing());
+        return Some(os::missing());
     }
     #[cfg(target_os = "windows")]
     if required {
@@ -364,9 +377,10 @@ fn refusal_if(required: bool) -> Option<String> {
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxStatus {
-    /// Commands are refused without it (Linux).
+    /// Commands are refused without it (Linux, macOS).
     pub required: bool,
-    /// What makes it: "bubblewrap" on Linux; "" where there's none yet.
+    /// What makes it: "bubblewrap" on Linux, "Seatbelt" on macOS; "" where
+    /// there's none.
     pub program: &'static str,
     /// It's there and confines commands.
     pub working: bool,
@@ -558,7 +572,7 @@ mod linux {
 
 /// A system with no mechanism yet: the callers' text checks apply, nothing
 /// is required, nothing can be installed.
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn no_sandbox_yet() -> SandboxStatus {
     SandboxStatus {
         required: false,
@@ -569,7 +583,7 @@ fn no_sandbox_yet() -> SandboxStatus {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 async fn nothing_to_install() -> Result<InstallOutcome, String> {
     Ok(InstallOutcome::Manual {
         message: "There's no sandbox to install on this system yet.".into(),
@@ -577,26 +591,139 @@ async fn nothing_to_install() -> Result<InstallOutcome, String> {
     })
 }
 
-/// No mechanism yet. The one to add is Seatbelt, `sandbox-exec -p <profile>
-/// -- program args`, with a profile that denies `file-write*` but under the
-/// writable folders and `file-read*` under each hidden directory (`(deny
-/// file-read* (subpath "/Users/me/.ssh"))`). macOS can't bind-mount, so
-/// that mechanism would say `can_redirect() == false` and the project's
-/// full path would stay refused by text. Implement [`Mechanism`] for it,
-/// list it in `MECHANISMS`, and give `status` and `install` their answers.
+/*
+ * ---------------------------------------------------------------------------
+ * macOS: Seatbelt
+ * ---------------------------------------------------------------------------
+ */
+
+/// The devices a command writes to as a terminal program does: its output
+/// thrown away, its terminal, its own descriptors, DTrace's helper (which
+/// node and the JVM open).
+const SEATBELT_DEVICES: &[&str] = &[
+    r#"(literal "/dev/null")"#,
+    r#"(literal "/dev/zero")"#,
+    r#"(literal "/dev/dtracehelper")"#,
+    r#"(literal "/dev/ptmx")"#,
+    r#"(regex #"^/dev/tty")"#,
+    r#"(regex #"^/dev/fd/")"#,
+];
+
+/// The Seatbelt profile (macOS's sandbox language) that enforces `c`, and
+/// the paths it names, as `sandbox-exec -D` parameters: a path never goes
+/// into the profile's text, so none can break it. Everything is allowed
+/// but what the policy forbids: writes outside the writable folders and
+/// those devices, and anything under a hidden folder, but for the writable
+/// folders inside one (a daemon's worktrees in its own folder, `--data`).
+/// The folders are as the file system has them: Seatbelt sees `/tmp` as
+/// `/private/tmp`. Nothing is redirected: Seatbelt can't.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
+    let writable: Vec<&PathBuf> = c.writable.iter().filter(|d| d.is_dir()).collect();
+    let hidden: Vec<&PathBuf> = c.hide.iter().filter(|d| d.is_dir()).collect();
+    let mut params: Vec<(String, PathBuf)> = Vec::new();
+    for (i, dir) in writable.iter().enumerate() {
+        params.push((format!("W{i}"), dir.to_path_buf()));
+    }
+    for (i, dir) in hidden.iter().enumerate() {
+        params.push((format!("H{i}"), dir.to_path_buf()));
+    }
+    let under = |name: String| format!(r#"(subpath (param "{name}"))"#);
+    let any = |filters: Vec<String>| format!("(require-any {})", filters.join(" "));
+
+    let mut profile = String::from("(version 1)\n(allow default)\n");
+    let mut writes: Vec<String> = (0..writable.len())
+        .map(|i| under(format!("W{i}")))
+        .collect();
+    writes.extend(SEATBELT_DEVICES.iter().map(|d| d.to_string()));
+    profile += &format!("(deny file-write* (require-not {}))\n", any(writes));
+    for (i, dir) in hidden.iter().enumerate() {
+        let inside: Vec<String> = writable
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| *w != dir && w.starts_with(dir))
+            .map(|(j, _)| under(format!("W{j}")))
+            .collect();
+        let filter = if inside.is_empty() {
+            under(format!("H{i}"))
+        } else {
+            format!(
+                "(require-all {} (require-not {}))",
+                under(format!("H{i}")),
+                any(inside)
+            )
+        };
+        profile += &format!("(deny file-read* file-write* {filter})\n");
+    }
+    (profile, params)
+}
+
+/// Each command runs under `sandbox-exec` with the policy's profile
+/// ([`seatbelt_profile`]): the system read-only but for the writable
+/// folders, the hidden ones out of reach. It's part of macOS, so there's
+/// nothing to install; it's deprecated as a command, but the sandbox it
+/// applies is the one macOS's own services run in. It can't redirect a
+/// path, so an isolated chat's commands get the project read-only, not its
+/// view there. Unlike bubblewrap it doesn't hide the other processes.
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{InstallOutcome, Mechanism, SandboxStatus};
+    use std::ffi::OsString;
+    use std::process::Command;
 
     pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
-    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[];
+    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[&Seatbelt];
+
+    const PROGRAM: &str = "/usr/bin/sandbox-exec";
+
+    pub(super) struct Seatbelt;
+
+    impl Mechanism for Seatbelt {
+        fn name(&self) -> &'static str {
+            "seatbelt"
+        }
+
+        fn command(&self, c: &super::Confine, program: &str, args: &[&str]) -> Command {
+            let (profile, params) = super::seatbelt_profile(c);
+            let mut cmd = crate::process::command(PROGRAM);
+            cmd.arg("-p").arg(profile);
+            for (name, path) in params {
+                let mut define = OsString::from(format!("{name}="));
+                define.push(path);
+                cmd.arg("-D").arg(define);
+            }
+            cmd.arg(program).args(args);
+            cmd
+        }
+
+        fn can_redirect(&self) -> bool {
+            false
+        }
+    }
+
+    pub(super) fn missing() -> String {
+        "macOS's sandbox (sandbox-exec) couldn't confine a command here, so the agent's \
+         commands are refused. It's part of macOS: if this Mac's management policy blocks \
+         it, ask whoever manages this Mac."
+            .into()
+    }
 
     pub(super) fn status() -> SandboxStatus {
-        super::no_sandbox_yet()
+        let working = super::chosen().is_some();
+        SandboxStatus {
+            required: true,
+            program: "Seatbelt",
+            working,
+            detail: (!working).then(missing),
+            can_install: false,
+        }
     }
 
     pub(super) async fn install() -> Result<InstallOutcome, String> {
-        super::nothing_to_install().await
+        Ok(InstallOutcome::Manual {
+            message: "Seatbelt is part of macOS: there's nothing to install.".into(),
+            command: None,
+        })
     }
 }
 
@@ -652,6 +779,170 @@ mod other {
 
     pub(super) async fn install() -> Result<InstallOutcome, String> {
         super::nothing_to_install().await
+    }
+}
+
+/// The Seatbelt profile's text, on every system; macOS runs it below.
+#[cfg(test)]
+mod seatbelt_profile_tests {
+    use super::*;
+
+    #[test]
+    fn the_profile_names_its_folders_by_parameter_and_lets_the_nested_one_through() {
+        let root = std::env::temp_dir().join(format!("sbpl-{}", std::process::id()));
+        let (daemon, work, secret) = (root.join("d"), root.join("d/work"), root.join("s"));
+        for d in [&work, &secret] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let c = Confine {
+            view: work.clone(),
+            project: work.clone(),
+            hide: vec![daemon.clone(), secret.clone(), root.join("gone")],
+            writable: vec![work.clone(), root.join("gone-too")],
+        };
+        let (profile, params) = seatbelt_profile(&c);
+        let names: Vec<(&str, &Path)> = params
+            .iter()
+            .map(|(n, p)| (n.as_str(), p.as_path()))
+            .collect();
+        // Folders gone since the policy was made are left out.
+        assert_eq!(
+            names,
+            [
+                ("W0", work.as_path()),
+                ("H0", daemon.as_path()),
+                ("H1", secret.as_path())
+            ]
+        );
+        assert!(
+            !profile.contains(&*root.to_string_lossy()),
+            "no path in the text"
+        );
+        assert!(profile.starts_with("(version 1)\n(allow default)\n"));
+        assert!(profile.contains(
+            r#"(deny file-write* (require-not (require-any (subpath (param "W0")) (literal "/dev/null")"#
+        ));
+        assert!(profile.contains(
+            r#"(deny file-read* file-write* (require-all (subpath (param "H0")) (require-not (require-any (subpath (param "W0"))))))"#
+        ));
+        assert!(profile.contains(r#"(deny file-read* file-write* (subpath (param "H1")))"#));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Seatbelt enforcing the policy, on macOS.
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    const SEATBELT: &dyn Mechanism = &macos::Seatbelt;
+
+    /// A fresh folder for one test, as the file system has it (Seatbelt
+    /// sees /var/folders as /private/var/folders).
+    fn fresh(test: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    fn run(c: &Confine, cwd: &Path, script: &str) -> std::process::Output {
+        SEATBELT
+            .command(c, "/bin/sh", &["-c", script])
+            .current_dir(cwd)
+            .output()
+            .unwrap()
+    }
+
+    fn stdout(out: &std::process::Output) -> String {
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// macOS always has it, and it confines commands here.
+    #[test]
+    fn seatbelt_is_the_mechanism_and_works() {
+        assert!(
+            works(SEATBELT, &probe_policy()),
+            "sandbox-exec refused the probe"
+        );
+        if std::env::var_os("ROVIK_CONFINE_COMMANDS").is_none() {
+            assert_eq!(chosen().map(|m| m.name()), Some("seatbelt"));
+            assert_eq!(refusal(), None);
+            assert!(status().required && status().working);
+        }
+    }
+
+    /// The command writes in its folder and to /dev/null, and nowhere
+    /// else; its exit code is its own.
+    #[test]
+    fn only_the_writable_folders_are_written() {
+        let root = fresh("sbwrite");
+        let (mine, other) = (root.join("mine"), root.join("other"));
+        for d in [&mine, &other] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let c = Confine {
+            view: mine.clone(),
+            project: mine.clone(),
+            hide: Vec::new(),
+            writable: vec![mine.clone()],
+        };
+        let script = format!(
+            "echo ok > {m}/a.txt && echo gone > /dev/null && \
+             (echo no > {o}/b.txt) 2>/dev/null; cat {m}/a.txt; exit 3",
+            m = mine.display(),
+            o = other.display()
+        );
+        let out = run(&c, &mine, &script);
+        assert_eq!(
+            out.status.code(),
+            Some(3),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(stdout(&out), "ok\n");
+        assert!(!other.join("b.txt").exists(), "wrote outside its folder");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A hidden folder can't be read, listed or written, but for a
+    /// writable folder inside it; one hidden inside a writable folder is.
+    #[test]
+    fn hidden_folders_are_out_of_reach_but_for_writable_ones_inside() {
+        let root = fresh("sbhide");
+        let (daemon, secret) = (root.join("daemon"), root.join("secret"));
+        let work = daemon.join("work");
+        let deep = work.join(".ssh");
+        for d in [&work, &secret, &deep] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(secret.join("key"), "TOPSECRET\n").unwrap();
+        std::fs::write(daemon.join("keys.json"), "TOPSECRET\n").unwrap();
+        std::fs::write(deep.join("id"), "TOPSECRET\n").unwrap();
+        let c = Confine {
+            view: work.clone(),
+            project: work.clone(),
+            hide: vec![secret.clone(), daemon.clone(), deep.clone()],
+            writable: vec![work.clone(), secret.clone()],
+        };
+        let script = format!(
+            "cat {s}/key {d}/keys.json {w}/.ssh/id 2>/dev/null; \
+             ls {s} 2>/dev/null | wc -l | tr -d ' '; \
+             echo planted > {s}/planted 2>/dev/null; \
+             echo mine > {w}/mine.txt && cat {w}/mine.txt",
+            s = secret.display(),
+            d = daemon.display(),
+            w = work.display()
+        );
+        let out = run(&c, &work, &script);
+        assert_eq!(
+            stdout(&out),
+            "0\nmine\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!secret.join("planted").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

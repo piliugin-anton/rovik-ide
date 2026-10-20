@@ -1,10 +1,11 @@
 // sandboxStartup.ts
 //
 // The command sandbox at app start (lib/sandbox.ts), in the background. On
-// Linux the agent's commands run under bubblewrap and are refused without
-// it, so when it's missing one notification offers to install it (the
-// system asks for permission). "Don't ask again" stops the notification;
-// the commands stay refused until it's installed.
+// Linux the agent's commands run under bubblewrap, on macOS under Seatbelt,
+// and are refused without it, so when it's missing or doesn't work one
+// notification says so, offering to install bubblewrap (the system asks for
+// permission). "Don't ask again" stops the notification; the commands stay
+// refused until it works.
 import { loadPrefs, savePrefs } from './localPrefs';
 import { notify } from './notifications';
 import { installSandbox, sandboxStatus, type SandboxStatus } from './sandbox';
@@ -85,7 +86,7 @@ export async function startSandbox() {
     id: NOTE,
     kind: 'warning',
     title: `The agent’s commands need ${status.program}`,
-    message: `${detail}On Linux the commands the agent runs are sandboxed with it, and refused without it. Installing asks for administrator permission.`,
+    message: `${detail}The commands the agent runs are sandboxed with it, and refused without it.${status.canInstall ? ' Installing asks for administrator permission.' : ''}`,
     actions: status.canInstall
       ? [
           {

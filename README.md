@@ -625,9 +625,14 @@ distribution (Settings → This computer → WSL): the daemon runs inside it
 with the same sandbox, every chat of a project moves there by itself when
 it first runs, the app reaches it through `wsl.exe`, and Rovik there
 follows the app's updates; a chat without a project, or a computer
-without WSL, is refused its commands. macOS has no sandbox yet
-(`src-tauri/crates/rovik-core/src/overlay/confine.rs` says what to add):
-there a command that names the project's full path is refused instead.
+without WSL, is refused its commands. On macOS every command runs under
+Seatbelt (`sandbox-exec`, part of macOS) with the same policy: the system
+read-only but for the chat's own folders, `/tmp` and the caches (including
+`~/Library/Caches`), and the credential stores (with `~/Library/Keychains`)
+out of reach. Seatbelt can't redirect a path, so an isolated chat's commands
+see the project read-only rather than the chat's view at its path, and a
+command naming the project's full path is refused by text there. Unlike
+bubblewrap it doesn't hide the other processes.
 
 Limits: 512 MiB of changed files per chat (warning at 80%). Build output and
 dependency folders don't count toward it. Heavy commands such as builds and
