@@ -36,10 +36,11 @@ usage: rovik-agentd <command>
       stdin and goes in config.toml. A running daemon reads it when it
       next starts.
 
-  install --admin USER [--binary FILE] [--root DIR]
+  install --admin USER [--binary FILE] [--no-browser] [--root DIR]
       As root: install Rovik for everyone on this server, with USER its
       administrator, and start USER's daemon. FILE is the build to install,
-      this one unless told.
+      this one unless told. --no-browser leaves the browser tools' browser
+      out (a WSL distribution on a developer's computer).
   user start|stop|restart|status [--root DIR]
       Through sudo: your own daemon.
   admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
@@ -74,6 +75,9 @@ pub enum Command {
         admin: String,
         binary: Option<PathBuf>,
         root: Option<PathBuf>,
+        /// The browser tools' browser is installed too (`--no-browser`
+        /// leaves it out).
+        browser: bool,
     },
     User {
         args: Vec<String>,
@@ -172,6 +176,7 @@ fn parse_token(rest: &[String]) -> Result<Command, String> {
 fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
     let (mut root, mut admin, mut binary) = (None, None, None);
     let mut allow_downgrade = false;
+    let mut browser = true;
     let mut words = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
@@ -184,6 +189,7 @@ fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
             "--root" => root = Some(PathBuf::from(value()?)),
             "--admin" if command == "install" => admin = Some(value()?),
             "--binary" if command == "install" => binary = Some(PathBuf::from(value()?)),
+            "--no-browser" if command == "install" => browser = false,
             "--allow-downgrade" if command == "admin" => allow_downgrade = true,
             "--help" | "-h" => return Ok(Command::Help),
             flag if flag.starts_with('-') => {
@@ -198,6 +204,7 @@ fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
             admin: admin.ok_or("install needs --admin USER")?,
             binary,
             root,
+            browser,
         }),
         "user" => Ok(Command::User { args: words, root }),
         _ => Ok(Command::Admin {
@@ -251,7 +258,8 @@ pub fn run(argv: &[String]) -> i32 {
             admin,
             binary,
             root,
-        } => system(root).and_then(|sys| installer::install(&sys, &admin, binary)),
+            browser,
+        } => system(root).and_then(|sys| installer::install(&sys, &admin, binary, browser)),
         Command::User { args, root } => system(root).and_then(|sys| installer::user(&sys, &args)),
         Command::Admin {
             args,
@@ -360,6 +368,16 @@ mod tests {
                 admin: "ann".into(),
                 binary: None,
                 root: Some("/r".into()),
+                browser: true,
+            })
+        );
+        assert_eq!(
+            parsed(&["install", "--admin", "ann", "--no-browser"]),
+            Ok(Command::Install {
+                admin: "ann".into(),
+                binary: None,
+                root: None,
+                browser: false,
             })
         );
         assert_eq!(

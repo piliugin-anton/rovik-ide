@@ -43,8 +43,9 @@ USER to `rovik-admin`, installs the sudoers rule once `visudo` accepts it,
 starts USER's daemon, installs the browser for the browser tools
 ([The browser](#the-browser)) and the distro's `bubblewrap` package, which
 confines the chats' commands ([What can read what](#what-can-read-what)).
-Neither stops the install when it can't be installed. To see what it would
-do without changing
+Neither stops the install when it can't be installed, and `--no-browser`
+leaves the browser out, as the app does for a WSL distribution. To see
+what it would do without changing
 anything, add `--root /tmp/somewhere`. It then writes the files under that
 folder and prints each command it would run.
 

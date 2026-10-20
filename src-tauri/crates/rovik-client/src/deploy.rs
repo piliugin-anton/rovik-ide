@@ -245,6 +245,10 @@ pub struct Target<'a> {
     pub root: Option<&'a dyn HostShell>,
     /// The host's name, which the daemon is told this connection is for.
     pub name: &'a str,
+    /// The browser tools' browser is installed and kept up there too; not
+    /// on a WSL distribution, where it would be a 200 MB download the
+    /// developer's computer already has a browser for.
+    pub browser: bool,
 }
 
 impl Target<'_> {
@@ -363,11 +367,17 @@ async fn install_and_start(
             // Root without sudo (a WSL distribution): the build installs
             // Rovik as it is.
             Some(root) => {
-                let install = format!("{} install --admin {}", quote(upload), quote(&probe.user));
+                let install = format!(
+                    "{} install --admin {}{}",
+                    quote(upload),
+                    quote(&probe.user),
+                    no_browser(target)
+                );
                 run(root, &install, b"").await?;
             }
             None => {
-                let (command, input) = install_command(probe, upload, sudo_password, layout)?;
+                let (command, input) =
+                    install_command(probe, upload, sudo_password, layout, no_browser(target))?;
                 run(target.shell, &command, &input).await?;
             }
         }
@@ -386,8 +396,13 @@ fn install_command(
     upload: &str,
     sudo_password: Option<&Secret>,
     layout: &Layout,
+    options: &str,
 ) -> Result<(String, Zeroizing<Vec<u8>>), DeployError> {
-    let install = format!("{} install --admin {}", quote(upload), quote(&probe.user));
+    let install = format!(
+        "{} install --admin {}{options}",
+        quote(upload),
+        quote(&probe.user)
+    );
     match (probe.sudo, sudo_password) {
         (Sudo::NoPassword, _) => Ok((
             format!("{} -n {install}", layout.sudo),
@@ -399,6 +414,14 @@ fn install_command(
         )),
         (Sudo::Password, None) => Err(DeployError::SudoPassword),
         (Sudo::Refused | Sudo::Missing, _) => Err(DeployError::NeedsRoot { command: install }),
+    }
+}
+
+/// What `install` takes after its user: nothing, or ` --no-browser`.
+fn no_browser(target: &Target<'_>) -> &'static str {
+    match target.browser {
+        true => "",
+        false => " --no-browser",
     }
 }
 
@@ -598,9 +621,11 @@ pub async fn upgrade(
     // The browser the new build pins, when it isn't there (D19): a build
     // from before it upgrades without installing one. The browser tools say
     // so when they're used without it, so it's no reason to fail the upgrade.
-    let (root, browser) = target.as_root(layout, "admin browser");
-    if let Err(e) = run(root, &browser, b"").await {
-        log::warn!("The upgrade installed no browser: {e}");
+    if target.browser {
+        let (root, browser) = target.as_root(layout, "admin browser");
+        if let Err(e) = run(root, &browser, b"").await {
+            log::warn!("The upgrade installed no browser: {e}");
+        }
     }
     if !probe.systemd {
         start(target, &probe, layout).await?;
@@ -888,22 +913,35 @@ mod tests {
         let layout = Layout::default();
         let upload = "/home/ann/.rovik-agentd-upload";
         let (command, input) =
-            install_command(&probe(Sudo::NoPassword), upload, None, &layout).unwrap();
+            install_command(&probe(Sudo::NoPassword), upload, None, &layout, "").unwrap();
         assert_eq!(
             command,
             "sudo -n '/home/ann/.rovik-agentd-upload' install --admin 'ann'"
         );
         assert!(input.is_empty());
-        let asks = install_command(&probe(Sudo::Password), upload, None, &layout);
+        // Without the browser, as the app installs in a WSL distribution.
+        let (command, _) = install_command(
+            &probe(Sudo::NoPassword),
+            upload,
+            None,
+            &layout,
+            " --no-browser",
+        )
+        .unwrap();
+        assert!(
+            command.ends_with("install --admin 'ann' --no-browser"),
+            "{command}"
+        );
+        let asks = install_command(&probe(Sudo::Password), upload, None, &layout, "");
         assert_eq!(asks.unwrap_err(), DeployError::SudoPassword);
         let password = Secret("hunter2".into());
         let (command, input) =
-            install_command(&probe(Sudo::Password), upload, Some(&password), &layout).unwrap();
+            install_command(&probe(Sudo::Password), upload, Some(&password), &layout, "").unwrap();
         assert!(command.starts_with("sudo -S -p '' "), "{command}");
         assert!(!command.contains("hunter2"));
         assert_eq!(input.as_slice(), b"hunter2\n");
         for sudo in [Sudo::Missing, Sudo::Refused] {
-            let root = install_command(&probe(sudo), upload, None, &layout).unwrap_err();
+            let root = install_command(&probe(sudo), upload, None, &layout, "").unwrap_err();
             let DeployError::NeedsRoot { command } = &root else {
                 panic!("{root:?}");
             };

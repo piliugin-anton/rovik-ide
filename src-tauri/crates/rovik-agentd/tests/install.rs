@@ -415,6 +415,29 @@ fn an_upgrade_reads_the_build_as_its_administrator() {
     assert_eq!(link, Path::new("rovik-agentd-9.9.9"));
 }
 
+/// `--no-browser` leaves the browser tools' browser out, as the app does
+/// for a WSL distribution; bubblewrap still goes in.
+#[test]
+fn the_browser_can_be_left_out() {
+    let server = Server::new();
+    let build = server.build.to_string_lossy().into_owned();
+    let installed = server.run(
+        &[
+            "install",
+            "--admin",
+            "nobody",
+            "--binary",
+            &build,
+            "--no-browser",
+        ],
+        None,
+    );
+    let out = said(&installed);
+    assert!(installed.status.success(), "{out}");
+    assert!(!out.contains("would download"), "{out}");
+    assert!(out.contains("install bubblewrap"), "{out}");
+}
+
 /// D19: install puts the Chrome for Testing Rovik pins in place for the
 /// browser tools, checked against its pinned SHA-256, with the packages it
 /// needs. `admin browser` does it for an administrator, and an upgrade runs

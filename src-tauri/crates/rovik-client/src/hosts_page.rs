@@ -208,6 +208,7 @@ impl HostLink {
                 connector,
                 root: None,
                 name,
+                browser: true,
             }),
             HostLink::Wsl {
                 shell,
@@ -219,6 +220,7 @@ impl HostLink {
                 connector,
                 root: Some(root),
                 name,
+                browser: false,
             }),
         }
     }

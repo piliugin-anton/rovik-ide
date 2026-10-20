@@ -254,7 +254,12 @@ impl System {
 
 /// `install --admin ADMIN`: see the module's comment. `binary` is the file
 /// to install, this one unless told.
-pub fn install(sys: &System, admin: &str, binary: Option<PathBuf>) -> Result<(), String> {
+pub fn install(
+    sys: &System,
+    admin: &str,
+    binary: Option<PathBuf>,
+    browser: bool,
+) -> Result<(), String> {
     if sys.live() && euid() != 0 {
         return Err(format!(
             "install changes the system for everyone: run it as root, as in \
@@ -301,7 +306,9 @@ pub fn install(sys: &System, admin: &str, binary: Option<PathBuf>) -> Result<(),
         );
     }
     println!("Its administrators: {}.", file.admins.join(", "));
-    browser::ensure_or_say(sys);
+    if browser {
+        browser::ensure_or_say(sys);
+    }
     bubblewrap::ensure_or_say(sys);
     Ok(())
 }
