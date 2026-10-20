@@ -194,6 +194,11 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
     ];
     let mut dirs = vec![root.to_path_buf(), std::env::temp_dir()];
     dirs.extend(std::env::var_os("TMPDIR").map(PathBuf::from));
+    // The system's too where `TMPDIR` is elsewhere (a daemon's own, K13):
+    // commands write to `/tmp` by name as often as through `TMPDIR`.
+    if cfg!(unix) {
+        dirs.push(PathBuf::from("/tmp"));
+    }
     dirs.extend(
         home()
             .into_iter()
