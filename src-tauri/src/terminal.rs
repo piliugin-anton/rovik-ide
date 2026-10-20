@@ -418,7 +418,8 @@ $endif
         /// the file, which reads without an error and keeps the user's own
         /// settings. Its readline's version is taken to be bash's (5.2 has
         /// 8.2), as bash builds its own. One bash says both, the one on PATH
-        /// (macOS has two: its own 3.2, and Homebrew's).
+        /// (macOS has two: its own 3.2, and Homebrew's). Interactive, as a
+        /// terminal's is: bash 3.2 reads readline's settings only then.
         #[test]
         fn bash_scrolls_a_long_line_before_readline_8_3_and_keeps_the_users_settings() {
             let dir = temp_dir("bash");
@@ -430,6 +431,7 @@ $endif
                 .args([
                     "--norc",
                     "--noprofile",
+                    "-i",
                     "-c",
                     "bind -v; echo \"bash=${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}\"",
                 ])
