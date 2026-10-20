@@ -1495,7 +1495,9 @@ mod tests {
                     .unwrap_or_else(|| default_allowed.clone()),
                 ..Permissions::default()
             };
-            let verdict = check_command(command, &permissions);
+            // The frontend reads commands the POSIX way; Windows adds the
+            // cmd.exe reading's refusals (its own tests).
+            let verdict = check_command_as(command, &permissions, &[Shell::Posix]);
             if let Some(p) = expect.get("permitted") {
                 assert_eq!(
                     matches!(verdict, Verdict::Permitted { .. }),
