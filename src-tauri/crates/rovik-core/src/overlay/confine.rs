@@ -399,6 +399,7 @@ pub async fn install() -> Result<InstallOutcome, String> {
 mod linux {
     use super::{Confine, InstallOutcome, Mechanism, SandboxStatus};
     use crate::distro::{self, Package, RootRun};
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
@@ -433,6 +434,22 @@ mod linux {
                 cmd.arg("--bind").arg(&c.view).arg(&c.project);
             }
             for dir in c.hide.iter().filter(|d| d.is_dir()) {
+                cmd.arg("--tmpfs").arg(dir);
+            }
+            // A writable folder inside a hidden one stays the command's
+            // (`--data` puts a daemon's worktrees in its own folder), and
+            // what's hidden inside it stays hidden.
+            let inside = |d: &Path, of: &[PathBuf]| of.iter().any(|o| d != o && d.starts_with(o));
+            let back: Vec<PathBuf> = c
+                .writable
+                .iter()
+                .filter(|d| d.is_dir() && inside(d, &c.hide))
+                .cloned()
+                .collect();
+            for dir in &back {
+                cmd.arg("--bind").arg(dir).arg(dir);
+            }
+            for dir in c.hide.iter().filter(|d| d.is_dir() && inside(d, &back)) {
                 cmd.arg("--tmpfs").arg(dir);
             }
             // Run by root, bwrap keeps the capabilities unless told; run by
@@ -738,6 +755,37 @@ mod tests {
             "TOPSECRET\n"
         );
         assert!(!secret.join("planted").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A writable folder inside a hidden one is the command's still (a
+    /// daemon started with `--data` keeps its worktrees in its own
+    /// folder), while the rest of the hidden folder, and what's hidden
+    /// inside the writable one, stay hidden.
+    #[test]
+    fn a_writable_folder_inside_a_hidden_one_stays_writable() {
+        let (root, mut c) = fresh("nested", &[]);
+        let daemon = root.join("daemon");
+        let work = daemon.join("work").join("chat");
+        let secret = work.join(".secret");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(daemon.join("keys.json"), "TOPSECRET\n").unwrap();
+        std::fs::write(work.join("old.rs"), "fn old() {}\n").unwrap();
+        std::fs::write(secret.join("token"), "TOKEN\n").unwrap();
+        c.hide = vec![daemon.clone(), secret.clone()];
+        c.writable = vec![work.clone()];
+        let script = format!(
+            "cat {d}/keys.json 2>/dev/null; cat {s}/token 2>/dev/null; \
+             mv {w}/old.rs {w}/new.rs && echo moved",
+            d = daemon.display(),
+            s = secret.display(),
+            w = work.display()
+        );
+        let Some(out) = run(&c, &work, &script) else {
+            return;
+        };
+        assert_eq!(stdout(&out), "moved\n");
+        assert!(work.join("new.rs").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
