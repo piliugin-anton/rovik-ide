@@ -249,8 +249,23 @@ pub struct Health {
     pub version: String,
 }
 
+/// How long `/health` may take, connecting included: a daemon that takes
+/// the connection and never answers would otherwise hang a deploy or a
+/// check for good.
+const HEALTH_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// The daemon's `/health`: that it answers, and its version.
 pub async fn health(connector: &dyn Connector) -> Result<Health, Fail> {
+    match tokio::time::timeout(HEALTH_WAIT, health_now(connector)).await {
+        Ok(answer) => answer,
+        Err(_) => Err(Fail::new(
+            FailCode::Unreachable,
+            "The daemon didn't answer /health in time.",
+        )),
+    }
+}
+
+async fn health_now(connector: &dyn Connector) -> Result<Health, Fail> {
     let lost = |why: String| Fail::new(FailCode::Unreachable, why);
     let io = connector.connect().await.map_err(|e| lost(e.to_string()))?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))

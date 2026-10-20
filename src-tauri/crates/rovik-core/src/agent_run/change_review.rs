@@ -1175,8 +1175,10 @@ impl Run {
             self.review_answers.clear();
             self.review_answer_nudges = 0;
         }
-        // D10: a last review that couldn't report found none of the high
-        // findings it was to check resolved: they're open still.
+        // D10: a review that couldn't report found none of the findings it
+        // was to check resolved: they're open still. The last review's high
+        // ones block; an earlier review's are asked about again, as the
+        // plan review's are (S02), never let through unchecked.
         let unchecked: Vec<Finding> = match blocking && !reported {
             true => (self.review_held.iter())
                 .filter(|f| f.severity == "high")
@@ -1192,6 +1194,14 @@ impl Run {
             review["blocked"] = json!(true);
             review["open"] = json!(high_open);
             self.review_blocked = true;
+        }
+        let asked_again = blocking && !reported && !last && !self.review_held.is_empty();
+        if asked_again {
+            serious = (self.review_held.iter())
+                .filter(|f| !after_green || f.severity == "high")
+                .cloned()
+                .collect();
+            review["findings"] = json!(serious);
         }
         self.review_record(&record_id, review.clone()).await?;
         self.review_outcome = Some((
@@ -1235,7 +1245,10 @@ impl Run {
         );
         note.meta = Some(json!({ "harness": "review" }));
         self.review_note_id = Some(note.id.clone());
-        self.review_findings.extend(serious);
+        // Findings asked about again were kept when first found.
+        if !asked_again {
+            self.review_findings.extend(serious);
+        }
         self.append(vec![note]).await?;
         Ok(true)
     }

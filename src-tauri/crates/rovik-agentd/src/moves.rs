@@ -69,8 +69,7 @@ pub async fn import(
     work::room_for_worktree(daemon, &chat).await?;
     let project = bundle.project.clone();
     let excludes = bundle.excludes.clone();
-    let repository =
-        work::repository_with(daemon, &project.id, excludes.clone(), base, changes).await?;
+    let repository = work::repository_with(daemon, &project.id, excludes, base, changes).await?;
     // What could still refuse the import, before anything of the chat's
     // earlier stay goes: rows another chat here has under the bundle's ids
     // (its own earlier rows go with it).
@@ -84,6 +83,43 @@ pub async fn import(
 
     // What an earlier stay left: files first, its rows with the import.
     work::clear_stay(daemon, &chat, &project.id).await;
+    // Nothing of the stay stands from here on: should the import fail,
+    // nothing of it does either. The store kept the stay's base otherwise,
+    // for the import's checkout, and the project's own changes read as
+    // the chat's.
+    match place(
+        daemon,
+        computer,
+        move_id,
+        bundle,
+        (base, changes),
+        repository,
+    )
+    .await
+    {
+        Ok(imported) => Ok(imported),
+        Err(e) => {
+            work::clear_stay(daemon, &chat, &project.id).await;
+            daemon.store.worktree_gone(&chat);
+            Err(e)
+        }
+    }
+}
+
+/// The chat's worktree from `bundle`, its rows, its project's and its
+/// state, once its earlier stay is cleared; `repository`, the project's,
+/// has the snapshot `base` and the chat's `changes` on it.
+async fn place(
+    daemon: &Daemon,
+    computer: &str,
+    move_id: &str,
+    bundle: ChatBundle,
+    (base, changes): (git2::Oid, Option<git2::Oid>),
+    repository: std::path::PathBuf,
+) -> Result<Imported, Fail> {
+    let chat = bundle.dialog_id.clone();
+    let project = bundle.project.clone();
+    let excludes = bundle.excludes.clone();
     api::remove_chat_and_children_files(&daemon.core, &chat)
         .await
         .map_err(internal)?;

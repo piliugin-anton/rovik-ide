@@ -422,6 +422,13 @@ pub(super) async fn end_run_stage(
         .await?;
         return Ok(());
     }
+    // The plan the task's plan runs saved, from the first of them: a Retry
+    // of a Plan stage that failed after saving it finds it still (S02).
+    let plan_since = (all.iter())
+        .filter(|r| r.record.task == run.task && r.record.name == Stage::Plan)
+        .map(|r| r.seq)
+        .min()
+        .unwrap_or(record.seq);
     let (status, outcome, summary, reference) = match failure_of(outcome) {
         Some(failure) => (
             Status::Failed,
@@ -429,7 +436,7 @@ pub(super) async fn end_run_stage(
             failed_line(failure),
             None,
         ),
-        None if run.stage == Stage::Plan => match saved_plan(core, dialog_id, record.seq).await? {
+        None if run.stage == Stage::Plan => match saved_plan(core, dialog_id, plan_since).await? {
             Some((row, file)) => (
                 Status::Done,
                 outcome.to_string(),

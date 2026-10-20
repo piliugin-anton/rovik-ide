@@ -4103,6 +4103,65 @@ async fn a_last_review_that_cant_report_leaves_its_high_finding_open() {
     );
 }
 
+/// S06 (D10): a follow-up review that can't report (its model fails)
+/// before the run's last review found nothing resolved either: the
+/// finding is asked about again, as the plan review's are (S02), and the
+/// next review checks the answer. It's never let through unchecked.
+#[tokio::test]
+async fn a_follow_up_review_that_cant_report_asks_again_before_the_last() {
+    let h = task_project().await;
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let mut script = task_script();
+    script.extend([
+        answer("a1", "not-a-problem", "ok.txt is meant to say ok"),
+        Reply::Text("Answered the review."),
+        answer("a2", "not-a-problem", "the test reads ok, so ok is right"),
+        Reply::Text("Answered again."),
+    ]);
+    let resolved = "## Earlier findings\n\n- Earlier 1: resolved — the test reads ok, so the word is right\n\n## Findings\n\nNone.";
+    let failed = Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}");
+    let (url, _) = model_routed(
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text("## Findings\n\nNone.")]),
+            (
+                CHANGE_REVIEW,
+                vec![Reply::Text(HIGH_FINDING), failed, Reply::Text(resolved)],
+            ),
+        ],
+        script,
+    )
+    .await;
+    h.start(reviewed_task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    let review = records.iter().find(|r| r.name == Stage::Review).unwrap();
+    assert_eq!(review.status, Status::Done, "{records:#?}");
+    let messages = h.messages().await;
+    let reviews: Vec<&Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("review"))
+        .filter(|r| r["kind"] == "change")
+        .collect();
+    let shown: Vec<(&str, usize)> = reviews
+        .iter()
+        .map(|r| {
+            let findings = r["findings"].as_array().map_or(0, Vec::len);
+            (r["status"].as_str().unwrap_or(""), findings)
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [("findings", 1), ("skipped", 1), ("clean", 0)],
+        "the review that couldn't report asked about the finding again: {reviews:#?}"
+    );
+    assert!(
+        !verifications(&messages).is_empty(),
+        "checked once the finding was resolved"
+    );
+}
+
 /// S06 (4.6, D10): a high finding answered "not-a-problem" stays open while
 /// the follow-up reviews don't agree; after the run's last review the task
 /// ends `review-open`, unchecked and not delivered.

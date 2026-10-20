@@ -192,6 +192,9 @@ pub struct Run {
     /// Autopilot: the loop guard's pause went on once already this run
     /// (U03); the next one ends the run.
     pub(super) loop_resumed: bool,
+    /// A Resume: when the reply whose calls run again was stored, which
+    /// a child chat they started comes after (S14).
+    pub(super) resumed_since: Option<i64>,
     /// The run ended as unfinished-checklist with this many open steps
     /// (for the run's log line).
     pub(super) open_steps_at_end: Option<usize>,
@@ -443,8 +446,9 @@ pub(super) enum Entry {
     Turn,
     /// With the checks of a record that waited for the user's go.
     Verify { record_id: String },
-    /// With tool calls that never ran (the app closed meanwhile).
-    Resume { calls: Vec<ToolCall> },
+    /// With tool calls that never ran (the app closed meanwhile), and when
+    /// their reply was stored.
+    Resume { calls: Vec<ToolCall>, since: i64 },
     /// With the checks on files the project's newer changes were merged
     /// into, on the chat's server (6.6), with what the project changed in
     /// each.
@@ -602,6 +606,21 @@ impl Run {
             }
             false => None,
         };
+        // A Retry or a Continue of a task past its run stages (it ended at a
+        // stage the IDE carries inside a run, or it's over) has no stage to
+        // run: it isn't run as an attended run under Autopilot's rules (U01).
+        if autopilot
+            && stage.is_none()
+            && matches!(
+                request.start,
+                StartKind::Retry | StartKind::ContinueReply | StartKind::ContinueRun
+            )
+        {
+            return Err(
+                "This chat's Autopilot task has no stage to go on with: send a message to start a task."
+                    .into(),
+            );
+        }
         // An Autopilot task's run follows Autopilot's configuration from
         // here on, at the effort its task started with: the kinds its
         // pipeline needs (A07), the rules of an unattended run (U01).
@@ -757,11 +776,11 @@ impl Run {
                 Entry::Verify { record_id }
             }
             StartKind::Resume => {
-                let calls = unanswered_tool_calls(&recent);
-                if calls.is_empty() {
+                let unanswered = unanswered_reply(&recent).filter(|(_, calls)| !calls.is_empty());
+                let Some((since, calls)) = unanswered else {
                     return Ok(None);
-                }
-                Entry::Resume { calls }
+                };
+                Entry::Resume { calls, since }
             }
             StartKind::CheckMerged { files, diffs } => {
                 let diffs = diffs.into_iter().chain(std::iter::repeat(String::new()));
@@ -1116,6 +1135,7 @@ impl Run {
             force_todo_next: false,
             checklist_gate_refused: false,
             loop_resumed: false,
+            resumed_since: None,
             open_steps_at_end: None,
             pending_step_compaction: None,
             clm_restricted: false,
@@ -1411,7 +1431,8 @@ impl Run {
                     }
                 }
             }
-            Entry::Resume { calls } => {
+            Entry::Resume { calls, since } => {
+                self.resumed_since = Some(since);
                 // Each asks the user again: they weren't there to decide.
                 self.execute_tool_calls(&calls, Some(RESUME_NOTE)).await?;
                 if self.stopped() {
@@ -3022,6 +3043,14 @@ impl Stream {
             } => {
                 self.waiting_done = true;
                 self.retrying = true;
+                // The stream starts over: what the attempt reasoned before
+                // it broke off isn't the reply's, nor the next attempt's
+                // reasoning its continuation.
+                self.reasoning.clear();
+                self.reasoning_details.clear();
+                self.reasoning_started = None;
+                self.reasoning_ended = None;
+                self.dirty_reasoning = true;
                 if !self.stop.is_set() {
                     self.set_status(Some(Status {
                         text: format!(
@@ -3544,6 +3573,14 @@ fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
 /// Tool calls of the chat's last agent step that have no result yet (the
 /// app closed while they waited for approval, or mid-way through a turn).
 pub(super) fn unanswered_tool_calls(messages: &[MessageRow]) -> Vec<ToolCall> {
+    unanswered_reply(messages)
+        .map(|(_, calls)| calls)
+        .unwrap_or_default()
+}
+
+/// The latest reply with tool calls, when nothing but their results came
+/// after it: when it was stored, and the calls that have no result.
+pub(super) fn unanswered_reply(messages: &[MessageRow]) -> Option<(i64, Vec<ToolCall>)> {
     for (i, m) in messages.iter().enumerate().rev() {
         if m.role == "tool" {
             continue;
@@ -3557,20 +3594,21 @@ pub(super) fn unanswered_tool_calls(messages: &[MessageRow]) -> Vec<ToolCall> {
             {
                 calls
             }
-            _ => return Vec::new(),
+            _ => return None,
         };
         let answered: Vec<&str> = messages[i + 1..]
             .iter()
             .filter(|x| x.role == "tool")
             .filter_map(|x| x.tool_call_id.as_deref())
             .collect();
-        return calls
+        let unanswered = calls
             .iter()
             .filter(|c| !answered.contains(&c.id.as_str()))
             .cloned()
             .collect();
+        return Some((m.created_at, unanswered));
     }
-    Vec::new()
+    None
 }
 
 #[cfg(test)]

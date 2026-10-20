@@ -17,7 +17,7 @@
 //! a lock in its folder (`APPLYING`), so another of Rovik's processes,
 //! starting meanwhile, doesn't take it for one a crash interrupted.
 
-use super::fs::{DeletedBase, OverlayChange};
+use super::fs::{check_name, DeletedBase, OverlayChange};
 use crate::vfs::store::Kind;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -144,6 +144,15 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
         .collect();
     for change in changes.iter().filter(|c| !c.by_product()) {
         let path = change.path().to_string();
+        // A change's path is the chat's own: one that isn't (a saved list
+        // or an imported tree written by hand) never reaches outside.
+        if !path.split('/').all(|part| check_name(part).is_ok()) {
+            conflicts.push(Conflict {
+                path,
+                reason: "it isn't a path inside the project".into(),
+            });
+            continue;
+        }
         let target = abs(project, &path);
         let now = snapshot(&target);
         match change {
@@ -227,9 +236,24 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 let perm = perm_changed.then_some(*perm);
                 let base = base_copy.as_ref().and_then(|b| fs::read(b).ok());
                 // Moved: the project's side is its file where the chat's
-                // came from (the new place is checked by its own delete).
+                // came from (the new place is checked by its own delete),
+                // unless the new place holds the file as it was or as the
+                // chat has it: the user moved it too, and that's the
+                // project's side. Another file there is theirs.
                 let moved_from = origin.as_ref().filter(|o| **o != path && base.is_some());
+                let user_moved_it = match &now {
+                    Snapshot::File(b) => Some(b) == base.as_ref() || *b == ours,
+                    _ => false,
+                };
                 let source = match moved_from {
+                    Some(_) if user_moved_it => now.clone(),
+                    Some(_) if now != Snapshot::Absent && !keep_chat => {
+                        conflicts.push(Conflict {
+                            path,
+                            reason: "the project has another file there now".into(),
+                        });
+                        continue;
+                    }
                     Some(o) => snapshot(&abs(project, o)),
                     None => now.clone(),
                 };

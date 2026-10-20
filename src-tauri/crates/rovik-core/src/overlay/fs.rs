@@ -114,6 +114,10 @@ struct Inner {
     /// Changed since the list of changes was last saved.
     dirty: bool,
     saved_at: Option<Instant>,
+    /// Saved changes whose folder can't be found now (a branch without
+    /// it): kept as they are, saved again and named to the sweep, and
+    /// tried again at the next open.
+    parked: Vec<OverlayChange>,
 }
 
 /// What a project entry was when the chat deleted (or replaced, or moved)
@@ -360,7 +364,7 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
-fn check_name(name: &str) -> VfsResult<()> {
+pub(super) fn check_name(name: &str) -> VfsResult<()> {
     if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
         return Err(VfsError::Invalid);
     }
@@ -457,6 +461,7 @@ impl OverlayFs {
                 copying: std::collections::HashSet::new(),
                 dirty: false,
                 saved_at: None,
+                parked: Vec::new(),
             }),
             listener: Mutex::new(None),
             saving: Mutex::new(()),
@@ -486,13 +491,24 @@ impl OverlayFs {
         {
             let mut inner = fs_.inner.lock().unwrap();
             inner.nodes = nodes;
-            if let Ok(bytes) = fs::read(store.join("manifest.json")) {
-                if let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes) {
-                    if manifest.version == 1 {
-                        inner.next_file = manifest.next_file;
-                        fs_.replay(&mut inner, &manifest.changes);
+            // A saved list that can't be read isn't an empty one: opened
+            // as empty, the sweep would delete every file it names.
+            let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidData, why);
+            match fs::read(store.join("manifest.json")) {
+                Ok(bytes) => {
+                    let manifest: Manifest = serde_json::from_slice(&bytes)
+                        .map_err(|e| invalid(format!("manifest.json: {e}")))?;
+                    if manifest.version != 1 {
+                        return Err(invalid(format!(
+                            "manifest.json: version {} is a newer Rovik's",
+                            manifest.version
+                        )));
                     }
+                    inner.next_file = manifest.next_file;
+                    fs_.replay(&mut inner, &manifest.changes);
                 }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
         }
         Ok(fs_)
@@ -1481,6 +1497,7 @@ impl OverlayFs {
         let mut inner = self.lock();
         let mut out = Vec::new();
         self.changes_in(&mut inner, ROOT, "", &mut out);
+        out.extend(inner.parked.iter().cloned());
         out
     }
 
@@ -1579,6 +1596,7 @@ impl OverlayFs {
             let mut inner = self.lock();
             let mut changes = Vec::new();
             self.changes_in(&mut inner, ROOT, "", &mut changes);
+            changes.extend(inner.parked.iter().cloned());
             inner.dirty = false;
             inner.saved_at = Some(Instant::now());
             (changes, inner.next_file, std::mem::take(&mut inner.trash))
@@ -1636,13 +1654,33 @@ impl OverlayFs {
 
     /// Rebuilds the view from a saved list of changes.
     fn replay(&self, inner: &mut Inner, changes: &[OverlayChange]) {
+        // One node per upper file: a hard-linked file is saved once per
+        // name, and its names share the file, or unlinking one would
+        // trash it under the others.
+        let mut by_upper: HashMap<PathBuf, Ino> = HashMap::new();
         for change in changes {
             let path = change.path();
+            // A saved path is the chat's own: one that isn't (a list
+            // written by hand) never reaches outside the project.
+            if !path.split('/').all(|part| check_name(part).is_ok()) {
+                continue;
+            }
             let (dir_path, name) = match path.rsplit_once('/') {
                 Some((d, n)) => (d, n),
                 None => ("", path),
             };
             let Ok(parent) = self.resolve_in(inner, dir_path) else {
+                // Its folder can't be found now (a branch without it):
+                // kept for a later open, its file named to the sweep.
+                if let OverlayChange::Write {
+                    upper: Some(file),
+                    by_product: false,
+                    ..
+                } = change
+                {
+                    inner.used += fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                }
+                inner.parked.push(change.clone());
                 continue;
             };
             let _ = self.load_dir(inner, parent, false);
@@ -1674,6 +1712,16 @@ impl OverlayFs {
                 } => {
                     if let Some(old) = Self::detach(inner, parent, name) {
                         self.collect(inner, old);
+                    }
+                    if let Some(&ino) = upper.as_ref().and_then(|file| by_upper.get(file)) {
+                        // Another name of a file replayed already: a link
+                        // to it, its first name kept first as `link` does.
+                        self.attach(inner, parent, name, ino);
+                        let node = inner.nodes.get_mut(&ino).unwrap();
+                        let newest = node.links.remove(0);
+                        node.links.push(newest);
+                        inner.nodes.get_mut(&parent).unwrap().removed.remove(name);
+                        continue;
                     }
                     let meta = origin
                         .as_deref()
@@ -1723,6 +1771,9 @@ impl OverlayFs {
                         by_product: *by_product,
                     };
                     let ino = Self::add_node(inner, node);
+                    if let Some(file) = upper {
+                        by_upper.insert(file.clone(), ino);
+                    }
                     self.attach(inner, parent, name, ino);
                     inner.nodes.get_mut(&parent).unwrap().removed.remove(name);
                 }

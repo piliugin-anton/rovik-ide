@@ -1685,7 +1685,9 @@ impl Run {
 
     /// The child chat `tc` started before the app closed, when the run is
     /// resumed (it goes on in that chat), else the id of a new one. A new
-    /// child isn't started past the run's token limit.
+    /// child isn't started past the run's token limit. The child is one
+    /// started since its reply was stored (S14): a provider that numbers
+    /// calls per reply names an earlier reply's child the same.
     async fn child_for(
         &self,
         tc: &ToolCall,
@@ -1694,9 +1696,10 @@ impl Run {
     ) -> Result<(Option<store::ChildDialog>, String), String> {
         let existing = if resumed {
             let (parent, call) = (self.dialog_id.clone(), tc.id.clone());
+            let since = self.resumed_since;
             self.core
                 .db
-                .read(move |c| store::child_for_call(c, &parent, &call))
+                .read(move |c| store::child_for_call(c, &parent, &call, since))
                 .await?
         } else {
             None

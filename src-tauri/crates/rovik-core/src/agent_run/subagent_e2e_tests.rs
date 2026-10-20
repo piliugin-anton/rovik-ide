@@ -50,7 +50,7 @@ impl Harness {
     async fn child_of(&self, call_id: &str) -> store::ChildDialog {
         let (id, call) = (self.dialog_id.clone(), call_id.to_string());
         let db = self.core.db.clone();
-        db.read(move |c| store::child_for_call(c, &id, &call))
+        db.read(move |c| store::child_for_call(c, &id, &call, None))
             .await
             .unwrap()
             .unwrap_or_else(|| panic!("no subagent chat for {call_id}"))
@@ -689,7 +689,7 @@ async fn plan_mode_never_starts_a_writing_subagent() {
     for call in ["t1", "t2", "t3"] {
         let (id, call) = (h.dialog_id.clone(), call.to_string());
         let child = db
-            .read(move |c| store::child_for_call(c, &id, &call))
+            .read(move |c| store::child_for_call(c, &id, &call, None))
             .await
             .unwrap();
         assert!(child.is_none(), "{child:?}");
@@ -8207,7 +8207,7 @@ async fn a_failed_brief_append_leaves_nothing_running() {
     let (id, call) = (h.dialog_id.clone(), "fb1".to_string());
     let db = h.core.db.clone();
     let child = db
-        .read(move |c| store::child_for_call(c, &id, &call))
+        .read(move |c| store::child_for_call(c, &id, &call, None))
         .await
         .unwrap();
     assert!(child.is_none(), "no child chat left: {child:?}");
@@ -9202,14 +9202,24 @@ async fn a_resumed_subagents_wall_starts_at_resume() {
     let h = harness(&[("a.txt", "x\n")]).await;
     let child = scout_left_at_a_restart(&h, 0, 10).await;
     let db = h.core.db.clone();
-    let id = child.clone();
+    let (id, lead) = (child.clone(), h.dialog_id.clone());
     db.write(move |c| {
-        c.execute(
-            "UPDATE dialogs SET created_at = created_at - 3600000 WHERE id = ?1",
-            rusqlite::params![id],
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        // An hour ago, the lead's reply that started it too: a child is
+        // never older than the reply whose call started it (S14).
+        for (sql, key) in [
+            (
+                "UPDATE dialogs SET created_at = created_at - 3600000 WHERE id = ?1",
+                &id,
+            ),
+            (
+                "UPDATE messages SET created_at = created_at - 3600000 WHERE dialog_id = ?1",
+                &lead,
+            ),
+        ] {
+            c.execute(sql, rusqlite::params![key])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     })
     .await
     .unwrap();
