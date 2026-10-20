@@ -11,8 +11,10 @@
 // - PDF, as a `file` part. OpenAI's Chat Completions take PDFs, and of
 //   documents only PDFs (Word, Excel and the like only on its Responses
 //   API); OpenRouter takes them for every model, reading out the text where
-//   the model can't. Anthropic's and Gemini's OpenAI-compatible endpoints
-//   leave them out, so, as for Vision, a model is marked as taking PDFs.
+//   the model can't; Anthropic's API (spoken natively, not through its
+//   OpenAI-compatible endpoint) takes them as documents. Gemini's
+//   OpenAI-compatible endpoint leaves them out, so, as for Vision, a model
+//   is marked as taking PDFs (Anthropic's model list says which do).
 // - Text (code, Markdown, CSV, JSON, logs…): every model reads it. A text
 //   file goes in the message itself, like a long paste.
 // Anything else (Word, spreadsheets, archives, audio, video) no model gets

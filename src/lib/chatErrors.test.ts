@@ -12,3 +12,13 @@ test('a reply cut by a server restart says so, and can be taken again', () => {
   assert.equal(describeFailure(failure), failure.message);
   assert.ok(canRetry(failure));
 });
+
+test('a request the model declined says why, as the core does', () => {
+  const failure = {
+    kind: 'refused' as const,
+    message: 'The model declined to answer (cyber). This request was declined.',
+    attempts: 1,
+  };
+  assert.equal(describeFailure(failure), failure.message);
+  assert.equal(describeFailure({ ...failure, message: '' }), 'The model declined this request.');
+});

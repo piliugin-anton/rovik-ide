@@ -1,7 +1,12 @@
 import { describeReasoning, settingOf } from '../lib/reasoning';
 import { createMemo, createSignal, For, Show } from 'solid-js';
-import type { Provider, ProviderModel } from '../types';
-import { fetchModels, formatModelLabel, guessProviderName } from '../lib/aiSettings';
+import type { Provider } from '../types';
+import {
+  fetchModels,
+  formatModelLabel,
+  guessProviderName,
+  mergeRemoteModels,
+} from '../lib/aiSettings';
 import { confirmDialog } from './ConfirmDialog';
 
 /** Lets the settings modal show the open form's name and close it with Back. */
@@ -113,29 +118,9 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
       const current = draft();
       if (!current) return;
 
-      // Keep existing choices; on the very first fetch enable everything,
-      // afterwards new models arrive disabled so a refresh doesn't flood the picker.
+      // Existing choices are kept; only the very first fetch enables everything.
       const firstFetch = current.models.length === 0;
-      const known = new Map(current.models.map((m) => [m.id, m]));
-      let added = 0;
-
-      const merged: ProviderModel[] = remote.map((r) => {
-        const existing = known.get(r.id);
-        known.delete(r.id);
-        const contextLength = r.context_length ?? undefined;
-        if (existing) {
-          return {
-            ...existing,
-            ownedBy: r.owned_by ?? existing.ownedBy,
-            contextLength: contextLength ?? existing.contextLength,
-          };
-        }
-        added++;
-        return { id: r.id, ownedBy: r.owned_by ?? undefined, contextLength, enabled: firstFetch };
-      });
-
-      // Models added by hand that the server didn't list stay put.
-      const models = [...merged, ...known.values()];
+      const { models, added } = mergeRemoteModels(current.models, remote);
 
       setDraft({ ...current, models });
       setTest({ kind: 'ok', total: remote.length, added, first: firstFetch });
@@ -461,7 +446,7 @@ export default function ModelProvidersSettings(props: ModelProvidersSettingsProp
                   </span>
                   <span
                     role="columnheader"
-                    title="The model accepts PDF files: PDFs attached in the chat are sent to it. OpenAI's models and OpenRouter take them; Anthropic's and Gemini's OpenAI-compatible APIs don't"
+                    title="The model accepts PDF files: PDFs attached in the chat are sent to it. OpenAI's and Anthropic's models and OpenRouter take them (Anthropic's are set from its model list); Gemini's OpenAI-compatible API doesn't"
                   >
                     PDF
                   </span>

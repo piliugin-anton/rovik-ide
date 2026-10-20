@@ -167,6 +167,8 @@ pub fn home_dir() -> Option<PathBuf> {
 pub struct Passwd {
     pub name: String,
     pub uid: u32,
+    /// Read by the installer's Linux-only code (servers run Linux).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub gid: u32,
     pub home: PathBuf,
     pub shell: String,

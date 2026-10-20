@@ -293,8 +293,48 @@ export interface RemoteModel {
   id: string;
   owned_by?: string | null;
   context_length?: number | null;
+  /** Whether it takes images and PDFs, when the provider says (Anthropic's API does). */
+  vision?: boolean | null;
+  pdf?: boolean | null;
 }
 
 export function fetchModels(baseUrl: string, apiKey: string): Promise<RemoteModel[]> {
   return invoke<RemoteModel[]>('list_models', { baseUrl, apiKey });
+}
+
+/**
+ * A provider's models after fetching its list: the ones it lists, in its
+ * order, keeping the choices already made for them; then models added by
+ * hand that it didn't list. On the very first fetch (`models` empty) every
+ * model is enabled; afterwards new ones arrive disabled, so a refresh
+ * doesn't flood the picker. Vision and PDF come from the provider where it
+ * says, unless already set.
+ */
+export function mergeRemoteModels(
+  models: ProviderModel[],
+  remote: RemoteModel[]
+): { models: ProviderModel[]; added: number } {
+  const firstFetch = models.length === 0;
+  const known = new Map(models.map((m) => [m.id, m]));
+  let added = 0;
+  const merged: ProviderModel[] = remote.map((r) => {
+    const existing = known.get(r.id);
+    known.delete(r.id);
+    const contextLength = r.context_length ?? undefined;
+    let model: ProviderModel;
+    if (existing) {
+      model = {
+        ...existing,
+        ownedBy: r.owned_by ?? existing.ownedBy,
+        contextLength: contextLength ?? existing.contextLength,
+      };
+    } else {
+      added++;
+      model = { id: r.id, ownedBy: r.owned_by ?? undefined, contextLength, enabled: firstFetch };
+    }
+    if (model.vision === undefined && typeof r.vision === 'boolean') model.vision = r.vision;
+    if (model.pdf === undefined && typeof r.pdf === 'boolean') model.pdf = r.pdf;
+    return model;
+  });
+  return { models: [...merged, ...known.values()], added };
 }

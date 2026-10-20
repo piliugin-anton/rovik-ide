@@ -259,6 +259,12 @@ const MARKER: &str = "__ROVIK_PATH__";
 /// rc file), leaving PATH as it was.
 #[cfg(unix)]
 fn login_shell_path() -> Option<String> {
+    login_shell_path_within(std::time::Duration::from_secs(3))
+}
+
+/// [`login_shell_path`], giving the shell up to `limit`.
+#[cfg(unix)]
+fn login_shell_path_within(limit: std::time::Duration) -> Option<String> {
     use std::io::Read;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
@@ -306,9 +312,7 @@ fn login_shell_path() -> Option<String> {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < Duration::from_secs(3) => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            Ok(None) if started.elapsed() < limit => std::thread::sleep(Duration::from_millis(20)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -413,12 +417,16 @@ mod tests {
         assert!(!on_path("rovik-no-such-program"));
     }
 
+    /// The shell is asked and its PATH read. Not how quickly: in a full
+    /// test run on a CI machine, a login shell's rc files can take longer
+    /// than the 3 s the app gives them.
     #[test]
     fn asks_the_login_shell() {
         if std::env::var("SHELL").map_or(true, |s| s.is_empty()) {
             return;
         }
-        let path = login_shell_path().expect("the login shell's PATH");
+        let path = login_shell_path_within(std::time::Duration::from_secs(60))
+            .expect("the login shell's PATH");
         assert!(
             std::env::split_paths(&path).any(|d| d.is_absolute()),
             "{path}"

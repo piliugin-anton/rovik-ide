@@ -13,7 +13,12 @@
 // - on the Responses API, reasoning output items (`id`, `summary`,
 //   `encrypted_content`), kept here as `reasoning_details` entries in
 //   OpenRouter's form for OpenAI (`format: "openai-responses-v1"`) and
-//   turned back into items there (chat_request/responses.rs).
+//   turned back into items there (chat_request/responses.rs);
+// - on Anthropic's Messages API, `thinking` blocks (text and `signature`)
+//   and `redacted_thinking` blocks (`data`), kept as entries in OpenRouter's
+//   form for Anthropic (`format: "anthropic-claude-v1"`) and turned back
+//   into blocks there (crate::anthropic). Such an entry may name the tool
+//   call it came right before (`before_call`), so it goes back in its place.
 //
 // What is sent back, and for which messages: chat_db/history.rs
 // (`attach_reasoning`). A server that refuses the fields gets the request
@@ -25,6 +30,10 @@ use std::sync::{LazyLock, Mutex};
 
 /// The format of Responses API reasoning, as OpenRouter names it.
 pub const RESPONSES_FORMAT: &str = "openai-responses-v1";
+
+/// The format of Anthropic's reasoning (thinking blocks), as OpenRouter
+/// names it.
+pub const ANTHROPIC_FORMAT: &str = "anthropic-claude-v1";
 
 /// The fields an assistant message carries its reasoning back in.
 pub const FIELDS: [&str; 2] = ["reasoning_details", "reasoning_content"];
@@ -212,6 +221,42 @@ pub fn to_responses_items(details: &[Value]) -> Vec<Value> {
     items
 }
 
+/// The Anthropic thinking blocks in `reasoning_details` (entries of other
+/// formats are for other APIs; one without a format is taken as
+/// Anthropic's), in order, each with the id of the tool call it came right
+/// before (`before_call`), if any. A thinking block goes back only with its
+/// signature, which the API checks; one without isn't sent.
+pub fn to_anthropic_blocks(details: &[Value]) -> Vec<(Option<String>, Value)> {
+    details
+        .iter()
+        .filter(|e| {
+            e.get("format")
+                .and_then(|f| f.as_str())
+                .is_none_or(|f| f == ANTHROPIC_FORMAT)
+        })
+        .filter_map(|entry| {
+            let field = |k: &str| {
+                entry
+                    .get(k)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            };
+            let block = match entry.get("type").and_then(|t| t.as_str()) {
+                Some("reasoning.text") => json!({
+                    "type": "thinking",
+                    "thinking": field("text").unwrap_or(""),
+                    "signature": field("signature")?,
+                }),
+                Some("reasoning.encrypted") => {
+                    json!({ "type": "redacted_thinking", "data": field("data")? })
+                }
+                _ => return None,
+            };
+            Some((field("before_call").map(str::to_string), block))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +346,38 @@ mod tests {
             &json!({ "type": "reasoning", "summary": [{ "text": "x" }] })
         ))
         .is_empty());
+    }
+
+    #[test]
+    fn anthropic_blocks_are_the_signed_entries_in_order() {
+        let details = [
+            json!({ "type": "reasoning.text", "text": "Plan.", "signature": "s1", "format": ANTHROPIC_FORMAT, "index": 0 }),
+            // Thinking shown as omitted: no text, still a block to send back.
+            json!({ "type": "reasoning.text", "signature": "s2", "format": ANTHROPIC_FORMAT, "index": 2, "before_call": "toolu_2" }),
+            json!({ "type": "reasoning.encrypted", "data": "blob", "format": ANTHROPIC_FORMAT, "index": 3 }),
+            // Unsigned: the API would refuse it.
+            json!({ "type": "reasoning.text", "text": "cut off", "format": ANTHROPIC_FORMAT, "index": 4 }),
+            // Another API's.
+            json!({ "type": "reasoning.encrypted", "data": "enc", "format": RESPONSES_FORMAT, "id": "rs_1" }),
+            json!({ "type": "reasoning.summary", "summary": "s", "format": ANTHROPIC_FORMAT }),
+        ];
+        assert_eq!(
+            to_anthropic_blocks(&details),
+            [
+                (
+                    None,
+                    json!({ "type": "thinking", "thinking": "Plan.", "signature": "s1" })
+                ),
+                (
+                    Some("toolu_2".to_string()),
+                    json!({ "type": "thinking", "thinking": "", "signature": "s2" })
+                ),
+                (None, json!({ "type": "redacted_thinking", "data": "blob" })),
+            ]
+        );
+        // No format: taken as Anthropic's.
+        let bare = json!({ "type": "reasoning.text", "text": "t", "signature": "s" });
+        assert_eq!(to_anthropic_blocks(&[bare]).len(), 1);
     }
 
     #[test]

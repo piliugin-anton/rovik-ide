@@ -27,8 +27,11 @@
 //!   on the last message: it carries the tail, which the next step sends
 //!   without, so a prefix cached there is never read again. Four at most;
 //!   providers without breakpoints ignore them.
-//! - Anthropic's own OpenAI-compatible endpoint doesn't cache at all;
-//!   Gemini, DeepSeek and most others cache on their own, with no hints.
+//! - Anthropic's API (api.anthropic.com) takes the same breakpoints: its
+//!   requests go to its Messages API (crate::anthropic), which keeps them
+//!   on their blocks. (Its OpenAI-compatible endpoint, not used, caches
+//!   nothing.) Cache reads don't count against its input rate limits.
+//! - Gemini, DeepSeek and most others cache on their own, with no hints.
 //!
 //! `cached_tokens` reads what a provider reports, for the run log and the
 //! headless report: the number to watch when changing how requests are
@@ -41,6 +44,7 @@ use serde_json::{json, Value};
 pub enum Host {
     OpenAi,
     OpenRouter,
+    Anthropic,
     Other,
 }
 
@@ -62,14 +66,16 @@ pub fn host(base_url: &str) -> Host {
         Host::OpenAi
     } else if host == "openrouter.ai" || host.ends_with(".openrouter.ai") {
         Host::OpenRouter
+    } else if crate::anthropic::is_anthropic(base_url) {
+        Host::Anthropic
     } else {
         Host::Other
     }
 }
 
 /// Adds the provider's cache hints to a Chat Completions body: the cache
-/// key (the chat's id) for OpenAI, breakpoints for OpenRouter. Others get
-/// the body as is.
+/// key (the chat's id) for OpenAI, breakpoints for OpenRouter and
+/// Anthropic. Others get the body as is.
 pub fn apply(body: &mut Value, base_url: &str, cache_key: Option<&str>) {
     match host(base_url) {
         Host::OpenAi => {
@@ -77,7 +83,7 @@ pub fn apply(body: &mut Value, base_url: &str, cache_key: Option<&str>) {
                 body["prompt_cache_key"] = json!(key);
             }
         }
-        Host::OpenRouter => mark_breakpoints(body),
+        Host::OpenRouter | Host::Anthropic => mark_breakpoints(body),
         Host::Other => {}
     }
 }
@@ -169,7 +175,8 @@ mod tests {
         );
         assert_eq!(host("https://openrouter.ai/api/v1"), Host::OpenRouter);
         assert_eq!(host("HTTPS://OpenRouter.ai/api/v1/"), Host::OpenRouter);
-        assert_eq!(host("https://api.anthropic.com/v1/"), Host::Other);
+        assert_eq!(host("https://api.anthropic.com/v1/"), Host::Anthropic);
+        assert_eq!(host("https://api.anthropic.com.evil.com/v1"), Host::Other);
         assert_eq!(host("http://localhost:11434/v1"), Host::Other);
         assert_eq!(host("https://evil.com/api.openai.com/v1"), Host::Other);
         assert_eq!(host("https://api.openai.com.evil.com/v1"), Host::Other);
@@ -310,9 +317,26 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_gets_the_same_breakpoints() {
+        let mut anthropic = body();
+        apply(
+            &mut anthropic,
+            "https://api.anthropic.com/v1",
+            Some("chat-1"),
+        );
+        let mut openrouter = body();
+        apply(
+            &mut openrouter,
+            "https://openrouter.ai/api/v1",
+            Some("chat-1"),
+        );
+        assert_eq!(anthropic, openrouter);
+        assert!(marked(&anthropic["messages"][0]) && marked(&anthropic["messages"][1]));
+    }
+
+    #[test]
     fn other_providers_get_no_hints() {
         for url in [
-            "https://api.anthropic.com/v1/",
             "http://localhost:11434/v1",
             "https://generativelanguage.googleapis.com/v1beta/openai",
         ] {

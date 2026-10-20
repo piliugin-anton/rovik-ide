@@ -13,8 +13,6 @@
 use std::path::Path;
 #[cfg(any(target_os = "macos", windows))]
 use std::process::Command;
-#[cfg(any(target_os = "macos", windows))]
-use std::time::Duration;
 
 use serde::Serialize;
 

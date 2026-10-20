@@ -84,6 +84,8 @@ export function describeFailure(failure: StoredFailure, now = Date.now()): strin
       return 'The server restarted while the reply was being written.';
     case 'bad_request':
       return 'The provider rejected the request.';
+    case 'refused':
+      return failure.message || 'The model declined this request.';
     case 'provider':
     default:
       return `The provider reported an error${after}.`;

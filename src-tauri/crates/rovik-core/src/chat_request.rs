@@ -80,6 +80,9 @@ pub enum ErrorKind {
     Length,
     /// An error reported inside the response by the provider.
     Provider,
+    /// The model's safety classifiers declined the request (Anthropic's
+    /// `refusal` stop reason): asked again, it's declined again.
+    Refused,
     Cancelled,
     /// The process ended while the reply streamed, and the daemon, started
     /// again, settled what was stored of it (5.4).
@@ -355,6 +358,8 @@ fn looks_like_context_overflow(text: &str) -> bool {
         "too many tokens",
         "prompt is too long",
         "reduce the length",
+        // Anthropic: "input length and `max_tokens` exceed context limit".
+        "exceed context limit",
     ]
     .iter()
     .any(|needle| t.contains(needle))
@@ -415,10 +420,16 @@ pub fn classify_status(status: u16, headers: &HeaderMap, body: &str) -> ChatErro
     } else {
         None
     };
-    ChatError::new(kind, message)
+    let mut error = ChatError::new(kind, message)
         .with_status(status)
         .with_retry_after(wait)
-        .with_details(body)
+        .with_details(body);
+    // Anthropic's monthly spend cap: a 429 no wait within the request fixes
+    // (it lasts until the next month or a higher tier).
+    if body.contains("enforced_spend_limit_reached") {
+        error.retryable = false;
+    }
+    error
 }
 
 /// An `{"error": …}` object inside a 200 response or a stream chunk.
@@ -494,6 +505,8 @@ pub struct ReplyParser {
     phase_key: Option<String>,
     /// Reasoning written into the reply text as `<think>…</think>`.
     think: InlineThink,
+    /// Messages API: the reply's content blocks and usage (`messages`).
+    messages: messages::Blocks,
 }
 
 /// Reasoning some models write at the start of the reply text instead of
@@ -893,7 +906,7 @@ pub enum Clients<'a> {
 }
 
 impl Clients<'_> {
-    async fn get(self) -> Client {
+    pub(crate) async fn get(self) -> Client {
         match self {
             Clients::Shared => crate::net::client().await,
             Clients::Only(client) => client.clone(),
@@ -1010,9 +1023,16 @@ async fn attempt(
     };
 
     let (upload, body, length) = Upload::start(spec.body);
-    let request = client
-        .post(spec.url)
-        .bearer_auth(spec.api_key)
+    // Anthropic's API takes the key as `x-api-key` and wants its version
+    // (and the betas the body uses) named (crate::anthropic); everyone
+    // else, a bearer token.
+    let request = client.post(spec.url);
+    let request = if spec.api == Api::Messages || crate::anthropic::is_anthropic(spec.url) {
+        request.headers(crate::anthropic::headers(spec.api_key, Some(spec.body)))
+    } else {
+        request.bearer_auth(spec.api_key)
+    };
+    let request = request
         .headers(crate::opencode::headers(spec.url, spec.chat_id))
         .header(CONTENT_TYPE, "application/json")
         .header(CONTENT_LENGTH, length)
@@ -1123,6 +1143,7 @@ async fn attempt(
         let fed = match spec.api {
             Api::ChatCompletions => parser.feed_complete(&body, emit),
             Api::Responses => parser.feed_complete_responses(&body, emit),
+            Api::Messages => parser.feed_complete_messages(&body, emit),
         };
         let mut e = fed.and_then(|_| parser.finish(emit));
         if let Err(err) = &mut e {
@@ -1230,8 +1251,9 @@ async fn attempt(
                 };
                 let fed = match spec.api {
                     Api::ChatCompletions => parser.feed(&value, emit).map(|_| false),
-                    // Ends with an event, not [DONE].
+                    // These end with an event, not [DONE].
                     Api::Responses => parser.feed_responses(&value, emit),
+                    Api::Messages => parser.feed_messages(&value, emit),
                 };
                 match fed {
                     Ok(false) => {}
@@ -1357,6 +1379,7 @@ pub fn human_duration(d: Duration) -> String {
     }
 }
 
+pub mod messages;
 pub mod responses;
 pub use responses::Api;
 

@@ -5696,7 +5696,8 @@ async fn the_red_check_flags_a_test_that_passes_on_the_old_code() {
     request.config.as_mut().unwrap().subagents = config;
     request.isolate = Some(true);
     h.start(request).await;
-    h.run_end().await;
+    // `go test` builds Go's standard library first on a fresh machine.
+    h.run_end_within(Duration::from_secs(120)).await;
     let r = result_of(&h.messages().await, "tw").content.clone();
     assert!(
         r.contains("Red check: `a/a_test.go` already passes on the code before the change"),

@@ -25,6 +25,10 @@ pub enum Api {
     /// Where a model starts while no route is known for it.
     #[default]
     Responses,
+    /// Anthropic's Messages API (`messages`, crate::anthropic): the route
+    /// for api.anthropic.com, told by the host, so it's neither tried nor
+    /// saved with the model.
+    Messages,
 }
 
 impl Api {
@@ -33,6 +37,7 @@ impl Api {
         match self {
             Api::ChatCompletions => "chat_completions",
             Api::Responses => "responses",
+            Api::Messages => "messages",
         }
     }
 
@@ -44,10 +49,13 @@ impl Api {
         }
     }
 
+    /// The route to try when this one refuses the model. The Messages API
+    /// has none: it's the only one Anthropic's models are on here.
     pub fn other(self) -> Api {
         match self {
             Api::ChatCompletions => Api::Responses,
             Api::Responses => Api::ChatCompletions,
+            Api::Messages => Api::Messages,
         }
     }
 }
@@ -167,6 +175,7 @@ pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
             ],
             "/responses",
         ),
+        Api::Messages => return false,
     };
     let named = needles.iter().any(|needle| text.contains(needle));
     let invalid_url = text.contains("invalid url") && text.contains(path);

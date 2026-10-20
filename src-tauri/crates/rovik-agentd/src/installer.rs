@@ -31,7 +31,6 @@ use crate::home::{self, Passwd};
 use crate::limits::{check_user_name, AdminFile, ADMIN_FILE};
 use rovik_protocol::release;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -704,6 +703,7 @@ fn regular_user(name: &str) -> Result<Passwd, String> {
 fn version_of(bytes: &[u8], named: &Path, user: &Passwd) -> Result<String, String> {
     use std::io::Write;
     use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
     let copy = runnable_memory().map_err(|e| {
         let why = match e.raw_os_error() {
             Some(libc::EACCES) => {

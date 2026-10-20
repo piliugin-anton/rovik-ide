@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   createAiSettingsHolder,
   loadAiSettings,
+  mergeRemoteModels,
   saveAiSettings,
   saveKeepingSubagents,
   type PersistedAiSettings,
@@ -161,4 +162,58 @@ test('ai_settings_holder: each save goes with the copy it was made of, for the b
   holder.apply({ ...edited, version: 2, loadFailed: true });
   await holder.save(edited);
   assert.equal(saves[2].base, undefined);
+});
+
+test('fetched models: the first fetch enables all, later ones add new models disabled', () => {
+  const first = mergeRemoteModels(
+    [],
+    [
+      { id: 'a', owned_by: 'x', context_length: 1000 },
+      { id: 'b', context_length: null },
+    ]
+  );
+  assert.equal(first.added, 2);
+  assert.deepEqual(first.models, [
+    { id: 'a', ownedBy: 'x', contextLength: 1000, enabled: true },
+    { id: 'b', ownedBy: undefined, contextLength: undefined, enabled: true },
+  ]);
+
+  // A refresh keeps the choices made, adds new models disabled, and keeps
+  // models added by hand that the list doesn't have.
+  const current = [
+    { id: 'a', enabled: false, contextLength: 1000, noTools: true },
+    { id: 'mine', enabled: true },
+  ];
+  const later = mergeRemoteModels(current, [{ id: 'c' }, { id: 'a', context_length: 2000 }]);
+  assert.equal(later.added, 1);
+  assert.deepEqual(
+    later.models.map((m) => [m.id, m.enabled, m.contextLength, m.noTools]),
+    [
+      ['c', false, undefined, undefined],
+      ['a', false, 2000, true],
+      ['mine', true, undefined, undefined],
+    ]
+  );
+});
+
+test('fetched models: vision and PDF come from the provider where it says, unless already set', () => {
+  const { models } = mergeRemoteModels(
+    [
+      { id: 'set-off', enabled: true, vision: false, pdf: false },
+      { id: 'unset', enabled: true },
+    ],
+    [
+      { id: 'set-off', vision: true, pdf: true },
+      { id: 'unset', vision: true, pdf: false },
+      { id: 'new', vision: true, pdf: true },
+      { id: 'silent', vision: null },
+    ]
+  );
+  const inputs = Object.fromEntries(models.map((m) => [m.id, [m.vision, m.pdf]]));
+  assert.deepEqual(inputs, {
+    'set-off': [false, false],
+    unset: [true, false],
+    new: [true, true],
+    silent: [undefined, undefined],
+  });
 });
