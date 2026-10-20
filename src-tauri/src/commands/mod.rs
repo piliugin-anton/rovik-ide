@@ -24,6 +24,7 @@ pub mod sandbox;
 pub mod tools;
 pub mod vfs;
 pub mod workload;
+pub mod wsl;
 
 /// A chat's operation, served by `dispatch` here: its reply as the type the
 /// command returns, or the error text the command returns.

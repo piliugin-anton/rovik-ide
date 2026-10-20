@@ -38,6 +38,7 @@ import HeavyCommandsSettings from './HeavyCommandsSettings';
 import VirtualFilesSettings from './VirtualFilesSettings';
 import NetworkSettings from './NetworkSettings';
 import CloudHostsSettings, { type HostsSettingsController } from './CloudHostsSettings';
+import WslSettings from './WslSettings';
 
 /** The pages that edit the AI settings: shown once those are read. */
 const AI_PAGES: SettingsPage[] = [
@@ -221,6 +222,9 @@ export default function SettingsDialog(props: SettingsDialogProps) {
             </Match>
             <Match when={page() === 'hosts'}>
               <CloudHostsSettings controller={setHostsApi} />
+            </Match>
+            <Match when={page() === 'wsl'}>
+              <WslSettings />
             </Match>
           </Switch>
         </div>

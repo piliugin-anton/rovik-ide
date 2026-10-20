@@ -110,6 +110,7 @@ import {
 } from './lib/virtualFilesStartup';
 import { startBrowser } from './lib/browserStartup';
 import { startSandbox } from './lib/sandboxStartup';
+import { startWsl } from './lib/wslStartup';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
 import { cloud, hostName, initCloud } from './lib/cloud';
 import SettingsDialog from './components/SettingsDialog';
@@ -136,6 +137,8 @@ export default function App() {
   onMount(() => void startVirtualFiles());
   // The command sandbox: offer to install bubblewrap where it's missing.
   onMount(() => void startSandbox());
+  // WSL on Windows: Rovik in it updated with the app, or its setup offered.
+  onMount(() => void startWsl());
   // Agent runs live in the backend: follow them from the start, whichever
   // sidebar tab is open (approvals show in the editor too).
   onMount(() => void initAgentRuns());

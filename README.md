@@ -620,7 +620,10 @@ The .deb and .rpm packages depend on bubblewrap, and the app offers to
 install it at start where it's missing (the AppImage can't carry it);
 without it the agent's commands are refused. Your own terminal isn't
 sandboxed, and `ROVIK_CONFINE_COMMANDS=0` turns the sandbox off for
-troubleshooting. macOS and Windows have no sandbox yet
+troubleshooting. On Windows, Rovik's Linux side runs in a WSL2
+distribution (Settings → This computer → WSL): the daemon runs inside it
+with the same sandbox, the app reaches it through `wsl.exe`, and Rovik
+there follows the app's updates. macOS has no sandbox yet
 (`src-tauri/crates/rovik-core/src/overlay/confine.rs` says what to add):
 there a command that names the project's full path is refused instead.
 

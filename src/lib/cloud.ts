@@ -122,6 +122,8 @@ export interface HostSummary {
    * not a daemon that the developer setting names by its socket.
    */
   terminal?: boolean;
+  /** The WSL distribution on this computer: its chats are this computer's, not a cloud's. */
+  wsl?: boolean;
   /** It works on its own (H02): its chats start in Autopilot. */
   autonomous?: boolean;
   /** The effort its tasks take while it works on its own, when it sets one (H01). */
@@ -354,7 +356,10 @@ export function placeLabel(
   if (!place) {
     return { label: 'This computer', tone: 'muted', title: 'This chat runs on this computer.' };
   }
-  const name = hostName(place.host, hosts);
+  // The WSL distribution is this computer's Linux side, not a cloud host.
+  const name = hosts.find((h) => h.id === place.host)?.wsl
+    ? 'This computer (WSL)'
+    : hostName(place.host, hosts);
   const readOnly = 'It’s read-only until the move ends.';
   switch (place.kind) {
     case 'moving':

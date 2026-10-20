@@ -33,6 +33,7 @@ pub mod connection_test;
 mod connector;
 pub mod deploy;
 pub mod host_settings;
+pub mod host_shell;
 mod hosts;
 pub mod hosts_page;
 mod http;
@@ -46,6 +47,7 @@ pub mod ssh;
 pub mod system_ssh;
 #[cfg(test)]
 mod testing;
+pub mod wsl;
 
 pub use client::{welcome, Client, DaemonInfo, HostState, Identity, Incoming, Sink, CALL_TIMEOUT};
 #[cfg(unix)]

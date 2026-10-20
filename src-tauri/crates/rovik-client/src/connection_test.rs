@@ -15,10 +15,13 @@
 
 pub mod probe;
 
+use crate::connector::Connector;
 use crate::deploy::{self, DeployError, InstalledBuild, Layout};
+use crate::host_shell::HostShell;
 use crate::http;
 use crate::release::Releases;
-use crate::ssh::{Ssh, SshAuth, SshConnector, SshError, SshTarget};
+use crate::ssh::{SshAuth, SshConnector, SshError, SshTarget};
+use crate::wsl::Wsl;
 use probe::{Probe, PROBE};
 use rovik_protocol::host::{Doctor, Level};
 use rovik_protocol::PROTOCOL;
@@ -39,6 +42,8 @@ pub enum Check {
     /// The handshake, and the host's key against the one pinned.
     HostKey,
     LogIn,
+    /// A WSL distribution here runs commands, in place of the three above.
+    Distro,
     /// The probe's findings, from here to `Install`.
     System,
     Account,
@@ -145,10 +150,21 @@ impl Steps<'_> {
     }
 }
 
-/// Tests `connector`'s host, telling `report` each step as it ends, and
-/// returns them all. The connection it makes stays with `connector`.
+/// The host under test: a server through Rovik's SSH, or a WSL
+/// distribution on this computer.
+pub enum TestTarget<'a> {
+    Ssh(&'a SshConnector),
+    Wsl {
+        wsl: &'a Wsl,
+        shell: &'a dyn HostShell,
+        connector: &'a dyn Connector,
+    },
+}
+
+/// Tests `target`'s host, telling `report` each step as it ends, and
+/// returns them all. The connection it makes stays with the connector.
 pub async fn test_connection(
-    connector: &SshConnector,
+    target: TestTarget<'_>,
     options: &TestOptions,
     report: &(dyn Fn(&Step) + Send + Sync),
 ) -> Vec<Step> {
@@ -156,51 +172,77 @@ pub async fn test_connection(
         done: Vec::new(),
         report,
     };
-    let target = connector.target();
-    if !steps.push(reach(&target.host, target.port).await) {
-        return steps.done;
-    }
-    if let Err(e) = target.pinned_fingerprint() {
-        steps.push(Step::new(
-            Check::HostKey,
-            Outcome::Failed,
-            format!("{e}. Remove the host and add it again."),
-        ));
-        return steps.done;
-    }
-    let ssh = match connector.session().await {
-        Ok(ssh) => {
-            steps.push(key_matches(target));
-            steps.push(logged_in(target));
-            ssh
-        }
-        Err(e) => {
-            for step in refused(target, e) {
-                steps.push(step);
+    match target {
+        TestTarget::Ssh(connector) => {
+            let target = connector.target();
+            if !steps.push(reach(&target.host, target.port).await) {
+                return steps.done;
             }
-            return steps.done;
+            if let Err(e) = target.pinned_fingerprint() {
+                steps.push(Step::new(
+                    Check::HostKey,
+                    Outcome::Failed,
+                    format!("{e}. Remove the host and add it again."),
+                ));
+                return steps.done;
+            }
+            let ssh = match connector.session().await {
+                Ok(ssh) => {
+                    steps.push(key_matches(target));
+                    steps.push(logged_in(target));
+                    ssh
+                }
+                Err(e) => {
+                    for step in refused(target, e) {
+                        steps.push(step);
+                    }
+                    return steps.done;
+                }
+            };
+            on_the_host(ssh.as_ref(), connector, options, &mut steps).await;
         }
-    };
-    let probe = match run_probe(&ssh).await {
+        TestTarget::Wsl {
+            wsl,
+            shell,
+            connector,
+        } => {
+            if !steps.push(distro(wsl, shell).await) {
+                return steps.done;
+            }
+            on_the_host(shell, connector, options, &mut steps).await;
+        }
+    }
+    steps.done
+}
+
+/// The steps once commands run on the host: the probe's findings, Rovik's
+/// build there, and the daemon.
+async fn on_the_host(
+    shell: &dyn HostShell,
+    connector: &dyn Connector,
+    options: &TestOptions,
+    steps: &mut Steps<'_>,
+) {
+    let probe = match run_probe(shell).await {
         Ok(probe) => probe,
         Err(step) => {
             steps.push(step);
-            return steps.done;
+            return;
         }
     };
     for step in probe.findings() {
         steps.push(step);
     }
     if options.deployed && !options.known.is_empty() {
-        let step = build(&ssh, options, &target.user).await;
+        let step = build(shell, options, &probe.user).await;
         if !steps.push(step) {
-            return steps.done;
+            return;
         }
     }
     if options.deployed || probe.socket {
         let mut step = daemon(connector).await;
         if step.outcome != Outcome::Failed {
-            if let Some(report) = doctor(&ssh).await {
+            if let Some(report) = doctor(shell).await {
                 step = with_doctor(step, &report);
             }
         }
@@ -212,15 +254,38 @@ pub async fn test_connection(
             "Rovik isn't deployed for you here yet.".into(),
         ));
     }
-    steps.done
+}
+
+/// The distribution runs a command as the user (WSL, in place of the
+/// address, the key and the log-in).
+async fn distro(wsl: &Wsl, shell: &dyn HostShell) -> Step {
+    let step = |outcome, message: String| Step::new(Check::Distro, outcome, message);
+    match shell.run("id -un", &[], STEP_WAIT).await {
+        Ok(out) if out.status == Some(0) => {
+            let user = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            step(
+                Outcome::Passed,
+                format!("{} runs commands as {user}.", wsl.display()),
+            )
+        }
+        Ok(out) => step(
+            Outcome::Failed,
+            format!(
+                "{} didn't run a command: {}",
+                wsl.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ),
+        Err(why) => step(Outcome::Failed, why),
+    }
 }
 
 /// Rovik's binary there, as each connection checks it (D5): a build that
 /// changed since it was trusted is for the user to compare and trust.
-async fn build(ssh: &Ssh, options: &TestOptions, user: &str) -> Step {
+async fn build(shell: &dyn HostShell, options: &TestOptions, user: &str) -> Step {
     let step = |outcome, message: String| Step::new(Check::Build, outcome, message);
     let releases = options.releases.as_ref();
-    match deploy::check_install(ssh, &options.known, releases, user, &options.layout).await {
+    match deploy::check_install(shell, &options.known, releases, user, &options.layout).await {
         Ok(build) => step(
             Outcome::Passed,
             match &build.version {
@@ -355,16 +420,16 @@ fn refused(target: &SshTarget, e: SshError) -> Vec<Step> {
 }
 
 /// Runs the probe, and reads what it says.
-async fn run_probe(ssh: &Ssh) -> Result<Probe, Step> {
+async fn run_probe(shell: &dyn HostShell) -> Result<Probe, Step> {
     let failed = |why: String| Step::new(Check::System, Outcome::Failed, why);
-    probe_server(ssh).await.map_err(failed)
+    probe_server(shell).await.map_err(failed)
 }
 
 /// What the server offers, as the probe says (H04, and the deploy).
-pub(crate) async fn probe_server(ssh: &Ssh) -> Result<Probe, String> {
+pub(crate) async fn probe_server(shell: &dyn HostShell) -> Result<Probe, String> {
     // Chrome may take 30 s to start.
     let wait = Duration::from_secs(60);
-    let run = ssh.exec_with_input(probe::COMMAND, PROBE.as_bytes());
+    let run = shell.exec_with_input(probe::COMMAND, PROBE.as_bytes());
     let output = match tokio::time::timeout(wait, run).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => return Err(format!("The probe couldn't run on the server: {e}")),
@@ -383,9 +448,9 @@ pub(crate) async fn probe_server(ssh: &Ssh) -> Result<Probe, String> {
 
 /// What `rovik-agentd doctor --json` says there: none from a daemon too
 /// old to say it.
-async fn doctor(ssh: &Ssh) -> Option<Doctor> {
+async fn doctor(shell: &dyn HostShell) -> Option<Doctor> {
     let command = format!("{} doctor --json", Layout::default().installed);
-    let run = tokio::time::timeout(STEP_WAIT, ssh.exec(&command));
+    let run = tokio::time::timeout(STEP_WAIT, shell.exec(&command));
     let output = run.await.ok()?.ok()?;
     serde_json::from_slice(&output.stdout).ok()
 }
@@ -459,7 +524,7 @@ fn bytes(n: u64) -> String {
 }
 
 /// The daemon's health and version, through the tunnel.
-async fn daemon(connector: &SshConnector) -> Step {
+async fn daemon(connector: &dyn Connector) -> Step {
     let step = |outcome, message: String| Step::new(Check::Daemon, outcome, message);
     match tokio::time::timeout(STEP_WAIT, http::health(connector)).await {
         Ok(Ok(health)) if health.protocol < PROTOCOL => step(
@@ -488,6 +553,7 @@ async fn daemon(connector: &SshConnector) -> Step {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::Ssh;
 
     #[tokio::test]
     async fn an_address_that_takes_no_connection_ends_the_test() {

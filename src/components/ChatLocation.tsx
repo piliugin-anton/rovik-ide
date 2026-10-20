@@ -170,7 +170,7 @@ export default function ChatLocation(props: {
               <Switch>
                 <Match when={!place()}>
                   <For
-                    each={cloud.hosts.filter((h) => h.deployed)}
+                    each={cloud.hosts.filter((h) => h.deployed && !h.wsl)}
                     fallback={
                       <ContextMenuItem
                         label="Set up a cloud host…"

@@ -192,6 +192,20 @@ one port. The browser tools open none: Rovik drives the agent's Chrome over
 a pipe that only that user's daemon holds, not a DevTools port, so other
 users of the server can't reach the browser, which runs as that user.
 
+## WSL on Windows
+
+On Windows the same daemon runs in a WSL2 distribution, as Rovik's Linux
+side on that computer: the agent's commands run there in the sandbox
+(bubblewrap), and the chats' overlays use FUSE. It isn't a cloud host: it's
+set up from Settings → This computer → WSL, which installs Rovik in the
+distribution as root inside it (`wsl.exe -u root`, no password) with
+bubblewrap and fuse3, adds the computer's token and starts the daemon;
+the app starts the daemon again whenever the distribution restarts, and
+updates Rovik there with its own updates. The page has no limits, no
+upgrade and no chat list: the chats there are the computer's own. The
+app reaches the daemon through `wsl.exe -d <distro> --exec rovik-agentd
+attach --stdio`, the byte bridge an SSH exec channel uses too.
+
 ## The browser
 
 The browser tools use Chrome for Testing, Google's build of Chromium for
