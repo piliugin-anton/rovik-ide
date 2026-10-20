@@ -143,7 +143,7 @@ fn range(lines: &[&str], start: usize, end: usize) -> String {
                 return format!(
                     "{PARTIAL_PREFIX}line {n} is {} characters long; shown: its first {MAX_CHARS}.{more}]\n{}",
                     len - 1,
-                    cut(line, MAX_CHARS)
+                    crate::text::first_chars(line, MAX_CHARS).0
                 );
             }
             return format!(
@@ -183,7 +183,7 @@ fn head(lines: &[&str]) -> (String, usize) {
         let len = line.chars().count() + 1;
         if used + len > HEAD_CHARS {
             if shown.is_empty() {
-                shown.push(format!("{}…", cut(line, HEAD_CHARS)));
+                shown.push(crate::text::shortened(line, HEAD_CHARS));
             }
             break;
         }
@@ -280,7 +280,7 @@ fn render(decls: Vec<Decl>) -> Option<String> {
                 "{}: {}{}",
                 d.lines,
                 " ".repeat(d.indent.min(MAP_MAX_INDENT)),
-                shorten(&d.text)
+                crate::text::shortened(&d.text, MAP_LINE_CHARS)
             )
         })
         .collect();
@@ -392,22 +392,6 @@ fn extension(path: &str) -> String {
     match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => ext.to_ascii_lowercase(),
         _ => String::new(),
-    }
-}
-
-/// The first `n` characters of `s`.
-fn cut(s: &str, n: usize) -> &str {
-    match s.char_indices().nth(n) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}
-
-fn shorten(text: &str) -> String {
-    if text.chars().count() > MAP_LINE_CHARS {
-        format!("{}…", cut(text, MAP_LINE_CHARS))
-    } else {
-        text.to_string()
     }
 }
 
@@ -698,7 +682,6 @@ mod tests {
         let content = "é".repeat(MAX_CHARS + 10);
         let out = read("notes.txt", &content, Some(1), Some(1)).unwrap();
         assert!(out.ends_with(&"é".repeat(MAX_CHARS)));
-        assert_eq!(cut("añb", 2), "añ");
         assert_eq!(extension("src/a.TSX"), "tsx");
         assert_eq!(extension(".bashrc"), "");
     }

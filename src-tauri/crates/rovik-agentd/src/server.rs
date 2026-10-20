@@ -65,6 +65,17 @@ async fn health() -> Response {
     )
 }
 
+/// The size a request's body declares, when it does.
+fn declared_length(request: &Request) -> Option<usize> {
+    request
+        .headers()
+        .get(CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
+
 /// A call too big for a frame: the `Call` in, its `Reply` out. A reply is
 /// sent whole, however big: this is where a `TooLarge` one is asked again.
 async fn call(
@@ -72,10 +83,7 @@ async fn call(
     Computer(computer): Computer,
     request: Request,
 ) -> Response {
-    let declared = request
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok()?.parse::<usize>().ok());
+    let declared = declared_length(&request);
     let too_large = || {
         refusal(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -128,10 +136,7 @@ async fn import_chat(
             format!("A chat moves with {} MB of rows at most.", MAX_BUNDLE >> 20),
         ))
     };
-    let declared = request
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok()?.parse::<usize>().ok());
+    let declared = declared_length(&request);
     if declared.is_some_and(|n| n > MAX_BUNDLE) {
         return too_large();
     }
@@ -255,10 +260,7 @@ async fn put_blob(
             ),
         )
     };
-    let declared = request
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok()?.parse::<usize>().ok());
+    let declared = declared_length(&request);
     if declared.is_some_and(|n| n > MAX_BLOB) {
         return too_large();
     }

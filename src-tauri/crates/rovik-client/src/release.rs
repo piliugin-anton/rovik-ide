@@ -64,15 +64,6 @@ pub struct Signed {
     pub signature: String,
 }
 
-/// The SHA-256 of `bytes`, in lowercase hex, as `SHA256SUMS` lists it.
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
 impl Releases {
     /// This build of Rovik's releases, kept under `data_dir`.
     pub fn new(data_dir: &Path) -> Releases {
@@ -114,7 +105,7 @@ impl Releases {
         // version's build, validly signed as itself, isn't taken under this
         // version's name.
         let listed = self.fetch(version, release::SUMS, false).await?;
-        let sum = sha256_hex(&build.bytes);
+        let sum = rovik_core::file_guard::sha256_hex(&build.bytes);
         let named = release::sums(&String::from_utf8_lossy(&listed.bytes))
             .into_iter()
             .any(|(hash, file)| hash == sum && file == name);

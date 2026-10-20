@@ -152,8 +152,7 @@ fn file_name(chat: &str) -> String {
         return format!("{chat}.lock");
     }
     let hash = crate::file_guard::hash(chat.as_bytes());
-    let name: String = hash[..16].iter().map(|b| format!("{b:02x}")).collect();
-    format!("{name}.lock")
+    format!("{}.lock", crate::file_guard::hex(&hash[..16]))
 }
 
 /// Whether `path` is a chat's lock file (for tests).

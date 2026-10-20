@@ -17,8 +17,8 @@
 //! a lock in its folder (`APPLYING`), so another of Rovik's processes,
 //! starting meanwhile, doesn't take it for one a crash interrupted.
 
-use super::fs::{check_name, DeletedBase, OverlayChange};
-use crate::vfs::store::Kind;
+use super::fs::{DeletedBase, OverlayChange};
+use crate::vfs::store::{check_name, Kind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;

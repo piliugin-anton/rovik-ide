@@ -32,10 +32,10 @@
 //!   on the merge: otherwise they run on the server first (6.6).
 
 use super::chats::{self, Pending};
-use super::fs::{check_name, write_manifest, DeletedBase, OverlayChange};
+use super::fs::{write_manifest, DeletedBase, OverlayChange};
 use super::land::{LandError, Landed};
 use super::tiers::Tiers;
-use crate::vfs::store::Kind;
+use crate::vfs::store::{check_name, Kind};
 use git2::build::CheckoutBuilder;
 use git2::{DiffFile, DiffFindOptions, FileMode, Oid, Repository, Tree};
 use rovik_protocol::work::ChatResult;

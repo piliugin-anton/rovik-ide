@@ -18,8 +18,8 @@
 use super::tiers::Tiers;
 use crate::vfs::backend::Backend;
 use crate::vfs::store::{
-    Attr, Change, DirEntry, Ino, Kind, Listener, RenameMode, SetAttr, VfsError, VfsResult,
-    MAX_NAME, ROOT,
+    check_name, Attr, Change, DirEntry, Ino, Kind, Listener, RenameMode, SetAttr, VfsError,
+    VfsResult, ROOT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -163,10 +163,6 @@ fn mtime_ns(m: &fs::Metadata) -> u64 {
         .map_or(0, |d| d.as_nanos() as u64)
 }
 
-fn hex(h: &crate::file_guard::Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 impl DeletedBase {
     /// What the project has at `abs` now, in the same form; None: nothing.
     pub fn of(abs: &Path) -> Option<DeletedBase> {
@@ -223,7 +219,7 @@ impl DeletedBase {
     /// A file with this content.
     pub fn file(bytes: &[u8]) -> DeletedBase {
         DeletedBase::File {
-            hash: hex(&crate::file_guard::hash(bytes)),
+            hash: crate::file_guard::sha256_hex(bytes),
         }
     }
 
@@ -243,7 +239,7 @@ impl DeletedBase {
                 *entries == now
                     && files.iter().all(|(rel, hash)| {
                         fs::read(abs.join(rel))
-                            .is_ok_and(|b| hex(&crate::file_guard::hash(&b)) == *hash)
+                            .is_ok_and(|b| crate::file_guard::sha256_hex(&b) == *hash)
                     })
             }
             (a, Some(b)) => *a == b,
@@ -362,16 +358,6 @@ fn join(dir: &str, name: &str) -> String {
     } else {
         format!("{dir}/{name}")
     }
-}
-
-pub(super) fn check_name(name: &str) -> VfsResult<()> {
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
-        return Err(VfsError::Invalid);
-    }
-    if name.len() > MAX_NAME {
-        return Err(VfsError::NameTooLong);
-    }
-    Ok(())
 }
 
 fn io_err(e: io::Error) -> VfsError {
@@ -1095,7 +1081,7 @@ impl OverlayFs {
             Data::Upper {
                 base_copy: Some(b), ..
             } => fs::read(b).ok().map(|bytes| DeletedBase::File {
-                hash: hex(&crate::file_guard::hash(&bytes)),
+                hash: crate::file_guard::sha256_hex(&bytes),
             }),
             Data::Upper {
                 base_copy: None, ..
@@ -1863,7 +1849,7 @@ impl Backend for OverlayFs {
             if let Some(DeletedBase::File { hash }) = inner.deleted.get(&path) {
                 let abs = self.abs(&path);
                 if let Ok(bytes) = fs::read(&abs) {
-                    if hex(&crate::file_guard::hash(&bytes)) == *hash {
+                    if crate::file_guard::sha256_hex(&bytes) == *hash {
                         let n = inner.next_file;
                         inner.next_file += 1;
                         let copy = self.store.join("base").join(n.to_string());

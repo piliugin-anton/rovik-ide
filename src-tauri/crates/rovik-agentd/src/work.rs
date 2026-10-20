@@ -10,6 +10,7 @@
 //! here gets its worktree the way a first sync makes one (moves.rs).
 
 use crate::daemon::Daemon;
+use crate::fail::{bad_request, git, internal, joined};
 use crate::store::{Place, ProjectState};
 use crate::sync::{self, Merged};
 use git2::build::CheckoutBuilder;
@@ -159,7 +160,7 @@ async fn merge_into(
     let base = daemon
         .store
         .base_of(chat)
-        .ok_or_else(|| internal("The chat's worktree has no base commit.".into()))?;
+        .ok_or_else(|| internal("The chat's worktree has no base commit."))?;
     let (projects, id) = (daemon.projects.clone(), project.to_string());
     let merged = rt::spawn_blocking(move || {
         projects.prepare(&id, &excludes)?;
@@ -629,20 +630,4 @@ fn synced(root: &Path) -> Synced {
 /// The form a root takes in a start and in the project's settings.
 pub fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
-}
-
-fn bad_request(message: impl Into<String>) -> Fail {
-    Fail::new(FailCode::BadRequest, message)
-}
-
-fn internal(message: String) -> Fail {
-    Fail::new(FailCode::Internal, message)
-}
-
-fn git(e: git2::Error) -> Fail {
-    internal(e.message().to_string())
-}
-
-fn joined(e: tokio::task::JoinError) -> Fail {
-    internal(e.to_string())
 }

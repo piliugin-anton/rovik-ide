@@ -5,6 +5,7 @@
 //! has them.
 
 use crate::daemon::Daemon;
+use crate::fail::{bad_request, git, internal, joined};
 use crate::results::{self, move_base, set_base};
 use crate::store::{Kept, Place};
 use crate::sync::Replaced;
@@ -14,7 +15,7 @@ use git2::{FileMode, ObjectType, Oid, Repository, ResetType, Tree};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_protocol::work::{Handed, UndoneMerge, WorkFile};
-use rovik_protocol::{Fail, FailCode, Response};
+use rovik_protocol::{Fail, Response};
 use std::fs;
 use std::path::Path;
 
@@ -252,7 +253,7 @@ fn place(daemon: &Daemon, chat: &str) -> Result<(Place, String, String), Fail> {
     let base = daemon
         .store
         .base_of(chat)
-        .ok_or_else(|| internal("The chat's worktree has no base commit.".into()))?;
+        .ok_or_else(|| internal("The chat's worktree has no base commit."))?;
     let subpath = daemon
         .store
         .project(&place.project)
@@ -295,20 +296,4 @@ fn on_disk(worktree: &Path, path: &str) -> Option<Vec<u8>> {
     let file = worktree.join(path);
     let meta = fs::symlink_metadata(&file).ok()?;
     meta.is_file().then(|| fs::read(&file).ok()).flatten()
-}
-
-fn bad_request(message: impl Into<String>) -> Fail {
-    Fail::new(FailCode::BadRequest, message)
-}
-
-fn internal(message: String) -> Fail {
-    Fail::new(FailCode::Internal, message)
-}
-
-fn git(e: git2::Error) -> Fail {
-    internal(e.message().to_string())
-}
-
-fn joined(e: tokio::task::JoinError) -> Fail {
-    internal(e.to_string())
 }

@@ -9,6 +9,7 @@
 // directory, no stdin, a timeout, and capped output. A timeout or Stop kills
 // the command with everything it started.
 
+use crate::overlay::chats::ChatOverlay;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -63,6 +64,39 @@ pub struct Queued {
     /// Keep the whole output too (`CommandOutput::whole`): the verify
     /// gate's checks (V07).
     pub whole_output: bool,
+}
+
+impl Queued {
+    /// A chat's command as `kind` queues it, run in its overlay's
+    /// environment when the chat is isolated (`overlay`), with nothing to
+    /// note while it waits and the output kept as usual.
+    pub fn of(kind: crate::workload::JobKind, overlay: Option<&ChatOverlay>) -> Queued {
+        Queued {
+            kind,
+            note: Box::new(|_| {}),
+            env: overlay.map(|o| o.command_env()).unwrap_or_default(),
+            confine: overlay.and_then(|o| o.confine()),
+            whole_output: false,
+        }
+    }
+
+    /// A chat's check (a test, a lint, an install), as `owner`'s.
+    pub fn check(owner: &str, overlay: Option<&ChatOverlay>) -> Queued {
+        let owner = owner.to_string();
+        Queued::of(crate::workload::JobKind::Check { owner }, overlay)
+    }
+
+    /// With `note` shown what the command waits for.
+    pub fn noting(mut self, note: impl Fn(Option<String>) + Send + Sync + 'static) -> Queued {
+        self.note = Box::new(note);
+        self
+    }
+
+    /// With the whole output kept too, when `whole_output`.
+    pub fn whole(mut self, whole_output: bool) -> Queued {
+        self.whole_output = whole_output;
+        self
+    }
 }
 
 #[cfg(windows)]
@@ -610,15 +644,7 @@ mod tests {
             "{lines}; echo 'src/mid.ts(3,5): error TS2322: Type string is not number.'; {lines}; \
              echo 'src/end.ts(1,1): error TS2304: Cannot find name x.'; exit 2"
         );
-        let queued = Queued {
-            kind: crate::workload::JobKind::Check {
-                owner: "whole-output-test".into(),
-            },
-            note: Box::new(|_| {}),
-            env: Vec::new(),
-            confine: None,
-            whole_output: true,
-        };
+        let queued = Queued::check("whole-output-test", None).whole(true);
         let out = run_blocking(
             dir.to_str().unwrap(),
             &script,

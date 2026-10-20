@@ -1615,7 +1615,7 @@ impl Run {
         let path = recent
             .iter()
             .rev()
-            .filter(|m| m.role == "user" && !super::plan::is_harness(m))
+            .filter(|m| super::plan::is_users(m))
             .find_map(|m| worker::plan_file_named(&m.content, base))
             .or_else(|| super::run::chat_plan_file(&recent))?;
         let text = std::fs::read_to_string(&path).ok()?;
@@ -2136,18 +2136,7 @@ impl Run {
             ran += 1;
             let stop = self.stop.clone();
             let overlay = crate::overlay::chats::get(&self.dialog_id);
-            let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Check {
-                    owner: self.dialog_id.clone(),
-                },
-                note: Box::new(|_| {}),
-                env: overlay
-                    .as_ref()
-                    .map(|o| o.command_env())
-                    .unwrap_or_default(),
-                confine: overlay.as_ref().and_then(|o| o.confine()),
-                whole_output: false,
-            };
+            let queued = crate::command_tool::Queued::check(&self.dialog_id, overlay.as_deref());
             let timeout = super::verify::check_timeout_ms(&self.dialog_id).min(LIGHT_TIMEOUT_MS);
             let Ok(out) = crate::command_tool::run_command(
                 root.clone(),

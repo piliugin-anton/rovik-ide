@@ -1772,7 +1772,7 @@ impl Run {
         let request = recent
             .iter()
             .rev()
-            .find(|m| m.role == "user" && !plan::is_harness(m))
+            .find(|m| plan::is_users(m))
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "plan".into());
         let existing = chat_plan_file(&recent);

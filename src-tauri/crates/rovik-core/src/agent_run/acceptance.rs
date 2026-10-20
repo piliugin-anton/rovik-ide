@@ -468,18 +468,11 @@ impl Run {
 
 /// Why the acceptance check didn't judge, for its record.
 fn skip_reason(skip: &subagent::Skip) -> String {
-    match skip {
-        subagent::Skip::NotStarted(why) => why.clone(),
-        subagent::Skip::NotRun => "the acceptance checker couldn't run".into(),
-        subagent::Skip::ModelFailed(error) => {
-            format!("the acceptance checker's model failed ({error})")
-        }
-        subagent::Skip::Blocked(why) => format!("the acceptance checker couldn't judge: {why}"),
-        subagent::Skip::Unformatted { why, .. } if why.is_empty() => {
-            "its verdicts couldn't be read".into()
-        }
-        subagent::Skip::Unformatted { why, .. } => format!("its verdicts couldn't be read: {why}"),
-    }
+    skip.reason(
+        "the acceptance checker",
+        "the acceptance checker couldn't judge",
+        "its verdicts couldn't be read",
+    )
 }
 
 #[cfg(test)]

@@ -1063,17 +1063,12 @@ async fn run(
                 }
             }
             let note = ctx.note.clone();
-            let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Agent {
-                    owner: ctx.owner.clone(),
-                },
-                note: Box::new(move |n| note(n)),
-                env: crate::overlay::chats::get(&ctx.owner)
-                    .map(|o| o.command_env())
-                    .unwrap_or_default(),
-                confine: crate::overlay::chats::get(&ctx.owner).and_then(|o| o.confine()),
-                whole_output: false,
+            let agent = crate::workload::JobKind::Agent {
+                owner: ctx.owner.clone(),
             };
+            let overlay = crate::overlay::chats::get(&ctx.owner);
+            let queued =
+                crate::command_tool::Queued::of(agent, overlay.as_deref()).noting(move |n| note(n));
             let out = crate::command_tool::run_command(
                 root_owned,
                 command.into(),

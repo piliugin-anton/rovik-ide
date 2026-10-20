@@ -478,7 +478,10 @@ pub struct VirtualFs {
     hub: Hub,
 }
 
-fn check_name(name: &str) -> VfsResult<()> {
+/// A name as the tree takes it: not empty, `.` or `..`, with no separator
+/// or NUL in it, and at most `MAX_NAME` bytes. The overlay's paths
+/// (manifests, imports, landings) are checked part by part with it.
+pub(crate) fn check_name(name: &str) -> VfsResult<()> {
     if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
         return Err(VfsError::Invalid);
     }

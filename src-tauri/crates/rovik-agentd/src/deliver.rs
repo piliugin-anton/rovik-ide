@@ -308,7 +308,7 @@ fn empty_commit(dir: &Path) -> Result<String, String> {
         .and_then(|t| t.write())
         .map_err(git)?;
     let tree = repo.find_tree(tree).map_err(git)?;
-    let rovik = git2::Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
+    let rovik = crate::results::rovik_signature().map_err(git)?;
     let commit = repo
         .commit(None, &rovik, &rovik, "Rovik: a delivery test", &tree, &[])
         .map_err(git)?;

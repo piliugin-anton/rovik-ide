@@ -17,12 +17,13 @@
 //!
 //! The run goes on in every case.
 
+use crate::fail::{bad_request, internal};
 use crate::store::Kept;
 use git2::{Oid, Repository, ResetType, Tree};
 use rovik_core::merge;
 use rovik_core::overlay::{chats, markers};
 use rovik_protocol::work::SyncState;
-use rovik_protocol::{Fail, FailCode};
+use rovik_protocol::Fail;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
@@ -86,7 +87,7 @@ pub fn merge(worktree: &Path, base: &str, snapshot: Oid, resolves: bool) -> Resu
     // A snapshot comes from a pushed pack, whose trees could name what no
     // checkout writes: nothing of it reaches the worktree.
     if let Some(stray) = paths.iter().find(|path| !in_worktree(path)) {
-        return Err(bad_request(&format!(
+        return Err(bad_request(format!(
             "{stray}: the snapshot names a path outside the project."
         )));
     }
@@ -333,12 +334,4 @@ fn write(path: &Path, entry: Option<&Entry>) -> io::Result<()> {
         }
         Some(Entry::Other) | None => Ok(()),
     }
-}
-
-fn bad_request(message: &str) -> Fail {
-    Fail::new(FailCode::BadRequest, message)
-}
-
-fn internal(message: String) -> Fail {
-    Fail::new(FailCode::Internal, message)
 }

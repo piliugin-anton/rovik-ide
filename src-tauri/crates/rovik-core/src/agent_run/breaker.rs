@@ -221,15 +221,11 @@ fn findings_note(files: &[(String, Mark)]) -> String {
 
 /// Why the tester gave no tests, for its record.
 fn skip_reason(skip: &subagent::Skip) -> String {
-    use subagent::Skip;
-    match skip {
-        Skip::NotStarted(why) => why.clone(),
-        Skip::NotRun => "the adversarial tester couldn't run".into(),
-        Skip::ModelFailed(error) => format!("the adversarial tester's model failed ({error})"),
-        Skip::Blocked(why) => format!("it couldn't test the change: {}", why.trim()),
-        Skip::Unformatted { why, .. } if why.is_empty() => "its report couldn't be read".into(),
-        Skip::Unformatted { why, .. } => format!("its report couldn't be read: {why}"),
-    }
+    skip.reason(
+        "the adversarial tester",
+        "it couldn't test the change",
+        "its report couldn't be read",
+    )
 }
 
 /// The tester's tests, while the gate's next round is due to judge them.
@@ -455,18 +451,7 @@ impl Run {
         let command = alone(Path::new(root), file)?;
         let stop = self.stop.clone();
         let overlay = crate::overlay::chats::get(&self.dialog_id);
-        let queued = crate::command_tool::Queued {
-            kind: crate::workload::JobKind::Check {
-                owner: self.dialog_id.clone(),
-            },
-            note: Box::new(|_| {}),
-            env: overlay
-                .as_ref()
-                .map(|o| o.command_env())
-                .unwrap_or_default(),
-            confine: overlay.as_ref().and_then(|o| o.confine()),
-            whole_output: false,
-        };
+        let queued = crate::command_tool::Queued::check(&self.dialog_id, overlay.as_deref());
         let out = crate::command_tool::run_command(
             root.to_string(),
             command,

@@ -130,6 +130,10 @@ impl ChatError {
             partial: false,
         }
     }
+    /// The user stopped the request.
+    pub fn stopped() -> Self {
+        ChatError::new(ErrorKind::Cancelled, "Stopped.")
+    }
     pub fn with_details(mut self, details: impl AsRef<str>) -> Self {
         let d: String = details.as_ref().chars().take(DETAILS_MAX_CHARS).collect();
         if !d.trim().is_empty() {
@@ -1024,7 +1028,7 @@ async fn attempt(
             deadline
         };
         tokio::select! {
-            _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
+            _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
             r = &mut request => match r {
                 Err(e) => {
                     let message = match crate::net::proxy_for_requests(spec.url) {
@@ -1064,7 +1068,7 @@ async fn attempt(
         // The error body is small, but a misbehaving server could still
         // stall here: bound it and keep it cancellable.
         let body = tokio::select! {
-            _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
+            _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
             r = tokio::time::timeout(Duration::from_secs(10), response.text()) => {
                 r.ok().and_then(|t| t.ok()).unwrap_or_default()
             }
@@ -1095,7 +1099,7 @@ async fn attempt(
 
     if !spec.streaming {
         let text = tokio::select! {
-            _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
+            _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
             r = tokio::time::timeout_at(deadline.into(), response.text()) => match r {
                 Err(_) => return Err(fail(overall_error(), false)),
                 Ok(Err(e)) => return Err(fail(ChatError::new(ErrorKind::Network, "The connection dropped.").with_details(e.to_string()), false)),
@@ -1154,7 +1158,7 @@ async fn attempt(
                 if let Some(usage) = parser.usage.take() {
                     emit(ChatStreamEvent::Finished { finish_reason: None, usage: Some(usage) });
                 }
-                return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), parser.visible()));
+                return Err(fail(ChatError::stopped(), parser.visible()));
             }
             r = tokio::time::timeout_at(wait_until.into(), stream.next()) => r,
         };
@@ -1327,7 +1331,7 @@ pub async fn run(
         });
         tokio::select! {
             _ = cancelled(cancel) => {
-                let mut stopped = ChatError::new(ErrorKind::Cancelled, "Stopped.");
+                let mut stopped = ChatError::stopped();
                 stopped.attempts = attempt_number;
                 return Err(stopped);
             }

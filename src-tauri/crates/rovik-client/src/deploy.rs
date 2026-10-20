@@ -36,9 +36,9 @@ use crate::connection_test::probe_server;
 use crate::http;
 use crate::release::Releases;
 use crate::ssh::{Output, Ssh, SshConnector};
+use rovik_core::file_guard::sha256_hex;
 use rovik_protocol::Secret;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -67,7 +67,7 @@ impl Binary {
         let bytes = std::fs::read(&path)
             .map_err(|e| DeployError::Failed(format!("{}: {e}", path.display())))?;
         Ok(Binary {
-            sha256: hex(&Sha256::digest(&bytes)),
+            sha256: sha256_hex(&bytes),
             path,
             signature: None,
         })
@@ -119,7 +119,7 @@ impl Builds {
             ))
         })?;
         Ok(Binary {
-            sha256: hex(&Sha256::digest(&file.bytes)),
+            sha256: sha256_hex(&file.bytes),
             path: file.path,
             signature: Some(file.signature),
         })
@@ -332,7 +332,7 @@ async fn install_and_start(
     // The hash goes in config.toml before the daemon starts, as it reads
     // it then.
     let add = format!("{} token add {}", quote(upload), quote(computer));
-    let hash = format!("{}\n", hex(&Sha256::digest(token.0.as_bytes())));
+    let hash = format!("{}\n", sha256_hex(token.0.as_bytes()));
     run(ssh, &add, hash.as_bytes()).await?;
     if probe.install.is_none() {
         let (command, input) = install_command(probe, upload, sudo_password, layout)?;
@@ -840,11 +840,7 @@ fn what(command: &str) -> String {
 fn new_token() -> Secret {
     let mut bytes = Zeroizing::new([0u8; 32]);
     getrandom::fill(bytes.as_mut_slice()).expect("the system's random numbers");
-    Secret(hex(bytes.as_slice()))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    Secret(rovik_core::file_guard::hex(bytes.as_slice()))
 }
 
 /// `text` in single quotes, for sh.

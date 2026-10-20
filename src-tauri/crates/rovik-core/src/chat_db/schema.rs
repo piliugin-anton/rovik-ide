@@ -353,6 +353,13 @@ pub fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
 /// The schema this build writes and reads.
 pub const VERSION: i64 = 10;
 
+/// Each version's step, in order: the first takes an empty database to
+/// version 1, the last to `VERSION`.
+const STEPS: [&str; VERSION as usize] = [
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+    SCHEMA_V9, SCHEMA_V10,
+];
+
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     // A newer Rovik wrote this database: what it added this build doesn't
@@ -367,65 +374,14 @@ pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
             )),
         ));
     }
-    if version < 1 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V1)?;
-        tx.pragma_update(None, "user_version", 1)?;
-        tx.commit()?;
-    }
-    if version < 2 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V2)?;
-        tx.pragma_update(None, "user_version", 2)?;
-        tx.commit()?;
-    }
-    if version < 3 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V3)?;
-        tx.pragma_update(None, "user_version", 3)?;
-        tx.commit()?;
-    }
-    if version < 4 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V4)?;
-        tx.pragma_update(None, "user_version", 4)?;
-        tx.commit()?;
-    }
-    if version < 5 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V5)?;
-        tx.pragma_update(None, "user_version", 5)?;
-        tx.commit()?;
-    }
-    if version < 6 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V6)?;
-        tx.pragma_update(None, "user_version", 6)?;
-        tx.commit()?;
-    }
-    if version < 7 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V7)?;
-        tx.pragma_update(None, "user_version", 7)?;
-        tx.commit()?;
-    }
-    if version < 8 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V8)?;
-        tx.pragma_update(None, "user_version", 8)?;
-        tx.commit()?;
-    }
-    if version < 9 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V9)?;
-        tx.pragma_update(None, "user_version", 9)?;
-        tx.commit()?;
-    }
-    if version < 10 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA_V10)?;
-        tx.pragma_update(None, "user_version", VERSION)?;
-        tx.commit()?;
+    for (step, schema) in STEPS.iter().enumerate() {
+        let next = step as i64 + 1;
+        if version < next {
+            let tx = conn.transaction()?;
+            tx.execute_batch(schema)?;
+            tx.pragma_update(None, "user_version", next)?;
+            tx.commit()?;
+        }
     }
     Ok(())
 }
@@ -440,8 +396,9 @@ mod tests {
     fn upgrades_a_version_2_database() {
         let mut conn = Connection::open_in_memory().unwrap();
         configure(&conn, true).unwrap();
-        conn.execute_batch(SCHEMA_V1).unwrap();
-        conn.execute_batch(SCHEMA_V2).unwrap();
+        for step in &STEPS[..2] {
+            conn.execute_batch(step).unwrap();
+        }
         conn.pragma_update(None, "user_version", 2).unwrap();
         conn.execute(
             "INSERT INTO dialogs (id, title, created_at, updated_at) VALUES ('old', 'Old chat', 1, 1)",
@@ -480,9 +437,7 @@ mod tests {
     fn upgrades_a_version_7_database() {
         let mut conn = Connection::open_in_memory().unwrap();
         configure(&conn, true).unwrap();
-        for step in [
-            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
-        ] {
+        for step in &STEPS[..7] {
             conn.execute_batch(step).unwrap();
         }
         conn.pragma_update(None, "user_version", 7).unwrap();
@@ -530,10 +485,7 @@ mod tests {
     fn upgrades_a_version_9_database() {
         let mut conn = Connection::open_in_memory().unwrap();
         configure(&conn, true).unwrap();
-        for step in [
-            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-            SCHEMA_V9,
-        ] {
+        for step in &STEPS[..9] {
             conn.execute_batch(step).unwrap();
         }
         conn.pragma_update(None, "user_version", 9).unwrap();

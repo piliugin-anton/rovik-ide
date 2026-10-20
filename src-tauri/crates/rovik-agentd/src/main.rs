@@ -52,6 +52,8 @@ mod deliver;
 mod doctor;
 #[cfg(unix)]
 mod events;
+
+mod fail;
 #[cfg(unix)]
 mod gc;
 #[cfg(unix)]

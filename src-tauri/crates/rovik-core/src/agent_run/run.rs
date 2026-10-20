@@ -2000,7 +2000,7 @@ impl Run {
 
             let mut s = lock(&stream);
             let failure = match result {
-                None => Some(failure::stopped()),
+                None => Some(ChatError::stopped()),
                 // Only problems before the request (e.g. building the history) land here.
                 Some(Err(e)) => Some(failure::before_request(e)),
                 Some(Ok(())) => s.failure.take(),
@@ -2164,7 +2164,7 @@ impl Run {
         let recent = self.recent().await?;
         let mut submitted = None;
         for m in recent.iter().rev() {
-            if m.role == "user" && !plan::is_harness(m) {
+            if plan::is_users(m) {
                 break;
             }
             if m.role == "tool" {
@@ -2778,7 +2778,7 @@ impl Run {
         let own = recent
             .iter()
             .rev()
-            .find(|m| m.role == "user" && !m.failed && !plan::is_harness(m))
+            .find(|m| plan::is_users(m) && !m.failed)
             .map(|m| sent_content(m).unwrap_or_else(|| m.content.clone()));
         if let Some(request) = own {
             return request;
@@ -3407,10 +3407,7 @@ pub(super) fn sent_text(meta: Option<&serde_json::Value>) -> Option<String> {
 
 /// The mode of the request a run belongs to: its starting message's.
 fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
-    let m = messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user" && !plan::is_harness(m))?;
+    let m = messages.iter().rev().find(|m| plan::is_users(m))?;
     m.meta.as_ref()?.get("mode")?.as_str().map(str::to_string)
 }
 
@@ -3424,7 +3421,7 @@ fn plan_check_at_start(
     let named = recent
         .iter()
         .rev()
-        .find(|m| m.role == "user" && !plan::is_harness(m))
+        .find(|m| plan::is_users(m))
         .and_then(|m| {
             let rest = m.content.strip_prefix("Implement the plan in `")?;
             Some(rest[..rest.find('`')?].to_string())
@@ -3530,7 +3527,7 @@ pub fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let m = messages
         .iter()
         .rev()
-        .find(|m| m.role == "user" && !m.failed && !plan::is_harness(m))?;
+        .find(|m| plan::is_users(m) && !m.failed)?;
     sent_content(m).or_else(|| Some(m.content.clone()))
 }
 
@@ -3563,7 +3560,7 @@ fn restriction_reason(
 fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let mut real = messages
         .iter()
-        .filter(|m| m.role == "user" && !m.failed && !plan::is_harness(m))
+        .filter(|m| plan::is_users(m) && !m.failed)
         .rev();
     real.next()?;
     let m = real.next()?;

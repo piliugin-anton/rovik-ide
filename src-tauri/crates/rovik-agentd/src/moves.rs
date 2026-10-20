@@ -17,6 +17,7 @@
 //!   later import from that computer clears (K36).
 
 use crate::daemon::Daemon;
+use crate::fail::{bad_request, internal};
 use crate::store::{Moved, Place, ProjectState};
 use crate::work;
 use rovik_core::chat_db::location::{self, Location};
@@ -257,12 +258,4 @@ pub async fn forget(daemon: &Daemon, dialog_id: &str) -> Result<Response, Fail> 
         .map_err(internal)?;
     log::info!("{dialog_id}'s rows went: its computer has them");
     Ok(Response::Bool(true))
-}
-
-fn bad_request(message: impl Into<String>) -> Fail {
-    Fail::new(FailCode::BadRequest, message)
-}
-
-fn internal(message: String) -> Fail {
-    Fail::new(FailCode::Internal, message)
 }

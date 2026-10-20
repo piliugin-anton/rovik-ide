@@ -514,16 +514,11 @@ pub(super) fn skipped(review: &mut Value, reason: String) {
 
 /// Why a review (of the change, or of the plan) was skipped.
 pub(super) fn reviewer_skip_reason(skip: &Skip) -> String {
-    match skip {
-        Skip::NotStarted(why) => why.clone(),
-        Skip::NotRun => "the reviewer couldn't run".into(),
-        Skip::ModelFailed(error) => format!("the reviewer's model failed ({error})"),
-        Skip::Blocked(why) => format!("the reviewer couldn't review: {why}"),
-        Skip::Unformatted { why, .. } if why.is_empty() => {
-            "its report didn't follow the format".into()
-        }
-        Skip::Unformatted { why, .. } => format!("its report didn't follow the format: {why}"),
-    }
+    skip.reason(
+        "the reviewer",
+        "the reviewer couldn't review",
+        "its report didn't follow the format",
+    )
 }
 
 /// Whether two findings are about the same thing: the same file, and the

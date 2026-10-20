@@ -161,25 +161,31 @@ third (the tables above). What's left was looked at and left as it is:
   store calls released that the database doesn't, which no retry fixes.
   The order stands.
 
-## Duplication left in the crates
+## Duplication removed
 
-Repeated code the reviews found, for a later pass:
+The repeated code the reviews listed, now in one place each (a fourth
+change):
 
-- `rovik-core`: six SHA-256-to-hex encoders (`overlay/fs.rs:162`,
-  `overlay/chats.rs:302`, `:849`, `:2251`, `chat_hold.rs:326`,
-  `chat_db/attachments.rs:75`); `check_name` in `vfs/store.rs:481` and
-  `overlay/fs.rs:363`, already diverged; `repo_map/mod.rs:1187`
-  `ancestors` is `read_symbol.rs:134`; "the latest real user message" in
-  seven variants with drifting filters (`run.rs:3380`, `:3395`,
-  `execute.rs:1761` omit `!m.failed`); `command_tool::Queued { kind:
-Check }` built three times; six `Skip → String` mappers in the
-  planning and review stages; `test_writer.rs` `tests_stage` and
-  `tests_for_an_untested_change` copied; `ChatError::new(Cancelled,
-"Stopped.")` seven times; four char-based truncation helpers;
-  `chat_db/schema.rs:370` ten identical migration blocks.
-- `rovik-client`: `session()` and `welcome()` repeat the Hello/Welcome
-  handling; "the daemon serves feature X" four times; clearing six
-  `State` maps twice; config + policy + network three times.
-- `rovik-agentd`: `bad_request`/`internal`/`git`/`joined` helpers copied
-  in seven files; the Content-Length pre-check in three handlers;
-  `Signature::now("Rovik", …)` four times.
+- `rovik-core`: `file_guard::hex` and `file_guard::sha256_hex` replace
+  the six SHA-256-to-hex encoders, and the client's three (its own
+  `sha2` dependency goes). `vfs::store::check_name` is the one name
+  check: the overlay's copy, which lacked the Windows `\` rule, is
+  gone. `read_symbol::ancestors` serves the repo map too.
+  `plan::is_users` is "a message of the user's" everywhere (each site's
+  `!m.failed` filter stays as it was). `Queued::of` and `Queued::check`
+  build a chat's queued command from its overlay, with `noting` and
+  `whole` for the verify gate's. `Skip::reason` gives every stage's
+  skip wording from three phrases: a blocked reason is trimmed in every
+  stage now, and the triage's model failure names the triage. The test
+  writer's two runs share `write_tests`, `outlines_of` and
+  `test_check`. `ChatError::stopped()` replaces the seven literals.
+  `text::first_chars` and `text::shortened` replace the four
+  character-cut helpers (blanks before an ellipsis are trimmed in each).
+  `chat_db/schema.rs` migrates through its `STEPS` array.
+- `rovik-client`: `hello()` does the Hello/Welcome exchange for
+  `session()` and `welcome()`. `DaemonInfo::serves` is the feature
+  check and `Client::takes` the version refusal. `State::forget` clears
+  a chat's six maps. `Remote::config_for` builds a host's configuration.
+- `rovik-agentd`: `fail.rs` holds `bad_request`, `internal`, `git` and
+  `joined`. `server::declared_length` is the Content-Length pre-check.
+  `results::rovik_signature` signs Rovik's commits.

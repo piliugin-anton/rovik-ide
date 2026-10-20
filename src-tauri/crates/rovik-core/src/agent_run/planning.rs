@@ -253,28 +253,16 @@ fn read_judgment(report: &str, given: &[&Candidate]) -> Result<Taken, String> {
 
 /// Why the judge gave no judgment, for its record and the note.
 pub(super) fn judge_skip_reason(skip: &subagent::Skip) -> String {
-    use subagent::Skip;
-    match skip {
-        Skip::NotStarted(why) => why.clone(),
-        Skip::NotRun => "it couldn't run".into(),
-        Skip::ModelFailed(error) => format!("its model failed ({error})"),
-        Skip::Blocked(why) => format!("it couldn't judge: {}", why.trim()),
-        Skip::Unformatted { why, .. } if why.is_empty() => "its report couldn't be read".into(),
-        Skip::Unformatted { why, .. } => format!("its report couldn't be read: {why}"),
-    }
+    skip.reason("it", "it couldn't judge", "its report couldn't be read")
 }
 
 /// Why a planner gave no plan, for its record.
 fn skip_reason(skip: &subagent::Skip) -> String {
-    use subagent::Skip;
-    match skip {
-        Skip::NotStarted(why) => why.clone(),
-        Skip::NotRun => "the planner couldn't run".into(),
-        Skip::ModelFailed(error) => format!("the planner's model failed ({error})"),
-        Skip::Blocked(why) => format!("the planner couldn't plan it: {}", why.trim()),
-        Skip::Unformatted { why, .. } if why.is_empty() => "its report couldn't be read".into(),
-        Skip::Unformatted { why, .. } => format!("its report couldn't be read: {why}"),
-    }
+    skip.reason(
+        "the planner",
+        "the planner couldn't plan it",
+        "its report couldn't be read",
+    )
 }
 
 /// A criteria record's fields: the criteria, what's out of scope and what

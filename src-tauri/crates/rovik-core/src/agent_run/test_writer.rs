@@ -300,8 +300,9 @@ pub(super) struct Red {
 /// its commands run there.
 struct RedPlace {
     cwd: PathBuf,
-    env: Vec<(String, String)>,
-    confine: Option<crate::overlay::confine::Confine>,
+    /// The chat's overlay, when it's isolated: the commands run in its
+    /// environment.
+    overlay: Option<std::sync::Arc<crate::overlay::chats::ChatOverlay>>,
     timeout_ms: u64,
 }
 
@@ -342,15 +343,8 @@ impl super::run::Run {
                 break;
             }
             let stop = self.stop.clone();
-            let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Check {
-                    owner: self.dialog_id.clone(),
-                },
-                note: Box::new(|_| {}),
-                env: place.env.clone(),
-                confine: place.confine.clone(),
-                whole_output: false,
-            };
+            let queued =
+                crate::command_tool::Queued::check(&self.dialog_id, place.overlay.as_deref());
             let out = crate::command_tool::run_command(
                 place.cwd.to_string_lossy().into_owned(),
                 command,
@@ -408,8 +402,7 @@ impl super::run::Run {
         }
         let place = RedPlace {
             cwd: scratch.view.clone(),
-            env: scratch.command_env(),
-            confine: scratch.confine(),
+            overlay: Some(scratch),
             timeout_ms: 300_000,
         };
         let red = self.red(place, &files).await;
@@ -446,17 +439,148 @@ pub fn stage_summary(files: &[String], passing: &[String]) -> String {
 
 /// S04: why the Tests stage wrote no test, for its record.
 fn skip_reason(skip: &super::subagent::Skip) -> String {
-    use super::subagent::Skip;
     match skip {
-        Skip::NotStarted(why) => format!("The test writer couldn't start: {why}"),
-        Skip::NotRun => "The test writer couldn't run".into(),
-        Skip::ModelFailed(error) => format!("The test writer's model failed ({error})"),
-        Skip::Blocked(why) => format!("The test writer was blocked: {}", why.trim()),
-        Skip::Unformatted { .. } => "The test writer's report couldn't be read".into(),
+        super::subagent::Skip::NotStarted(why) => {
+            format!("The test writer couldn't start: {why}")
+        }
+        _ => skip.reason(
+            "The test writer",
+            "The test writer was blocked",
+            "The test writer's report couldn't be read",
+        ),
     }
 }
 
+/// What a test writer's run gave (S04, S07): its record row's id, what
+/// the record says so far (`meta.tests`), the test files it wrote, and
+/// its report, when it gave one.
+struct Written {
+    record_id: String,
+    tests: serde_json::Value,
+    files: Vec<String>,
+    report: Option<super::subagent::SubResult>,
+    ended: Ended,
+}
+
+/// How a test writer's run ended, for the stage's own record.
+enum Ended {
+    /// The user stopped it, or only it.
+    Stopped,
+    /// It gave no test file: why.
+    Skipped(String),
+    /// It wrote some.
+    Wrote,
+}
+
+const NO_TEST_FILE: &str = "The test writer wrote no test file";
+
+/// The outlines of `hidden`, the files the writer can't read (E02): what
+/// it's told of them.
+fn outlines_of(root: &str, hidden: &[String]) -> Vec<(String, Option<String>)> {
+    hidden
+        .iter()
+        .map(|k| {
+            let exists = std::path::Path::new(&super::tools::to_absolute_path(k, root)).is_file();
+            let outline = exists
+                .then(|| crate::agent_tools::tool_outline(root.to_string(), k.clone()).ok())
+                .flatten();
+            (k.clone(), outline)
+        })
+        .collect()
+}
+
 impl super::run::Run {
+    /// The project's test check, when one is on.
+    fn test_check(&self) -> Option<String> {
+        self.checks
+            .iter()
+            .find(|c| c.kind == "test" && c.enabled)
+            .map(|c| c.command.clone())
+    }
+
+    /// Runs the test writer on `message` for `goal`, as an IDE-started
+    /// subagent that can't read `hidden` (E02), under a record row
+    /// (`meta.tests`, with `after` for S07's) that shows it at work, then
+    /// what it wrote. What it wrote counts whatever its report says: the
+    /// files are there.
+    async fn write_tests(
+        &mut self,
+        goal: &str,
+        message: String,
+        hidden: Vec<String>,
+        after: bool,
+    ) -> Result<Written, String> {
+        use super::subagent::{Kind, SubOutcome, SubStatus};
+        use serde_json::json;
+        let mut row = super::run::new_message("assistant", "");
+        let mut tests = json!({ "status": "running" });
+        if after {
+            tests["after"] = json!(true);
+        }
+        row.meta = Some(json!({ "tests": tests }));
+        let record_id = row.id.clone();
+        self.append(vec![row]).await?;
+        let started = std::time::Instant::now();
+        let outcome = self
+            .run_ide_subagent_with(Kind::TestWriter, &record_id, goal, message, |sub| {
+                sub.tests_only = true;
+                sub.hidden = hidden;
+                sub.light_bash = true;
+            })
+            .await;
+        tests["ms"] = json!(started.elapsed().as_millis() as u64);
+        let report = match &outcome {
+            Ok((_, Some(r))) => Some(r.clone()),
+            _ => None,
+        };
+        let mut files: Vec<String> = Vec::new();
+        for w in report.iter().flat_map(|r| r.writes.iter()) {
+            if project::is_test_path(&w.path) && !files.contains(&w.path) {
+                files.push(w.path.clone());
+            }
+        }
+        let ended = match super::subagent::outcome_of(&mut tests, outcome) {
+            SubOutcome::Stopped => {
+                tests["status"] = json!("stopped");
+                Ended::Stopped
+            }
+            SubOutcome::Skipped(skip) => {
+                let blocked = matches!(skip, super::subagent::Skip::Blocked(_));
+                tests["status"] = json!(if blocked { "blocked" } else { "skipped" });
+                let why = skip_reason(&skip);
+                tests["reason"] = json!(why);
+                Ended::Skipped(why)
+            }
+            SubOutcome::Report(r) => {
+                let parts = super::subagent::sections(&r.text);
+                for (key, section) in [("summary", "Summary"), ("assumptions", "Assumptions")] {
+                    if let Some(text) = parts.get(section).filter(|t| !t.trim().is_empty()) {
+                        tests[key] = json!(text.trim());
+                    }
+                }
+                tests["report"] = json!(r.text.chars().take(6_000).collect::<String>());
+                if r.status == SubStatus::Partial {
+                    tests["partial"] = json!(true);
+                }
+                if files.is_empty() {
+                    tests["status"] = json!("skipped");
+                    tests["reason"] = json!(NO_TEST_FILE);
+                    Ended::Skipped(NO_TEST_FILE.into())
+                } else {
+                    tests["status"] = json!("done");
+                    Ended::Wrote
+                }
+            }
+        };
+        Ok(Written {
+            record_id,
+            tests,
+            files,
+            report,
+            ended,
+        })
+    }
+
     /// S04 (4.4): the Tests stage's run. The test writer writes the tests
     /// before the code, from the request, the plan and its criteria, as an
     /// IDE-started subagent that can't read the files the plan changes
@@ -468,7 +592,6 @@ impl super::run::Run {
     /// task goes on. "stopped" when the user stopped it, else "done".
     pub(super) async fn tests_stage(&mut self) -> Result<String, String> {
         use super::autopilot::Status;
-        use super::subagent::{Kind, SubOutcome, SubStatus};
         use serde_json::json;
         if self.stage.is_none() {
             return Ok("done".into());
@@ -504,23 +627,9 @@ impl super::run::Run {
                 }
             }
         }
-        let outlines: Vec<(String, Option<String>)> = hidden
-            .iter()
-            .map(|k| {
-                let exists =
-                    std::path::Path::new(&super::tools::to_absolute_path(k, &root)).is_file();
-                let outline = exists
-                    .then(|| crate::agent_tools::tool_outline(root.clone(), k.clone()).ok())
-                    .flatten();
-                (k.clone(), outline)
-            })
-            .collect();
+        let outlines = outlines_of(&root, &hidden);
         let request = self.latest_user_request().await;
-        let test_check = self
-            .checks
-            .iter()
-            .find(|c| c.kind == "test" && c.enabled)
-            .map(|c| c.command.clone());
+        let test_check = self.test_check();
         let message = brief(&BriefParts {
             request: &request,
             plan: Some((shown.as_str(), plan.as_str())),
@@ -529,100 +638,44 @@ impl super::run::Run {
             test_check: test_check.as_deref(),
             first: Some(&criteria),
         });
-
-        // Its record row: the writer at work, then what it wrote.
-        let mut row = super::run::new_message("assistant", "");
-        let mut tests = json!({ "status": "running" });
-        row.meta = Some(json!({ "tests": tests }));
-        let record_id = row.id.clone();
-        self.append(vec![row]).await?;
-        let started = std::time::Instant::now();
-        let outcome = self
-            .run_ide_subagent_with(
-                Kind::TestWriter,
-                &record_id,
-                "Write the tests before the change",
-                message,
-                |sub| {
-                    sub.tests_only = true;
-                    sub.hidden = hidden;
-                    sub.light_bash = true;
-                },
-            )
-            .await;
-        tests["ms"] = json!(started.elapsed().as_millis() as u64);
-        // What it wrote counts whatever its report says: the files are there.
-        let writes: Vec<(String, bool)> = match &outcome {
-            Ok((_, Some(r))) => r
-                .writes
-                .iter()
-                .filter(|w| project::is_test_path(&w.path))
-                .map(|w| (w.path.clone(), w.original.bytes.is_none()))
-                .collect(),
-            _ => Vec::new(),
-        };
-        let mut files: Vec<String> = Vec::new();
-        for (path, _) in &writes {
-            if !files.contains(path) {
-                files.push(path.clone());
-            }
-        }
-        let mut reason = None;
-        match super::subagent::outcome_of(&mut tests, outcome) {
-            SubOutcome::Stopped if self.stopped() => {
-                tests["status"] = json!("stopped");
+        let goal = "Write the tests before the change";
+        let Written {
+            record_id,
+            mut tests,
+            files,
+            report,
+            ended,
+        } = self.write_tests(goal, message, hidden, false).await?;
+        let reason = match ended {
+            Ended::Stopped if self.stopped() => {
                 tests["files"] = json!(files);
                 self.update_meta(&record_id, json!({ "tests": tests }))
                     .await?;
                 return Ok("stopped".into());
             }
             // Only the writer was stopped: the task goes on without it.
-            SubOutcome::Stopped => {
+            Ended::Stopped => {
                 tests["status"] = json!("skipped");
                 let why = "The test writer was stopped".to_string();
                 tests["reason"] = json!(why);
-                reason = Some(why);
+                Some(why)
             }
-            SubOutcome::Skipped(skip) => {
-                let blocked = matches!(skip, super::subagent::Skip::Blocked(_));
-                tests["status"] = json!(if blocked { "blocked" } else { "skipped" });
-                let why = skip_reason(&skip);
-                tests["reason"] = json!(why);
-                reason = Some(why);
-            }
-            SubOutcome::Report(r) => {
-                let parts = super::subagent::sections(&r.text);
-                for (key, section) in [("summary", "Summary"), ("assumptions", "Assumptions")] {
-                    if let Some(text) = parts.get(section).filter(|t| !t.trim().is_empty()) {
-                        tests[key] = json!(text.trim());
-                    }
-                }
-                tests["report"] = json!(r.text.chars().take(6_000).collect::<String>());
-                if r.status == SubStatus::Partial {
-                    tests["partial"] = json!(true);
-                }
-                tests["status"] = json!("done");
-            }
-        }
+            Ended::Skipped(why) => Some(why),
+            Ended::Wrote => None,
+        };
         // The red check: how the new tests do on the code as it is. Those
         // that pass, and those seen to fail; the files it changed, it
         // doesn't run.
-        let new: Vec<String> = writes
+        let new: Vec<String> = report
             .iter()
-            .filter(|(_, new)| *new)
-            .map(|(path, _)| path.clone())
-            .filter(|path| files.contains(path))
+            .flat_map(|r| r.writes.iter())
+            .filter(|w| w.original.bytes.is_none() && files.contains(&w.path))
+            .map(|w| w.path.clone())
             .collect();
         let Red { passing, failing } = self.red_before_the_change(&root, &new).await;
         tests["files"] = json!(files);
         tests["passing"] = json!(passing);
         tests["failing"] = json!(failing);
-        if tests["status"] == "done" && files.is_empty() {
-            tests["status"] = json!("skipped");
-            let why = "The test writer wrote no test file".to_string();
-            tests["reason"] = json!(why);
-            reason = Some(why);
-        }
         self.update_meta(&record_id, json!({ "tests": tests }))
             .await?;
         super::log::write(
@@ -643,7 +696,7 @@ impl super::run::Run {
         let (status, summary) = match (files.is_empty(), reason) {
             (true, reason) => (
                 Status::Skipped,
-                reason.unwrap_or_else(|| "The test writer wrote no test file".into()),
+                reason.unwrap_or_else(|| NO_TEST_FILE.into()),
             ),
             // Blocked or cut short with tests written: they're the task's.
             (false, Some(why)) => (
@@ -672,7 +725,7 @@ impl super::run::Run {
     /// which are the test writer's to the run (E03), and the checks run
     /// them now. Its record row is `meta.tests` with `after`.
     pub(super) async fn tests_for_an_untested_change(&mut self) -> Result<bool, String> {
-        use super::subagent::{Kind, SubOutcome, SubStatus, SubagentSettings};
+        use super::subagent::{Kind, SubagentSettings};
         use serde_json::json;
         if !self.in_autopilot()
             || self.sub().is_some()
@@ -697,23 +750,9 @@ impl super::run::Run {
         };
         let plan = self.implementing_plan().await;
         let hidden = self.test_writer_hidden().await;
-        let outlines: Vec<(String, Option<String>)> = hidden
-            .iter()
-            .map(|k| {
-                let exists =
-                    std::path::Path::new(&super::tools::to_absolute_path(k, &root)).is_file();
-                let outline = exists
-                    .then(|| crate::agent_tools::tool_outline(root.clone(), k.clone()).ok())
-                    .flatten();
-                (k.clone(), outline)
-            })
-            .collect();
+        let outlines = outlines_of(&root, &hidden);
         let request = self.latest_user_request().await;
-        let test_check = self
-            .checks
-            .iter()
-            .find(|c| c.kind == "test" && c.enabled)
-            .map(|c| c.command.clone());
+        let test_check = self.test_check();
         let message = brief(&BriefParts {
             request: &request,
             plan: plan.as_ref().map(|(p, t)| (p.as_str(), t.as_str())),
@@ -722,65 +761,16 @@ impl super::run::Run {
             test_check: test_check.as_deref(),
             first: None,
         });
-        let mut row = super::run::new_message("assistant", "");
-        let mut tests = json!({ "status": "running", "after": true });
-        row.meta = Some(json!({ "tests": tests }));
-        let record_id = row.id.clone();
-        self.append(vec![row]).await?;
-        let started = std::time::Instant::now();
-        let outcome = self
-            .run_ide_subagent_with(
-                Kind::TestWriter,
-                &record_id,
-                "Write tests for the change",
-                message,
-                |sub| {
-                    sub.tests_only = true;
-                    sub.hidden = hidden;
-                    sub.light_bash = true;
-                },
-            )
-            .await;
-        tests["ms"] = json!(started.elapsed().as_millis() as u64);
-        let result = match &outcome {
-            Ok((_, Some(r))) => Some(r.clone()),
-            _ => None,
-        };
-        let mut files: Vec<String> = Vec::new();
-        for w in result.iter().flat_map(|r| r.writes.iter()) {
-            if project::is_test_path(&w.path) && !files.contains(&w.path) {
-                files.push(w.path.clone());
-            }
-        }
-        match super::subagent::outcome_of(&mut tests, outcome) {
-            SubOutcome::Stopped => {
-                tests["status"] = json!("stopped");
-            }
-            SubOutcome::Skipped(skip) => {
-                let blocked = matches!(skip, super::subagent::Skip::Blocked(_));
-                tests["status"] = json!(if blocked { "blocked" } else { "skipped" });
-                tests["reason"] = json!(skip_reason(&skip));
-            }
-            SubOutcome::Report(r) => {
-                let parts = super::subagent::sections(&r.text);
-                for (key, section) in [("summary", "Summary"), ("assumptions", "Assumptions")] {
-                    if let Some(text) = parts.get(section).filter(|t| !t.trim().is_empty()) {
-                        tests[key] = json!(text.trim());
-                    }
-                }
-                tests["report"] = json!(r.text.chars().take(6_000).collect::<String>());
-                if r.status == SubStatus::Partial {
-                    tests["partial"] = json!(true);
-                }
-                tests["status"] = json!("done");
-            }
-        }
-        if tests["status"] == "done" && files.is_empty() {
-            tests["status"] = json!("skipped");
-            tests["reason"] = json!("The test writer wrote no test file");
-        }
+        let goal = "Write tests for the change";
+        let Written {
+            record_id,
+            mut tests,
+            files,
+            report,
+            ..
+        } = self.write_tests(goal, message, hidden, true).await?;
         // E04: the new ones that pass on the code before the change.
-        if let Some(r) = result
+        if let Some(r) = report
             .as_ref()
             .filter(|_| !files.is_empty() && !self.stopped())
         {
@@ -816,14 +806,9 @@ impl super::run::Run {
         if files.is_empty() || self.stopped() {
             return Red::default();
         }
-        let overlay = crate::overlay::chats::get(&self.dialog_id);
         let place = RedPlace {
             cwd: PathBuf::from(root),
-            env: overlay
-                .as_ref()
-                .map(|o| o.command_env())
-                .unwrap_or_default(),
-            confine: overlay.as_ref().and_then(|o| o.confine()),
+            overlay: crate::overlay::chats::get(&self.dialog_id),
             timeout_ms: super::verify::check_timeout_ms(&self.dialog_id),
         };
         self.red(place, files).await

@@ -1698,18 +1698,7 @@ impl Run {
         let command = super::breaker::alone(Path::new(root), file)?;
         let stop = self.stop.clone();
         let overlay = crate::overlay::chats::get(chat);
-        let queued = crate::command_tool::Queued {
-            kind: crate::workload::JobKind::Check {
-                owner: self.dialog_id.clone(),
-            },
-            note: Box::new(|_| {}),
-            env: overlay
-                .as_ref()
-                .map(|o| o.command_env())
-                .unwrap_or_default(),
-            confine: overlay.as_ref().and_then(|o| o.confine()),
-            whole_output: false,
-        };
+        let queued = crate::command_tool::Queued::check(&self.dialog_id, overlay.as_deref());
         let out = crate::command_tool::run_command(
             root.to_string(),
             command,

@@ -90,10 +90,6 @@ pub fn describe(error: &ChatError) -> String {
     }
 }
 
-pub fn stopped() -> ChatError {
-    ChatError::new(ErrorKind::Cancelled, "Stopped.")
-}
-
 /// What cut a reply the process ended mid-stream (5.4).
 pub fn restarted() -> ChatError {
     ChatError::new(
@@ -124,7 +120,7 @@ mod tests {
         assert_eq!(describe(&e), "Rate limit reached. Try again in 2 min.");
         assert_eq!(stored(&e)["kind"], "rate_limited");
         assert!(stored(&e)["resetAt"].as_i64().unwrap() > now_ms());
-        assert_eq!(describe(&stopped()), "Stopped.");
+        assert_eq!(describe(&ChatError::stopped()), "Stopped.");
         assert_eq!(stored(&restarted())["kind"], "restarted");
         assert_eq!(
             describe(&restarted()),

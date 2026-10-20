@@ -313,7 +313,6 @@ impl HostsPage {
     /// by `follow_policies` (and what only a deploy runs), and its token's
     /// digest (a deploy makes a new one; the token itself isn't kept).
     fn made_of(&self, host: &Host) -> (String, Option<String>) {
-        use sha2::{Digest, Sha256};
         let mut made = host.clone();
         made.approval_policy = ApprovalPolicy::default();
         made.autonomy = AutonomySettings::default();
@@ -325,13 +324,7 @@ impl HostsPage {
                 })
             })
             .flatten()
-            .map(|token| {
-                let digest = Sha256::digest(token.0.as_bytes());
-                digest
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>()
-            });
+            .map(|token| rovik_core::file_guard::sha256_hex(token.0.as_bytes()));
         (serde_json::to_string(&made).unwrap_or_default(), token)
     }
 
