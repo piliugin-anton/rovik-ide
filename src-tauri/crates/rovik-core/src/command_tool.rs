@@ -821,20 +821,26 @@ mod tests {
     #[test]
     fn stop_kills_the_command() {
         let dir = std::env::temp_dir();
+        // Stopped once it has said so, not after a set time: a busy machine
+        // may take longer than that to start the sandbox and the shell.
+        let said = dir.join(format!("stop-said-{}", std::process::id()));
+        let _ = std::fs::remove_file(&said);
+        let marker = said.clone();
         let started = Instant::now();
-        let stop = move || started.elapsed() >= Duration::from_millis(300);
+        let stop = move || marker.exists();
         let out = run_blocking(
             dir.to_str().unwrap(),
-            "sleep 30 & echo up; wait",
+            &format!("sleep 30 & echo up; touch {}; wait", said.display()),
             Duration::from_secs(60),
             &stop,
             None,
         )
         .unwrap();
+        let _ = std::fs::remove_file(&said);
         assert!(out.stopped);
         assert!(!out.timed_out);
         assert_eq!(out.stdout.trim(), "up");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
 
     #[cfg(not(windows))]

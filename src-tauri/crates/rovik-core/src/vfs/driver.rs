@@ -11,6 +11,7 @@
 //! releases. A download is checked against the SHA-256 GitHub publishes for
 //! it when there is one, and its code signature is checked before it runs.
 
+#[cfg(unix)]
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::process::Command;
