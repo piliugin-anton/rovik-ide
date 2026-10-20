@@ -173,33 +173,68 @@ pub fn secret_dirs() -> Vec<PathBuf> {
     existing(under_home.chain(registered))
 }
 
+/// When a folder of [`TOOL_DIRS`] that isn't there yet is made before a
+/// command runs: the sandbox can only open a folder that exists, so a tool's
+/// first run there couldn't make its cache (a fresh machine's `go test`
+/// fails on `~/.cache/go-build`).
+enum Make {
+    /// Always: the folders every tool writes to (XDG's).
+    Always,
+    /// When this program is installed, so homes without it get no folder.
+    With(&'static str),
+    /// Never: the installer makes it, or the system has it.
+    Never,
+}
+
+/// The toolchains' caches and user installs under the home folder.
+const TOOL_DIRS: &[(&str, Make)] = &[
+    (".cache", Make::Always),
+    (".cargo", Make::With("cargo")),
+    (".rustup", Make::Never),
+    (".npm", Make::With("npm")),
+    (".yarn", Make::With("yarn")),
+    (".bun", Make::Never),
+    (".deno", Make::With("deno")),
+    (".m2", Make::With("mvn")),
+    (".gradle", Make::With("gradle")),
+    (".nuget", Make::With("dotnet")),
+    (".local/bin", Make::Never),
+    (".local/lib", Make::Never),
+    (".local/share/pnpm", Make::With("pnpm")),
+    (".local/share/uv", Make::With("uv")),
+    (".local/state", Make::Always),
+    ("go", Make::With("go")),
+    // macOS: the caches (Homebrew, pip, clang's modules) and Xcode's
+    // build products.
+    ("Library/Caches", Make::Never),
+    ("Library/Developer/Xcode/DerivedData", Make::Never),
+];
+
+/// Makes the folders of [`TOOL_DIRS`] under `home` that should be there
+/// and aren't, `installed` saying whether a program is. Not the home itself.
+fn make_missing(home: &Path, installed: impl Fn(&str) -> bool) {
+    if !home.is_dir() {
+        return;
+    }
+    for (rel, make) in TOOL_DIRS {
+        let dir = home.join(rel);
+        let wanted = match make {
+            Make::Always => true,
+            Make::With(program) => installed(program),
+            Make::Never => false,
+        };
+        if wanted && !dir.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+        }
+    }
+}
+
 /// Where a command run in `root` may write: `root` itself, the temporary
 /// folders, and the toolchains' caches and user installs under the home
-/// folder (what a build or a test run writes besides the project). Only
-/// those that exist right now. Everything else is read-only to it.
+/// folder (what a build or a test run writes besides the project), made
+/// first where a tool would make them ([`Make`]). Only those that exist.
+/// Everything else is read-only to it.
 pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
-    const UNDER_HOME: &[&str] = &[
-        ".cache",
-        ".cargo",
-        ".rustup",
-        ".npm",
-        ".yarn",
-        ".bun",
-        ".deno",
-        ".m2",
-        ".gradle",
-        ".nuget",
-        ".local/bin",
-        ".local/lib",
-        ".local/share/pnpm",
-        ".local/share/uv",
-        ".local/state",
-        "go",
-        // macOS: the caches (Homebrew, pip, clang's modules) and Xcode's
-        // build products.
-        "Library/Caches",
-        "Library/Developer/Xcode/DerivedData",
-    ];
     let mut dirs = vec![root.to_path_buf(), std::env::temp_dir()];
     dirs.extend(std::env::var_os("TMPDIR").map(PathBuf::from));
     // The system's too where `TMPDIR` is elsewhere (a daemon's own, K13):
@@ -207,11 +242,12 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
     if cfg!(unix) {
         dirs.push(PathBuf::from("/tmp"));
     }
-    dirs.extend(
-        home()
-            .into_iter()
-            .flat_map(|home| UNDER_HOME.iter().map(move |rel| home.join(rel))),
-    );
+    if let Some(home) = home() {
+        if cfg!(unix) {
+            make_missing(&home, crate::process::on_path);
+        }
+        dirs.extend(TOOL_DIRS.iter().map(|(rel, _)| home.join(rel)));
+    }
     // macOS: the user's cache folder beside `TMPDIR` (/var/folders/…/C),
     // where the developer tools keep theirs.
     if cfg!(target_os = "macos") {
@@ -1192,6 +1228,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&registered);
         assert!(writable_dirs(&std::env::temp_dir())
             .contains(&std::env::temp_dir().canonicalize().unwrap()));
+    }
+
+    /// A tool's folder is made before its first sandboxed run: the XDG ones
+    /// always, a toolchain's only where it's installed; nothing the
+    /// installer makes, and nothing in a home that isn't there.
+    #[test]
+    fn missing_tool_folders_are_made_where_a_tool_would_make_them() {
+        let home = std::env::temp_dir().join(format!("confine-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        make_missing(&home, |_| true);
+        assert!(!home.exists());
+        std::fs::create_dir_all(&home).unwrap();
+        make_missing(&home, |program| program == "go");
+        assert!(home.join(".cache").is_dir());
+        assert!(home.join(".local/state").is_dir());
+        assert!(home.join("go").is_dir());
+        assert!(!home.join(".npm").exists());
+        assert!(!home.join(".rustup").exists());
+        assert!(!home.join(".local/bin").exists());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Windows has no sandbox: the app, which requires one, runs no command
