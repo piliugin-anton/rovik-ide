@@ -129,6 +129,141 @@ pub fn packages_script() -> String {
     )
 }
 
+/// Why WSL2 can't run on this Windows, when it can't: before build 18362
+/// (Windows 10 version 1903), and on Windows 7, 8 and 8.1, there's no
+/// WSL2 to install. None elsewhere, and where the version can't be read.
+pub async fn unsupported_windows() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let mut command = rovik_core::process::command("cmd.exe");
+    rovik_core::process::no_window(&mut command);
+    let printed = tokio::process::Command::from(command)
+        .args(["/C", "ver"])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(10), printed)
+        .await
+        .ok()?
+        .ok()?;
+    too_old_for_wsl2(&decode(&output.stdout))
+}
+
+/// The oldest Windows with WSL2: 10.0.18362, Windows 10 version 1903.
+const OLDEST_WITH_WSL2: (u32, u32, u32) = (10, 0, 18362);
+
+/// What `ver` printed ("Microsoft Windows [Version 10.0.19045.3693]"),
+/// judged: why WSL2 can't run on it, when it can't.
+pub fn too_old_for_wsl2(ver: &str) -> Option<String> {
+    let (major, minor, build) = windows_version(ver)?;
+    if (major, minor, build) >= OLDEST_WITH_WSL2 {
+        return None;
+    }
+    let name = match (major, minor) {
+        (6, 1) => "Windows 7".to_string(),
+        (6, 2) => "Windows 8".to_string(),
+        (6, 3) => "Windows 8.1".to_string(),
+        _ => format!("Windows {major}.{minor} build {build}"),
+    };
+    Some(format!(
+        "This is {name}: WSL2 needs Windows 10 version 1903 (build 18362) or newer, or Windows 11. \
+         Update Windows to use the agent's commands on this computer."
+    ))
+}
+
+/// The major, minor and build numbers in what `ver` printed.
+fn windows_version(ver: &str) -> Option<(u32, u32, u32)> {
+    let after = ver.split("Version ").nth(1)?;
+    let numbers = after
+        .trim_end_matches(|c: char| c != ']')
+        .trim_end_matches(']');
+    let mut parts = numbers
+        .trim()
+        .split('.')
+        .map(|n| n.trim().parse::<u32>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+/// What the `wsl.exe` errors WSL2 is known to start with mean, each with
+/// what to do about it, by what the error names: its code (`0x80370102`),
+/// its name (`HCS_E_HYPERV_NOT_INSTALLED`) or its text.
+const EXPLAINED: &[(&[&str], &str)] = &[
+    (
+        &[
+            "hcs_e_hyperv_not_installed",
+            "0x80370102",
+            "hcs_e_service_not_available",
+            "0x80370114",
+            "wsl_e_vm_mode_not_supported",
+            "virtual machine platform",
+            "virtualization",
+            "hypervisor",
+        ],
+        "WSL2's virtual machine can't start: virtualization is turned off, or Windows' \
+         \"Virtual Machine Platform\" is missing. Turn Intel VT-x or AMD-V on in the computer's \
+         BIOS/UEFI settings, turn the Virtual Machine Platform on (an administrator PowerShell: \
+         wsl --install --no-distribution), and restart.",
+    ),
+    (
+        &[
+            "wsl_e_wsl_optional_component_required",
+            "0x8007019e",
+            "optional component is not enabled",
+        ],
+        "WSL isn't turned on in Windows: run wsl --install from an administrator PowerShell, \
+         and restart.",
+    ),
+    (
+        &["0x800701bc", "kernel component"],
+        "WSL2's kernel is out of date: run wsl --update from an administrator PowerShell.",
+    ),
+    (
+        &["0x80070422", "lxssmanager"],
+        "The WSL service (LxssManager) is disabled: enable it in Services, or run wsl --install \
+         from an administrator PowerShell.",
+    ),
+    (
+        &["hcs_e_connection_timeout", "0x80370109"],
+        "WSL2's virtual machine didn't answer in time: run wsl --shutdown from a PowerShell, \
+         and try again.",
+    ),
+    (
+        &[
+            "wsl_e_distro_not_found",
+            "no distribution with the supplied name",
+        ],
+        "The distribution isn't installed any more: set WSL up again with one that is.",
+    ),
+    (
+        &[
+            "wsl_e_default_distro_not_found",
+            "no installed distributions",
+        ],
+        "No distribution is installed: install one from an administrator PowerShell \
+         (wsl --install -d Ubuntu), and come back.",
+    ),
+];
+
+/// What a `wsl.exe` error means, with what to do about it, for the known
+/// ways WSL2 fails to start; None for one this doesn't know.
+pub fn explain(error: &str) -> Option<&'static str> {
+    let error = error.to_ascii_lowercase();
+    let known = |needles: &[&str]| needles.iter().any(|needle| error.contains(needle));
+    EXPLAINED
+        .iter()
+        .find(|(needles, _)| known(needles))
+        .map(|(_, meaning)| *meaning)
+}
+
+/// `error` with what it means in front, when `explain` knows.
+pub fn explained(error: String) -> String {
+    match explain(&error) {
+        Some(meaning) => format!("{meaning} ({})", error.trim()),
+        None => error,
+    }
+}
+
 /// The distributions installed here, as `wsl.exe -l -q` lists them.
 pub async fn distros() -> Result<Vec<String>, String> {
     let mut command = rovik_core::process::command(PROGRAM);
@@ -163,7 +298,7 @@ pub fn parse_distros(printed: &[u8]) -> Vec<String> {
 
 /// What `wsl.exe` printed: UTF-16LE, as it writes to a pipe on Windows
 /// (every ASCII character followed by a zero byte), or UTF-8.
-fn decode(printed: &[u8]) -> String {
+pub fn decode(printed: &[u8]) -> String {
     let utf16 = printed.len() >= 2 && printed.len().is_multiple_of(2) && printed[1] == 0;
     if utf16 {
         let units: Vec<u16> = printed
@@ -194,6 +329,61 @@ mod tests {
         assert_eq!(wsl.shell().args, ["-d", "Debian", "--exec"]);
         assert_eq!(wsl.display(), "WSL: Debian");
         assert_eq!(wsl.shell().program.to_string_lossy(), PROGRAM);
+    }
+
+    #[test]
+    fn the_known_startup_failures_are_explained() {
+        let hyperv = "wsl.exe couldn't list the distributions: The virtual machine could not be \
+                      started because a required feature is not installed.\nError code: \
+                      Wsl/Service/CreateInstance/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED";
+        let meaning = explain(hyperv).unwrap();
+        assert!(
+            meaning.starts_with("WSL2's virtual machine can't start"),
+            "{meaning}"
+        );
+        assert!(meaning.contains("BIOS/UEFI"));
+        assert_eq!(explain("Error code: Wsl/0x80370102"), Some(meaning));
+        assert!(explain("Error code: Wsl/0x800701bc")
+            .unwrap()
+            .contains("wsl --update"));
+        assert!(explain("WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED")
+            .unwrap()
+            .contains("wsl --install"));
+        assert_eq!(explain("sh: 1: rovik-agentd: not found"), None);
+        // The meaning first, the error after it.
+        let whole = explained(format!("{hyperv}\n"));
+        assert!(whole.starts_with(meaning), "{whole}");
+        assert!(whole.ends_with("HCS_E_HYPERV_NOT_INSTALLED)"), "{whole}");
+        assert_eq!(explained("other".into()), "other");
+    }
+
+    #[test]
+    fn windows_before_1903_cant_run_wsl2() {
+        assert_eq!(
+            too_old_for_wsl2("Microsoft Windows [Version 10.0.19045.3693]"),
+            None
+        );
+        assert_eq!(
+            too_old_for_wsl2("\r\nMicrosoft Windows [Version 10.0.22631.4317]\r\n"),
+            None
+        );
+        assert_eq!(
+            too_old_for_wsl2("Microsoft Windows [Version 10.0.18362.1]"),
+            None
+        );
+        let old = too_old_for_wsl2("Microsoft Windows [Version 10.0.17763.5576]").unwrap();
+        assert!(
+            old.starts_with("This is Windows 10.0 build 17763: WSL2 needs"),
+            "{old}"
+        );
+        let seven = too_old_for_wsl2("Microsoft Windows [Version 6.1.7601]").unwrap();
+        assert!(seven.starts_with("This is Windows 7:"), "{seven}");
+        assert!(too_old_for_wsl2("Microsoft Windows [Version 6.3.9600]")
+            .unwrap()
+            .starts_with("This is Windows 8.1:"));
+        // Unreadable: no verdict.
+        assert_eq!(too_old_for_wsl2("Linux"), None);
+        assert_eq!(too_old_for_wsl2("Microsoft Windows [Version x]"), None);
     }
 
     #[test]

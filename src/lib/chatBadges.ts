@@ -5,7 +5,7 @@
 // subagents, local or remote; its host's name for a chat on a host, or
 // that the host can't be reached; and that it's moving.
 import { chatsWaitingOnApprovals } from './approvals';
-import { hostName, placeLabel, type HostSummary } from './cloud';
+import { hostName, isWsl, placeLabel, WSL_PAGE, type HostSummary } from './cloud';
 import { chatsWaitingOnQuestions } from './questions';
 import type { DialogSummary } from '../types';
 
@@ -37,6 +37,8 @@ export function chatBadges(
   const place = dialog.place;
   if (place?.kind === 'host') {
     const name = hostName(place.host, hosts);
+    // A chat in WSL is this computer's: no badge while all is well.
+    const wsl = isWsl(place.host, hosts);
     switch (hosts.find((h) => h.id === place.host)?.state) {
       case 'offline':
         badges.push({
@@ -55,12 +57,16 @@ export function chatBadges(
       case 'refused':
         badges.push({
           kind: 'offline',
-          label: `${name} · refused`,
-          title: `${name} turned this computer away: Settings → Cloud hosts says why.`,
+          label: wsl ? 'WSL · couldn’t start' : `${name} · refused`,
+          title: wsl
+            ? `WSL couldn’t start: ${WSL_PAGE} says why.`
+            : `${name} turned this computer away: Settings → Cloud hosts says why.`,
         });
         break;
       default:
-        badges.push({ kind: 'cloud', label: name, title: `This chat runs on ${name}.` });
+        if (!wsl) {
+          badges.push({ kind: 'cloud', label: name, title: `This chat runs on ${name}.` });
+        }
     }
   } else if (place) {
     badges.push({ kind: 'moving', label: 'Moving…', title: placeLabel(place, hosts).title });

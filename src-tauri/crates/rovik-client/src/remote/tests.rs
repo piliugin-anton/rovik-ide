@@ -634,6 +634,64 @@ async fn a_project_with_a_remote_chat_isnt_merged_or_deleted() {
     assert_eq!(remote.keep_project(&all_local, "deleting it").await, Ok(()));
 }
 
+/// A computer whose chats run on its Linux side (WSL on Windows): a local
+/// chat of a project moves there before it starts, as "Move to" would, and
+/// a move that fails is the start's failure. A chat without a project
+/// folder here stays, as does one at work here. Removed, the host is
+/// nobody's home.
+#[tokio::test]
+async fn a_chat_of_a_project_goes_home_before_it_starts() {
+    let app = App::new();
+    let folder = app.dir.0.join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let root = folder.to_string_lossy().into_owned();
+    let opened = rovik_core::chat_db::api::chat_open_project(&app.core.db, root.clone()).await;
+    let project = opened.unwrap().project.id;
+    app.chat("chat", Some(&project), Vec::new()).await;
+    app.chat("homeless", None, Vec::new()).await;
+    let fake = Fake::default();
+    *fake.features.lock().unwrap() = vec![features::MIRROR.into(), features::PROJECTS.into()];
+    let (remote, fake) = connected_to(&app, fake).await;
+    assert_eq!(remote.goes_home("chat").await, Ok(true));
+    assert_eq!(remote.goes_home("homeless").await, Ok(false));
+
+    remote.set_home(Some(HOST));
+    let told: Arc<Mutex<Vec<CloudEvent>>> = Arc::default();
+    let sink = told.clone();
+    remote.on_cloud(Arc::new(move |e| sink.lock().unwrap().push(e)));
+    let mut request = start("chat", StartKind::Retry, None);
+    request.root = Some(root);
+    // The fake daemon takes no packs: the move fails at the push, and so
+    // does the start, the chat here as it was.
+    let failed = remote.start(request).await.unwrap_err();
+    assert_ne!(failed.code, FailCode::Internal, "{failed}");
+    let requests = fake.requests.lock().unwrap().clone();
+    assert!(
+        requests
+            .iter()
+            .any(|r| matches!(r, Request::ProjectEnsure { .. })),
+        "the move didn't begin: {requests:?}"
+    );
+    assert!(starts(&fake).is_empty(), "started without the move");
+    let at = app.core.db.read(|c| location::of_chat(c, "chat")).await;
+    assert_eq!(at, Ok(Location::Here));
+    assert_eq!(remote.host_of("chat"), None);
+    // The frontend saw the move, and its end.
+    let steps: Vec<String> = told
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            CloudEvent::Moving { step, .. } => Some(step.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(steps, ["pushing", "failed"]);
+
+    remote.disconnect(HOST);
+    assert_eq!(remote.home(), None);
+}
+
 /// 6.5: results land by themselves in the open project, which the user's
 /// answer about its folder (a copy, or a project that moved) can change.
 #[tokio::test]

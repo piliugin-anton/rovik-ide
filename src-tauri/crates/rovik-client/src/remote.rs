@@ -212,6 +212,11 @@ struct State {
     backs: HashMap<String, String>,
     /// The sends whose files are going up, by chat: Stop cancels one.
     uploads: HashMap<String, oneshot::Sender<()>>,
+    /// The host this computer's chats run on when they don't run here:
+    /// its Linux side (the WSL distribution, on Windows), where their
+    /// commands are sandboxed. A chat of a project moves there before its
+    /// first start (remote/moving.rs, `go_home`).
+    home: Option<String>,
     /// The project open in the app: its id and folder (6.5).
     open: Option<(String, PathBuf)>,
     /// Each chat's snapshot as its last sync took it (6.7).
@@ -419,6 +424,16 @@ impl Remote {
         self.lock().chats.get(dialog_id).cloned()
     }
 
+    /// The host this computer's chats go to before they run, when they
+    /// have one (`State::home`): none from now on with `None`.
+    pub fn set_home(&self, host: Option<&str>) {
+        self.lock().home = host.map(str::to_string);
+    }
+
+    pub fn home(&self) -> Option<String> {
+        self.lock().home.clone()
+    }
+
     /// Each host's connection, by its id.
     pub fn states(&self) -> Vec<(String, HostState)> {
         self.hosts.states()
@@ -498,6 +513,9 @@ impl Remote {
         let mut state = self.lock();
         state.policies.remove(host);
         state.autonomy.remove(host);
+        if state.home.as_deref() == Some(host) {
+            state.home = None;
+        }
     }
 
     /// A call about the host itself (the Host group): `HostInfo`,
@@ -689,12 +707,17 @@ impl Remote {
         }
     }
 
-    /// A start (6.1). A remote chat's is prepared for its host first: its
-    /// project checked here and synced before a message (6.7), local paths
-    /// taken out of the request's text (K08), the project's settings added
-    /// (K03), the host's approval policy applied (6.9), and the text left
-    /// out when the host has it already (K50).
+    /// A start (6.1). A local chat of a project goes to the computer's home
+    /// host first, when it has one (`go_home`). A remote chat's start is
+    /// prepared for its host: its project checked here and synced before a
+    /// message (6.7), local paths taken out of the request's text (K08),
+    /// the project's settings added (K03), the host's approval policy
+    /// applied (6.9), and the text left out when the host has it already
+    /// (K50).
     pub async fn start(&self, mut request: StartRequest) -> Result<Response, Fail> {
+        if self.host_of(&request.dialog_id).is_none() {
+            self.go_home(&request.dialog_id).await?;
+        }
         let Some(host) = self.host_of(&request.dialog_id) else {
             return rovik_core::dispatch(&self.core, Request::AgentStart(Box::new(request))).await;
         };

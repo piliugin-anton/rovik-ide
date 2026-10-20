@@ -510,6 +510,8 @@ impl HostsPage {
         if let Some(wsl) = host.wsl() {
             let connector = self.wsl_connector(host, &wsl);
             self.remote.connect(&host.id, connector, identity);
+            // This computer's chats run there (Remote::start).
+            self.remote.set_home(Some(&host.id));
             return Ok(());
         }
         if host.auth == AuthKind::SystemSsh {
@@ -1143,6 +1145,9 @@ pub struct WslStatus {
     /// Why it doesn't, when it doesn't.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
+    /// This Windows can't run WSL2 (`wsl::unsupported_windows`): no
+    /// install would help.
+    pub unsupported: bool,
     /// The distributions installed here.
     pub distros: Vec<String>,
     /// The distribution set up, when one is, and the user in it.
@@ -1172,9 +1177,11 @@ impl HostsPage {
     }
 
     pub async fn wsl_status(&self) -> Result<WslStatus, String> {
-        let (available, unavailable, distros) = match wsl::distros().await {
-            Ok(distros) => (true, None, distros),
-            Err(why) => (false, Some(why), Vec::new()),
+        let unsupported = wsl::unsupported_windows().await;
+        let (available, unavailable, distros) = match (&unsupported, wsl::distros().await) {
+            (Some(why), _) => (false, Some(why.clone()), Vec::new()),
+            (None, Ok(distros)) => (true, None, distros),
+            (None, Err(why)) => (false, Some(wsl::explained(why)), Vec::new()),
         };
         let host = self.wsl_host()?;
         let (distro, user) = match host.as_ref().and_then(Host::wsl) {
@@ -1196,10 +1203,12 @@ impl HostsPage {
             .unconnected()
             .get(WSL_HOST)
             .cloned()
-            .or_else(|| self.remote.refusal(WSL_HOST));
+            .or_else(|| self.remote.refusal(WSL_HOST))
+            .map(wsl::explained);
         Ok(WslStatus {
             available,
             unavailable,
+            unsupported: unsupported.is_some(),
             distros,
             distro,
             user,
@@ -1256,7 +1265,7 @@ impl HostsPage {
         if let Err(e) = root.run(&wsl::packages_script(), &[], PACKAGES_WAIT).await {
             log::warn!("{}: its packages weren't installed: {e}", wsl.display());
         }
-        self.deploy(WSL_HOST, None).await
+        self.deploy(WSL_HOST, None).await.map_err(explained)
     }
 
     /// Tests the distribution's connection, a step at a time.
@@ -1270,7 +1279,7 @@ impl HostsPage {
     /// Rovik in the distribution brought to this app's version, as an app
     /// update leaves it behind: the user is the administrator there.
     pub async fn wsl_update(&self) -> Result<(), DeployFailure> {
-        self.upgrade(WSL_HOST).await
+        self.upgrade(WSL_HOST).await.map_err(explained)
     }
 
     /// Rovik removed from the distribution, which the app then forgets.
@@ -1283,6 +1292,17 @@ impl HostsPage {
             self.remove_rovik(WSL_HOST, &removal).await?;
         }
         self.remove(WSL_HOST).await.map_err(DeployFailure::from)
+    }
+}
+
+/// A WSL deploy's failure, with what `wsl.exe`'s error means in front
+/// when it's a known one (`wsl::explain`).
+fn explained(failure: DeployFailure) -> DeployFailure {
+    match failure {
+        DeployFailure::Failed { message } => DeployFailure::Failed {
+            message: wsl::explained(message),
+        },
+        other => other,
     }
 }
 

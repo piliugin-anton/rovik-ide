@@ -316,13 +316,18 @@ pub fn hiding_if_available(root: &Path) -> Option<Confine> {
 }
 
 /// Why no command of the agent's may run here, if none may: on Linux the
-/// sandbox is required, and its program is missing or can't make one.
+/// sandbox is required, and its program is missing or can't make one; on
+/// Windows commands run in the computer's Linux side (WSL), never here.
 /// None where the sandbox works, where it's turned off, and on systems
 /// without a mechanism yet (their text checks apply).
 pub fn refusal() -> Option<String> {
     #[cfg(target_os = "linux")]
     if !switched_off() && chosen().is_none() {
         return Some(linux::missing());
+    }
+    #[cfg(target_os = "windows")]
+    if !switched_off() {
+        return Some(windows::MISSING.into());
     }
     None
 }
@@ -509,7 +514,7 @@ mod linux {
 
 /// A system with no mechanism yet: the callers' text checks apply, nothing
 /// is required, nothing can be installed.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn no_sandbox_yet() -> SandboxStatus {
     SandboxStatus {
         required: false,
@@ -560,14 +565,28 @@ mod macos {
 /// (`/S /C "…"`); a mechanism here gets that line as `args` and must pass
 /// it on the same way.
 #[cfg(windows)]
+/// Windows has no sandbox of its own: a chat of a project runs in the WSL
+/// distribution the app sets up (the client's `Remote::go_home`), where
+/// Rovik's daemon confines its commands with bubblewrap, and a chat that
+/// runs here, without a project, is refused its commands.
 mod windows {
     use super::{InstallOutcome, Mechanism, SandboxStatus};
 
     pub(super) const PROBE: (&str, &[&str]) = ("cmd.exe", &["/C", "exit", "0"]);
     pub(super) static MECHANISMS: &[&dyn Mechanism] = &[];
 
+    pub(super) const MISSING: &str = "On Windows the agent's commands run sandboxed in this \
+        computer's Linux side (WSL), which a chat of a project moves to before it runs: open the \
+        chat's project, and set WSL up in Settings → This computer → WSL if it isn't.";
+
     pub(super) fn status() -> SandboxStatus {
-        super::no_sandbox_yet()
+        SandboxStatus {
+            required: true,
+            program: "WSL",
+            working: false,
+            detail: Some(MISSING.into()),
+            can_install: false,
+        }
     }
 
     pub(super) async fn install() -> Result<InstallOutcome, String> {

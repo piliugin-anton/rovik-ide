@@ -622,8 +622,10 @@ without it the agent's commands are refused. Your own terminal isn't
 sandboxed, and `ROVIK_CONFINE_COMMANDS=0` turns the sandbox off for
 troubleshooting. On Windows, Rovik's Linux side runs in a WSL2
 distribution (Settings → This computer → WSL): the daemon runs inside it
-with the same sandbox, the app reaches it through `wsl.exe`, and Rovik
-there follows the app's updates. macOS has no sandbox yet
+with the same sandbox, every chat of a project moves there by itself when
+it first runs, the app reaches it through `wsl.exe`, and Rovik there
+follows the app's updates; a chat without a project, or a computer
+without WSL, is refused its commands. macOS has no sandbox yet
 (`src-tauri/crates/rovik-core/src/overlay/confine.rs` says what to add):
 there a command that names the project's full path is refused instead.
 

@@ -20,8 +20,10 @@ import {
   worksOnItsOwn,
   type CloudEvent,
   type HostSummary,
+  isWsl,
 } from './cloud';
 import { chatStore } from './chatStore';
+import { wslSummary, type WslStatus } from './wsl';
 import type { DialogSummary } from '../types';
 
 const callbacks = new Map<number, (event: unknown) => void>();
@@ -115,6 +117,60 @@ test('the chip: this computer, a host by name and whether it’s there, or the m
     'Moving back from Spare…'
   );
   assert.equal(hostName('h3', HOSTS), 'New');
+});
+
+test('a chat in WSL is this computer’s: no host name, and its troubles point at its page', () => {
+  const hosts: HostSummary[] = [...HOSTS, { id: 'wsl', name: 'WSL', deployed: true, wsl: true }];
+  assert.equal(isWsl('wsl', hosts), true);
+  assert.equal(isWsl('h1', hosts), false);
+  assert.equal(placeLabel({ kind: 'host', host: 'wsl' }, hosts).label, 'This computer (WSL)');
+  assert.equal(
+    placeLabel({ kind: 'moving', host: 'wsl' }, hosts).label,
+    'Moving to This computer (WSL)…'
+  );
+  const inState = (state: HostSummary['state']): HostSummary[] => [
+    { id: 'wsl', name: 'WSL', deployed: true, wsl: true, state },
+  ];
+  assert.equal(readOnlyReason({ kind: 'host', host: 'wsl' }, inState('ready')), null);
+  assert.match(
+    readOnlyReason({ kind: 'host', host: 'wsl' }, inState('offline'))!,
+    /^WSL isn’t running: .*Settings → This computer → WSL/
+  );
+  assert.match(
+    readOnlyReason({ kind: 'host', host: 'wsl' }, inState('refused'))!,
+    /^WSL couldn’t start: .*Settings → This computer → WSL says what’s wrong/
+  );
+  assert.match(
+    readOnlyReason({ kind: 'host', host: 'wsl' }, inState('version-mismatch'))!,
+    /Rovik in WSL is newer than this app/
+  );
+  assert.match(
+    readOnlyReason({ kind: 'moving', host: 'wsl' }, hosts)!,
+    /moving to WSL, where it runs/
+  );
+  // The Settings menu's line.
+  const status = (over: Partial<WslStatus>): WslStatus => ({
+    available: true,
+    unsupported: false,
+    distros: [],
+    deployed: false,
+    outdated: false,
+    appVersion: '1.0.0',
+    ...over,
+  });
+  assert.equal(wslSummary(status({ available: false })).text, 'WSL isn’t installed');
+  assert.equal(
+    wslSummary(status({ available: false, unsupported: true })).text,
+    'WSL2 can’t run on this Windows'
+  );
+  assert.equal(
+    wslSummary(status({ deployed: true, state: 'ready', distro: 'Ubuntu' })).text,
+    'Ubuntu, connected'
+  );
+  assert.equal(
+    wslSummary(status({ deployed: true, state: 'refused', distro: 'Ubuntu' })).warning,
+    true
+  );
 });
 
 test('a chat on a host that works on its own, and only there, goes in Autopilot (H02)', () => {

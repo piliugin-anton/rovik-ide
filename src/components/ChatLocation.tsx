@@ -194,7 +194,11 @@ export default function ChatLocation(props: {
                   {(on) => (
                     <>
                       <ContextMenuItem
-                        label="Move back to this computer…"
+                        label={
+                          hostOf(on().host)?.wsl
+                            ? 'Move out of WSL…'
+                            : 'Move back to this computer…'
+                        }
                         disabled={!!unavailable(hostOf(on().host))}
                         onClick={() => openMove('back', on().host)}
                       />

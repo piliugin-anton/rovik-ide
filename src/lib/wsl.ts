@@ -17,6 +17,8 @@ export interface WslStatus {
   available: boolean;
   /** Why it doesn't, when it doesn't. */
   unavailable?: string;
+  /** This Windows can't run WSL2 (too old): no install would help. */
+  unsupported: boolean;
   /** The distributions installed here. */
   distros: string[];
   /** The distribution set up, when one is, and the user in it. */
@@ -50,7 +52,12 @@ export const onWindows = () => navigator.platform.toUpperCase().includes('WIN');
 
 /** One line for the Settings menu. */
 export function wslSummary(status: WslStatus): { text: string; warning: boolean } {
-  if (!status.available) return { text: 'WSL isn’t installed', warning: true };
+  if (!status.available) {
+    return {
+      text: status.unsupported ? 'WSL2 can’t run on this Windows' : 'WSL isn’t installed',
+      warning: true,
+    };
+  }
   if (!status.deployed) return { text: 'Not set up', warning: true };
   switch (status.state) {
     case 'ready':

@@ -8,6 +8,7 @@
 import { loadPrefs, savePrefs } from './localPrefs';
 import { notify } from './notifications';
 import { installSandbox, sandboxStatus, type SandboxStatus } from './sandbox';
+import { onWindows } from './wsl';
 
 const PREFS_KEY = 'rovik.sandbox';
 const NOTE = 'sandbox-setup';
@@ -68,7 +69,8 @@ let started = false;
 
 /** Once per app run, in the background. */
 export async function startSandbox() {
-  if (started) return;
+  // On Windows the sandbox is WSL's: wslStartup.ts sees to it.
+  if (started || onWindows()) return;
   started = true;
   let status: SandboxStatus;
   try {

@@ -112,13 +112,14 @@ export default function WslSettings() {
       <section class="settings-section">
         <div class="settings-section-title">What it is</div>
         <p class="settings-hint">
-          On Windows, Rovik’s Linux side runs in a WSL2 distribution: the agent’s commands run there
-          in a sandbox (bubblewrap: the system read-only but for the chat’s own folders, your
-          credentials hidden, no other process in sight), and the chats’ overlays use FUSE. Setting
-          it up installs Rovik in the distribution, as root inside it, with the packages it needs,
-          and starts its daemon; Rovik there follows this app’s updates on its own. Install the
-          toolchains your projects need (node, cargo, python…) in the distribution, as the commands
-          run there.
+          On Windows, Rovik’s Linux side runs in a WSL2 distribution: every chat of a project moves
+          there by itself when it first runs, and the agent’s commands run there in a sandbox
+          (bubblewrap: the system read-only but for the chat’s own folders, your credentials hidden,
+          no other process in sight), with the chats’ overlays on FUSE. Setting it up installs Rovik
+          in the distribution, as root inside it, with the packages it needs, and starts its daemon;
+          Rovik there follows this app’s updates on its own. Install the toolchains your projects
+          need (node, cargo, python…) in the distribution, as the commands run there. A chat without
+          a project stays on this computer, where commands are refused.
         </p>
       </section>
 
@@ -132,9 +133,11 @@ export default function WslSettings() {
                   WSL isn’t available: {s().unavailable}
                 </p>
                 <p class="settings-hint">
-                  Install it from an administrator PowerShell with <code>wsl --install</code>,
-                  restart the computer, then come back here. Until then the agent’s commands are
-                  refused on this computer.
+                  <Show when={!s().unsupported} fallback={<>Until Windows is updated, </>}>
+                    Install it from an administrator PowerShell with <code>wsl --install</code>,
+                    restart the computer, then come back here. Until then{' '}
+                  </Show>
+                  the agent’s commands are refused on this computer.
                 </p>
               </Show>
               <Show when={s().available && (!deployed() || choosing())}>

@@ -25,7 +25,10 @@ pub async fn wsl_setup(
 }
 
 #[tauri::command]
-pub async fn wsl_test(app: AppHandle, page: State<'_, Arc<HostsPage>>) -> Result<Vec<Step>, String> {
+pub async fn wsl_test(
+    app: AppHandle,
+    page: State<'_, Arc<HostsPage>>,
+) -> Result<Vec<Step>, String> {
     super::hosts::hosts_test(app, page, WSL_HOST.into()).await
 }
 

@@ -207,6 +207,20 @@ upgrade and no chat list: the chats there are the computer's own. The
 app reaches the daemon through `wsl.exe -d <distro> --exec rovik-agentd
 attach --stdio`, the byte bridge an SSH exec channel uses too.
 
+Every chat of a project moves there by itself when it first runs, as
+"Move to" a cloud host would (its project synced into a worktree there,
+its results landing back in the project), and is shown as "This computer
+(WSL)"; a move that fails is the start's failure, with the cause. A chat
+without a project stays on this computer, where the agent's commands are
+refused, as they are until WSL is set up. When the distribution can't
+start, the page and a notification say why in plain words for the known
+cases: virtualization turned off in the BIOS/UEFI or Windows' Virtual
+Machine Platform missing (`HCS_E_HYPERV_NOT_INSTALLED`, `0x80370102`),
+WSL turned off (`0x8007019e`), its kernel out of date (`0x800701bc`), the
+WSL service disabled (`0x80070422`); and a Windows too old for WSL2
+(before Windows 10 version 1903, build 18362) is told so before anything
+is tried.
+
 ## The browser
 
 The browser tools use Chrome for Testing, Google's build of Chromium for

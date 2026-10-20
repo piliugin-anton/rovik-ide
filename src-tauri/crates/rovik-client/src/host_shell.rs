@@ -204,10 +204,27 @@ impl ProcessConnector {
         let mut state = self.state.lock().await;
         let fresh = state.ensured.is_some_and(|at| at.elapsed() < STARTED_FOR);
         if let (Some(script), false) = (&self.ensure, fresh) {
-            self.shell
+            let out = self
+                .shell
                 .run(script, &[], START_WAIT)
                 .await
                 .map_err(io::Error::other)?;
+            // The program itself failed (WSL's virtual machine couldn't
+            // start, say): what it said is the refusal, explained where
+            // it's a known one, tried again now and then.
+            if out.status != Some(0) {
+                let said = crate::wsl::decode(&out.stderr);
+                let why = format!(
+                    "{}: the daemon couldn't be started: {}",
+                    self.shell.name,
+                    said.trim()
+                );
+                return Err(Refusal {
+                    why: crate::wsl::explained(why),
+                    may_pass: true,
+                }
+                .into_error());
+            }
             state.ensured = Some(Instant::now());
         }
         if let (Some(check), false) = (&self.install, state.checked) {
