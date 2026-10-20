@@ -500,6 +500,9 @@ pub struct ReplyParser {
     commentary: Vec<u64>,
     /// Their text, in case the reply turns out to be nothing else.
     commentary_text: String,
+    /// Responses API: how many of `reasoning_details` have their place
+    /// decided: before a call (`before_call`), or before the reply's text.
+    responses_placed: usize,
     /// Responses API: where to note that this model labels its messages
     /// with a phase (`responses::note_phases`).
     phase_key: Option<String>,

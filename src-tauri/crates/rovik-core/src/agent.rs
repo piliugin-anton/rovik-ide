@@ -228,7 +228,10 @@ fn apply_reasoning_level(
 ///
 /// A streamed request also asks for the token counts at the end
 /// (`stream_options.include_usage`, see `stream_usage`), dropped the same way
-/// if the provider rejects it.
+/// if the provider rejects it. So is the reasoning sent back with the steps
+/// (reasoning_echo.rs), and on the Responses API the request for encrypted
+/// reasoning: refused by a 400 naming them, or by a bare 400 that sending
+/// none of it then fixes, they aren't sent to that model there again.
 ///
 /// The API route is found here too. `url` is the chat completions URL; a
 /// model starts on the route it was last found to work on (this run of the
@@ -272,11 +275,13 @@ pub async fn run_with_reasoning(
     let mut rejected: Vec<String> = Vec::new();
     let mut stripped_blindly: Vec<String> = Vec::new();
     let mut ask_usage = streaming && stream_usage::wanted(url);
-    // Reasoning sent back (reasoning_echo.rs), until the server refuses it.
-    let mut echo = crate::reasoning_echo::wanted(url);
+    let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
+    // Reasoning sent back (reasoning_echo.rs), until the server refuses it
+    // for this model.
+    let mut echo = crate::reasoning_echo::wanted(url, model);
     // Dropped after a 400 naming nothing: only blamed if that then works.
     let mut usage_stripped_blindly = false;
-    let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("");
+    let mut echo_stripped_blindly = false;
     let responses_url = responses::responses_url(url);
     // Nothing known: the Responses API first (`Api::default`). Without a
     // known `/responses` URL, chat completions is all there is.
@@ -324,7 +329,11 @@ pub async fn run_with_reasoning(
                     responses::request_body(&attempt_body, phases, echo),
                 )
             }
-            _ => (url, attempt_body),
+            _ => {
+                // Commentary goes back on the Responses API only.
+                crate::reasoning_echo::strip_commentary(&mut attempt_body);
+                (url, attempt_body)
+            }
         };
         let spec = crate::chat_request::RequestSpec {
             client,
@@ -368,15 +377,14 @@ pub async fn run_with_reasoning(
                     force_fell_back = true;
                     continue;
                 }
-                // Reasoning sent back, or the request for it: not for this server.
+                // Reasoning sent back, or the request for it: not for this
+                // model on this server.
                 let echo_named = echo_refused(&text);
-                let echoes = crate::reasoning_echo::sends_any(&attempt_body)
-                    || (api == Api::Responses
-                        && effort.is_some_and(|e| !matches!(e, ReasoningEffort::None)));
+                let echoes = crate::reasoning_echo::sends_any(&attempt_body);
                 if echo && echoes && echo_named {
-                    eprintln!("chat: {url} refuses reasoning sent back; sending none from now on");
+                    eprintln!("chat: {url} refuses reasoning sent back to {model}; sending none from now on");
                     echo = false;
-                    crate::reasoning_echo::rejected(url);
+                    crate::reasoning_echo::rejected(url, model);
                     continue;
                 }
                 if sends_usage
@@ -421,9 +429,15 @@ pub async fn run_with_reasoning(
                     continue;
                 }
                 // A 400 naming nothing: the reasoning fields go first (they
-                // are the likelier cause), then the usage request.
+                // are the likelier cause), then the reasoning sent back (and
+                // the request for it), then the usage request.
                 if !formats.is_empty() && stripped_blindly.is_empty() {
                     stripped_blindly = std::mem::take(&mut formats);
+                    continue;
+                }
+                if echo && echoes && !echo_stripped_blindly {
+                    echo_stripped_blindly = true;
+                    echo = false;
                     continue;
                 }
                 if sends_usage {
@@ -457,6 +471,14 @@ pub async fn run_with_reasoning(
     }
     if usage_stripped_blindly && result.is_ok() {
         stream_usage::rejected(url);
+    }
+    // Blamed only if dropping it was what fixed the request: the usage
+    // request, dropped after it, may have been the cause instead.
+    if echo_stripped_blindly && !usage_stripped_blindly && result.is_ok() {
+        eprintln!(
+            "chat: {url} works for {model} without reasoning sent back; sending none from now on"
+        );
+        crate::reasoning_echo::rejected(url, model);
     }
     if !requested {
         return (result, None);
@@ -618,17 +640,20 @@ pub struct ReasoningSupport {
 }
 
 /// Whether a 400's text refuses reasoning sent back (reasoning_echo.rs): it
-/// names the fields, the encrypted reasoning, or `include` as a parameter
-/// (quoted, as in "Unknown parameter: 'include'"; the plain word is too
-/// common in errors to count).
+/// names the fields, the encrypted reasoning (as a field or in words, as in
+/// "Encrypted content is not supported with this model"), or `include` as a
+/// parameter (quoted, as in "Unknown parameter: 'include'"; the plain word
+/// is too common in errors to count).
 fn echo_refused(text: &str) -> bool {
+    let lower = text.to_lowercase();
     [
         "reasoning_details",
         "reasoning_content",
         "encrypted_content",
     ]
     .iter()
-    .any(|f| mentions_field(text, f))
+    .any(|f| mentions_field(&lower, f))
+        || lower.contains("encrypted content")
         || text.contains("'include'")
         || text.contains("\"include\"")
 }
@@ -2787,6 +2812,142 @@ mod reasoning_tests {
             *seen.lock().unwrap(),
             ["/v1/responses", "/v1/chat/completions"]
         );
+    }
+
+    /// One HTTP request off `socket`: its JSON body, read whole (by its
+    /// Content-Length).
+    async fn request_body_of(socket: &mut tokio::net::TcpStream) -> serde_json::Value {
+        use tokio::io::AsyncReadExt;
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = socket.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&raw).to_string();
+            let Some(end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text[..end]
+                .lines()
+                .find_map(|line| {
+                    let line = line.to_ascii_lowercase();
+                    line.strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            if raw.len() >= end + 4 + length {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&raw).to_string();
+        text.split_once("\r\n\r\n")
+            .and_then(|(_, body)| serde_json::from_str(body).ok())
+            .unwrap_or_default()
+    }
+
+    /// A Responses API whose model `plain` refuses the request for its
+    /// encrypted reasoning (a 400 with `refusal`), as a model that doesn't
+    /// reason may; every other request is served. Returns the chat
+    /// completions URL and the bodies it saw.
+    async fn echo_provider(
+        refusal: &'static str,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let body = request_body_of(&mut socket).await;
+                let refuse = body["model"] == "plain" && body.get("include").is_some();
+                log.lock().unwrap().push(body);
+                let reply = if refuse {
+                    format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{refusal}", refusal.len())
+                } else {
+                    let sse: String = [
+                        r#"{"type":"response.output_text.delta","delta":"Hi"}"#,
+                        r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                    ]
+                    .iter()
+                    .map(|e| format!("data: {e}\n\n"))
+                    .collect();
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}")
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+
+    /// A request for `model` with no effort picked.
+    async fn send_as(url: &str, model: &str) -> Result<(), crate::chat_request::ChatError> {
+        let client = Client::new();
+        let body = serde_json::json!({ "model": model, "messages": [{ "role": "user", "content": "Hi" }] });
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        std::mem::forget(tx);
+        run_with_reasoning(
+            crate::chat_request::Clients::Only(&client),
+            url,
+            "k",
+            &body,
+            true,
+            crate::chat_request::Limits::default(),
+            None,
+            Vec::new(),
+            None,
+            None,
+            &mut rx,
+            &mut |_| {},
+        )
+        .await
+        .0
+    }
+
+    /// Whether each request seen asked for the encrypted reasoning.
+    fn asked(seen: &std::sync::Mutex<Vec<serde_json::Value>>) -> Vec<bool> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .map(|b| b.get("include").is_some())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_model_refusing_encrypted_reasoning_is_asked_without_it_and_the_others_still_are() {
+        // Said in words, naming no field.
+        let refusal =
+            r#"{"error":{"message":"Encrypted content is not supported with this model."}}"#;
+        let (url, seen) = echo_provider(refusal).await;
+        assert!(send_as(&url, "plain").await.is_ok());
+        assert_eq!(asked(&seen), [true, false], "asked again without it");
+        assert!(send_as(&url, "plain").await.is_ok());
+        assert_eq!(asked(&seen), [true, false, false], "and not again");
+        assert!(send_as(&url, "thinker").await.is_ok());
+        assert_eq!(
+            asked(&seen),
+            [true, false, false, true],
+            "the other model on the same server still is"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bare_400_that_sending_no_reasoning_back_fixes_is_remembered() {
+        let (url, seen) = echo_provider(r#"{"error":{"message":"Bad Request"}}"#).await;
+        assert!(send_as(&url, "plain").await.is_ok());
+        assert_eq!(asked(&seen), [true, false]);
+        assert!(send_as(&url, "plain").await.is_ok());
+        assert_eq!(asked(&seen), [true, false, false]);
     }
 }
 
