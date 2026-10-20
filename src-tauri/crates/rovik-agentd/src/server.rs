@@ -88,12 +88,9 @@ async fn call(
     if declared.is_some_and(|n| n > MAX_CALL) {
         return too_large();
     }
-    let body = tokio::time::timeout(
-        BODY_WAIT,
-        axum::body::to_bytes(request.into_body(), MAX_CALL),
-    );
-    let Ok(Ok(body)) = body.await else {
-        return too_large();
+    let body = match whole_body(request.into_body(), MAX_CALL, too_large).await {
+        Ok(body) => body,
+        Err(response) => return response,
     };
     let Ok(Frame::Call { id, req }) = serde_json::from_slice::<Frame>(&body) else {
         return refusal(
@@ -268,12 +265,9 @@ async fn put_blob(
     if let Err(fail) = room_on_disk(&daemon).await {
         return failed(fail);
     }
-    let body = tokio::time::timeout(
-        BODY_WAIT,
-        axum::body::to_bytes(request.into_body(), MAX_BLOB),
-    );
-    let Ok(Ok(body)) = body.await else {
-        return too_large();
+    let body = match whole_body(request.into_body(), MAX_BLOB, too_large).await {
+        Ok(body) => body,
+        Err(response) => return response,
     };
     if attachments::id_of(&body) != id {
         return refusal(
@@ -498,6 +492,29 @@ impl FromRequestParts<Arc<Daemon>> for Computer {
                     ),
                 )
             })
+    }
+}
+
+/// A request's body, whole: within `limit` bytes, and within BODY_WAIT.
+/// Else the reply that says so: `too_large` past the limit (a link that
+/// broke reads the same, the body short of its length), or, past the
+/// time, one asking for the request again rather than calling it too big
+/// for good.
+async fn whole_body(
+    body: axum::body::Body,
+    limit: usize,
+    too_large: impl Fn() -> Response,
+) -> Result<Bytes, Response> {
+    match tokio::time::timeout(BODY_WAIT, axum::body::to_bytes(body, limit)).await {
+        Ok(Ok(body)) => Ok(body),
+        Ok(Err(_)) => Err(too_large()),
+        Err(_) => Err(refusal(
+            StatusCode::REQUEST_TIMEOUT,
+            Fail::new(
+                FailCode::Busy,
+                "The request's body didn't arrive in time: send it again.",
+            ),
+        )),
     }
 }
 

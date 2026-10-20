@@ -206,6 +206,20 @@ fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
     }
 }
 
+/// The system a command changes: `/`, or, in development, a folder in its
+/// place (`--root DIR`). Never the folder for root: through sudo, which
+/// lets everyone run `user` and the administrators `admin`, a folder of
+/// the caller's (a link in it to `/opt/rovik/bin`) would have root write
+/// where the caller says, past the release's signature.
+fn system(root: Option<PathBuf>) -> Result<System, String> {
+    // SAFETY: geteuid can't fail.
+    let as_root = unsafe { libc::geteuid() } == 0 || std::env::var_os("SUDO_UID").is_some();
+    if root.is_some() && as_root {
+        return Err("--root is for development, as a user: root changes the system itself.".into());
+    }
+    Ok(System::new(root))
+}
+
 pub fn run(argv: &[String]) -> i32 {
     let command = match parse(argv) {
         Ok(command) => command,
@@ -232,13 +246,13 @@ pub fn run(argv: &[String]) -> i32 {
             admin,
             binary,
             root,
-        } => installer::install(&System::new(root), &admin, binary),
-        Command::User { args, root } => installer::user(&System::new(root), &args),
+        } => system(root).and_then(|sys| installer::install(&sys, &admin, binary)),
+        Command::User { args, root } => system(root).and_then(|sys| installer::user(&sys, &args)),
         Command::Admin {
             args,
             root,
             allow_downgrade,
-        } => installer::admin(&System::new(root), &args, allow_downgrade),
+        } => system(root).and_then(|sys| installer::admin(&sys, &args, allow_downgrade)),
     };
     match result {
         Ok(()) => 0,

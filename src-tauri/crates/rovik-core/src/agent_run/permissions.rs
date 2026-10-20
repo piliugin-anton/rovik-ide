@@ -711,7 +711,10 @@ const CHECK_COMMANDS: &[&[&str]] = &[
     &["make", "check"],
 ];
 
-static AWK_WRITES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"system\(|>\s*""#).unwrap());
+/// awk writing a file (`> "f"`), or running a program: `system(…)`, or a
+/// pipe into one (`print … | "sh"`).
+static AWK_WRITES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"system\(|>\s*"|\|\s*""#).unwrap());
 static BRANCH_CHANGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^-(d|D|m|M|c|C|f)$|^--(delete|move|copy|force)").unwrap());
 static REWRITES_FILES: LazyLock<Regex> =
@@ -760,6 +763,16 @@ pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
     if cmd == "awk" {
         return !rest.iter().any(|a| AWK_WRITES.is_match(a));
     }
+    if cmd == "tree" {
+        // `tree -o FILE` writes the listing to FILE.
+        return !rest
+            .iter()
+            .any(|a| a == "-o" || (a.starts_with("-o") && !a.starts_with("--")));
+    }
+    if cmd == "rg" && rest.iter().any(|a| a.starts_with("--pre")) {
+        // `--pre CMD` runs a program over every file searched.
+        return false;
+    }
     if READ_ONLY_COMMANDS.contains(&cmd) {
         return true;
     }
@@ -771,7 +784,8 @@ pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
         let sub = rest[at].as_str();
         let args = &rest[at + 1..];
         if READ_ONLY_GIT.contains(&sub) {
-            return true;
+            // `--output=FILE` (log, diff, show) writes what it shows there.
+            return !args.iter().any(|a| a.starts_with("--output"));
         }
         let flags_only = args.iter().all(|a| a.starts_with('-'));
         return match sub {
@@ -1142,6 +1156,33 @@ mod tests {
 
     fn words(seg: &[&str]) -> Vec<String> {
         seg.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A reader told to write, or to run a program, isn't read-only: rg
+    /// runs `--pre` over every file, git's readers write `--output`, tree
+    /// writes `-o`, and awk's pipe runs what it names.
+    #[test]
+    fn readers_that_write_or_run_programs_are_not_read_only() {
+        for (command, read_only) in [
+            ("rg --pre rm x", false),
+            ("rg --pre=rm x", false),
+            ("rg --pre-glob '*.pdf' x", false),
+            ("rg -n x src", true),
+            ("git log --output=src/lib.rs", false),
+            ("git diff --output /tmp/x", false),
+            ("git log --oneline -5", true),
+            ("tree -o out.txt", false),
+            ("tree -L 2 src", true),
+            (r#"awk '{print "rm -rf src" | "sh"}' f"#, false),
+            (r#"awk '{print $1}' f"#, true),
+        ] {
+            let parsed = parse_command(command);
+            assert_eq!(
+                segment_is_read_only(&parsed.segments[0]),
+                read_only,
+                "{command}"
+            );
+        }
     }
 
     /// P0.2: every matcher reads a command past the same wrappers.

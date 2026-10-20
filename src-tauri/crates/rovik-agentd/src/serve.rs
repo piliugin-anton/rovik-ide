@@ -55,7 +55,12 @@ pub fn serve(options: Options) -> Result<(), String> {
     let tokens = Tokens::new(&config.tokens)?;
     let admin = AdminFile::read(Path::new(ADMIN_FILE))?.unwrap_or_default();
     let limits = Limits {
-        caps: Caps::new(&admin, vec![home.root.clone(), home.share.clone()]),
+        // Each folder once: under `--data DIR` they're one, and a folder
+        // counted twice would trip the disk cap at half.
+        caps: Caps::new(
+            &admin,
+            home.folders().iter().map(|f| f.to_path_buf()).collect(),
+        ),
         admin,
         user_slots: config.max_slots,
     };

@@ -882,7 +882,9 @@ impl Run {
         let child_id = uuid::Uuid::new_v4().to_string();
         self.store_child(&child_id, call_id, kind, goal, message)
             .await?;
-        let child = self.launch_child(child_id.clone(), call_id, goal, sub)?;
+        // One that couldn't launch leaves no chat behind (`launched`).
+        let launched = self.launch_child(child_id.clone(), call_id, goal, sub);
+        let child = self.launched(launched, &child_id, false).await?;
         let result = run_child(child).await;
         if let Some(r) = &result {
             self.absorb_child_writes(&r.writes);

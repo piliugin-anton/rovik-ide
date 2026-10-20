@@ -42,12 +42,10 @@ pub(crate) fn is_denylisted_name(name: &str) -> bool {
     if DENYLIST_DIRS.contains(&name) {
         return true;
     }
-    if let Some(ext) = name.rsplit('.').next() {
-        if DENYLIST_EXTENSIONS.contains(&ext) {
-            return true;
-        }
-    }
-    false
+    // Its extension, not a whole name without one: a folder called `key`
+    // isn't a key.
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| DENYLIST_EXTENSIONS.contains(&ext))
 }
 
 fn canonicalize_or_err(p: &Path) -> Result<PathBuf, String> {

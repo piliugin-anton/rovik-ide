@@ -242,6 +242,12 @@ async fn install_in(root: PathBuf, mut progress: impl FnMut(u64, u64)) -> Result
         .map_err(|e| e.to_string())??;
     drop(archive);
     let dir = root.join(VERSION);
+    // This version's folder without its browser (an install stopped
+    // half-way, a file an antivirus took): out of the way, or the rename
+    // below would fail at every start, and the download with it.
+    if dir.is_dir() && !executable.is_file() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     if let Err(e) = std::fs::rename(&unpacked.0, &dir) {
         // Another start of the app put it there first.
         if !executable.is_file() {

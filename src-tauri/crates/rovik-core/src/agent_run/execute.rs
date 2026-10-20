@@ -1442,7 +1442,13 @@ impl Run {
         } else {
             args.get("content").and_then(|c| c.as_str())?.to_string()
         };
-        let abs_path = tools::to_absolute_path(&path, root);
+        // Inside the project, as the write itself insists: a file outside
+        // it (a key file, a shell's history) must not be read into the
+        // review, which goes to the reviewer's provider and the approval.
+        let abs_path = match crate::agent_tools::resolve_within_root(root, &path) {
+            Ok(abs) => abs,
+            Err(e) => return Some(Prepared::Invalid(format!("Error: {e}"))),
+        };
         let Ok(current) = std::fs::read_to_string(&abs_path) else {
             return Some(Prepared::New);
         };
@@ -1461,7 +1467,7 @@ impl Run {
         }
         Some(Prepared::Diff {
             proposal: EditProposal {
-                abs_path,
+                abs_path: abs_path.to_string_lossy().into_owned(),
                 rel_path: path,
                 current,
                 proposed,

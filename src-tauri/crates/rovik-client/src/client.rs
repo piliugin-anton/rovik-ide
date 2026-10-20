@@ -32,6 +32,9 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// size, which a frame's 60 s would cut, and the daemon then run while
 /// the app gives the message back to the input (6.11).
 pub const POST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// A session up this long served: lost after it, the next connection is
+/// tried at once, not after a backoff.
+const SERVED_AWHILE: Duration = Duration::from_secs(30);
 /// How long the daemon has to answer `Hello`.
 const WELCOME_WAIT: Duration = Duration::from_secs(10);
 /// The daemon's answer to a token it doesn't take.
@@ -611,6 +614,7 @@ async fn session(shared: &Shared) -> Ended {
         let _ = sink.close().await;
     }));
     shared.lock().writer = Some(writer);
+    let served_since = std::time::Instant::now();
     shared.set_state(HostState::Ready);
     while let Some(frame) = next_frame(&mut stream).await {
         match frame {
@@ -635,7 +639,12 @@ async fn session(shared: &Shared) -> Ended {
             _ => {}
         }
     }
-    Ended::Lost { served: true }
+    // Served: it stayed up a while. A daemon that drops the link right
+    // after Welcome (one in a crash loop) isn't reconnected at once, every
+    // second, for ever: the backoff goes on as for a failed connection.
+    Ended::Lost {
+        served: served_since.elapsed() >= SERVED_AWHILE,
+    }
 }
 
 /// Says Hello to the daemon once, and returns its Welcome (H05): that it

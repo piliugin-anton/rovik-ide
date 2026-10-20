@@ -16,7 +16,9 @@ pub fn stored(error: &ChatError) -> Value {
         "attempts": error.attempts,
     });
     if let Some(ms) = error.retry_after_ms {
-        failure["resetAt"] = json!(now_ms() + ms as i64);
+        // A wait the provider named: however long, never in the past.
+        let ms = i64::try_from(ms).unwrap_or(i64::MAX);
+        failure["resetAt"] = json!(now_ms().saturating_add(ms));
     }
     if let Some(details) = &error.details {
         failure["details"] = json!(details);
@@ -66,7 +68,10 @@ pub fn describe(error: &ChatError) -> String {
     };
     match error.kind {
         ErrorKind::RateLimited => match error.retry_after_ms {
-            Some(ms) if ms > 0 => format!("Rate limit reached. Try again in {}.", format_duration(ms as i64)),
+            Some(ms) if ms > 0 => format!(
+                "Rate limit reached. Try again in {}.",
+                format_duration(i64::try_from(ms).unwrap_or(i64::MAX))
+            ),
             _ => format!("The provider is rate limiting requests{after}. Try again shortly."),
         },
         ErrorKind::EmptyResponse => format!("The model returned an empty response{after}."),

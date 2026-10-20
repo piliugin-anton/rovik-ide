@@ -54,21 +54,27 @@ pub async fn file(
 pub async fn discard(daemon: &Daemon, computer: &str, chat: &str) -> Result<Response, Fail> {
     daemon.store.check_owner(computer, chat)?;
     let _files = work::hold_files(daemon, chat)?;
-    let _base = daemon.results.hold_base().await;
-    let (place, base, _) = place(daemon, chat)?;
-    let reset = rt::spawn_blocking(move || {
-        let repo = Repository::open(&place.worktree).map_err(git)?;
-        let base = Oid::from_str(&base).and_then(|base| repo.find_object(base, None));
-        repo.reset(&base.map_err(git)?, ResetType::Hard, None)
-            .map_err(git)?;
-        // A hard reset keeps untracked files: the chat's new ones go now.
-        let mut opts = CheckoutBuilder::new();
-        opts.force().remove_untracked(true);
-        repo.checkout_head(Some(&mut opts)).map_err(git)
-    });
-    reset.await.map_err(joined)??;
-    daemon.store.marks_left(chat, Vec::new());
-    daemon.results.forget_kept(chat, None).await;
+    {
+        let _base = daemon.results.hold_base().await;
+        let (place, base, _) = place(daemon, chat)?;
+        let reset = rt::spawn_blocking(move || {
+            let repo = Repository::open(&place.worktree).map_err(git)?;
+            let base = Oid::from_str(&base).and_then(|base| repo.find_object(base, None));
+            repo.reset(&base.map_err(git)?, ResetType::Hard, None)
+                .map_err(git)?;
+            // A hard reset keeps untracked files: the chat's new ones go now.
+            let mut opts = CheckoutBuilder::new();
+            opts.force().remove_untracked(true);
+            repo.checkout_head(Some(&mut opts)).map_err(git)
+        });
+        reset.await.map_err(joined)??;
+        daemon.store.marks_left(chat, Vec::new());
+        daemon.results.forget_kept(chat, None).await;
+    }
+    // The result as the worktree is now, nothing: the one from before the
+    // discard would be offered again (`WorkResults` after a reconnect).
+    // Once the base is let go of: committing takes it.
+    daemon.results.recommit(chat).await?;
     Ok(Response::Done)
 }
 

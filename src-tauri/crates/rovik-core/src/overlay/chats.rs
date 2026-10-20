@@ -1176,7 +1176,7 @@ pub fn claim_direct_writes(project: &Path, dialog_id: &str) -> Result<(), String
     }
     Err(format!(
         "Error: another chat that isn't isolated (chat {}) is running commands that change files in this project, and this chat isn't isolated either, so the two could overwrite each other. Read-only commands work; use the write and edit tools for changes, or wait until that chat's run ends.",
-        &holder[..holder.len().min(8)]
+        holder.chars().take(8).collect::<String>()
     ))
 }
 

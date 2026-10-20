@@ -162,11 +162,18 @@ impl Notifier {
             return;
         };
         rovik_core::rt::spawn(async move {
-            let client = rovik_core::net::builder()
-                .await
-                .timeout(CALL_WAIT)
-                .build()
-                .unwrap_or_default();
+            // The way this server's requests go, or not at all: a client
+            // made some other way would leave the proxy out.
+            let client = match rovik_core::net::builder().await.timeout(CALL_WAIT).build() {
+                Ok(client) => client,
+                Err(e) => {
+                    log::warn!(
+                        "notify: {}: no client to call it with: {e}",
+                        url_for_logs(&url)
+                    );
+                    return;
+                }
+            };
             let mut wait = FIRST_RETRY;
             let mut last = String::new();
             for attempt in 0..=RETRIES {

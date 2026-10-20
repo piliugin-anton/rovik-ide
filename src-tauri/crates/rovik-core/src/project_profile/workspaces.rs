@@ -383,7 +383,9 @@ fn toml_string_value(content: &str, section: &str, key: &str) -> Option<String> 
         }
         let v = v.trim().trim_matches(',').trim();
         if v.len() >= 2 && (v.starts_with('"') || v.starts_with('\'')) {
-            return Some(v[1..v.len() - 1].to_string());
+            // The quotes off: unless the value isn't closed by one and ends
+            // in the middle of a character, which is no value.
+            return v.get(1..v.len() - 1).map(str::to_string);
         }
     }
     None

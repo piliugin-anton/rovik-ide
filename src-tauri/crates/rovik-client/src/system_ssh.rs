@@ -179,6 +179,15 @@ impl SystemSshConnector {
         let started = Instant::now();
         loop {
             if self.reach().await.is_ok() {
+                // What ssh says from now on (a forwarded connection that
+                // failed while the daemon was down, a banner) is read and
+                // dropped: left in a full pipe, ssh would stop at its
+                // logger and forward nothing, while it looks alive.
+                if let Some(mut stderr) = child.stderr.take() {
+                    rovik_core::rt::spawn(async move {
+                        let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+                    });
+                }
                 *forward = Some(child);
                 return Ok(());
             }

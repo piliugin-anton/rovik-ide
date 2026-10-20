@@ -128,6 +128,11 @@ pub async fn push(
 
 /// `git push` of `refspec` to `remote`, from the repository at `repo`.
 async fn git_push(repo: &Path, remote: &str, refspec: &str, key: &str) -> Result<(), String> {
+    // A remote is a name or a URL, never an option: `--receive-pack=…`
+    // in its place would run a program.
+    if remote.starts_with('-') {
+        return Err(format!("{remote} isn't a remote"));
+    }
     let mut git = Command::new("git");
     git.arg("-C")
         .arg(repo)

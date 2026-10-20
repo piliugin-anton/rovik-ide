@@ -890,11 +890,23 @@ impl OverlayFs {
             if let Some(b) = &base {
                 fs::copy(&src, b)?;
             }
-            if keep_content {
-                fs::copy(&src, &file)
-            } else {
-                fs::write(&file, b"").map(|_| 0)
+            if !keep_content {
+                return fs::write(&file, b"").map(|_| 0);
             }
+            let n = fs::copy(&src, &file)?;
+            // The copy came with the project file's mode. The chat's copy is
+            // written through (`handle` opens it read and write): a
+            // read-only project file (generated code, a vendored one)
+            // stays read-only to the chat as `perm` says, but the copy
+            // itself must take the writes `chmod u+w` then allows.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perm = fs::metadata(&file)?.permissions();
+                perm.set_mode(perm.mode() | 0o600);
+                fs::set_permissions(&file, perm)?;
+            }
+            Ok(n)
         })();
 
         let mut inner = self.lock();
@@ -1935,8 +1947,15 @@ impl Backend for OverlayFs {
         };
         let src_name = stored(&inner, parent, src).unwrap_or_else(|| name.to_string());
         if dst == Some(src) {
-            // The same entry: only a change of case (`a` → `A`) renames it.
-            if parent == new_parent && src_name != new_name {
+            // The same entry. Found by a lookup that ignores case, under a
+            // name the folder doesn't have, it's a change of case (`a` →
+            // `A`), which renames it. Found under the name itself (the
+            // same name, or a hard link's), nothing moves, as POSIX says.
+            let under_new_name = inner.nodes[&new_parent]
+                .children
+                .as_ref()
+                .is_some_and(|c| c.contains_key(new_name));
+            if parent == new_parent && !under_new_name {
                 self.remember_deleted(&mut inner, parent, &src_name, src);
                 Self::detach(&mut inner, parent, &src_name);
                 self.attach(&mut inner, new_parent, new_name, src);
@@ -1948,23 +1967,32 @@ impl Backend for OverlayFs {
         let dst_name = dst
             .and_then(|d| stored(&inner, new_parent, d))
             .unwrap_or_else(|| new_name.to_string());
-        // A folder can't move into itself.
-        if inner.nodes[&src].is_dir() {
-            let mut at = new_parent;
-            loop {
-                if at == src {
-                    return Err(VfsError::Invalid);
-                }
-                if at == ROOT {
-                    break;
-                }
-                at = inner
-                    .nodes
-                    .get(&at)
-                    .and_then(|n| n.links.first())
-                    .map(|(p, _)| *p)
-                    .unwrap_or(ROOT);
+        // A folder can't move into itself; nor, exchanged, can the other
+        // folder move into it (`a/b` for `a` would make `a` its own child).
+        let within = |inner: &Inner, dir: Ino, mut at: Ino| loop {
+            if at == dir {
+                return true;
             }
+            if at == ROOT {
+                return false;
+            }
+            at = inner
+                .nodes
+                .get(&at)
+                .and_then(|n| n.links.first())
+                .map(|(p, _)| *p)
+                .unwrap_or(ROOT);
+        };
+        if let Some(dst) = dst {
+            if matches!(mode, RenameMode::Exchange)
+                && inner.nodes[&dst].is_dir()
+                && within(&inner, dst, parent)
+            {
+                return Err(VfsError::Invalid);
+            }
+        }
+        if inner.nodes[&src].is_dir() && within(&inner, src, new_parent) {
+            return Err(VfsError::Invalid);
         }
         // Moving a project folder: list what it holds first, so it keeps
         // pointing at the project's files.

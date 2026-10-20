@@ -585,9 +585,20 @@ async fn make(
             },
             created_at: store::now_ms(),
         };
-        core.db
+        let created = core
+            .db
             .write(move |c| store::create_child_dialog(c, &dialog))
-            .await?;
+            .await;
+        if let Err(e) = created {
+            // The copies, and the chats made so far, would be nobody's: no
+            // candidates row names them, so no round's discard would.
+            for chat in &chats {
+                copies.discard(dialog_id.to_string(), chat.clone()).await;
+                let id = chat.clone();
+                let _ = core.db.write(move |c| store::delete_dialog(c, &id)).await;
+            }
+            return Err(e);
+        }
     }
     let record = CandidatesRecord {
         task,

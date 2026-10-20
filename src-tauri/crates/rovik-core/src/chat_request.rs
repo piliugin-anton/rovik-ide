@@ -236,11 +236,14 @@ pub async fn cancelled(cancel: &mut watch::Receiver<bool>) {
  * ---------------------------------------------------------------------------
  */
 
-/// "2m59.56s", "1h2m", "750ms", "20s", or a plain number of seconds.
+/// "2m59.56s", "1h2m", "750ms", "20s", or a plain number of seconds. None
+/// for what isn't a wait a provider could mean ("inf", a negative number,
+/// more seconds than a Duration holds): the header is the provider's, and
+/// `Duration::from_secs_f64` would panic on it.
 fn parse_duration_text(text: &str) -> Option<Duration> {
     let t = text.trim();
     if let Ok(secs) = t.parse::<f64>() {
-        return (secs >= 0.0).then(|| Duration::from_secs_f64(secs));
+        return Duration::try_from_secs_f64(secs).ok();
     }
     let mut total = 0.0f64;
     let mut number = String::new();
@@ -266,7 +269,11 @@ fn parse_duration_text(text: &str) -> Option<Duration> {
         total += value * unit;
         any = true;
     }
-    (any && number.is_empty()).then(|| Duration::from_secs_f64(total))
+    if any && number.is_empty() {
+        Duration::try_from_secs_f64(total).ok()
+    } else {
+        None
+    }
 }
 
 /// A reset value that may be an epoch time (s or ms) or a duration.
@@ -824,13 +831,16 @@ impl ReplyParser {
                         .and_then(|m| m.get("reasoning_details"))
                         .cloned()
                         .unwrap_or(serde_json::Value::Null),
+                    // Each call numbered, as a stream's deltas are. What isn't
+                    // a call (a broken gateway's number or string) is left
+                    // out: indexing it would panic.
                     "tool_calls": message
                         .and_then(|m| m.get("tool_calls"))
                         .and_then(|t| t.as_array())
-                        .map(|calls| calls.iter().enumerate().map(|(i, c)| {
-                            let mut c = c.clone();
-                            c["index"] = serde_json::json!(i);
-                            c
+                        .map(|calls| calls.iter().enumerate().filter_map(|(i, c)| {
+                            let mut c = c.as_object()?.clone();
+                            c.insert("index".into(), serde_json::json!(i));
+                            Some(serde_json::Value::Object(c))
                         }).collect::<Vec<_>>())
                         .unwrap_or_default(),
                 },
