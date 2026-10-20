@@ -13,7 +13,12 @@
 // - on the Responses API, reasoning output items (`id`, `summary`,
 //   `encrypted_content`), kept here as `reasoning_details` entries in
 //   OpenRouter's form for OpenAI (`format: "openai-responses-v1"`) and
-//   turned back into items there (chat_request/responses.rs);
+//   turned back into items there (chat_request/responses.rs). The model's
+//   commentary messages (`phase: "commentary"`, shown with the reasoning,
+//   not as the reply) are kept beside them (`COMMENTARY`): OpenAI's guide
+//   says to replay a step's output items, in their order, with its calls.
+//   Each entry names the call it came right before (`before_call`), so it
+//   goes back in its place;
 // - on Anthropic's Messages API, `thinking` blocks (text and `signature`)
 //   and `redacted_thinking` blocks (`data`), kept as entries in OpenRouter's
 //   form for Anthropic (`format: "anthropic-claude-v1"`) and turned back
@@ -22,7 +27,8 @@
 //
 // What is sent back, and for which messages: chat_db/history.rs
 // (`attach_reasoning`). A server that refuses the fields gets the request
-// again without them, and isn't sent them again until the app restarts.
+// again without them, and they aren't sent to that model there again until
+// the app restarts.
 
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -30,6 +36,11 @@ use std::sync::{LazyLock, Mutex};
 
 /// The format of Responses API reasoning, as OpenRouter names it.
 pub const RESPONSES_FORMAT: &str = "openai-responses-v1";
+
+/// The type of a Responses API commentary message kept with the reasoning
+/// (`commentary_entry`). Not one of OpenRouter's: it only goes back to the
+/// Responses API (`strip_commentary`).
+pub const COMMENTARY: &str = "commentary";
 
 /// The format of Anthropic's reasoning (thinking blocks), as OpenRouter
 /// names it.
@@ -40,15 +51,24 @@ pub const FIELDS: [&str; 2] = ["reasoning_details", "reasoning_content"];
 
 static REJECTED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
 
-/// Whether reasoning may be sent back to this endpoint.
-pub fn wanted(url: &str) -> bool {
-    REJECTED.lock().map_or(true, |r| !r.contains(url))
+fn key(url: &str, model: &str) -> String {
+    format!("{url}|{model}")
 }
 
-/// The endpoint refused reasoning in its requests.
-pub fn rejected(url: &str) {
+/// Whether reasoning may be sent back to this model at this endpoint.
+pub fn wanted(url: &str, model: &str) -> bool {
+    REJECTED
+        .lock()
+        .map_or(true, |r| !r.contains(&key(url, model)))
+}
+
+/// The endpoint refused reasoning in this model's requests. Remembered for
+/// the model, not the endpoint: on the Responses API a model that doesn't
+/// reason may refuse the request for encrypted reasoning, while the models
+/// beside it need theirs back.
+pub fn rejected(url: &str, model: &str) {
     if let Ok(mut r) = REJECTED.lock() {
-        r.insert(url.to_string());
+        r.insert(key(url, model));
     }
 }
 
@@ -78,15 +98,82 @@ pub fn strip(body: &mut Value) -> bool {
     removed
 }
 
-/// Whether a request body sends any reasoning back.
+/// Whether a request body sends any reasoning back, or asks for it to send
+/// back later: in its chat messages, or on the Responses API as reasoning
+/// items and the request for encrypted reasoning.
 pub fn sends_any(body: &Value) -> bool {
-    body.get("messages")
+    let in_messages = body
+        .get("messages")
         .and_then(|m| m.as_array())
         .is_some_and(|messages| {
             messages
                 .iter()
                 .any(|m| FIELDS.iter().any(|f| m.get(*f).is_some()))
-        })
+        });
+    let in_input = body
+        .get("input")
+        .and_then(|i| i.as_array())
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|i| i.get("type").and_then(|t| t.as_str()) == Some("reasoning"))
+        });
+    in_messages || in_input || body.get("include").is_some()
+}
+
+/// A commentary message kept with the reasoning (`commentary_entry`).
+pub fn is_commentary(entry: &Value) -> bool {
+    entry.get("type").and_then(|t| t.as_str()) == Some(COMMENTARY)
+        && entry.get("format").and_then(|f| f.as_str()) == Some(RESPONSES_FORMAT)
+}
+
+/// A Responses API commentary message (an output item with `phase:
+/// "commentary"`, at `index` in the output) as a `reasoning_details` entry:
+/// its text, to go back where it was. None for one without text.
+pub fn commentary_entry(item: &Value, index: u64) -> Option<Value> {
+    let text: String = item
+        .get("content")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
+        .collect();
+    if text.is_empty() {
+        return None;
+    }
+    let mut entry = json!({
+        "type": COMMENTARY, "text": text, "format": RESPONSES_FORMAT, "index": index,
+    });
+    if let Some(id) = item.get("id").filter(|id| id.is_string()) {
+        entry["id"] = id.clone();
+    }
+    Some(entry)
+}
+
+/// Removes the commentary kept with the reasoning from a chat completions
+/// body: it's the Responses API's, which alone takes it back. A message
+/// left without entries loses the field.
+pub fn strip_commentary(body: &mut Value) {
+    for message in body
+        .get_mut("messages")
+        .and_then(|m| m.as_array_mut())
+        .into_iter()
+        .flatten()
+    {
+        let Some(message) = message.as_object_mut() else {
+            continue;
+        };
+        let Some(details) = message
+            .get_mut("reasoning_details")
+            .and_then(|d| d.as_array_mut())
+        else {
+            continue;
+        };
+        details.retain(|e| !is_commentary(e));
+        if details.is_empty() {
+            message.remove("reasoning_details");
+        }
+    }
 }
 
 /// Adds one streamed `reasoning_details` fragment to the entries so far.
@@ -188,36 +275,64 @@ pub fn from_responses_item(item: &Value) -> Vec<Value> {
     out
 }
 
-/// The Responses API reasoning items in `reasoning_details` (entries of
-/// other formats are for other APIs), in order, one per id.
-pub fn to_responses_items(details: &[Value]) -> Vec<Value> {
-    let mut items: Vec<Value> = Vec::new();
+/// What goes back to the Responses API from `reasoning_details` (entries
+/// of other formats are for other APIs), in order: the reasoning items, one
+/// per id, and the model's commentary messages, each with the call it came
+/// right before (`before_call`), if any.
+pub fn to_responses_items(details: &[Value]) -> Vec<(Option<String>, Value)> {
+    let mut items: Vec<(Option<String>, Value)> = Vec::new();
     for entry in details
         .iter()
         .filter(|e| e.get("format").and_then(|f| f.as_str()) == Some(RESPONSES_FORMAT))
     {
-        let id = entry.get("id").cloned().unwrap_or(Value::Null);
-        if items.last().is_none_or(|i| i["id"] != id) {
-            items.push(json!({ "type": "reasoning", "id": id, "summary": [] }));
+        let before = entry
+            .get("before_call")
+            .and_then(|b| b.as_str())
+            .filter(|b| !b.is_empty())
+            .map(str::to_string);
+        let kind = entry.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if kind == COMMENTARY {
+            if let Some(text) = entry
+                .get("text")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty())
+            {
+                items.push((
+                    before,
+                    json!({ "role": "assistant", "content": text, "phase": "commentary" }),
+                ));
+            }
+            continue;
         }
-        let Some(item) = items.last_mut() else {
+        if !matches!(kind, "reasoning.summary" | "reasoning.encrypted") {
+            continue;
+        }
+        let id = entry.get("id").cloned().unwrap_or(Value::Null);
+        let same_item = items
+            .last()
+            .is_some_and(|(_, i)| i["type"] == "reasoning" && i["id"] == id);
+        if !same_item {
+            items.push((
+                before,
+                json!({ "type": "reasoning", "id": id, "summary": [] }),
+            ));
+        }
+        let Some((_, item)) = items.last_mut() else {
             continue;
         };
-        match entry.get("type").and_then(|t| t.as_str()) {
-            Some("reasoning.summary") => {
-                let text = entry.get("summary").cloned().unwrap_or(json!(""));
-                if let Some(summary) = item["summary"].as_array_mut() {
-                    summary.push(json!({ "type": "summary_text", "text": text }));
-                }
+        if kind == "reasoning.summary" {
+            let text = entry.get("summary").cloned().unwrap_or(json!(""));
+            if let Some(summary) = item["summary"].as_array_mut() {
+                summary.push(json!({ "type": "summary_text", "text": text }));
             }
-            Some("reasoning.encrypted") => {
-                item["encrypted_content"] = entry.get("data").cloned().unwrap_or(Value::Null)
-            }
-            _ => {}
+        } else {
+            item["encrypted_content"] = entry.get("data").cloned().unwrap_or(Value::Null);
         }
     }
-    // An item without an id can't be resumed.
-    items.retain(|i| i["id"].as_str().is_some_and(|id| !id.is_empty()));
+    // A reasoning item without an id can't be resumed.
+    items.retain(|(_, i)| {
+        i["type"] != "reasoning" || i["id"].as_str().is_some_and(|id| !id.is_empty())
+    });
     items
 }
 
@@ -332,11 +447,14 @@ mod tests {
         assert_eq!(details.len(), 3);
         assert_eq!(
             to_responses_items(&details),
-            [json!({
-                "type": "reasoning", "id": "rs_1",
-                "summary": [{ "type": "summary_text", "text": "A" }, { "type": "summary_text", "text": "B" }],
-                "encrypted_content": "enc",
-            })]
+            [(
+                None,
+                json!({
+                    "type": "reasoning", "id": "rs_1",
+                    "summary": [{ "type": "summary_text", "text": "A" }, { "type": "summary_text", "text": "B" }],
+                    "encrypted_content": "enc",
+                })
+            )]
         );
         // Other formats aren't Responses items; an item without an id can't be resumed.
         let other =
@@ -396,8 +514,87 @@ mod tests {
                 && is_deepseek("DeepSeek-Reasoner")
                 && !is_deepseek("gpt-5")
         );
-        assert!(wanted("https://example.test/v1"));
-        rejected("https://example.test/v1");
-        assert!(!wanted("https://example.test/v1"));
+        assert!(wanted("https://example.test/v1", "m"));
+        rejected("https://example.test/v1", "m");
+        assert!(!wanted("https://example.test/v1", "m"));
+        assert!(
+            wanted("https://example.test/v1", "other"),
+            "a refusal is the model's"
+        );
+    }
+
+    #[test]
+    fn a_responses_step_goes_back_whole_and_each_item_in_its_place() {
+        let reasoning = |id: &str, call: &str| {
+            let mut entries = from_responses_item(
+                &json!({ "type": "reasoning", "id": id, "summary": [], "encrypted_content": format!("enc-{id}") }),
+            );
+            for e in &mut entries {
+                e["before_call"] = json!(call);
+            }
+            entries
+        };
+        let mut commentary = commentary_entry(
+            &json!({ "type": "message", "id": "msg_1", "phase": "commentary", "content": [{ "type": "output_text", "text": "Reading both." }] }),
+            1,
+        )
+        .unwrap();
+        commentary["before_call"] = json!("c1");
+        let mut details = reasoning("rs_1", "c1");
+        details.push(commentary);
+        details.extend(reasoning("rs_2", "c2"));
+        let items = to_responses_items(&details);
+        let placed: Vec<(Option<&str>, &str)> = items
+            .iter()
+            .map(|(at, i)| (at.as_deref(), i["type"].as_str().unwrap_or("message")))
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                (Some("c1"), "reasoning"),
+                (Some("c1"), "message"),
+                (Some("c2"), "reasoning"),
+            ]
+        );
+        assert_eq!(items[0].1["encrypted_content"], "enc-rs_1");
+        assert_eq!(
+            items[1].1,
+            json!({ "role": "assistant", "content": "Reading both.", "phase": "commentary" })
+        );
+        // Commentary without text isn't kept.
+        assert!(commentary_entry(&json!({ "type": "message", "content": [] }), 0).is_none());
+    }
+
+    #[test]
+    fn commentary_stays_off_chat_completions_and_what_counts_as_sent_back() {
+        let commentary = commentary_entry(
+            &json!({ "content": [{ "type": "output_text", "text": "Looking." }] }),
+            0,
+        )
+        .unwrap();
+        let summary = json!({ "type": "reasoning.summary", "summary": "s", "id": "rs_1", "format": RESPONSES_FORMAT });
+        let mut body = json!({ "messages": [
+            { "role": "assistant", "content": "", "reasoning_details": [commentary.clone(), summary.clone()] },
+            { "role": "assistant", "content": "", "reasoning_details": [commentary] },
+        ]});
+        strip_commentary(&mut body);
+        assert_eq!(body["messages"][0]["reasoning_details"], json!([summary]));
+        assert!(body["messages"][1].get("reasoning_details").is_none());
+        // On the Responses API: its items, and the request for more.
+        let responses = |input: Value| json!({ "model": "m", "input": input });
+        assert!(sends_any(&responses(
+            json!([{ "type": "reasoning", "id": "rs_1" }])
+        )));
+        // A labelled message alone isn't reasoning (the text sent with
+        // calls is labelled commentary too).
+        assert!(!sends_any(&responses(
+            json!([{ "role": "assistant", "content": "x", "phase": "commentary" }])
+        )));
+        let mut asked = responses(json!([]));
+        asked["include"] = json!(["reasoning.encrypted_content"]);
+        assert!(sends_any(&asked));
+        assert!(!sends_any(&responses(
+            json!([{ "role": "user", "content": "q" }])
+        )));
     }
 }

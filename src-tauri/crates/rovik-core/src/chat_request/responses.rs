@@ -261,22 +261,35 @@ fn is_empty(content: &Value) -> bool {
 /// stored with the provider (`store: false`): the whole history is sent
 /// each time, as with chat completions.
 ///
+/// A step's output goes back as it came, in its order: OpenAI's guide says
+/// to replay the returned output items, reasoning included, with the tool
+/// calls and their results. The step's reasoning and commentary are kept
+/// as its `reasoning_details` entries (reasoning_echo.rs), each noting the
+/// call it came right before: it goes back there, else before the step's
+/// text.
+///
 /// `phases`: the model labels its messages (GPT-5.3 Codex and later), and
 /// expects its earlier ones back labelled: text sent with tool calls is
-/// `commentary`, any other reply its `final_answer`. Its commentary itself
-/// isn't stored as part of the reply (it's shown with the reasoning), so
-/// it isn't sent back, like the reasoning.
+/// `commentary`, any other reply its `final_answer`. Its commentary isn't
+/// part of the reply (it's shown with the reasoning): it goes back as items
+/// of its own, labelled, where it was. A history carrying commentary is
+/// from such a model, whatever this run of the app has seen.
 /// `echo`: reasoning may go back to the server (reasoning_echo.rs): its
 /// items, and the request for encrypted reasoning to send back later.
 pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
     let mut instructions: Vec<String> = Vec::new();
     let mut input: Vec<Value> = Vec::new();
-    for message in chat
+    let messages: &[Value] = chat
         .get("messages")
         .and_then(|m| m.as_array())
-        .into_iter()
-        .flatten()
-    {
+        .map_or(&[], Vec::as_slice);
+    let phases = phases
+        || messages.iter().any(|m| {
+            m.get("reasoning_details")
+                .and_then(|d| d.as_array())
+                .is_some_and(|d| d.iter().any(crate::reasoning_echo::is_commentary))
+        });
+    for message in messages {
         let role = message
             .get("role")
             .and_then(|r| r.as_str())
@@ -298,29 +311,50 @@ pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
             }
             _ => {
                 let assistant = role == "assistant";
-                let calls = message.get("tool_calls").and_then(|c| c.as_array());
-                // The step's reasoning, before what it said and called.
-                if assistant {
-                    if let Some(details) =
-                        message.get("reasoning_details").and_then(|d| d.as_array())
-                    {
-                        input.extend(crate::reasoning_echo::to_responses_items(details));
+                let calls: &[Value] = message
+                    .get("tool_calls")
+                    .and_then(|c| c.as_array())
+                    .map_or(&[], Vec::as_slice);
+                let ids: Vec<&str> = calls
+                    .iter()
+                    .map(|c| c.get("id").and_then(|i| i.as_str()).unwrap_or(""))
+                    .collect();
+                // The step's reasoning and commentary, each where it was.
+                let items = match message.get("reasoning_details").and_then(|d| d.as_array()) {
+                    Some(details) if assistant => {
+                        crate::reasoning_echo::to_responses_items(details)
+                    }
+                    _ => Vec::new(),
+                };
+                let mut sent = vec![false; items.len()];
+                // Before the text: what came before it, or before no call
+                // of this step.
+                for (k, (at, item)) in items.iter().enumerate() {
+                    if !at.as_deref().is_some_and(|id| ids.contains(&id)) {
+                        input.push(item.clone());
+                        sent[k] = true;
                     }
                 }
                 if !is_empty(content) {
                     let mut item =
                         json!({ "role": role, "content": content_of(content, assistant) });
                     if assistant && phases {
-                        let with_calls = calls.is_some_and(|c| !c.is_empty());
-                        item["phase"] = json!(if with_calls {
-                            "commentary"
-                        } else {
+                        item["phase"] = json!(if calls.is_empty() {
                             "final_answer"
+                        } else {
+                            "commentary"
                         });
                     }
                     input.push(item);
                 }
-                for call in calls.into_iter().flatten() {
+                for (call, id) in calls.iter().zip(&ids) {
+                    // What came right before this call.
+                    for (k, (at, item)) in items.iter().enumerate() {
+                        if !sent[k] && at.as_deref() == Some(*id) {
+                            input.push(item.clone());
+                            sent[k] = true;
+                        }
+                    }
                     input.push(json!({
                         "type": "function_call",
                         "call_id": call.get("id").cloned().unwrap_or(json!("")),
@@ -398,11 +432,13 @@ pub fn request_body(chat: &Value, phases: bool, echo: bool) -> Value {
         .or_else(|| (chat.pointer("/reasoning/enabled") == Some(&json!(false))).then_some("none"));
     if let Some(effort) = effort {
         body["reasoning"] = json!({ "effort": effort });
-        // Stateless (`store: false`): the reasoning comes back encrypted, to
-        // send with the next step.
-        if echo && effort != "none" {
-            body["include"] = json!(["reasoning.encrypted_content"]);
-        }
+    }
+    // Stateless (`store: false`): the reasoning comes back encrypted only
+    // when asked for, to send with the next step. Asked whatever the effort:
+    // at the provider's default effort the model reasons too, and in a tool
+    // calling loop it needs its reasoning back with the calls.
+    if echo && effort != Some("none") {
+        body["include"] = json!(["reasoning.encrypted_content"]);
     }
     // `stop` and `stream_options` aren't taken: usage always comes with the
     // completed response.
@@ -424,6 +460,26 @@ fn delta(delta: Value) -> Value {
 }
 
 impl ReplyParser {
+    /// The entries kept to send back since the reply's text or the last
+    /// call came right before the call `id`: they go back right before it
+    /// (`request_body`), where they were.
+    fn place_before_call(&mut self, id: &str) {
+        for entry in self
+            .reasoning_details
+            .iter_mut()
+            .skip(self.responses_placed)
+        {
+            let ours = entry.get("format").and_then(|f| f.as_str())
+                == Some(crate::reasoning_echo::RESPONSES_FORMAT);
+            if let Some(entry) = entry.as_object_mut().filter(|_| ours) {
+                entry
+                    .entry("before_call")
+                    .or_insert_with(|| Value::String(id.to_string()));
+            }
+        }
+        self.responses_placed = self.reasoning_details.len();
+    }
+
     /// One Responses API stream event, translated into the chat completions
     /// form `feed` takes. True once the response has ended.
     pub fn feed_responses(
@@ -464,15 +520,15 @@ impl ReplyParser {
             }
             "response.output_item.added" | "response.output_item.done" => {
                 let item = value.get("item").unwrap_or(&Value::Null);
+                let index = value
+                    .get("output_index")
+                    .and_then(|i| i.as_u64())
+                    .unwrap_or(0);
                 if kind == "response.output_item.added" && str_at(item, "type") == "message" {
                     if let Some(phase) = item.get("phase").and_then(|p| p.as_str()) {
                         if let Some(key) = &self.phase_key {
                             note_phases(key);
                         }
-                        let index = value
-                            .get("output_index")
-                            .and_then(|i| i.as_u64())
-                            .unwrap_or(0);
                         if phase == "commentary" && !self.commentary.contains(&index) {
                             self.commentary.push(index);
                             // Apart from the reasoning before it.
@@ -480,6 +536,11 @@ impl ReplyParser {
                                 self.feed(&delta(json!({ "reasoning_content": "\n\n" })), emit)?;
                             }
                         }
+                    }
+                    // The reply's text: what came before it goes back
+                    // before it, not before a call after it.
+                    if !self.commentary.contains(&index) {
+                        self.responses_placed = self.reasoning_details.len();
                     }
                 }
                 // Reasoning to send back with the next request: the whole item.
@@ -489,17 +550,26 @@ impl ReplyParser {
                         self.feed(&delta(json!({ "reasoning_details": entries })), emit)?;
                     }
                 }
+                // Commentary goes back too, where it was: it's the model's
+                // own account of what it's doing between its calls.
+                if kind == "response.output_item.done"
+                    && str_at(item, "type") == "message"
+                    && self.commentary.contains(&index)
+                {
+                    if let Some(entry) = crate::reasoning_echo::commentary_entry(item, index) {
+                        self.feed(&delta(json!({ "reasoning_details": [entry] })), emit)?;
+                    }
+                }
                 if str_at(item, "type") == "function_call" {
-                    let index = value
-                        .get("output_index")
-                        .and_then(|i| i.as_u64())
-                        .unwrap_or(0);
                     // `call_id` is what the result is sent back with.
                     let id = item
                         .get("call_id")
                         .or_else(|| item.get("id"))
                         .cloned()
                         .unwrap_or(json!(""));
+                    if let Some(id) = id.as_str().filter(|id| !id.is_empty()) {
+                        self.place_before_call(id);
+                    }
                     // Whole arguments: only what hasn't been streamed yet.
                     let streamed = self
                         .calls
@@ -551,9 +621,12 @@ impl ReplyParser {
                 } else {
                     "stop".to_string()
                 });
-                // Nothing but commentary: that's the reply, then.
+                // Nothing but commentary: that's the reply, then (and not
+                // sent back a second time as commentary).
                 if !self.visible() && !self.commentary_text.is_empty() {
                     let text = std::mem::take(&mut self.commentary_text);
+                    self.reasoning_details
+                        .retain(|e| !crate::reasoning_echo::is_commentary(e));
                     self.feed(&delta(json!({ "content": text })), emit)?;
                 }
                 return Ok(true);
@@ -604,6 +677,10 @@ impl ReplyParser {
             .flatten()
             .enumerate()
         {
+            // Each item as a stream ends it (`output_item.done`), so what's
+            // sent back is kept here too.
+            let done =
+                json!({ "type": "response.output_item.done", "output_index": index, "item": item });
             match str_at(item, "type") {
                 "message" => {
                     self.feed_responses(
@@ -627,6 +704,7 @@ impl ReplyParser {
                             )?;
                         }
                     }
+                    self.feed_responses(&done, emit)?;
                 }
                 "reasoning" => {
                     let parts = ["summary", "content"]
@@ -645,12 +723,10 @@ impl ReplyParser {
                             emit,
                         )?;
                     }
+                    self.feed_responses(&done, emit)?;
                 }
                 "function_call" => {
-                    self.feed_responses(
-                        &json!({ "type": "response.output_item.done", "output_index": index, "item": item }),
-                        emit,
-                    )?;
+                    self.feed_responses(&done, emit)?;
                 }
                 _ => {}
             }
@@ -708,6 +784,153 @@ mod tests {
         assert!(request_body(&chat, false, false).get("include").is_none());
         let off = json!({ "model": "m", "reasoning_effort": "none", "messages": [] });
         assert!(request_body(&off, false, true).get("include").is_none());
+        // No effort picked: the model reasons at its default, and its
+        // reasoning still has to come back to go with the next step.
+        let default = request_body(&json!({ "model": "m", "messages": [] }), false, true);
+        assert_eq!(default["include"], json!(["reasoning.encrypted_content"]));
+        assert!(default.get("reasoning").is_none(), "no effort is sent");
+    }
+
+    /// A step's input items, in order, named for comparing.
+    fn order_of(input: &[Value]) -> Vec<String> {
+        input
+            .iter()
+            .map(|i| match i["type"].as_str() {
+                Some("reasoning") => format!("reasoning {}", i["id"].as_str().unwrap_or("")),
+                Some("function_call") => format!("call {}", i["call_id"].as_str().unwrap_or("")),
+                Some("function_call_output") => {
+                    format!("result {}", i["call_id"].as_str().unwrap_or(""))
+                }
+                _ => format!(
+                    "{} {}",
+                    i["role"].as_str().unwrap_or(""),
+                    i.get("phase").and_then(|p| p.as_str()).unwrap_or("-")
+                ),
+            })
+            .collect()
+    }
+
+    fn details_of(events: &[ChatStreamEvent]) -> Vec<Value> {
+        events
+            .iter()
+            .find_map(|e| match e {
+                ChatStreamEvent::ReasoningDetails { details } => Some(details.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_streamed_step_goes_back_in_the_order_it_came() {
+        let reasoning = |at: u64, id: &str| {
+            json!({ "type": "response.output_item.done", "output_index": at,
+                    "item": { "type": "reasoning", "id": id, "summary": [], "encrypted_content": format!("enc-{id}") } })
+        };
+        let call = |at: u64, id: &str| {
+            json!({ "type": "response.output_item.done", "output_index": at,
+                    "item": { "type": "function_call", "call_id": id, "name": "read", "arguments": "{}" } })
+        };
+        // Reasoning, commentary and a call; more reasoning and a second call.
+        let (ended, mut events, mut parser) = feed_all(&[
+            json!({ "type": "response.output_item.added", "output_index": 0, "item": { "type": "reasoning", "id": "rs_1", "summary": [] } }),
+            reasoning(0, "rs_1"),
+            json!({ "type": "response.output_item.added", "output_index": 1,
+                    "item": { "type": "message", "role": "assistant", "phase": "commentary", "content": [] } }),
+            json!({ "type": "response.output_text.delta", "output_index": 1, "delta": "Reading a, then b." }),
+            json!({ "type": "response.output_item.done", "output_index": 1,
+                    "item": { "type": "message", "id": "msg_1", "role": "assistant", "phase": "commentary",
+                              "content": [{ "type": "output_text", "text": "Reading a, then b." }] } }),
+            json!({ "type": "response.output_item.added", "output_index": 2,
+                    "item": { "type": "function_call", "call_id": "c1", "name": "read", "arguments": "" } }),
+            call(2, "c1"),
+            reasoning(3, "rs_2"),
+            call(4, "c2"),
+            json!({ "type": "response.completed", "response": {} }),
+        ]);
+        assert!(ended.unwrap());
+        parser.finish(&mut |e| events.push(e)).unwrap();
+        let (reply, shown) = text_of_events(&events);
+        assert_eq!(
+            (reply.as_str(), shown.as_str()),
+            ("", "Reading a, then b."),
+            "commentary is shown with the reasoning, not as the reply"
+        );
+
+        // The step as the history sends it back (chat_db::history::to_wire).
+        let chat = json!({ "model": "m", "messages": [
+            { "role": "user", "content": "Read a and b" },
+            { "role": "assistant", "content": "", "reasoning_details": details_of(&events), "tool_calls": [
+                { "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{}" } },
+                { "id": "c2", "type": "function", "function": { "name": "read", "arguments": "{}" } }
+            ] },
+            { "role": "tool", "tool_call_id": "c1", "content": "a" },
+            { "role": "tool", "tool_call_id": "c2", "content": "b" },
+        ] });
+        let body = request_body(&chat, false, true);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(
+            order_of(input),
+            [
+                "user -",
+                "reasoning rs_1",
+                "assistant commentary",
+                "call c1",
+                "reasoning rs_2",
+                "call c2",
+                "result c1",
+                "result c2"
+            ]
+        );
+        assert_eq!(input[1]["encrypted_content"], "enc-rs_1");
+        assert_eq!(input[2]["content"], "Reading a, then b.");
+        // Echo refused: neither reasoning nor commentary goes back.
+        let mut stripped = chat.clone();
+        crate::reasoning_echo::strip(&mut stripped);
+        let input = request_body(&stripped, false, false)["input"].clone();
+        assert_eq!(
+            order_of(input.as_array().unwrap()),
+            ["user -", "call c1", "call c2", "result c1", "result c2"]
+        );
+    }
+
+    #[test]
+    fn a_complete_response_keeps_what_goes_back_in_its_place() {
+        // Not streamed: reasoning before the text stays before it, and
+        // reasoning after it goes right before the call it came before.
+        let body = json!({ "status": "completed", "output": [
+            { "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc-1" },
+            { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "Plan: read it." }] },
+            { "type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "enc-2" },
+            { "type": "function_call", "call_id": "c1", "name": "read", "arguments": "{}" }
+        ] });
+        let mut parser = ReplyParser::default();
+        let mut events = Vec::new();
+        parser
+            .feed_complete_responses(&body, &mut |e| events.push(e))
+            .unwrap();
+        parser.finish(&mut |e| events.push(e)).unwrap();
+        let details = details_of(&events);
+        let placed: Vec<(Value, Value)> = details
+            .iter()
+            .map(|d| (d["id"].clone(), d["before_call"].clone()))
+            .collect();
+        assert_eq!(
+            placed,
+            [(json!("rs_1"), Value::Null), (json!("rs_2"), json!("c1"))]
+        );
+        let chat = json!({ "model": "m", "messages": [
+            { "role": "assistant", "content": "Plan: read it.", "reasoning_details": details, "tool_calls": [
+                { "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{}" } }
+            ] },
+        ] });
+        assert_eq!(
+            order_of(
+                request_body(&chat, false, true)["input"]
+                    .as_array()
+                    .unwrap()
+            ),
+            ["reasoning rs_1", "assistant -", "reasoning rs_2", "call c1"]
+        );
     }
 
     #[test]
@@ -730,7 +953,7 @@ mod tests {
         });
         assert_eq!(
             details.map(|d| crate::reasoning_echo::to_responses_items(&d)),
-            Some(vec![item])
+            Some(vec![(None, item)])
         );
     }
     use crate::chat_request::ErrorKind;
@@ -929,11 +1152,17 @@ mod tests {
             json!({ "type": "response.output_item.added", "output_index": 0,
                     "item": { "type": "message", "phase": "commentary", "content": [] } }),
             json!({ "type": "response.output_text.delta", "output_index": 0, "delta": "Done." }),
+            json!({ "type": "response.output_item.done", "output_index": 0,
+                    "item": { "type": "message", "phase": "commentary", "content": [{ "type": "output_text", "text": "Done." }] } }),
             json!({ "type": "response.completed", "response": {} }),
         ]);
         assert!(ended.unwrap());
         parser.finish(&mut |e| events.push(e)).unwrap();
         assert_eq!(text_of_events(&events).0, "Done.");
+        assert!(
+            details_of(&events).is_empty(),
+            "the reply now: not sent back again as commentary"
+        );
     }
 
     #[test]

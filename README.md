@@ -812,3 +812,24 @@ effort, never returns the model's reasoning, drops PDFs and caches nothing
 - When a model's safety classifiers decline a request
   (`stop_reason: "refusal"`), the chat shows why, and the request isn't
   retried as it is.
+
+### OpenAI's Responses API
+
+A chat with a model on an OpenAI-compatible provider goes to the
+provider's `/responses` (OpenAI's Responses API) first, and moves to its
+`/chat/completions` when the provider says the model is there
+(`src-tauri/crates/rovik-core/src/chat_request/responses.rs`). Nothing is
+stored with the provider (`store: false`): the whole history goes with
+every request, so the model's own output goes back with it:
+
+- Every request asks for the model's reasoning, encrypted
+  (`include: ["reasoning.encrypted_content"]`), whatever the effort picked,
+  except "No thinking": at the provider's default effort a model reasons
+  too.
+- A step's reasoning and commentary (the notes a model writes between its
+  tool calls, shown with its reasoning) go back with the run's next steps
+  in the order they came, each right before the call it preceded, as
+  OpenAI asks of a tool-calling loop.
+- A model that refuses the request for its reasoning, or the reasoning sent
+  back, gets the request again without it, and isn't sent it again while
+  the app runs. The other models on the same provider still are.
