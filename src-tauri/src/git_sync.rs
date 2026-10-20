@@ -11,14 +11,17 @@
 // Merges and rebases are libgit2's on-disk ones: the state lives in .git
 // (MERGE_HEAD, rebase-merge/) like git's own, so a terminal sees it too.
 
-use crate::git::{git_fetch_blocking, off_main_thread, open_repo};
+use crate::git::{
+    git_fetch_blocking, head_commit, inside_repo, open_repo, signature, tree_blob, workdir,
+};
+use crate::util::{blocking, rewriting, ErrText};
 use git2::{
-    build::CheckoutBuilder, BranchType, ErrorCode, Oid, RebaseOptions, Reference, Repository,
-    RepositoryState, ResetType, Status, StatusOptions,
+    build::CheckoutBuilder, AnnotatedCommit, BranchType, ErrorCode, Oid, RebaseOptions, Reference,
+    Repository, RepositoryState, ResetType, Status, StatusOptions,
 };
 use rovik_core::merge::{is_binary, ConflictFile, MergeSegment};
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path};
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Pull strategy, from git config
@@ -106,7 +109,7 @@ pub fn pull_config(repo: &Repository, branch: &str) -> PullConfig {
 
 /// The current branch and the remote branch it tracks.
 fn tracking(repo: &Repository) -> Result<(String, Reference<'_>), String> {
-    let head = repo.head().map_err(|e| e.to_string())?;
+    let head = repo.head().err_text()?;
     if !head.is_branch() {
         return Err("Cannot pull: HEAD is detached, not on a branch".to_string());
     }
@@ -114,9 +117,7 @@ fn tracking(repo: &Repository) -> Result<(String, Reference<'_>), String> {
         .shorthand()
         .map_err(|e| format!("Could not determine current branch name: {e}"))?
         .to_string();
-    let branch = repo
-        .find_branch(&name, BranchType::Local)
-        .map_err(|e| e.to_string())?;
+    let branch = repo.find_branch(&name, BranchType::Local).err_text()?;
     let upstream = branch
         .upstream()
         .map_err(|_| format!("Branch '{name}' has no upstream configured"))?;
@@ -125,9 +126,9 @@ fn tracking(repo: &Repository) -> Result<(String, Reference<'_>), String> {
 
 #[tauri::command]
 pub async fn git_pull_config(path: String) -> Result<PullConfig, String> {
-    off_main_thread(move || {
+    blocking(move || {
         let repo = open_repo(&path)?;
-        let head = repo.head().map_err(|e| e.to_string())?;
+        let head = repo.head().err_text()?;
         let branch = head.shorthand().unwrap_or("HEAD").to_string();
         Ok(pull_config(&repo, &branch))
     })
@@ -174,6 +175,14 @@ fn state_name(state: RepositoryState) -> Option<&'static str> {
     }
 }
 
+/// Nothing may be in progress before a pull or a rebase starts.
+pub(crate) fn nothing_in_progress(repo: &Repository) -> Result<(), String> {
+    match state_name(repo.state()) {
+        Some(op) => Err(format!("A {op} is in progress: finish or abort it first.")),
+        None => Ok(()),
+    }
+}
+
 /// `conflictStyle = diff3 / zdiff3`: conflict markers in the files show the
 /// common ancestor too, as git would write them.
 fn checkout_for_merge(repo: &Repository) -> CheckoutBuilder<'static> {
@@ -196,19 +205,14 @@ fn rebase_options(repo: &Repository) -> RebaseOptions<'static> {
     opts
 }
 
-fn signature(repo: &Repository) -> Result<git2::Signature<'static>, String> {
-    repo.signature()
-        .map_err(|e| format!("No Git identity configured (user.name / user.email): {e}"))
-}
-
 /// Files with conflicts in the index, sorted.
 pub fn conflicted_paths(repo: &Repository) -> Result<Vec<String>, String> {
-    let mut index = repo.index().map_err(|e| e.to_string())?;
+    let mut index = repo.index().err_text()?;
     // Another handle (a resolve) may have written it since.
-    index.read(false).map_err(|e| e.to_string())?;
+    index.read(false).err_text()?;
     let mut paths = Vec::new();
-    for conflict in index.conflicts().map_err(|e| e.to_string())? {
-        let conflict = conflict.map_err(|e| e.to_string())?;
+    for conflict in index.conflicts().err_text()? {
+        let conflict = conflict.err_text()?;
         if let Some(entry) = conflict.our.or(conflict.their).or(conflict.ancestor) {
             paths.push(String::from_utf8_lossy(&entry.path).into_owned());
         }
@@ -224,7 +228,7 @@ pub fn conflicted_paths(repo: &Repository) -> Result<Vec<String>, String> {
 fn ensure_clean(repo: &Repository, what: &str) -> Result<(), String> {
     let mut opts = StatusOptions::new();
     opts.include_untracked(false).include_ignored(false);
-    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+    let statuses = repo.statuses(Some(&mut opts)).err_text()?;
     let dirty = statuses
         .iter()
         .any(|e| e.status() != Status::CURRENT && !e.status().is_ignored());
@@ -242,9 +246,11 @@ pub async fn git_pull(
     strategy: Option<PullStrategy>,
     remember: Option<bool>,
 ) -> Result<PullOutcome, String> {
-    // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
-    off_main_thread(move || git_pull_blocking(path, strategy, remember.unwrap_or(false))).await
+    let repo = path.clone();
+    rewriting(&path, move || {
+        git_pull_blocking(repo, strategy, remember.unwrap_or(false))
+    })
+    .await
 }
 
 /// Fetches, then brings the upstream's commits into the current branch.
@@ -255,12 +261,7 @@ pub fn git_pull_blocking(
     strategy: Option<PullStrategy>,
     remember: bool,
 ) -> Result<PullOutcome, String> {
-    {
-        let repo = open_repo(&path)?;
-        if let Some(op) = state_name(repo.state()) {
-            return Err(format!("A {op} is in progress: finish or abort it first."));
-        }
-    }
+    nothing_in_progress(&open_repo(&path)?)?;
     git_fetch_blocking(path.clone())?;
     integrate_upstream(&open_repo(&path)?, strategy, remember)
 }
@@ -275,12 +276,8 @@ pub fn integrate_upstream(
     let upstream_oid = upstream
         .target()
         .ok_or("Upstream branch has no target commit")?;
-    let incoming = repo
-        .reference_to_annotated_commit(&upstream)
-        .map_err(|e| e.to_string())?;
-    let (analysis, _) = repo
-        .merge_analysis(&[&incoming])
-        .map_err(|e| e.to_string())?;
+    let incoming = repo.reference_to_annotated_commit(&upstream).err_text()?;
+    let (analysis, _) = repo.merge_analysis(&[&incoming]).err_text()?;
     if analysis.is_up_to_date() {
         return Ok(PullOutcome::done("up-to-date"));
     }
@@ -291,10 +288,10 @@ pub fn integrate_upstream(
             let mut local = repo
                 .config()
                 .and_then(|c| c.open_level(git2::ConfigLevel::Local))
-                .map_err(|e| e.to_string())?;
+                .err_text()?;
             local
                 .set_bool("pull.rebase", s == PullStrategy::Rebase)
-                .map_err(|e| e.to_string())?;
+                .err_text()?;
         }
     }
     let strategy = strategy.or(config.strategy);
@@ -303,16 +300,14 @@ pub fn integrate_upstream(
     if analysis.is_fast_forward() && !merge_anyway {
         // The working tree first, safely: local edits to files the upstream
         // changes stop it, rather than being overwritten.
-        let target = repo
-            .find_object(upstream_oid, None)
-            .map_err(|e| e.to_string())?;
+        let target = repo.find_object(upstream_oid, None).err_text()?;
         repo.checkout_tree(&target, Some(CheckoutBuilder::new().safe()))
             .map_err(|e| format!("Pull would overwrite your local changes: {e}"))?;
         let refname = format!("refs/heads/{branch}");
         repo.find_reference(&refname)
             .and_then(|mut r| r.set_target(upstream_oid, "pull: Fast-forward"))
-            .map_err(|e| e.to_string())?;
-        repo.set_head(&refname).map_err(|e| e.to_string())?;
+            .err_text()?;
+        repo.set_head(&refname).err_text()?;
         return Ok(PullOutcome::done("fast-forward"));
     }
 
@@ -325,21 +320,21 @@ pub fn integrate_upstream(
         Some(PullStrategy::Merge) => {
             ensure_clean(repo, "pull")?;
             let mut checkout = checkout_for_merge(repo);
-            repo.merge(&[&incoming], None, Some(&mut checkout)).map_err(|e| format!("Merge failed: {e}"))?;
+            repo.merge(&[&incoming], None, Some(&mut checkout))
+                .map_err(|e| format!("Merge failed: {e}"))?;
             let conflicts = conflicted_paths(repo)?;
             if !conflicts.is_empty() {
-                return Ok(PullOutcome { result: "conflicts", conflicts });
+                return Ok(PullOutcome {
+                    result: "conflicts",
+                    conflicts,
+                });
             }
             commit_merge(repo, None)?;
             Ok(PullOutcome::done("merged"))
         }
         Some(PullStrategy::Rebase) => {
             ensure_clean(repo, "pull")?;
-            let mut opts = rebase_options(repo);
-            let mut rebase = repo
-                .rebase(None, Some(&incoming), None, Some(&mut opts))
-                .map_err(|e| format!("Rebase failed: {e}"))?;
-            drive_rebase(repo, &mut rebase)
+            start_rebase(repo, &incoming)
         }
     }
 }
@@ -355,10 +350,9 @@ pub async fn git_rebase(
     remote: bool,
     rewrite_pushed: Option<bool>,
 ) -> Result<PullOutcome, String> {
-    // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
-    off_main_thread(move || {
-        git_rebase_blocking(path, onto, remote, rewrite_pushed.unwrap_or(false))
+    let repo = path.clone();
+    rewriting(&path, move || {
+        git_rebase_blocking(repo, onto, remote, rewrite_pushed.unwrap_or(false))
     })
     .await
 }
@@ -377,9 +371,7 @@ pub fn git_rebase_blocking(
     rewrite_pushed: bool,
 ) -> Result<PullOutcome, String> {
     let repo = open_repo(&path)?;
-    if let Some(op) = state_name(repo.state()) {
-        return Err(format!("A {op} is in progress: finish or abort it first."));
-    }
+    nothing_in_progress(&repo)?;
     let head = repo
         .head()
         .map_err(|_| "There are no commits to rebase yet.".to_string())?;
@@ -398,15 +390,9 @@ pub fn git_rebase_blocking(
     let target = repo
         .find_branch(&onto, kind)
         .map_err(|_| format!("There's no branch {onto}."))?;
-    let head_id = head.peel_to_commit().map_err(|e| e.to_string())?.id();
-    let onto_id = target
-        .get()
-        .peel_to_commit()
-        .map_err(|e| e.to_string())?
-        .id();
-    let has_it = repo
-        .graph_descendant_of(head_id, onto_id)
-        .map_err(|e| e.to_string())?;
+    let head_id = head.peel_to_commit().err_text()?.id();
+    let onto_id = target.get().peel_to_commit().err_text()?.id();
+    let has_it = repo.graph_descendant_of(head_id, onto_id).err_text()?;
     if head_id == onto_id || has_it {
         return Ok(PullOutcome::done("up-to-date"));
     }
@@ -416,12 +402,8 @@ pub fn git_rebase_blocking(
     }
     let incoming = repo
         .reference_to_annotated_commit(target.get())
-        .map_err(|e| e.to_string())?;
-    let mut opts = rebase_options(&repo);
-    let mut rebase = repo
-        .rebase(None, Some(&incoming), None, Some(&mut opts))
-        .map_err(|e| format!("Rebase failed: {e}"))?;
-    drive_rebase(&repo, &mut rebase)
+        .err_text()?;
+    start_rebase(&repo, &incoming)
 }
 
 /// Whether rebasing `branch` (at `head`) onto `onto` replays a commit its
@@ -437,10 +419,10 @@ fn replays_pushed(repo: &Repository, branch: &str, head: Oid, onto: Oid) -> Resu
     };
     // The commits on `tip` that `onto` doesn't have.
     let own = |tip: Oid| -> Result<std::collections::HashSet<Oid>, String> {
-        let mut walk = repo.revwalk().map_err(|e| e.to_string())?;
-        walk.push(tip).map_err(|e| e.to_string())?;
-        walk.hide(onto).map_err(|e| e.to_string())?;
-        walk.collect::<Result<_, _>>().map_err(|e| e.to_string())
+        let mut walk = repo.revwalk().err_text()?;
+        walk.push(tip).err_text()?;
+        walk.hide(onto).err_text()?;
+        walk.collect::<Result<_, _>>().err_text()
     };
     let pushed = own(upstream)?;
     Ok(own(head)?.iter().any(|c| pushed.contains(c)))
@@ -462,31 +444,30 @@ fn merge_message(repo: &Repository) -> String {
     }
 }
 
-fn commit_merge(repo: &Repository, message: Option<String>) -> Result<(), String> {
-    let mut index = repo.index().map_err(|e| e.to_string())?;
-    if index.has_conflicts() {
-        return Err("Resolve the remaining conflicts first.".to_string());
-    }
-    let tree = repo
-        .find_tree(index.write_tree().map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let sig = signature(repo)?;
-    let head = repo
-        .head()
-        .and_then(|h| h.peel_to_commit())
-        .map_err(|e| e.to_string())?;
-    let mut ids: Vec<Oid> = Vec::new();
+/// The commits a merge in progress brings in (MERGE_HEAD).
+fn merge_heads(repo: &Repository) -> Result<Vec<Oid>, String> {
+    let mut ids = Vec::new();
     // mergehead_foreach wants `&mut`; a second handle on the same repository will do.
-    let mut handle = Repository::open(repo.path()).map_err(|e| e.to_string())?;
+    let mut handle = Repository::open(repo.path()).err_text()?;
     handle
         .mergehead_foreach(|id| {
             ids.push(*id);
             true
         })
-        .map_err(|e| e.to_string())?;
-    let mut parents = vec![head];
-    for id in ids {
-        parents.push(repo.find_commit(id).map_err(|e| e.to_string())?);
+        .err_text()?;
+    Ok(ids)
+}
+
+fn commit_merge(repo: &Repository, message: Option<String>) -> Result<(), String> {
+    let mut index = repo.index().err_text()?;
+    if index.has_conflicts() {
+        return Err("Resolve the remaining conflicts first.".to_string());
+    }
+    let tree = repo.find_tree(index.write_tree().err_text()?).err_text()?;
+    let sig = signature(repo)?;
+    let mut parents = vec![head_commit(repo)?];
+    for id in merge_heads(repo)? {
+        parents.push(repo.find_commit(id).err_text()?);
     }
     let parents: Vec<&git2::Commit> = parents.iter().collect();
     let message = message
@@ -494,8 +475,8 @@ fn commit_merge(repo: &Repository, message: Option<String>) -> Result<(), String
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| merge_message(repo));
     repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
-        .map_err(|e| e.to_string())?;
-    repo.cleanup_state().map_err(|e| e.to_string())
+        .err_text()?;
+    repo.cleanup_state().err_text()
 }
 
 /// Commits the rebase step just applied. A step whose change is upstream
@@ -509,6 +490,15 @@ fn commit_rebase_step(
         Err(e) if e.code() == ErrorCode::Applied => Ok(()),
         Err(e) => Err(format!("Rebase commit failed: {e}")),
     }
+}
+
+/// Rebases the current branch onto `incoming`, and applies the steps.
+fn start_rebase(repo: &Repository, incoming: &AnnotatedCommit<'_>) -> Result<PullOutcome, String> {
+    let mut opts = rebase_options(repo);
+    let mut rebase = repo
+        .rebase(None, Some(incoming), None, Some(&mut opts))
+        .map_err(|e| format!("Rebase failed: {e}"))?;
+    drive_rebase(repo, &mut rebase)
 }
 
 /// Applies the remaining steps, stopping at the first one with conflicts.
@@ -536,9 +526,11 @@ pub async fn git_operation_continue(
     path: String,
     message: Option<String>,
 ) -> Result<PullOutcome, String> {
-    // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
-    off_main_thread(move || git_operation_continue_blocking(path, message)).await
+    let repo = path.clone();
+    rewriting(&path, move || {
+        git_operation_continue_blocking(repo, message)
+    })
+    .await
 }
 
 /// After the conflicts are resolved: commits the merge, or commits the
@@ -582,9 +574,8 @@ pub fn git_operation_continue_blocking(
 
 #[tauri::command]
 pub async fn git_operation_abort(path: String) -> Result<(), String> {
-    // Isolated chats on the project wait while the working tree is rewritten.
-    let _busy = rovik_core::overlay::chats::hold_busy(std::path::Path::new(&path));
-    off_main_thread(move || git_operation_abort_blocking(path)).await
+    let repo = path.clone();
+    rewriting(&path, move || git_operation_abort_blocking(repo)).await
 }
 
 /// Back to where the branch was before the merge / rebase.
@@ -595,20 +586,17 @@ pub fn git_operation_abort_blocking(path: String) -> Result<(), String> {
         RepositoryState::RebaseMerge
         | RepositoryState::Rebase
         | RepositoryState::RebaseInteractive => {
-            let mut rebase = repo.open_rebase(None).map_err(|e| e.to_string())?;
+            let mut rebase = repo.open_rebase(None).err_text()?;
             rebase
                 .abort()
                 .map_err(|e| format!("Couldn't abort the rebase: {e}"))
         }
         // A merge (or cherry-pick / revert) hasn't moved HEAD: back to it.
         _ => {
-            let head = repo
-                .head()
-                .and_then(|h| h.peel_to_commit())
-                .map_err(|e| e.to_string())?;
+            let head = head_commit(&repo)?;
             repo.reset(head.as_object(), ResetType::Hard, None)
-                .map_err(|e| e.to_string())?;
-            repo.cleanup_state().map_err(|e| e.to_string())
+                .err_text()?;
+            repo.cleanup_state().err_text()
         }
     }
 }
@@ -710,47 +698,22 @@ pub fn current_operation(repo: &Repository) -> Option<GitOperation> {
 // ---------------------------------------------------------------------------
 
 fn blob_bytes(repo: &Repository, id: Option<Oid>) -> Result<Option<Vec<u8>>, String> {
-    match id {
-        None => Ok(None),
-        Some(id) => Ok(Some(
-            repo.find_blob(id)
-                .map_err(|e| e.to_string())?
-                .content()
-                .to_vec(),
-        )),
-    }
-}
-
-fn tree_blob_id(tree: Option<&git2::Tree<'_>>, file: &str) -> Option<Oid> {
-    let entry = tree?.get_path(Path::new(file)).ok()?;
-    (entry.kind() == Some(git2::ObjectType::Blob)).then(|| entry.id())
+    id.map(|id| repo.find_blob(id).map(|b| b.content().to_vec()).err_text())
+        .transpose()
 }
 
 /// The three versions of a file that's no longer conflicted, from the
-/// commits the operation is combining.
+/// commits the operation is combining: base, ours, theirs.
 fn sides_from_operation(repo: &Repository, file: &str) -> Result<[Option<Oid>; 3], String> {
-    let head = repo
-        .head()
-        .and_then(|h| h.peel_to_commit())
-        .map_err(|e| e.to_string())?;
+    let head = head_commit(repo)?;
     let theirs = match repo.state() {
-        RepositoryState::Merge => {
-            let mut ids = Vec::new();
-            let mut handle = Repository::open(repo.path()).map_err(|e| e.to_string())?;
-            handle
-                .mergehead_foreach(|id| {
-                    ids.push(*id);
-                    true
-                })
-                .map_err(|e| e.to_string())?;
-            ids.first()
-                .copied()
-                .and_then(|id| repo.find_commit(id).ok())
-        }
+        RepositoryState::Merge => merge_heads(repo)?
+            .first()
+            .and_then(|id| repo.find_commit(*id).ok()),
         RepositoryState::RebaseMerge
         | RepositoryState::Rebase
         | RepositoryState::RebaseInteractive => {
-            let mut rebase = repo.open_rebase(None).map_err(|e| e.to_string())?;
+            let mut rebase = repo.open_rebase(None).err_text()?;
             let id = rebase
                 .operation_current()
                 .and_then(|i| rebase.nth(i).map(|o| o.id()));
@@ -766,38 +729,25 @@ fn sides_from_operation(repo: &Repository, file: &str) -> Result<[Option<Oid>; 3
             .and_then(|id| repo.find_commit(id).ok()),
         _ => theirs.parent(0).ok(),
     };
-    Ok([
-        tree_blob_id(base.and_then(|c| c.tree().ok()).as_ref(), file),
-        tree_blob_id(head.tree().ok().as_ref(), file),
-        tree_blob_id(theirs.tree().ok().as_ref(), file),
-    ])
-}
-
-fn check_rel_path(file: &str) -> Result<&Path, String> {
     let rel = Path::new(file);
-    if file.is_empty()
-        || rel.is_absolute()
-        || rel.components().any(|c| matches!(c, Component::ParentDir))
-    {
-        return Err(format!("{file}: not a path inside the repository"));
-    }
-    Ok(rel)
+    Ok([
+        tree_blob(base.and_then(|c| c.tree().ok()).as_ref(), rel),
+        tree_blob(head.tree().ok().as_ref(), rel),
+        tree_blob(theirs.tree().ok().as_ref(), rel),
+    ])
 }
 
 #[tauri::command]
 pub async fn git_conflict_file(path: String, file: String) -> Result<ConflictFile, String> {
-    off_main_thread(move || git_conflict_file_blocking(path, file)).await
+    blocking(move || git_conflict_file_blocking(path, file)).await
 }
 
 pub fn git_conflict_file_blocking(path: String, file: String) -> Result<ConflictFile, String> {
     let repo = open_repo(&path)?;
-    let rel = check_rel_path(&file)?;
-    let workdir = repo
-        .workdir()
-        .ok_or("the repository has no working folder")?
-        .to_path_buf();
+    let rel = inside_repo(&file)?;
+    let workdir = workdir(&repo)?;
 
-    let index = repo.index().map_err(|e| e.to_string())?;
+    let index = repo.index().err_text()?;
     let staged = index.conflict_get(rel).ok();
     let resolved = staged.is_none();
     let [base_id, ours_id, theirs_id] = match staged {
@@ -876,8 +826,7 @@ pub async fn git_conflict_resolve(
     content: Option<String>,
     side: Option<String>,
 ) -> Result<(), String> {
-    off_main_thread(move || git_conflict_resolve_blocking(path, file, content, side.as_deref()))
-        .await
+    blocking(move || git_conflict_resolve_blocking(path, file, content, side.as_deref())).await
 }
 
 /// Writes the resolved file and stages it, which clears its conflict.
@@ -891,14 +840,11 @@ pub fn git_conflict_resolve_blocking(
     side: Option<&str>,
 ) -> Result<(), String> {
     let repo = open_repo(&path)?;
-    let rel = check_rel_path(&file)?;
-    let abs = repo
-        .workdir()
-        .ok_or("the repository has no working folder")?
-        .join(rel);
+    let rel = inside_repo(&file)?;
+    let abs = workdir(&repo)?.join(rel);
     let bytes: Option<Vec<u8>> = match side {
         Some(side) => {
-            let index = repo.index().map_err(|e| e.to_string())?;
+            let index = repo.index().err_text()?;
             let [_, ours, theirs] = match index.conflict_get(rel).ok() {
                 Some(c) => [None, c.our.map(|e| e.id), c.their.map(|e| e.id)],
                 None => sides_from_operation(&repo, &file)?,
@@ -911,14 +857,14 @@ pub fn git_conflict_resolve_blocking(
         }
         None => content.map(String::into_bytes),
     };
-    let mut index = repo.index().map_err(|e| e.to_string())?;
+    let mut index = repo.index().err_text()?;
     match bytes {
         Some(bytes) => {
             if let Some(dir) = abs.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| format!("{file}: {e}"))?;
             }
             std::fs::write(&abs, bytes).map_err(|e| format!("{file}: couldn't write it: {e}"))?;
-            index.add_path(rel).map_err(|e| e.to_string())?;
+            index.add_path(rel).err_text()?;
         }
         None => {
             if abs.exists() {
@@ -929,7 +875,7 @@ pub fn git_conflict_resolve_blocking(
         }
     }
     let _ = index.conflict_remove(rel);
-    index.write().map_err(|e| e.to_string())
+    index.write().err_text()
 }
 
 #[cfg(test)]

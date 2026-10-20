@@ -63,6 +63,55 @@ struct Spec {
     ok_codes: &'static [i32],
 }
 
+impl Spec {
+    /// A formatter: `program args` reads the file on stdin and prints it
+    /// formatted. Until said otherwise, it's a standard one, fine to run
+    /// without a config, installed on PATH alone, and 0 is its only success.
+    const fn new(
+        id: &'static str,
+        name: &'static str,
+        languages: &'static [&'static str],
+        program: &'static str,
+        args: &'static [&'static str],
+    ) -> Self {
+        Spec {
+            id,
+            name,
+            languages,
+            program,
+            args,
+            local: Local::None,
+            signals: &[],
+            fallback: true,
+            ok_codes: &[0],
+        }
+    }
+
+    /// Where the project keeps its own copy.
+    const fn local(mut self, local: Local) -> Self {
+        self.local = local;
+        self
+    }
+
+    /// What shows the project uses it.
+    const fn signals(mut self, signals: &'static [Signal]) -> Self {
+        self.signals = signals;
+        self
+    }
+
+    /// Only with a sign the project uses it: it needs the project's config.
+    const fn declared_only(mut self) -> Self {
+        self.fallback = false;
+        self
+    }
+
+    /// Exit codes that still mean "formatted".
+    const fn ok_codes(mut self, codes: &'static [i32]) -> Self {
+        self.ok_codes = codes;
+        self
+    }
+}
+
 const WEB: &[&str] = &[
     "javascript",
     "typescript",
@@ -98,25 +147,24 @@ const PRETTIER_CONFIG: &[Signal] = &[
 
 /// In order of preference where more than one applies.
 const SPECS: &[Spec] = &[
-    Spec {
-        id: "biome",
-        name: "Biome",
-        languages: &["javascript", "typescript", "json", "css", "graphql"],
-        program: "biome",
-        args: &["format", "--stdin-file-path={path}"],
-        local: Local::Node,
-        signals: &[
-            Signal::File("biome.json"),
-            Signal::File("biome.jsonc"),
-            Signal::Package("@biomejs/biome"),
-        ],
-        fallback: false,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "dprint",
-        name: "dprint",
-        languages: &[
+    Spec::new(
+        "biome",
+        "Biome",
+        &["javascript", "typescript", "json", "css", "graphql"],
+        "biome",
+        &["format", "--stdin-file-path={path}"],
+    )
+    .local(Local::Node)
+    .signals(&[
+        Signal::File("biome.json"),
+        Signal::File("biome.jsonc"),
+        Signal::Package("@biomejs/biome"),
+    ])
+    .declared_only(),
+    Spec::new(
+        "dprint",
+        "dprint",
+        &[
             "javascript",
             "typescript",
             "json",
@@ -130,218 +178,141 @@ const SPECS: &[Spec] = &[
             "yaml",
             "graphql",
         ],
-        program: "dprint",
-        args: &["fmt", "--stdin", "{path}"],
-        local: Local::Node,
-        signals: &[
-            Signal::File("dprint.json"),
-            Signal::File(".dprint.json"),
-            Signal::File("dprint.jsonc"),
-            Signal::File(".dprint.jsonc"),
-        ],
-        fallback: false,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "prettier",
-        name: "Prettier",
-        languages: WEB,
-        program: "prettier",
-        args: &["--stdin-filepath", "{path}"],
-        local: Local::Node,
-        signals: PRETTIER_CONFIG,
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "rustfmt",
-        name: "rustfmt",
-        languages: &["rust"],
-        program: "rustfmt",
-        args: &["--edition", "{edition}", "--emit", "stdout"],
-        local: Local::None,
-        signals: &[Signal::File("rustfmt.toml"), Signal::File(".rustfmt.toml")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "gofmt",
-        name: "gofmt",
-        languages: &["go"],
-        program: "gofmt",
-        args: &[],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "ruff",
-        name: "Ruff",
-        languages: &["python"],
-        program: "ruff",
-        args: &["format", "--stdin-filename", "{path}", "-"],
-        local: Local::Python,
-        signals: &[
-            Signal::File("ruff.toml"),
-            Signal::File(".ruff.toml"),
-            Signal::FileWith("pyproject.toml", "[tool.ruff"),
-        ],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "black",
-        name: "Black",
-        languages: &["python"],
-        program: "black",
-        args: &["--quiet", "--stdin-filename", "{path}", "-"],
-        local: Local::Python,
-        signals: &[Signal::FileWith("pyproject.toml", "[tool.black]")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "clang-format",
-        name: "clang-format",
-        languages: &["cpp", "c", "objective-c", "proto"],
-        program: "clang-format",
-        args: &["--assume-filename={path}"],
-        local: Local::None,
-        signals: &[Signal::File(".clang-format"), Signal::File("_clang-format")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "shfmt",
-        name: "shfmt",
-        languages: &["shell"],
-        program: "shfmt",
-        args: &["--filename", "{path}"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "stylua",
-        name: "StyLua",
-        languages: &["lua"],
-        program: "stylua",
-        args: &["--stdin-filepath", "{path}", "-"],
-        local: Local::None,
-        signals: &[Signal::File("stylua.toml"), Signal::File(".stylua.toml")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "dart",
-        name: "dart format",
-        languages: &["dart"],
-        program: "dart",
-        args: &["format"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "mix",
-        name: "mix format",
-        languages: &["elixir"],
-        program: "mix",
-        args: &["format", "--stdin-filename", "{path}", "-"],
-        local: Local::None,
-        // Needs the project: plugins and settings come from .formatter.exs.
-        signals: &[Signal::File(".formatter.exs")],
-        fallback: false,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "terraform",
-        name: "terraform fmt",
-        languages: &["hcl"],
-        program: "terraform",
-        args: &["fmt", "-"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "tofu",
-        name: "tofu fmt",
-        languages: &["hcl"],
-        program: "tofu",
-        args: &["fmt", "-"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "ktfmt",
-        name: "ktfmt",
-        languages: &["kotlin"],
-        program: "ktfmt",
-        args: &["-"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "ktlint",
-        name: "ktlint",
-        languages: &["kotlin"],
-        program: "ktlint",
-        args: &["--format", "--stdin", "--log-level=none"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        // 1: lint issues it couldn't fix; the text is still formatted.
-        ok_codes: &[0, 1],
-    },
-    Spec {
-        id: "google-java-format",
-        name: "google-java-format",
-        languages: &["java"],
-        program: "google-java-format",
-        args: &["-"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "scalafmt",
-        name: "scalafmt",
-        languages: &["scala"],
-        program: "scalafmt",
-        args: &["--stdin", "--assume-filename", "{path}", "--quiet"],
-        local: Local::None,
-        // Refuses to run without a config naming its version.
-        signals: &[Signal::File(".scalafmt.conf")],
-        fallback: false,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "swift-format",
-        name: "swift-format",
-        languages: &["swift"],
-        program: "swift-format",
-        args: &["format", "--assume-filename", "{path}"],
-        local: Local::None,
-        signals: &[Signal::File(".swift-format")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "rubocop",
-        name: "RuboCop",
-        languages: &["ruby"],
-        program: "rubocop",
-        args: &[
+        "dprint",
+        &["fmt", "--stdin", "{path}"],
+    )
+    .local(Local::Node)
+    .signals(&[
+        Signal::File("dprint.json"),
+        Signal::File(".dprint.json"),
+        Signal::File("dprint.jsonc"),
+        Signal::File(".dprint.jsonc"),
+    ])
+    .declared_only(),
+    Spec::new(
+        "prettier",
+        "Prettier",
+        WEB,
+        "prettier",
+        &["--stdin-filepath", "{path}"],
+    )
+    .local(Local::Node)
+    .signals(PRETTIER_CONFIG),
+    Spec::new(
+        "rustfmt",
+        "rustfmt",
+        &["rust"],
+        "rustfmt",
+        &["--edition", "{edition}", "--emit", "stdout"],
+    )
+    .signals(&[Signal::File("rustfmt.toml"), Signal::File(".rustfmt.toml")]),
+    Spec::new("gofmt", "gofmt", &["go"], "gofmt", &[]),
+    Spec::new(
+        "ruff",
+        "Ruff",
+        &["python"],
+        "ruff",
+        &["format", "--stdin-filename", "{path}", "-"],
+    )
+    .local(Local::Python)
+    .signals(&[
+        Signal::File("ruff.toml"),
+        Signal::File(".ruff.toml"),
+        Signal::FileWith("pyproject.toml", "[tool.ruff"),
+    ]),
+    Spec::new(
+        "black",
+        "Black",
+        &["python"],
+        "black",
+        &["--quiet", "--stdin-filename", "{path}", "-"],
+    )
+    .local(Local::Python)
+    .signals(&[Signal::FileWith("pyproject.toml", "[tool.black]")]),
+    Spec::new(
+        "clang-format",
+        "clang-format",
+        &["cpp", "c", "objective-c", "proto"],
+        "clang-format",
+        &["--assume-filename={path}"],
+    )
+    .signals(&[Signal::File(".clang-format"), Signal::File("_clang-format")]),
+    Spec::new(
+        "shfmt",
+        "shfmt",
+        &["shell"],
+        "shfmt",
+        &["--filename", "{path}"],
+    ),
+    Spec::new(
+        "stylua",
+        "StyLua",
+        &["lua"],
+        "stylua",
+        &["--stdin-filepath", "{path}", "-"],
+    )
+    .signals(&[Signal::File("stylua.toml"), Signal::File(".stylua.toml")]),
+    Spec::new("dart", "dart format", &["dart"], "dart", &["format"]),
+    // Needs the project: plugins and settings come from .formatter.exs.
+    Spec::new(
+        "mix",
+        "mix format",
+        &["elixir"],
+        "mix",
+        &["format", "--stdin-filename", "{path}", "-"],
+    )
+    .signals(&[Signal::File(".formatter.exs")])
+    .declared_only(),
+    Spec::new(
+        "terraform",
+        "terraform fmt",
+        &["hcl"],
+        "terraform",
+        &["fmt", "-"],
+    ),
+    Spec::new("tofu", "tofu fmt", &["hcl"], "tofu", &["fmt", "-"]),
+    Spec::new("ktfmt", "ktfmt", &["kotlin"], "ktfmt", &["-"]),
+    // 1: lint issues it couldn't fix; the text is still formatted.
+    Spec::new(
+        "ktlint",
+        "ktlint",
+        &["kotlin"],
+        "ktlint",
+        &["--format", "--stdin", "--log-level=none"],
+    )
+    .ok_codes(&[0, 1]),
+    Spec::new(
+        "google-java-format",
+        "google-java-format",
+        &["java"],
+        "google-java-format",
+        &["-"],
+    ),
+    // Refuses to run without a config naming its version.
+    Spec::new(
+        "scalafmt",
+        "scalafmt",
+        &["scala"],
+        "scalafmt",
+        &["--stdin", "--assume-filename", "{path}", "--quiet"],
+    )
+    .signals(&[Signal::File(".scalafmt.conf")])
+    .declared_only(),
+    Spec::new(
+        "swift-format",
+        "swift-format",
+        &["swift"],
+        "swift-format",
+        &["format", "--assume-filename", "{path}"],
+    )
+    .signals(&[Signal::File(".swift-format")]),
+    // 1: offenses it couldn't correct; the text is still corrected.
+    Spec::new(
+        "rubocop",
+        "RuboCop",
+        &["ruby"],
+        "rubocop",
+        &[
             "--autocorrect",
             "--stdin",
             "{path}",
@@ -349,95 +320,63 @@ const SPECS: &[Spec] = &[
             "--format",
             "quiet",
         ],
-        local: Local::None,
-        signals: &[Signal::File(".rubocop.yml")],
-        fallback: false,
-        // 1: offenses it couldn't correct; the text is still corrected.
-        ok_codes: &[0, 1],
-    },
-    Spec {
-        id: "perltidy",
-        name: "Perltidy",
-        languages: &["perl"],
-        program: "perltidy",
-        args: &["--standard-output", "--standard-error-output", "--quiet"],
-        local: Local::None,
-        signals: &[Signal::File(".perltidyrc")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "sqlfluff",
-        name: "SQLFluff",
-        languages: &["sql", "mysql", "pgsql", "redshift"],
-        program: "sqlfluff",
-        args: &["format", "-"],
-        local: Local::Python,
-        // The dialect comes from the config.
-        signals: &[
-            Signal::File(".sqlfluff"),
-            Signal::FileWith("pyproject.toml", "[tool.sqlfluff"),
-        ],
-        fallback: false,
-        // 1: violations it couldn't fix; the fixable ones are fixed.
-        ok_codes: &[0, 1],
-    },
-    Spec {
-        id: "pg_format",
-        name: "pgFormatter",
-        languages: &["pgsql"],
-        program: "pg_format",
-        args: &["-"],
-        local: Local::None,
-        signals: &[Signal::File(".pg_format")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "taplo",
-        name: "Taplo",
-        // TOML opens as ini (lib/languageMap.ts); only .toml files qualify.
-        languages: &["ini"],
-        program: "taplo",
-        args: &["format", "--stdin-filepath", "{path}", "-"],
-        local: Local::None,
-        signals: &[Signal::File("taplo.toml"), Signal::File(".taplo.toml")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "yamlfmt",
-        name: "yamlfmt",
-        languages: &["yaml"],
-        program: "yamlfmt",
-        args: &["-"],
-        local: Local::None,
-        signals: &[Signal::File(".yamlfmt"), Signal::File("yamlfmt.yml")],
-        fallback: true,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "forge",
-        name: "forge fmt",
-        languages: &["sol"],
-        program: "forge",
-        args: &["fmt", "--raw", "-"],
-        local: Local::None,
-        signals: &[Signal::File("foundry.toml")],
-        fallback: false,
-        ok_codes: &[0],
-    },
-    Spec {
-        id: "xmllint",
-        name: "xmllint",
-        languages: &["xml"],
-        program: "xmllint",
-        args: &["--format", "-"],
-        local: Local::None,
-        signals: &[],
-        fallback: true,
-        ok_codes: &[0],
-    },
+    )
+    .signals(&[Signal::File(".rubocop.yml")])
+    .declared_only()
+    .ok_codes(&[0, 1]),
+    Spec::new(
+        "perltidy",
+        "Perltidy",
+        &["perl"],
+        "perltidy",
+        &["--standard-output", "--standard-error-output", "--quiet"],
+    )
+    .signals(&[Signal::File(".perltidyrc")]),
+    // The dialect comes from the config. 1: violations it couldn't fix;
+    // the fixable ones are fixed.
+    Spec::new(
+        "sqlfluff",
+        "SQLFluff",
+        &["sql", "mysql", "pgsql", "redshift"],
+        "sqlfluff",
+        &["format", "-"],
+    )
+    .local(Local::Python)
+    .signals(&[
+        Signal::File(".sqlfluff"),
+        Signal::FileWith("pyproject.toml", "[tool.sqlfluff"),
+    ])
+    .declared_only()
+    .ok_codes(&[0, 1]),
+    Spec::new("pg_format", "pgFormatter", &["pgsql"], "pg_format", &["-"])
+        .signals(&[Signal::File(".pg_format")]),
+    // TOML opens as ini (lib/languageMap.ts); only .toml files qualify.
+    Spec::new(
+        "taplo",
+        "Taplo",
+        &["ini"],
+        "taplo",
+        &["format", "--stdin-filepath", "{path}", "-"],
+    )
+    .signals(&[Signal::File("taplo.toml"), Signal::File(".taplo.toml")]),
+    Spec::new("yamlfmt", "yamlfmt", &["yaml"], "yamlfmt", &["-"])
+        .signals(&[Signal::File(".yamlfmt"), Signal::File("yamlfmt.yml")]),
+    Spec::new(
+        "forge",
+        "forge fmt",
+        &["sol"],
+        "forge",
+        &["fmt", "--raw", "-"],
+    )
+    .signals(&[Signal::File("foundry.toml")])
+    .declared_only(),
+    Spec::new(
+        "xmllint",
+        "xmllint",
+        &["xml"],
+        "xmllint",
+        &["--format", "-"],
+    ),
 ];
 
 /// TOML files open as ini (lib/languageMap.ts), but .ini and .cfg files
@@ -575,6 +514,8 @@ struct Resolution {
     found: Option<Resolved>,
     /// The project's formatter, when it isn't installed.
     missing: Option<&'static Spec>,
+    /// The folders looked in (search_dirs).
+    dirs: Vec<PathBuf>,
 }
 
 /// `search_path`: the PATH to look for installed tools on.
@@ -599,6 +540,7 @@ fn resolve(path: &Path, language: &str, root: Option<&Path>, search_path: &OsStr
                             declared: true,
                         }),
                         missing: None,
+                        dirs,
                     }
                 }
                 None => missing = missing.or(Some(*spec)),
@@ -607,23 +549,22 @@ fn resolve(path: &Path, language: &str, root: Option<&Path>, search_path: &OsStr
     }
     // The project names a formatter that isn't installed: running another
     // one would format the file the wrong way.
-    if missing.is_some() {
-        return Resolution {
-            found: None,
-            missing,
-        };
-    }
-    let found = candidates.iter().filter(|s| s.fallback).find_map(|spec| {
-        Some(Resolved {
-            spec,
-            program: find_program(spec, &dirs, search_path)?,
-            cwd: file_dir.clone(),
-            declared: false,
+    let found = if missing.is_some() {
+        None
+    } else {
+        candidates.iter().filter(|s| s.fallback).find_map(|spec| {
+            Some(Resolved {
+                spec,
+                program: find_program(spec, &dirs, search_path)?,
+                cwd: file_dir.clone(),
+                declared: false,
+            })
         })
-    });
+    };
     Resolution {
         found,
-        missing: None,
+        missing,
+        dirs,
     }
 }
 
@@ -749,10 +690,14 @@ fn run(
         return Err("printed more than a source file can hold".to_string());
     }
     let out = String::from_utf8(out).map_err(|_| "printed text that isn't UTF-8".to_string())?;
-    // A tool that "succeeds" with nothing on stdout didn't format anything;
-    // saving that would empty the file.
-    if out.trim().is_empty() && !err.is_empty() {
-        return Err(err);
+    // A tool that "succeeds" with nothing on stdout didn't format anything
+    // (the input is never blank); saving that would empty the file.
+    if out.trim().is_empty() {
+        return Err(if err.is_empty() {
+            "printed nothing".to_string()
+        } else {
+            err
+        });
     }
     Ok(out)
 }
@@ -774,7 +719,6 @@ fn format_text(
             None => "no formatter for this file".to_string(),
         });
     };
-    let dirs = search_dirs(path, root);
     let path_str = path.to_string_lossy();
     let args: Vec<String> = f
         .spec
@@ -783,7 +727,7 @@ fn format_text(
         .map(|a| {
             let a = a.replace("{path}", &path_str);
             if a.contains("{edition}") {
-                a.replace("{edition}", &rust_edition(&dirs))
+                a.replace("{edition}", &rust_edition(&r.dirs))
             } else {
                 a
             }
@@ -819,7 +763,7 @@ pub async fn format_file(
     root: Option<String>,
     content: String,
 ) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::util::blocking(move || {
         format_text(
             Path::new(&path),
             &language,
@@ -829,7 +773,6 @@ pub async fn format_file(
         )
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

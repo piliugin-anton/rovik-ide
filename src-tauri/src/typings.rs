@@ -1,40 +1,27 @@
 //! The editor's IntelliSense definitions (rovik_core::typings), as
-//! commands. Each runs off the async runtime: walking and reading
-//! thousands of files must not stall the other commands.
+//! commands. Each runs off the async runtime (util::blocking_in): walking
+//! and reading thousands of files must not stall the other commands.
 
+use crate::util::blocking_in;
 use rovik_core::typings::{self, ImportSite, LoadedFiles, LoadedTypings, ProjectDefinitions};
-use std::path::PathBuf;
-
-async fn off_runtime<T: Send + 'static>(
-    root: String,
-    load: impl FnOnce(&std::path::Path) -> T + Send + 'static,
-) -> Result<T, String> {
-    let root = PathBuf::from(root);
-    if !root.is_dir() {
-        return Err(format!("{}: not a folder", root.display()));
-    }
-    tauri::async_runtime::spawn_blocking(move || load(&root))
-        .await
-        .map_err(|e| e.to_string())
-}
 
 /// The project's sources and the dependencies they reach: what a project
 /// opens with.
 #[tauri::command]
 pub async fn load_project_definitions(root: String) -> Result<ProjectDefinitions, String> {
-    off_runtime(root, typings::load_definitions).await
+    blocking_in(root, typings::load_definitions).await
 }
 
 /// The project's sources alone (within limits).
 #[tauri::command]
 pub async fn load_project_sources(root: String) -> Result<LoadedFiles, String> {
-    off_runtime(root, typings::load_sources).await
+    blocking_in(root, typings::load_sources).await
 }
 
 /// The dependencies the project's sources reach, again: after an install.
 #[tauri::command]
 pub async fn load_project_typings(root: String) -> Result<LoadedTypings, String> {
-    off_runtime(root, typings::load_typings).await
+    blocking_in(root, typings::load_typings).await
 }
 
 /// The packages these imports reach that the editor doesn't have yet
@@ -45,7 +32,7 @@ pub async fn load_dependency_typings(
     sites: Vec<ImportSite>,
     exclude: Vec<String>,
 ) -> Result<LoadedTypings, String> {
-    off_runtime(root, move |_| typings::load_dependencies(&sites, &exclude)).await
+    blocking_in(root, move |_| typings::load_dependencies(&sites, &exclude)).await
 }
 
 #[cfg(test)]

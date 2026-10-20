@@ -1,7 +1,7 @@
 //! The agent's runs (agent_run), and the requests the frontend makes itself
 //! (agent.rs). A chat on a host runs there (6.1).
 
-use super::{answer, call};
+use super::{answer, call, route};
 use rovik_client::Remote;
 use rovik_core::agent::{
     self, ChatParams, ChatStreamEvent, ContextEstimate, OpenAIChatOptions, ReasoningEffort,
@@ -59,7 +59,7 @@ pub async fn agent_stop(remote: State<'_, Arc<Remote>>, dialog_id: String) -> Re
     let request = Request::AgentStop {
         dialog_id: dialog_id.clone(),
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 #[tauri::command]
@@ -74,7 +74,7 @@ pub async fn agent_resolve_approval(
         tool_call_id,
         decision,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 #[tauri::command]
@@ -89,7 +89,7 @@ pub async fn agent_answer_questions(
         tool_call_id,
         outcome,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 /// What's going on right now, here and on the connected hosts, for a
@@ -119,7 +119,7 @@ pub async fn chat_dismiss_checklist(
         dialog_id: dialog_id.clone(),
         message_id,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title),
