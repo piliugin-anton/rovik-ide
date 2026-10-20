@@ -241,17 +241,39 @@ impl Harness {
 
     /// Waits for an event the predicate accepts; returns it.
     async fn wait_for(&self, what: &str, pred: impl Fn(&Value) -> bool) -> Value {
-        for _ in 0..600 {
+        self.wait_for_within(what, Duration::from_secs(15), pred)
+            .await
+    }
+
+    /// [`Harness::wait_for`], for about `limit` at most.
+    async fn wait_for_within(
+        &self,
+        what: &str,
+        limit: Duration,
+        pred: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let step = Duration::from_millis(25);
+        for _ in 0..limit.as_millis() / step.as_millis() {
             if let Some(e) = self.events.lock().unwrap().iter().find(|e| pred(e)) {
                 return e.clone();
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            tokio::time::sleep(step).await;
         }
         panic!("no {what} event; got {:#?}", self.events.lock().unwrap());
     }
 
     async fn run_end(&self) -> String {
-        let e = self.wait_for("runEnded", |e| e["type"] == "runEnded").await;
+        self.run_end_within(Duration::from_secs(15)).await
+    }
+
+    /// [`Harness::run_end`], for about `limit` at most: a run of real tools
+    /// (a compiler, a test runner) takes its time, the more so on a CI
+    /// machine, where the commands of every test running at once wait for
+    /// its one CPU slot (`workload`).
+    async fn run_end_within(&self, limit: Duration) -> String {
+        let e = self
+            .wait_for_within("runEnded", limit, |e| e["type"] == "runEnded")
+            .await;
         e["outcome"].as_str().unwrap().to_string()
     }
 
