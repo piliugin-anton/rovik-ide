@@ -270,6 +270,17 @@ pub async fn spawn_remote_terminal(
     let size = size(cols, rows);
     let target = match page.shell_access(&host)? {
         ShellAccess::Ssh(target) => target,
+        ShellAccess::Wsl(wsl) => {
+            let mut cmd = CommandBuilder::new(rovik_client::wsl::PROGRAM);
+            cmd.args(wsl.terminal_args());
+            in_home(&app, &mut cmd);
+            // What runs in it runs in the distribution: nothing counts here.
+            let id = spawn_pty(&app, &state, cmd, size, on_event, false)?;
+            return Ok(TerminalInfo {
+                id,
+                shell: wsl.distro,
+            });
+        }
         ShellAccess::System(ssh) => {
             let mut cmd = CommandBuilder::new(&ssh.program);
             cmd.args(ssh.terminal_args());

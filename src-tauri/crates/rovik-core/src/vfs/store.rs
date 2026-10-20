@@ -1,6 +1,6 @@
 //! What the virtual filesystem holds: an in-memory tree of inodes.
 //!
-//! Both drivers (FUSE on Linux/macOS, WinFsp on Windows) translate kernel
+//! The drivers (FUSE on Linux, macFUSE on macOS) translate kernel
 //! requests into calls on [`VirtualFs`], and the app reaches the same files
 //! through the path-based API at the bottom. Nothing here is platform
 //! specific, so all the filesystem semantics are tested on any OS.

@@ -712,7 +712,19 @@ pub fn writer_command_problem(
     test_writer: bool,
     root: Option<&Path>,
 ) -> Option<String> {
-    let parsed = super::permissions::parse_command(command);
+    // Every way the command may be read here: a problem in any is one.
+    super::permissions::Shell::readings()
+        .iter()
+        .find_map(|&shell| writer_command_problem_in(command, test_writer, root, shell))
+}
+
+fn writer_command_problem_in(
+    command: &str,
+    test_writer: bool,
+    root: Option<&Path>,
+    shell: super::permissions::Shell,
+) -> Option<String> {
+    let parsed = super::permissions::parse_command_in(command, shell);
     let why = if test_writer {
         "The test writer runs only the project's checks and test runners with bash (it reads with read and search_code, and writes tests with write)"
     } else {

@@ -2,13 +2,14 @@
 //
 // Virtual files (src-tauri/src/vfs): files held in the app's memory that
 // every other program sees as real files, through the OS's user-space
-// filesystem driver (FUSE on Linux, macFUSE on macOS, WinFsp on Windows).
+// filesystem driver (FUSE on Linux, macFUSE on macOS). Windows has none: the
+// agent works in WSL, whose daemon serves them.
 // Write one, hand its `realPath` to a command, and the command reads it with
 // ordinary system calls; what the command writes there the app can read back.
 import { Channel, invoke } from '@tauri-apps/api/core';
 
 export interface DriverStatus {
-  /** "FUSE", "macFUSE" or "WinFsp". */
+  /** "FUSE" or "macFUSE"; "WSL" on Windows, which serves them. */
   driver: string;
   installed: boolean;
   version: string | null;

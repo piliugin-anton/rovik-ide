@@ -110,10 +110,6 @@ windows = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_Fil
 [target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"] }
 
-# winfsp.dll is delay-loaded (build.rs), so the app starts without WinFsp.
-[target.'cfg(windows)'.build-dependencies]
-winfsp = { version = "0.13", default-features = false, features = ["delayload"] }
-
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
 

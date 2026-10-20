@@ -64,8 +64,16 @@
       "icons/icon.ico"
     ],
     "linux": {
-      "deb": { "recommends": ["bubblewrap"] },
-      "rpm": { "recommends": ["bubblewrap"] }
+      "deb": {
+        "depends": ["bubblewrap"],
+        "postInstallScript": "crates/rovik-core/linux/bwrap-apparmor.sh",
+        "postRemoveScript": "crates/rovik-core/linux/bwrap-apparmor-remove.sh"
+      },
+      "rpm": {
+        "depends": ["bubblewrap"],
+        "postInstallScript": "crates/rovik-core/linux/bwrap-apparmor.sh",
+        "postRemoveScript": "crates/rovik-core/linux/bwrap-apparmor-remove.sh"
+      }
     }
   }
 }

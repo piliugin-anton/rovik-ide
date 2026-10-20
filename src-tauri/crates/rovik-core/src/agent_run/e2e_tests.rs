@@ -790,10 +790,9 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     // Commands are confined where bwrap or the app may make a namespace
     // (Ubuntu 24.04's AppArmor forbids the app's own, and bwrap may not be
     // installed): found out once, by the run's first command, and kept.
-    let confined = crate::overlay::confine::available(&crate::overlay::confine::Confine {
-        view: h.project.clone(),
-        project: h.project.clone(),
-    });
+    let confined = crate::overlay::confine::available(&crate::overlay::confine::Confine::hiding(
+        h.project.clone(),
+    ));
     assert!(
         result_of(&messages, "b1").content.contains("hello"),
         "{}",

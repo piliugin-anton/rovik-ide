@@ -88,7 +88,65 @@ fn is_target_end(c: char) -> bool {
     c.is_whitespace() || ";&|<>()".contains(c)
 }
 
+/// Which shell the command is read as. The agent's `bash` runs through
+/// cmd.exe on Windows and a POSIX shell everywhere else (command_tool.rs),
+/// and the two split a line very differently: cmd.exe knows only `"`
+/// quotes (not `'`), escapes the next character with `^` (not `\`, which
+/// is just a path separator), doesn't treat `;` as a separator, and
+/// expands `%VAR%`. Reading a Windows command with POSIX rules let a
+/// second command hide behind a `'`-quoted or `\`-escaped `&`, so the
+/// allowed-commands check below never saw it; reading it only as cmd.exe
+/// does let one hide from the checks behind a `;` or in `bash -c '…'`,
+/// which the bash or sh cmd.exe starts reads the POSIX way. So the checks
+/// read a command every way this machine may ([`Shell::readings`]), and
+/// what any reading refuses is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shell {
+    Posix,
+    Cmd,
+}
+
+impl Shell {
+    /// Every way a command is read on this machine: as cmd.exe splits it
+    /// on Windows, which runs the agent's commands, and as a POSIX shell
+    /// does everywhere, as the programs cmd.exe starts may (bash, sh).
+    pub(crate) fn readings() -> &'static [Shell] {
+        if cfg!(windows) {
+            &[Shell::Posix, Shell::Cmd]
+        } else {
+            &[Shell::Posix]
+        }
+    }
+
+    /// Whether `c` opens a quoted span. cmd.exe has only `"`.
+    fn is_quote(self, c: char) -> bool {
+        c == '"' || (self == Shell::Posix && c == '\'')
+    }
+
+    /// The character that takes the next one literally outside quotes:
+    /// `\` in a POSIX shell, `^` in cmd.exe.
+    fn escape(self) -> char {
+        match self {
+            Shell::Posix => '\\',
+            Shell::Cmd => '^',
+        }
+    }
+
+    /// Whether `;` separates commands (it doesn't in cmd.exe).
+    fn semicolon_separates(self) -> bool {
+        self == Shell::Posix
+    }
+}
+
+/// Reads a command as a POSIX shell splits it: what it means to the tools
+/// that describe it (its workload, its files, its server). The checks read
+/// it every way this machine may ([`Shell::readings`]).
 pub fn parse_command(command: &str) -> ParsedCommand {
+    parse_command_in(command, Shell::Posix)
+}
+
+/// Reads a command as `shell` splits it.
+pub(crate) fn parse_command_in(command: &str, shell: Shell) -> ParsedCommand {
     let chars: Vec<char> = command.chars().collect();
     let mut s = Splitter::default();
     let mut quote: Option<char> = None;
@@ -104,14 +162,23 @@ pub fn parse_command(command: &str) -> ParsedCommand {
         if let Some(q) = quote {
             if c == q {
                 quote = None;
-            } else if c == '\\' && q == '"' && next.is_some() {
+            } else if shell == Shell::Posix && c == '\\' && q == '"' && next.is_some() {
                 i += 1;
                 s.word.push(chars[i]);
             } else {
-                if q == '"' && (c == '`' || (c == '$' && next == Some('('))) {
+                if shell == Shell::Posix
+                    && q == '"'
+                    && (c == '`' || (c == '$' && next == Some('(')))
+                {
                     opaque = true;
                 }
-                if q == '"' && c == '$' {
+                if shell == Shell::Posix && q == '"' && c == '$' {
+                    s.expanding = true;
+                }
+                // cmd.exe expands `%VAR%` even inside double quotes, so a
+                // program name can hide there.
+                if shell == Shell::Cmd && c == '%' {
+                    opaque = true;
                     s.expanding = true;
                 }
                 s.word.push(c);
@@ -120,13 +187,13 @@ pub fn parse_command(command: &str) -> ParsedCommand {
             continue;
         }
 
-        if c == '\'' || c == '"' {
+        if shell.is_quote(c) {
             quote = Some(c);
             s.in_word = true;
             i += 1;
             continue;
         }
-        if c == '\\' {
+        if c == shell.escape() {
             if let Some(n) = next {
                 s.word.push(n);
                 s.in_word = true;
@@ -134,24 +201,30 @@ pub fn parse_command(command: &str) -> ParsedCommand {
                 continue;
             }
         }
-        if c == '`'
-            || (c == '$' && next == Some('('))
-            || (c == '<' && next == Some('('))
-            || c == '('
-            || c == ')'
-        {
+        let subshell = match shell {
+            Shell::Posix => {
+                c == '`'
+                    || (c == '$' && next == Some('('))
+                    || (c == '<' && next == Some('('))
+                    || c == '('
+                    || c == ')'
+            }
+            // cmd.exe has no `$(`/backtick substitution; `(` `)` group.
+            Shell::Cmd => c == '(' || c == ')',
+        };
+        if subshell {
             opaque = true;
             s.in_word = true;
             s.word.push(c);
             i += 1;
             continue;
         }
-        if c == '&' && next == Some('>') {
+        if shell == Shell::Posix && c == '&' && next == Some('>') {
             // "&>file": redirects both streams; the ">" is handled next.
             i += 1;
             continue;
         }
-        if matches!(c, '&' | '|' | ';' | '\n') {
+        if c == '&' || c == '|' || c == '\n' || (shell.semicolon_separates() && c == ';') {
             s.end_segment(c == '|' && next != Some('|'));
             if (c == '&' || c == '|') && next == Some(c) {
                 i += 1;
@@ -223,8 +296,16 @@ pub fn parse_command(command: &str) -> ParsedCommand {
             i += 1;
             continue;
         }
-        if matches!(c, '*' | '?' | '[' | '~' | '{' | '$') {
-            s.expanding = true;
+        match shell {
+            Shell::Posix if matches!(c, '*' | '?' | '[' | '~' | '{' | '$') => {
+                s.expanding = true;
+            }
+            // cmd.exe expands `%VAR%`, which can hide a program name.
+            Shell::Cmd if c == '%' => {
+                s.expanding = true;
+                opaque = true;
+            }
+            _ => {}
         }
         s.word.push(c);
         s.in_word = true;
@@ -450,12 +531,12 @@ fn inner_scripts(segment: &[String]) -> Vec<String> {
 
 /// Whether a segment runs a denied command: its program, then the entry's
 /// other words in order anywhere after it; a shell's `-c` script is
-/// checked as a command of its own.
+/// checked as a command of its own, read as that POSIX shell reads it.
 fn segment_denied(segment: &[String], denied: &[Vec<String>], depth: usize) -> bool {
     if depth < 3
         && inner_scripts(segment)
             .iter()
-            .any(|script| command_denied(script, denied, depth + 1))
+            .any(|script| command_denied(script, denied, depth + 1, Shell::Posix))
     {
         return true;
     }
@@ -508,8 +589,8 @@ fn short_options(program: &str, args: &[String]) -> Vec<char> {
     out
 }
 
-fn command_denied(command: &str, denied: &[Vec<String>], depth: usize) -> bool {
-    let parsed = parse_command(command);
+fn command_denied(command: &str, denied: &[Vec<String>], depth: usize, shell: Shell) -> bool {
+    let parsed = parse_command_in(command, shell);
     if parsed
         .segments
         .iter()
@@ -531,8 +612,8 @@ fn command_denied(command: &str, denied: &[Vec<String>], depth: usize) -> bool {
 /// shell's own script too; or runs the last part on what a substitution
 /// running the one before it puts out (`sh -c "$(curl -fsSL x)"`,
 /// `bash <(curl -s x)`).
-fn pipeline_denied(command: &str, parts: &[Vec<String>], depth: usize) -> bool {
-    let parsed = parse_command(command);
+fn pipeline_denied(command: &str, parts: &[Vec<String>], depth: usize, shell: Shell) -> bool {
+    let parsed = parse_command_in(command, shell);
     let runs = |segment: &[String], part: &Vec<String>| {
         segment_denied(segment, std::slice::from_ref(part), depth)
     };
@@ -559,7 +640,7 @@ fn pipeline_denied(command: &str, parts: &[Vec<String>], depth: usize) -> bool {
             .segments
             .iter()
             .flat_map(|segment| inner_scripts(segment))
-            .any(|script| pipeline_denied(&script, parts, depth + 1))
+            .any(|script| pipeline_denied(&script, parts, depth + 1, Shell::Posix))
     {
         return true;
     }
@@ -589,10 +670,13 @@ pub fn denied_entry(command: &str, permissions: &Permissions) -> Option<String> 
         if parts.iter().any(Vec::is_empty) {
             return None;
         }
-        let denied = match parts.as_slice() {
-            [words] => command_denied(command, std::slice::from_ref(words), 0),
-            _ => pipeline_denied(command, &parts, 0),
-        };
+        // Denied when any reading of the command runs it.
+        let denied = Shell::readings()
+            .iter()
+            .any(|&shell| match parts.as_slice() {
+                [words] => command_denied(command, std::slice::from_ref(words), 0, shell),
+                _ => pipeline_denied(command, &parts, 0, shell),
+            });
         denied.then(|| entry.trim().to_string())
     })
 }
@@ -818,23 +902,51 @@ pub enum Verdict {
 }
 
 /// Whether a command may change files (the same analysis as
-/// `check_command`, without the allowed-list check).
+/// `check_command`, without the allowed-list check), as any reading of it
+/// says.
 pub fn command_modifies_files(command: &str) -> bool {
-    let parsed = parse_command(command);
+    Shell::readings()
+        .iter()
+        .any(|&shell| modifies_files_in(&parse_command_in(command, shell)))
+}
+
+fn modifies_files_in(parsed: &ParsedCommand) -> bool {
     parsed.writes_via_redirect
         || parsed.opaque
         || !parsed.segments.iter().all(|s| segment_is_read_only(s))
 }
 
+/// Whether the command may run: only if every reading of it may
+/// ([`Shell::readings`]); it modifies files if any reading says so.
 pub fn check_command(command: &str, permissions: &Permissions) -> Verdict {
-    let parsed = parse_command(command);
+    check_command_as(command, permissions, Shell::readings())
+}
+
+/// [`check_command`] with these readings: every one has to permit it.
+pub(crate) fn check_command_as(
+    command: &str,
+    permissions: &Permissions,
+    readings: &[Shell],
+) -> Verdict {
+    let mut modifies_files = false;
+    for &shell in readings {
+        match check_command_in(command, permissions, shell) {
+            Verdict::Refused(why) => return Verdict::Refused(why),
+            Verdict::Permitted { modifies_files: m } => modifies_files |= m,
+        }
+    }
+    Verdict::Permitted { modifies_files }
+}
+
+/// [`check_command`], reading the command as `shell` splits it. Split out
+/// so the cmd.exe reading is tested on every build, not only a Windows one.
+pub(crate) fn check_command_in(command: &str, permissions: &Permissions, shell: Shell) -> Verdict {
+    let parsed = parse_command_in(command, shell);
     if parsed.segments.is_empty() {
         return Verdict::Refused("The command is empty.".into());
     }
 
-    let modifies_files = parsed.writes_via_redirect
-        || parsed.opaque
-        || !parsed.segments.iter().all(|s| segment_is_read_only(s));
+    let modifies_files = modifies_files_in(&parsed);
 
     if let Some(entry) = denied_entry(command, permissions) {
         return Verdict::Refused(format!(
@@ -1161,6 +1273,104 @@ mod tests {
         seg.iter().map(|s| s.to_string()).collect()
     }
 
+    /// cmd.exe splits a line by its own rules, so reading a Windows command
+    /// with POSIX rules let a second command hide behind a quote or an
+    /// escape the allowed-commands check never looked past. Checked here
+    /// for both shells so it holds on every build, not only a Windows one.
+    #[test]
+    fn a_command_cannot_hide_from_the_cmd_exe_splitter() {
+        // `'` is an ordinary character in cmd.exe, so the `&` still ends
+        // the first command and `calc` is its own, checkable, segment.
+        let p = parse_command_in("ls '& calc'", Shell::Cmd);
+        assert_eq!(p.segments.len(), 2, "cmd: {:?}", p.segments);
+        assert_eq!(p.segments[1], words(&["calc'"]));
+        // `\` is a path separator in cmd.exe, not an escape, so `\&` is
+        // still a separator with `calc` behind it.
+        let p = parse_command_in(r"cat a\& calc", Shell::Cmd);
+        assert_eq!(p.segments.len(), 2, "cmd: {:?}", p.segments);
+        assert_eq!(p.segments[1], words(&["calc"]));
+        // `;` is ordinary in cmd.exe: one command, not two.
+        let p = parse_command_in("echo a;calc", Shell::Cmd);
+        assert_eq!(p.segments.len(), 1, "cmd: {:?}", p.segments);
+        // What can't be read is opaque, so check_command refuses it unless
+        // every command is allowed: `%VAR%` expansion, `^` escapes (so the
+        // program name is unknown), and `( )` grouping.
+        assert!(parse_command_in("%COMSPEC% /c calc", Shell::Cmd).opaque);
+        assert!(parse_command_in("(calc)", Shell::Cmd).opaque);
+        // A POSIX shell keeps POSIX rules: `'` quotes, `\` escapes, `;`
+        // separates. Reading the same lines its way is unchanged.
+        let p = parse_command_in("ls '& calc'", Shell::Posix);
+        assert_eq!(p.segments, vec![words(&["ls", "& calc"])]);
+        // POSIX escapes only the `&`, so this is one `cat` command with
+        // `a&` and `calc` as its arguments — not a second command.
+        let p = parse_command_in(r"cat a\& calc", Shell::Posix);
+        assert_eq!(p.segments, vec![words(&["cat", "a&", "calc"])]);
+        assert_eq!(
+            parse_command_in("echo a;calc", Shell::Posix).segments.len(),
+            2
+        );
+
+        // The whole point: with the default allowed list, none of the
+        // cmd.exe forms slip a disallowed command through.
+        let perms = Permissions {
+            allowed_commands: vec!["ls".into(), "cat".into(), "echo".into()],
+            ..Permissions::default()
+        };
+        for command in [
+            "ls '& calc'",
+            r"cat a\& calc",
+            "%COMSPEC% /c calc",
+            "(calc)",
+        ] {
+            let refused = matches!(
+                check_command_in(command, &perms, Shell::Cmd),
+                Verdict::Refused(_)
+            );
+            assert!(refused, "cmd.exe should refuse: {command}");
+        }
+    }
+
+    /// On Windows a command is read both ways, and refused if either
+    /// reading refuses it: each reading alone lets one of these through.
+    #[test]
+    fn windows_reads_a_command_both_ways() {
+        let both = &[Shell::Posix, Shell::Cmd];
+        let perms = Permissions {
+            allowed_commands: vec!["ls".into(), "npm test".into(), "bash".into()],
+            denied_commands: vec!["git push".into()],
+            ..Permissions::default()
+        };
+        let refused = |command: &str, readings: &[Shell]| {
+            matches!(
+                check_command_as(command, &perms, readings),
+                Verdict::Refused(_)
+            )
+        };
+        // cmd.exe sees `calc`; POSIX sees one quoted argument.
+        assert!(!refused("ls '& calc'", &[Shell::Posix]));
+        assert!(refused("ls '& calc'", both));
+        // POSIX sees `rm`; cmd.exe sees one `npm test` with odd arguments.
+        assert!(!refused("npm test ; rm -rf /", &[Shell::Cmd]));
+        assert!(refused("npm test ; rm -rf /", both));
+        // The denied list sees through `bash -c '…'` whichever shell runs it.
+        let denied = denied_entry("bash -c 'git push'", &perms);
+        assert_eq!(denied.as_deref(), Some("git push"));
+        assert!(refused("bash -c 'git push'", both));
+        // What both permit is permitted, modifying files if either says so.
+        assert_eq!(
+            check_command_as("ls -la", &perms, both),
+            Verdict::Permitted {
+                modifies_files: false
+            }
+        );
+        assert!(matches!(
+            check_command_as("ls > out.txt", &perms, both),
+            Verdict::Permitted {
+                modifies_files: true
+            }
+        ));
+    }
+
     /// A reader told to write, or to run a program, isn't read-only: rg
     /// runs `--pre` over every file, git's readers write `--output`, tree
     /// writes `-o`, and awk's pipe runs what it names.
@@ -1285,7 +1495,9 @@ mod tests {
                     .unwrap_or_else(|| default_allowed.clone()),
                 ..Permissions::default()
             };
-            let verdict = check_command(command, &permissions);
+            // The frontend reads commands the POSIX way; Windows adds the
+            // cmd.exe reading's refusals (its own tests).
+            let verdict = check_command_as(command, &permissions, &[Shell::Posix]);
             if let Some(p) = expect.get("permitted") {
                 assert_eq!(
                     matches!(verdict, Verdict::Permitted { .. }),

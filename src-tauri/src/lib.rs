@@ -27,6 +27,8 @@ mod util;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The agent's commands run sandboxed or not at all: on Windows, in WSL.
+    rovik_core::overlay::confine::require();
     log_to_file();
     // First, while the process is still single-threaded.
     process::adopt_login_shell_path();
@@ -239,6 +241,12 @@ pub fn run() {
             commands::hosts::hosts_list,
             commands::hosts::hosts_summaries,
             commands::hosts::hosts_save,
+            commands::wsl::wsl_status,
+            commands::wsl::wsl_setup,
+            commands::wsl::wsl_install,
+            commands::wsl::wsl_test,
+            commands::wsl::wsl_update,
+            commands::wsl::wsl_remove,
             commands::hosts::hosts_remove,
             commands::hosts::hosts_test,
             commands::hosts::hosts_trust_key,
@@ -375,6 +383,8 @@ pub fn run() {
             commands::tools::outline_symbols,
             commands::vfs::vfs_status,
             commands::vfs::vfs_install_driver,
+            commands::sandbox::sandbox_status,
+            commands::sandbox::sandbox_install,
             commands::vfs::vfs_mount,
             commands::vfs::vfs_unmount,
             commands::vfs::vfs_open_settings,

@@ -148,7 +148,7 @@ pub async fn chat_answer_moved(
     target_id: String,
 ) -> Result<projects::ProjectInfo, String> {
     not_open_elsewhere(&app, &target_id, None, "use its chats here")?;
-    remote.keep_project(&current_id, "merging it").await?;
+    remote.before_merging_project(&current_id).await?;
     let project = api::chat_answer_moved(&core.db, root.clone(), current_id, target_id).await?;
     reclaim(&app, &root, &project.id);
     remote.folder_answered(Path::new(&root), &project.id);
@@ -186,7 +186,7 @@ pub async fn chat_relink_project(
 ) -> Result<projects::Relinked, String> {
     not_open_elsewhere(&app, &project_id, Some(&root), "move its chats")?;
     if merge {
-        remote.keep_project(&project_id, "merging it").await?;
+        remote.before_merging_project(&project_id).await?;
     }
     api::chat_relink_project(&core.db, project_id, root, merge).await
 }
@@ -200,7 +200,7 @@ pub async fn chat_delete_project(
     project_id: String,
 ) -> Result<(), String> {
     not_open_elsewhere(&app, &project_id, None, "delete it")?;
-    remote.keep_project(&project_id, "deleting it").await?;
+    remote.before_deleting_project(&project_id).await?;
     api::chat_delete_project(&core, project_id).await
 }
 

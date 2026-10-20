@@ -120,6 +120,7 @@ import {
 } from '../lib/agentRuns';
 import type { ShowTarget } from '../lib/remoteNotices';
 import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
+import { onWindows } from '../lib/wsl';
 import { chatsAtWorkElsewhere } from '../lib/instances';
 import ModelPicker from './ModelPicker';
 import { confirmDialog } from './ConfirmDialog';
@@ -4230,7 +4231,8 @@ export default function ChatPanel(props: ChatProps) {
           dialogId={activeDialogId()}
           budget={clmBudget()?.dialogId === activeDialogId() ? clmBudget()!.budget : null}
           sending={sending()}
-          onOpenVirtualFiles={() => openAppSettings('vfs')}
+          movesToWsl={onWindows() && !store.summaryOf(activeDialogId() ?? '')?.place}
+          onOpenVirtualFiles={() => openAppSettings(onWindows() ? 'wsl' : 'vfs')}
         />
       </div>
     </div>

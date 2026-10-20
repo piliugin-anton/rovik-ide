@@ -17,6 +17,8 @@ pub mod code_search;
 pub mod command_tool;
 pub mod core;
 mod dispatch;
+#[cfg(target_os = "linux")]
+pub mod distro;
 mod edit_file;
 pub mod file_guard;
 pub mod merge;

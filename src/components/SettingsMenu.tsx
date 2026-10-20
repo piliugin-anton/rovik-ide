@@ -24,6 +24,7 @@ import { workloadStatus, workloadSummary } from '../lib/workload';
 import { vfsStatus, vfsSummary } from '../lib/virtualFiles';
 import { hostsSummary, listHosts } from '../lib/hosts';
 import { networkSettings, networkSummary } from '../lib/network';
+import { onWindows, wslStatus, wslSummary } from '../lib/wsl';
 
 interface SettingsMenuProps {
   /** The open project, for its group; none without a project. */
@@ -42,9 +43,15 @@ export default function SettingsMenu(props: SettingsMenuProps) {
   const [vfs] = createResource(() => vfsStatus().catch(() => null));
   const [hosts] = createResource(() => listHosts().catch(() => null));
   const [network] = createResource(() => networkSettings().catch(() => null));
+  // WSL is this computer's Linux side on Windows alone.
+  const [wsl] = createResource(() => (onWindows() ? wslStatus().catch(() => null) : null));
   const vfsLine = () => {
     const status = vfs();
     return status ? vfsSummary(status) : null;
+  };
+  const wslLine = () => {
+    const status = wsl();
+    return status ? wslSummary(status) : null;
   };
   /** An AI page's state line, once the settings are read. */
   const ai = (line: () => string) => (aiSettingsLoaded() ? line() : undefined);
@@ -152,13 +159,25 @@ export default function SettingsMenu(props: SettingsMenuProps) {
           about="How many builds, tests and type checks run at once, from all chats and the terminal, so the machine stays responsive."
           state={workload() ? workloadSummary(workload()!) : undefined}
         />
-        <Item
-          page="vfs"
-          label="Virtual files"
-          about="The filesystem driver that lets each chat work on its own copy of your changes, and the agent manage its own context."
-          state={vfsLine()?.text}
-          warning={vfsLine()?.warning}
-        />
+        {/* On Windows, WSL serves them. */}
+        <Show when={!onWindows()}>
+          <Item
+            page="vfs"
+            label="Virtual files"
+            about="The filesystem driver that lets each chat work on its own copy of your changes, and the agent manage its own context."
+            state={vfsLine()?.text}
+            warning={vfsLine()?.warning}
+          />
+        </Show>
+        <Show when={onWindows()}>
+          <Item
+            page="wsl"
+            label="WSL"
+            about="The WSL distribution the agent’s commands run in, sandboxed: Rovik’s Linux side on this computer."
+            state={wslLine()?.text}
+            warning={wslLine()?.warning}
+          />
+        </Show>
         <Item
           page="network"
           label="Network"

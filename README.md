@@ -156,8 +156,7 @@ Built packages end up in `src-tauri/target/release/bundle/`.
 2. Install [Rust](https://rustup.rs) with the default
    `x86_64-pc-windows-msvc` toolchain (MinGW isn't supported).
 3. Install [Node.js](https://nodejs.org) 18 or newer.
-4. Install LLVM: `winget install LLVM.LLVM`
-5. From the project folder, run the same `npm` commands as on macOS.
+4. From the project folder, run the same `npm` commands as on macOS.
 
 WebView2 is already part of Windows 10 and 11.
 
@@ -167,7 +166,8 @@ More details on prerequisites:
 ### Optional: virtual files driver
 
 Some features work best with a virtual-file driver: FUSE on Linux, macFUSE
-on macOS, WinFsp on Windows. The app runs without one. When it's missing,
+on macOS. On Windows there's none to install: the agent works in WSL
+(Settings → This computer → WSL), which has FUSE. The app runs without one. When it's missing,
 the app offers to install it for you; you can also do it later in
 **Settings → Virtual files**. The driver is required for the agent's
 self-managed context (CLM mode), and it makes the agent's shell commands
@@ -502,7 +502,7 @@ src-tauri/               backend (Rust), a Cargo workspace
     chat_db/             chat storage (SQLite)
     clm/                 agent-managed context (CLM mode)
     overlay/             each chat's private view of the project
-    vfs/                 virtual files (FUSE / macFUSE / WinFsp)
+    vfs/                 virtual files (FUSE / macFUSE)
     workload/            queue for heavy commands (builds, tests)
     merge.rs             three-way merge (no git program needed)
     code_search.rs       project search
@@ -608,12 +608,35 @@ lands on its own. Anything else (conflicts, failing checks) is shown in the
 bar above the chat's message box, where you can resolve conflicts, land
 anyway, discard, or undo a landing.
 
-On Linux, the commands a chat runs see its overlay at the project's own
-path too, so one that names the project by its full path still stays in
-the chat. They run under bubblewrap (`bwrap`, which the .deb and .rpm
-packages recommend), or, without it, in a namespace the app makes itself.
-Where neither is allowed, and on macOS and Windows, a command that names
-the project's full path is refused instead.
+On Linux, every command the agent runs is sandboxed with bubblewrap
+(`bwrap`): the system is read-only to it but for the chat's own folders
+(its view or worktree, its build folder, `/tmp` and the toolchains' caches
+under your home), the credential stores (`~/.rovik`, `~/.ssh`, `~/.aws`,
+`~/.gnupg`, the cloud CLIs' folders) are empty to it, it sees no other
+process, and it has no capabilities, so it can't undo any of that. An
+isolated chat's commands also see its overlay at the project's own path,
+so one that names the project by its full path still stays in the chat.
+The .deb and .rpm packages depend on bubblewrap, and the app offers to
+install it at start where it's missing (the AppImage can't carry it);
+without it the agent's commands are refused. Ubuntu 23.10 and later
+restrict unprivileged user namespaces through AppArmor, which stops
+bubblewrap from making its sandbox: the packages add a small profile that
+lets `/usr/bin/bwrap` make one (`rovik-bwrap`, removed with Rovik), and the
+app offers to add it at start where it's missing. Your own terminal isn't
+sandboxed, and `ROVIK_CONFINE_COMMANDS=0` turns the sandbox off for
+troubleshooting. On Windows, Rovik's Linux side runs in a WSL2
+distribution (Settings → This computer → WSL): the daemon runs inside it
+with the same sandbox, every chat of a project moves there by itself when
+it first runs, the app reaches it through `wsl.exe`, and Rovik there
+follows the app's updates; a chat without a project, or a computer
+without WSL, is refused its commands. On macOS every command runs under
+Seatbelt (`sandbox-exec`, part of macOS) with the same policy: the system
+read-only but for the chat's own folders, `/tmp` and the caches (including
+`~/Library/Caches`), and the credential stores (with `~/Library/Keychains`)
+out of reach. Seatbelt can't redirect a path, so an isolated chat's commands
+see the project read-only rather than the chat's view at its path, and a
+command naming the project's full path is refused by text there. Unlike
+bubblewrap it doesn't hide the other processes.
 
 Limits: 512 MiB of changed files per chat (warning at 80%). Build output and
 dependency folders don't count toward it. Heavy commands such as builds and
@@ -633,7 +656,7 @@ like real files to every other program. Commands the agent runs can `cat`,
 | ------- | ------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Linux   | FUSE 3  | the distro's `fuse3` package, via polkit (`pkexec`) | Mounted with `fusermount3`; libfuse isn't needed to build or run.                                                                                                                                  |
 | macOS   | macFUSE | the official `.dmg` (signature checked)             | On macOS 15.4+ with macFUSE 5.1+ it uses FSKit (no kernel extension; enable it once in System Settings), mounted at `/Volumes/RovikVirtualFiles`. Older systems need the kernel extension allowed. |
-| Windows | WinFsp  | the official `.msi` (signature checked)             | `winfsp.dll` is loaded on first use. Building needs LLVM (`libclang`) for the bindings.                                                                                                            |
+| Windows | none    | —                                                   | The agent works in WSL, whose daemon mounts them with FUSE. A chat of a project runs there; without WSL it doesn't start.                                                                          |
 
 The app starts without the driver; only mounting needs it. At startup it
 checks in the background and either mounts the volume or offers once to
@@ -673,7 +696,7 @@ Details:
   revisions per file and 256 MiB in total are kept, oldest dropped first;
   files over 32 MiB aren't versioned (`set_history_limits`).
 - Files: `store.rs` (the in-memory filesystem with POSIX semantics),
-  `fuse.rs` / `macfuse.rs` / `winfsp_fs.rs` (OS drivers), `problem.rs`
+  `fuse.rs` / `macfuse.rs` (OS drivers), `problem.rs`
   (mount errors), `events.rs`, `history.rs`, `driver.rs` (finding and
   installing the driver).
 

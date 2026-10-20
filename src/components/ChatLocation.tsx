@@ -170,7 +170,7 @@ export default function ChatLocation(props: {
               <Switch>
                 <Match when={!place()}>
                   <For
-                    each={cloud.hosts.filter((h) => h.deployed)}
+                    each={cloud.hosts.filter((h) => h.deployed && !h.wsl)}
                     fallback={
                       <ContextMenuItem
                         label="Set up a cloud host…"
@@ -194,7 +194,11 @@ export default function ChatLocation(props: {
                   {(on) => (
                     <>
                       <ContextMenuItem
-                        label="Move back to this computer…"
+                        label={
+                          hostOf(on().host)?.wsl
+                            ? 'Move out of WSL…'
+                            : 'Move back to this computer…'
+                        }
                         disabled={!!unavailable(hostOf(on().host))}
                         onClick={() => openMove('back', on().host)}
                       />

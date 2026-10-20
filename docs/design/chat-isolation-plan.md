@@ -940,15 +940,46 @@ once; they touch different files. Everything else is sequential.
     the project's path is the chat's view (`overlay/confine.rs`): a
     command naming the project by its full path reaches the chat's files.
     Bubblewrap makes it where it's installed and may
-    (`bwrap --dev-bind / / --bind <view> <project>`; Ubuntu 24.04's
-    AppArmor, which forbids unprivileged user namespaces to other
-    programs, has a profile that lets bwrap make them), and the app's own
+    (`bwrap --dev-bind / / --bind <view> <project>`; where Ubuntu's
+    AppArmor forbids unprivileged user namespaces, 23.10 and later, bwrap
+    needs a profile that lets it, which Rovik's packages, its offer at
+    start and the host installer add: `rovik-bwrap`), and the app's own
     way otherwise: a user namespace mapping the user to itself, which
     needs no privileges. The way is found once, in that order; where
     neither works (or `ROVIK_CONFINE_COMMANDS=0`; `bwrap` or `unshare`
     picks one), and on macOS and Windows, such commands are refused by the
     textual check as before. The .deb and .rpm packages recommend
     `bubblewrap`. The user's own terminal isn't confined.
+  - The sandbox (`overlay/confine.rs`): on Linux every agent command, an
+    isolated chat's or not, a server's worktree commands included, runs
+    under bubblewrap with the system read-only but for its own folders
+    (`Confine::writable`: the view or worktree, the build folder, `/tmp`,
+    the toolchains' caches), the credential stores an empty tmpfs
+    (`secret_dirs`: `~/.rovik`, `~/.ssh`, `~/.aws`, `~/.gnupg`, the cloud
+    CLIs', what the app registers with `protect`), a pid namespace, fresh
+    `/dev` and `/proc`, every capability dropped, dying with the app. The
+    policy (`Confine`) is OS-independent and a `Mechanism` per OS
+    enforces it. Linux has bubblewrap only (the app's own user namespace
+    was dropped: it duplicated bwrap in unsafe code and sandboxed less),
+    and requires it: without it commands are refused (`refusal`); the
+    .deb/.rpm depend on the package, the host installer adds it, and the
+    desktop offers to at start (`status`, `install`, through `distro.rs`,
+    which the FUSE driver's installer shares). macOS has Seatbelt
+    (`sandbox-exec`, a generated profile with the folders passed as
+    `-D` parameters), required as bubblewrap is; it can't redirect, so an
+    isolated chat's commands there see the project read-only. On Windows the
+    command check also reads commands as cmd.exe splits them
+    (`permissions::Shell`), so a second command can't hide behind a `'`
+    or a `\` the POSIX reading took for quoting.
+  - Windows has no sandbox and, since WSL became required, no WinFsp: a
+    chat of a project runs in WSL, where the daemon gives it a worktree and
+    bubblewrap, and the app runs no command of the agent's on Windows
+    (`confine::require`). Without WSL set up such a chat doesn't start; a
+    chat without a project runs here, un-isolated, without commands. The
+    `winfsp` crates, their delay-load build hooks and the LLVM build
+    prerequisite went with the driver; WSL's results land through the
+    overlay store on disk, which needs no mount, and a chat moved out of
+    WSL lands its changes rather than keeping them in a view.
   - Settings → Builds & checks sets how many heavy commands run at once:
     Auto (one, or two on a big machine with room) or a fixed number from
     1 to 8, kept in the app's data folder (`workload-settings.json`) and

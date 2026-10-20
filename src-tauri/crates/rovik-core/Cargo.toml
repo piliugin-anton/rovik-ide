@@ -126,26 +126,18 @@ fuser = "0.18"
 [target.'cfg(target_os = "macos")'.dependencies]
 fuser = { version = "0.18", features = ["macos-no-mount", "macfuse-4-compat"] }
 
-# Windows: WinFsp, delay-loaded for the same reason. Building needs LLVM
-# (libclang) for winfsp-sys's bindings.
+# Windows has no virtual files of its own: the agent works in WSL, whose
+# daemon serves them (FUSE).
 [target.'cfg(windows)'.dependencies]
-winfsp = { version = "0.13", default-features = false, features = ["delayload"] }
-winfsp-sys = "0.12"
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Registry",
     "Win32_System_Threading",
 ] }
 
 # The tests' settings (KindConfig::extra_tools).
 [dev-dependencies]
 rovik-protocol = { workspace = true, features = ["testing"] }
-
-# winfsp.dll is delay-loaded in this crate's test binaries too (build.rs).
-[target.'cfg(windows)'.build-dependencies]
-winfsp = { version = "0.13", default-features = false, features = ["delayload"] }

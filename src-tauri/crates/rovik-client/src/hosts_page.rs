@@ -11,14 +11,16 @@
 //! way in first.
 
 use crate::client::{HostState, Identity};
-use crate::connection_test::{test_connection, Outcome, Step, TestOptions};
+use crate::connection_test::{test_connection, Outcome, Step, TestOptions, TestTarget};
 use crate::deploy::{self, Builds, DeployError, Layout, Removal, SetupRun};
-use crate::host_settings::{AuthKind, DeployState, Host, HostSettings};
+use crate::host_settings::{AuthKind, DeployState, Host, HostSettings, Transport};
+use crate::host_shell::{HostShell, ProcessConnector, ProcessShell};
 use crate::release::Releases;
 use crate::remote::{ApprovalPolicy, Remote};
 use crate::secrets::{SecretName, SecretStore, StoreKind};
-use crate::ssh::{Answerer, Questions, SshAuth, SshConnector, SshTarget};
+use crate::ssh::{Answerer, Questions, Ssh, SshAuth, SshConnector, SshTarget};
 use crate::system_ssh::{Local, SystemSsh, SystemSshConnector};
+use crate::wsl::{self, Wsl};
 use rovik_protocol::autopilot::{AutonomySettings, ChatTask, DeliveryTest, Effort};
 use rovik_protocol::host::{HostInfo, KeyInfo, Storage};
 use rovik_protocol::{features, Request, Response, Secret};
@@ -143,6 +145,10 @@ pub struct HostSummary {
     /// setting names by its socket.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub terminal: bool,
+    /// The WSL distribution on this computer (`WSL_HOST`): its chats are
+    /// this computer's, not a cloud's.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub wsl: bool,
     /// It works on its own (H02): its chats start in Autopilot.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub autonomous: bool,
@@ -159,6 +165,81 @@ pub enum ShellAccess {
     Ssh(SshTarget),
     /// The user's own ssh, run in a terminal here (H03).
     System(SystemSsh),
+    /// `wsl.exe`, run in a terminal here: the user's shell in the
+    /// distribution.
+    Wsl(Wsl),
+}
+
+/// How the page reaches a host for its test, deploy, upgrade and removal:
+/// through Rovik's SSH, or through `wsl.exe` for a WSL distribution here.
+enum HostLink {
+    Ssh(SshConnector),
+    Wsl {
+        wsl: Wsl,
+        shell: ProcessShell,
+        root: ProcessShell,
+        connector: ProcessConnector,
+    },
+}
+
+impl HostLink {
+    /// The SSH session, made now; none for WSL, whose shell needs none.
+    async fn session(&self) -> Result<Option<Arc<Ssh>>, String> {
+        match self {
+            HostLink::Ssh(connector) => connector
+                .session()
+                .await
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            HostLink::Wsl { .. } => Ok(None),
+        }
+    }
+
+    /// Where a deploy, an upgrade or a removal acts, `session` being the
+    /// SSH one.
+    fn target<'a>(
+        &'a self,
+        session: Option<&'a Ssh>,
+        name: &'a str,
+    ) -> Result<deploy::Target<'a>, String> {
+        match self {
+            HostLink::Ssh(connector) => Ok(deploy::Target {
+                shell: session.ok_or("The SSH session wasn't made.")?,
+                connector,
+                root: None,
+                name,
+                browser: true,
+            }),
+            HostLink::Wsl {
+                shell,
+                root,
+                connector,
+                ..
+            } => Ok(deploy::Target {
+                shell,
+                connector,
+                root: Some(root),
+                name,
+                browser: false,
+            }),
+        }
+    }
+
+    fn test_target(&self) -> TestTarget<'_> {
+        match self {
+            HostLink::Ssh(connector) => TestTarget::Ssh(connector),
+            HostLink::Wsl {
+                wsl,
+                shell,
+                connector,
+                ..
+            } => TestTarget::Wsl {
+                wsl,
+                shell,
+                connector,
+            },
+        }
+    }
 }
 
 /// A deploy's, an upgrade's or a removal's failure, as the page takes it.
@@ -426,6 +507,13 @@ impl HostsPage {
         };
         self.remote.set_policy(&host.id, host.approval_policy);
         self.remote.set_autonomy(&host.id, host.autonomy.clone());
+        if let Some(wsl) = host.wsl() {
+            let connector = self.wsl_connector(host, &wsl);
+            self.remote.connect(&host.id, connector, identity);
+            // This computer's chats run there (Remote::start).
+            self.remote.set_home(Some(&host.id));
+            return Ok(());
+        }
         if host.auth == AuthKind::SystemSsh {
             let connector = SystemSshConnector::new(system_ssh(host), self.local(host)?);
             self.remote.connect(&host.id, connector, identity);
@@ -490,14 +578,48 @@ impl HostsPage {
         })
     }
 
-    /// How a terminal reaches the host's shell: the user's own ssh for a
-    /// host set to it, Rovik's SSH with the host's way in otherwise.
+    /// How a terminal reaches the host's shell: `wsl.exe` for a WSL
+    /// distribution, the user's own ssh for a host set to it, Rovik's SSH
+    /// with the host's way in otherwise.
     pub fn shell_access(&self, id: &str) -> Result<ShellAccess, String> {
         let host = self.host(id)?;
+        if let Some(wsl) = host.wsl() {
+            return Ok(ShellAccess::Wsl(wsl));
+        }
         match host.auth {
             AuthKind::SystemSsh => Ok(ShellAccess::System(system_ssh(&host))),
             _ => Ok(ShellAccess::Ssh(self.target(&host)?)),
         }
+    }
+
+    /// How the page reaches `host` for its test, deploy, upgrade and
+    /// removal.
+    fn link(&self, host: &Host) -> Result<HostLink, String> {
+        match host.wsl() {
+            Some(wsl) => Ok(HostLink::Wsl {
+                shell: wsl.shell(),
+                root: wsl.root_shell(),
+                connector: self.wsl_connector(host, &wsl),
+                wsl,
+            }),
+            None => Ok(HostLink::Ssh(SshConnector::new(self.target(host)?))),
+        }
+    }
+
+    /// The daemon in a WSL distribution, checked against the build this
+    /// computer trusts once it's deployed (D5), as SSH's connector is.
+    fn wsl_connector(&self, host: &Host, wsl: &Wsl) -> ProcessConnector {
+        let mut connector = wsl.connector(&Layout::default().installed);
+        if let DeployState::Deployed {
+            sha256: Some(sha256),
+            ..
+        } = &host.deploy
+        {
+            let user = wsl.user.clone().unwrap_or_default();
+            connector =
+                connector.with_install_check(vec![sha256.clone()], Some(self.releases()), user);
+        }
+        connector
     }
 
     /// The hosts' names and connections, for the chats (U02, U03): no
@@ -525,6 +647,7 @@ impl HostsPage {
                     deployed: matches!(host.deploy, DeployState::Deployed { .. }),
                     caught_up: self.remote.caught_up(&host.id),
                     terminal: true,
+                    wsl: host.wsl().is_some(),
                     autonomous,
                     effort: host.autonomy.effort.filter(|_| autonomous),
                     id: host.id,
@@ -543,6 +666,7 @@ impl HostsPage {
                 state: Some(*state),
                 caught_up: self.remote.caught_up(id),
                 terminal: false,
+                wsl: false,
                 autonomous: false,
                 effort: None,
                 id: id.clone(),
@@ -558,7 +682,8 @@ impl HostsPage {
         let states: HashMap<String, HostState> = self.remote.states().into_iter().collect();
         let unconnected = self.unconnected();
         let mut hosts = Vec::new();
-        for host in settings.hosts {
+        // The WSL distribution isn't a cloud host: its own page shows it.
+        for host in settings.hosts.into_iter().filter(|h| h.wsl().is_none()) {
             let id = host.id.clone();
             let problem = unconnected
                 .get(&id)
@@ -610,10 +735,12 @@ impl HostsPage {
         // in doesn't use goes: a password left from before its key.
         let id = host.id.clone();
         let gone = || Some(Secret(String::new()));
-        let (password, passphrase) = match host.auth {
-            AuthKind::Key => (gone(), secrets.passphrase),
-            AuthKind::Password | AuthKind::KeyboardInteractive => (secrets.password, gone()),
-            AuthKind::Agent | AuthKind::SystemSsh => (gone(), gone()),
+        let (password, passphrase) = match (host.wsl().is_some(), host.auth) {
+            (false, AuthKind::Key) => (gone(), secrets.passphrase),
+            (false, AuthKind::Password | AuthKind::KeyboardInteractive) => {
+                (secrets.password, gone())
+            }
+            (true, _) | (false, AuthKind::Agent | AuthKind::SystemSsh) => (gone(), gone()),
         };
         for (name, value) in [
             (SecretName::Password { host: id.clone() }, password),
@@ -629,7 +756,9 @@ impl HostsPage {
         let changed = self.change(|settings| {
             match settings.host(&host.id) {
                 Some(old) => {
-                    let same_server = old.host == host.host && old.port == host.port;
+                    let same_server = old.host == host.host
+                        && old.port == host.port
+                        && old.transport == host.transport;
                     host.host_key = old.host_key.clone().filter(|_| same_server);
                     host.deploy = old.deploy.clone();
                     host.approval_policy = old.approval_policy;
@@ -702,7 +831,7 @@ impl HostsPage {
         report: &(dyn Fn(&Step) + Send + Sync),
     ) -> Result<Vec<Step>, String> {
         let host = self.host(id)?;
-        let connector = SshConnector::new(self.target(&host)?);
+        let link = self.link(&host)?;
         let known = match &host.deploy {
             DeployState::Deployed {
                 sha256: Some(sha256),
@@ -716,7 +845,7 @@ impl HostsPage {
             layout: Layout::default(),
             releases: Some(self.releases()),
         };
-        let steps = test_connection(&connector, &options, report).await;
+        let steps = test_connection(link.test_target(), &options, report).await;
         // A host that turned the app away is tried again on its own only
         // now and then, or not at all (`HostState::Refused`): once the test
         // gets through, as after a fix on the server, the app connects
@@ -822,17 +951,13 @@ impl HostsPage {
         sudo_password: Option<Secret>,
     ) -> Result<String, DeployFailure> {
         let host = self.host(id)?;
-        let connector = SshConnector::new(self.target(&host)?);
+        let link = self.link(&host)?;
+        let session = link.session().await?;
+        let target = link.target(session.as_deref(), &host.name)?;
         let builds = Builds::new(self.remote.data_dir(), &self.version)?;
         let computer = self.settings()?.computer;
         let layout = Layout::default();
-        let deployed = deploy::deploy(
-            &connector,
-            &builds,
-            &computer,
-            sudo_password.as_ref(),
-            &layout,
-        );
+        let deployed = deploy::deploy(&target, &builds, &computer, sudo_password.as_ref(), &layout);
         let deployed = deployed.await?;
         let token = SecretName::Token { host: id.into() };
         let kept = self.secrets.set(&token, &deployed.token);
@@ -856,9 +981,11 @@ impl HostsPage {
     /// daemons start again on the build, which the app knows from then on.
     pub async fn upgrade(&self, id: &str) -> Result<(), DeployFailure> {
         let host = self.host(id)?;
-        let connector = SshConnector::new(self.target(&host)?);
+        let link = self.link(&host)?;
+        let session = link.session().await?;
+        let target = link.target(session.as_deref(), &host.name)?;
         let builds = Builds::new(self.remote.data_dir(), &self.version)?;
-        let installed = deploy::upgrade(&connector, &builds, &Layout::default()).await?;
+        let installed = deploy::upgrade(&target, &builds, &Layout::default()).await?;
         let host = self.change_host(id, |host| {
             if let DeployState::Deployed { sha256, .. } = &mut host.deploy {
                 *sha256 = Some(installed);
@@ -876,8 +1003,10 @@ impl HostsPage {
         if script.trim().is_empty() {
             return Err("This host has no setup script.".to_string().into());
         }
-        let connector = SshConnector::new(self.target(&host)?);
-        Ok(deploy::run_setup(&connector, script).await?)
+        let link = self.link(&host)?;
+        let session = link.session().await?;
+        let target = link.target(session.as_deref(), &host.name)?;
+        Ok(deploy::run_setup(target.shell, script).await?)
     }
 
     /// Opens the encrypted file that keeps secrets where there's no
@@ -892,8 +1021,10 @@ impl HostsPage {
     /// What removing Rovik for this user deletes on the host.
     pub async fn removal(&self, id: &str) -> Result<Removal, DeployFailure> {
         let host = self.host(id)?;
-        let connector = SshConnector::new(self.target(&host)?);
-        Ok(deploy::removal(&connector).await?)
+        let link = self.link(&host)?;
+        let session = link.session().await?;
+        let target = link.target(session.as_deref(), &host.name)?;
+        Ok(deploy::removal(target.shell).await?)
     }
 
     /// Removes Rovik for this user, as `removal` listed it: not while
@@ -909,8 +1040,10 @@ impl HostsPage {
             });
         }
         let host = self.host(id)?;
-        let connector = SshConnector::new(self.target(&host)?);
-        deploy::remove(&connector, removal, &Layout::default()).await?;
+        let link = self.link(&host)?;
+        let session = link.session().await?;
+        let target = link.target(session.as_deref(), &host.name)?;
+        deploy::remove(&target, removal, &Layout::default()).await?;
         self.remote.disconnect(id);
         let token = SecretName::Token { host: id.into() };
         self.secrets.delete(&token).map_err(|e| e.to_string())?;
@@ -968,8 +1101,10 @@ impl HostsPage {
     /// them.
     pub async fn limits(&self, id: &str) -> Result<Vec<(String, String)>, DeployFailure> {
         let host = self.host(id)?;
-        let connector = SshConnector::new(self.target(&host)?);
-        Ok(deploy::limits(&connector, &Layout::default()).await?)
+        let link = self.link(&host)?;
+        let session = link.session().await?;
+        let target = link.target(session.as_deref(), &host.name)?;
+        Ok(deploy::limits(&target, &Layout::default()).await?)
     }
 
     pub async fn set_limits(
@@ -978,8 +1113,10 @@ impl HostsPage {
         changes: &[(String, String)],
     ) -> Result<(), DeployFailure> {
         let host = self.host(id)?;
-        let connector = SshConnector::new(self.target(&host)?);
-        Ok(deploy::set_limits(&connector, changes, &Layout::default()).await?)
+        let link = self.link(&host)?;
+        let session = link.session().await?;
+        let target = link.target(session.as_deref(), &host.name)?;
+        Ok(deploy::set_limits(&target, changes, &Layout::default()).await?)
     }
 
     async fn call<T>(&self, id: &str, request: Request) -> Result<T, String>
@@ -988,6 +1125,219 @@ impl HostsPage {
     {
         let reply = self.remote.host_call(id, request).await;
         reply.and_then(T::try_from).map_err(|fail| fail.message)
+    }
+}
+
+/// The WSL distribution's host in the settings (Windows): one per
+/// computer, set up from Settings → This computer → WSL, kept out of the
+/// Cloud hosts page. Its chats are this computer's.
+pub const WSL_HOST: &str = "wsl";
+
+/// How long installing the distribution's packages may take.
+const PACKAGES_WAIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The WSL page's state (Settings → This computer → WSL).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WslStatus {
+    /// `wsl.exe` answers here: Windows with WSL installed.
+    pub available: bool,
+    /// Why it doesn't, when it doesn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+    /// This Windows can't run WSL2 (`wsl::unsupported_windows`): no
+    /// install would help.
+    pub unsupported: bool,
+    /// The distributions installed here.
+    pub distros: Vec<String>,
+    /// The distribution set up, when one is, and the user in it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distro: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Rovik runs in it for this computer.
+    pub deployed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<HostState>,
+    /// Why the app couldn't connect to it, when it couldn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// Rovik there is older than this app: the app updates it at its
+    /// start (`wsl_update`).
+    pub outdated: bool,
+    pub app_version: String,
+}
+
+impl HostsPage {
+    /// The WSL distribution's host, once set up.
+    pub fn wsl_host(&self) -> Result<Option<Host>, String> {
+        Ok(self.settings()?.host(WSL_HOST).cloned())
+    }
+
+    pub async fn wsl_status(&self) -> Result<WslStatus, String> {
+        let unsupported = wsl::unsupported_windows().await;
+        let (available, unavailable, distros) = match (&unsupported, wsl::distros().await) {
+            (Some(why), _) => (false, Some(why.clone()), Vec::new()),
+            (None, Ok(distros)) => (true, None, distros),
+            (None, Err(why)) => (false, Some(wsl::explained(why)), Vec::new()),
+        };
+        let host = self.wsl_host()?;
+        let (distro, user) = match host.as_ref().and_then(Host::wsl) {
+            Some(wsl) => (Some(wsl.distro), wsl.user),
+            None => (None, None),
+        };
+        let deploy = host.map(|h| h.deploy).unwrap_or_default();
+        let version = match &deploy {
+            DeployState::Deployed { version, .. } => Some(version.clone()),
+            DeployState::NotDeployed => None,
+        };
+        let state = self
+            .remote
+            .states()
+            .into_iter()
+            .find(|(id, _)| id == WSL_HOST)
+            .map(|(_, state)| state);
+        let problem = self
+            .unconnected()
+            .get(WSL_HOST)
+            .cloned()
+            .or_else(|| self.remote.refusal(WSL_HOST))
+            .map(wsl::explained);
+        Ok(WslStatus {
+            available,
+            unavailable,
+            unsupported: unsupported.is_some(),
+            distros,
+            distro,
+            user,
+            deployed: matches!(deploy, DeployState::Deployed { .. }),
+            outdated: version
+                .as_deref()
+                .is_some_and(|version| older(version, &self.version)),
+            version,
+            state: state.or(problem.as_ref().map(|_| HostState::Offline)),
+            problem,
+            app_version: self.version.clone(),
+        })
+    }
+
+    /// Sets the distribution up as this computer's Linux side: Rovik
+    /// deployed in it (installed as root inside it, no password), with the
+    /// packages its sandbox and overlays take (bubblewrap, FUSE), this
+    /// computer's token added, and its daemon started and connected. A
+    /// distribution set up before is let go of first. Returns the daemon's
+    /// version.
+    pub async fn wsl_setup(
+        &self,
+        distro: String,
+        user: Option<String>,
+    ) -> Result<String, DeployFailure> {
+        let mut wsl = Wsl::new(distro, user);
+        // A distribution whose default user is root (installed by the app,
+        // `--no-launch`, or by hand without its first run) gets one: the
+        // daemon and the commands don't run as root.
+        if wsl.user.is_none() {
+            wsl.user = Self::wsl_user(&wsl).await?;
+        }
+        if let Some(old) = self.wsl_host()? {
+            if old.wsl().as_ref() != Some(&wsl) {
+                self.wsl_remove().await?;
+            }
+        }
+        let host = Host {
+            id: WSL_HOST.into(),
+            name: "WSL".into(),
+            transport: Transport::Wsl {
+                distro: wsl.distro.clone(),
+                user: wsl.user.clone(),
+            },
+            host: String::new(),
+            port: 22,
+            user: String::new(),
+            auth: AuthKind::Agent,
+            key_path: None,
+            host_key: None,
+            approval_policy: ApprovalPolicy::default(),
+            autonomy: AutonomySettings::default(),
+            deploy: DeployState::NotDeployed,
+            setup_script: None,
+        };
+        self.save(host, HostSecrets::default())?;
+        // The packages, as root in the distribution: best-effort, as the
+        // installer adds bubblewrap itself and says when it couldn't.
+        let root: &dyn HostShell = &wsl.root_shell();
+        if let Err(e) = root.run(&wsl::packages_script(), &[], PACKAGES_WAIT).await {
+            log::warn!("{}: its packages weren't installed: {e}", wsl.display());
+        }
+        self.deploy(WSL_HOST, None).await.map_err(explained)
+    }
+
+    /// Tests the distribution's connection, a step at a time.
+    pub async fn wsl_test(
+        &self,
+        report: &(dyn Fn(&Step) + Send + Sync),
+    ) -> Result<Vec<Step>, String> {
+        self.test(WSL_HOST, report).await
+    }
+
+    /// Whom Rovik runs as in a distribution the user named no user for:
+    /// its default user, or `rovik`, made as root, when that's root.
+    async fn wsl_user(wsl: &Wsl) -> Result<Option<String>, DeployFailure> {
+        let shell: &dyn HostShell = &wsl.shell();
+        let out = shell.run("id -un", &[], crate::ssh::EXEC_WAIT).await?;
+        if out.status != Some(0) {
+            let said = String::from_utf8_lossy(&out.stderr);
+            return Err(DeployFailure::Failed {
+                message: wsl::explained(format!("{}: {}", wsl.display(), said.trim())),
+            });
+        }
+        if String::from_utf8_lossy(&out.stdout).trim() != "root" {
+            return Ok(None);
+        }
+        let root: &dyn HostShell = &wsl.root_shell();
+        let made = root.run(&wsl::user_script(), &[], PACKAGES_WAIT).await?;
+        let user = String::from_utf8_lossy(&made.stdout).trim().to_string();
+        if made.status != Some(0) || user.is_empty() {
+            return Err(DeployFailure::Failed {
+                message: format!(
+                    "{}: its default user is root, and no user could be made for Rovik: {}",
+                    wsl.display(),
+                    String::from_utf8_lossy(&made.stderr).trim()
+                ),
+            });
+        }
+        Ok(Some(user))
+    }
+
+    /// Rovik in the distribution brought to this app's version, as an app
+    /// update leaves it behind: the user is the administrator there.
+    pub async fn wsl_update(&self) -> Result<(), DeployFailure> {
+        self.upgrade(WSL_HOST).await.map_err(explained)
+    }
+
+    /// Rovik removed from the distribution, which the app then forgets.
+    pub async fn wsl_remove(&self) -> Result<(), DeployFailure> {
+        let deployed = self
+            .wsl_host()?
+            .is_some_and(|host| matches!(host.deploy, DeployState::Deployed { .. }));
+        if deployed {
+            let removal = self.removal(WSL_HOST).await?;
+            self.remove_rovik(WSL_HOST, &removal).await?;
+        }
+        self.remove(WSL_HOST).await.map_err(DeployFailure::from)
+    }
+}
+
+/// A WSL deploy's failure, with what `wsl.exe`'s error means in front
+/// when it's a known one (`wsl::explain`).
+fn explained(failure: DeployFailure) -> DeployFailure {
+    match failure {
+        DeployFailure::Failed { message } => DeployFailure::Failed {
+            message: wsl::explained(message),
+        },
+        other => other,
     }
 }
 
@@ -1005,6 +1355,23 @@ fn check(host: &Host) -> Result<(), String> {
     }
     if blank(&host.name) {
         return Err("Give the host a name.".into());
+    }
+    // A WSL distribution: its name and the user's, which go to wsl.exe as
+    // arguments (one that starts with - would be an option to it).
+    if let Some(wsl) = host.wsl() {
+        let plain = |text: &str| {
+            !blank(text)
+                && !text.contains(char::is_whitespace)
+                && !text.starts_with('-')
+                && !text.contains(char::is_control)
+        };
+        if !plain(&wsl.distro) {
+            return Err("Choose the WSL distribution.".into());
+        }
+        if wsl.user.as_deref().is_some_and(|user| !plain(user)) {
+            return Err("The user in the distribution is a name without spaces.".into());
+        }
+        return Ok(());
     }
     // An address or a user that starts with - would be an option to ssh.
     if blank(&host.host)
@@ -1191,6 +1558,7 @@ mod tests {
         Host {
             id: String::new(),
             name: "Build box".into(),
+            transport: Transport::Ssh,
             host: "build.example.com".into(),
             port: 22,
             user: "ann".into(),
@@ -1561,6 +1929,7 @@ mod tests {
         let mut host = Host {
             id: String::new(),
             name: "Build box".into(),
+            transport: Transport::Ssh,
             host: "build.example.com".into(),
             port: 22,
             user: "ann".into(),

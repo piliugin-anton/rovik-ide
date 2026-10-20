@@ -43,6 +43,9 @@ pub fn serve(options: Options) -> Result<(), String> {
     // 2. The folders, which must be this user's alone, and the lock.
     let home = Home::locate(options.data)?;
     home.prepare()?;
+    // The daemon's own folder (keys.json among it) is hidden from every
+    // command the agent runs, whatever $HOME says (overlay/confine.rs).
+    rovik_core::overlay::confine::protect([home.root.clone()]);
     let _lock = home.lock()?;
     let config = Config::read(&home.config_file())?;
     logfile::init(&home.logs(), config.level()?)?;

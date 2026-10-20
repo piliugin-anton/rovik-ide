@@ -8,8 +8,10 @@
 // - it's missing → one notification offers to install it, then mounts.
 // "Don't ask again" stops the notifications (not the mount attempt).
 import { createSignal } from 'solid-js';
+import { loadPrefs, savePrefs } from './localPrefs';
 import { notify } from './notifications';
 import { installVfsDriver, mountVfs, vfsStatus, type MountProblem } from './virtualFiles';
+import { onWindows } from './wsl';
 
 const PREFS_KEY = 'rovik.virtualFiles';
 const NOTE = 'vfs-setup';
@@ -18,22 +20,6 @@ const NOTE = 'vfs-setup';
 interface Prefs {
   /** No setup notifications at start. */
   quiet?: boolean;
-}
-
-function loadPrefs(): Prefs {
-  try {
-    return JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}') ?? {};
-  } catch {
-    return {};
-  }
-}
-
-function savePrefs(patch: Partial<Prefs>) {
-  try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch }));
-  } catch {
-    // storage unavailable: the choice just isn't remembered
-  }
 }
 
 // "Show steps": the chat's settings open on the Virtual files page. The
@@ -48,7 +34,10 @@ export function clearVfsSettingsRequest() {
 }
 
 const notNow = { label: 'Not now', run: () => {} };
-const dontAsk = { label: 'Don’t ask again', run: () => savePrefs({ quiet: true }) };
+const dontAsk = {
+  label: 'Don’t ask again',
+  run: () => savePrefs<Prefs>(PREFS_KEY, { quiet: true }),
+};
 const showSteps = { label: 'Show steps', primary: true, run: requestVfsSettings };
 
 /** Mounts, reporting a failure; true when mounted. */
@@ -119,7 +108,9 @@ let started = false;
 
 /** Once per app run, in the background. */
 export async function startVirtualFiles() {
-  if (started) return;
+  // Windows has no driver to offer: the agent works in WSL, whose daemon
+  // serves the virtual files (wslStartup.ts sees to WSL).
+  if (started || onWindows()) return;
   started = true;
   let status;
   try {
@@ -127,7 +118,7 @@ export async function startVirtualFiles() {
   } catch {
     return; // not supported here
   }
-  const quiet = loadPrefs().quiet === true;
+  const quiet = loadPrefs<Prefs>(PREFS_KEY).quiet === true;
   if (status.driver.installed) {
     if (status.mountpoint) return;
     try {

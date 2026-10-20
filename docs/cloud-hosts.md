@@ -19,6 +19,7 @@ Rovik is installed once per server, by root:
 | `/etc/systemd/system/rovik.slice`                         | The caps on all of Rovik together.                       |
 | `/etc/sudoers.d/rovik`                                    | Lets users run the commands described below.             |
 | `/opt/rovik/browser/<version>/`                           | The browser tools' browser (below), owned by root.       |
+| The distro's `bubblewrap` package                         | Confines the chats' commands (see What can read what).   |
 | The `rovik-admin` group                                   | The administrators.                                      |
 
 Each user's daemon keeps its files in `~/.rovik` and works in
@@ -39,8 +40,12 @@ sudo /path/to/rovik-agentd install --admin USER
 The installer copies the binary, writes `agentd.toml` with USER as the
 administrator and with limits sized to the machine, writes the units, adds
 USER to `rovik-admin`, installs the sudoers rule once `visudo` accepts it,
-starts USER's daemon, and installs the browser for the browser tools
-([The browser](#the-browser)). To see what it would do without changing
+starts USER's daemon, installs the browser for the browser tools
+([The browser](#the-browser)) and the distro's `bubblewrap` package, which
+confines the chats' commands ([What can read what](#what-can-read-what)).
+Neither stops the install when it can't be installed, and `--no-browser`
+leaves the browser out, as the app does for a WSL distribution. To see
+what it would do without changing
 anything, add `--root /tmp/somewhere`. It then writes the files under that
 folder and prints each command it would run.
 
@@ -88,6 +93,7 @@ sudo /opt/rovik/bin/rovik-agentd admin limits cpu_quota=none     # remove one
 sudo /opt/rovik/bin/rovik-agentd admin add USER
 sudo /opt/rovik/bin/rovik-agentd admin remove USER
 sudo /opt/rovik/bin/rovik-agentd admin browser                   # install it if it's missing
+sudo /opt/rovik/bin/rovik-agentd admin bubblewrap                # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin upgrade FILE
 sudo /opt/rovik/bin/rovik-agentd admin uninstall
 ```
@@ -155,7 +161,17 @@ what Rovik's folders take.
 
 ## What can read what
 
-- The agent's commands run as the user and can read whatever the user can.
+- The agent's commands run as the user, in a bubblewrap sandbox: the
+  system is read-only to them but for the worktree, `/tmp` and the
+  toolchains' caches under the home folder; the credential stores
+  (`~/.rovik` with the API keys, `~/.ssh`, `~/.aws`, `~/.gnupg`, the cloud
+  CLIs' folders) are empty to them; they see no other process and hold no
+  capability, so they can't undo any of that. The installer adds
+  bubblewrap from the distro's package and, where AppArmor restricts
+  unprivileged user namespaces (Ubuntu 23.10 and later), the AppArmor
+  profile `rovik-bwrap`, which lets `/usr/bin/bwrap` make one; without
+  them the agent's commands are refused, which `rovik-agentd doctor` and
+  the app's connection test report. `admin bubblewrap` adds both again. A command that names `~/.rovik` still needs the user's approval.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
   read them, but root can. The app tells users: "Your API keys are stored in
   your account on this server, so chats there run while this computer is
@@ -177,6 +193,45 @@ reached by every user of the server, and two people's agents can clash on
 one port. The browser tools open none: Rovik drives the agent's Chrome over
 a pipe that only that user's daemon holds, not a DevTools port, so other
 users of the server can't reach the browser, which runs as that user.
+
+## WSL on Windows
+
+On Windows the same daemon runs in a WSL2 distribution, as Rovik's Linux
+side on that computer: the agent's commands run there in the sandbox
+(bubblewrap), and the chats' overlays use FUSE. It isn't a cloud host: it's
+set up from Settings → This computer → WSL, which installs Rovik in the
+distribution as root inside it (`wsl.exe -u root`, no password) with
+bubblewrap and fuse3, adds the computer's token and starts the daemon;
+the app starts the daemon again whenever the distribution restarts, and
+updates Rovik there with its own updates. The page has no limits, no
+upgrade and no chat list: the chats there are the computer's own. The
+app reaches the daemon through `wsl.exe -d <distro> --exec rovik-agentd
+attach --stdio`, the byte bridge an SSH exec channel uses too.
+
+Every chat of a project moves there by itself when it first runs, as
+"Move to" a cloud host would (its project synced into a worktree there,
+its results landing back in the project), and is shown as "This computer
+(WSL)"; a move that fails is the start's failure, with the cause. A chat
+without a project stays on this computer, where the agent's commands are
+refused, as they are until WSL is set up. Deleting a project deletes its chats
+in WSL too; merging one into another brings its chats in WSL back to this
+computer first (and is refused, with why, while one is running or can't
+come back), and their next message takes them to WSL again. When the distribution can't
+start, the page and a notification say why in plain words for the known
+cases: virtualization turned off in the BIOS/UEFI or Windows' Virtual
+Machine Platform missing (`HCS_E_HYPERV_NOT_INSTALLED`, `0x80370102`),
+WSL turned off (`0x8007019e`), its kernel out of date (`0x800701bc`), the
+WSL service disabled (`0x80070422`); and a Windows too old for WSL2
+(before Windows 10 version 1903, build 18362) is told so before anything
+is tried. A computer without WSL is offered its install, at start and on
+the page: `wsl --install -d <distro> --no-launch` run as an administrator
+(Windows asks for permission), which may need a restart; where there's no
+`wsl.exe` yet, the two Windows features are turned on with `dism` and the
+restart brings it. The distribution isn't launched, so its default user
+is root; setting it up then makes a `rovik` user to run as.
+
+CI can't run WSL2 (no nested virtualization on its Windows runners): the
+checks to make by hand on a Windows machine are in `docs/wsl-checklist.md`.
 
 ## The browser
 
@@ -217,7 +272,8 @@ in your home is yours to change meanwhile, so it never goes back to it. It
 asks a copy in memory its version, as you rather than as root, and the
 copy under `/opt/rovik/bin` is root's alone until it has passed. Each
 build is named for the version it says it is. Before the daemons start again, the new build installs
-the browser it pins if it's missing, and the other versions go. An upgrade
+the browser it pins and bubblewrap, whichever is missing, and the browser's
+other versions go. An upgrade
 from the app does the same for a server whose installed build is older
 than that.
 

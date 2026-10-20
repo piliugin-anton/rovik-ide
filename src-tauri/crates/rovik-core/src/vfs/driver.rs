@@ -1,17 +1,18 @@
 //! Finding and installing the driver the virtual filesystem needs:
-//! FUSE (Linux), macFUSE (macOS) or WinFsp (Windows).
+//! FUSE (Linux) or macFUSE (macOS). Windows has none: the agent works in
+//! WSL, whose daemon serves the virtual files.
 //!
 //! Installing always needs the administrator's consent, asked the way the OS
 //! normally does: polkit's dialog (`pkexec`) on Linux, the admin password
-//! dialog on macOS, UAC on Windows. Without a way to ask (e.g. no polkit
+//! dialog on macOS. Without a way to ask (e.g. no polkit
 //! agent), the result says which command to run instead.
 //!
-//! The macFUSE and WinFsp installers come from their official GitHub
+//! The macFUSE installer comes from its official GitHub
 //! releases. A download is checked against the SHA-256 GitHub publishes for
 //! it when there is one, and its code signature is checked before it runs.
 
 use std::path::Path;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
 use serde::Serialize;
@@ -19,7 +20,7 @@ use serde::Serialize;
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverStatus {
-    /// "FUSE", "macFUSE" or "WinFsp".
+    /// "FUSE" or "macFUSE"; "WSL" on Windows, which serves them.
     pub driver: &'static str,
     pub installed: bool,
     pub version: Option<String>,
@@ -46,13 +47,7 @@ pub enum InstallOutcome {
 // --- Linux ------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-fn which(name: &str) -> Option<std::path::PathBuf> {
-    let path = crate::process::child_var("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .chain(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(Into::into))
-        .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
-}
+use crate::distro::which;
 
 #[cfg(target_os = "linux")]
 pub fn status() -> DriverStatus {
@@ -87,19 +82,11 @@ pub fn status() -> DriverStatus {
 /// manager and loads the kernel module.
 #[cfg(target_os = "linux")]
 fn linux_install_script() -> Option<String> {
-    let install = [
-        ("apt-get", "export DEBIAN_FRONTEND=noninteractive; apt-get install -y fuse3 || { apt-get update && apt-get install -y fuse3; }"),
-        ("dnf", "dnf install -y fuse3"),
-        ("yum", "yum install -y fuse3"),
-        ("pacman", "pacman -S --needed --noconfirm fuse3"),
-        ("zypper", "zypper --non-interactive install fuse3"),
-        ("apk", "apk add fuse3"),
-        ("xbps-install", "xbps-install -y fuse3"),
-        ("emerge", "emerge --noreplace sys-fs/fuse:3"),
-    ]
-    .into_iter()
-    .find(|(manager, _)| which(manager).is_some())
-    .map(|(_, script)| script)?;
+    const FUSE3: crate::distro::Package = crate::distro::Package {
+        name: "fuse3",
+        gentoo: "sys-fs/fuse:3",
+    };
+    let install = crate::distro::install_script(&FUSE3)?;
     Some(format!(
         "set -e; {install}; modprobe fuse 2>/dev/null || true"
     ))
@@ -113,40 +100,13 @@ pub async fn install() -> Result<InstallOutcome, String> {
             command: None,
         });
     };
-    let is_root = unsafe { libc::geteuid() } == 0;
-    let graphical =
-        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let mut command = if is_root {
-        let mut c = crate::process::command("sh");
-        c.args(["-c", &script]);
-        c
-    } else if which("pkexec").is_some() && graphical {
-        let mut c = crate::process::command("pkexec");
-        c.args(["sh", "-c", &script]);
-        c
-    } else {
+    if let crate::distro::RootRun::Manual { message, command } =
+        crate::distro::run_as_root(&script, "Installing FUSE").await?
+    {
         return Ok(InstallOutcome::Manual {
-            message: "Installing FUSE needs administrator rights. Run this in a terminal:".into(),
-            command: Some(format!("sudo sh -c '{script}'")),
+            message,
+            command: Some(command),
         });
-    };
-    let out = crate::rt::spawn_blocking(move || command.output())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("starting the installer: {e}"))?;
-    match out.status.code() {
-        Some(0) => {}
-        // pkexec: the dialog was dismissed / not authorized.
-        Some(126) | Some(127) if !is_root => return Err("Installation was cancelled.".into()),
-        _ => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let last: Vec<&str> = stderr.lines().rev().take(5).collect();
-            return Err(format!(
-                "Installing FUSE failed ({}): {}",
-                out.status,
-                last.into_iter().rev().collect::<Vec<_>>().join("\n")
-            ));
-        }
     }
     let now = status();
     if now.installed {
@@ -163,7 +123,7 @@ pub async fn install() -> Result<InstallOutcome, String> {
 // --- Shared by the macOS and Windows installers -----------------------------
 
 /// File names linked under `prefix` in a release's asset list.
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn asset_names(html: &str, prefix: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut rest = html;
@@ -181,7 +141,7 @@ fn asset_names(html: &str, prefix: &str) -> Vec<String> {
     names
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(target_os = "macos")]
 mod download {
     use super::*;
     use futures_util::StreamExt;
@@ -399,178 +359,42 @@ pub async fn install() -> Result<InstallOutcome, String> {
     result
 }
 
-// --- Windows ----------------------------------------------------------------
-
-#[cfg(windows)]
-const WINFSP_DLL: &str = if cfg!(target_arch = "aarch64") {
-    "winfsp-a64.dll"
-} else if cfg!(target_arch = "x86") {
-    "winfsp-x86.dll"
-} else {
-    "winfsp-x64.dll"
-};
-
-/// WinFsp's install folder, from the registry.
-#[cfg(windows)]
-fn winfsp_dir() -> Option<std::path::PathBuf> {
-    use windows::core::{w, PCWSTR};
-    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
-    let read = |key: PCWSTR| -> Option<std::path::PathBuf> {
-        let mut buf = [0u16; 1024];
-        let mut size = (buf.len() * 2) as u32;
-        let status = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                key,
-                w!("InstallDir"),
-                RRF_RT_REG_SZ,
-                None,
-                Some(buf.as_mut_ptr().cast()),
-                Some(&mut size),
-            )
-        };
-        if status.is_err() {
-            return None;
-        }
-        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Some(String::from_utf16_lossy(&buf[..len]).into())
-    };
-    read(w!("SOFTWARE\\WOW6432Node\\WinFsp")).or_else(|| read(w!("SOFTWARE\\WinFsp")))
-}
-
-/// Loads the installed winfsp DLL, so the delay-loaded imports resolve to it.
-#[cfg(windows)]
-pub fn load_winfsp() -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
-    use windows::Win32::System::LibraryLoader::LoadLibraryW;
-    let dll = winfsp_dir()
-        .map(|d| d.join("bin").join(WINFSP_DLL))
-        .filter(|p| p.is_file())
-        .ok_or("WinFsp isn't installed")?;
-    let wide: Vec<u16> = dll.as_os_str().encode_wide().chain(Some(0)).collect();
-    unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
-        .map(|_| ())
-        .map_err(|e| format!("loading {}: {e}", dll.display()))
-}
-
-#[cfg(windows)]
-fn winfsp_version(dir: &Path) -> Option<String> {
-    // Not stored anywhere simple; the installer's product name carries it.
-    let out = crate::process::no_window(&mut Command::new("reg"))
-        .args([
-            "query",
-            r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-            "/s",
-            "/f",
-            "WinFsp",
-            "/d",
-        ])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let version = text
-        .lines()
-        .find(|l| l.trim_start().starts_with("DisplayVersion"))
-        .and_then(|l| l.split_whitespace().last())
-        .map(str::to_string);
-    let _ = dir;
-    version
-}
-
-#[cfg(windows)]
-pub fn status() -> DriverStatus {
-    let dir = winfsp_dir();
-    let installed = dir
-        .as_ref()
-        .is_some_and(|d| d.join("bin").join(WINFSP_DLL).is_file());
-    DriverStatus {
-        driver: "WinFsp",
-        installed,
-        version: dir
-            .as_deref()
-            .filter(|_| installed)
-            .and_then(winfsp_version),
-        detail: (!installed).then(|| "WinFsp isn't installed.".to_string()),
-        can_install: true,
-    }
-}
-
-#[cfg(windows)]
-pub async fn install() -> Result<InstallOutcome, String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-    let asset = download::latest_asset("winfsp/winfsp", |n| {
-        n.starts_with("winfsp-") && n.ends_with(".msi")
-    })
-    .await?;
-    let dir = std::env::temp_dir().join(format!("rovik-winfsp-{}", std::process::id()));
-    let msi = download::fetch(&asset, &dir).await?;
-    crate::rt::spawn_blocking(move || {
-        let msi_s = msi.to_string_lossy().into_owned();
-        // Only run an installer signed by WinFsp's publisher.
-        let script = "$s = Get-AuthenticodeSignature -LiteralPath $args[0]; \
-                      if ($s.Status -ne 'Valid') { exit 2 }; $s.SignerCertificate.Subject";
-        let out = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script, &msi_s])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("checking the installer's signature: {e}"))?;
-        let subject = String::from_utf8_lossy(&out.stdout);
-        if !out.status.success() || !subject.contains("Navimatics") {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err("the WinFsp installer doesn't carry a valid signature from its publisher; not installing it".to_string());
-        }
-        // msiexec asks for elevation (UAC) itself.
-        let status = Command::new("msiexec")
-            .args(["/i", &msi_s, "/passive", "/norestart"])
-            .status()
-            .map_err(|e| format!("msiexec: {e}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        match status?.code() {
-            Some(0) => Ok(InstallOutcome::Installed { version: winfsp_dir().as_deref().and_then(winfsp_version) }),
-            Some(3010) | Some(1641) => Ok(InstallOutcome::NeedsRestart {
-                message: "WinFsp is installed. Restart Windows to finish.".into(),
-            }),
-            Some(1602) => Err("Installation was cancelled.".into()),
-            code => Err(format!("installing WinFsp failed (msiexec exit code {code:?})")),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 // --- Other systems ------------------------------------------------------------
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+/// Why there are no virtual files here: on Windows the agent works in WSL,
+/// whose daemon serves them; elsewhere there's no driver for them.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub const UNSUPPORTED: &str = if cfg!(windows) {
+    "On Windows the agent works in WSL, which serves the virtual files: Settings → This computer → WSL."
+} else {
+    "Virtual files aren't supported on this system."
+};
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn status() -> DriverStatus {
     DriverStatus {
-        driver: "FUSE",
+        driver: if cfg!(windows) { "WSL" } else { "FUSE" },
         installed: false,
         version: None,
-        detail: Some("Virtual files aren't supported on this system.".into()),
+        detail: Some(UNSUPPORTED.into()),
         can_install: false,
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub async fn install() -> Result<InstallOutcome, String> {
-    Err("Virtual files aren't supported on this system.".into())
+    Err(UNSUPPORTED.into())
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn finds_asset_names() {
-        let html = r#"<li><a href="/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi">x</a> sha256:ab</li>
-            <li><a href="/winfsp/winfsp/releases/download/v2.1/winfsp-tests-2.1.25156.zip">y</a></li>
-            <li><a href="/winfsp/winfsp/archive/refs/tags/v2.1.zip">src</a></li>"#;
-        let names = super::asset_names(html, "/winfsp/winfsp/releases/download/v2.1/");
-        assert_eq!(
-            names,
-            ["winfsp-2.1.25156.msi", "winfsp-tests-2.1.25156.zip"]
-        );
+        let html = r#"<li><a href="/macfuse/macfuse/releases/download/macfuse-4.8.0/macfuse-4.8.0.dmg">x</a> sha256:ab</li>
+            <li><a href="/macfuse/macfuse/releases/download/macfuse-4.8.0/macfuse-4.8.0.dmg.sig">y</a></li>
+            <li><a href="/macfuse/macfuse/archive/refs/tags/macfuse-4.8.0.zip">src</a></li>"#;
+        let names = super::asset_names(html, "/macfuse/macfuse/releases/download/macfuse-4.8.0/");
+        assert_eq!(names, ["macfuse-4.8.0.dmg", "macfuse-4.8.0.dmg.sig"]);
     }
 
     #[cfg(target_os = "linux")]

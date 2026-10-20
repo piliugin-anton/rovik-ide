@@ -13,6 +13,7 @@
 //! is there only once all of it is in place. A browser that doesn't work
 //! anyway says so when the browser tools start it.
 
+use super::packages::PackageManager;
 use super::{System, INSTALLED};
 use rovik_core::pinned_browser::{self, Build, Leftover, NAME, SERVER_ROOT, VERSION};
 use std::path::Path;
@@ -105,37 +106,20 @@ fn packages(sys: &System, dir: &Path) -> Result<(), String> {
         let path = dir.join(name);
         std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
     };
-    match sys.which(&["apt-get", "dnf", "zypper"]) {
-        Some("apt-get") => {
+    // The archive lists its dependencies for apt (an expression `satisfy`
+    // takes) and as rpm capabilities; the other managers have no list.
+    match PackageManager::find(sys) {
+        Some(apt @ PackageManager::Apt) => {
             let wanted = deb_dependencies(&listed("deb.deps")?);
-            let apt = |args: &[&str]| {
-                let mut all = vec![
-                    "DEBIAN_FRONTEND=noninteractive",
-                    "apt-get",
-                    "-o",
-                    "DPkg::Lock::Timeout=300",
-                    "-q",
-                ];
-                all.extend_from_slice(args);
-                sys.run("env", &all)
-            };
-            // A new machine has no package lists yet. When they can't be
-            // updated, the ones there may still do.
-            if let Err(why) = apt(&["update"]) {
-                println!("The package lists weren't updated: {why}");
-            }
-            apt(&["-y", "--no-install-recommends", "satisfy", &wanted]).map(|_| ())
+            apt.apt(sys, &["-y", "--no-install-recommends", "satisfy", &wanted])
+                .map(|_| ())
         }
-        Some(manager) => {
+        Some(rpm @ (PackageManager::Dnf | PackageManager::Zypper)) => {
             let wanted = rpm_capabilities(&listed("rpm.deps")?);
-            let mut args = match manager {
-                "dnf" => vec!["install", "-y", "--setopt=install_weak_deps=False"],
-                _ => vec!["--non-interactive", "install", "--no-recommends"],
-            };
-            args.extend(wanted.iter().map(String::as_str));
-            sys.run(manager, &args).map(|_| ())
+            let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+            rpm.install(sys, &wanted)
         }
-        None => {
+        _ => {
             println!(
                 "There's no apt-get, dnf or zypper here to install the libraries {NAME} \
                  needs: its rpm.deps names them."

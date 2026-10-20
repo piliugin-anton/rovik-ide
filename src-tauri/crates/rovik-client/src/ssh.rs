@@ -896,7 +896,8 @@ impl SshConnector {
             let layout = crate::deploy::Layout::default();
             let releases = self.releases.as_ref();
             let user = &self.target.user;
-            let checked = crate::deploy::check_install(&ssh, known, releases, user, &layout);
+            let checked =
+                crate::deploy::check_install(ssh.as_ref(), known, releases, user, &layout);
             checked.await.map_err(|e| match e {
                 // The check couldn't be made now: no verdict on the install.
                 crate::deploy::DeployError::Failed(why) => SshError::Failed(why),

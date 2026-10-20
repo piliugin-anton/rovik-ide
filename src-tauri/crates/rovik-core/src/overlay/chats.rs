@@ -7,9 +7,10 @@
 //! mounted at a short path of its own (`$XDG_RUNTIME_DIR/rovik-ide/chats/…`
 //! on Linux), so commands can use it unquoted.
 //!
-//! Isolation needs the virtual-files driver (FUSE, macFUSE or WinFsp). If
-//! it can't mount, the chat works in the project directly, as before
-//! isolation, and the run says so.
+//! Isolation needs the virtual-files driver (FUSE or macFUSE). If it can't
+//! mount, the chat works in the project directly, as before isolation, and
+//! the run says so. Windows has none: a chat of a project runs in WSL
+//! (the client's `Remote::go_home`), whose daemon gives it a worktree.
 
 use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
 // The markers put in a chat's files for it to resolve.
@@ -42,26 +43,31 @@ impl ChatOverlay {
     /// Cargo locks it, and the queue for heavy work runs one build at a
     /// time anyway.
     pub fn command_env(&self) -> Vec<(String, String)> {
+        vec![(
+            "CARGO_TARGET_DIR".into(),
+            self.target_dir().to_string_lossy().into_owned(),
+        )]
+    }
+
+    /// Where the chat's Rust builds go (`command_env`).
+    fn target_dir(&self) -> PathBuf {
         let shared = data_dir().map(|d| {
             d.join("overlays")
                 .join("targets")
                 .join(project_key(&self.project))
         });
-        let dir = shared.unwrap_or_else(|| self.store.join("out").join("target"));
-        vec![(
-            "CARGO_TARGET_DIR".into(),
-            dir.to_string_lossy().into_owned(),
-        )]
+        shared.unwrap_or_else(|| self.store.join("out").join("target"))
     }
 
-    /// How the chat's commands are kept out of the project: the project's
-    /// path shows the chat's view to them (confine.rs). None where that
-    /// isn't possible.
+    /// The sandbox the chat's commands run in: the project's path shows
+    /// the chat's view to them, and they may write to the view and the
+    /// build folder, which is made here since they couldn't (confine.rs).
+    /// None where that isn't possible.
     pub fn confine(&self) -> Option<super::confine::Confine> {
-        let c = super::confine::Confine {
-            view: self.view.clone(),
-            project: self.project.clone(),
-        };
+        let target = self.target_dir();
+        let _ = std::fs::create_dir_all(&target);
+        let c = super::confine::Confine::redirecting(self.view.clone(), self.project.clone())
+            .also_writable(target);
         super::confine::available(&c).then_some(c)
     }
 

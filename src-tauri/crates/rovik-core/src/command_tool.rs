@@ -59,7 +59,9 @@ pub struct Queued {
     pub note: Box<dyn Fn(Option<String>) + Send + Sync>,
     /// More environment for the command (an isolated chat's build folder).
     pub env: Vec<(String, String)>,
-    /// An isolated chat's command: the project's path shows its view.
+    /// An isolated chat's command: the project's path shows its view, and
+    /// the credential stores are hidden. None: the command still gets the
+    /// hiding-only policy, where this machine can enforce one.
     pub confine: Option<crate::overlay::confine::Confine>,
     /// Keep the whole output too (`CommandOutput::whole`): the verify
     /// gate's checks (V07).
@@ -99,6 +101,10 @@ impl Queued {
     }
 }
 
+/// No Windows mechanism yet (overlay/confine.rs, `windows`): the policy is
+/// ignored here and the callers' text checks apply. When one is added, build
+/// the line below through `confine::command`, as the Unix one does, keeping
+/// the `raw_arg` form cmd.exe needs.
 #[cfg(windows)]
 fn shell_command(command: &str, _confine: Option<&crate::overlay::confine::Confine>) -> Command {
     use std::os::windows::process::CommandExt;
@@ -116,8 +122,9 @@ fn shell_command(command: &str, _confine: Option<&crate::overlay::confine::Confi
 
 /// The user's shell when it's a POSIX one (the commands are POSIX shell, as
 /// models write them and the permission checks read them); `/bin/sh` when
-/// it's fish, nu or another shell with a syntax of its own. An isolated
-/// chat's runs `confine`d: the project's path shows the chat's view.
+/// it's fish, nu or another shell with a syntax of its own. With a
+/// `confine` policy it runs confined: the project's path shows the chat's
+/// view, and the credential stores are hidden (overlay/confine.rs).
 #[cfg(not(windows))]
 fn shell_command(command: &str, confine: Option<&crate::overlay::confine::Confine>) -> Command {
     use crate::process::{shell_kind, user_shell, ShellKind};
@@ -391,6 +398,10 @@ fn run_blocking(
             root.display()
         ));
     }
+    // On Linux the sandbox is required: without it, no command runs.
+    if let Some(why) = crate::overlay::confine::refusal() {
+        return Err(why);
+    }
 
     // A command predicted heavy waits for a slot; the wait isn't part of
     // its time or its timeout.
@@ -416,7 +427,13 @@ fn run_blocking(
     }
 
     let started = Instant::now();
-    let mut cmd = shell_command(command, queued.and_then(|q| q.confine.as_ref()));
+    // An isolated chat's policy (its overlay's redirect, and hiding), else
+    // the one every other agent command gets: nothing redirected, the
+    // credential stores hidden, where this machine can (overlay/confine.rs).
+    let confine = queued
+        .and_then(|q| q.confine.clone())
+        .or_else(|| crate::overlay::confine::hiding_if_available(root));
+    let mut cmd = shell_command(command, confine.as_ref());
     crate::process::no_window(&mut cmd)
         .current_dir(root)
         .stdin(Stdio::null())
@@ -570,12 +587,10 @@ mod tests {
         let out = shell_command("cat /proc/self/oom_score_adj", None).output();
         // An isolated chat's too, whichever way it's confined.
         let dir = std::env::temp_dir().join(format!("oom-confined-{}", std::process::id()));
-        let c = crate::overlay::confine::Confine {
-            view: dir.join("view"),
-            project: dir.join("project"),
-        };
-        std::fs::create_dir_all(&c.view).unwrap();
-        std::fs::create_dir_all(&c.project).unwrap();
+        std::fs::create_dir_all(dir.join("view")).unwrap();
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        let c =
+            crate::overlay::confine::Confine::redirecting(dir.join("view"), dir.join("project"));
         let confined = crate::overlay::confine::available(&c)
             .then(|| shell_command("cat /proc/self/oom_score_adj", Some(&c)).output());
         let _ = std::fs::write(own, "0");
@@ -790,7 +805,14 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(out.timed_out);
+        // In bubblewrap's sandbox (Linux), the command's pid namespace ends
+        // with the shell: nothing it left behind outlives it to hold the
+        // output, so the command just ends. Seatbelt (macOS) has no pid
+        // namespace, and without a sandbox there's nothing either: the child
+        // holds the output until the timeout.
+        let sandboxed = crate::overlay::confine::hiding_if_available(&dir).is_some();
+        let ends_background = sandboxed && cfg!(target_os = "linux");
+        assert_eq!(out.timed_out, !ends_background);
         assert_eq!(out.stdout.trim(), "up");
         assert_eq!(out.exit_code, Some(0));
     }

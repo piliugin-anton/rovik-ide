@@ -120,18 +120,17 @@ jobs:
           }
           & $driver --version
           "MSEDGEDRIVER=$driver" >> $env:GITHUB_ENV
-      # Virtual files: what isolates an agent's chat from the project (and
-      # what the app offers to install when it's missing). gsudo: to run
-      # the app as a user would, not elevated as everything on this runner
-      # is. An elevated WebView2 host (Runtime 150 on) ignores the
-      # debugging port msedgedriver asks for in WEBVIEW2_* variables, so
-      # WebDriver can't attach to it.
-      - name: Install WinFsp and gsudo
+      # gsudo: to run the app as a user would, not elevated as everything
+      # on this runner is. An elevated WebView2 host (Runtime 150 on)
+      # ignores the debugging port msedgedriver asks for in WEBVIEW2_*
+      # variables, so WebDriver can't attach to it. (No virtual-files
+      # driver: on Windows the agent works in WSL, which this runner, with
+      # no nested virtualization, can't run.)
+      - name: Install gsudo
         continue-on-error: true
         shell: pwsh
         run: |
-          choco install winfsp gsudo -y --no-progress
-          (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\WinFsp' -ErrorAction SilentlyContinue).InstallDir
+          choco install gsudo -y --no-progress
           # Where choco puts it (a search of its folders took minutes).
           $gsudo = Get-Item 'C:\tools\gsudo\Current\gsudo.exe' -ErrorAction SilentlyContinue
           if (-not $gsudo) {

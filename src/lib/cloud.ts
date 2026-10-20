@@ -122,6 +122,8 @@ export interface HostSummary {
    * not a daemon that the developer setting names by its socket.
    */
   terminal?: boolean;
+  /** The WSL distribution on this computer: its chats are this computer's, not a cloud's. */
+  wsl?: boolean;
   /** It works on its own (H02): its chats start in Autopilot. */
   autonomous?: boolean;
   /** The effort its tasks take while it works on its own, when it sets one (H01). */
@@ -262,8 +264,10 @@ function track(event: CloudEvent) {
         message: event.message,
         pushed: same ? was.pushed : undefined,
       });
-      // Where the move puts the chat, as it starts and once it's over.
-      if (event.step === 'pausing' || ENDS.has(event.step)) {
+      // Where the move puts the chat, as it starts (its first step: a
+      // move the app began by itself, a chat's first start on Windows,
+      // shows the same) and once it's over.
+      if (!same || ENDS.has(event.step)) {
         void chatStore.refreshPlace(event.dialogId);
       }
       return;
@@ -346,6 +350,18 @@ export function hostName(id: string, hosts: HostSummary[]): string {
   return hosts.find((h) => h.id === id)?.name ?? id;
 }
 
+/**
+ * Whether the host is the WSL distribution: this computer's Linux side,
+ * where its chats of a project run (Settings → This computer → WSL), not
+ * a cloud host.
+ */
+export function isWsl(id: string, hosts: HostSummary[]): boolean {
+  return hosts.find((h) => h.id === id)?.wsl === true;
+}
+
+/** Where the WSL distribution's state is explained and changed. */
+export const WSL_PAGE = 'Settings → This computer → WSL';
+
 /** What the chat's header says of where it is. */
 export function placeLabel(
   place: ChatPlace | undefined,
@@ -354,7 +370,7 @@ export function placeLabel(
   if (!place) {
     return { label: 'This computer', tone: 'muted', title: 'This chat runs on this computer.' };
   }
-  const name = hostName(place.host, hosts);
+  const name = isWsl(place.host, hosts) ? 'This computer (WSL)' : hostName(place.host, hosts);
   const readOnly = 'It’s read-only until the move ends.';
   switch (place.kind) {
     case 'moving':
@@ -408,20 +424,29 @@ export function placeLabel(
 export function readOnlyReason(place: ChatPlace | undefined, hosts: HostSummary[]): string | null {
   if (!place) return null;
   const name = hostName(place.host, hosts);
+  const wsl = isWsl(place.host, hosts);
   switch (place.kind) {
     case 'moving':
-      return `This chat is moving to ${name}: it’s read-only until the move ends.`;
+      return wsl
+        ? 'This chat is moving to WSL, where it runs: it’s read-only until the move ends.'
+        : `This chat is moving to ${name}: it’s read-only until the move ends.`;
     case 'movingBack':
       return `This chat is moving back from ${name}: it’s read-only until the move ends.`;
     case 'host':
       // 6.10: what it shows is the mirror's, until its host is back.
       switch (hosts.find((h) => h.id === place.host)?.state) {
         case 'offline':
-          return `${name} is offline: this chat is read-only until it’s back.`;
+          return wsl
+            ? `WSL isn’t running: this chat is read-only until it’s back (${WSL_PAGE}).`
+            : `${name} is offline: this chat is read-only until it’s back.`;
         case 'version-mismatch':
-          return `${name} serves only newer versions of this app: update it to write in this chat.`;
+          return wsl
+            ? `Rovik in WSL is newer than this app: update the app to write in this chat.`
+            : `${name} serves only newer versions of this app: update it to write in this chat.`;
         case 'refused':
-          return `${name} turned this computer away: this chat is read-only until that's fixed in Settings → Cloud hosts.`;
+          return wsl
+            ? `WSL couldn’t start: this chat is read-only until that’s fixed. ${WSL_PAGE} says what’s wrong.`
+            : `${name} turned this computer away: this chat is read-only until that's fixed in Settings → Cloud hosts.`;
         default:
           return null;
       }

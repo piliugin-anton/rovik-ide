@@ -15,6 +15,3 @@ uuid.workspace = true
 # The scripted model and temporary folders its tests run on.
 rovik-core = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["rt"] }
-
-[target.'cfg(windows)'.build-dependencies]
-winfsp = { version = "0.13", default-features = false, features = ["delayload"] }

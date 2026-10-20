@@ -52,9 +52,17 @@ export type DeployState =
  */
 export type HostState = 'connecting' | 'ready' | 'offline' | 'version-mismatch' | 'refused';
 
+/**
+ * How the app reaches a host: SSH to a server (the default, left out), or
+ * wsl.exe to a WSL distribution on this computer (Settings → This computer
+ * → WSL, never in the Cloud hosts list).
+ */
+export type Transport = { kind: 'ssh' } | { kind: 'wsl'; distro: string; user?: string };
+
 export interface Host {
   id: string;
   name: string;
+  transport?: Transport;
   host: string;
   port: number;
   user: string;
@@ -104,6 +112,8 @@ export type Check =
   | 'address'
   | 'host-key'
   | 'log-in'
+  /** A WSL distribution here runs commands, in place of the three above. */
+  | 'distro'
   | 'system'
   | 'account'
   | 'disk'
@@ -372,6 +382,7 @@ export const CHECK_LABELS: Record<Check, string> = {
   address: 'Address',
   'host-key': 'Host key',
   'log-in': 'Log-in',
+  distro: 'WSL distribution',
   system: 'System',
   account: 'Account',
   disk: 'Disk',

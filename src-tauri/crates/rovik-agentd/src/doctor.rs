@@ -61,6 +61,8 @@ pub struct Server {
     /// The virtual files' driver and version, or why there are none.
     pub virtual_files: Result<String, String>,
     pub chrome: Option<PathBuf>,
+    /// `bwrap`, which confines the chats' commands (overlay/confine.rs).
+    pub bwrap: Option<PathBuf>,
     pub git: Option<String>,
     /// A folder's file system: its free and total bytes.
     pub disk: fn(&Path) -> Option<(u64, u64)>,
@@ -88,6 +90,7 @@ impl Server {
                 Some(why) => Err(why),
             },
             chrome: rovik_core::browser_tools::chrome_path(),
+            bwrap: crate::installer::find_on_path("bwrap"),
             git: git_version(),
             disk: free_space,
         })
@@ -147,6 +150,17 @@ pub fn gather(server: &Server) -> Doctor {
         findings.warning(
             "unprivileged user namespaces are off: Chrome runs without its sandbox".into(),
         );
+    }
+    match &server.bwrap {
+        Some(bwrap) => findings.ok(format!(
+            "bubblewrap: {} sandboxes the agent's commands",
+            bwrap.display()
+        )),
+        None => findings.warning(format!(
+            "no bubblewrap: the agent's commands are refused until it's installed; sudo {} \
+             admin bubblewrap installs it",
+            crate::installer::INSTALLED
+        )),
     }
     if server.git.is_none() {
         findings.warning("no git: the projects' repositories aren't garbage-collected".into());
@@ -440,6 +454,7 @@ mod tests {
             user: "ann".into(),
             virtual_files: Ok("fuse3 3.14.0".into()),
             chrome: None,
+            bwrap: Some("/usr/bin/bwrap".into()),
             git: Some("2.43.0".into()),
             disk: |_| Some((12 << 30, 40 << 30)),
         };
@@ -457,6 +472,7 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
   ok       virtual files: fuse3 3.14.0
   warning  no Chrome or Chromium: the browser tools won't work
   ok       unprivileged user namespaces are allowed
+  ok       bubblewrap: /usr/bin/bwrap sandboxes the agent's commands
   git      2.43.0
   storage  projects 3.0 MB, working copies 1.0 MB, chats and attachments 20 KB, temporary files 0 B
   logs     2.0 KB, rotated at 5 MB with 3 kept

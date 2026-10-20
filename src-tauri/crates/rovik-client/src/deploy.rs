@@ -33,9 +33,11 @@
 use crate::client::{welcome, DaemonInfo, Identity};
 use crate::connection_test::probe::{Probe, Sudo};
 use crate::connection_test::probe_server;
+use crate::connector::Connector;
+use crate::host_shell::HostShell;
 use crate::http;
 use crate::release::Releases;
-use crate::ssh::{Output, Ssh, SshConnector};
+use crate::ssh::Output;
 use rovik_core::file_guard::sha256_hex;
 use rovik_protocol::Secret;
 use serde::Serialize;
@@ -234,22 +236,48 @@ pub struct InstalledBuild {
     pub version: Option<String>,
 }
 
-/// Deploys `binary` for this user on `connector`'s host, as `computer`.
+/// Where a deploy, an upgrade or a removal acts: the host's shell, its
+/// daemon's connector, and a shell as root there where one is had without
+/// sudo (a WSL distribution); else root is reached through sudo.
+pub struct Target<'a> {
+    pub shell: &'a dyn HostShell,
+    pub connector: &'a dyn Connector,
+    pub root: Option<&'a dyn HostShell>,
+    /// The host's name, which the daemon is told this connection is for.
+    pub name: &'a str,
+    /// The browser tools' browser is installed and kept up there too; not
+    /// on a WSL distribution, where it would be a 200 MB download the
+    /// developer's computer already has a browser for.
+    pub browser: bool,
+}
+
+impl Target<'_> {
+    /// `rovik-agentd ARGS` as root: on the root shell, or through sudo.
+    fn as_root(&self, layout: &Layout, args: &str) -> (&dyn HostShell, String) {
+        let installed = quote(&layout.installed);
+        match self.root {
+            Some(root) => (root, format!("{installed} {args}")),
+            None => (self.shell, format!("{} -n {installed} {args}", layout.sudo)),
+        }
+    }
+}
+
+/// Deploys `builds`' build for this user on `target`'s host, as `computer`.
 pub async fn deploy(
-    connector: &SshConnector,
+    target: &Target<'_>,
     builds: &Builds,
     computer: &str,
     sudo_password: Option<&Secret>,
     layout: &Layout,
 ) -> Result<Deployed, DeployError> {
-    let ssh = session(connector).await?;
-    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
+    let shell = target.shell;
+    let probe = probe_server(shell).await.map_err(DeployError::Failed)?;
     supported(&probe)?;
     let binary = builds.for_machine(&probe.arch).await?;
-    let upload = upload(&ssh, &binary).await?;
+    let upload = upload(shell, &binary).await?;
     let token = new_token();
     let done = install_and_start(
-        &ssh,
+        target,
         &probe,
         &upload,
         computer,
@@ -260,16 +288,16 @@ pub async fn deploy(
     let done = done.await;
     // The build stays only for someone with root to run.
     if !matches!(done, Err(DeployError::NeedsRoot { .. })) {
-        forget_upload(&ssh, &upload).await;
+        forget_upload(shell, &upload).await;
     }
     done?;
     let identity = Identity {
-        host: connector.target().host.clone(),
+        host: target.name.to_string(),
         computer: computer.into(),
         token: token.clone(),
         client: format!("rovik-client {}", env!("CARGO_PKG_VERSION")),
     };
-    let daemon = confirm(connector, &identity).await?;
+    let daemon = confirm(target.connector, &identity).await?;
     // The build trusted from now on (D5). Installed now, the one the
     // server runs. Installed before, by someone else, the one that went
     // up: theirs passes each connection's check (`check_install`) as that
@@ -278,7 +306,7 @@ pub async fn deploy(
     let sha256 = match probe.install {
         Some(_) => binary.sha256.clone(),
         None => {
-            let (installed, _) = installed(&ssh, &probe.user, layout).await?;
+            let (installed, _) = installed(shell, &probe.user, layout).await?;
             let installed = installed.ok_or_else(|| {
                 DeployError::Failed(format!(
                     "Rovik's binary isn't on the server at {}.",
@@ -321,7 +349,7 @@ fn supported(probe: &Probe) -> Result<(), DeployError> {
 }
 
 async fn install_and_start(
-    ssh: &Ssh,
+    target: &Target<'_>,
     probe: &Probe,
     upload: &str,
     computer: &str,
@@ -333,16 +361,32 @@ async fn install_and_start(
     // it then.
     let add = format!("{} token add {}", quote(upload), quote(computer));
     let hash = format!("{}\n", sha256_hex(token.0.as_bytes()));
-    run(ssh, &add, hash.as_bytes()).await?;
+    run(target.shell, &add, hash.as_bytes()).await?;
     if probe.install.is_none() {
-        let (command, input) = install_command(probe, upload, sudo_password, layout)?;
-        run(ssh, &command, &input).await?;
+        match target.root {
+            // Root without sudo (a WSL distribution): the build installs
+            // Rovik as it is.
+            Some(root) => {
+                let install = format!(
+                    "{} install --admin {}{}",
+                    quote(upload),
+                    quote(&probe.user),
+                    no_browser(target)
+                );
+                run(root, &install, b"").await?;
+            }
+            None => {
+                let (command, input) =
+                    install_command(probe, upload, sudo_password, layout, no_browser(target))?;
+                run(target.shell, &command, &input).await?;
+            }
+        }
         if probe.systemd {
             // The installer started the administrator's daemon.
             return Ok(());
         }
     }
-    start(ssh, probe, layout).await
+    start(target, probe, layout).await
 }
 
 /// How the build installs Rovik: through sudo, with the password on
@@ -352,8 +396,13 @@ fn install_command(
     upload: &str,
     sudo_password: Option<&Secret>,
     layout: &Layout,
+    options: &str,
 ) -> Result<(String, Zeroizing<Vec<u8>>), DeployError> {
-    let install = format!("{} install --admin {}", quote(upload), quote(&probe.user));
+    let install = format!(
+        "{} install --admin {}{options}",
+        quote(upload),
+        quote(&probe.user)
+    );
     match (probe.sudo, sudo_password) {
         (Sudo::NoPassword, _) => Ok((
             format!("{} -n {install}", layout.sudo),
@@ -368,23 +417,31 @@ fn install_command(
     }
 }
 
+/// What `install` takes after its user: nothing, or ` --no-browser`.
+fn no_browser(target: &Target<'_>) -> &'static str {
+    match target.browser {
+        true => "",
+        false => " --no-browser",
+    }
+}
+
 /// The user's daemon, started or started again, to read a new token.
-async fn start(ssh: &Ssh, probe: &Probe, layout: &Layout) -> Result<(), DeployError> {
-    let installed = quote(&layout.installed);
+async fn start(target: &Target<'_>, probe: &Probe, layout: &Layout) -> Result<(), DeployError> {
     if probe.systemd {
         for action in ["start", "restart"] {
-            let command = format!("{} -n {installed} user {action}", layout.sudo);
-            run(ssh, &command, b"").await?;
+            let (shell, command) = target.as_root(layout, &format!("user {action}"));
+            run(shell, &command, b"").await?;
         }
         return Ok(());
     }
     // Without systemd the app starts it (5.3), in a session of its own so
     // it outlives this connection, once one that runs has stopped.
     let command = format!(
-        "{}; setsid {installed} serve </dev/null >/dev/null 2>&1 &",
-        stop_unmanaged(layout)
+        "{}; setsid {} serve </dev/null >/dev/null 2>&1 &",
+        stop_unmanaged(layout),
+        quote(&layout.installed)
     );
-    run(ssh, &command, b"").await
+    run(target.shell, &command, b"").await
 }
 
 /// Stops the user's daemon that runs without systemd, and waits up to
@@ -402,7 +459,7 @@ fn stop_unmanaged(layout: &Layout) -> String {
 /// The daemon answers `/health`, then `Welcome` with `identity`'s token.
 /// One that's starting may take a moment.
 pub async fn confirm(
-    connector: &SshConnector,
+    connector: &dyn Connector,
     identity: &Identity,
 ) -> Result<DaemonInfo, DeployError> {
     let started = Instant::now();
@@ -428,13 +485,13 @@ pub async fn confirm(
 /// release's signed `SHA256SUMS` lists them. Without systemd, only the
 /// binary is checked.
 pub async fn check_install(
-    ssh: &Ssh,
+    shell: &dyn HostShell,
     known: &[String],
     releases: Option<&Releases>,
     user: &str,
     layout: &Layout,
 ) -> Result<InstalledBuild, DeployError> {
-    let (build, shown) = installed(ssh, user, layout).await?;
+    let (build, shown) = installed(shell, user, layout).await?;
     let Some(build) = build else {
         return Err(DeployError::Tampered(format!(
             "Rovik's binary isn't on the server at {}.",
@@ -475,7 +532,7 @@ pub async fn check_install(
 /// The build the installed link points to, if there's one, and what
 /// systemd says the user's unit runs (nothing without systemd).
 async fn installed(
-    ssh: &Ssh,
+    shell: &dyn HostShell,
     user: &str,
     layout: &Layout,
 ) -> Result<(Option<InstalledBuild>, String), DeployError> {
@@ -486,10 +543,7 @@ async fn installed(
         installed = quote(&layout.installed),
         unit = quote(&format!("rovik-agentd@{user}.service")),
     );
-    let out = ssh
-        .exec(&command)
-        .await
-        .map_err(|e| DeployError::Failed(e.to_string()))?;
+    let out = shell.exec(&command).await.map_err(DeployError::Failed)?;
     Ok(read_installed(&String::from_utf8_lossy(&out.stdout)))
 }
 
@@ -544,12 +598,12 @@ fn exec_starts(shown: &str) -> Vec<String> {
 /// The browser the new build pins is installed when it's missing
 /// (`admin browser`).
 pub async fn upgrade(
-    connector: &SshConnector,
+    target: &Target<'_>,
     builds: &Builds,
     layout: &Layout,
 ) -> Result<String, DeployError> {
-    let ssh = session(connector).await?;
-    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
+    let shell = target.shell;
+    let probe = probe_server(shell).await.map_err(DeployError::Failed)?;
     let Some(install) = &probe.install else {
         return Err(DeployError::Failed(
             "Rovik isn't installed on this server: deploy it first.".into(),
@@ -559,29 +613,22 @@ pub async fn upgrade(
         return Err(DeployError::AskAdmins(install.admins.clone()));
     }
     let binary = builds.for_machine(&probe.arch).await?;
-    let upload = upload(&ssh, &binary).await?;
-    let command = format!(
-        "{} -n {} admin upgrade {}",
-        layout.sudo,
-        quote(&layout.installed),
-        quote(&upload)
-    );
-    let upgraded = run(&ssh, &command, b"").await;
-    forget_upload(&ssh, &upload).await;
+    let upload = upload(shell, &binary).await?;
+    let (root, command) = target.as_root(layout, &format!("admin upgrade {}", quote(&upload)));
+    let upgraded = run(root, &command, b"").await;
+    forget_upload(shell, &upload).await;
     upgraded?;
     // The browser the new build pins, when it isn't there (D19): a build
     // from before it upgrades without installing one. The browser tools say
     // so when they're used without it, so it's no reason to fail the upgrade.
-    let browser = format!(
-        "{} -n {} admin browser",
-        layout.sudo,
-        quote(&layout.installed)
-    );
-    if let Err(e) = run(&ssh, &browser, b"").await {
-        log::warn!("The upgrade installed no browser: {e}");
+    if target.browser {
+        let (root, browser) = target.as_root(layout, "admin browser");
+        if let Err(e) = run(root, &browser, b"").await {
+            log::warn!("The upgrade installed no browser: {e}");
+        }
     }
     if !probe.systemd {
-        start(&ssh, &probe, layout).await?;
+        start(target, &probe, layout).await?;
     }
     Ok(binary.sha256)
 }
@@ -589,16 +636,11 @@ pub async fn upgrade(
 /// The limits on each user's daemon, as `admin limits` shows them to an
 /// administrator: each name and its value, `none` when it isn't set.
 pub async fn limits(
-    connector: &SshConnector,
+    target: &Target<'_>,
     layout: &Layout,
 ) -> Result<Vec<(String, String)>, DeployError> {
-    let ssh = session(connector).await?;
-    let command = format!(
-        "{} -n {} admin limits",
-        layout.sudo,
-        quote(&layout.installed)
-    );
-    let out = exec(&ssh, &command, b"").await?;
+    let (root, command) = target.as_root(layout, "admin limits");
+    let out = exec(root, &command, b"").await?;
     let text = String::from_utf8_lossy(&out.stdout);
     let limits = text.lines().filter_map(|line| {
         let (name, value) = line.split_once(" = ")?;
@@ -610,7 +652,7 @@ pub async fn limits(
 /// Sets limits as an administrator (`admin limits name=value ...`), `none`
 /// taking one away. They apply to each daemon when it next starts.
 pub async fn set_limits(
-    connector: &SshConnector,
+    target: &Target<'_>,
     changes: &[(String, String)],
     layout: &Layout,
 ) -> Result<(), DeployError> {
@@ -618,14 +660,8 @@ pub async fn set_limits(
         .iter()
         .map(|(name, value)| quote(&format!("{name}={value}")))
         .collect();
-    let ssh = session(connector).await?;
-    let command = format!(
-        "{} -n {} admin limits {}",
-        layout.sudo,
-        quote(&layout.installed),
-        settings.join(" ")
-    );
-    run(&ssh, &command, b"").await
+    let (root, command) = target.as_root(layout, &format!("admin limits {}", settings.join(" ")));
+    run(root, &command, b"").await
 }
 
 /// What removing Rovik for this user deletes: each folder, and its size in
@@ -636,16 +672,12 @@ pub struct Removal {
 }
 
 /// The folders a removal deletes.
-pub async fn removal(connector: &SshConnector) -> Result<Removal, DeployError> {
-    let ssh = session(connector).await?;
+pub async fn removal(shell: &dyn HostShell) -> Result<Removal, DeployError> {
     let command = "for d in \"$HOME/.rovik\" \"$HOME/.local/share/rovik\"; do \
                    if [ -d \"$d\" ]; then \
                    printf '%s\\t%s\\n' \"$(du -sk \"$d\" 2>/dev/null | cut -f1)\" \"$d\"; \
                    fi; done; true";
-    let out = ssh
-        .exec(command)
-        .await
-        .map_err(|e| DeployError::Failed(e.to_string()))?;
+    let out = shell.exec(command).await.map_err(DeployError::Failed)?;
     let folders = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
@@ -661,7 +693,7 @@ pub async fn removal(connector: &SshConnector) -> Result<Removal, DeployError> {
 
 /// Stops the user's daemon, then deletes what `removal` listed.
 pub async fn remove(
-    connector: &SshConnector,
+    target: &Target<'_>,
     removal: &Removal,
     layout: &Layout,
 ) -> Result<(), DeployError> {
@@ -675,13 +707,13 @@ pub async fn remove(
             )));
         }
     }
-    let ssh = session(connector).await?;
-    let probe = probe_server(&ssh).await.map_err(DeployError::Failed)?;
-    let stop = match (probe.systemd, &probe.install) {
-        (true, Some(_)) => format!("{} -n {} user stop", layout.sudo, quote(&layout.installed)),
-        _ => format!("{}; true", stop_unmanaged(layout)),
+    let shell = target.shell;
+    let probe = probe_server(shell).await.map_err(DeployError::Failed)?;
+    let (stopper, stop) = match (probe.systemd, &probe.install) {
+        (true, Some(_)) => target.as_root(layout, "user stop"),
+        _ => (shell, format!("{}; true", stop_unmanaged(layout))),
     };
-    run(&ssh, &stop, b"").await?;
+    run(stopper, &stop, b"").await?;
     let folders: Vec<String> = removal.folders.iter().map(|(p, _)| quote(p)).collect();
     // The virtual files' mount, if the daemon left it, would stop rm.
     let command = format!(
@@ -690,7 +722,7 @@ pub async fn remove(
          rm -rf -- {}",
         folders.join(" ")
     );
-    run(&ssh, &command, b"").await
+    run(shell, &command, b"").await
 }
 
 /// What the host's setup script printed, and how it ended.
@@ -711,14 +743,13 @@ const SETUP_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 
 
 /// Runs the host's setup script (design §7) as the user, in their home
 /// folder: with bash where there is one, else sh, the script on stdin.
-pub async fn run_setup(connector: &SshConnector, script: &str) -> Result<SetupRun, DeployError> {
-    let ssh = session(connector).await?;
+pub async fn run_setup(shell: &dyn HostShell, script: &str) -> Result<SetupRun, DeployError> {
     let command = "cd && if command -v bash >/dev/null 2>&1; \
                    then exec bash -s 2>&1; else exec sh -s 2>&1; fi";
-    let out = ssh
-        .exec_within(command, script.as_bytes(), SETUP_WAIT)
+    let out = shell
+        .run(command, script.as_bytes(), SETUP_WAIT)
         .await
-        .map_err(|e| DeployError::Failed(e.to_string()))?;
+        .map_err(DeployError::Failed)?;
     let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
     output.push_str(&String::from_utf8_lossy(&out.stderr));
     Ok(SetupRun {
@@ -744,7 +775,7 @@ fn tail(text: &str, max: usize) -> String {
 /// Uploads `binary` to the user's home, and its signature beside it
 /// (`<upload>.sig`) when it has one, for `admin upgrade` to check: a build
 /// of one's own leaves no signature there, not even an older one.
-async fn upload(ssh: &Ssh, binary: &Binary) -> Result<String, DeployError> {
+async fn upload(shell: &dyn HostShell, binary: &Binary) -> Result<String, DeployError> {
     let signed = match &binary.signature {
         Some(_) => format!(
             "umask 077 && cat > \"$HOME/{UPLOAD}{}\"",
@@ -756,12 +787,12 @@ async fn upload(ssh: &Ssh, binary: &Binary) -> Result<String, DeployError> {
         ),
     };
     let signature = binary.signature.as_deref().unwrap_or_default();
-    run(ssh, &signed, signature.as_bytes()).await?;
+    run(shell, &signed, signature.as_bytes()).await?;
     let bytes = std::fs::read(&binary.path)
         .map_err(|e| DeployError::Failed(format!("{}: {e}", binary.path.display())))?;
     // A build is mostly tables: gzipped, a tenth of it goes, where the
     // server has gzip to unpack it.
-    let gzip = exec(ssh, HAS_GZIP, b"").await;
+    let gzip = exec(shell, HAS_GZIP, b"").await;
     let gzip = gzip.is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "yes");
     let (write, sent) = match gzip {
         true => ("gzip -dc", gzipped(&bytes)?),
@@ -771,7 +802,7 @@ async fn upload(ssh: &Ssh, binary: &Binary) -> Result<String, DeployError> {
         "umask 077 && f=\"$HOME/{UPLOAD}\" && {write} > \"$f.part\" && chmod 700 \"$f.part\" && \
          mv -f \"$f.part\" \"$f\" && printf '%s\\n' \"$f\" && sha256sum \"$f\" | cut -d' ' -f1"
     );
-    let out = exec(ssh, &command, &sent).await?;
+    let out = exec(shell, &command, &sent).await?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut lines = text.lines();
     let (path, hash) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
@@ -792,29 +823,22 @@ fn gzipped(bytes: &[u8]) -> Result<Vec<u8>, DeployError> {
 }
 
 /// The upload and its signature, once they've done their work.
-async fn forget_upload(ssh: &Ssh, upload: &str) {
+async fn forget_upload(shell: &dyn HostShell, upload: &str) {
     let signature = format!("{upload}{}", rovik_protocol::release::SIGNATURE);
     let command = format!("rm -f {} {}", quote(upload), quote(&signature));
-    let _ = ssh.exec(&command).await;
-}
-
-async fn session(connector: &SshConnector) -> Result<std::sync::Arc<Ssh>, DeployError> {
-    connector
-        .session()
-        .await
-        .map_err(|e| DeployError::Failed(e.to_string()))
+    let _ = shell.exec(&command).await;
 }
 
 /// Runs `command` with `input` on stdin; it must succeed.
-async fn run(ssh: &Ssh, command: &str, input: &[u8]) -> Result<(), DeployError> {
-    exec(ssh, command, input).await.map(|_| ())
+async fn run(shell: &dyn HostShell, command: &str, input: &[u8]) -> Result<(), DeployError> {
+    exec(shell, command, input).await.map(|_| ())
 }
 
-async fn exec(ssh: &Ssh, command: &str, input: &[u8]) -> Result<Output, DeployError> {
-    let out = ssh
+async fn exec(shell: &dyn HostShell, command: &str, input: &[u8]) -> Result<Output, DeployError> {
+    let out = shell
         .exec_with_input(command, input)
         .await
-        .map_err(|e| DeployError::Failed(e.to_string()))?;
+        .map_err(DeployError::Failed)?;
     if out.status != Some(0) {
         let said = String::from_utf8_lossy(&out.stderr);
         let said = match said.trim() {
@@ -889,22 +913,35 @@ mod tests {
         let layout = Layout::default();
         let upload = "/home/ann/.rovik-agentd-upload";
         let (command, input) =
-            install_command(&probe(Sudo::NoPassword), upload, None, &layout).unwrap();
+            install_command(&probe(Sudo::NoPassword), upload, None, &layout, "").unwrap();
         assert_eq!(
             command,
             "sudo -n '/home/ann/.rovik-agentd-upload' install --admin 'ann'"
         );
         assert!(input.is_empty());
-        let asks = install_command(&probe(Sudo::Password), upload, None, &layout);
+        // Without the browser, as the app installs in a WSL distribution.
+        let (command, _) = install_command(
+            &probe(Sudo::NoPassword),
+            upload,
+            None,
+            &layout,
+            " --no-browser",
+        )
+        .unwrap();
+        assert!(
+            command.ends_with("install --admin 'ann' --no-browser"),
+            "{command}"
+        );
+        let asks = install_command(&probe(Sudo::Password), upload, None, &layout, "");
         assert_eq!(asks.unwrap_err(), DeployError::SudoPassword);
         let password = Secret("hunter2".into());
         let (command, input) =
-            install_command(&probe(Sudo::Password), upload, Some(&password), &layout).unwrap();
+            install_command(&probe(Sudo::Password), upload, Some(&password), &layout, "").unwrap();
         assert!(command.starts_with("sudo -S -p '' "), "{command}");
         assert!(!command.contains("hunter2"));
         assert_eq!(input.as_slice(), b"hunter2\n");
         for sudo in [Sudo::Missing, Sudo::Refused] {
-            let root = install_command(&probe(sudo), upload, None, &layout).unwrap_err();
+            let root = install_command(&probe(sudo), upload, None, &layout, "").unwrap_err();
             let DeployError::NeedsRoot { command } = &root else {
                 panic!("{root:?}");
             };

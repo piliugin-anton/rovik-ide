@@ -35,6 +35,11 @@ pub struct Host {
     pub id: String,
     /// What the user calls it.
     pub name: String,
+    /// How it's reached: SSH to a server, or `wsl.exe` to a WSL
+    /// distribution on this computer, for which `host`, `port`, `user`
+    /// and `auth` don't apply.
+    #[serde(default, skip_serializing_if = "Transport::is_ssh")]
+    pub transport: Transport,
     /// Its DNS name or address, and SSH port.
     pub host: String,
     #[serde(default = "ssh_port")]
@@ -77,6 +82,42 @@ pub enum AuthKind {
     KeyboardInteractive,
     /// The user's own `ssh`, with their configuration (H03).
     SystemSsh,
+}
+
+/// How the app reaches a host.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum Transport {
+    /// A server, over SSH, as `Host::host`, `port`, `user` and `auth` say.
+    #[default]
+    Ssh,
+    /// A WSL2 distribution on this computer (Windows), as `user` there:
+    /// the distribution's default user when none is named.
+    Wsl {
+        distro: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+    },
+}
+
+impl Transport {
+    pub fn is_ssh(&self) -> bool {
+        *self == Transport::Ssh
+    }
+}
+
+impl Host {
+    /// The distribution, for a host reached through WSL.
+    pub fn wsl(&self) -> Option<crate::wsl::Wsl> {
+        match &self.transport {
+            Transport::Wsl { distro, user } => Some(crate::wsl::Wsl::new(distro, user.clone())),
+            Transport::Ssh => None,
+        }
+    }
 }
 
 /// What was deployed on a host for this user (H05).
@@ -191,6 +232,7 @@ mod tests {
         Host {
             id: id.into(),
             name: "Build box".into(),
+            transport: Transport::Ssh,
             host: "build.example.com".into(),
             port: 2222,
             user: "me".into(),

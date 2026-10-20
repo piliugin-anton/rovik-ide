@@ -1,4 +1,4 @@
-//! What the drivers (FUSE, macFUSE, WinFsp) serve: any filesystem with this
+//! What the drivers (FUSE, macFUSE) serve: any filesystem with this
 //! inode API, not only the app's in-memory [`VirtualFs`].
 //!
 //! The virtual-files volume serves a `VirtualFs`. A chat's overlay
@@ -12,9 +12,6 @@ use super::store::{
     Attr, DirEntry, Ino, Kind, Listener, RenameMode, SetAttr, VfsResult, VirtualFs,
 };
 
-// `dir_is_empty`, `resolve`, `resolve_parent` and `path_of`: only the
-// path-based WinFsp driver uses them.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub trait Backend: Send + Sync {
     fn getattr(&self, ino: Ino) -> VfsResult<Attr>;
     fn lookup(&self, parent: Ino, name: &str) -> VfsResult<Attr>;

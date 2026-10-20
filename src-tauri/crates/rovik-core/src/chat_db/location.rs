@@ -143,16 +143,26 @@ pub fn chats_on(conn: &Connection, host: &str) -> DbResult<usize> {
     .map_err(err)
 }
 
-/// Whether any of the project's chats is on a host or moving to one (K38).
-pub fn project_has_chats_away(conn: &Connection, project_id: &str) -> DbResult<Option<String>> {
-    conn.query_row(
-        "SELECT location FROM dialogs WHERE project_id = ?1 AND location IS NOT NULL LIMIT 1",
-        params![project_id],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()
-    .map(|column| column.and_then(|c| Location::parse(Some(&c)).host().map(str::to_string)))
-    .map_err(err)
+/// The project's chats (subagents' aside, which go with their lead's) that
+/// are on a host or moving to or from one, with where.
+pub fn project_chats_away(
+    conn: &Connection,
+    project_id: &str,
+) -> DbResult<Vec<(String, Location)>> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id, location FROM dialogs \
+             WHERE project_id = ?1 AND parent_id IS NULL AND location IS NOT NULL ORDER BY id",
+        )
+        .map_err(err)?;
+    let rows = stmt
+        .query_map(params![project_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })
+        .map_err(err)?;
+    rows.map(|row| row.map(|(id, column)| (id, Location::parse(column.as_deref()))))
+        .collect::<Result<_, _>>()
+        .map_err(err)
 }
 
 #[cfg(test)]

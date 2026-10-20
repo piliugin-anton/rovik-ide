@@ -42,6 +42,9 @@ pub struct Probe {
     pub chrome_headless: bool,
     /// Unprivileged user namespaces: Chrome's sandbox needs them.
     pub user_namespaces: bool,
+    /// `bwrap`, which sandboxes the agent's commands; without it they're
+    /// refused. Rovik's install adds it.
+    pub bwrap: Option<String>,
     /// `/dev/fuse`, and the helper that mounts without root: the virtual
     /// files need both.
     pub fuse: bool,
@@ -101,6 +104,7 @@ impl Probe {
                 "chrome" => probe.chrome = some(),
                 "chrome_headless" => probe.chrome_headless = yes,
                 "userns" => probe.user_namespaces = yes,
+                "bwrap" => probe.bwrap = some(),
                 "fuse" => probe.fuse = yes,
                 "fusermount" => probe.fusermount = some(),
                 "systemd" => probe.systemd = yes,
@@ -267,7 +271,8 @@ impl Probe {
         }
     }
 
-    /// User namespaces and FUSE: extras, not needed (design §3.1).
+    /// User namespaces, bubblewrap and FUSE: extras, not needed (design
+    /// §3.1).
     fn isolation(&self) -> Step {
         let mut missing = Vec::new();
         if !self.user_namespaces {
@@ -283,16 +288,27 @@ impl Probe {
         if let Some(why) = virtual_files {
             missing.push(format!("{why}, so CLM chats fall back to trimming"));
         }
-        match missing.is_empty() {
-            true => Step::new(
+        // bubblewrap isn't optional: the agent's commands are refused
+        // without it.
+        let required = self.bwrap.is_none().then_some(
+            "bubblewrap isn't installed, so the agent's commands are refused there until it is \
+             (Rovik's install adds it).",
+        );
+        let optional = (!missing.is_empty()).then(|| format!("Optional: {}.", missing.join("; ")));
+        match (required, optional) {
+            (None, None) => Step::new(
                 Check::Isolation,
                 Outcome::Passed,
-                "User namespaces and FUSE are there.".into(),
+                "User namespaces, bubblewrap and FUSE are there.".into(),
             ),
-            false => Step::new(
+            (None, Some(optional)) => Step::new(Check::Isolation, Outcome::Warning, optional),
+            (Some(required), None) => {
+                Step::new(Check::Isolation, Outcome::Warning, required.into())
+            }
+            (Some(required), Some(optional)) => Step::new(
                 Check::Isolation,
                 Outcome::Warning,
-                format!("Optional: {}.", missing.join("; ")),
+                format!("{required} {optional}"),
             ),
         }
     }
@@ -470,6 +486,7 @@ git=git version 2.39.5
 chrome=/usr/bin/chromium
 chrome_headless=yes
 userns=yes
+bwrap=/usr/bin/bwrap
 fuse=no
 fusermount=
 systemd=yes
@@ -511,6 +528,7 @@ disk_kb=3320552
 git=git version 2.43.0
 chrome=
 userns=yes
+bwrap=/usr/bin/bwrap
 fuse=yes
 fusermount=/usr/bin/fusermount3
 systemd=no

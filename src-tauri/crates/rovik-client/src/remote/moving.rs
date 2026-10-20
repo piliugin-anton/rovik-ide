@@ -38,6 +38,10 @@ use rovik_protocol::work::Project;
 use rovik_protocol::{features, Fail, FailCode, Request, PROTOCOL};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+/// How long a start waits for the home host to connect.
+const HOME_WAIT: Duration = Duration::from_secs(15);
 
 /// What the move dialog shows before a chat moves (6.8's preflight).
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
@@ -225,6 +229,75 @@ impl Remote {
             log::warn!("{dialog_id} moved, but its run didn't pick up there: {fail}");
         }
         Ok(())
+    }
+
+    /// A local chat moves to the computer's home host before it starts
+    /// (`Remote::set_home`): on Windows, the WSL distribution, this
+    /// computer's Linux side, where its commands run sandboxed. One that
+    /// can't go stays: a chat without a project folder here, a subagent's
+    /// (it goes with its lead's), one at work here already, which
+    /// finishes here. A move that fails is the start's failure, as the
+    /// chat here would refuse its commands; what the user does about it
+    /// is in Settings → This computer → WSL. On Windows without WSL set up,
+    /// such a chat doesn't start: it would run un-isolated, its commands
+    /// refused.
+    pub(super) async fn go_home(&self, dialog_id: &str) -> Result<(), Fail> {
+        let Some(home) = self.home() else {
+            // Windows isolates no chat of its own (no overlays), and the
+            // app runs no command here (`confine::require`): a chat of a
+            // project waits for WSL.
+            let why = cfg!(windows)
+                .then(rovik_core::overlay::confine::refusal)
+                .flatten();
+            return match why {
+                Some(why) if self.goes_home(dialog_id).await.map_err(internal)? => {
+                    Err(Fail::new(FailCode::Unreachable, why))
+                }
+                _ => Ok(()),
+            };
+        };
+        if !self.goes_home(dialog_id).await.map_err(internal)? {
+            return Ok(());
+        }
+        // The app's start: its daemon may still be connecting.
+        self.wait_ready(&home, HOME_WAIT).await;
+        // Boxed: a move with a start of its own calls `start` again.
+        Box::pin(self.move_chat(dialog_id, &home, None)).await
+    }
+
+    /// Whether the chat is one `go_home` moves: here, the lead chat, of a
+    /// project with its folder on this computer, with no run going.
+    pub(super) async fn goes_home(&self, dialog_id: &str) -> Result<bool, String> {
+        if self.core.agents.is_running(dialog_id) {
+            return Ok(false);
+        }
+        let id = dialog_id.to_string();
+        let at = self
+            .core
+            .db
+            .read(move |c| location::of_chat(c, &id))
+            .await?;
+        if at != Location::Here {
+            return Ok(false);
+        }
+        let id = dialog_id.to_string();
+        if self.core.db.read(move |c| store::lead_chat(c, &id)).await? != dialog_id {
+            return Ok(false);
+        }
+        Ok(self.project_of(dialog_id).await?.is_some())
+    }
+
+    /// Waits for the host to be ready, up to `limit`: `ready` says what's
+    /// wrong when it isn't by then.
+    async fn wait_ready(&self, host: &str, limit: Duration) {
+        let until = Instant::now() + limit;
+        while Instant::now() < until {
+            let state = self.client(host).map(|c| c.state());
+            if !matches!(state, Ok(HostState::Connecting)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// "Cancel move": the chat is where it was. A move going now stops at
@@ -668,9 +741,13 @@ impl Remote {
     pub(super) fn ready(&self, host: &str) -> Result<Client, Fail> {
         let client = self.client(host)?;
         if client.state() != HostState::Ready {
+            let why = match client.refusal() {
+                Some(why) if client.state() == HostState::Refused => format!(": {why}"),
+                _ => ".".to_string(),
+            };
             return Err(Fail::new(
                 FailCode::Unreachable,
-                format!("{} isn't connected.", client.name()),
+                format!("{} isn't connected{why}", client.name()),
             ));
         }
         let takes = client
