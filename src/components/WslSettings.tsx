@@ -11,7 +11,9 @@ import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { confirmDialog } from './ConfirmDialog';
 import { CHECK_LABELS, hostStatus, onHostTest, testVerdict, type Step } from '../lib/hosts';
 import {
+  afterInstall,
   asFailure,
+  installWsl,
   removeWsl,
   setUpWsl,
   testWsl,
@@ -30,6 +32,7 @@ export default function WslSettings() {
   const [choosing, setChoosing] = createSignal(false);
   const [steps, setSteps] = createSignal<Step[]>([]);
   const [testing, setTesting] = createSignal(false);
+  const [installed, setInstalled] = createSignal<string | null>(null);
 
   async function refresh() {
     try {
@@ -72,6 +75,11 @@ export default function WslSettings() {
     });
 
   const update = () => run('Updating…', updateWsl);
+
+  const install = () =>
+    run('Installing WSL…', async () => {
+      setInstalled(afterInstall(await installWsl(distro().trim() || undefined)));
+    });
 
   async function test() {
     setSteps([]);
@@ -132,13 +140,37 @@ export default function WslSettings() {
                 <p class="settings-hint setting-explain warning">
                   WSL isn’t available: {s().unavailable}
                 </p>
+                <Show when={installed()}>
+                  <p class="settings-hint setting-explain">{installed()}</p>
+                </Show>
                 <p class="settings-hint">
                   <Show when={!s().unsupported} fallback={<>Until Windows is updated, </>}>
-                    Install it from an administrator PowerShell with <code>wsl --install</code>,
-                    restart the computer, then come back here. Until then{' '}
+                    Install it here (Windows asks for an administrator’s permission; it may take a
+                    while, and the computer may have to restart), or from an administrator
+                    PowerShell with <code>wsl --install</code>. Until then{' '}
                   </Show>
                   the agent’s commands are refused on this computer.
                 </p>
+                <Show when={!s().unsupported}>
+                  <label>
+                    Distribution to install
+                    <input
+                      value={distro()}
+                      onInput={(e) => setDistro(e.currentTarget.value)}
+                      placeholder="Ubuntu"
+                      spellcheck={false}
+                    />
+                  </label>
+                  <div class="host-actions">
+                    <button
+                      class="chat-action-button primary"
+                      disabled={busy() != null}
+                      onClick={() => void install()}
+                    >
+                      {busy() ?? 'Install WSL'}
+                    </button>
+                  </div>
+                </Show>
               </Show>
               <Show when={s().available && (!deployed() || choosing())}>
                 <label>

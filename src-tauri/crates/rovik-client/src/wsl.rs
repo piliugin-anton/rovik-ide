@@ -17,7 +17,9 @@
 
 use crate::host_shell::{ProcessConnector, ProcessShell};
 use crate::ssh::quote;
+use serde::Serialize;
 use std::ffi::OsString;
+use std::path::Path;
 use std::time::Duration;
 
 /// The program, on the PATH of every Windows with WSL.
@@ -264,6 +266,163 @@ pub fn explained(error: String) -> String {
     }
 }
 
+/*
+ * Installing WSL itself
+ */
+
+/// The distribution installed when the user names none.
+pub const DEFAULT_DISTRO: &str = "Ubuntu";
+
+/// How long installing WSL may take: Windows' features, the kernel and
+/// the distribution's download.
+const INSTALL_WAIT: Duration = Duration::from_secs(45 * 60);
+
+/// `dism`'s exit code for "restart to finish", which the install script
+/// ends with when it enabled Windows' features.
+const RESTART_NEEDED: u32 = 3010;
+
+/// What installing WSL came to.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Installed {
+    /// The computer has to restart before WSL works: the install enabled
+    /// Windows' features, or said so.
+    pub restart: bool,
+    /// What the install printed, for the page.
+    pub output: String,
+}
+
+/// Installs WSL with `distro`, as an administrator: Windows asks the user
+/// for permission (UAC), then `wsl --install -d <distro> --no-launch`
+/// runs, which turns WSL and the Virtual Machine Platform on, installs
+/// the kernel and the distribution, and may need a restart. On a Windows
+/// without `wsl.exe` yet, the two features are turned on with `dism`
+/// instead, after which a restart brings `wsl.exe`, and installing again
+/// brings the distribution. The distribution isn't launched: its first
+/// run would ask for a user in a console, and `wsl_setup` makes one.
+pub async fn install(distro: Option<&str>) -> Result<Installed, String> {
+    if !cfg!(windows) {
+        return Err("WSL is Windows' own.".into());
+    }
+    let distro = distro
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .unwrap_or(DEFAULT_DISTRO);
+    if !plain_distro(distro) {
+        return Err(format!("{distro:?} isn't a distribution's name."));
+    }
+    let dir = std::env::temp_dir();
+    let (script, log) = (
+        dir.join("rovik-wsl-install.cmd"),
+        dir.join("rovik-wsl-install.log"),
+    );
+    std::fs::write(&script, install_script(distro, &log)).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&log);
+    let mut command = rovik_core::process::command("powershell.exe");
+    rovik_core::process::no_window(&mut command);
+    let run = tokio::process::Command::from(command)
+        .args(elevated(&script))
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(INSTALL_WAIT, run)
+        .await
+        .map_err(|_| "Installing WSL didn't finish in time.".to_string())?
+        .map_err(|e| format!("powershell.exe couldn't start: {e}"))?;
+    let printed = decode(&std::fs::read(&log).unwrap_or_default());
+    let _ = std::fs::remove_file(&script);
+    let code = output.status.code().and_then(|c| u32::try_from(c).ok());
+    match code {
+        Some(0) => Ok(Installed {
+            restart: says_restart(&printed),
+            output: printed.trim().to_string(),
+        }),
+        Some(RESTART_NEEDED) => Ok(Installed {
+            restart: true,
+            output: printed.trim().to_string(),
+        }),
+        _ => {
+            let said = String::from_utf8_lossy(&output.stderr);
+            if said.to_ascii_lowercase().contains("canceled") {
+                return Err("Windows didn't get permission: the install was cancelled.".into());
+            }
+            let why = if printed.trim().is_empty() {
+                said.trim().to_string()
+            } else {
+                printed.trim().to_string()
+            };
+            Err(explained(format!(
+                "Installing WSL failed (exit code {}): {why}",
+                code.map_or("none".to_string(), |c| c.to_string())
+            )))
+        }
+    }
+}
+
+/// A distribution's name as `wsl --install -d` takes it: letters, digits
+/// and a few marks, nothing a script would read otherwise.
+fn plain_distro(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The batch file run as an administrator: WSL's install with its output
+/// in `log` (UTF-16, as `wsl.exe` writes it), or the features turned on
+/// where there's no `wsl.exe` to do it, ending as `dism` does.
+pub fn install_script(distro: &str, log: &Path) -> String {
+    let log = log.display();
+    let dism = "dism.exe /online /enable-feature /featurename";
+    let lines = [
+        "@echo off".to_string(),
+        "where wsl.exe >nul 2>&1".to_string(),
+        "if errorlevel 1 (".to_string(),
+        format!("  {dism}:Microsoft-Windows-Subsystem-Linux /all /norestart > \"{log}\" 2>&1"),
+        format!("  {dism}:VirtualMachinePlatform /all /norestart >> \"{log}\" 2>&1"),
+        format!("  exit /b {RESTART_NEEDED}"),
+        ")".to_string(),
+        format!("wsl.exe --install -d {distro} --no-launch > \"{log}\" 2>&1"),
+        "exit /b %ERRORLEVEL%".to_string(),
+        String::new(),
+    ];
+    lines.join("\r\n")
+}
+
+/// PowerShell's arguments to run `script` as an administrator and end
+/// with its exit code: `Start-Process -Verb RunAs` is the UAC prompt.
+pub fn elevated(script: &Path) -> Vec<String> {
+    let path = script.display().to_string().replace('\'', "''");
+    let command = format!(
+        "$p = Start-Process -FilePath '{path}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; \
+         exit $p.ExitCode"
+    );
+    vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-ExecutionPolicy".into(),
+        "Bypass".into(),
+        "-Command".into(),
+        command,
+    ]
+}
+
+/// Whether what the install printed asks for a restart.
+pub fn says_restart(printed: &str) -> bool {
+    let printed = printed.to_ascii_lowercase();
+    printed.contains("reboot") || printed.contains("restart")
+}
+
+/// The script, as root in the distribution, that gives it a user for
+/// Rovik when its default user is root (a distribution installed without
+/// its first run, `--no-launch`): `rovik`, made if it isn't there.
+/// Prints the user to run as.
+pub fn user_script() -> String {
+    "if ! id -u rovik >/dev/null 2>&1; then \
+     useradd -m -s /bin/sh rovik 2>/dev/null || adduser -D rovik; fi; echo rovik"
+        .into()
+}
+
 /// The distributions installed here, as `wsl.exe -l -q` lists them.
 pub async fn distros() -> Result<Vec<String>, String> {
     let mut command = rovik_core::process::command(PROGRAM);
@@ -313,6 +472,7 @@ pub fn decode(printed: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn commands_run_in_the_distribution_as_the_user_without_a_login_shell() {
@@ -329,6 +489,37 @@ mod tests {
         assert_eq!(wsl.shell().args, ["-d", "Debian", "--exec"]);
         assert_eq!(wsl.display(), "WSL: Debian");
         assert_eq!(wsl.shell().program.to_string_lossy(), PROGRAM);
+    }
+
+    #[test]
+    fn wsl_is_installed_as_an_administrator_without_launching_the_distribution() {
+        let log = PathBuf::from(r"C:\Users\me\AppData\Local\Temp\rovik-wsl-install.log");
+        let script = install_script("Ubuntu-24.04", &log);
+        assert!(script.starts_with("@echo off\r\n"));
+        assert!(script.contains(
+            "wsl.exe --install -d Ubuntu-24.04 --no-launch > \"C:\\Users\\me\\AppData\\Local\\Temp\\rovik-wsl-install.log\" 2>&1\r\n"
+        ));
+        // Without wsl.exe, the features, and a restart to get it.
+        assert!(script.contains("where wsl.exe >nul"));
+        assert!(script.contains("/featurename:VirtualMachinePlatform /all /norestart"));
+        assert!(script.contains("exit /b 3010"));
+        let args = elevated(Path::new(r"C:\Temp\it's.cmd"));
+        assert_eq!(
+            args[..5],
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command"
+            ]
+        );
+        assert!(args[5].contains("Start-Process -FilePath 'C:\\Temp\\it''s.cmd' -Verb RunAs -Wait"));
+        assert!(args[5].ends_with("exit $p.ExitCode"));
+        assert!(plain_distro("Ubuntu-24.04"));
+        assert!(!plain_distro("Ubuntu & calc"));
+        assert!(says_restart("The requested operation is successful. Changes will not be effective until the system is rebooted."));
+        assert!(!says_restart("Ubuntu is already installed."));
     }
 
     #[test]

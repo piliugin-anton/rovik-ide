@@ -1234,7 +1234,13 @@ impl HostsPage {
         distro: String,
         user: Option<String>,
     ) -> Result<String, DeployFailure> {
-        let wsl = Wsl::new(distro, user);
+        let mut wsl = Wsl::new(distro, user);
+        // A distribution whose default user is root (installed by the app,
+        // `--no-launch`, or by hand without its first run) gets one: the
+        // daemon and the commands don't run as root.
+        if wsl.user.is_none() {
+            wsl.user = Self::wsl_user(&wsl).await?;
+        }
         if let Some(old) = self.wsl_host()? {
             if old.wsl().as_ref() != Some(&wsl) {
                 self.wsl_remove().await?;
@@ -1274,6 +1280,35 @@ impl HostsPage {
         report: &(dyn Fn(&Step) + Send + Sync),
     ) -> Result<Vec<Step>, String> {
         self.test(WSL_HOST, report).await
+    }
+
+    /// Whom Rovik runs as in a distribution the user named no user for:
+    /// its default user, or `rovik`, made as root, when that's root.
+    async fn wsl_user(wsl: &Wsl) -> Result<Option<String>, DeployFailure> {
+        let shell: &dyn HostShell = &wsl.shell();
+        let out = shell.run("id -un", &[], crate::ssh::EXEC_WAIT).await?;
+        if out.status != Some(0) {
+            let said = String::from_utf8_lossy(&out.stderr);
+            return Err(DeployFailure::Failed {
+                message: wsl::explained(format!("{}: {}", wsl.display(), said.trim())),
+            });
+        }
+        if String::from_utf8_lossy(&out.stdout).trim() != "root" {
+            return Ok(None);
+        }
+        let root: &dyn HostShell = &wsl.root_shell();
+        let made = root.run(&wsl::user_script(), &[], PACKAGES_WAIT).await?;
+        let user = String::from_utf8_lossy(&made.stdout).trim().to_string();
+        if made.status != Some(0) || user.is_empty() {
+            return Err(DeployFailure::Failed {
+                message: format!(
+                    "{}: its default user is root, and no user could be made for Rovik: {}",
+                    wsl.display(),
+                    String::from_utf8_lossy(&made.stderr).trim()
+                ),
+            });
+        }
+        Ok(Some(user))
     }
 
     /// Rovik in the distribution brought to this app's version, as an app

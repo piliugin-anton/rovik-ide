@@ -4,14 +4,16 @@
 // the distribution is brought to this app's version when an app update
 // left it behind, without asking; a distribution not set up yet gets one
 // notification pointing at Settings → This computer → WSL, where the
-// agent's commands are refused until it's done. "Don't ask again" stops
-// the notification. A distribution set up that can't start (virtualization
+// agent's commands are refused until it's done; a computer without WSL
+// is offered its install (`wsl --install`, an administrator's permission
+// asked, a restart maybe needed). "Don't ask again" stops the
+// notification. A distribution set up that can't start (virtualization
 // off in the BIOS/UEFI, WSL turned off, its kernel out of date) is told of
 // every time, with what to do: nothing runs until it's fixed.
 import { openAppSettings } from './appSettings';
 import { loadPrefs, savePrefs } from './localPrefs';
 import { notify } from './notifications';
-import { onWindows, updateWsl, wslStatus, type WslStatus } from './wsl';
+import { afterInstall, installWsl, onWindows, updateWsl, wslStatus, type WslStatus } from './wsl';
 
 const PREFS_KEY = 'rovik.wsl';
 const NOTE = 'wsl-setup';
@@ -29,6 +31,35 @@ const dontAsk = {
 };
 const showPage = { label: 'Set up WSL', primary: true, run: () => openAppSettings('wsl') };
 const showProblem = { label: 'Show', primary: true, run: () => openAppSettings('wsl') };
+const installIt = { label: 'Install WSL', primary: true, run: () => void install() };
+
+/** Installs WSL (Windows asks for permission), and says what to do next. */
+async function install() {
+  notify({
+    id: NOTE,
+    title: 'Installing WSL…',
+    message: 'Windows asks for an administrator’s permission. This takes a while.',
+    progress: 'busy',
+  });
+  try {
+    const installed = await installWsl();
+    notify({
+      id: NOTE,
+      kind: 'success',
+      title: 'WSL is installed',
+      message: afterInstall(installed),
+      actions: installed.restart ? [notNow] : [showPage, notNow],
+    });
+  } catch (err) {
+    notify({
+      id: NOTE,
+      kind: 'error',
+      title: 'WSL couldn’t be installed',
+      message: String(err),
+      actions: [showPage, notNow],
+    });
+  }
+}
 
 /** How long a distribution set up gets to connect, before its problem is looked for. */
 const CONNECT_WAIT_MS = 60_000;
@@ -81,8 +112,11 @@ export async function startWsl() {
       ? 'On Windows the agent’s commands run in a WSL distribution, in a sandbox. Until one is set up, they’re refused.'
       : status.unsupported
         ? `${status.unavailable ?? ''} Until then the agent’s commands are refused on this computer.`
-        : 'On Windows the agent’s commands run in a WSL distribution, in a sandbox. Install WSL (wsl --install in an administrator PowerShell), then set it up here.',
-    actions: [showPage, notNow, dontAsk],
+        : 'On Windows the agent’s commands run in a WSL distribution, in a sandbox. Install WSL (Windows asks for an administrator’s permission; the computer may have to restart), then set it up.',
+    actions:
+      status.available || status.unsupported
+        ? [showPage, notNow, dontAsk]
+        : [installIt, showPage, notNow, dontAsk],
   });
 }
 

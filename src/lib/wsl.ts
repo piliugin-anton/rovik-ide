@@ -43,6 +43,28 @@ export const setUpWsl = (distro: string, user?: string) =>
 
 export const testWsl = () => invoke<Step[]>('wsl_test');
 
+/** What installing WSL came to. */
+export interface Installed {
+  /** The computer has to restart before WSL works. */
+  restart: boolean;
+  /** What the install printed. */
+  output: string;
+}
+
+/**
+ * Installs WSL itself with `distro` (Ubuntu when none), as an administrator:
+ * Windows asks for permission. Takes a while (the kernel, the distribution).
+ */
+export const installWsl = (distro?: string) =>
+  invoke<Installed>('wsl_install', { distro: distro || null });
+
+/** What to do once WSL was installed: restart first, or set it up now. */
+export function afterInstall(installed: Installed): string {
+  return installed.restart
+    ? 'WSL is installed. Restart the computer, then come back here to set it up.'
+    : 'WSL is installed: set it up below.';
+}
+
 export const updateWsl = () => invoke<void>('wsl_update');
 
 export const removeWsl = () => invoke<void>('wsl_remove');

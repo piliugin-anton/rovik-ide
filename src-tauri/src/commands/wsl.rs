@@ -32,6 +32,14 @@ pub async fn wsl_test(
     super::hosts::hosts_test(app, page, WSL_HOST.into()).await
 }
 
+/// Installs WSL itself, with `distro` (Ubuntu when none), as an
+/// administrator: Windows asks for permission. The computer may have to
+/// restart before it's set up.
+#[tauri::command]
+pub async fn wsl_install(distro: Option<String>) -> Result<rovik_client::wsl::Installed, String> {
+    rovik_client::wsl::install(distro.as_deref()).await
+}
+
 /// Rovik in the distribution brought to this app's version.
 #[tauri::command]
 pub async fn wsl_update(page: State<'_, Arc<HostsPage>>) -> Result<(), DeployFailure> {

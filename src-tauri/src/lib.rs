@@ -241,6 +241,7 @@ pub fn run() {
             commands::hosts::hosts_save,
             commands::wsl::wsl_status,
             commands::wsl::wsl_setup,
+            commands::wsl::wsl_install,
             commands::wsl::wsl_test,
             commands::wsl::wsl_update,
             commands::wsl::wsl_remove,

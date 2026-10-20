@@ -219,7 +219,12 @@ Machine Platform missing (`HCS_E_HYPERV_NOT_INSTALLED`, `0x80370102`),
 WSL turned off (`0x8007019e`), its kernel out of date (`0x800701bc`), the
 WSL service disabled (`0x80070422`); and a Windows too old for WSL2
 (before Windows 10 version 1903, build 18362) is told so before anything
-is tried.
+is tried. A computer without WSL is offered its install, at start and on
+the page: `wsl --install -d <distro> --no-launch` run as an administrator
+(Windows asks for permission), which may need a restart; where there's no
+`wsl.exe` yet, the two Windows features are turned on with `dism` and the
+restart brings it. The distribution isn't launched, so its default user
+is root; setting it up then makes a `rovik` user to run as.
 
 ## The browser
 
