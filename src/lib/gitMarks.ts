@@ -12,6 +12,7 @@
 // whole lines until saved: these are git's view and stay as long as the
 // file differs from it.
 import { createSignal } from 'solid-js';
+import { normalizePath } from './fileTools';
 
 interface Base {
   /** Relative to the repository's working folder, for refreshing. */
@@ -23,17 +24,19 @@ interface Base {
 const [bases, setBases] = createSignal<Record<string, Base>>({});
 
 export function setGitBase(absPath: string, file: string, content: string | null) {
-  setBases((all) => ({ ...all, [absPath]: { file, content: content ?? '' } }));
+  const key = normalizePath(absPath);
+  setBases((all) => ({ ...all, [key]: { file, content: content ?? '' } }));
 }
 
 export function clearGitBase(absPath: string) {
-  if (!bases()[absPath]) return;
-  setBases(({ [absPath]: _gone, ...rest }) => rest);
+  const key = normalizePath(absPath);
+  if (!bases()[key]) return;
+  setBases(({ [key]: _gone, ...rest }) => rest);
 }
 
 /** The base the editor compares a file with (reactive). */
 export function gitBaseFor(absPath: string): string | undefined {
-  return bases()[absPath]?.content;
+  return bases()[normalizePath(absPath)]?.content;
 }
 
 /** Files with marks, to refresh their bases. */

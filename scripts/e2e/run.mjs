@@ -1135,10 +1135,20 @@ async function run() {
     await d.waitFor(
       async () => {
         await modClick(token);
-        await sleep(1500);
-        return (await activeTab()) === 'math.ts';
+        return d
+          .waitFor(async () => (await activeTab()) === 'math.ts', { timeout: 1500, interval: 100 })
+          .then(
+            () => true,
+            () => false
+          );
       },
       { timeout: 30_000, interval: 500, what: 'math.ts to open' }
+    );
+    // Opened at the definition: its line lit for a moment (lib/openInEditor.ts).
+    await waitFor(
+      () => d.exists('.monaco-editor .editor-reveal-flash'),
+      'the definition lit',
+      1500
     );
   });
 
@@ -1297,6 +1307,12 @@ async function run() {
     );
     await click(hit);
     await waitFor(async () => (await activeTab()) === 'notes.txt', 'notes.txt opened');
+    // The match selected, in view.
+    await waitFor(() => d.exists('.monaco-editor .selected-text'), 'the match selected');
+    assert(
+      (await panelText('.monaco-editor .view-lines')).includes('find me here'),
+      'the match in view'
+    );
     // Kept while another sidebar tab is shown.
     await sidebar('Git');
     await sidebar('Files');
@@ -1309,6 +1325,30 @@ async function run() {
     );
     await click('input[placeholder="Search in files"]');
     await keys([MOD, 'a'], Keys.BACKSPACE, Keys.ESC);
+  });
+
+  await step('open: a changed file from the tree opens at its first change, lit', async () => {
+    // A change far down a long file, made outside the app (an editor, a
+    // script): the file opens with it in view and marked against git, not
+    // at its top.
+    const path = join(DEMO, 'long.ts');
+    write(path, readFileSync(path, 'utf8').replace('// line 200:', '// line 200 changed:'));
+    await click(row('long.ts'));
+    await waitFor(async () => (await activeTab()) === 'long.ts', 'long.ts opened');
+    await waitFor(() => d.exists('.monaco-editor .editor-reveal-flash'), 'the change lit', 5_000);
+    await waitFor(
+      async () => (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
+      'the change in view'
+    );
+    const shown = await panelText('.monaco-editor .view-lines');
+    assert(!shown.includes('line 1:'), 'the top of the file is out of view');
+    await waitFor(() => d.exists('.monaco-editor .git-line-modified'), 'the change marked', 5_000);
+    // And still in view once the light has faded.
+    await sleep(1600);
+    assert(
+      (await panelText('.monaco-editor .view-lines')).includes('line 200 changed'),
+      'the change still in view after a moment'
+    );
   });
 
   await step('terminal: run a command', async () => {
@@ -1873,38 +1913,97 @@ async function run() {
     await waitFor(() => d.exists('.chat-send-button:not(.stop)'), 'the run to end', 30_000);
   });
 
-  await step('chat: the agent writes a file, it lands, Undo takes it back', async () => {
-    await send(
-      'Please create the file.\n@tool write {"path":"hello.txt","content":"Hi from agent\\n"}\n@text Wrote hello.txt.'
+  /** Settings → Agent runs → "Open the files the agent edits". */
+  async function openFilesAfterAgentEdits(on) {
+    await click('.sidebar-settings-button');
+    await waitFor(() => d.exists('.settings-menu-item'), 'the settings menu');
+    await click(
+      await mark(
+        `return [...document.querySelectorAll('.settings-menu-item')].find((b) => b.innerText.trim().startsWith('Agent runs'));`,
+        'page'
+      )
     );
-    await waitFor(() => existsSync(join(DEMO, 'hello.txt')), 'hello.txt landed', 60_000);
-    // Without the virtual-files driver (WinFsp, macFUSE) the chat works in
-    // the project itself, and says so: nothing to land or undo.
-    const notIsolated = async () =>
-      (await notifications()).find((n) => n.includes("This chat isn't isolated"));
-    await waitFor(
-      async () => (await chatText()).includes('Landed') || !!(await notIsolated()),
-      'the Landed bar',
-      30_000
+    const box = await mark(
+      `const label = [...document.querySelectorAll('.modal .setting-checkbox')].find((l) => l.innerText.includes('Open the files the agent edits'));
+       return label && label.querySelector('input[type="checkbox"]');`,
+      'box'
     );
-    const told = await notIsolated();
-    if (told) {
-      note(`the chat wasn't isolated: ${told}`);
-      rmSync(join(DEMO, 'hello.txt'));
-      return;
-    }
-    const gap = () =>
-      d.exec(
-        'const el = document.querySelector(".chat-messages"); return el.scrollHeight - el.clientHeight - el.scrollTop'
+    if ((await d.prop(box, 'checked')) !== on) await click(box);
+    await closeModal();
+  }
+
+  await step(
+    'chat: the agent writes a file, it opens behind, lands, Undo takes it back',
+    async () => {
+      await openFilesAfterAgentEdits(true);
+      await send(
+        'Please create the file.\n@tool write {"path":"hello.txt","content":"Hi from agent\\n"}\n@text Wrote hello.txt.'
       );
-    await d
-      .waitFor(async () => (await gap()) <= 4, { timeout: 3000, what: 'the list at its newest' })
-      .catch(async () => {
-        throw new Error(`the list isn't at its newest message (${await gap()}px above the bottom)`);
-      });
-    await click(await buttonByText('Undo'));
-    await waitFor(() => !existsSync(join(DEMO, 'hello.txt')), 'the landing undone', 30_000);
-  });
+      await waitFor(() => existsSync(join(DEMO, 'hello.txt')), 'hello.txt landed', 60_000);
+      // The written file opens in a tab behind the one being worked on; shown,
+      // it's centered on its first change, lit, with the agent's lines marked
+      // (lib/openInEditor.ts). An isolated chat's write isn't in the project
+      // until it lands, so its tab comes with the landing, if at all.
+      const opened = await d
+        .waitFor(async () => (await tabs()).includes('hello.txt'), { timeout: 10_000 })
+        .then(
+          () => true,
+          () => false
+        );
+      if (opened) {
+        assert((await activeTab()) !== 'hello.txt', 'opened behind the tab being worked on');
+        await click(
+          await mark(
+            `return [...document.querySelectorAll('.tab')].find((t) => t.innerText.split('\\n')[0] === 'hello.txt');`,
+            'tab'
+          )
+        );
+        await waitFor(async () => (await activeTab()) === 'hello.txt', 'hello.txt shown');
+        await waitFor(
+          () => d.exists('.monaco-editor .editor-reveal-flash'),
+          'its change lit',
+          5_000
+        );
+        await waitFor(
+          () => d.exists('.monaco-editor .agent-change-line'),
+          "the agent's lines marked"
+        );
+        await d.screenshot('agent-write-shown');
+      } else {
+        note(
+          'hello.txt was not opened: the chat is isolated, or files open after agent edits is off'
+        );
+      }
+      // Without the virtual-files driver (WinFsp, macFUSE) the chat works in
+      // the project itself, and says so: nothing to land or undo.
+      const notIsolated = async () =>
+        (await notifications()).find((n) => n.includes("This chat isn't isolated"));
+      await waitFor(
+        async () => (await chatText()).includes('Landed') || !!(await notIsolated()),
+        'the Landed bar',
+        30_000
+      );
+      const told = await notIsolated();
+      if (told) {
+        note(`the chat wasn't isolated: ${told}`);
+        rmSync(join(DEMO, 'hello.txt'));
+        return;
+      }
+      const gap = () =>
+        d.exec(
+          'const el = document.querySelector(".chat-messages"); return el.scrollHeight - el.clientHeight - el.scrollTop'
+        );
+      await d
+        .waitFor(async () => (await gap()) <= 4, { timeout: 3000, what: 'the list at its newest' })
+        .catch(async () => {
+          throw new Error(
+            `the list isn't at its newest message (${await gap()}px above the bottom)`
+          );
+        });
+      await click(await buttonByText('Undo'));
+      await waitFor(() => !existsSync(join(DEMO, 'hello.txt')), 'the landing undone', 30_000);
+    }
+  );
 
   await step('chat: the agent runs the tests in its copy of the project', async () => {
     // In an isolated chat, its view (FUSE, WinFsp): npm, node and the

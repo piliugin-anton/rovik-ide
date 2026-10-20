@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import ToolCallGroup from './ToolCallGroup';
-import { onOpenFileRequest, type OpenFileRequest } from '../lib/editorBridge';
+import { setEditorOpener, type OpenInEditor } from '../lib/openInEditor';
 import { sameGroupLabel } from '../lib/toolGroups';
 import type { ChatMessage, ChatToolCall } from '../types';
 
@@ -53,11 +53,13 @@ test('streaming elsewhere in the chat leaves the line’s file names in place, c
     after.every((b, i) => b === before[i]),
     'the same buttons, not new ones'
   );
-  const opened: OpenFileRequest[] = [];
-  const stop = onOpenFileRequest((r) => opened.push(r));
+  const opened: OpenInEditor[] = [];
+  setEditorOpener(async (r) => {
+    opened.push(r);
+  });
   (after[1] as HTMLButtonElement).click();
-  assert.deepEqual(opened, [{ path: 'src/b.ts', line: 1 }]);
-  stop();
+  assert.deepEqual(opened, [{ path: 'src/b.ts', focus: true }]);
+  setEditorOpener(null);
   dispose();
 });
 

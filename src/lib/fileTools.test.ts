@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { movedPath } from './fileTools';
+import { movedPath, normalizePath } from './fileTools';
+
+test('one spelling of a path, for keys', () => {
+  assert.equal(normalizePath('C:\\Users\\me\\x.ts'), 'c:/Users/me/x.ts');
+  assert.equal(normalizePath('/p//src/a.ts'), '/p/src/a.ts');
+  assert.equal(normalizePath('/p/src/a.ts'), '/p/src/a.ts');
+});
 
 test('a renamed file and the files in a renamed folder follow it', () => {
   const moves = [{ from: '/p/docs', to: '/p/documentation' }];

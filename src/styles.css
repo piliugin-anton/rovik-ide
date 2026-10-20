@@ -5997,6 +5997,22 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   box-shadow: inset 0 -2px 0 var(--diff-deleted-strong);
 }
 
+/* The place an open request points at (lib/openInEditor.ts), lit for a moment */
+
+.monaco-editor .editor-reveal-flash {
+  animation: editor-reveal-flash 1.4s ease-out forwards;
+}
+
+@keyframes editor-reveal-flash {
+  0%,
+  35% {
+    background: color-mix(in srgb, var(--accent) 38%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 /* Notifications (NotificationHost.tsx), bottom right. Same popup look as
    the menus: menu background, border, soft shadow. */
 

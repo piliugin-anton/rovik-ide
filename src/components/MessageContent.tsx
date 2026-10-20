@@ -1,7 +1,8 @@
 import { createEffect, createMemo, createSignal, Index, Match, on, Show, Switch } from 'solid-js';
 import { parseMessageSegments } from '../lib/messageSegments';
 import { pathBefore } from '../lib/codeLocation';
-import { requestOpenFile, resolveProjectFile } from '../lib/editorBridge';
+import { resolveProjectFile } from '../lib/editorBridge';
+import { openInEditor } from '../lib/openInEditor';
 import StaticCodeBlock from './StaticCodeBlock';
 import FormattedText from './FormattedText';
 
@@ -66,7 +67,10 @@ export default function MessageContent(props: { content: string; streaming?: boo
                 streaming={open()}
                 // Opens the file where this code is found in it.
                 onOpenInEditor={
-                  file() ? () => requestOpenFile({ path: file()!, snippet: text() }) : undefined
+                  file()
+                    ? () =>
+                        void openInEditor({ path: file()!, focus: true, at: { snippet: text() } })
+                    : undefined
                 }
               />
             </Match>

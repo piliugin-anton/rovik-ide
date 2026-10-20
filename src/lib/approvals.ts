@@ -16,7 +16,9 @@
 // never on the local file's tab, and is allowed or denied whole.
 import { invoke } from '@tauri-apps/api/core';
 import { createStore, produce } from 'solid-js/store';
-import { requestCompare } from './editorBridge';
+import { editorSettings } from './editorSettings';
+import { normalizePath } from './fileTools';
+import { openInEditor } from './openInEditor';
 import { applyHunks, diffLines, splitLines, type DiffHunk } from './lineDiff';
 import { notify } from './notifications';
 
@@ -36,8 +38,6 @@ export interface EditReview {
   eol: '\n' | '\r\n';
   proposed: string;
   hunks: ReviewHunk[];
-  /** Bumped to ask the editor to open the file and scroll to the next change. */
-  revealNonce: number;
 }
 
 export interface PendingApproval {
@@ -93,7 +93,6 @@ const [state, setState] = createStore<{ pending: Record<string, PendingApproval>
 
 const keyOf = (dialogId: string, toolCallId: string) => `${dialogId}\n${toolCallId}`;
 
-const revealListeners = new Set<(absPath: string, explicit: boolean) => void>();
 const writtenListeners = new Set<(absPath: string, content: string) => void>();
 
 /*
@@ -120,7 +119,6 @@ export function buildEditReview(
     eol: base.eol,
     proposed,
     hunks: hunks.map((h) => ({ ...h, state: 'pending' })),
-    revealNonce: 0,
   };
 }
 
@@ -225,8 +223,6 @@ export function hunkCounts(edit: EditReview) {
   return { pending, accepted, rejected, total: edit.hunks.length };
 }
 
-const normalizePath = (p: string) => p.replace(/\\/g, '/').replace(/\/+/g, '/');
-
 /*
  * ---------------------------------------------------------------------------
  * Answering
@@ -311,11 +307,19 @@ export function decideRemaining(
  * when files don't open by themselves after agent edits.
  */
 export function revealEdit(dialogId: string, toolCallId: string, explicit = false) {
-  const key = keyOf(dialogId, toolCallId);
-  const edit = state.pending[key]?.edit;
+  const edit = state.pending[keyOf(dialogId, toolCallId)]?.edit;
   if (!edit) return;
-  setState('pending', key, 'edit', 'revealNonce', (n) => n + 1);
-  for (const listener of revealListeners) listener(edit.absPath, explicit);
+  // "Review in editor" (explicit) opens it whatever the settings say; the
+  // edit arriving opens it only when files open after agent edits, and
+  // without taking the keyboard from the chat.
+  if (!explicit && !editorSettings().openFilesAfterAgentEdits) return;
+  const next = edit.hunks.find((h) => h.state === 'pending') ?? edit.hunks[0];
+  void openInEditor({
+    path: edit.absPath,
+    focus: explicit,
+    at: next ? { line: Math.max(1, next.origStart) } : undefined,
+    highlight: 'none',
+  });
 }
 
 /**
@@ -327,20 +331,18 @@ export function showRemoteEdit(dialogId: string, toolCallId: string, asked = tru
   const edit = state.pending[keyOf(dialogId, toolCallId)]?.remoteEdit;
   if (!edit) return;
   const name = edit.relPath.split(/[\\/]/).pop() || edit.relPath;
-  requestCompare({
-    id: `remote-edit:${dialogId}:${toolCallId}`,
-    title: `${name} (proposed on the server)`,
-    fileName: edit.relPath,
-    before: edit.current,
-    after: edit.proposed,
-    ...(asked ? {} : { background: true }),
+  void openInEditor({
+    path: `remote-edit:${dialogId}:${toolCallId}`,
+    focus: asked,
+    marks: {
+      compare: {
+        title: `${name} (proposed on the server)`,
+        fileName: edit.relPath,
+        before: edit.current,
+        after: edit.proposed,
+      },
+    },
   });
-}
-
-/** App opens the file in a tab. */
-export function onRevealEdit(listener: (absPath: string, explicit: boolean) => void): () => void {
-  revealListeners.add(listener);
-  return () => revealListeners.delete(listener);
 }
 
 /** The agent wrote a file: open tabs refresh their content. */

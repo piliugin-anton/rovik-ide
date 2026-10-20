@@ -7,6 +7,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from
 import type { Accessor } from 'solid-js';
 import type { ToolSearchLine, ToolSearchResult } from '../types';
 import { searchInFiles } from '../lib/commands';
+import { openInEditor } from '../lib/openInEditor';
 import HighlightedText from './HighlightedText';
 
 const DEBOUNCE_MS = 250;
@@ -17,14 +18,6 @@ interface FileGroup {
   name: string;
   dir: string;
   lines: ToolSearchLine[];
-}
-
-export interface SearchMatchTarget {
-  /** Path relative to the project root, as returned by the search. */
-  relativePath: string;
-  line: number;
-  column: number;
-  length: number;
 }
 
 function splitPath(path: string): { name: string; dir: string } {
@@ -51,7 +44,6 @@ const kept = {
 
 export default function SearchPanel(props: {
   rootPath: Accessor<string | null>;
-  onOpenMatch: (target: SearchMatchTarget) => void;
   /** True while a query is entered (the Files tab then hides the tree). */
   onActiveChange?: (active: boolean) => void;
 }) {
@@ -163,13 +155,14 @@ export default function SearchPanel(props: {
     });
   }
 
+  /** Opens the match's file with the match selected. */
   function open(line: ToolSearchLine) {
     const first = line.ranges?.[0];
-    props.onOpenMatch({
-      relativePath: line.path,
-      line: line.line,
-      column: line.column ?? 1,
-      length: first ? first[1] - first[0] : 0,
+    void openInEditor({
+      path: line.path,
+      focus: true,
+      highlight: 'selection',
+      at: { line: line.line, column: line.column ?? 1, length: first ? first[1] - first[0] : 0 },
     });
   }
 

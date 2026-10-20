@@ -3,7 +3,8 @@ import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { invoke } from '@tauri-apps/api/core';
 import { resolveChatLink } from '../lib/markdownPreview';
-import { requestOpenFile, resolveProjectFile } from '../lib/editorBridge';
+import { resolveProjectFile } from '../lib/editorBridge';
+import { openInEditor } from '../lib/openInEditor';
 import { notify } from '../lib/notifications';
 import { morphHtml } from '../lib/morphHtml';
 
@@ -71,7 +72,7 @@ async function openProjectFile(path: string, line?: number) {
     });
     return;
   }
-  requestOpenFile({ path: file, line });
+  void openInEditor({ path: file, focus: true, ...(line ? { at: { line } } : {}) });
 }
 
 export default function FormattedText(props: FormattedTextProps) {

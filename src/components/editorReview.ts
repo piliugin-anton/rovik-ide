@@ -13,13 +13,7 @@
 // `renderEditReview` draws the current state; callers re-run it when the
 // state changes (it's cheap: a handful of decorations and zones).
 import * as monaco from 'monaco-editor';
-import {
-  decideRemaining,
-  hunkCounts,
-  setHunkState,
-  type PendingApproval,
-  type ReviewHunk,
-} from '../lib/approvals';
+import { decideRemaining, hunkCounts, setHunkState, type PendingApproval } from '../lib/approvals';
 
 export interface ReviewHandle {
   dispose: () => void;
@@ -46,11 +40,6 @@ function isolate(el: HTMLElement) {
   for (const type of ['mousedown', 'mouseup', 'pointerdown', 'pointerup']) {
     el.addEventListener(type, (e) => e.stopPropagation());
   }
-}
-
-/** The line a change sits at, for scrolling. */
-export function hunkLine(hunk: ReviewHunk): number {
-  return Math.max(1, hunk.origStart);
 }
 
 /**

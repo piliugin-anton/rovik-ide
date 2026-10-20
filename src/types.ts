@@ -132,15 +132,6 @@ export interface ToolSearchLine {
 }
 
 /** Ask the editor to select a range in a file (e.g. a search result). */
-export interface RevealRequest {
-  path: string;
-  line: number;
-  column: number;
-  length: number;
-  /** Distinguishes repeated requests for the same spot. */
-  nonce: number;
-}
-
 export interface ToolSearchResult {
   /** The first matches in path order, up to the result limit. */
   lines: ToolSearchLine[];

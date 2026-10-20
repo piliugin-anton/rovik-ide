@@ -2,9 +2,9 @@
 //
 // Go to definition in another file. Monaco can't open other files by
 // itself: an editor opener hands the file to the app's tabs
-// (lib/editorBridge.ts), at the definition's line.
+// (lib/openInEditor.ts), at the definition's line.
 import * as monaco from 'monaco-editor';
-import { requestOpenFile } from '../editorBridge';
+import { openInEditor } from '../openInEditor';
 
 export function registerDefinitionOpener(currentRoot: () => string | null): void {
   monaco.editor.registerEditorOpener({
@@ -18,7 +18,7 @@ export function registerDefinitionOpener(currentRoot: () => string | null): void
         : 'startLineNumber' in selectionOrPosition
           ? selectionOrPosition.startLineNumber
           : selectionOrPosition.lineNumber;
-      requestOpenFile({ path: resource.fsPath, line });
+      void openInEditor({ path: resource.fsPath, focus: true, at: { line } });
       return true;
     },
   });

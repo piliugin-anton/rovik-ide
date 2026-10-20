@@ -26,7 +26,7 @@ import {
   type ContextEdit,
 } from '../lib/contextDoc';
 import { APPROVE_AT, REJECT_AT, reviewChecks } from '../lib/aiApproval';
-import { requestOpenFile } from '../lib/editorBridge';
+import { openInEditor } from '../lib/openInEditor';
 import {
   callStatus,
   dirName,
@@ -952,7 +952,8 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
   };
 
   /** Where to open the file: a known line, else code to find in it. */
-  const openTarget = (): { line?: number; snippet?: string } => {
+  /** Where the call points in the file: a line, or text to find there. */
+  const openTarget = (): { line: number } | { snippet: string } | undefined => {
     const a = args();
     const start = lineArg(a.start_line) ?? resultMeta()?.range?.[0];
     if (start !== undefined) return { line: start };
@@ -965,14 +966,21 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
       const snippet = failedOrPending ? oldText : str(a.content) || oldText;
       if (snippet) return { snippet };
     }
-    return { line: 1 };
+    return undefined;
   };
-  const openInEditor = () => {
+  const openFile = () => {
     const path = str(args().path);
     if (!path) return;
-    // A file the agent wrote opens with its changes marked against git.
-    const changes = (isWrite() || isEdit()) && !isContextFile();
-    requestOpenFile({ path, ...openTarget(), changes, dialogId: props.dialogId });
+    // A file the agent wrote: as its chat has it when that isn't the
+    // project's file yet, else with its changes marked, centered on the
+    // first one unless the call says where.
+    const written = (isWrite() || isEdit()) && !isContextFile();
+    void openInEditor({
+      path,
+      focus: true,
+      at: openTarget() ?? (written ? 'first-change' : undefined),
+      ...(written ? { dialogId: props.dialogId } : {}),
+    });
   };
 
   // Code arguments are shown highlighted below, not as escaped JSON strings.
@@ -1056,7 +1064,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
               <StaticCodeBlock
                 code={str(args().content)!}
                 language={language()}
-                onOpenInEditor={openInEditor}
+                onOpenInEditor={openFile}
               />
             </Show>
             <Show when={props.toolCall.name === 'submit_plan' && str(args().plan)}>
@@ -1094,7 +1102,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                   newText={str(args().content)!}
                   language={language()}
                   startLine={editLandedLine()}
-                  onOpenInEditor={openInEditor}
+                  onOpenInEditor={openFile}
                 />
               </Show>
             </Show>
@@ -1134,7 +1142,7 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                   <StaticCodeBlock
                     code={resultText()!}
                     language={language()}
-                    onOpenInEditor={openInEditor}
+                    onOpenInEditor={openFile}
                   />
                 </Show>
               </Show>

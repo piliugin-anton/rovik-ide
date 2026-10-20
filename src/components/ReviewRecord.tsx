@@ -14,7 +14,7 @@ import {
   type ReviewMeta,
 } from '../lib/changeReview';
 import { liveLabel, liveSubagent } from '../lib/subagents';
-import { requestOpenFile } from '../lib/editorBridge';
+import { openInEditor } from '../lib/openInEditor';
 import { stopRun } from '../lib/agentRuns';
 import { SubagentTranscript } from './ToolCallBlock';
 import { createSubagentWork, ShowWorkButton } from './SubagentWork';
@@ -22,8 +22,8 @@ import { createSubagentWork, ShowWorkButton } from './SubagentWork';
 function FindingItem(props: { finding: ReviewFinding; dropped?: boolean }) {
   const f = () => props.finding;
   const open = () => {
-    const path = f().path;
-    if (path) requestOpenFile({ path, line: f().line ?? 1 });
+    const { path, line } = f();
+    if (path) void openInEditor({ path, focus: true, ...(line ? { at: { line } } : {}) });
   };
   return (
     <li class={`review-finding ${f().severity}`} classList={{ dropped: !!props.dropped }}>
