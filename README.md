@@ -618,7 +618,11 @@ isolated chat's commands also see its overlay at the project's own path,
 so one that names the project by its full path still stays in the chat.
 The .deb and .rpm packages depend on bubblewrap, and the app offers to
 install it at start where it's missing (the AppImage can't carry it);
-without it the agent's commands are refused. Your own terminal isn't
+without it the agent's commands are refused. Ubuntu 23.10 and later
+restrict unprivileged user namespaces through AppArmor, which stops
+bubblewrap from making its sandbox: the packages add a small profile that
+lets `/usr/bin/bwrap` make one (`rovik-bwrap`, removed with Rovik), and the
+app offers to add it at start where it's missing. Your own terminal isn't
 sandboxed, and `ROVIK_CONFINE_COMMANDS=0` turns the sandbox off for
 troubleshooting. On Windows, Rovik's Linux side runs in a WSL2
 distribution (Settings → This computer → WSL): the daemon runs inside it

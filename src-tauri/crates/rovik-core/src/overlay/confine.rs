@@ -412,8 +412,10 @@ pub async fn install() -> Result<InstallOutcome, String> {
 /// namespace (it sees no other processes), fresh `/dev` and `/proc`, every
 /// capability dropped (so it can't undo any of this), and it dies with the
 /// app. The distro's package, which the .deb and .rpm depend on and the
-/// host installer adds: on Ubuntu 24.04 it's the package's AppArmor profile
-/// that lets anything make a user namespace at all.
+/// host installer adds. Where AppArmor restricts unprivileged user
+/// namespaces (Ubuntu 23.10 and later) bwrap can't make its sandbox without
+/// a profile that lets it: the packages, the host installer and `install`
+/// here add `rovik-bwrap` (`distro::BWRAP_APPARMOR`).
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{Confine, InstallOutcome, Mechanism, SandboxStatus};
@@ -496,16 +498,23 @@ mod linux {
             .filter(|l| !l.is_empty())
     }
 
+    /// Why bubblewrap can't make a sandbox though it's installed.
+    fn blocked() -> &'static str {
+        if distro::userns_restricted() {
+            "AppArmor stops it from making a sandbox here (Ubuntu 23.10 and later restrict user \
+             namespaces): a profile that lets it, added with administrator permission, fixes that"
+        } else {
+            "it can't make a sandbox here (the kernel or a security module may forbid user \
+             namespaces)"
+        }
+    }
+
     pub(super) fn status() -> SandboxStatus {
         let working = super::chosen().is_some();
         let installed = distro::which(PROGRAM).is_some();
         let detail = match (working, installed) {
             (true, _) => None,
-            (false, true) => Some(
-                "bubblewrap is installed but can't make a sandbox here (the kernel or a \
-                 security module may forbid user namespaces)."
-                    .to_string(),
-            ),
+            (false, true) => Some(format!("bubblewrap is installed, but {}.", blocked())),
             (false, false) => Some("bubblewrap isn't installed.".to_string()),
         };
         SandboxStatus {
@@ -513,21 +522,33 @@ mod linux {
             program: PACKAGE.name,
             working,
             detail,
-            can_install: !installed && distro::install_script(&PACKAGE).is_some(),
+            can_install: (!installed && distro::install_script(&PACKAGE).is_some())
+                || (installed && !working && distro::userns_restricted()),
         }
     }
 
+    /// Installs bubblewrap where it's missing, and where AppArmor restricts
+    /// user namespaces adds the profile that lets it make its sandbox
+    /// (`distro::BWRAP_APPARMOR`): one administrator prompt for both.
     pub(super) async fn install() -> Result<InstallOutcome, String> {
-        let Some(script) = distro::install_script(&PACKAGE) else {
-            return Ok(InstallOutcome::Manual {
-                message: "No supported package manager was found. Install bubblewrap (the \
-                          package is called bubblewrap nearly everywhere)."
-                    .into(),
-                command: None,
-            });
+        let package = match distro::which(PROGRAM) {
+            Some(_) => String::new(),
+            None => match distro::install_script(&PACKAGE) {
+                Some(script) => format!("{script}\n"),
+                None => {
+                    return Ok(InstallOutcome::Manual {
+                        message: "No supported package manager was found. Install bubblewrap \
+                                  (the package is called bubblewrap nearly everywhere)."
+                            .into(),
+                        command: None,
+                    })
+                }
+            },
         };
+        // The profile's script checks for the restriction itself.
+        let script = format!("set -e\n{package}{}", distro::BWRAP_APPARMOR);
         if let RootRun::Manual { message, command } =
-            distro::run_as_root(&format!("set -e; {script}"), "Installing bubblewrap").await?
+            distro::run_as_root(&script, "Setting up bubblewrap").await?
         {
             return Ok(InstallOutcome::Manual {
                 message,
@@ -548,14 +569,14 @@ mod linux {
     /// What a command is refused with while there's no sandbox.
     pub(super) fn missing() -> String {
         let how = match distro::which(PROGRAM) {
-            Some(_) => {
-                "it's installed but can't make a sandbox here (the kernel or a security \
-                        module may forbid user namespaces)"
-            }
-            None => {
-                "it isn't installed: the app offers to install it at start, or install the \
+            Some(_) if distro::userns_restricted() => format!(
+                "it's installed, but {}: the app offers to at start",
+                blocked()
+            ),
+            Some(_) => format!("it's installed, but {}", blocked()),
+            None => "it isn't installed: the app offers to install it at start, or install the \
                      bubblewrap package yourself"
-            }
+                .to_string(),
         };
         format!(
             "Error: on Linux the agent's commands run in a bubblewrap sandbox, and {how}. \

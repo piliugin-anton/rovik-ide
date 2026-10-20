@@ -940,9 +940,10 @@ once; they touch different files. Everything else is sequential.
     the project's path is the chat's view (`overlay/confine.rs`): a
     command naming the project by its full path reaches the chat's files.
     Bubblewrap makes it where it's installed and may
-    (`bwrap --dev-bind / / --bind <view> <project>`; Ubuntu 24.04's
-    AppArmor, which forbids unprivileged user namespaces to other
-    programs, has a profile that lets bwrap make them), and the app's own
+    (`bwrap --dev-bind / / --bind <view> <project>`; where Ubuntu's
+    AppArmor forbids unprivileged user namespaces, 23.10 and later, bwrap
+    needs a profile that lets it, which Rovik's packages, its offer at
+    start and the host installer add: `rovik-bwrap`), and the app's own
     way otherwise: a user namespace mapping the user to itself, which
     needs no privileges. The way is found once, in that order; where
     neither works (or `ROVIK_CONFINE_COMMANDS=0`; `bwrap` or `unshare`

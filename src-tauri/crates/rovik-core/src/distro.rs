@@ -49,6 +49,26 @@ pub fn install_script(package: &Package) -> Option<String> {
         .map(|(_, script)| script)
 }
 
+/// The script, run as root, that lets bubblewrap make its sandbox where
+/// AppArmor restricts unprivileged user namespaces (Ubuntu 23.10 and later):
+/// it adds and loads the `rovik-bwrap` profile, unless the restriction is
+/// off or another profile covers bwrap already. The .deb and .rpm run the
+/// same file after installing (tauri.conf.json); the app's offer to set the
+/// sandbox up runs it, and so does the cloud host installer.
+pub const BWRAP_APPARMOR: &str = include_str!("../linux/bwrap-apparmor.sh");
+
+/// Whether AppArmor keeps programs without a profile of their own from
+/// making user namespaces here, as bubblewrap's sandbox needs.
+pub fn userns_restricted() -> bool {
+    std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim() == "1")
+}
+
+/// `text` as one word for `sh`, whatever it holds.
+pub fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// What came of running a script as root.
 pub enum RootRun {
     /// It ran and succeeded.
@@ -77,7 +97,7 @@ pub async fn run_as_root(script: &str, what: &str) -> Result<RootRun, String> {
     } else {
         return Ok(RootRun::Manual {
             message: format!("{what} needs administrator rights. Run this in a terminal:"),
-            command: format!("sudo sh -c '{script}'"),
+            command: format!("sudo sh -c {}", sh_quote(script)),
         });
     };
     let out = crate::rt::spawn_blocking(move || command.output())
@@ -97,5 +117,133 @@ pub async fn run_as_root(script: &str, what: &str) -> Result<RootRun, String> {
                 last.into_iter().rev().collect::<Vec<_>>().join("\n")
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    const RESTRICTED: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
+    const REMOVE: &str = include_str!("../linux/bwrap-apparmor-remove.sh");
+
+    /// `script` with the system's paths under `root`, run with a fake
+    /// `apparmor_parser` that logs its arguments to `root/parser.log`.
+    fn run(root: &Path, script: &str, arg: &str) {
+        let script = script
+            .replace(RESTRICTED, &root.join("restrict").to_string_lossy())
+            .replace(
+                "/etc/apparmor.d",
+                &root.join("apparmor.d").to_string_lossy(),
+            );
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let parser = bin.join("apparmor_parser");
+        let log = root.join("parser.log");
+        std::fs::write(
+            &parser,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+        )
+        .unwrap();
+        Command::new("chmod")
+            .arg("755")
+            .arg(&parser)
+            .status()
+            .unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new("sh")
+            .args(["-c", &script, "sh", arg])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn fresh(test: &str, restricted: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("apparmor.d")).unwrap();
+        std::fs::write(root.join("restrict"), restricted).unwrap();
+        root
+    }
+
+    fn parsed(root: &Path) -> String {
+        std::fs::read_to_string(root.join("parser.log")).unwrap_or_default()
+    }
+
+    /// Where AppArmor restricts user namespaces, the profile goes in and is
+    /// loaded, once however often the script runs; it gives bwrap `userns`.
+    #[test]
+    fn the_profile_lets_bwrap_make_its_namespace_where_apparmor_restricts_them() {
+        let root = fresh("bwrap-aa", "1\n");
+        run(&root, BWRAP_APPARMOR, "configure");
+        run(&root, BWRAP_APPARMOR, "configure");
+        let profile = root.join("apparmor.d/rovik-bwrap");
+        let text = std::fs::read_to_string(&profile).unwrap();
+        assert!(text.contains("profile rovik-bwrap /usr/bin/bwrap flags=(unconfined) {"));
+        assert!(text.contains("  userns,\n"));
+        assert!(text.contains("abi <abi/4.0>,"));
+        let loaded = format!("-r {}\n", profile.display());
+        assert_eq!(parsed(&root), loaded.repeat(2), "loaded each time");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Nothing where the restriction is off, or another profile covers bwrap.
+    #[test]
+    fn nothing_where_its_not_needed_or_bwrap_has_a_profile() {
+        let root = fresh("bwrap-aa-off", "0\n");
+        run(&root, BWRAP_APPARMOR, "configure");
+        assert!(!root.join("apparmor.d/rovik-bwrap").exists());
+        let _ = std::fs::remove_dir_all(&root);
+
+        let root = fresh("bwrap-aa-other", "1\n");
+        std::fs::write(
+            root.join("apparmor.d/bwrap-userns-restrict"),
+            "abi <abi/4.0>,\nprofile bwrap /usr/bin/bwrap flags=(attach_disconnected) {\n}\n",
+        )
+        .unwrap();
+        run(&root, BWRAP_APPARMOR, "configure");
+        assert!(!root.join("apparmor.d/rovik-bwrap").exists());
+        assert_eq!(parsed(&root), "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Removing Rovik removes the profile; an upgrade keeps it.
+    #[test]
+    fn the_profile_goes_with_rovik_but_stays_through_an_upgrade() {
+        let root = fresh("bwrap-aa-rm", "1\n");
+        run(&root, BWRAP_APPARMOR, "configure");
+        let profile = root.join("apparmor.d/rovik-bwrap");
+        for upgrade in ["upgrade", "1"] {
+            run(&root, REMOVE, upgrade);
+            assert!(profile.exists(), "kept through {upgrade}");
+        }
+        run(&root, REMOVE, "remove");
+        assert!(!profile.exists());
+        assert!(parsed(&root).ends_with(&format!("-R {}\n", profile.display())));
+        run(&root, BWRAP_APPARMOR, "configure");
+        run(&root, REMOVE, "0");
+        assert!(!profile.exists(), "the .rpm's last erase");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_quoted_script_reaches_sh_whole() {
+        let script = "echo 'it'\"'\"'s' \"$HOME\" \\";
+        let out = Command::new("sh")
+            .args(["-c", &format!("printf %s {}", sh_quote(script))])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), script);
     }
 }

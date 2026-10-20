@@ -167,10 +167,11 @@ what Rovik's folders take.
   (`~/.rovik` with the API keys, `~/.ssh`, `~/.aws`, `~/.gnupg`, the cloud
   CLIs' folders) are empty to them; they see no other process and hold no
   capability, so they can't undo any of that. The installer adds
-  bubblewrap from the distro's package (on Ubuntu 24.04 only its AppArmor
-  profile may make a user namespace); without it the agent's commands are
-  refused, which `rovik-agentd doctor` and the app's connection test
-  report. A command that names `~/.rovik` still needs the user's approval.
+  bubblewrap from the distro's package and, where AppArmor restricts
+  unprivileged user namespaces (Ubuntu 23.10 and later), the AppArmor
+  profile `rovik-bwrap`, which lets `/usr/bin/bwrap` make one; without
+  them the agent's commands are refused, which `rovik-agentd doctor` and
+  the app's connection test report. `admin bubblewrap` adds both again. A command that names `~/.rovik` still needs the user's approval.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
   read them, but root can. The app tells users: "Your API keys are stored in
   your account on this server, so chats there run while this computer is
