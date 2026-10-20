@@ -917,7 +917,7 @@ impl Remote {
         let sent = self.hosts.ready().into_iter().map(|(host, client)| {
             let mut request = request.clone();
             if let Request::AgentConfigure(config) = &mut request {
-                *config = config.without_keys();
+                **config = config.without_keys();
                 self.apply_policy(&host, config);
                 config.network = network.clone();
             }
@@ -946,7 +946,7 @@ impl Remote {
             self.apply_policy(&host, &mut config);
             config.network = network.clone();
             async move {
-                let request = Request::AgentConfigure(config);
+                let request = Request::AgentConfigure(Box::new(config));
                 if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
                     log::warn!("{host} didn't take how to connect: {fail}");
                 }
@@ -977,7 +977,7 @@ impl Remote {
             let mut config = self.core.agents.config().without_keys();
             self.apply_policy(host, &mut config);
             config.network = host_network().await;
-            let sent = client.call_within(Request::AgentConfigure(config), HOSTS_WAIT);
+            let sent = client.call_within(Request::AgentConfigure(Box::new(config)), HOSTS_WAIT);
             if let Err(fail) = sent.await {
                 log::warn!("{host} didn't take the configuration: {fail}");
             }

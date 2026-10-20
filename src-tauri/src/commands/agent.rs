@@ -22,7 +22,11 @@ pub async fn agent_configure(
     remote: State<'_, Arc<Remote>>,
     config: AgentConfig,
 ) -> Result<(), String> {
-    answer(remote.everywhere(Request::AgentConfigure(config)).await)
+    answer(
+        remote
+            .everywhere(Request::AgentConfigure(Box::new(config)))
+            .await,
+    )
 }
 
 /// Starts a run in the chat. Returns its id, or None when there was nothing

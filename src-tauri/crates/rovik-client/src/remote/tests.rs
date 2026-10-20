@@ -664,11 +664,14 @@ async fn a_configuration_goes_to_every_host_without_its_keys() {
         ..AgentConfig::default()
     };
     let reply = remote
-        .everywhere(Request::AgentConfigure(config.clone()))
+        .everywhere(Request::AgentConfigure(Box::new(config.clone())))
         .await;
     assert_eq!(reply, Ok(Response::Done));
     let requests = fake.requests.lock().unwrap().clone();
-    assert_eq!(requests, [Request::AgentConfigure(config.without_keys())]);
+    assert_eq!(
+        requests,
+        [Request::AgentConfigure(Box::new(config.without_keys()))]
+    );
 }
 
 /// Cloud hosts' rows in Settings → Network: the hosts' configuration
@@ -706,7 +709,7 @@ async fn host_network_in_a_process_of_its_own() {
         requests
             .into_iter()
             .filter_map(|request| match request {
-                Request::AgentConfigure(config) => Some(config),
+                Request::AgentConfigure(config) => Some(*config),
                 _ => None,
             })
             .collect()
@@ -740,7 +743,7 @@ async fn host_network_in_a_process_of_its_own() {
     });
 
     remote
-        .everywhere(Request::AgentConfigure(AgentConfig::default()))
+        .everywhere(Request::AgentConfigure(Box::default()))
         .await
         .unwrap();
     assert_eq!(
@@ -798,7 +801,7 @@ async fn a_host_connecting_after_the_settings_were_applied_gets_them() {
     };
     // Applied with no host connected: nowhere to send it yet.
     let reply = remote
-        .everywhere(Request::AgentConfigure(config.clone()))
+        .everywhere(Request::AgentConfigure(Box::new(config.clone())))
         .await;
     assert_eq!(reply, Ok(Response::Done));
     let fake = Fake::default();
@@ -807,7 +810,7 @@ async fn a_host_connecting_after_the_settings_were_applied_gets_them() {
     assert_eq!(
         requests[..2],
         [
-            Request::AgentConfigure(config.without_keys()),
+            Request::AgentConfigure(Box::new(config.without_keys())),
             Request::AgentStatus
         ]
     );
@@ -898,7 +901,7 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
     remote.set_policy(HOST, ApprovalPolicy::Autonomous);
     remote.set_autonomy(HOST, block.clone());
     remote
-        .everywhere(Request::AgentConfigure(config.clone()))
+        .everywhere(Request::AgentConfigure(Box::new(config.clone())))
         .await
         .unwrap();
     let fake = Fake::default();
@@ -921,7 +924,7 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
         },
         "the host's hours, the computer's cost and tokens"
     );
-    let mut rest = received.clone();
+    let mut rest = received.as_ref().clone();
     rest.permissions.command_approval.by = Approver::User;
     rest.autopilot = config.autopilot.clone();
     assert_eq!(rest, config.without_keys(), "the rest is the computer's");
@@ -940,7 +943,7 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
     assert_eq!(started[1].mode.as_deref(), Some("plan"), "what it named");
     // With its keys, which a start carries (D11).
     let start_config = started[0].config.as_ref().map(AgentConfig::without_keys);
-    assert_eq!(start_config.as_ref(), Some(received));
+    assert_eq!(start_config.as_ref(), Some(received.as_ref()));
 
     // A change reaches it at once; "Wait for me" forgets the block there.
     fake.requests.lock().unwrap().clear();
@@ -960,7 +963,11 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
     let Request::AgentConfigure(waiting) = &requests[0] else {
         panic!("{requests:?}");
     };
-    assert_eq!(waiting, &config.without_keys(), "the computer's, as it is");
+    assert_eq!(
+        waiting.as_ref(),
+        &config.without_keys(),
+        "the computer's, as it is"
+    );
     assert_eq!(
         requests[1],
         Request::AutonomyConfigure(AutonomyConfig::default())
@@ -1303,14 +1310,14 @@ async fn the_policies_are_read_again_before_a_configuration_goes_out() {
         ..AgentConfig::default()
     };
     remote
-        .everywhere(Request::AgentConfigure(config.clone()))
+        .everywhere(Request::AgentConfigure(Box::new(config.clone())))
         .await
         .unwrap();
     assert_eq!(remote.policy(HOST), ApprovalPolicy::WaitForMe);
     let mut expected = config.without_keys();
     ApprovalPolicy::WaitForMe.apply(&AutonomySettings::default(), &mut expected);
     let requests = fake.requests.lock().unwrap().clone();
-    assert_eq!(requests, [Request::AgentConfigure(expected)]);
+    assert_eq!(requests, [Request::AgentConfigure(Box::new(expected))]);
 }
 
 /// A mirrored chat is pulled by one window at a time: two pulling from the

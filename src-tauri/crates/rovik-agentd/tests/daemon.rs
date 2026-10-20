@@ -422,7 +422,9 @@ async fn keys_are_listed_without_themselves_then_removed() {
         approval_profiles: vec![reviewer],
         ..AgentConfig::default()
     };
-    let configured = session.call(Request::AgentConfigure(config)).await;
+    let configured = session
+        .call(Request::AgentConfigure(Box::new(config)))
+        .await;
     assert_eq!(configured, Ok(Response::Done));
     let listed = session.call(Request::KeysList).await.unwrap();
     assert_eq!(

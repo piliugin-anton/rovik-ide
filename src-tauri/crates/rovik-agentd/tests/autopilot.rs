@@ -8,7 +8,6 @@ mod common;
 use common::project::CHAT;
 use common::task::*;
 use common::{until, Daemon, Row};
-use rovik_core::agent_run::AgentConfig;
 use rovik_core::testing::Reply;
 use rovik_protocol::{Frame, Request, Response};
 use serde_json::{json, Value};
@@ -369,9 +368,7 @@ async fn the_autonomy_frame_is_kept_and_read_back_after_a_restart() {
     daemon.restart().await;
     // Another change of the state, written from what the daemon read back.
     let mut session = daemon.session().await;
-    let configured = session
-        .call(Request::AgentConfigure(AgentConfig::default()))
-        .await;
+    let configured = session.call(Request::AgentConfigure(Box::default())).await;
     assert_eq!(configured, Ok(Response::Done));
     assert_eq!(
         kept(&daemon),

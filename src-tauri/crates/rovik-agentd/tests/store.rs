@@ -47,9 +47,13 @@ async fn each_computers_configuration_applies_to_its_own_chats() {
     std::fs::create_dir_all(&project).unwrap();
     let mut laptop = daemon.session().await;
     let mut desk = daemon.session_as(OTHER, &daemon.other_token).await;
-    let configured = laptop.call(Request::AgentConfigure(approvals(true))).await;
+    let configured = laptop
+        .call(Request::AgentConfigure(Box::new(approvals(true))))
+        .await;
     assert_eq!(configured, Ok(Response::Done));
-    let configured = desk.call(Request::AgentConfigure(approvals(false))).await;
+    let configured = desk
+        .call(Request::AgentConfigure(Box::new(approvals(false))))
+        .await;
     assert_eq!(configured, Ok(Response::Done));
 
     // Starts that carry no configuration of their own.

@@ -58,7 +58,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         ))),
         Request::AgentStatus => Ok(Response::AgentStatus(agent_run::agent_status(core))),
         Request::AgentConfigure(config) => {
-            agent_run::agent_configure(core, config);
+            agent_run::agent_configure(core, *config);
             Ok(Response::Done)
         }
         Request::AgentSetEffort {
@@ -416,7 +416,11 @@ mod tests {
         let mut config = AgentConfig::default();
         config.permissions.allow_any_command = true;
         assert_eq!(
-            call(&test.core, Request::AgentConfigure(config.clone())).await,
+            call(
+                &test.core,
+                Request::AgentConfigure(Box::new(config.clone()))
+            )
+            .await,
             Response::Done
         );
         assert_eq!(test.core.agents.config(), config);
