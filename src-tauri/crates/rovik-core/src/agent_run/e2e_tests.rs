@@ -793,6 +793,7 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     let confined = crate::overlay::confine::available(&crate::overlay::confine::Confine {
         view: h.project.clone(),
         project: h.project.clone(),
+        hide: Vec::new(),
     });
     assert!(
         result_of(&messages, "b1").content.contains("hello"),

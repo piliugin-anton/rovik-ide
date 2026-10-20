@@ -42,6 +42,9 @@ pub struct Probe {
     pub chrome_headless: bool,
     /// Unprivileged user namespaces: Chrome's sandbox needs them.
     pub user_namespaces: bool,
+    /// `bwrap`, which confines the chats' commands; without it the daemon's
+    /// own user namespace does, where allowed. Rovik's install adds it.
+    pub bwrap: Option<String>,
     /// `/dev/fuse`, and the helper that mounts without root: the virtual
     /// files need both.
     pub fuse: bool,
@@ -101,6 +104,7 @@ impl Probe {
                 "chrome" => probe.chrome = some(),
                 "chrome_headless" => probe.chrome_headless = yes,
                 "userns" => probe.user_namespaces = yes,
+                "bwrap" => probe.bwrap = some(),
                 "fuse" => probe.fuse = yes,
                 "fusermount" => probe.fusermount = some(),
                 "systemd" => probe.systemd = yes,
@@ -267,12 +271,20 @@ impl Probe {
         }
     }
 
-    /// User namespaces and FUSE: extras, not needed (design §3.1).
+    /// User namespaces, bubblewrap and FUSE: extras, not needed (design
+    /// §3.1).
     fn isolation(&self) -> Step {
         let mut missing = Vec::new();
         if !self.user_namespaces {
             missing.push(
                 "unprivileged user namespaces are off, so Chrome runs without its sandbox".into(),
+            );
+        }
+        if self.bwrap.is_none() {
+            missing.push(
+                "bubblewrap isn't installed, so the chats' commands are confined with the \
+                 daemon's own user namespace where allowed (Rovik's install adds it)"
+                    .into(),
             );
         }
         let virtual_files = match (self.fuse, &self.fusermount) {
@@ -287,7 +299,7 @@ impl Probe {
             true => Step::new(
                 Check::Isolation,
                 Outcome::Passed,
-                "User namespaces and FUSE are there.".into(),
+                "User namespaces, bubblewrap and FUSE are there.".into(),
             ),
             false => Step::new(
                 Check::Isolation,
@@ -470,6 +482,7 @@ git=git version 2.39.5
 chrome=/usr/bin/chromium
 chrome_headless=yes
 userns=yes
+bwrap=/usr/bin/bwrap
 fuse=no
 fusermount=
 systemd=yes
@@ -511,6 +524,7 @@ disk_kb=3320552
 git=git version 2.43.0
 chrome=
 userns=yes
+bwrap=/usr/bin/bwrap
 fuse=yes
 fusermount=/usr/bin/fusermount3
 systemd=no

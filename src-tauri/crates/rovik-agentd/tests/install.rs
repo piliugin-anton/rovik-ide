@@ -444,6 +444,15 @@ fn the_pinned_browser_comes_with_rovik_and_its_upgrades() {
         ),
         "{out}"
     );
+    // And bubblewrap, from the distro's package, which confines the chats'
+    // commands (a dry run never finds it installed).
+    assert!(
+        out.contains(
+            "would run: env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
+             -q -y --no-install-recommends install bubblewrap"
+        ),
+        "{out}"
+    );
 
     let (_, uid) = someone_else();
     let refused = server.run(&["admin", "browser"], Some(uid));
@@ -451,6 +460,13 @@ fn the_pinned_browser_comes_with_rovik_and_its_upgrades() {
     let again = server.run(&["admin", "browser"], Some(NOBODY));
     assert!(again.status.success(), "{}", said(&again));
     assert!(said(&again).contains(&format!("would download {}", pin.url())));
+    let again = server.run(&["admin", "bubblewrap"], Some(NOBODY));
+    assert!(again.status.success(), "{}", said(&again));
+    assert!(
+        said(&again).contains("install bubblewrap"),
+        "{}",
+        said(&again)
+    );
 
     let path = server.file("/etc/rovik/agentd.toml");
     let settings = std::fs::read_to_string(&path).unwrap() + "allow_unsigned = true\n";
@@ -462,9 +478,10 @@ fn the_pinned_browser_comes_with_rovik_and_its_upgrades() {
     let out = said(&upgraded);
     assert!(upgraded.status.success(), "{out}");
     let browser = out.find("would run: /opt/rovik/bin/rovik-agentd admin browser");
+    let bubblewrap = out.find("would run: /opt/rovik/bin/rovik-agentd admin bubblewrap");
     let restart = out.find("would run: systemctl try-restart");
     assert!(
-        matches!((browser, restart), (Some(b), Some(r)) if b < r),
+        matches!((browser, bubblewrap, restart), (Some(b), Some(w), Some(r)) if b < r && w < r),
         "{out}"
     );
 }

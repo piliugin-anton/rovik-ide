@@ -35,6 +35,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod browser;
+mod bubblewrap;
+mod packages;
 
 pub const BIN_DIR: &str = "/opt/rovik/bin";
 /// The installed binary, a link to the current version.
@@ -191,6 +193,12 @@ impl System {
         programs.iter().copied().find(|p| on_path(p))
     }
 
+    /// Whether `program` is on the PATH; under another root, never, so a
+    /// dry run shows what installing it would run.
+    fn has(&self, program: &str) -> bool {
+        self.live() && on_path(program)
+    }
+
     /// Writes a file all at once: a new one beside it, renamed over it.
     /// The new one is root's alone until it's whole and has its `mode`.
     fn write(&self, absolute: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
@@ -294,6 +302,7 @@ pub fn install(sys: &System, admin: &str, binary: Option<PathBuf>) -> Result<(),
     }
     println!("Its administrators: {}.", file.admins.join(", "));
     browser::ensure_or_say(sys);
+    bubblewrap::ensure_or_say(sys);
     Ok(())
 }
 
@@ -380,11 +389,12 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
             leave_group(sys, user)
         }
         ["browser"] => browser::ensure(sys),
+        ["bubblewrap"] => bubblewrap::ensure(sys),
         ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller, allow_downgrade),
         ["uninstall"] => uninstall(sys),
         _ => Err(
             "admin takes: limits [name=value ...], add USER, remove USER, browser, \
-             upgrade FILE [--allow-downgrade], uninstall"
+             bubblewrap, upgrade FILE [--allow-downgrade], uninstall"
                 .into(),
         ),
     }
@@ -447,6 +457,12 @@ fn upgrade(
     match sys.run(INSTALLED, &["admin", "browser"]) {
         Ok(said) => print!("{said}"),
         Err(why) => println!("{}", browser::not_installed(&why)),
+    }
+    // And bubblewrap, which confines the chats' commands, for a server
+    // installed before Rovik asked for it. Same: it stops nothing else.
+    match sys.run(INSTALLED, &["admin", "bubblewrap"]) {
+        Ok(said) => print!("{said}"),
+        Err(why) => println!("{}", bubblewrap::not_installed(&why)),
     }
     if sys.systemd() {
         sys.run("systemctl", &["try-restart", "rovik-agentd@*.service"])?;
@@ -933,8 +949,15 @@ pub fn runs_installed() -> bool {
 }
 
 fn on_path(program: &str) -> bool {
+    find_on_path(program).is_some()
+}
+
+/// Where `program` is, when it's in a folder of the PATH.
+pub(crate) fn find_on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|file| file.is_file())
 }
 
 /// The machine's memory, from /proc/meminfo; 4 GiB when it can't be read.

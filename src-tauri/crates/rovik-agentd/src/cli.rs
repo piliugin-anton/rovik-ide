@@ -43,11 +43,13 @@ usage: rovik-agentd <command>
   user start|stop|restart|status [--root DIR]
       Through sudo: your own daemon.
   admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
-         upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
+         bubblewrap | upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
       Through sudo, for Rovik's administrators: the limits on each user's
       daemon (none takes one away), the administrators, the browser for
       the browser tools (the Chrome for Testing Rovik pins, which install
-      and upgrade put in place too), an upgrade for everyone (a release's
+      and upgrade put in place too), bubblewrap, which confines the chats'
+      commands (install and upgrade put it in place too, from the distro's
+      package), an upgrade for everyone (a release's
       build, signed in FILE.sig, or a build of one's own where agentd.toml
       allows unsigned ones; an older build only with --allow-downgrade), or
       Rovik's removal from the server.

@@ -19,6 +19,7 @@ Rovik is installed once per server, by root:
 | `/etc/systemd/system/rovik.slice`                         | The caps on all of Rovik together.                       |
 | `/etc/sudoers.d/rovik`                                    | Lets users run the commands described below.             |
 | `/opt/rovik/browser/<version>/`                           | The browser tools' browser (below), owned by root.       |
+| The distro's `bubblewrap` package                         | Confines the chats' commands (see What can read what).   |
 | The `rovik-admin` group                                   | The administrators.                                      |
 
 Each user's daemon keeps its files in `~/.rovik` and works in
@@ -39,8 +40,11 @@ sudo /path/to/rovik-agentd install --admin USER
 The installer copies the binary, writes `agentd.toml` with USER as the
 administrator and with limits sized to the machine, writes the units, adds
 USER to `rovik-admin`, installs the sudoers rule once `visudo` accepts it,
-starts USER's daemon, and installs the browser for the browser tools
-([The browser](#the-browser)). To see what it would do without changing
+starts USER's daemon, installs the browser for the browser tools
+([The browser](#the-browser)) and the distro's `bubblewrap` package, which
+confines the chats' commands ([What can read what](#what-can-read-what)).
+Neither stops the install when it can't be installed. To see what it would
+do without changing
 anything, add `--root /tmp/somewhere`. It then writes the files under that
 folder and prints each command it would run.
 
@@ -88,6 +92,7 @@ sudo /opt/rovik/bin/rovik-agentd admin limits cpu_quota=none     # remove one
 sudo /opt/rovik/bin/rovik-agentd admin add USER
 sudo /opt/rovik/bin/rovik-agentd admin remove USER
 sudo /opt/rovik/bin/rovik-agentd admin browser                   # install it if it's missing
+sudo /opt/rovik/bin/rovik-agentd admin bubblewrap                # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin upgrade FILE
 sudo /opt/rovik/bin/rovik-agentd admin uninstall
 ```
@@ -155,7 +160,16 @@ what Rovik's folders take.
 
 ## What can read what
 
-- The agent's commands run as the user and can read whatever the user can.
+- The agent's commands run as the user, kept out of the credential stores:
+  `~/.rovik` (the API keys among it), `~/.ssh`, `~/.aws`, `~/.gnupg` and
+  the cloud CLIs' folders. Each command runs in a mount namespace where
+  those folders are empty, with its capabilities dropped so it can't undo
+  that: made by bubblewrap, which the installer adds from the distro's
+  package (on Ubuntu 24.04 only its AppArmor profile may make one), or by
+  the daemon itself where the kernel allows an unprivileged user
+  namespace. Where neither can be made, a command that names `~/.rovik`
+  needs the user's approval, and the rest is readable as the user.
+  `rovik-agentd doctor` and the app's connection test say which applies.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
   read them, but root can. The app tells users: "Your API keys are stored in
   your account on this server, so chats there run while this computer is
@@ -217,7 +231,8 @@ in your home is yours to change meanwhile, so it never goes back to it. It
 asks a copy in memory its version, as you rather than as root, and the
 copy under `/opt/rovik/bin` is root's alone until it has passed. Each
 build is named for the version it says it is. Before the daemons start again, the new build installs
-the browser it pins if it's missing, and the other versions go. An upgrade
+the browser it pins and bubblewrap, whichever is missing, and the browser's
+other versions go. An upgrade
 from the app does the same for a server whose installed build is older
 than that.
 

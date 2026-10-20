@@ -55,13 +55,10 @@ impl ChatOverlay {
     }
 
     /// How the chat's commands are kept out of the project: the project's
-    /// path shows the chat's view to them (confine.rs). None where that
-    /// isn't possible.
+    /// path shows the chat's view to them, and the credential stores are
+    /// hidden (confine.rs). None where that isn't possible.
     pub fn confine(&self) -> Option<super::confine::Confine> {
-        let c = super::confine::Confine {
-            view: self.view.clone(),
-            project: self.project.clone(),
-        };
+        let c = super::confine::Confine::redirecting(self.view.clone(), self.project.clone());
         super::confine::available(&c).then_some(c)
     }
 

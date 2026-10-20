@@ -610,10 +610,16 @@ anyway, discard, or undo a landing.
 
 On Linux, the commands a chat runs see its overlay at the project's own
 path too, so one that names the project by its full path still stays in
-the chat. They run under bubblewrap (`bwrap`, which the .deb and .rpm
-packages recommend), or, without it, in a namespace the app makes itself.
-Where neither is allowed, and on macOS and Windows, a command that names
-the project's full path is refused instead.
+the chat, and the credential stores are empty to them: the provider keys
+(`~/.rovik` on a server), `~/.ssh`, `~/.aws`, `~/.gnupg` and the cloud
+CLIs' folders. Every agent command gets that, isolated or not, a cloud
+host's worktrees included; your own terminal isn't confined. They run
+under bubblewrap (`bwrap`, which the .deb and .rpm packages recommend), or,
+without it, in a namespace the app makes itself. Where neither is allowed,
+and on macOS and Windows (no mechanism yet;
+`src-tauri/crates/rovik-core/src/overlay/confine.rs` says what to add), a
+command that names the project's full path is refused instead, and one
+that names a server's `~/.rovik` needs your approval.
 
 Limits: 512 MiB of changed files per chat (warning at 80%). Build output and
 dependency folders don't count toward it. Heavy commands such as builds and
