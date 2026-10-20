@@ -807,6 +807,29 @@ pub fn rel_key(root: &str, path: &str) -> String {
     }
 }
 
+/// `rel_key`, with the links in the path followed: where a write to it
+/// really lands, relative to the root. None when that's outside the root,
+/// or the root can't be resolved.
+pub fn real_key(root: &str, path: &str) -> Option<String> {
+    let root_real = Path::new(root).canonicalize().ok()?;
+    let abs = std::path::PathBuf::from(tools::to_absolute_path(path, root));
+    // The deepest part that exists, resolved, and the rest as given.
+    let mut rest = Vec::new();
+    let mut at = abs.as_path();
+    let mut real = loop {
+        if let Ok(real) = at.canonicalize() {
+            break real;
+        }
+        rest.push(at.file_name()?.to_os_string());
+        at = at.parent()?;
+    };
+    for part in rest.iter().rev() {
+        real.push(part);
+    }
+    let rel = real.strip_prefix(&root_real).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
+}
+
 fn read(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
     match std::fs::read(path) {
         Ok(b) => Ok(Some(b)),
@@ -1165,6 +1188,32 @@ impl Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A link under the tests to the code leads where it leads: the real
+    /// key is the code's, which the test writer's rule refuses.
+    #[cfg(unix)]
+    #[test]
+    fn a_links_real_key_is_where_it_leads() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.join("p");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::os::unix::fs::symlink("../src", root.join("tests/fixtures")).unwrap();
+        let root = root.to_string_lossy().into_owned();
+        assert_eq!(
+            rel_key(&root, "tests/fixtures/new.rs"),
+            "tests/fixtures/new.rs"
+        );
+        assert_eq!(
+            real_key(&root, "tests/fixtures/new.rs").as_deref(),
+            Some("src/new.rs")
+        );
+        assert_eq!(
+            real_key(&root, "tests/new.rs").as_deref(),
+            Some("tests/new.rs")
+        );
+        assert_eq!(real_key(&root, "../outside.rs"), None);
+    }
 
     fn round(keys: &[&str], ran: &[&str]) -> RoundFailures {
         RoundFailures {

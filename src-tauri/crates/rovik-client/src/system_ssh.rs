@@ -105,6 +105,8 @@ impl SystemSsh {
 pub struct SystemSshConnector {
     ssh: SystemSsh,
     local: Local,
+    /// The port picked for `Local::Port(0)` when the forward last started.
+    picked: std::sync::Mutex<Option<u16>>,
     /// The daemon's socket there, asked for once.
     remote: tokio::sync::Mutex<Option<String>>,
     forward: tokio::sync::Mutex<Option<Child>>,
@@ -115,8 +117,24 @@ impl SystemSshConnector {
         SystemSshConnector {
             ssh,
             local,
+            picked: std::sync::Mutex::new(None),
             remote: tokio::sync::Mutex::new(None),
             forward: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Where the forward listens: `local`, with a free port picked now for
+    /// `Local::Port(0)`. One picked once, when the host was saved, could
+    /// be taken by the time the forward starts again.
+    fn listen_at(&self) -> io::Result<Local> {
+        match &self.local {
+            Local::Port(0) => {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+                let port = listener.local_addr()?.port();
+                *self.picked.lock().unwrap_or_else(|e| e.into_inner()) = Some(port);
+                Ok(Local::Port(port))
+            }
+            local => Ok(local.clone()),
         }
     }
 
@@ -169,8 +187,9 @@ impl SystemSshConnector {
                 std::fs::create_dir_all(dir)?;
             }
         }
+        let local = self.listen_at()?;
         let mut child = ssh_command(&self.ssh.program)
-            .args(self.ssh.forward_args(&self.local, &remote))
+            .args(self.ssh.forward_args(&local, &remote))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -214,7 +233,14 @@ impl SystemSshConnector {
 
     /// A stream to the forward's end here.
     async fn reach(&self) -> io::Result<Stream> {
-        match &self.local {
+        let local = match &self.local {
+            Local::Port(0) => {
+                let picked = *self.picked.lock().unwrap_or_else(|e| e.into_inner());
+                Local::Port(picked.unwrap_or(0))
+            }
+            local => local.clone(),
+        };
+        match &local {
             #[cfg(unix)]
             Local::Socket(path) => {
                 let stream = tokio::net::UnixStream::connect(path).await?;

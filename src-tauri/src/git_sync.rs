@@ -591,11 +591,62 @@ pub fn git_operation_abort_blocking(path: String) -> Result<(), String> {
                 .abort()
                 .map_err(|e| format!("Couldn't abort the rebase: {e}"))
         }
-        // A merge (or cherry-pick / revert) hasn't moved HEAD: back to it.
+        // A merge (or cherry-pick / revert) hasn't moved HEAD: back to it,
+        // as git's --abort goes: what the operation touched (staged,
+        // conflicted) goes back to HEAD, and the rest of the working
+        // folder stays as it is. A touched file with edits not added would
+        // lose them: refused, as git refuses.
         _ => {
             let head = head_commit(&repo)?;
-            repo.reset(head.as_object(), ResetType::Hard, None)
+            let mut options = StatusOptions::new();
+            options.include_untracked(false).include_ignored(false);
+            let statuses = repo.statuses(Some(&mut options)).err_text()?;
+            let staged = Status::INDEX_NEW
+                | Status::INDEX_MODIFIED
+                | Status::INDEX_DELETED
+                | Status::INDEX_RENAMED
+                | Status::INDEX_TYPECHANGE;
+            let edited = Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_TYPECHANGE;
+            let (mut touched, mut unsaved) = (Vec::new(), Vec::new());
+            for entry in statuses.iter() {
+                let (Ok(path), status) = (entry.path(), entry.status()) else {
+                    continue;
+                };
+                if status.is_conflicted() || status.intersects(staged) {
+                    touched.push(path.to_string());
+                    if !status.is_conflicted() && status.intersects(edited) {
+                        unsaved.push(path.to_string());
+                    }
+                }
+            }
+            if !unsaved.is_empty() {
+                return Err(format!(
+                    "{} changed since the operation staged it: commit or stash the change first.",
+                    unsaved.join(", ")
+                ));
+            }
+            repo.reset(head.as_object(), ResetType::Mixed, None)
                 .err_text()?;
+            let tree = head.tree().err_text()?;
+            let dir = workdir(&repo)?;
+            let mut checkout = CheckoutBuilder::new();
+            checkout.force().disable_pathspec_match(true);
+            let mut restored = false;
+            for path in &touched {
+                match tree.get_path(Path::new(path)) {
+                    Ok(_) => {
+                        checkout.path(path);
+                        restored = true;
+                    }
+                    // Added by the operation: nothing of HEAD's to put back.
+                    Err(_) => {
+                        let _ = std::fs::remove_file(dir.join(path));
+                    }
+                }
+            }
+            if restored {
+                repo.checkout_head(Some(&mut checkout)).err_text()?;
+            }
             repo.cleanup_state().err_text()
         }
     }

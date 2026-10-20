@@ -393,13 +393,13 @@ pub async fn remove(daemon: &Daemon, chat: &str) {
 /// again: as `remove` takes, but the snapshot the move pushed to `project`.
 /// Its rows go in the import's transaction, its state with the import.
 pub async fn clear_stay(daemon: &Daemon, chat: &str, project: &str) {
-    clear(daemon, chat, Some(project)).await
+    clear(daemon, chat, Some(project)).await;
 }
 
 /// The chat's worktree, its branch and its refs in every project's
 /// repository but its snapshot in `keep`'s, and its root among its
-/// project's folders.
-async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) {
+/// project's folders. Whether the worktree's folder is gone.
+async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) -> bool {
     if let Some(place) = daemon.store.place(chat) {
         let subpath = daemon
             .store
@@ -435,8 +435,13 @@ async fn clear(daemon: &Daemon, chat: &str, keep: Option<&str>) {
             _ => Ok(()),
         }
     });
-    if let Ok(Err(e)) = removed.await {
-        log::warn!("{chat}'s worktree stays: {e}");
+    match removed.await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            log::warn!("{chat}'s worktree stays: {e}");
+            false
+        }
+        Err(_) => false,
     }
 }
 
@@ -469,9 +474,13 @@ pub async fn collect_chats(daemon: &Daemon, released_before: i64) -> usize {
             removed += 1;
         } else if released.is_some_and(|at| at < week_over) {
             log::info!("{chat} went back to its computer a week ago: its worktree goes");
-            clear(daemon, &chat, None).await;
-            daemon.store.worktree_gone(&chat);
-            removed += 1;
+            // Forgotten once it's gone: a folder that stays (a file held
+            // open) is tried again next time, not left as nobody's, which
+            // the collection below would remove with the chat's rows.
+            if clear(daemon, &chat, None).await {
+                daemon.store.worktree_gone(&chat);
+                removed += 1;
+            }
         }
     }
     // A chat taken back whose worktree went and whose rows its computer

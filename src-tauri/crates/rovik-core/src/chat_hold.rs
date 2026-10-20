@@ -130,11 +130,13 @@ impl Holds {
         if held.contains_key(chat) {
             return;
         }
-        if let Some(path) = self
-            .path(chat)
-            .filter(|p| !crate::os_lock::held_elsewhere(p))
-        {
-            let _ = std::fs::remove_file(path);
+        // Deleted while this process holds it: deleted from under another
+        // process's hold, the file would come back fresh for a third one,
+        // and two would hold the chat.
+        if let Some(path) = self.path(chat) {
+            if let Ok(Some(_holding)) = crate::os_lock::try_hold(&path) {
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
 }

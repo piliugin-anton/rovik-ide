@@ -134,8 +134,11 @@ pub enum SshError {
     HostKeyChanged { pinned: String, found: String },
     /// The host didn't take the credentials.
     Denied(String),
-    /// The key file or the agent failed.
+    /// The key file or the agent failed: not there, not up, not answering.
     Key(String),
+    /// The key file is there and can't be used: not a key, or not one its
+    /// passphrase (or none) opens. For the user, as the host's refusal is.
+    KeyUnusable(String),
     /// The connection dropped while logging in, or a channel or a
     /// command failed.
     Failed(String),
@@ -160,6 +163,7 @@ impl fmt::Display for SshError {
             ),
             SshError::Denied(why) => write!(f, "The host didn't let you in: {why}"),
             SshError::Key(why) => write!(f, "The SSH key: {why}"),
+            SshError::KeyUnusable(why) => write!(f, "The SSH key can't be used: {why}"),
             SshError::Failed(why) | SshError::Install(why) => write!(f, "{why}"),
         }
     }
@@ -626,8 +630,16 @@ async fn log_in(handle: &mut Handle<Checker>, target: &SshTarget) -> Result<(), 
             .map_err(dropped)?,
         SshAuth::Key { path, passphrase } => {
             let passphrase = passphrase.as_ref().map(|p| p.0.as_str());
-            let key = russh::keys::load_secret_key(path, passphrase)
-                .map_err(|e| SshError::Key(format!("{}: {e}", path.display())))?;
+            // A key file that isn't there (a drive not mounted) is tried
+            // again soon; one that's there and can't be read with this
+            // passphrase waits for the user, as the host's refusal would.
+            let key = russh::keys::load_secret_key(path, passphrase).map_err(|e| {
+                let why = format!("{}: {e}", path.display());
+                match std::fs::metadata(path) {
+                    Err(_) => SshError::Key(why),
+                    Ok(_) => SshError::KeyUnusable(why),
+                }
+            })?;
             let hash = handle
                 .best_supported_rsa_hash()
                 .await
@@ -916,9 +928,11 @@ impl Connector for SshConnector {
 /// published) may come right on their own, and are tried again now and
 /// then. The key file and the agent are this computer's (an agent not up
 /// yet, a drive not mounted): a link that didn't come up, tried again soon.
+/// A key file that's there and can't be used waits for the user, as the
+/// credentials do: tried again, it would fail the same way.
 fn io_error(e: SshError) -> io::Error {
     let may_pass = match &e {
-        SshError::Denied(_) | SshError::UnknownHostKey { .. } => false,
+        SshError::Denied(_) | SshError::UnknownHostKey { .. } | SshError::KeyUnusable(_) => false,
         SshError::HostKeyChanged { .. } | SshError::Install(_) => true,
         SshError::Unreachable(_) | SshError::Failed(_) | SshError::Key(_) => {
             return io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string())
@@ -959,6 +973,10 @@ mod tests {
         };
         assert_eq!(refusal(changed), Some(true));
         assert_eq!(refusal(SshError::Install("changed".into())), Some(true));
+        assert_eq!(
+            refusal(SshError::KeyUnusable("id_ed25519: bad passphrase".into())),
+            Some(false)
+        );
         for passing in [
             SshError::Key("no SSH agent answered: not found".into()),
             SshError::Key("/media/usb/id_ed25519: not found".into()),

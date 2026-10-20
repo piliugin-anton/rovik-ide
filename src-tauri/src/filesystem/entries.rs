@@ -814,6 +814,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An id names what was at its path when the tree was read: once
+    /// another file is there (renamed outside the app, the tree not
+    /// refreshed), a command by the id doesn't act on that file.
+    #[test]
+    fn an_id_whose_path_holds_another_file_doesnt_resolve() {
+        let dir = scratch("staleid");
+        let a = dir.join("a.txt");
+        std::fs::write(&a, "first").unwrap();
+        let state = WatcherState::default();
+        let id = stable_file_id(&a);
+        remember_id(&state, &id, &a);
+        std::fs::rename(&a, dir.join("b.txt")).unwrap();
+        std::fs::write(&a, "another").unwrap();
+        assert!(resolve_id(&state, &id).is_err(), "another file at the path");
+        remember_id(&state, &id, &dir.join("b.txt"));
+        assert_eq!(resolve_id(&state, &id).unwrap(), dir.join("b.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn temp_hop_rename_updates_the_id_mapping() {
         let dir = scratch("temphop");

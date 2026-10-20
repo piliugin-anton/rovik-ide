@@ -46,9 +46,10 @@ pub async fn request(
         }
     };
     let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL {url}: {e}"))?;
+    // A URL's IPv6 host keeps its brackets in `host_str`.
     let local = matches!(
         parsed.host_str(),
-        Some("localhost") | Some("127.0.0.1") | Some("::1")
+        Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
     );
     if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {
         return Err(format!(

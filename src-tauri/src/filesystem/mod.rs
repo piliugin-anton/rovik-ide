@@ -69,22 +69,35 @@ pub struct WatcherState {
     /// Dropping the watcher stops its watch loop.
     active_watcher: Mutex<Option<notify::RecommendedWatcher>>,
     gitignore: Mutex<Option<(PathBuf, Arc<Gitignore>)>>,
-    /// Maps a stable_file_id() back to the last path we saw it at. Populated
-    /// whenever we hand an id to the frontend (read_dir_entries, get_path_id)
-    /// and updated on rename/move, so mutating commands can always resolve an
-    /// id to a real path instead of trusting a path string the frontend may
-    /// be holding onto with stale or differently-cased casing.
-    id_to_path: Mutex<HashMap<String, PathBuf>>,
+    /// Maps a stable_file_id() back to the last path we saw it at, with the
+    /// identity of what was there then. Populated whenever we hand an id to
+    /// the frontend (read_dir_entries, get_path_id) and updated on
+    /// rename/move, so mutating commands can always resolve an id to a real
+    /// path instead of trusting a path string the frontend may be holding
+    /// onto with stale or differently-cased casing. After a cross-device
+    /// move the old id maps to the copy, whose identity is the copy's own.
+    id_to_path: Mutex<HashMap<String, (PathBuf, Option<String>)>>,
 }
 
 fn resolve_id(state: &WatcherState, id: &str) -> Result<PathBuf, String> {
-    state
+    let (path, was) = state
         .id_to_path
         .lock()
         .unwrap()
         .get(id)
         .cloned()
-        .ok_or_else(|| format!("{id}: unknown id (try refreshing the folder view)"))
+        .ok_or_else(|| format!("{id}: unknown id (try refreshing the folder view)"))?;
+    // Another entry at the path now (renamed outside the app, the tree
+    // not refreshed yet): not the id's, and not acted on as it.
+    if let (Some(was), Some(now)) = (was, file_identity(&path)) {
+        if now != was {
+            return Err(format!(
+                "{}: another file is at this path now (refresh the folder view)",
+                path.display()
+            ));
+        }
+    }
+    Ok(path)
 }
 
 fn remember_id(state: &WatcherState, id: &str, path: &Path) {
@@ -92,7 +105,7 @@ fn remember_id(state: &WatcherState, id: &str, path: &Path) {
         .id_to_path
         .lock()
         .unwrap()
-        .insert(id.to_string(), path.to_path_buf());
+        .insert(id.to_string(), (path.to_path_buf(), file_identity(path)));
 }
 
 fn build_gitignore(root: &Path) -> Result<Gitignore, String> {

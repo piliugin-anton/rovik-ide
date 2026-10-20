@@ -3,7 +3,7 @@
 //! talking, so what follows a proxy's answer in the same read is the
 //! host's first bytes: the link hands them on before anything else.
 
-use super::settings::authority;
+use super::settings::{authority, bare_host};
 use base64::Engine;
 use std::fmt;
 use std::io;
@@ -157,7 +157,7 @@ pub async fn open(host: &str, port: u16, hop: &Hop, timeout: Duration) -> Result
     let connect = async {
         match hop {
             Hop::Direct => {
-                let stream = TcpStream::connect((host, port))
+                let stream = TcpStream::connect((bare_host(host).as_str(), port))
                     .await
                     .map_err(|e| format!("{target}: {}", plain(&e)))?;
                 Ok(Link::new(stream, Vec::new()))
@@ -198,13 +198,16 @@ pub async fn open(host: &str, port: u16, hop: &Hop, timeout: Duration) -> Result
 }
 
 async fn reach_proxy(host: &str, port: u16) -> Result<TcpStream, String> {
-    TcpStream::connect((host, port)).await.map_err(|e| {
-        format!(
-            "The proxy at {} can't be reached: {}",
-            authority(host, port),
-            plain(&e)
-        )
-    })
+    let bare = bare_host(host);
+    TcpStream::connect((bare.as_str(), port))
+        .await
+        .map_err(|e| {
+            format!(
+                "The proxy at {} can't be reached: {}",
+                authority(host, port),
+                plain(&e)
+            )
+        })
 }
 
 /// An I/O error as a sentence's end.
@@ -292,6 +295,13 @@ async fn connect_through_socks5(
     match (chosen[1], auth) {
         (0x00, _) => {}
         (0x02, Some((user, password))) => {
+            // Their lengths go in a byte each.
+            if user.len() > 255 || password.len() > 255 {
+                return Err(
+                    "The proxy's username and password are too long for SOCKS5 (255 bytes each at most)."
+                        .into(),
+                );
+            }
             let mut sign_in = vec![0x01, user.len() as u8];
             sign_in.extend_from_slice(user.as_bytes());
             sign_in.push(password.len() as u8);
@@ -310,6 +320,9 @@ async fn connect_through_socks5(
     }
 
     let mut request = vec![0x05, 0x01, 0x00];
+    // The address without a URL's brackets: `[::1]` is an address, not a name.
+    let host = bare_host(host);
+    let host = host.as_str();
     let address = match host.parse::<IpAddr>() {
         Ok(ip) => ip,
         Err(_) if remote_names => {

@@ -451,7 +451,10 @@ pub fn report_editor_diagnostics(
         {
             return Err(format!("path must not contain '..': {path}"));
         }
-        path.trim().replace('\\', "/")
+        // As the tools name the file (`src/a.ts`, never `./src/a.ts`):
+        // the diagnostics look it up under that name.
+        let plain = path.trim().replace('\\', "/");
+        crate::agent_run::paths::norm_rel(&plain).unwrap_or(plain)
     };
     let mut markers = markers;
     for m in &mut markers {

@@ -60,7 +60,15 @@ fn append_queued() {
                 }
             }
         };
-        let _ = crate::project_profile::append_agent_log(&dir, &text);
+        // A panic in one append (a path that can't be made) is that line's:
+        // the writer goes on, or `writing` would stay set and every later
+        // line stay queued.
+        let appended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = crate::project_profile::append_agent_log(&dir, &text);
+        }));
+        if appended.is_err() {
+            eprintln!("agent log: a line couldn't be written to {}", dir.display());
+        }
         QUEUE.lock().unwrap_or_else(|e| e.into_inner()).appended += 1;
     }
 }

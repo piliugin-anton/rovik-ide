@@ -20,7 +20,7 @@
 use super::fs::{check_name, DeletedBase, OverlayChange};
 use crate::vfs::store::Kind;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -756,11 +756,45 @@ fn is_content(project: &Path, rel: &str, content: &Content) -> bool {
         (Content::File { file, .. }, Snapshot::File(now)) if !file.is_dir() => {
             fs::read(file).is_ok_and(|b| b == now)
         }
-        // A folder kept whole (a deleted folder's journal copy).
-        (Content::File { file, .. }, Snapshot::Dir) if file.is_dir() => true,
+        // A folder kept whole (a deleted folder's journal copy): the same
+        // folder when it holds the same, not any folder by that name.
+        (Content::File { file, .. }, Snapshot::Dir) if file.is_dir() => {
+            same_tree(file, &abs(project, rel))
+        }
         (Content::Symlink { target }, Snapshot::Symlink(t)) => *target == t,
         _ => false,
     }
+}
+
+/// Whether the folder at `b` holds what the folder at `a` holds: the same
+/// names, each the same kind with the same content, nothing more or less.
+fn same_tree(a: &Path, b: &Path) -> bool {
+    let entries = |dir: &Path| -> Option<BTreeMap<std::ffi::OsString, fs::FileType>> {
+        fs::read_dir(dir)
+            .ok()?
+            .map(|e| {
+                let e = e.ok()?;
+                Some((e.file_name(), e.file_type().ok()?))
+            })
+            .collect()
+    };
+    let (Some(in_a), Some(in_b)) = (entries(a), entries(b)) else {
+        return false;
+    };
+    if !in_a.keys().eq(in_b.keys()) {
+        return false;
+    }
+    in_a.iter().all(|(name, kind)| {
+        let (pa, pb) = (a.join(name), b.join(name));
+        let kind_b = in_b[name];
+        if kind.is_dir() {
+            kind_b.is_dir() && same_tree(&pa, &pb)
+        } else if kind.is_symlink() {
+            kind_b.is_symlink() && fs::read_link(&pa).ok() == fs::read_link(&pb).ok()
+        } else {
+            kind_b.is_file() && fs::read(&pa).ok() == fs::read(&pb).ok()
+        }
+    })
 }
 
 /// The lock a landing holds while it's written (`apply`, `recover_where`).

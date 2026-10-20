@@ -696,7 +696,9 @@ fn text(frame: &Frame) -> Message {
 }
 
 /// The next frame, or none once the link is gone. Text that isn't a frame
-/// this client knows, from a newer daemon, is passed over.
+/// this client knows, from a newer daemon, is passed over, with a line in
+/// the log; a reply it can't read fails its call, which would otherwise
+/// wait for an answer that came.
 async fn next_frame<S>(stream: &mut S) -> Option<Frame>
 where
     S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin,
@@ -705,7 +707,21 @@ where
         match stream.next().await? {
             Ok(Message::Text(text)) => match serde_json::from_str(&text) {
                 Ok(frame) => return Some(frame),
-                Err(_) => continue,
+                Err(e) => {
+                    log::warn!("a frame from the daemon couldn't be read: {e}");
+                    let envelope: Option<serde_json::Value> = serde_json::from_str(&text).ok();
+                    let reply_to = envelope
+                        .filter(|v| v["t"] == "reply")
+                        .and_then(|v| v["id"].as_u64());
+                    if let Some(id) = reply_to {
+                        let res = Err(Fail::new(
+                            FailCode::Version,
+                            "The daemon's answer isn't one this app reads: update Rovik.",
+                        ));
+                        return Some(Frame::Reply { id, res });
+                    }
+                    continue;
+                }
             },
             Ok(Message::Close(_)) | Err(_) => return None,
             Ok(_) => continue,

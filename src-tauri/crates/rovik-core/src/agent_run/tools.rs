@@ -837,6 +837,20 @@ async fn run(
     ctx: &CallContext,
 ) -> Result<ToolResult, String> {
     let seen: &Seen = &ctx.seen;
+    // The test writer doesn't read the change's code by any tool (P2.4):
+    // first, before any path is served; by the path's name, and by where
+    // it really leads (a link under the tests to the code).
+    if !ctx.hidden.is_empty() && matches!(name, "read" | "neighbours" | "diagnostics") {
+        if let (Some(path), Some(root)) = (text(args, "path"), root) {
+            let key = super::repair::rel_key(root, path);
+            let real = super::repair::real_key(root, path);
+            if super::test_writer::is_hidden(&ctx.hidden, &key)
+                || real.is_some_and(|real| super::test_writer::is_hidden(&ctx.hidden, &real))
+            {
+                return Ok(ToolResult::text(super::test_writer::hidden_file(&key)));
+            }
+        }
+    }
     // A check's whole output, saved by the verification gate (C01).
     if name == "read" {
         if let Some(path) = text(args, "path").filter(|p| super::check_output::is_checks_path(p)) {
@@ -847,15 +861,6 @@ async fn run(
                 uint(args, "end_line"),
             )
             .map(ToolResult::text);
-        }
-    }
-    // The test writer doesn't read the change's code by any tool (P2.4).
-    if !ctx.hidden.is_empty() && matches!(name, "read" | "neighbours" | "diagnostics") {
-        if let (Some(path), Some(root)) = (text(args, "path"), root) {
-            let key = super::repair::rel_key(root, path);
-            if super::test_writer::is_hidden(&ctx.hidden, &key) {
-                return Ok(ToolResult::text(super::test_writer::hidden_file(&key)));
-            }
         }
     }
     match name {

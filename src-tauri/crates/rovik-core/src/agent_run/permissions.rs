@@ -1066,7 +1066,10 @@ static RISKY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"^(bash|sh|zsh|fish|eval|xargs)\b",
         r"^(node|bun|deno|python3?)\s+(-\S+\s+)*(-c|-e|-p|--eval)\b",
         r"^rm\s+(-\S*[rRf]\S*\s+)+",
-        r"^git\b.*\b(push|reset\s+--hard|clean\s+-\S*[fd]|branch\s+-D|checkout\s+--\s|restore\b)",
+        r"^(shred|truncate)\b",
+        r"^find\b.*\s-(delete\b|(exec|execdir|ok|okdir)\s+(rm|mv|shred|truncate|chmod|chown)\b)",
+        r"^git\b.*\b(push|reset\s+--hard|clean\s+-\S*[fd]|branch\s+-[dD]|stash\s+(drop|clear)|checkout\s+--\s|restore\b)",
+        r"^(perl|ruby|php)\s+(-\S+\s+)*-(e|E|r)\b",
         r"^(npm|pnpm|yarn|bun|cargo)\s+publish\b",
         r"^(wrangler|vercel|fly|flyctl|netlify)\s+deploy\b|^terraform\s+(apply|destroy)\b|^kubectl\s+(delete|apply)\b",
         r"^(curl|wget)\b.*\s(-d|--data\S*|-F|--form|-T|--upload-file|-X\s*(POST|PUT|PATCH|DELETE))\b",
@@ -1432,6 +1435,24 @@ mod tests {
         assert!(is_risky_command("npm test && rm -rf dist"));
         assert!(is_risky_command("cat .env"));
         assert!(is_risky_command("sudo ls"));
+        // Deleting by other names: find's own, git's stash and branches,
+        // shred and truncate, and a string run by perl or ruby.
+        for risky in [
+            "find . -name '*.log' -delete",
+            "find build -type f -exec rm {} \\;",
+            "git stash drop",
+            "git stash clear",
+            "git branch -d feature",
+            "shred -u secrets.txt",
+            "truncate -s 0 app.log",
+            "perl -e 'unlink glob \"*.bak\"'",
+            "ruby -e 'File.delete(\"x\")'",
+        ] {
+            assert!(is_risky_command(risky), "{risky}");
+        }
+        for plain in ["find . -name '*.rs'", "git stash list", "git branch -a"] {
+            assert!(!is_risky_command(plain), "{plain}");
+        }
         assert!(is_risky_command("env FOO=1 bash -c 'x'"));
         assert!(is_risky_command("python -c 'print(1)'"));
         assert!(!is_risky_command("npm test"));

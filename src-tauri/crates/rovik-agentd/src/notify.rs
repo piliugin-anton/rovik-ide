@@ -25,6 +25,8 @@ const CALL_WAIT: Duration = Duration::from_secs(10);
 /// The wait before the first retry; each after doubles it.
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const RETRIES: u32 = 3;
+/// Records told, and reports kept, at most: past that, forgotten whole.
+const REMEMBERED: usize = 10_000;
 
 /// What the URL is told.
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -96,6 +98,9 @@ impl Notifier {
                     (text("branch"), text("pr")),
                 );
                 let mut reports = self.reports.lock().unwrap_or_else(|e| e.into_inner());
+                if reports.len() >= REMEMBERED {
+                    reports.clear();
+                }
                 reports.insert(dialog_id.to_string(), latest);
             }
             if let Some(record) = meta.get("stage") {
@@ -122,14 +127,15 @@ impl Notifier {
         };
         self.store.autonomy_of(dialog_id).notify_url.as_ref()?;
         let key = format!("{message_id}:{status}");
-        if !self
-            .told
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key)
-        {
+        let mut told = self.told.lock().unwrap_or_else(|e| e.into_inner());
+        // Bounded: what was told long ago needn't be remembered for good.
+        if told.len() >= REMEMBERED {
+            told.clear();
+        }
+        if !told.insert(key) {
             return None;
         }
+        drop(told);
         let outcome = match field("outcome") {
             "" => status,
             outcome => outcome,

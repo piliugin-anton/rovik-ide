@@ -1219,6 +1219,45 @@ mod safety {
         );
     }
 
+    /// A folder the chat deleted, journaled whole; the app crashes before
+    /// the landing writes, and the user fills the folder with other files:
+    /// recovery sees it isn't the journal's copy, and leaves it.
+    #[test]
+    fn recovery_leaves_a_folder_the_user_filled_again() {
+        let d = setup(&[("dir/f.txt", "f\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        let dir = ino(&o, "dir");
+        o.unlink(dir, "f.txt").unwrap();
+        o.rmdir(ROOT, "dir").unwrap();
+        write_all(&o, "b.txt", "B\n");
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
+        let journal = data(&d)
+            .join("landings")
+            .join("chat")
+            .join(&landed.id)
+            .join("journal.json");
+        let text = fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        fs::write(&journal, text).unwrap();
+        fs::write(d.project().join("b.txt"), "b\n").unwrap();
+        fs::create_dir_all(d.project().join("dir")).unwrap();
+        fs::write(d.project().join("dir/new.txt"), "the user's\n").unwrap();
+        let report = land::recover(&data(&d));
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("B\n"));
+        assert_eq!(
+            project_file(&d, "dir/new.txt").as_deref(),
+            Some("the user's\n"),
+            "{report:?}"
+        );
+        assert!(
+            report.iter().any(|r| r.starts_with("dir (not finished")),
+            "{report:?}"
+        );
+    }
+
     #[test]
     fn undo_that_stopped_partway_finishes_on_retry() {
         let d = setup(&[("a.txt", "one\n"), ("b.txt", "two\n")]);
