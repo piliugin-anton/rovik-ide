@@ -67,7 +67,8 @@ import { recallViewState, rememberViewState } from '../lib/viewStates';
 interface EditorProps {
   projectDir: Accessor<string | null>;
   currentFilePath: string;
-  content: Accessor<string>;
+  /** The file's text as the app holds it; undefined once its tab is closed. */
+  content: Accessor<string | undefined>;
   language: Accessor<string>;
   onChange: (value: string) => void;
   onSave: () => void;
@@ -154,7 +155,7 @@ export default function Editor(props: EditorProps) {
       model = null;
     }
 
-    const content = props.content();
+    const content = props.content() ?? '';
     if (model) {
       // A cached model may hold stale content/language (e.g. the file
       // changed on disk while the tab was closed). Bring it in sync with
@@ -584,7 +585,7 @@ export default function Editor(props: EditorProps) {
         const anchor = headingRequest(props.currentFilePath);
         if (anchor === undefined || view() !== 'edit' || !editor) return;
         clearHeadingRequest(props.currentFilePath);
-        const line = headingLine(untrack(props.content), anchor);
+        const line = headingLine(untrack(props.content) ?? '', anchor);
         if (line === null) return;
         editor.setPosition({ lineNumber: line + 1, column: 1 });
         editor.revealLineNearTop(line + 1);
@@ -620,7 +621,12 @@ export default function Editor(props: EditorProps) {
   createEffect(() => {
     const next = props.content();
 
-    if (!editor || disposed) return;
+    // A closed tab has no content: its file left the app's list a moment
+    // before this editor goes. The model stays cached (lib/models.ts) for
+    // the TypeScript worker and the language servers, which read it in
+    // place of the file on disk; emptied here, the file read as "not a
+    // module" from every import of it until the model was pruned.
+    if (next === undefined || !editor || disposed) return;
 
     const model = editor.getModel();
     if (model && model.getValue() !== next) {
@@ -665,7 +671,7 @@ export default function Editor(props: EditorProps) {
         <MarkdownPreview
           path={props.currentFilePath}
           root={props.projectDir}
-          content={props.content}
+          content={() => props.content() ?? ''}
           editor={instance}
           beside={() => view() === 'split'}
           readOnly={() => props.readOnly?.() ?? false}

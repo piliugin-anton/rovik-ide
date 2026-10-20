@@ -2236,7 +2236,7 @@ export default function App() {
               <Editor
                 projectDir={rootPath}
                 currentFilePath={path}
-                content={() => openFiles().find((f) => f.path === path)?.content ?? ''}
+                content={() => openFiles().find((f) => f.path === path)?.content}
                 language={() => openFiles().find((f) => f.path === path)?.language ?? 'plaintext'}
                 onChange={(value) => updateContent(path, value)}
                 onSave={() => saveActiveFile()}
