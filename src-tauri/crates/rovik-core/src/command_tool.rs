@@ -805,12 +805,14 @@ mod tests {
             None,
         )
         .unwrap();
-        // In the sandbox (Linux), the command's pid namespace ends with the
-        // shell: nothing it left behind outlives it to hold the output, so
-        // the command just ends. Elsewhere the child holds it until the
-        // timeout.
+        // In bubblewrap's sandbox (Linux), the command's pid namespace ends
+        // with the shell: nothing it left behind outlives it to hold the
+        // output, so the command just ends. Seatbelt (macOS) has no pid
+        // namespace, and without a sandbox there's nothing either: the child
+        // holds the output until the timeout.
         let sandboxed = crate::overlay::confine::hiding_if_available(&dir).is_some();
-        assert_eq!(out.timed_out, !sandboxed);
+        let ends_background = sandboxed && cfg!(target_os = "linux");
+        assert_eq!(out.timed_out, !ends_background);
         assert_eq!(out.stdout.trim(), "up");
         assert_eq!(out.exit_code, Some(0));
     }
