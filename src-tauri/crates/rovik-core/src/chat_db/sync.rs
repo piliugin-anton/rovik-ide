@@ -909,11 +909,24 @@ fn apply_message(
         return Ok(());
     }
     // A row of the chat's with this number, which came another way (a
-    // run's event) numbered here: out of the way until its own change
-    // brings the owner's number.
+    // run's event) numbered here: out of the way, at a number nothing has
+    // (one parked before may hold -seq), until its own change brings the
+    // owner's number.
+    let lowest: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MIN(seq), 0) FROM messages WHERE dialog_id = ?1",
+            params![message.dialog_id],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
     conn.execute(
-        "UPDATE messages SET seq = -seq WHERE dialog_id = ?1 AND seq = ?2 AND id != ?3 AND seq > 0",
-        params![message.dialog_id, message.seq, message.id],
+        "UPDATE messages SET seq = ?4 WHERE dialog_id = ?1 AND seq = ?2 AND id != ?3 AND seq > 0",
+        params![
+            message.dialog_id,
+            message.seq,
+            message.id,
+            lowest.min(0) - 1
+        ],
     )
     .map_err(err)?;
     let values = params![

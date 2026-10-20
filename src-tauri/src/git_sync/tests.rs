@@ -317,6 +317,31 @@ fn abort_puts_the_branch_back() {
     }
 }
 
+/// Aborting a merge puts back what the merge touched and nothing else: an
+/// edit not added, to a file the merge didn't touch, stays, as with git's
+/// own --abort.
+#[test]
+fn an_abort_keeps_edits_the_merge_didnt_touch() {
+    let (dir, repo) = diverged("one\nOURS\nthree\n", "one\nTHEIRS\nthree\n");
+    assert_eq!(
+        integrate_upstream(&repo, Some(PullStrategy::Merge), false)
+            .unwrap()
+            .result,
+        "conflicts"
+    );
+    fs::write(dir.join("b.txt"), "edited meanwhile\n").unwrap();
+    git_operation_abort_blocking(p(&dir)).unwrap();
+    assert_eq!(repo.state(), RepositoryState::Clean);
+    assert_eq!(
+        fs::read_to_string(dir.join("a.txt")).unwrap(),
+        "one\nOURS\nthree\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("b.txt")).unwrap(),
+        "edited meanwhile\n"
+    );
+}
+
 #[test]
 fn remember_stores_pull_rebase() {
     let (_dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");

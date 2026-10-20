@@ -22,8 +22,8 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Mutex};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use fuser::{BackgroundSession, Config, MountOption, Session};
 
@@ -229,7 +229,8 @@ unsafe impl Send for Channel {}
 
 /// Runs `f` with this process's stderr going to a pipe, returning what was
 /// written there: libfuse reports why a mount failed only on stderr. The
-/// pipe doesn't block writers (excess output is lost, not waited for), and
+/// pipe is read as it's written, on a thread of its own, so a writer never
+/// waits on it (nor fails on it, as on a full pipe that doesn't block), and
 /// stderr is restored after `timeout` even if `f` is still running.
 fn capturing_stderr<T: Send + 'static>(
     timeout: Duration,
@@ -240,30 +241,61 @@ fn capturing_stderr<T: Send + 'static>(
     let mut fds = [0 as c_int; 2];
     let piped = unsafe { libc::pipe(fds.as_mut_ptr()) } == 0;
     let saved = if piped { unsafe { libc::dup(2) } } else { -1 };
-    if piped && saved >= 0 {
-        unsafe {
-            libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-            libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-            libc::dup2(fds[1], 2);
-            libc::close(fds[1]);
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let reading = match (piped, saved >= 0) {
+        (true, true) => {
+            unsafe {
+                libc::dup2(fds[1], 2);
+                libc::close(fds[1]);
+            }
+            let mut reader = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+            let sink = captured.clone();
+            Some(std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => sink
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .extend_from_slice(&buf[..n]),
+                    }
+                }
+            }))
         }
-    }
+        (true, false) => {
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+            None
+        }
+        (false, _) => None,
+    };
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(f());
     });
     let result = rx.recv_timeout(timeout).ok();
-    let mut captured = String::new();
     if piped && saved >= 0 {
         unsafe {
             libc::dup2(saved, 2);
             libc::close(saved);
         }
-        let mut reader = unsafe { std::fs::File::from_raw_fd(fds[0]) };
-        let mut buf = Vec::new();
-        let _ = reader.read_to_end(&mut buf);
-        captured = String::from_utf8_lossy(&buf).trim().to_string();
     }
+    // With stderr restored the pipe has no writer left, but for a process
+    // `f` started that holds it still: the reader is waited for a moment.
+    if let Some(reading) = reading {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while !reading.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if reading.is_finished() {
+            let _ = reading.join();
+        }
+    }
+    let captured = captured.lock().unwrap_or_else(|e| e.into_inner());
+    let captured = String::from_utf8_lossy(&captured).trim().to_string();
     (result, captured)
 }
 

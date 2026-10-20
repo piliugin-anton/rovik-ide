@@ -469,7 +469,7 @@ fn every_request_round_trips() {
                 },
             },
             Request::AgentStatus,
-            Request::AgentConfigure(config()),
+            Request::AgentConfigure(Box::new(config())),
             Request::DeliveryTest {
                 remote: "git@github.com:acme/app.git".into(),
             },

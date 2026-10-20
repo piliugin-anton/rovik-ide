@@ -73,13 +73,18 @@ pub fn verify(key: &str, bytes: &[u8], signature: &str) -> Result<(), String> {
         .or_else(|| PublicKey::decode(key.trim()).ok())
         .or_else(|| PublicKey::from_base64(key.trim()).ok())
         .ok_or("Rovik's release key can't be read.")?;
-    let signature = unwrapped(signature)
-        .and_then(|text| Signature::decode(&text).ok())
-        .or_else(|| Signature::decode(signature.trim()).ok())
-        .ok_or("Its signature can't be read.")?;
+    let signature = decoded(signature).ok_or("Its signature can't be read.")?;
     public
         .verify(bytes, &signature, false)
         .map_err(|_| "Its signature doesn't match: it isn't what the release signed.".into())
+}
+
+/// A `.sig` file's signature: minisign's text, or that text in the base64
+/// `tauri signer` wraps it in.
+fn decoded(signature: &str) -> Option<Signature> {
+    unwrapped(signature)
+        .and_then(|text| Signature::decode(&text).ok())
+        .or_else(|| Signature::decode(signature.trim()).ok())
 }
 
 /// minisign's text, from the base64 `tauri signer` wraps it in.

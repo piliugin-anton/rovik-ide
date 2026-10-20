@@ -988,7 +988,7 @@ pub async fn run_chat(
             let clm_built = tokio::select! {
                 _ = crate::chat_request::cancelled(cancel) => {
                     on_event(ChatStreamEvent::Error {
-                        error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                        error: crate::chat_request::ChatError::stopped(),
                     });
                     return Ok(());
                 }
@@ -1042,7 +1042,7 @@ pub async fn run_chat(
                     let (wire, info) = tokio::select! {
                         _ = crate::chat_request::cancelled(cancel) => {
                             on_event(ChatStreamEvent::Error {
-                                error: crate::chat_request::ChatError::new(crate::chat_request::ErrorKind::Cancelled, "Stopped."),
+                                error: crate::chat_request::ChatError::stopped(),
                             });
                             return Ok(());
                         }

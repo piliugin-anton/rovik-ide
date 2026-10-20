@@ -239,7 +239,7 @@ fn error_of(content: &str, node: &Node, missing: bool) -> SyntaxError {
     } else {
         let text = &content[node.start_byte()..node.end_byte()];
         let first = text.lines().next().unwrap_or("").trim();
-        let snippet = shorten(&collapse(first), SYNTAX_SNIPPET_CHARS);
+        let snippet = crate::text::shortened(&collapse(first), SYNTAX_SNIPPET_CHARS);
         if snippet.is_empty() {
             "syntax error".to_string()
         } else {
@@ -457,7 +457,7 @@ fn symbols(content: &str, items: Vec<Node>, names: &HashMap<usize, Node>) -> Vec
         };
         out.push(Symbol {
             name: match names.get(&f.item.id()) {
-                Some(n) => shorten(
+                Some(n) => crate::text::shortened(
                     &collapse(&content[n.start_byte()..n.end_byte()]),
                     NAME_CHARS,
                 ),
@@ -567,7 +567,7 @@ fn signature(content: &str, item: Node, range: Node) -> String {
         let line = &content[start..];
         text = collapse(line.lines().next().unwrap_or(""));
     }
-    shorten(&text, SIGNATURE_CHARS)
+    crate::text::shortened(&text, SIGNATURE_CHARS)
 }
 
 /// Field names that hold a declaration's name.
@@ -642,16 +642,9 @@ fn name(content: &str, item: Node) -> String {
             .next()
             .unwrap_or(""),
     };
-    shorten(&collapse(text), NAME_CHARS)
+    crate::text::shortened(&collapse(text), NAME_CHARS)
 }
 
 fn collapse(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn shorten(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &text[..i]),
-        None => text.to_string(),
-    }
 }

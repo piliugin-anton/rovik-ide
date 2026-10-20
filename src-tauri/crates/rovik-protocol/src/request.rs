@@ -45,7 +45,8 @@ pub enum Request {
         outcome: QuestionsOutcome,
     },
     AgentStatus,
-    AgentConfigure(AgentConfig),
+    /// Boxed as a start is: a configuration is far bigger than the rest.
+    AgentConfigure(Box<AgentConfig>),
     /// Beside `AgentConfigure`: what a server that works on its own keeps
     /// of this computer's settings for runs that go on without it (H02).
     /// Served with `features::AUTONOMY`.

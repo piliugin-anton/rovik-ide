@@ -119,7 +119,9 @@ impl WriteScope {
         let mut scope = WriteScope::default();
         // Files it only reads are the contract's, not its to change (F03).
         for f in step.files.iter().filter(|f| !f.read_only) {
-            let Some(p) = paths::norm_rel(&f.path) else {
+            // The project itself (`./`) is no file of a step's: as a folder
+            // it would let the step write anything.
+            let Some(p) = paths::norm_rel(&f.path).filter(|p| !p.is_empty()) else {
                 continue;
             };
             if f.path.trim().ends_with('/') {

@@ -128,6 +128,11 @@ pub async fn push(
 
 /// `git push` of `refspec` to `remote`, from the repository at `repo`.
 async fn git_push(repo: &Path, remote: &str, refspec: &str, key: &str) -> Result<(), String> {
+    // A remote is a name or a URL, never an option: `--receive-pack=…`
+    // in its place would run a program.
+    if remote.starts_with('-') {
+        return Err(format!("{remote} isn't a remote"));
+    }
     let mut git = Command::new("git");
     git.arg("-C")
         .arg(repo)
@@ -303,7 +308,7 @@ fn empty_commit(dir: &Path) -> Result<String, String> {
         .and_then(|t| t.write())
         .map_err(git)?;
     let tree = repo.find_tree(tree).map_err(git)?;
-    let rovik = git2::Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
+    let rovik = crate::results::rovik_signature().map_err(git)?;
     let commit = repo
         .commit(None, &rovik, &rovik, "Rovik: a delivery test", &tree, &[])
         .map_err(git)?;

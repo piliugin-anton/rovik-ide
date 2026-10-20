@@ -18,9 +18,9 @@
 //! starting meanwhile, doesn't take it for one a crash interrupted.
 
 use super::fs::{DeletedBase, OverlayChange};
-use crate::vfs::store::Kind;
+use crate::vfs::store::{check_name, Kind};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -144,6 +144,15 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
         .collect();
     for change in changes.iter().filter(|c| !c.by_product()) {
         let path = change.path().to_string();
+        // A change's path is the chat's own: one that isn't (a saved list
+        // or an imported tree written by hand) never reaches outside.
+        if !path.split('/').all(|part| check_name(part).is_ok()) {
+            conflicts.push(Conflict {
+                path,
+                reason: "it isn't a path inside the project".into(),
+            });
+            continue;
+        }
         let target = abs(project, &path);
         let now = snapshot(&target);
         match change {
@@ -227,9 +236,24 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 let perm = perm_changed.then_some(*perm);
                 let base = base_copy.as_ref().and_then(|b| fs::read(b).ok());
                 // Moved: the project's side is its file where the chat's
-                // came from (the new place is checked by its own delete).
+                // came from (the new place is checked by its own delete),
+                // unless the new place holds the file as it was or as the
+                // chat has it: the user moved it too, and that's the
+                // project's side. Another file there is theirs.
                 let moved_from = origin.as_ref().filter(|o| **o != path && base.is_some());
+                let user_moved_it = match &now {
+                    Snapshot::File(b) => Some(b) == base.as_ref() || *b == ours,
+                    _ => false,
+                };
                 let source = match moved_from {
+                    Some(_) if user_moved_it => now.clone(),
+                    Some(_) if now != Snapshot::Absent && !keep_chat => {
+                        conflicts.push(Conflict {
+                            path,
+                            reason: "the project has another file there now".into(),
+                        });
+                        continue;
+                    }
                     Some(o) => snapshot(&abs(project, o)),
                     None => now.clone(),
                 };
@@ -732,11 +756,45 @@ fn is_content(project: &Path, rel: &str, content: &Content) -> bool {
         (Content::File { file, .. }, Snapshot::File(now)) if !file.is_dir() => {
             fs::read(file).is_ok_and(|b| b == now)
         }
-        // A folder kept whole (a deleted folder's journal copy).
-        (Content::File { file, .. }, Snapshot::Dir) if file.is_dir() => true,
+        // A folder kept whole (a deleted folder's journal copy): the same
+        // folder when it holds the same, not any folder by that name.
+        (Content::File { file, .. }, Snapshot::Dir) if file.is_dir() => {
+            same_tree(file, &abs(project, rel))
+        }
         (Content::Symlink { target }, Snapshot::Symlink(t)) => *target == t,
         _ => false,
     }
+}
+
+/// Whether the folder at `b` holds what the folder at `a` holds: the same
+/// names, each the same kind with the same content, nothing more or less.
+fn same_tree(a: &Path, b: &Path) -> bool {
+    let entries = |dir: &Path| -> Option<BTreeMap<std::ffi::OsString, fs::FileType>> {
+        fs::read_dir(dir)
+            .ok()?
+            .map(|e| {
+                let e = e.ok()?;
+                Some((e.file_name(), e.file_type().ok()?))
+            })
+            .collect()
+    };
+    let (Some(in_a), Some(in_b)) = (entries(a), entries(b)) else {
+        return false;
+    };
+    if !in_a.keys().eq(in_b.keys()) {
+        return false;
+    }
+    in_a.iter().all(|(name, kind)| {
+        let (pa, pb) = (a.join(name), b.join(name));
+        let kind_b = in_b[name];
+        if kind.is_dir() {
+            kind_b.is_dir() && same_tree(&pa, &pb)
+        } else if kind.is_symlink() {
+            kind_b.is_symlink() && fs::read_link(&pa).ok() == fs::read_link(&pb).ok()
+        } else {
+            kind_b.is_file() && fs::read(&pa).ok() == fs::read(&pb).ok()
+        }
+    })
 }
 
 /// The lock a landing holds while it's written (`apply`, `recover_where`).

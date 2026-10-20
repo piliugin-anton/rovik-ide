@@ -414,8 +414,13 @@ impl Run {
             path_arg,
             self.root.as_deref(),
         ) {
+            // By its name, and by where it really lands: a link under the
+            // tests (`tests/fixtures -> ../src`) isn't a way to the code.
             let key = super::repair::rel_key(root, path);
-            if !super::project::is_test_path(&key) {
+            let real = super::repair::real_key(root, path);
+            if !super::project::is_test_path(&key)
+                || !real.as_deref().is_some_and(super::project::is_test_path)
+            {
                 let content = super::test_writer::not_a_test_file(&key);
                 return self.answer_unrun(tc, content, true, None).await;
             }
@@ -1442,7 +1447,13 @@ impl Run {
         } else {
             args.get("content").and_then(|c| c.as_str())?.to_string()
         };
-        let abs_path = tools::to_absolute_path(&path, root);
+        // Inside the project, as the write itself insists: a file outside
+        // it (a key file, a shell's history) must not be read into the
+        // review, which goes to the reviewer's provider and the approval.
+        let abs_path = match crate::agent_tools::resolve_within_root(root, &path) {
+            Ok(abs) => abs,
+            Err(e) => return Some(Prepared::Invalid(format!("Error: {e}"))),
+        };
         let Ok(current) = std::fs::read_to_string(&abs_path) else {
             return Some(Prepared::New);
         };
@@ -1461,7 +1472,7 @@ impl Run {
         }
         Some(Prepared::Diff {
             proposal: EditProposal {
-                abs_path,
+                abs_path: abs_path.to_string_lossy().into_owned(),
                 rel_path: path,
                 current,
                 proposed,
@@ -1761,13 +1772,20 @@ impl Run {
         let request = recent
             .iter()
             .rev()
-            .find(|m| m.role == "user" && !plan::is_harness(m))
+            .find(|m| plan::is_users(m))
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "plan".into());
         let existing = chat_plan_file(&recent);
+        // The plan a revision is small against: in Autopilot the task's own
+        // saved plan (S02), never an earlier task's, which a short first
+        // plan would otherwise pass as a small revision of.
+        let revised = match self.in_autopilot() {
+            true => super::autopilot::task_plan_file(&self.core, &self.dialog_id).await?,
+            false => existing.clone(),
+        };
         // B09: the plan reviewer, when it's on, before the plan is saved.
         let review = self
-            .review_plan(&tc.id, plan_text, existing.as_deref(), &responses)
+            .review_plan(&tc.id, plan_text, revised.as_deref(), &responses)
             .await?;
         let record = review.record;
         let (plan_text, note) = match review.decision {

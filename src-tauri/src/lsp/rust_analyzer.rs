@@ -17,6 +17,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::util::{blocking, ErrText};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -64,7 +65,7 @@ fn managed_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
-        .map_err(|e| e.to_string())?
+        .err_text()?
         .join("language-servers")
         .join("rust-analyzer"))
 }
@@ -80,49 +81,53 @@ fn version_of(path: &Path) -> Option<String> {
         .spawn()
         .ok()?;
     for _ in 0..100 {
-        if let Some(status) = child.try_wait().ok()? {
-            if !status.success() {
-                return None;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut out = String::new();
+                child.stdout.take()?.read_to_string(&mut out).ok()?;
+                let line = out.lines().next()?.trim().to_string();
+                return (!line.is_empty()).then_some(line);
             }
-            let mut out = String::new();
-            child.stdout.take()?.read_to_string(&mut out).ok()?;
-            let line = out.lines().next()?.trim().to_string();
-            return (!line.is_empty()).then_some(line);
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => break,
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
+    // Hung, or lost: not one to use. Reaped, not left a zombie.
     let _ = child.kill();
+    let _ = child.wait();
     None
+}
+
+/// `path` as a rust-analyzer, if it runs as one.
+fn binary(path: PathBuf, source: &str, tag: Option<String>) -> Option<RaBinary> {
+    let version = version_of(&path)?;
+    Some(RaBinary {
+        path: path.to_string_lossy().into_owned(),
+        version,
+        source: source.into(),
+        tag,
+    })
 }
 
 fn managed_binary(app: &AppHandle) -> Option<RaBinary> {
     let dir = managed_dir(app).ok()?;
     let current: Current =
         serde_json::from_str(&fs::read_to_string(dir.join("current.json")).ok()?).ok()?;
-    let path = dir.join(&current.tag).join(EXE);
-    let version = version_of(&path)?;
-    Some(RaBinary {
-        path: path.to_string_lossy().into_owned(),
-        version,
-        source: "managed".into(),
-        tag: Some(current.tag),
-    })
+    binary(
+        dir.join(&current.tag).join(EXE),
+        "managed",
+        Some(current.tag),
+    )
 }
 
 fn system_binary() -> Option<RaBinary> {
-    let path = tool_path();
-    std::env::split_paths(&path)
+    std::env::split_paths(&tool_path())
         .map(|dir| dir.join(EXE))
         .filter(|candidate| candidate.is_file())
-        .find_map(|candidate| {
-            let version = version_of(&candidate)?;
-            Some(RaBinary {
-                path: candidate.to_string_lossy().into_owned(),
-                version,
-                source: "system".into(),
-                tag: None,
-            })
-        })
+        .find_map(|candidate| binary(candidate, "system", None))
 }
 
 /// Old versions left from earlier updates. One that's still running (Windows)
@@ -153,18 +158,12 @@ pub async fn ra_find(
     custom_path: Option<String>,
     prefer_system: bool,
 ) -> Result<Option<RaBinary>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         if let Some(custom) = custom_path.filter(|p| !p.trim().is_empty()) {
             let path = PathBuf::from(custom.trim());
-            return match version_of(&path) {
-                Some(version) => Ok(Some(RaBinary {
-                    path: path.to_string_lossy().into_owned(),
-                    version,
-                    source: "custom".into(),
-                    tag: None,
-                })),
-                None => Err(format!("{}: doesn't run as rust-analyzer", path.display())),
-            };
+            return binary(path.clone(), "custom", None)
+                .map(Some)
+                .ok_or_else(|| format!("{}: doesn't run as rust-analyzer", path.display()));
         }
         let managed = managed_binary(&app);
         if let Some(tag) = managed.as_ref().and_then(|m| m.tag.clone()) {
@@ -177,7 +176,6 @@ pub async fn ra_find(
         })
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// The release file for this platform. Linux uses the glibc build unless the
@@ -200,31 +198,29 @@ fn asset_name() -> Result<String, String> {
     Ok(format!("rust-analyzer-{target}"))
 }
 
-/// Settings → Network's timeout and proxy (`rovik_core::net`).
-async fn http() -> Result<reqwest::Client, String> {
-    rovik_core::net::builder()
+/// Settings → Network's timeout and proxy (`rovik_core::net`). Without
+/// `redirects`, a redirect is the answer (the latest release is one).
+async fn http(redirects: bool) -> Result<reqwest::Client, String> {
+    let mut builder = rovik_core::net::builder()
         .await
-        .user_agent(concat!("rovik-ide/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| e.to_string())
+        .user_agent(concat!("rovik-ide/", env!("CARGO_PKG_VERSION")));
+    if !redirects {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
+    builder.build().err_text()
 }
 
 /// The latest release's file for this platform, with its checksum.
 #[tauri::command]
 pub async fn ra_latest_release() -> Result<RaRelease, String> {
     let asset = asset_name()?;
-    let no_redirect = rovik_core::net::builder()
-        .await
-        .user_agent(concat!("rovik-ide/", env!("CARGO_PKG_VERSION")))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| e.to_string())?;
     // /releases/latest redirects to /releases/tag/<tag>.
-    let response = no_redirect
+    let response = http(false)
+        .await?
         .get(format!("{REPO}/releases/latest"))
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
     let location = response
         .headers()
         .get(reqwest::header::LOCATION)
@@ -237,16 +233,16 @@ pub async fn ra_latest_release() -> Result<RaRelease, String> {
         .ok_or("no release tag")?
         .to_string();
 
-    let html = http()
+    let html = http(true)
         .await?
         .get(format!("{REPO}/releases/expanded_assets/{tag}"))
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?
+        .err_text()?
         .text()
         .await
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
     let (href, sha256) = rovik_core::release_assets::parse_assets(&html, &asset)
         .ok_or_else(|| format!("{asset} or its checksum isn't in release {tag}"))?;
     if !href.starts_with("/rust-lang/rust-analyzer/releases/download/") {
@@ -286,16 +282,16 @@ pub async fn ra_install(
         return Err(format!("bad release tag {}", release.tag));
     }
     let dir = managed_dir(&app)?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).err_text()?;
 
     // Download, hashing as it arrives.
-    let response = http()
+    let response = http(true)
         .await?
         .get(&release.url)
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
     let total = response.content_length();
     if total.is_some_and(|t| t > MAX_DOWNLOAD_BYTES) {
         return Err("download too large".into());
@@ -336,24 +332,21 @@ pub async fn ra_install(
     }
 
     // Unpack into a staging folder, then move it into place.
-    let app2 = app.clone();
-    let tag = release.tag.clone();
-    let asset = release.asset.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<RaBinary, String> {
+    let RaRelease { tag, asset, .. } = release;
+    blocking(move || {
         // This process's own: another window may install at the same time.
         let staging = dir.join(format!(".staging-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&staging);
-        fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&staging).err_text()?;
         let exe_path = staging.join(EXE);
         let binary = unpack(&asset, &data)?;
-        let mut file = fs::File::create(&exe_path).map_err(|e| e.to_string())?;
-        file.write_all(&binary).map_err(|e| e.to_string())?;
+        let mut file = fs::File::create(&exe_path).err_text()?;
+        file.write_all(&binary).err_text()?;
         drop(file);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&exe_path, fs::Permissions::from_mode(0o755))
-                .map_err(|e| e.to_string())?;
+            fs::set_permissions(&exe_path, fs::Permissions::from_mode(0o755)).err_text()?;
         }
         let version = version_of(&exe_path)
             .ok_or("the downloaded rust-analyzer doesn't run on this system")?;
@@ -364,23 +357,19 @@ pub async fn ra_install(
             let _ = fs::remove_dir_all(&staging);
         } else {
             let _ = fs::remove_dir_all(&final_dir);
-            fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
+            fs::rename(&staging, &final_dir).err_text()?;
         }
-        let current =
-            serde_json::to_string(&Current { tag: tag.clone() }).map_err(|e| e.to_string())?;
+        let current = serde_json::to_string(&Current { tag: tag.clone() }).err_text()?;
         rovik_core::atomic_file::write_atomic(&dir.join("current.json"), current.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let path = final_dir.join(EXE);
-        let _ = app2;
+            .err_text()?;
         Ok(RaBinary {
-            path: path.to_string_lossy().into_owned(),
+            path: final_dir.join(EXE).to_string_lossy().into_owned(),
             version,
             source: "managed".into(),
             tag: Some(tag),
         })
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// The executable out of a release file (.gz: the binary itself; .zip: the
@@ -424,17 +413,23 @@ pub struct RustSrcStatus {
     pub rustup: bool,
 }
 
+/// `program args`, run in `root` with the tools' PATH: its output when it
+/// succeeded.
+fn run_in(root: &str, program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
+    rovik_core::process::no_window(&mut rovik_core::process::command(program))
+        .args(args)
+        .current_dir(root)
+        .env("PATH", tool_path())
+        .output()
+}
+
 /// Whether the project's toolchain has `rust-src` (checked in the project,
 /// so a rust-toolchain file is respected).
 #[tauri::command]
 pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let run = |cmd: &str, args: &[&str]| {
-            rovik_core::process::no_window(&mut rovik_core::process::command(cmd))
-                .args(args)
-                .current_dir(&root)
-                .env("PATH", tool_path())
-                .output()
+    blocking(move || {
+        let run = |program: &str, args: &[&str]| {
+            run_in(&root, program, args)
                 .ok()
                 .filter(|o| o.status.success())
         };
@@ -449,18 +444,13 @@ pub async fn ra_rust_src_status(root: String) -> Result<RustSrcStatus, String> {
         Ok(RustSrcStatus { installed, rustup })
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 /// `rustup component add rust-src` for the project's toolchain.
 #[tauri::command]
 pub async fn ra_install_rust_src(root: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let out = rovik_core::process::no_window(&mut rovik_core::process::command("rustup"))
-            .args(["component", "add", "rust-src"])
-            .current_dir(&root)
-            .env("PATH", tool_path())
-            .output()
+    blocking(move || {
+        let out = run_in(&root, "rustup", &["component", "add", "rust-src"])
             .map_err(|e| format!("rustup: {e}"))?;
         if out.status.success() {
             Ok(())
@@ -469,7 +459,6 @@ pub async fn ra_install_rust_src(root: String) -> Result<(), String> {
         }
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

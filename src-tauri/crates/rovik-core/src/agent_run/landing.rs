@@ -344,17 +344,11 @@ impl Run {
                 continue;
             }
             let stop = self.stop.clone();
-            let queued = crate::command_tool::Queued {
-                kind: crate::workload::JobKind::Landing {
-                    owner: self.dialog_id.clone(),
-                },
-                note: Box::new(|_| {}),
-                env: chats::get(&self.dialog_id)
-                    .map(|o| o.command_env())
-                    .unwrap_or_default(),
-                confine: chats::get(&self.dialog_id).and_then(|o| o.confine()),
-                whole_output: false,
+            let landing = crate::workload::JobKind::Landing {
+                owner: self.dialog_id.clone(),
             };
+            let overlay = chats::get(&self.dialog_id);
+            let queued = crate::command_tool::Queued::of(landing, overlay.as_deref());
             let out = crate::command_tool::run_command(
                 view.to_string_lossy().into_owned(),
                 check.command.clone(),

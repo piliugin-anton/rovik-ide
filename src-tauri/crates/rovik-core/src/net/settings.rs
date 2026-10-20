@@ -372,6 +372,15 @@ pub fn authority(host: &str, port: u16) -> String {
     }
 }
 
+/// `host` as a connection takes it: an IPv6 address without the brackets
+/// a URL puts around it, or the host as given.
+pub fn bare_host(host: &str) -> String {
+    match bare_ipv6(host) {
+        Some(ip) => ip.to_string(),
+        None => host.to_string(),
+    }
+}
+
 /// An IPv6 address, with or without its brackets.
 fn bare_ipv6(host: &str) -> Option<Ipv6Addr> {
     let bare = host

@@ -22,6 +22,9 @@ use tokio::task::spawn_blocking;
 
 /// A pack's pieces on their way between the repository and the socket.
 const PIECES: usize = 16;
+/// How long a fetched pack may go without a frame: a host that stalls
+/// would otherwise hold the results queue, every host's, for good.
+const FRAME_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Sends `new` from the shadow repository at `shadow` to the project's ref
 /// `name` on the host, telling `progress` the bytes sent so far.
@@ -97,10 +100,18 @@ pub async fn fetch(
         packs::receive(&open(&repo)?, pieces)
     });
     let mut cut = false;
-    while let Some(frame) = body.frame().await {
-        let Ok(frame) = frame else {
+    loop {
+        let Ok(next) = tokio::time::timeout(FRAME_WAIT, body.frame()).await else {
             cut = true;
             break;
+        };
+        let frame = match next {
+            Some(Ok(frame)) => frame,
+            Some(Err(_)) => {
+                cut = true;
+                break;
+            }
+            None => break,
         };
         let Ok(piece) = frame.into_data() else {
             continue;

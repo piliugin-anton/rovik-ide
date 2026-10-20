@@ -35,7 +35,7 @@ use super::chats::{self, Pending};
 use super::fs::{write_manifest, DeletedBase, OverlayChange};
 use super::land::{LandError, Landed};
 use super::tiers::Tiers;
-use crate::vfs::store::Kind;
+use crate::vfs::store::{check_name, Kind};
 use git2::build::CheckoutBuilder;
 use git2::{DiffFile, DiffFindOptions, FileMode, Oid, Repository, Tree};
 use rovik_protocol::work::ChatResult;
@@ -249,6 +249,7 @@ fn build(
     let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
     let mut outside = BTreeSet::new();
     let in_project = |tree_path: &str| tree_path.strip_prefix(&prefix).map(String::from);
+    let inside = |rel: &String| rel.split('/').all(|part| check_name(part).is_ok());
     let landed =
         |tree_path: &str| in_project(tree_path).filter(|rel| !tiers.is_by_product(rel, false));
     for delta in diff.deltas() {
@@ -270,7 +271,9 @@ fn build(
             vec![(was, old, None, None), (now, carried, new, moved)]
         };
         for (tree_path, old, new, from) in sides {
-            let Some(rel) = in_project(&tree_path) else {
+            // Inside the project by its path, and by its parts: a result
+            // tree written by hand never reaches outside with a `..`.
+            let Some(rel) = in_project(&tree_path).filter(|rel| inside(rel)) else {
                 outside.insert(tree_path);
                 continue;
             };

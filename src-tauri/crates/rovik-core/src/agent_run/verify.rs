@@ -1582,23 +1582,15 @@ impl Run {
                 // Checks are heavy work: they may wait for a CPU slot, and the
                 // record says what for while they do.
                 let waiting: Arc<Mutex<Option<Option<String>>>> = Arc::default();
-                let queued = crate::command_tool::Queued {
-                    kind: crate::workload::JobKind::Check {
-                        owner: self.dialog_id.clone(),
-                    },
-                    note: {
-                        let waiting = waiting.clone();
-                        Box::new(move |note| {
-                            *waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(note)
+                let overlay = crate::overlay::chats::get(&self.dialog_id);
+                let noted = waiting.clone();
+                // V07: in Autopilot, kept whole for the failure keys.
+                let queued =
+                    crate::command_tool::Queued::check(&self.dialog_id, overlay.as_deref())
+                        .noting(move |note| {
+                            *noted.lock().unwrap_or_else(|e| e.into_inner()) = Some(note)
                         })
-                    },
-                    env: crate::overlay::chats::get(&self.dialog_id)
-                        .map(|o| o.command_env())
-                        .unwrap_or_default(),
-                    confine: crate::overlay::chats::get(&self.dialog_id).and_then(|o| o.confine()),
-                    // V07: in Autopilot, kept whole for the failure keys.
-                    whole_output: self.in_autopilot(),
-                };
+                        .whole(self.in_autopilot());
                 let run = crate::command_tool::run_command(
                     root.into(),
                     results[i].command.clone(),

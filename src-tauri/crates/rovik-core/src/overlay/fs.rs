@@ -18,8 +18,8 @@
 use super::tiers::Tiers;
 use crate::vfs::backend::Backend;
 use crate::vfs::store::{
-    Attr, Change, DirEntry, Ino, Kind, Listener, RenameMode, SetAttr, VfsError, VfsResult,
-    MAX_NAME, ROOT,
+    check_name, Attr, Change, DirEntry, Ino, Kind, Listener, RenameMode, SetAttr, VfsError,
+    VfsResult, ROOT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -114,6 +114,10 @@ struct Inner {
     /// Changed since the list of changes was last saved.
     dirty: bool,
     saved_at: Option<Instant>,
+    /// Saved changes whose folder can't be found now (a branch without
+    /// it): kept as they are, saved again and named to the sweep, and
+    /// tried again at the next open.
+    parked: Vec<OverlayChange>,
 }
 
 /// What a project entry was when the chat deleted (or replaced, or moved)
@@ -157,10 +161,6 @@ fn mtime_ns(m: &fs::Metadata) -> u64 {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos() as u64)
-}
-
-fn hex(h: &crate::file_guard::Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl DeletedBase {
@@ -219,7 +219,7 @@ impl DeletedBase {
     /// A file with this content.
     pub fn file(bytes: &[u8]) -> DeletedBase {
         DeletedBase::File {
-            hash: hex(&crate::file_guard::hash(bytes)),
+            hash: crate::file_guard::sha256_hex(bytes),
         }
     }
 
@@ -239,7 +239,7 @@ impl DeletedBase {
                 *entries == now
                     && files.iter().all(|(rel, hash)| {
                         fs::read(abs.join(rel))
-                            .is_ok_and(|b| hex(&crate::file_guard::hash(&b)) == *hash)
+                            .is_ok_and(|b| crate::file_guard::sha256_hex(&b) == *hash)
                     })
             }
             (a, Some(b)) => *a == b,
@@ -360,16 +360,6 @@ fn join(dir: &str, name: &str) -> String {
     }
 }
 
-fn check_name(name: &str) -> VfsResult<()> {
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
-        return Err(VfsError::Invalid);
-    }
-    if name.len() > MAX_NAME {
-        return Err(VfsError::NameTooLong);
-    }
-    Ok(())
-}
-
 fn io_err(e: io::Error) -> VfsError {
     match e.kind() {
         io::ErrorKind::NotFound => VfsError::NotFound,
@@ -457,6 +447,7 @@ impl OverlayFs {
                 copying: std::collections::HashSet::new(),
                 dirty: false,
                 saved_at: None,
+                parked: Vec::new(),
             }),
             listener: Mutex::new(None),
             saving: Mutex::new(()),
@@ -486,13 +477,24 @@ impl OverlayFs {
         {
             let mut inner = fs_.inner.lock().unwrap();
             inner.nodes = nodes;
-            if let Ok(bytes) = fs::read(store.join("manifest.json")) {
-                if let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes) {
-                    if manifest.version == 1 {
-                        inner.next_file = manifest.next_file;
-                        fs_.replay(&mut inner, &manifest.changes);
+            // A saved list that can't be read isn't an empty one: opened
+            // as empty, the sweep would delete every file it names.
+            let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidData, why);
+            match fs::read(store.join("manifest.json")) {
+                Ok(bytes) => {
+                    let manifest: Manifest = serde_json::from_slice(&bytes)
+                        .map_err(|e| invalid(format!("manifest.json: {e}")))?;
+                    if manifest.version != 1 {
+                        return Err(invalid(format!(
+                            "manifest.json: version {} is a newer Rovik's",
+                            manifest.version
+                        )));
                     }
+                    inner.next_file = manifest.next_file;
+                    fs_.replay(&mut inner, &manifest.changes);
                 }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
         }
         Ok(fs_)
@@ -890,11 +892,23 @@ impl OverlayFs {
             if let Some(b) = &base {
                 fs::copy(&src, b)?;
             }
-            if keep_content {
-                fs::copy(&src, &file)
-            } else {
-                fs::write(&file, b"").map(|_| 0)
+            if !keep_content {
+                return fs::write(&file, b"").map(|_| 0);
             }
+            let n = fs::copy(&src, &file)?;
+            // The copy came with the project file's mode. The chat's copy is
+            // written through (`handle` opens it read and write): a
+            // read-only project file (generated code, a vendored one)
+            // stays read-only to the chat as `perm` says, but the copy
+            // itself must take the writes `chmod u+w` then allows.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perm = fs::metadata(&file)?.permissions();
+                perm.set_mode(perm.mode() | 0o600);
+                fs::set_permissions(&file, perm)?;
+            }
+            Ok(n)
         })();
 
         let mut inner = self.lock();
@@ -1067,7 +1081,7 @@ impl OverlayFs {
             Data::Upper {
                 base_copy: Some(b), ..
             } => fs::read(b).ok().map(|bytes| DeletedBase::File {
-                hash: hex(&crate::file_guard::hash(&bytes)),
+                hash: crate::file_guard::sha256_hex(&bytes),
             }),
             Data::Upper {
                 base_copy: None, ..
@@ -1469,6 +1483,7 @@ impl OverlayFs {
         let mut inner = self.lock();
         let mut out = Vec::new();
         self.changes_in(&mut inner, ROOT, "", &mut out);
+        out.extend(inner.parked.iter().cloned());
         out
     }
 
@@ -1567,6 +1582,7 @@ impl OverlayFs {
             let mut inner = self.lock();
             let mut changes = Vec::new();
             self.changes_in(&mut inner, ROOT, "", &mut changes);
+            changes.extend(inner.parked.iter().cloned());
             inner.dirty = false;
             inner.saved_at = Some(Instant::now());
             (changes, inner.next_file, std::mem::take(&mut inner.trash))
@@ -1624,13 +1640,33 @@ impl OverlayFs {
 
     /// Rebuilds the view from a saved list of changes.
     fn replay(&self, inner: &mut Inner, changes: &[OverlayChange]) {
+        // One node per upper file: a hard-linked file is saved once per
+        // name, and its names share the file, or unlinking one would
+        // trash it under the others.
+        let mut by_upper: HashMap<PathBuf, Ino> = HashMap::new();
         for change in changes {
             let path = change.path();
+            // A saved path is the chat's own: one that isn't (a list
+            // written by hand) never reaches outside the project.
+            if !path.split('/').all(|part| check_name(part).is_ok()) {
+                continue;
+            }
             let (dir_path, name) = match path.rsplit_once('/') {
                 Some((d, n)) => (d, n),
                 None => ("", path),
             };
             let Ok(parent) = self.resolve_in(inner, dir_path) else {
+                // Its folder can't be found now (a branch without it):
+                // kept for a later open, its file named to the sweep.
+                if let OverlayChange::Write {
+                    upper: Some(file),
+                    by_product: false,
+                    ..
+                } = change
+                {
+                    inner.used += fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                }
+                inner.parked.push(change.clone());
                 continue;
             };
             let _ = self.load_dir(inner, parent, false);
@@ -1662,6 +1698,16 @@ impl OverlayFs {
                 } => {
                     if let Some(old) = Self::detach(inner, parent, name) {
                         self.collect(inner, old);
+                    }
+                    if let Some(&ino) = upper.as_ref().and_then(|file| by_upper.get(file)) {
+                        // Another name of a file replayed already: a link
+                        // to it, its first name kept first as `link` does.
+                        self.attach(inner, parent, name, ino);
+                        let node = inner.nodes.get_mut(&ino).unwrap();
+                        let newest = node.links.remove(0);
+                        node.links.push(newest);
+                        inner.nodes.get_mut(&parent).unwrap().removed.remove(name);
+                        continue;
                     }
                     let meta = origin
                         .as_deref()
@@ -1711,6 +1757,9 @@ impl OverlayFs {
                         by_product: *by_product,
                     };
                     let ino = Self::add_node(inner, node);
+                    if let Some(file) = upper {
+                        by_upper.insert(file.clone(), ino);
+                    }
                     self.attach(inner, parent, name, ino);
                     inner.nodes.get_mut(&parent).unwrap().removed.remove(name);
                 }
@@ -1800,7 +1849,7 @@ impl Backend for OverlayFs {
             if let Some(DeletedBase::File { hash }) = inner.deleted.get(&path) {
                 let abs = self.abs(&path);
                 if let Ok(bytes) = fs::read(&abs) {
-                    if hex(&crate::file_guard::hash(&bytes)) == *hash {
+                    if crate::file_guard::sha256_hex(&bytes) == *hash {
                         let n = inner.next_file;
                         inner.next_file += 1;
                         let copy = self.store.join("base").join(n.to_string());
@@ -1935,8 +1984,15 @@ impl Backend for OverlayFs {
         };
         let src_name = stored(&inner, parent, src).unwrap_or_else(|| name.to_string());
         if dst == Some(src) {
-            // The same entry: only a change of case (`a` → `A`) renames it.
-            if parent == new_parent && src_name != new_name {
+            // The same entry. Found by a lookup that ignores case, under a
+            // name the folder doesn't have, it's a change of case (`a` →
+            // `A`), which renames it. Found under the name itself (the
+            // same name, or a hard link's), nothing moves, as POSIX says.
+            let under_new_name = inner.nodes[&new_parent]
+                .children
+                .as_ref()
+                .is_some_and(|c| c.contains_key(new_name));
+            if parent == new_parent && !under_new_name {
                 self.remember_deleted(&mut inner, parent, &src_name, src);
                 Self::detach(&mut inner, parent, &src_name);
                 self.attach(&mut inner, new_parent, new_name, src);
@@ -1948,23 +2004,32 @@ impl Backend for OverlayFs {
         let dst_name = dst
             .and_then(|d| stored(&inner, new_parent, d))
             .unwrap_or_else(|| new_name.to_string());
-        // A folder can't move into itself.
-        if inner.nodes[&src].is_dir() {
-            let mut at = new_parent;
-            loop {
-                if at == src {
-                    return Err(VfsError::Invalid);
-                }
-                if at == ROOT {
-                    break;
-                }
-                at = inner
-                    .nodes
-                    .get(&at)
-                    .and_then(|n| n.links.first())
-                    .map(|(p, _)| *p)
-                    .unwrap_or(ROOT);
+        // A folder can't move into itself; nor, exchanged, can the other
+        // folder move into it (`a/b` for `a` would make `a` its own child).
+        let within = |inner: &Inner, dir: Ino, mut at: Ino| loop {
+            if at == dir {
+                return true;
             }
+            if at == ROOT {
+                return false;
+            }
+            at = inner
+                .nodes
+                .get(&at)
+                .and_then(|n| n.links.first())
+                .map(|(p, _)| *p)
+                .unwrap_or(ROOT);
+        };
+        if let Some(dst) = dst {
+            if matches!(mode, RenameMode::Exchange)
+                && inner.nodes[&dst].is_dir()
+                && within(&inner, dst, parent)
+            {
+                return Err(VfsError::Invalid);
+            }
+        }
+        if inner.nodes[&src].is_dir() && within(&inner, src, new_parent) {
+            return Err(VfsError::Invalid);
         }
         // Moving a project folder: list what it holds first, so it keeps
         // pointing at the project's files.

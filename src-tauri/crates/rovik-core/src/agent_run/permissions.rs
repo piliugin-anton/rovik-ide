@@ -711,7 +711,10 @@ const CHECK_COMMANDS: &[&[&str]] = &[
     &["make", "check"],
 ];
 
-static AWK_WRITES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"system\(|>\s*""#).unwrap());
+/// awk writing a file (`> "f"`), or running a program: `system(…)`, or a
+/// pipe into one (`print … | "sh"`).
+static AWK_WRITES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"system\(|>\s*"|\|\s*""#).unwrap());
 static BRANCH_CHANGES: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^-(d|D|m|M|c|C|f)$|^--(delete|move|copy|force)").unwrap());
 static REWRITES_FILES: LazyLock<Regex> =
@@ -760,6 +763,16 @@ pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
     if cmd == "awk" {
         return !rest.iter().any(|a| AWK_WRITES.is_match(a));
     }
+    if cmd == "tree" {
+        // `tree -o FILE` writes the listing to FILE.
+        return !rest
+            .iter()
+            .any(|a| a == "-o" || (a.starts_with("-o") && !a.starts_with("--")));
+    }
+    if cmd == "rg" && rest.iter().any(|a| a.starts_with("--pre")) {
+        // `--pre CMD` runs a program over every file searched.
+        return false;
+    }
     if READ_ONLY_COMMANDS.contains(&cmd) {
         return true;
     }
@@ -771,7 +784,8 @@ pub(super) fn segment_is_read_only(seg: &[String]) -> bool {
         let sub = rest[at].as_str();
         let args = &rest[at + 1..];
         if READ_ONLY_GIT.contains(&sub) {
-            return true;
+            // `--output=FILE` (log, diff, show) writes what it shows there.
+            return !args.iter().any(|a| a.starts_with("--output"));
         }
         let flags_only = args.iter().all(|a| a.starts_with('-'));
         return match sub {
@@ -1052,7 +1066,10 @@ static RISKY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"^(bash|sh|zsh|fish|eval|xargs)\b",
         r"^(node|bun|deno|python3?)\s+(-\S+\s+)*(-c|-e|-p|--eval)\b",
         r"^rm\s+(-\S*[rRf]\S*\s+)+",
-        r"^git\b.*\b(push|reset\s+--hard|clean\s+-\S*[fd]|branch\s+-D|checkout\s+--\s|restore\b)",
+        r"^(shred|truncate)\b",
+        r"^find\b.*\s-(delete\b|(exec|execdir|ok|okdir)\s+(rm|mv|shred|truncate|chmod|chown)\b)",
+        r"^git\b.*\b(push|reset\s+--hard|clean\s+-\S*[fd]|branch\s+-[dD]|stash\s+(drop|clear)|checkout\s+--\s|restore\b)",
+        r"^(perl|ruby|php)\s+(-\S+\s+)*-(e|E|r)\b",
         r"^(npm|pnpm|yarn|bun|cargo)\s+publish\b",
         r"^(wrangler|vercel|fly|flyctl|netlify)\s+deploy\b|^terraform\s+(apply|destroy)\b|^kubectl\s+(delete|apply)\b",
         r"^(curl|wget)\b.*\s(-d|--data\S*|-F|--form|-T|--upload-file|-X\s*(POST|PUT|PATCH|DELETE))\b",
@@ -1142,6 +1159,33 @@ mod tests {
 
     fn words(seg: &[&str]) -> Vec<String> {
         seg.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A reader told to write, or to run a program, isn't read-only: rg
+    /// runs `--pre` over every file, git's readers write `--output`, tree
+    /// writes `-o`, and awk's pipe runs what it names.
+    #[test]
+    fn readers_that_write_or_run_programs_are_not_read_only() {
+        for (command, read_only) in [
+            ("rg --pre rm x", false),
+            ("rg --pre=rm x", false),
+            ("rg --pre-glob '*.pdf' x", false),
+            ("rg -n x src", true),
+            ("git log --output=src/lib.rs", false),
+            ("git diff --output /tmp/x", false),
+            ("git log --oneline -5", true),
+            ("tree -o out.txt", false),
+            ("tree -L 2 src", true),
+            (r#"awk '{print "rm -rf src" | "sh"}' f"#, false),
+            (r#"awk '{print $1}' f"#, true),
+        ] {
+            let parsed = parse_command(command);
+            assert_eq!(
+                segment_is_read_only(&parsed.segments[0]),
+                read_only,
+                "{command}"
+            );
+        }
     }
 
     /// P0.2: every matcher reads a command past the same wrappers.
@@ -1391,6 +1435,24 @@ mod tests {
         assert!(is_risky_command("npm test && rm -rf dist"));
         assert!(is_risky_command("cat .env"));
         assert!(is_risky_command("sudo ls"));
+        // Deleting by other names: find's own, git's stash and branches,
+        // shred and truncate, and a string run by perl or ruby.
+        for risky in [
+            "find . -name '*.log' -delete",
+            "find build -type f -exec rm {} \\;",
+            "git stash drop",
+            "git stash clear",
+            "git branch -d feature",
+            "shred -u secrets.txt",
+            "truncate -s 0 app.log",
+            "perl -e 'unlink glob \"*.bak\"'",
+            "ruby -e 'File.delete(\"x\")'",
+        ] {
+            assert!(is_risky_command(risky), "{risky}");
+        }
+        for plain in ["find . -name '*.rs'", "git stash list", "git branch -a"] {
+            assert!(!is_risky_command(plain), "{plain}");
+        }
         assert!(is_risky_command("env FOO=1 bash -c 'x'"));
         assert!(is_risky_command("python -c 'print(1)'"));
         assert!(!is_risky_command("npm test"));

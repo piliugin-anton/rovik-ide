@@ -9,12 +9,12 @@
 
 pub mod rust_analyzer;
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::util::{blocking, ErrText, Registry};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -23,27 +23,43 @@ use uuid::Uuid;
 /// Bigger messages aren't legitimate LSP traffic.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
-struct Server {
+pub(crate) struct Server {
     stdin: Mutex<ChildStdin>,
     child: Mutex<Child>,
 }
 
-#[derive(Default)]
-pub struct LspState(Mutex<HashMap<String, Arc<Server>>>);
+impl Server {
+    /// One JSON-RPC message to the server.
+    fn send(&self, message: &str) -> Result<(), String> {
+        let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
+        stdin.write_all(&frame(message)).err_text()?;
+        stdin.flush().err_text()
+    }
 
-impl LspState {
-    fn get(&self, id: &str) -> Result<Arc<Server>, String> {
-        self.0
+    /// Whether it has exited (and was reaped).
+    fn exited(&self) -> bool {
+        self.child
             .lock()
-            .map_err(|_| "language server state poisoned".to_string())?
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("language server {id} isn't running"))
+            .ok()
+            .and_then(|mut c| c.try_wait().ok().flatten())
+            .is_some()
     }
 
-    fn remove(&self, id: &str) -> Option<Arc<Server>> {
-        self.0.lock().ok()?.remove(id)
+    /// Ends it, if it hasn't ended on its own.
+    fn kill(&self) {
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
+}
+
+/// Live language servers by id.
+pub(crate) type LspState = Registry<Server>;
+
+/// The app's language servers, none yet.
+pub fn servers() -> LspState {
+    Registry::new("language server")
 }
 
 #[derive(Clone, Serialize)]
@@ -170,30 +186,42 @@ pub fn lsp_start(
     let stderr = child.stderr.take().ok_or("no stderr")?;
 
     let id = Uuid::new_v4().to_string();
-    state
-        .0
-        .lock()
-        .map_err(|_| "language server state poisoned".to_string())?
-        .insert(
-            id.clone(),
-            Arc::new(Server {
-                stdin: Mutex::new(stdin),
-                child: Mutex::new(child),
-            }),
-        );
+    state.insert(
+        id.clone(),
+        Server {
+            stdin: Mutex::new(stdin),
+            child: Mutex::new(child),
+        },
+    );
 
     let messages = on_event.clone();
+    let (reader_app, reader_id) = (app.clone(), id.clone());
     std::thread::Builder::new()
         .name(format!("lsp-out-{id}"))
         .spawn(move || {
             let mut reader = BufReader::new(stdout);
-            while let Ok(Some(data)) = read_message(&mut reader) {
-                if messages.send(LspEvent::Message { data }).is_err() {
-                    break;
+            loop {
+                match read_message(&mut reader) {
+                    Ok(Some(data)) => {
+                        if messages.send(LspEvent::Message { data }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    // The stream is out of step (a frame too big, a body
+                    // cut short): nothing after it can be read, so the
+                    // server is stopped, and its exit reported as any.
+                    Err(e) => {
+                        eprintln!("lsp: {command}: {e}; stopping it");
+                        if let Some(server) = reader_app.state::<LspState>().remove(&reader_id) {
+                            server.kill();
+                        }
+                        break;
+                    }
                 }
             }
         })
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
 
     let logs = on_event.clone();
     std::thread::Builder::new()
@@ -203,7 +231,7 @@ pub fn lsp_start(
                 let _ = logs.send(LspEvent::Log { line });
             }
         })
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
 
     // Waiter: polls rather than blocking on wait(), so lsp_stop can still
     // take the lock to kill it.
@@ -212,7 +240,7 @@ pub fn lsp_start(
         .name(format!("lsp-wait-{id}"))
         .spawn(move || {
             let code = loop {
-                let Some(server) = app.state::<LspState>().get(&waiter_id).ok() else {
+                let Ok(server) = app.state::<LspState>().get(&waiter_id) else {
                     break None;
                 };
                 let status = server
@@ -229,48 +257,40 @@ pub fn lsp_start(
             app.state::<LspState>().remove(&waiter_id);
             let _ = on_event.send(LspEvent::Exit { code });
         })
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
 
     Ok(id)
 }
 
+/// Off the async threads: the server's stdin can be full while it's busy.
 #[tauri::command]
-pub fn lsp_send(state: State<'_, LspState>, id: String, message: String) -> Result<(), String> {
+pub async fn lsp_send(
+    state: State<'_, LspState>,
+    id: String,
+    message: String,
+) -> Result<(), String> {
     let server = state.get(&id)?;
-    let mut stdin = server
-        .stdin
-        .lock()
-        .map_err(|_| "stdin poisoned".to_string())?;
-    stdin
-        .write_all(&frame(&message))
-        .map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())
+    blocking(move || server.send(&message)).await
 }
 
 /// Stops a server: the frontend sends `shutdown` and `exit` first; this
 /// makes sure it's gone (waiting briefly for a clean exit).
 #[tauri::command]
-pub fn lsp_stop(state: State<'_, LspState>, id: String) -> Result<(), String> {
+pub async fn lsp_stop(state: State<'_, LspState>, id: String) -> Result<(), String> {
     let Some(server) = state.remove(&id) else {
         return Ok(());
     };
-    for _ in 0..20 {
-        if server
-            .child
-            .lock()
-            .ok()
-            .and_then(|mut c| c.try_wait().ok().flatten())
-            .is_some()
-        {
-            return Ok(());
+    blocking(move || {
+        for _ in 0..20 {
+            if server.exited() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    if let Ok(mut child) = server.child.lock() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    Ok(())
+        server.kill();
+        Ok(())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -323,5 +343,8 @@ mod tests {
         assert_eq!(read_message(&mut reader).unwrap().as_deref(), Some(a));
         assert_eq!(read_message(&mut reader).unwrap().as_deref(), Some(b));
         assert_eq!(read_message(&mut reader).unwrap(), None);
+        // A frame no server would send ends the stream with an error.
+        let mut huge = BufReader::new(&b"Content-Length: 99999999999\r\n\r\n"[..]);
+        assert!(read_message(&mut huge).is_err());
     }
 }

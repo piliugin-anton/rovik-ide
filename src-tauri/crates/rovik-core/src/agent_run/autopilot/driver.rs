@@ -11,7 +11,7 @@ use super::inside::inside_record;
 use super::outcome::{
     failure_of, failure_summary, reopens, run_continues, task_outcome, undelivered,
 };
-use super::rate_limit::{rate_limit_wait, retry_later};
+use super::rate_limit::{rate_limit_wait, retry_later, RateLimited};
 use super::rows::{add_stage, current_task, end_stage, load, settle_spent, task_chat, task_spent};
 use super::stage::{
     next_after, next_round, total_spent, Carrier, Next, Recorded, Stage, StageRecord, StageRun,
@@ -168,6 +168,19 @@ pub async fn stage_for(
         && failed.status == Status::Failed
         && failed.outcome.as_deref().is_some_and(reopens);
     if !reopened {
+        // S09: a delivery that failed on its own (its push, its pull
+        // request), after a task that got to it whole, is done again on a
+        // Retry: its result would be stranded otherwise. One that carries
+        // the task's own failure isn't the task's way on.
+        let delivery_failed = last.record.name == Stage::Deliver
+            && last.record.status == Status::Failed
+            && failed.status != Status::Failed;
+        if delivery_failed {
+            let round = next_round(records.iter().map(|r| &r.record), Stage::Deliver);
+            let record =
+                StageRecord::running(&last.record.task, Stage::Deliver, round, last.record.effort);
+            return record_run(core, dialog_id, &record).await.map(Some);
+        }
         return Ok(None);
     }
     // T06: a Pick that took its winner's change failed with that winner's
@@ -224,8 +237,14 @@ pub(in crate::agent_run) fn after_run(
                 return Ok(());
             }
             // H07: the provider's rate limit holds the stage up until it
-            // resets, then its run goes on.
-            if let Some(wait) = rate_limit_wait(&core, &dialog_id, &run, &outcome).await? {
+            // resets, then its run goes on; past the task's budget, the
+            // stage ends as over budget, not as an error.
+            let limited = rate_limit_wait(&core, &dialog_id, &run, &outcome).await?;
+            if let Some(RateLimited::OverBudget) = limited {
+                end_run_stage(&core, &dialog_id, &run, "budget", &settings).await?;
+                return advance(&core, &dialog_id, &run.task, &settings).await;
+            }
+            if let Some(RateLimited::Wait(wait)) = limited {
                 let again = crate::agent_run::failure::format_duration(wait.as_millis() as i64);
                 let until = store::now_ms() + wait.as_millis() as i64;
                 end_stage(&core, &dialog_id, &run.record, |r| {
@@ -280,11 +299,11 @@ pub(super) fn stopped_by(core: &Core, dialog_id: &str, error: &str) {
 pub(super) fn lock_of(dialog_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: Mutex<Option<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = Mutex::new(None);
     let mut locks = LOCKS.lock().unwrap_or_else(|e| e.into_inner());
-    locks
-        .get_or_insert_with(HashMap::new)
-        .entry(dialog_id.to_string())
-        .or_default()
-        .clone()
+    let locks = locks.get_or_insert_with(HashMap::new);
+    // A lock nobody holds or waits for is this map's alone: it goes, and a
+    // fresh one is the same to its next taker.
+    locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    locks.entry(dialog_id.to_string()).or_default().clone()
 }
 
 pub(in crate::agent_run) async fn drive_lock(dialog_id: &str) -> DriveGuard {
@@ -422,6 +441,13 @@ pub(super) async fn end_run_stage(
         .await?;
         return Ok(());
     }
+    // The plan the task's plan runs saved, from the first of them: a Retry
+    // of a Plan stage that failed after saving it finds it still (S02).
+    let plan_since = (all.iter())
+        .filter(|r| r.record.task == run.task && r.record.name == Stage::Plan)
+        .map(|r| r.seq)
+        .min()
+        .unwrap_or(record.seq);
     let (status, outcome, summary, reference) = match failure_of(outcome) {
         Some(failure) => (
             Status::Failed,
@@ -429,7 +455,7 @@ pub(super) async fn end_run_stage(
             failed_line(failure),
             None,
         ),
-        None if run.stage == Stage::Plan => match saved_plan(core, dialog_id, record.seq).await? {
+        None if run.stage == Stage::Plan => match saved_plan(core, dialog_id, plan_since).await? {
             Some((row, file)) => (
                 Status::Done,
                 outcome.to_string(),

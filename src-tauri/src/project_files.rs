@@ -64,14 +64,8 @@ pub async fn list_project_files(
     root: String,
     limit: Option<usize>,
 ) -> Result<ProjectFiles, String> {
-    let root = std::path::PathBuf::from(root);
-    if !root.is_dir() {
-        return Err(format!("{}: not a folder", root.display()));
-    }
     let limit = limit.unwrap_or(20_000);
-    tauri::async_runtime::spawn_blocking(move || list_files(&root, limit))
-        .await
-        .map_err(|e| e.to_string())
+    crate::util::blocking_in(root, move |root| list_files(root, limit)).await
 }
 
 #[cfg(test)]

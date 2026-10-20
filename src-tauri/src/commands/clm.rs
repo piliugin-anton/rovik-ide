@@ -1,7 +1,7 @@
 //! Context Language Models (clm): a chat's context as a file the agent
 //! edits, and its revisions, which a chat on a host keeps there (6.1).
 
-use super::answer;
+use super::route;
 use rovik_client::Remote;
 use rovik_core::clm::{self, store::RevisionRow, ClmStatus};
 use rovik_core::Core;
@@ -17,7 +17,7 @@ pub async fn clm_status(
     let request = Request::ClmStatus {
         dialog_id: dialog_id.clone(),
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 #[tauri::command]
@@ -30,7 +30,7 @@ pub async fn clm_set_mode(
         dialog_id: dialog_id.clone(),
         mode,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 /// Drops the agent's context; the chat is sent as stored again.
@@ -39,7 +39,7 @@ pub async fn clm_reset(remote: State<'_, Arc<Remote>>, dialog_id: String) -> Res
     let request = Request::ClmReset {
         dialog_id: dialog_id.clone(),
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 #[tauri::command]
@@ -50,7 +50,7 @@ pub async fn clm_list_revisions(
     let request = Request::ClmListRevisions {
         dialog_id: dialog_id.clone(),
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 #[tauri::command]
@@ -63,7 +63,7 @@ pub async fn clm_read_revision(
         dialog_id: dialog_id.clone(),
         number,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 /// Puts revision `number` back as the context file: it's read back like an
@@ -78,7 +78,7 @@ pub async fn clm_restore_revision(
         dialog_id: dialog_id.clone(),
         number,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 #[tauri::command]

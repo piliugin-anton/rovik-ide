@@ -206,6 +206,23 @@ fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
     }
 }
 
+/// The system a command changes: `/`, or, in development, a folder in its
+/// place (`--root DIR`). Never for the installed binary: the sudoers rule
+/// runs that one as root for everyone (`user`) and the administrators
+/// (`admin`), and a folder of the caller's (a link in it to
+/// `/opt/rovik/bin`) would have root write where the caller says, past the
+/// release's signature. A development build takes the folder whoever runs
+/// it: the tests under `tests/install.rs` do, as root on some runners.
+fn system(root: Option<PathBuf>) -> Result<System, String> {
+    if root.is_some() && installer::runs_installed() {
+        return Err(format!(
+            "--root is for development builds: {} changes the system itself.",
+            installer::INSTALLED
+        ));
+    }
+    Ok(System::new(root))
+}
+
 pub fn run(argv: &[String]) -> i32 {
     let command = match parse(argv) {
         Ok(command) => command,
@@ -232,13 +249,13 @@ pub fn run(argv: &[String]) -> i32 {
             admin,
             binary,
             root,
-        } => installer::install(&System::new(root), &admin, binary),
-        Command::User { args, root } => installer::user(&System::new(root), &args),
+        } => system(root).and_then(|sys| installer::install(&sys, &admin, binary)),
+        Command::User { args, root } => system(root).and_then(|sys| installer::user(&sys, &args)),
         Command::Admin {
             args,
             root,
             allow_downgrade,
-        } => installer::admin(&System::new(root), &args, allow_downgrade),
+        } => system(root).and_then(|sys| installer::admin(&sys, &args, allow_downgrade)),
     };
     match result {
         Ok(()) => 0,
@@ -374,5 +391,14 @@ mod tests {
             })
         );
         assert!(parsed(&["user", "start", "--allow-downgrade"]).is_err());
+    }
+
+    /// `--root` is a development build's, whoever runs it: the install
+    /// tests run this crate's binary with it as root on some runners.
+    #[test]
+    fn a_development_build_takes_root_whoever_runs_it() {
+        let dir = rovik_core::testing::temp_dir();
+        assert!(system(Some(dir.0.clone())).is_ok());
+        assert!(system(None).is_ok());
     }
 }

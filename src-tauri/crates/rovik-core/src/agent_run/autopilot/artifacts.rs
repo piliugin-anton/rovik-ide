@@ -37,7 +37,9 @@ pub async fn task_plan_file(core: &Core, dialog_id: &str) -> Result<Option<Strin
     let Some((_, records)) = current_task(core, &chat).await? else {
         return Ok(None);
     };
-    let Some(plan_run) = records.iter().rev().find(|r| r.record.name == Stage::Plan) else {
+    // From the task's first plan run: a plan saved by one whose stage was
+    // retried after is the task's still (S02).
+    let Some(plan_run) = records.iter().find(|r| r.record.name == Stage::Plan) else {
         return Ok(None);
     };
     Ok(saved_plan(core, &chat, plan_run.seq)
@@ -208,7 +210,7 @@ pub(in crate::agent_run) async fn implementation_message(
     candidate: Option<&str>,
 ) -> Result<Result<UserMessage, String>, String> {
     let task = &records[0].record.task;
-    let plan_run = records.iter().rev().find(|r| r.record.name == Stage::Plan);
+    let plan_run = records.iter().find(|r| r.record.name == Stage::Plan);
     let saved = match plan_run {
         Some(r) => saved_plan(core, dialog_id, r.seq).await?,
         None => None,

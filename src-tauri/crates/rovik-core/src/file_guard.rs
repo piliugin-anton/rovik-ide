@@ -31,6 +31,16 @@ pub fn hash(bytes: &[u8]) -> Hash {
     Sha256::digest(bytes).into()
 }
 
+/// `hash` (or the first bytes of one) in lowercase hex.
+pub fn hex(hash: &[u8]) -> String {
+    hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The SHA-256 of `bytes` in lowercase hex, as `sha256sum` writes it.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&hash(bytes))
+}
+
 /// Who wrote a file through the app.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Writer {

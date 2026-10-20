@@ -1,12 +1,12 @@
+use crate::filesystem::WatcherState;
 use crate::instances::Instances;
-use crate::{filesystem::WatcherState, terminal::TerminalState};
 use rovik_client::hosts_page::HostsPage;
 use rovik_client::provider_keys::ProviderKeys;
 use rovik_client::secrets::{SecretError, SecretName, SecretStore};
 use rovik_client::Remote;
 use rovik_core::agent_run::events::{AgentEvent, EVENT};
 use rovik_core::{chat_db, chat_request, process, rt, Core, EventSink, Paths};
-use std::{collections::HashMap, sync::Arc, sync::Mutex};
+use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 mod commands;
@@ -23,6 +23,7 @@ mod remote_chats;
 mod shared_state;
 mod terminal;
 mod typings;
+mod util;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -34,14 +35,10 @@ pub fn run() {
     init_log();
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .manage(TerminalState::default())
-        .manage(lsp::LspState::default())
+        .manage(terminal::terminals())
+        .manage(lsp::servers())
         .manage(chat_request::ChatRequests::default())
-        .manage(WatcherState {
-            active_watcher: Mutex::new(None),
-            gitignore: Mutex::new(None),
-            id_to_path: Mutex::new(HashMap::new()),
-        }) // Register our state manager
+        .manage(WatcherState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let config = app.path().app_config_dir()?;

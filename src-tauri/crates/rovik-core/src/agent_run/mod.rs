@@ -1303,6 +1303,10 @@ pub(super) async fn start_run(
         }
     };
     let run_id = controls.run_id.clone();
+    // Registered until the run's end, whatever ends it: a start dropped or
+    // panicking before its run is spawned would otherwise leave the chat
+    // "already working" until the app restarts.
+    let registered = state.registered(&dialog_id, &run_id);
 
     // A new message is stored before anything else: the run reads the
     // chat's history from the database.
@@ -1319,7 +1323,7 @@ pub(super) async fn start_run(
                 messages: vec![events::out_message(&dialog_id, seqs[0], &new, false)],
             }),
             Err(e) => {
-                state.unregister(&dialog_id, &run_id);
+                drop(registered);
                 return Err(e);
             }
         }
@@ -1338,11 +1342,11 @@ pub(super) async fn start_run(
     let prepared = match run::Run::prepare(core, request, controls).await {
         Ok(Some(prepared)) => prepared,
         Ok(None) => {
-            state.unregister(&dialog_id, &run_id);
+            drop(registered);
             return Ok(None);
         }
         Err(e) => {
-            state.unregister(&dialog_id, &run_id);
+            drop(registered);
             // The message got no answer: it's marked failed, its draft comes back.
             if let Some(message_id) = sent {
                 let id = message_id.clone();
@@ -1408,7 +1412,7 @@ pub(super) async fn start_run(
         // Autopilot task's run: told before it's gone.
         let spent = core.agents.run_spent(&dialog_id).unwrap_or_default();
         let autopilot = core.agents.autopilot_of(&dialog_id).is_some();
-        core.agents.unregister(&dialog_id, &id);
+        drop(registered);
         core.emit(AgentEvent::RunEnded {
             dialog_id: dialog_id.clone(),
             run_id: id,

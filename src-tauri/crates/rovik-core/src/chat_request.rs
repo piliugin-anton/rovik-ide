@@ -130,6 +130,10 @@ impl ChatError {
             partial: false,
         }
     }
+    /// The user stopped the request.
+    pub fn stopped() -> Self {
+        ChatError::new(ErrorKind::Cancelled, "Stopped.")
+    }
     pub fn with_details(mut self, details: impl AsRef<str>) -> Self {
         let d: String = details.as_ref().chars().take(DETAILS_MAX_CHARS).collect();
         if !d.trim().is_empty() {
@@ -236,11 +240,14 @@ pub async fn cancelled(cancel: &mut watch::Receiver<bool>) {
  * ---------------------------------------------------------------------------
  */
 
-/// "2m59.56s", "1h2m", "750ms", "20s", or a plain number of seconds.
+/// "2m59.56s", "1h2m", "750ms", "20s", or a plain number of seconds. None
+/// for what isn't a wait a provider could mean ("inf", a negative number,
+/// more seconds than a Duration holds): the header is the provider's, and
+/// `Duration::from_secs_f64` would panic on it.
 fn parse_duration_text(text: &str) -> Option<Duration> {
     let t = text.trim();
     if let Ok(secs) = t.parse::<f64>() {
-        return (secs >= 0.0).then(|| Duration::from_secs_f64(secs));
+        return Duration::try_from_secs_f64(secs).ok();
     }
     let mut total = 0.0f64;
     let mut number = String::new();
@@ -266,7 +273,11 @@ fn parse_duration_text(text: &str) -> Option<Duration> {
         total += value * unit;
         any = true;
     }
-    (any && number.is_empty()).then(|| Duration::from_secs_f64(total))
+    if any && number.is_empty() {
+        Duration::try_from_secs_f64(total).ok()
+    } else {
+        None
+    }
 }
 
 /// A reset value that may be an epoch time (s or ms) or a duration.
@@ -824,13 +835,16 @@ impl ReplyParser {
                         .and_then(|m| m.get("reasoning_details"))
                         .cloned()
                         .unwrap_or(serde_json::Value::Null),
+                    // Each call numbered, as a stream's deltas are. What isn't
+                    // a call (a broken gateway's number or string) is left
+                    // out: indexing it would panic.
                     "tool_calls": message
                         .and_then(|m| m.get("tool_calls"))
                         .and_then(|t| t.as_array())
-                        .map(|calls| calls.iter().enumerate().map(|(i, c)| {
-                            let mut c = c.clone();
-                            c["index"] = serde_json::json!(i);
-                            c
+                        .map(|calls| calls.iter().enumerate().filter_map(|(i, c)| {
+                            let mut c = c.as_object()?.clone();
+                            c.insert("index".into(), serde_json::json!(i));
+                            Some(serde_json::Value::Object(c))
                         }).collect::<Vec<_>>())
                         .unwrap_or_default(),
                 },
@@ -1014,7 +1028,7 @@ async fn attempt(
             deadline
         };
         tokio::select! {
-            _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
+            _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
             r = &mut request => match r {
                 Err(e) => {
                     let message = match crate::net::proxy_for_requests(spec.url) {
@@ -1054,7 +1068,7 @@ async fn attempt(
         // The error body is small, but a misbehaving server could still
         // stall here: bound it and keep it cancellable.
         let body = tokio::select! {
-            _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
+            _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
             r = tokio::time::timeout(Duration::from_secs(10), response.text()) => {
                 r.ok().and_then(|t| t.ok()).unwrap_or_default()
             }
@@ -1085,7 +1099,7 @@ async fn attempt(
 
     if !spec.streaming {
         let text = tokio::select! {
-            _ = cancelled(cancel) => return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), false)),
+            _ = cancelled(cancel) => return Err(fail(ChatError::stopped(), false)),
             r = tokio::time::timeout_at(deadline.into(), response.text()) => match r {
                 Err(_) => return Err(fail(overall_error(), false)),
                 Ok(Err(e)) => return Err(fail(ChatError::new(ErrorKind::Network, "The connection dropped.").with_details(e.to_string()), false)),
@@ -1144,7 +1158,7 @@ async fn attempt(
                 if let Some(usage) = parser.usage.take() {
                     emit(ChatStreamEvent::Finished { finish_reason: None, usage: Some(usage) });
                 }
-                return Err(fail(ChatError::new(ErrorKind::Cancelled, "Stopped."), parser.visible()));
+                return Err(fail(ChatError::stopped(), parser.visible()));
             }
             r = tokio::time::timeout_at(wait_until.into(), stream.next()) => r,
         };
@@ -1317,7 +1331,7 @@ pub async fn run(
         });
         tokio::select! {
             _ = cancelled(cancel) => {
-                let mut stopped = ChatError::new(ErrorKind::Cancelled, "Stopped.");
+                let mut stopped = ChatError::stopped();
                 stopped.attempts = attempt_number;
                 return Err(stopped);
             }

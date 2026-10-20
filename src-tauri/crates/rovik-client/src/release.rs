@@ -101,6 +101,19 @@ impl Releases {
     pub async fn build(&self, version: &str, cpu: &str) -> Result<Signed, String> {
         let name = release::build_name(version, cpu);
         let build = self.fetch(version, &name, true).await?;
+        // Named in the version's signed list with this content: another
+        // version's build, validly signed as itself, isn't taken under this
+        // version's name.
+        let listed = self.fetch(version, release::SUMS, false).await?;
+        let sum = rovik_core::file_guard::sha256_hex(&build.bytes);
+        let named = release::sums(&String::from_utf8_lossy(&listed.bytes))
+            .into_iter()
+            .any(|(hash, file)| hash == sum && file == name);
+        if !named {
+            return Err(format!(
+                "{name} isn't in release {version}'s signed list with this content."
+            ));
+        }
         self.forget_builds_but(version);
         Ok(build)
     }
@@ -318,15 +331,15 @@ mod tests {
         assert_eq!(std::fs::read(&build.path).unwrap(), BUILD.as_bytes());
         assert_eq!(
             asked.lock().unwrap().len(),
-            2,
-            "the build and its signature"
+            4,
+            "the build and its signature, and the list it's named in"
         );
         assert!(!cache.join("9.9.7/rovik-agentd-9.9.7-x86_64").exists());
         assert!(cache.join("9.9.7/SHA256SUMS").exists(), "lists stay");
         // Kept: the server isn't asked again.
         let again = releases.build("9.9.8", "x86_64").await.unwrap();
         assert_eq!(again.bytes, build.bytes);
-        assert_eq!(asked.lock().unwrap().len(), 2);
+        assert_eq!(asked.lock().unwrap().len(), 4);
         let sums = releases.sums("9.9.8").await.unwrap();
         assert_eq!(sums, [BUILD_SHA256, BUILD_SHA256]);
 

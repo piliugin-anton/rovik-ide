@@ -1914,6 +1914,12 @@ pub fn is_harness(m: &MessageRow) -> bool {
         .is_some_and(|h| !h.is_null())
 }
 
+/// Whether a stored message is a request of the user's: theirs, not one
+/// the IDE wrote in their name.
+pub fn is_users(m: &MessageRow) -> bool {
+    m.role == "user" && !is_harness(m)
+}
+
 /// Whether the user dismissed a checklist here (`meta.checklistClosed`):
 /// on the message holding its `todo` call (the panel's dismiss ✕), or, as
 /// older chats have it, on the user message that followed it.
@@ -1975,9 +1981,7 @@ fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
 /// tells the model to close the old one when the new message is a different
 /// task.
 pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
-    let last_user = messages
-        .iter()
-        .rposition(|m| m.role == "user" && !is_harness(m));
+    let last_user = messages.iter().rposition(is_users);
     let Some(last) = last_user else {
         // No user message yet: whatever the latest todo call says.
         for m in messages.iter().rev() {
@@ -2014,9 +2018,7 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     // The previous request only: past the last user message, up to the one
     // before it. A second user message stops the search, so an old
     // checklist doesn't linger across unrelated work.
-    let prev_user = messages[..last]
-        .iter()
-        .rposition(|m| m.role == "user" && !is_harness(m));
+    let prev_user = messages[..last].iter().rposition(is_users);
     let from = prev_user.map(|p| p + 1).unwrap_or(0);
     for m in messages[from..last].iter().rev() {
         if let Some(items) = todo_in_message(m) {

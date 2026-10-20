@@ -552,17 +552,8 @@ impl Run {
         let mut r = InstallResult::pending(install);
         let dir = Path::new(root).join(&install.folder);
         let stop = self.stop.clone();
-        let queued = crate::command_tool::Queued {
-            kind: crate::workload::JobKind::Check {
-                owner: chat.to_string(),
-            },
-            note: Box::new(|_| {}),
-            env: crate::overlay::chats::get(chat)
-                .map(|o| o.command_env())
-                .unwrap_or_default(),
-            confine: crate::overlay::chats::get(chat).and_then(|o| o.confine()),
-            whole_output: false,
-        };
+        let overlay = crate::overlay::chats::get(chat);
+        let queued = crate::command_tool::Queued::check(chat, overlay.as_deref());
         let outcome = crate::command_tool::run_command(
             dir.to_string_lossy().into_owned(),
             install.command.clone(),

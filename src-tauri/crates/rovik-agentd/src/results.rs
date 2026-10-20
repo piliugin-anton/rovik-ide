@@ -21,6 +21,7 @@
 
 use crate::deliver;
 use crate::events::Events;
+use crate::fail::{git, internal};
 use crate::store::{Kept, Place, Store};
 use git2::build::TreeUpdateBuilder;
 use git2::{
@@ -437,6 +438,11 @@ impl Results {
     }
 }
 
+/// Rovik's own signature on the commits it makes.
+pub fn rovik_signature() -> Result<Signature<'static>, git2::Error> {
+    Signature::now("Rovik", "results@rovik.invalid")
+}
+
 /// Stages the worktree through the chat's own index, against `base`, and
 /// commits it on `base` at the chat's result ref. An unchanged tree keeps
 /// the previous result.
@@ -468,7 +474,7 @@ pub fn commit_at(
     {
         return Ok(previous.id());
     }
-    let rovik = Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
+    let rovik = rovik_signature().map_err(git)?;
     let tree = repo.find_tree(tree).map_err(git)?;
     let commit = repo
         .commit(None, &rovik, &rovik, message, &tree, &[&base])
@@ -605,7 +611,7 @@ fn hold(worktree: &Path, chat: &str, kept: &BTreeMap<String, Kept>) -> Result<()
         }
     }
     let tree = repo.find_tree(tree.write()?)?;
-    let rovik = Signature::now("Rovik", "results@rovik.invalid")?;
+    let rovik = rovik_signature()?;
     let message = format!("What Undo the merge puts back in chat {chat}");
     let held = repo.commit(None, &rovik, &rovik, &message, &tree, &[])?;
     repo.reference(&name, held, true, "kept")?;
@@ -643,7 +649,6 @@ pub fn move_base(
     paths: &[String],
     chat: &str,
 ) -> Result<Oid, Fail> {
-    let git = |e: git2::Error| internal(e.message().to_string());
     let repo = Repository::open(worktree).map_err(git)?;
     let base = (Oid::from_str(base).and_then(|base| repo.find_commit(base))).map_err(git)?;
     let landed = repo
@@ -670,7 +675,6 @@ pub fn set_base(
     entries: &[(String, Option<(Oid, FileMode)>)],
     message: &str,
 ) -> Result<Oid, Fail> {
-    let git = |e: git2::Error| internal(e.message().to_string());
     let base_tree = base.tree().map_err(git)?;
     let mut update = TreeUpdateBuilder::new();
     for (path, entry) in entries {
@@ -688,7 +692,7 @@ pub fn set_base(
     if tree == base_tree.id() {
         return Ok(base.id());
     }
-    let rovik = Signature::now("Rovik", "results@rovik.invalid").map_err(git)?;
+    let rovik = rovik_signature().map_err(git)?;
     let tree = repo.find_tree(tree).map_err(git)?;
     let commit = repo
         .commit(None, &rovik, &rovik, message, &tree, &[base])
@@ -732,10 +736,6 @@ fn file_mode(entry: &git2::TreeEntry) -> Option<FileMode> {
         0o120000 => FileMode::Link,
         _ => FileMode::Blob,
     })
-}
-
-fn internal(message: String) -> Fail {
-    Fail::new(FailCode::Internal, message)
 }
 
 #[cfg(test)]

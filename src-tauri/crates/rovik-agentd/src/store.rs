@@ -7,6 +7,7 @@
 //! computer, its runs their computer's configuration (D16), and an
 //! interrupted run its way back (5.4).
 
+use crate::fail::internal;
 use crate::keys::{self, Keys};
 use rovik_protocol::agent::{
     AgentConfig, ModelProfile, OpenAIChatOptions, StartKind, StartRequest,
@@ -859,10 +860,6 @@ impl Inner {
         self.state.computers.insert(computer.to_string(), kept);
         self.configs.insert(computer.to_string(), config);
     }
-}
-
-fn internal(message: String) -> Fail {
-    Fail::new(FailCode::Internal, message)
 }
 
 #[cfg(test)]

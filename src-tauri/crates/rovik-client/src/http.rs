@@ -185,8 +185,13 @@ where
 const RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How long a reply's body may take to arrive whole: they're bounded
-/// (`MAX_CALL`, `MAX_BLOB`), on a link that may be slow.
+/// (`MAX_CALL`, `MAX_BLOB`), on a link that may be slow. A request's body
+/// too: the daemon answers once it has it all.
 const BODY_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// A request body up to this is as good as none: answered in a header's
+/// time, not a body's.
+const SMALL_BODY: u64 = 64 * 1024;
 
 /// One request with this computer's token, on a connection of its own:
 /// the response, with its body still to come. A body of unknown length
@@ -220,10 +225,17 @@ where
     if let Some(length) = body.size_hint().exact() {
         request = request.header(CONTENT_LENGTH, length);
     }
+    // The daemon answers once it has the body: a request that carries one
+    // (a blob, a pack, a chat's import) is answered in the body's time, on
+    // a link that may be slow, not in a header's.
+    let wait = match body.size_hint().upper() {
+        Some(n) if n <= SMALL_BODY => RESPONSE_WAIT,
+        _ => BODY_WAIT,
+    };
     let request = request
         .body(body)
         .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
-    tokio::time::timeout(RESPONSE_WAIT, sender.send_request(request))
+    tokio::time::timeout(wait, sender.send_request(request))
         .await
         .map_err(|_| unreachable(&identity.host))?
         .map_err(|_| unreachable(&identity.host))
@@ -237,8 +249,23 @@ pub struct Health {
     pub version: String,
 }
 
+/// How long `/health` may take, connecting included: a daemon that takes
+/// the connection and never answers would otherwise hang a deploy or a
+/// check for good.
+const HEALTH_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// The daemon's `/health`: that it answers, and its version.
 pub async fn health(connector: &dyn Connector) -> Result<Health, Fail> {
+    match tokio::time::timeout(HEALTH_WAIT, health_now(connector)).await {
+        Ok(answer) => answer,
+        Err(_) => Err(Fail::new(
+            FailCode::Unreachable,
+            "The daemon didn't answer /health in time.",
+        )),
+    }
+}
+
+async fn health_now(connector: &dyn Connector) -> Result<Health, Fail> {
     let lost = |why: String| Fail::new(FailCode::Unreachable, why);
     let io = connector.connect().await.map_err(|e| lost(e.to_string()))?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))

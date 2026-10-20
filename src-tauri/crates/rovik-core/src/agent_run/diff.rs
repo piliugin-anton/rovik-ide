@@ -27,10 +27,14 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Op>> {
     let max = (n + m).min(MAX_EDIT_DISTANCE as isize);
     let off = max + 1;
     let mut v = vec![0isize; (2 * max + 3) as usize];
+    // Step d's frontier is its diagonals -d..=d, with the untouched one
+    // beyond each end that the backtrack reads at the ends: kept as that
+    // slice, not as the whole vector, which a long search copied 2,000
+    // times over.
     let mut trace: Vec<Vec<isize>> = Vec::new();
 
     for d in 0..=max {
-        trace.push(v.clone());
+        trace.push(v[(off - d - 1) as usize..=(off + d + 1) as usize].to_vec());
         let mut k = -d;
         while k <= d {
             let mut x =
@@ -46,7 +50,7 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Op>> {
             }
             v[(off + k) as usize] = x;
             if x >= n && y >= m {
-                return Some(backtrack(&trace, n, m, off));
+                return Some(backtrack(&trace, n, m));
             }
             k += 2;
         }
@@ -54,19 +58,20 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Op>> {
     None
 }
 
-fn backtrack(trace: &[Vec<isize>], n: isize, m: isize, off: isize) -> Vec<Op> {
+fn backtrack(trace: &[Vec<isize>], n: isize, m: isize) -> Vec<Op> {
     let mut ops = Vec::new();
     let (mut x, mut y) = (n, m);
     for d in (0..trace.len() as isize).rev() {
+        // Step d's diagonals, -(d + 1)..=(d + 1), as kept.
         let v = &trace[d as usize];
+        let at = |k: isize| v[(k + d + 1) as usize];
         let k = x - y;
-        let prev_k = if k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize])
-        {
+        let prev_k = if k == -d || (k != d && at(k - 1) < at(k + 1)) {
             k + 1
         } else {
             k - 1
         };
-        let prev_x = v[(off + prev_k) as usize];
+        let prev_x = at(prev_k);
         let prev_y = prev_x - prev_k;
         while x > prev_x && y > prev_y {
             ops.push(Op::Eq);

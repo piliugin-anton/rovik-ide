@@ -32,6 +32,9 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// size, which a frame's 60 s would cut, and the daemon then run while
 /// the app gives the message back to the input (6.11).
 pub const POST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// A session up this long served: lost after it, the next connection is
+/// tried at once, not after a backoff.
+const SERVED_AWHILE: Duration = Duration::from_secs(30);
 /// How long the daemon has to answer `Hello`.
 const WELCOME_WAIT: Duration = Duration::from_secs(10);
 /// The daemon's answer to a token it doesn't take.
@@ -96,6 +99,14 @@ pub struct DaemonInfo {
     pub daemon: String,
     /// The additive requests it serves (4.5).
     pub features: Vec<String>,
+}
+
+impl DaemonInfo {
+    /// Whether the daemon serves `feature` (4.5): one it listed in its
+    /// `Welcome`.
+    pub fn serves(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
 }
 
 /// What a client hears from its daemon, in order.
@@ -286,7 +297,7 @@ impl Client {
         bundle: &ChatBundle,
         progress: impl Fn(u64) + Send + Sync + 'static,
     ) -> Result<Imported, Fail> {
-        self.takes_moves()?;
+        self.takes(features::MIRROR, "chats")?;
         let bytes =
             serde_json::to_vec(bundle).map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
         if bytes.len() > MAX_BUNDLE {
@@ -335,7 +346,7 @@ impl Client {
         new: Oid,
         progress: impl Fn(u64) + Send + Sync + 'static,
     ) -> Result<Pushed, Fail> {
-        self.takes_projects()?;
+        self.takes(features::PROJECTS, "projects")?;
         let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
         let progress = Box::new(progress);
         packs::push(connector, identity, shadow, project, name, new, progress).await
@@ -344,33 +355,19 @@ impl Client {
     /// Takes what the daemon has of `wants` for the project into the
     /// shadow repository at `shadow` (6.4). Returns how many objects came.
     pub async fn fetch(&self, project: &str, shadow: &Path, wants: &[Oid]) -> Result<usize, Fail> {
-        self.takes_projects()?;
+        self.takes(features::PROJECTS, "projects")?;
         let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
         packs::fetch(connector, identity, shadow, project, wants).await
     }
 
-    /// A daemon from before the mirror can't take a chat (4.5).
-    fn takes_moves(&self) -> Result<(), Fail> {
+    /// A daemon from before `feature` can't take `what` (4.5): chats
+    /// before the mirror, projects before their transport (`/packs`).
+    fn takes(&self, feature: &str, what: &str) -> Result<(), Fail> {
         match self.daemon() {
-            Some(daemon) if !daemon.features.iter().any(|f| f == features::MIRROR) => {
-                Err(Fail::new(
-                    FailCode::Version,
-                    "The server's daemon can't take chats yet: it needs an upgrade.",
-                ))
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// A daemon from before the project transport has no `/packs` (4.5).
-    fn takes_projects(&self) -> Result<(), Fail> {
-        match self.daemon() {
-            Some(daemon) if !daemon.features.iter().any(|f| f == features::PROJECTS) => {
-                Err(Fail::new(
-                    FailCode::Version,
-                    "The server's daemon can't take projects yet: it needs an upgrade.",
-                ))
-            }
+            Some(daemon) if !daemon.serves(feature) => Err(Fail::new(
+                FailCode::Version,
+                format!("The server's daemon can't take {what} yet: it needs an upgrade."),
+            )),
             _ => Ok(()),
         }
     }
@@ -541,10 +538,9 @@ async fn slept(tick: Duration, wall: impl Fn() -> SystemTime) {
 /// then the frames that come, until the link drops.
 async fn session(shared: &Shared) -> Ended {
     let lost = Ended::Lost { served: false };
-    let identity = &shared.identity;
-    let io = match shared.connector.connect().await {
-        Ok(io) => io,
-        Err(e) => {
+    let (socket, daemon, boot) = match hello(&*shared.connector, &shared.identity).await {
+        Ok(welcomed) => welcomed,
+        Err(Unwelcome::NoLink(e)) => {
             return match Refusal::of(&e) {
                 Some(refusal) => Ended::Refused {
                     why: refusal.why.clone(),
@@ -553,47 +549,17 @@ async fn session(shared: &Shared) -> Ended {
                 None => lost,
             }
         }
-    };
-    let uri: Uri = "ws://rovik-agentd/rpc".parse().expect("a URI");
-    let request = ClientRequestBuilder::new(uri)
-        .with_header("Authorization", format!("Bearer {}", identity.token.0));
-    let mut socket = match tokio_tungstenite::client_async(request, io).await {
-        Ok((socket, _)) => socket,
-        Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
+        Err(Unwelcome::TokenRefused) => {
             return Ended::Refused {
                 why: TOKEN_REFUSED.into(),
                 may_pass: false,
             }
         }
-        Err(_) => return lost,
+        Err(Unwelcome::Lost(_)) => return lost,
     };
-    let hello = Frame::Hello {
-        protocol: PROTOCOL,
-        client: identity.client.clone(),
-        device: identity.computer.clone(),
-        token: identity.token.clone(),
-    };
-    if socket.send(text(&hello)).await.is_err() {
-        return lost;
-    }
-    let welcome = tokio::time::timeout(WELCOME_WAIT, next_frame(&mut socket)).await;
-    let Ok(Some(Frame::Welcome {
-        protocol,
-        min_protocol,
-        daemon,
-        boot,
-        features,
-    })) = welcome
-    else {
-        return lost;
-    };
-    shared.lock().daemon = Some(DaemonInfo {
-        protocol,
-        min_protocol,
-        daemon,
-        features,
-    });
-    if PROTOCOL < min_protocol {
+    let too_old = PROTOCOL < daemon.min_protocol;
+    shared.lock().daemon = Some(daemon);
+    if too_old {
         return Ended::TooOld;
     }
 
@@ -611,6 +577,7 @@ async fn session(shared: &Shared) -> Ended {
         let _ = sink.close().await;
     }));
     shared.lock().writer = Some(writer);
+    let served_since = std::time::Instant::now();
     shared.set_state(HostState::Ready);
     while let Some(frame) = next_frame(&mut stream).await {
         match frame {
@@ -635,23 +602,56 @@ async fn session(shared: &Shared) -> Ended {
             _ => {}
         }
     }
-    Ended::Lost { served: true }
+    // Served: it stayed up a while. A daemon that drops the link right
+    // after Welcome (one in a crash loop) isn't reconnected at once, every
+    // second, for ever: the backoff goes on as for a failed connection.
+    Ended::Lost {
+        served: served_since.elapsed() >= SERVED_AWHILE,
+    }
 }
 
 /// Says Hello to the daemon once, and returns its Welcome (H05): that it
 /// takes this computer's token, and what it is.
 pub async fn welcome(connector: &dyn Connector, identity: &Identity) -> Result<DaemonInfo, Fail> {
-    let lost = |why: String| Fail::new(FailCode::Unreachable, why);
-    let io = connector.connect().await.map_err(|e| lost(e.to_string()))?;
+    let (mut socket, daemon, _) = hello(connector, identity).await.map_err(|e| match e {
+        Unwelcome::NoLink(e) => Fail::new(FailCode::Unreachable, e.to_string()),
+        Unwelcome::TokenRefused => Fail::new(FailCode::BadRequest, TOKEN_REFUSED),
+        Unwelcome::Lost(why) => Fail::new(FailCode::Unreachable, why),
+    })?;
+    let _ = socket.close(None).await;
+    Ok(daemon)
+}
+
+/// Why a Hello got no Welcome.
+enum Unwelcome {
+    /// The link didn't come up: the connector's error, a `Refusal` maybe.
+    NoLink(std::io::Error),
+    /// The daemon doesn't know this computer's token (401).
+    TokenRefused,
+    /// The link dropped, or the daemon didn't answer: why.
+    Lost(String),
+}
+
+/// A WebSocket to the daemon, with this computer's token, over a fresh
+/// link.
+type Socket = tokio_tungstenite::WebSocketStream<crate::connector::Stream>;
+
+/// Opens a link to the daemon and says Hello on it: the socket, to go on
+/// with, what the daemon's Welcome says of it, and its boot.
+async fn hello(
+    connector: &dyn Connector,
+    identity: &Identity,
+) -> Result<(Socket, DaemonInfo, String), Unwelcome> {
+    let io = connector.connect().await.map_err(Unwelcome::NoLink)?;
     let uri: Uri = "ws://rovik-agentd/rpc".parse().expect("a URI");
     let request = ClientRequestBuilder::new(uri)
         .with_header("Authorization", format!("Bearer {}", identity.token.0));
     let mut socket = match tokio_tungstenite::client_async(request, io).await {
         Ok((socket, _)) => socket,
         Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
-            return Err(Fail::new(FailCode::BadRequest, TOKEN_REFUSED))
+            return Err(Unwelcome::TokenRefused)
         }
-        Err(e) => return Err(lost(e.to_string())),
+        Err(e) => return Err(Unwelcome::Lost(e.to_string())),
     };
     let hello = Frame::Hello {
         protocol: PROTOCOL,
@@ -662,24 +662,25 @@ pub async fn welcome(connector: &dyn Connector, identity: &Identity) -> Result<D
     socket
         .send(text(&hello))
         .await
-        .map_err(|e| lost(e.to_string()))?;
+        .map_err(|e| Unwelcome::Lost(e.to_string()))?;
     let welcome = tokio::time::timeout(WELCOME_WAIT, next_frame(&mut socket)).await;
-    let _ = socket.close(None).await;
-    match welcome {
-        Ok(Some(Frame::Welcome {
-            protocol,
-            min_protocol,
-            daemon,
-            features,
-            ..
-        })) => Ok(DaemonInfo {
-            protocol,
-            min_protocol,
-            daemon,
-            features,
-        }),
-        _ => Err(lost("The daemon didn't answer Hello.".into())),
-    }
+    let Ok(Some(Frame::Welcome {
+        protocol,
+        min_protocol,
+        daemon,
+        boot,
+        features,
+    })) = welcome
+    else {
+        return Err(Unwelcome::Lost("The daemon didn't answer Hello.".into()));
+    };
+    let daemon = DaemonInfo {
+        protocol,
+        min_protocol,
+        daemon,
+        features,
+    };
+    Ok((socket, daemon, boot))
 }
 
 fn text(frame: &Frame) -> Message {
@@ -687,7 +688,9 @@ fn text(frame: &Frame) -> Message {
 }
 
 /// The next frame, or none once the link is gone. Text that isn't a frame
-/// this client knows, from a newer daemon, is passed over.
+/// this client knows, from a newer daemon, is passed over, with a line in
+/// the log; a reply it can't read fails its call, which would otherwise
+/// wait for an answer that came.
 async fn next_frame<S>(stream: &mut S) -> Option<Frame>
 where
     S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin,
@@ -696,7 +699,21 @@ where
         match stream.next().await? {
             Ok(Message::Text(text)) => match serde_json::from_str(&text) {
                 Ok(frame) => return Some(frame),
-                Err(_) => continue,
+                Err(e) => {
+                    log::warn!("a frame from the daemon couldn't be read: {e}");
+                    let envelope: Option<serde_json::Value> = serde_json::from_str(&text).ok();
+                    let reply_to = envelope
+                        .filter(|v| v["t"] == "reply")
+                        .and_then(|v| v["id"].as_u64());
+                    if let Some(id) = reply_to {
+                        let res = Err(Fail::new(
+                            FailCode::Version,
+                            "The daemon's answer isn't one this app reads: update Rovik.",
+                        ));
+                        return Some(Frame::Reply { id, res });
+                    }
+                    continue;
+                }
             },
             Ok(Message::Close(_)) | Err(_) => return None,
             Ok(_) => continue,

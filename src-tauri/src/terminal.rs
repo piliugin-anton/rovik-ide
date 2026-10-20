@@ -28,12 +28,12 @@
 // the login shell on a pseudo-terminal there (rovik-client's `Ssh::shell`);
 // its reads are async, so a task pumps its output, and no thread waits.
 
-use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
+use crate::util::{blocking, ErrText, Registry};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use rovik_client::hosts_page::{HostsPage, ShellAccess};
 use rovik_client::ssh::{Shell, ShellEvent, Ssh};
@@ -48,7 +48,7 @@ const TERM: &str = "xterm-256color";
 /// A program on a pseudo-terminal here. Each part has its own lock, so a
 /// write that blocks on a full pty buffer (a big paste) never holds up
 /// other terminals or a resize.
-struct PtyInstance {
+pub(crate) struct PtyInstance {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -56,7 +56,7 @@ struct PtyInstance {
 
 /// One terminal: a program on a pseudo-terminal here (the user's shell, or
 /// their ssh to a host), or a shell on a host through Rovik's SSH.
-enum Session {
+pub(crate) enum Session {
     Pty(PtyInstance),
     Ssh(Shell),
 }
@@ -65,14 +65,11 @@ impl Session {
     fn write(&self, data: &[u8]) -> Result<(), String> {
         match self {
             Session::Pty(pty) => {
-                let mut writer = pty
-                    .writer
-                    .lock()
-                    .map_err(|_| "terminal writer poisoned".to_string())?;
-                writer.write_all(data).map_err(|e| e.to_string())?;
-                writer.flush().map_err(|e| e.to_string())
+                let mut writer = pty.writer.lock().unwrap_or_else(|e| e.into_inner());
+                writer.write_all(data).err_text()?;
+                writer.flush().err_text()
             }
-            Session::Ssh(shell) => shell.write(data).map_err(|e| e.to_string()),
+            Session::Ssh(shell) => shell.write(data).err_text(),
         }
     }
 
@@ -80,10 +77,7 @@ impl Session {
         let (cols, rows) = (cols.max(1), rows.max(1));
         match self {
             Session::Pty(pty) => {
-                let master = pty
-                    .master
-                    .lock()
-                    .map_err(|_| "terminal pty poisoned".to_string())?;
+                let master = pty.master.lock().unwrap_or_else(|e| e.into_inner());
                 master
                     .resize(PtySize {
                         rows,
@@ -91,11 +85,9 @@ impl Session {
                         pixel_width: 0,
                         pixel_height: 0,
                     })
-                    .map_err(|e| e.to_string())
+                    .err_text()
             }
-            Session::Ssh(shell) => shell
-                .resize(cols.into(), rows.into())
-                .map_err(|e| e.to_string()),
+            Session::Ssh(shell) => shell.resize(cols.into(), rows.into()).err_text(),
         }
     }
 
@@ -112,31 +104,12 @@ impl Session {
     }
 }
 
-/// Live terminals by id. The map lock is only held to look an entry up.
-#[derive(Default)]
-pub struct TerminalState(Mutex<HashMap<String, Arc<Session>>>);
+/// Live terminals by id.
+pub(crate) type TerminalState = Registry<Session>;
 
-impl TerminalState {
-    fn get(&self, id: &str) -> Result<Arc<Session>, String> {
-        self.0
-            .lock()
-            .map_err(|_| "terminal state poisoned".to_string())?
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("terminal {id} not found"))
-    }
-
-    fn insert(&self, id: String, session: Session) -> Result<(), String> {
-        self.0
-            .lock()
-            .map_err(|_| "terminal state poisoned".to_string())?
-            .insert(id, Arc::new(session));
-        Ok(())
-    }
-
-    fn remove(&self, id: &str) -> Option<Arc<Session>> {
-        self.0.lock().ok()?.remove(id)
-    }
+/// The app's terminals, none yet.
+pub fn terminals() -> TerminalState {
+    Registry::new("terminal")
 }
 
 /// Streamed to the frontend over the terminal's channel.
@@ -309,14 +282,14 @@ pub async fn spawn_remote_terminal(
             });
         }
     };
-    let ssh = Arc::new(Ssh::connect(&target).await.map_err(|e| e.to_string())?);
+    let ssh = Arc::new(Ssh::connect(&target).await.err_text()?);
     // Its name first: what the shell prints waits unread until its output
     // is pumped, and enough of it would hold up the answer.
     let name = ssh.login_shell().await;
     let opened = ssh.shell(TERM, size.cols.into(), size.rows.into()).await;
-    let (shell, mut output) = opened.map_err(|e| e.to_string())?;
+    let (shell, mut output) = opened.err_text()?;
     let id = Uuid::new_v4().to_string();
-    state.insert(id.clone(), Session::Ssh(shell))?;
+    state.insert(id.clone(), Session::Ssh(shell));
     let exit_id = id.clone();
     rovik_core::rt::spawn(async move {
         let mut text = Utf8Stream::default();
@@ -362,9 +335,7 @@ fn spawn_pty(
     on_event: Channel<TerminalEvent>,
     counted: bool,
 ) -> Result<String, String> {
-    let pair = native_pty_system()
-        .openpty(size)
-        .map_err(|e| e.to_string())?;
+    let pair = native_pty_system().openpty(size).err_text()?;
 
     // The user's environment, run from an AppImage, not the AppImage's: a
     // login shell's profile runs flatpak, python…
@@ -379,13 +350,13 @@ fn spawn_pty(
     cmd.env("TERM", TERM);
     cmd.env("COLORTERM", "truecolor");
 
-    let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let mut child = pair.slave.spawn_command(cmd).err_text()?;
     // Drop our copy of the slave end now that the child owns it, or the
     // master's reader never sees EOF when the child exits.
     drop(pair.slave);
 
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut reader = pair.master.try_clone_reader().err_text()?;
+    let writer = pair.master.take_writer().err_text()?;
     let killer = child.clone_killer();
 
     let id = Uuid::new_v4().to_string();
@@ -396,7 +367,7 @@ fn spawn_pty(
             master: Mutex::new(pair.master),
             killer: Mutex::new(killer),
         }),
-    )?;
+    );
 
     let (drained_tx, drained_rx) = mpsc::channel::<()>();
 
@@ -428,7 +399,7 @@ fn spawn_pty(
             }
             let _ = drained_tx.send(());
         })
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
 
     // The shell's commands count in the queue for heavy work: a build run
     // here takes a CPU slot (chats wait, with a note naming it), but the
@@ -455,18 +426,21 @@ fn spawn_pty(
             let _ = drained_rx.recv_timeout(Duration::from_millis(500));
             let _ = on_event.send(TerminalEvent::Exit { code });
         })
-        .map_err(|e| e.to_string())?;
+        .err_text()?;
 
     Ok(id)
 }
 
+/// Off the async threads: a write to a full pty buffer (a big paste into a
+/// program that isn't reading) blocks until the program reads.
 #[tauri::command]
-pub fn write_to_terminal(
+pub async fn write_to_terminal(
     state: State<'_, TerminalState>,
     id: String,
     data: String,
 ) -> Result<(), String> {
-    state.get(&id)?.write(data.as_bytes())
+    let session = state.get(&id)?;
+    blocking(move || session.write(data.as_bytes())).await
 }
 
 #[tauri::command]

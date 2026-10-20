@@ -202,15 +202,7 @@ pub trait Deliverer: Send + Sync {
 pub fn plan_title(plan: &str) -> Option<String> {
     let line = plan.lines().map(str::trim).find(|l| l.starts_with("# "))?;
     let title = line.trim_start_matches('#').trim();
-    (!title.is_empty()).then(|| shortened(title, 72))
-}
-
-/// `text` cut to `max` characters, with "…" when it was cut.
-pub(super) fn shortened(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
-        None => text.to_string(),
-    }
+    (!title.is_empty()).then(|| crate::text::shortened(title, 72))
 }
 
 /// D15: on a server that pushes its results, a landable one goes to its
@@ -352,7 +344,7 @@ pub async fn report_facts(core: &Core, dialog_id: &str) -> Result<Option<ReportF
             body.lines()
                 .map(str::trim)
                 .find(|l| !l.is_empty())
-                .map(|l| shortened(l, 72))
+                .map(|l| crate::text::shortened(l, 72))
                 .unwrap_or_default()
         }
     };

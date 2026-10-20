@@ -341,6 +341,106 @@ fn a_file_unlinked_while_open_stays_readable_until_released() {
 /// Through a real mount: ordinary programs and random operations, checked
 /// against the same operations on a plain copy of the project.
 #[cfg(target_os = "linux")]
+/// A change in a project folder that's gone (a branch without it): the
+/// saved list can't place it now, so it's kept as it is and its file is
+/// named to the sweep, and it's back once the folder is.
+#[test]
+fn a_change_whose_folder_the_project_lost_waits_for_it() {
+    let d = setup(&[("src/a.txt", "a")]);
+    {
+        let o = overlay(&d);
+        let src = ino(&o, "src");
+        let n = o
+            .create(src, "new.txt", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(n.ino, 0, b"kept").unwrap();
+        o.flush();
+    }
+    fs::remove_dir_all(d.project().join("src")).unwrap();
+    {
+        let o = overlay(&d);
+        o.sweep_orphans();
+        assert_eq!(paths(&o.changes()), vec!["+src/new.txt"]);
+        o.flush();
+    }
+    let files = fs::read_dir(d.store().join("upper")).unwrap().count();
+    assert_eq!(files, 1, "its file stays");
+    fs::create_dir_all(d.project().join("src")).unwrap();
+    let o = overlay(&d);
+    assert_eq!(read_all(&o, "src/new.txt"), "kept");
+}
+
+/// A saved list that can't be read (a newer Rovik's, or a broken file)
+/// doesn't open as an empty one: opened so, the sweep would delete every
+/// file it names.
+#[test]
+fn a_saved_list_that_cant_be_read_doesnt_open_as_empty() {
+    let d = setup(&[("a.txt", "a")]);
+    {
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "A");
+        o.flush();
+    }
+    fs::write(d.store().join("manifest.json"), b"{\"version\": 2").unwrap();
+    let opened = OverlayFs::open(&d.project(), &d.store(), 1 << 30);
+    assert!(opened.is_err());
+    let files = fs::read_dir(d.store().join("upper")).unwrap().count();
+    assert_eq!(files, 1, "its file stays");
+}
+
+/// A hard-linked file is saved once per name, as one file: opened again,
+/// its names share it still, and unlinking one leaves it under the other.
+#[test]
+fn a_hard_links_names_share_their_file_after_reopening() {
+    let d = setup(&[]);
+    {
+        let o = overlay(&d);
+        let n = o
+            .create(ROOT, "n.txt", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(n.ino, 0, b"N").unwrap();
+        o.link(n.ino, ROOT, "m.txt").unwrap();
+        o.flush();
+    }
+    {
+        let o = overlay(&d);
+        assert_eq!(ino(&o, "n.txt"), ino(&o, "m.txt"), "one file");
+        o.unlink(ROOT, "m.txt").unwrap();
+        assert_eq!(read_all(&o, "n.txt"), "N");
+        o.flush();
+    }
+    let o = overlay(&d);
+    o.sweep_orphans();
+    assert_eq!(read_all(&o, "n.txt"), "N");
+}
+
+/// A saved path that isn't the chat's own (a list written by hand) is
+/// left out, and never lands: `..` doesn't reach outside the project.
+#[test]
+fn a_saved_path_outside_the_project_is_left_out() {
+    let d = setup(&[("a.txt", "a")]);
+    let upper = d.store().join("upper");
+    fs::create_dir_all(&upper).unwrap();
+    fs::write(upper.join("1"), b"evil").unwrap();
+    let outside = OverlayChange::Write {
+        path: "../evil.txt".into(),
+        kind: Kind::File,
+        origin: None,
+        upper: Some(upper.join("1")),
+        base_copy: None,
+        perm: 0o644,
+        perm_changed: false,
+        target: None,
+        by_product: false,
+    };
+    super::fs::write_manifest(&d.store(), 2, vec![outside.clone()]).unwrap();
+    let o = overlay(&d);
+    assert!(o.changes().is_empty(), "{:?}", o.changes());
+    let plan = super::land::plan(&d.project(), &[outside], false);
+    let reasons: Vec<&str> = plan.conflicts.iter().map(|c| c.reason.as_str()).collect();
+    assert_eq!(reasons, ["it isn't a path inside the project"]);
+}
+
 mod mounted {
     use super::*;
     use std::path::Path;
@@ -924,6 +1024,47 @@ mod safety {
         assert!(project_file(&d, "a.txt").is_none());
     }
 
+    /// A moved file's new place must be free, or hold the file as it was
+    /// or as the chat has it (the user moved it too): another file there
+    /// is theirs, not written over.
+    #[test]
+    fn a_moved_file_doesnt_write_over_another_file_at_its_new_place() {
+        let d = setup(&[("a.txt", "1\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "A\n");
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace)
+            .unwrap();
+        fs::write(d.project().join("b.txt"), "theirs\n").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        let conflicts: Vec<(&str, &str)> = plan
+            .conflicts
+            .iter()
+            .map(|c| (c.path.as_str(), c.reason.as_str()))
+            .collect();
+        assert_eq!(
+            conflicts,
+            [("b.txt", "the project has another file there now")]
+        );
+        // Land anyway: the chat's.
+        let anyway = land::plan(&d.project(), &landable(&o), true);
+        assert!(anyway.conflicts.is_empty(), "{:?}", anyway.conflicts);
+    }
+
+    #[test]
+    fn a_file_the_user_moved_too_lands_as_the_chats() {
+        let d = setup(&[("a.txt", "same\n")]);
+        let o = overlay(&d);
+        write_all(&o, "a.txt", "edited\n");
+        o.rename(ROOT, "a.txt", ROOT, "b.txt", RenameMode::Replace)
+            .unwrap();
+        fs::rename(d.project().join("a.txt"), d.project().join("b.txt")).unwrap();
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("edited\n"));
+        assert!(project_file(&d, "a.txt").is_none());
+    }
+
     #[test]
     fn a_moved_untouched_file_lands_at_its_new_place() {
         let d = setup(&[("a.txt", "same\n")]);
@@ -1074,6 +1215,45 @@ mod safety {
         assert_eq!(project_file(&d, "b.txt").as_deref(), Some("user's\n"));
         assert!(
             report.iter().any(|r| r.starts_with("b.txt (not finished")),
+            "{report:?}"
+        );
+    }
+
+    /// A folder the chat deleted, journaled whole; the app crashes before
+    /// the landing writes, and the user fills the folder with other files:
+    /// recovery sees it isn't the journal's copy, and leaves it.
+    #[test]
+    fn recovery_leaves_a_folder_the_user_filled_again() {
+        let d = setup(&[("dir/f.txt", "f\n"), ("b.txt", "b\n")]);
+        let o = overlay(&d);
+        let dir = ino(&o, "dir");
+        o.unlink(dir, "f.txt").unwrap();
+        o.rmdir(ROOT, "dir").unwrap();
+        write_all(&o, "b.txt", "B\n");
+        let landed = land::land(&data(&d), "chat", &d.project(), &landable(&o), false)
+            .unwrap()
+            .unwrap();
+        let journal = data(&d)
+            .join("landings")
+            .join("chat")
+            .join(&landed.id)
+            .join("journal.json");
+        let text = fs::read_to_string(&journal)
+            .unwrap()
+            .replace("\"done\"", "\"applying\"");
+        fs::write(&journal, text).unwrap();
+        fs::write(d.project().join("b.txt"), "b\n").unwrap();
+        fs::create_dir_all(d.project().join("dir")).unwrap();
+        fs::write(d.project().join("dir/new.txt"), "the user's\n").unwrap();
+        let report = land::recover(&data(&d));
+        assert_eq!(project_file(&d, "b.txt").as_deref(), Some("B\n"));
+        assert_eq!(
+            project_file(&d, "dir/new.txt").as_deref(),
+            Some("the user's\n"),
+            "{report:?}"
+        );
+        assert!(
+            report.iter().any(|r| r.starts_with("dir (not finished")),
             "{report:?}"
         );
     }

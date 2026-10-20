@@ -368,17 +368,23 @@ pub fn child_dialog(conn: &Connection, id: &str) -> DbResult<Option<(ChildDialog
 }
 
 /// The subagent chat answering a parent's tool call, if there is one.
+/// The newest child chat of `parent_id` that answers its call
+/// `parent_call_id`, started at `since` or after when given: a provider
+/// that numbers calls per reply ("call_1") names an earlier reply's child
+/// the same, and that one isn't this call's.
 pub fn child_for_call(
     conn: &Connection,
     parent_id: &str,
     parent_call_id: &str,
+    since: Option<i64>,
 ) -> DbResult<Option<ChildDialog>> {
     conn.query_row(
         &format!(
-            "SELECT {CHILD_COLUMNS} FROM dialogs WHERE parent_id = ?1 AND parent_call_id = ?2
+            "SELECT {CHILD_COLUMNS} FROM dialogs
+             WHERE parent_id = ?1 AND parent_call_id = ?2 AND (?3 IS NULL OR created_at >= ?3)
              ORDER BY created_at DESC, id DESC LIMIT 1"
         ),
-        params![parent_id, parent_call_id],
+        params![parent_id, parent_call_id, since],
         child_from_row,
     )
     .optional()

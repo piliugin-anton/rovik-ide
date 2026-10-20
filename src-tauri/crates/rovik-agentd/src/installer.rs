@@ -922,6 +922,16 @@ fn this_binary() -> String {
         .unwrap_or_else(|_| "rovik-agentd".into())
 }
 
+/// Whether this process runs the installed binary, `INSTALLED`: the one
+/// the sudoers rule runs as root for everyone and the administrators.
+/// Both paths are the file's own, the link and `/proc/self/exe` followed.
+pub fn runs_installed() -> bool {
+    match (std::env::current_exe(), Path::new(INSTALLED).canonicalize()) {
+        (Ok(this), Ok(installed)) => this == installed,
+        _ => false,
+    }
+}
+
 fn on_path(program: &str) -> bool {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path).any(|dir| dir.join(program).is_file())

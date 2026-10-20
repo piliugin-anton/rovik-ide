@@ -4,6 +4,7 @@
 //! its commit is complete here, and only from the commit the client last
 //! saw there.
 
+use crate::fail::{bad_request, git};
 use git2::{ErrorCode, Oid, Reference, Repository};
 use rovik_core::packs;
 use rovik_protocol::packs::{Fetch, Refs, Update};
@@ -34,7 +35,7 @@ impl Projects {
             return Ok(Refs::default());
         };
         let mut refs = BTreeMap::new();
-        for reference in repo.references().map_err(internal)?.flatten() {
+        for reference in repo.references().map_err(git)?.flatten() {
             if let (Ok(name), Some(id)) = (reference.name(), reference.target()) {
                 refs.insert(name.to_string(), id.to_string());
             }
@@ -69,7 +70,7 @@ impl Projects {
                 FailCode::Busy,
                 format!("{} moved since the refs were read.", update.name),
             ),
-            _ => internal(e),
+            _ => git(e),
         })?;
         Ok(objects)
     }
@@ -103,9 +104,9 @@ impl Projects {
         let repo = self.repository(project)?;
         // Written only when it isn't so: a write takes the config's lock,
         // which two syncs of the project at once would fight over.
-        let mut config = repo.config().map_err(internal)?;
+        let mut config = repo.config().map_err(git)?;
         if config.get_bool("core.autocrlf").ok() != Some(false) {
-            config.set_bool("core.autocrlf", false).map_err(internal)?;
+            config.set_bool("core.autocrlf", false).map_err(git)?;
         }
         let mut rules =
             String::from("# What the client ignores and the server doesn't know of (K32).\n");
@@ -169,7 +170,7 @@ impl Projects {
     fn repository(&self, project: &str) -> Result<Repository, Fail> {
         match self.open(project)? {
             Some(repo) => Ok(repo),
-            None => Repository::init_bare(self.path(project)?).map_err(internal),
+            None => Repository::init_bare(self.path(project)?).map_err(git),
         }
     }
 
@@ -199,12 +200,4 @@ impl Wanted {
 
 fn oid(id: &str) -> Result<Oid, Fail> {
     Oid::from_str(id).map_err(|_| bad_request(format!("{id} isn't a commit's id.")))
-}
-
-fn bad_request(message: impl Into<String>) -> Fail {
-    Fail::new(FailCode::BadRequest, message)
-}
-
-fn internal(e: git2::Error) -> Fail {
-    Fail::new(FailCode::Internal, e.message())
 }

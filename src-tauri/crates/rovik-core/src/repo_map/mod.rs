@@ -23,6 +23,7 @@
 mod tests;
 
 use crate::outline::{self, Symbol};
+use crate::read_symbol::ancestors;
 use ignore::{WalkBuilder, WalkState};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1180,23 +1181,6 @@ fn is_test_path(path: &str) -> bool {
         || stem == "conftest"
         || file.contains(".test.")
         || file.contains(".spec.")
-}
-
-/// The declarations symbol `j` is nested in (the outline lists parents
-/// before children, with their depth).
-fn ancestors(symbols: &[Symbol], j: usize) -> Vec<usize> {
-    let mut out = Vec::new();
-    let mut depth = symbols[j].depth;
-    for i in (0..j).rev() {
-        if depth == 0 {
-            break;
-        }
-        if symbols[i].depth < depth {
-            out.push(i);
-            depth = symbols[i].depth;
-        }
-    }
-    out
 }
 
 /// What a request is about, from its text and the paths the chat touched:

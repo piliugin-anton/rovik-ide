@@ -841,6 +841,46 @@ fn child(conn: &mut Connection, id: &str, parent: &str, call: &str) {
     .unwrap();
 }
 
+/// S14: a resumed `task` call finds the child it started by its call's id
+/// among the children started since its reply was stored: a provider
+/// that numbers calls per reply names an earlier reply's child the same.
+#[test]
+fn a_resumed_call_finds_the_child_started_since_its_reply() {
+    let mut conn = db();
+    dialog(&mut conn, "p", "Pancakes", 0);
+    for (id, at) in [("k1", 100), ("k2", 200)] {
+        create_child_dialog(
+            &mut conn,
+            &NewChildDialog {
+                id: id.into(),
+                parent_id: "p".into(),
+                parent_call_id: "call_1".into(),
+                kind: "scout".into(),
+                title: "Scout".into(),
+                created_at: at,
+            },
+        )
+        .unwrap();
+    }
+    let found = |since| {
+        child_for_call(&conn, "p", "call_1", since)
+            .unwrap()
+            .map(|c| c.id)
+    };
+    assert_eq!(found(None).as_deref(), Some("k2"), "the newest");
+    assert_eq!(found(Some(150)).as_deref(), Some("k2"));
+    assert_eq!(
+        found(Some(200)).as_deref(),
+        Some("k2"),
+        "stored the same moment"
+    );
+    assert_eq!(
+        found(Some(201)),
+        None,
+        "an earlier reply's child isn't this call's"
+    );
+}
+
 fn create_found_child(conn: &mut Connection) -> String {
     let id = "3f2a9c1d-0000-4000-8000-000000000000".to_string();
     child(conn, &id, "p", "call-9");
@@ -878,11 +918,11 @@ fn subagent_chats_stay_out_of_lists_and_search() {
         .unwrap();
     assert_eq!(rows, 0);
 
-    let found = child_for_call(&conn, "p", "call-1").unwrap().unwrap();
+    let found = child_for_call(&conn, "p", "call-1", None).unwrap().unwrap();
     assert_eq!(found.id, "k");
     assert_eq!(found.kind, "scout");
     assert_eq!(found.parent_id, "p");
-    assert_eq!(child_for_call(&conn, "p", "call-2").unwrap(), None);
+    assert_eq!(child_for_call(&conn, "p", "call-2", None).unwrap(), None);
     // Found by the handle a report gives ("kind-" and the id's start) or the call.
     let id = create_found_child(&mut conn);
     let handle = format!("scout-{}", &id[..8]);

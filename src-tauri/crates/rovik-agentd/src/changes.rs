@@ -5,6 +5,7 @@
 //! has them.
 
 use crate::daemon::Daemon;
+use crate::fail::{bad_request, git, internal, joined};
 use crate::results::{self, move_base, set_base};
 use crate::store::{Kept, Place};
 use crate::sync::Replaced;
@@ -14,7 +15,7 @@ use git2::{FileMode, ObjectType, Oid, Repository, ResetType, Tree};
 use rovik_core::overlay::markers;
 use rovik_core::rt;
 use rovik_protocol::work::{Handed, UndoneMerge, WorkFile};
-use rovik_protocol::{Fail, FailCode, Response};
+use rovik_protocol::{Fail, Response};
 use std::fs;
 use std::path::Path;
 
@@ -54,21 +55,27 @@ pub async fn file(
 pub async fn discard(daemon: &Daemon, computer: &str, chat: &str) -> Result<Response, Fail> {
     daemon.store.check_owner(computer, chat)?;
     let _files = work::hold_files(daemon, chat)?;
-    let _base = daemon.results.hold_base().await;
-    let (place, base, _) = place(daemon, chat)?;
-    let reset = rt::spawn_blocking(move || {
-        let repo = Repository::open(&place.worktree).map_err(git)?;
-        let base = Oid::from_str(&base).and_then(|base| repo.find_object(base, None));
-        repo.reset(&base.map_err(git)?, ResetType::Hard, None)
-            .map_err(git)?;
-        // A hard reset keeps untracked files: the chat's new ones go now.
-        let mut opts = CheckoutBuilder::new();
-        opts.force().remove_untracked(true);
-        repo.checkout_head(Some(&mut opts)).map_err(git)
-    });
-    reset.await.map_err(joined)??;
-    daemon.store.marks_left(chat, Vec::new());
-    daemon.results.forget_kept(chat, None).await;
+    {
+        let _base = daemon.results.hold_base().await;
+        let (place, base, _) = place(daemon, chat)?;
+        let reset = rt::spawn_blocking(move || {
+            let repo = Repository::open(&place.worktree).map_err(git)?;
+            let base = Oid::from_str(&base).and_then(|base| repo.find_object(base, None));
+            repo.reset(&base.map_err(git)?, ResetType::Hard, None)
+                .map_err(git)?;
+            // A hard reset keeps untracked files: the chat's new ones go now.
+            let mut opts = CheckoutBuilder::new();
+            opts.force().remove_untracked(true);
+            repo.checkout_head(Some(&mut opts)).map_err(git)
+        });
+        reset.await.map_err(joined)??;
+        daemon.store.marks_left(chat, Vec::new());
+        daemon.results.forget_kept(chat, None).await;
+    }
+    // The result as the worktree is now, nothing: the one from before the
+    // discard would be offered again (`WorkResults` after a reconnect).
+    // Once the base is let go of: committing takes it.
+    daemon.results.recommit(chat).await?;
     Ok(Response::Done)
 }
 
@@ -246,7 +253,7 @@ fn place(daemon: &Daemon, chat: &str) -> Result<(Place, String, String), Fail> {
     let base = daemon
         .store
         .base_of(chat)
-        .ok_or_else(|| internal("The chat's worktree has no base commit.".into()))?;
+        .ok_or_else(|| internal("The chat's worktree has no base commit."))?;
     let subpath = daemon
         .store
         .project(&place.project)
@@ -289,20 +296,4 @@ fn on_disk(worktree: &Path, path: &str) -> Option<Vec<u8>> {
     let file = worktree.join(path);
     let meta = fs::symlink_metadata(&file).ok()?;
     meta.is_file().then(|| fs::read(&file).ok()).flatten()
-}
-
-fn bad_request(message: impl Into<String>) -> Fail {
-    Fail::new(FailCode::BadRequest, message)
-}
-
-fn internal(message: String) -> Fail {
-    Fail::new(FailCode::Internal, message)
-}
-
-fn git(e: git2::Error) -> Fail {
-    internal(e.message().to_string())
-}
-
-fn joined(e: tokio::task::JoinError) -> Fail {
-    internal(e.to_string())
 }

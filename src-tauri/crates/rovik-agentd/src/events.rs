@@ -32,6 +32,10 @@ const LIVE: usize = 1_024;
 
 /// A chat's `ChatChanged` goes at most this often (6.3).
 const CHANGED_EVERY: Duration = Duration::from_millis(500);
+/// How long a chat's last `ChatChanged` is remembered once the map of
+/// them is full: a chat quiet longer isn't worth a row.
+const CHANGED_KEEP: Duration = Duration::from_secs(600);
+const CHANGED_ROWS: usize = 512;
 
 /// The computer a chat belongs to: the one that started it here (the
 /// daemon's store keeps it).
@@ -169,6 +173,12 @@ impl Events {
     fn change(&self, state: &mut State, chat: &str) {
         if self.db.get().is_none() {
             return;
+        }
+        // Chats long quiet go: the map isn't every chat the daemon saw.
+        if state.changes.len() >= CHANGED_ROWS {
+            state.changes.retain(|_, c| {
+                c.coming || c.sent.is_some_and(|sent| sent.elapsed() < CHANGED_KEEP)
+            });
         }
         let entry = state.changes.entry(chat.to_string()).or_default();
         if entry.coming {
@@ -378,15 +388,23 @@ impl EventSink for Events {
             return;
         }
         let mut state = self.lock();
-        if let AgentEvent::SubagentStarted {
-            dialog_id,
-            child_dialog_id,
-            ..
-        } = event
-        {
-            state
-                .leads
-                .insert(child_dialog_id.clone(), dialog_id.clone());
+        match event {
+            AgentEvent::SubagentStarted {
+                dialog_id,
+                child_dialog_id,
+                ..
+            } => {
+                state
+                    .leads
+                    .insert(child_dialog_id.clone(), dialog_id.clone());
+            }
+            // Its lead's no longer: nothing more comes from its chat.
+            AgentEvent::SubagentEnded {
+                child_dialog_id, ..
+            } => {
+                state.leads.remove(child_dialog_id);
+            }
+            _ => {}
         }
         let route = match event.dialog_id() {
             Some(dialog_id) => match self.route(&state, dialog_id) {

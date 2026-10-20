@@ -9,9 +9,11 @@
 // directory, no stdin, a timeout, and capped output. A timeout or Stop kills
 // the command with everything it started.
 
+use crate::overlay::chats::ChatOverlay;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -64,6 +66,39 @@ pub struct Queued {
     pub whole_output: bool,
 }
 
+impl Queued {
+    /// A chat's command as `kind` queues it, run in its overlay's
+    /// environment when the chat is isolated (`overlay`), with nothing to
+    /// note while it waits and the output kept as usual.
+    pub fn of(kind: crate::workload::JobKind, overlay: Option<&ChatOverlay>) -> Queued {
+        Queued {
+            kind,
+            note: Box::new(|_| {}),
+            env: overlay.map(|o| o.command_env()).unwrap_or_default(),
+            confine: overlay.and_then(|o| o.confine()),
+            whole_output: false,
+        }
+    }
+
+    /// A chat's check (a test, a lint, an install), as `owner`'s.
+    pub fn check(owner: &str, overlay: Option<&ChatOverlay>) -> Queued {
+        let owner = owner.to_string();
+        Queued::of(crate::workload::JobKind::Check { owner }, overlay)
+    }
+
+    /// With `note` shown what the command waits for.
+    pub fn noting(mut self, note: impl Fn(Option<String>) + Send + Sync + 'static) -> Queued {
+        self.note = Box::new(note);
+        self
+    }
+
+    /// With the whole output kept too, when `whole_output`.
+    pub fn whole(mut self, whole_output: bool) -> Queued {
+        self.whole_output = whole_output;
+        self
+    }
+}
+
 #[cfg(windows)]
 fn shell_command(command: &str, _confine: Option<&crate::overlay::confine::Confine>) -> Command {
     use std::os::windows::process::CommandExt;
@@ -104,6 +139,7 @@ fn shell_command(command: &str, confine: Option<&crate::overlay::confine::Confin
 /// Keeps the first `HEAD_BYTES` and the last `TAIL_BYTES` of a stream. Only
 /// keeping the start lost what matters most in long output: a build's or a
 /// test run's errors and final summary come at the end.
+#[derive(Clone)]
 struct HeadTail {
     head: Vec<u8>,
     tail: Vec<u8>,
@@ -177,26 +213,49 @@ impl HeadTail {
 /// with `whole`, up to WHOLE_BYTES of it (V07).
 type Drained = ((Vec<u8>, bool), Option<Vec<u8>>);
 
+/// What a stream's reader has read so far: its start and end, and the
+/// whole of it when asked for.
+#[derive(Clone)]
+struct Draining {
+    kept: HeadTail,
+    all: Option<HeadTail>,
+}
+
+impl Draining {
+    fn finish(self, cut: bool) -> Drained {
+        let (bytes, dropped) = self.kept.finish();
+        ((bytes, dropped || cut), self.all.map(|a| a.finish().0))
+    }
+}
+
 /// Reads a whole stream on its own thread, keeping its start and end.
-fn drain<R: Read + Send + 'static>(mut reader: R, whole: bool) -> thread::JoinHandle<Drained> {
-    thread::spawn(move || {
-        let mut kept = HeadTail::new();
-        let mut all =
-            whole.then(|| HeadTail::sized(WHOLE_BYTES - WHOLE_TAIL_BYTES, WHOLE_TAIL_BYTES));
+/// What it has read is there at any time: a timeout that can't wait for
+/// the stream's end (a process that left the group holds it) takes that.
+fn drain<R: Read + Send + 'static>(
+    mut reader: R,
+    whole: bool,
+) -> (thread::JoinHandle<()>, Arc<Mutex<Draining>>) {
+    let draining = Arc::new(Mutex::new(Draining {
+        kept: HeadTail::new(),
+        all: whole.then(|| HeadTail::sized(WHOLE_BYTES - WHOLE_TAIL_BYTES, WHOLE_TAIL_BYTES)),
+    }));
+    let shared = draining.clone();
+    let reading = thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    kept.push(&buf[..n]);
-                    if let Some(all) = all.as_mut() {
+                    let mut read = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    read.kept.push(&buf[..n]);
+                    if let Some(all) = read.all.as_mut() {
                         all.push(&buf[..n]);
                     }
                 }
             }
         }
-        (kept.finish(), all.map(|a| a.finish().0))
-    })
+    });
+    (reading, draining)
 }
 
 /// A started shell (or tool) and everything it starts, which a timeout or
@@ -393,8 +452,8 @@ fn run_blocking(
     }
 
     let whole = queued.is_some_and(|q| q.whole_output);
-    let stdout = drain(child.stdout.take().ok_or("no stdout")?, whole);
-    let stderr = drain(child.stderr.take().ok_or("no stderr")?, whole);
+    let (stdout, out_read) = drain(child.stdout.take().ok_or("no stdout")?, whole);
+    let (stderr, err_read) = drain(child.stderr.take().ok_or("no stderr")?, whole);
 
     // Done when the shell has exited and the pipes are closed: a server the
     // command left running in the background still holds them, and its
@@ -424,22 +483,25 @@ fn run_blocking(
     let status = child.wait().ok();
 
     // A process that left the group (setsid, a detached daemon) may still
-    // hold the pipes after the kill; don't wait on the readers forever then.
+    // hold the pipes after the kill; don't wait on the readers forever
+    // then: what they read so far is the output, cut.
     let killed = timed_out || stopped;
-    let join = |handle: thread::JoinHandle<Drained>| -> Drained {
+    let join = |handle: thread::JoinHandle<()>, read: Arc<Mutex<Draining>>| -> Drained {
         if killed {
             let deadline = Instant::now() + Duration::from_secs(2);
             while !handle.is_finished() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
             }
-            if !handle.is_finished() {
-                return ((Vec::new(), true), None);
-            }
         }
-        handle.join().unwrap_or_default()
+        let ended = handle.is_finished() || !killed;
+        if ended {
+            let _ = handle.join();
+        }
+        let read = read.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        read.finish(!ended)
     };
-    let ((out, out_cut), out_whole) = join(stdout);
-    let ((err, err_cut), err_whole) = join(stderr);
+    let ((out, out_cut), out_whole) = join(stdout, out_read);
+    let ((err, err_cut), err_whole) = join(stderr, err_read);
     let text = |b: Vec<u8>| String::from_utf8_lossy(&b).into_owned();
     let whole = match (out_whole, err_whole) {
         (None, None) => None,
@@ -582,15 +644,7 @@ mod tests {
             "{lines}; echo 'src/mid.ts(3,5): error TS2322: Type string is not number.'; {lines}; \
              echo 'src/end.ts(1,1): error TS2304: Cannot find name x.'; exit 2"
         );
-        let queued = Queued {
-            kind: crate::workload::JobKind::Check {
-                owner: "whole-output-test".into(),
-            },
-            note: Box::new(|_| {}),
-            env: Vec::new(),
-            confine: None,
-            whole_output: true,
-        };
+        let queued = Queued::check("whole-output-test", None).whole(true);
         let out = run_blocking(
             dir.to_str().unwrap(),
             &script,

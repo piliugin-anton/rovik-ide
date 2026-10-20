@@ -301,7 +301,7 @@ pub fn enabled() -> bool {
 /// A short, stable name for a project folder.
 fn project_key(project: &Path) -> String {
     let hash = crate::file_guard::hash(project.to_string_lossy().as_bytes());
-    hash[..8].iter().map(|b| format!("{b:02x}")).collect()
+    crate::file_guard::hex(&hash[..8])
 }
 
 /// Chats already told this session that they can't be isolated.
@@ -847,12 +847,8 @@ pub fn merged_since(child: &str, view: &Path) -> Vec<String> {
 const CONFLICTS: &str = "conflicts.json";
 
 fn content_hash(path: &Path) -> String {
-    use sha2::{Digest, Sha256};
     match std::fs::read(path) {
-        Ok(bytes) => Sha256::digest(&bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect(),
+        Ok(bytes) => crate::file_guard::sha256_hex(&bytes),
         Err(_) => "absent".into(),
     }
 }
@@ -1176,7 +1172,7 @@ pub fn claim_direct_writes(project: &Path, dialog_id: &str) -> Result<(), String
     }
     Err(format!(
         "Error: another chat that isn't isolated (chat {}) is running commands that change files in this project, and this chat isn't isolated either, so the two could overwrite each other. Read-only commands work; use the write and edit tools for changes, or wait until that chat's run ends.",
-        &holder[..holder.len().min(8)]
+        holder.chars().take(8).collect::<String>()
     ))
 }
 
@@ -2248,13 +2244,6 @@ fn check_rel(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn hex_hash(bytes: &[u8]) -> String {
-    crate::file_guard::hash(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
 /// A file's three versions: what the chat changed it from, the chat's
 /// version, the project's now (None: not there).
 struct Sides {
@@ -2733,7 +2722,7 @@ fn keep_versions(dialog_id: &str, path: &str, s: &Sides) -> Result<(), String> {
 fn note_written(dialog_id: &str, path: &str, bytes: &[u8]) {
     let mut kept = load_pre_merge(dialog_id);
     if let Some(entry) = kept.files.get_mut(path) {
-        entry.written = Some(hex_hash(bytes));
+        entry.written = Some(crate::file_guard::sha256_hex(bytes));
         let _ = save_pre_merge(dialog_id, &kept);
     }
 }
@@ -2797,7 +2786,8 @@ pub fn undo_merge(dialog_id: &str, only: Option<&[String]>) -> Result<UndoneMerg
     for path in targets {
         let entry = kept.files[&path].clone();
         let unchanged = match &entry.written {
-            Some(w) => current_version(dialog_id, &path).is_some_and(|c| hex_hash(&c) == *w),
+            Some(w) => current_version(dialog_id, &path)
+                .is_some_and(|c| crate::file_guard::sha256_hex(&c) == *w),
             None => true,
         };
         if !unchanged {

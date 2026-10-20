@@ -503,13 +503,6 @@ async fn open(page: &Page, url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn truncate_chars(text: &str, max: usize) -> (String, bool) {
-    match text.char_indices().nth(max) {
-        Some((cut, _)) => (text[..cut].to_string(), true),
-        None => (text.to_string(), false),
-    }
-}
-
 /// Collapses runs of blank lines that innerText produces around hidden elements.
 fn tidy_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -954,11 +947,12 @@ async fn readable(page: &Page, max_chars: usize) -> Result<BrowsedPage, String> 
         .await
         .map_err(|e| format!("Could not read the page: {e}"))?;
 
-    let (text, truncated) = truncate_chars(&tidy_text(&raw.text), max_chars);
+    let tidy = tidy_text(&raw.text);
+    let (text, truncated) = crate::text::first_chars(&tidy, max_chars);
     Ok(BrowsedPage {
         url: raw.url,
         title: raw.title,
-        text,
+        text: text.to_string(),
         truncated,
         links: raw.links,
     })

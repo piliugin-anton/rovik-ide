@@ -569,16 +569,11 @@ pub fn pick(results: &[CheckResult], previous: &[CheckResult]) -> Option<(usize,
 
 /// Why a triage was skipped.
 fn triage_skip_reason(skip: &Skip) -> String {
-    match skip {
-        Skip::NotStarted(why) => why.clone(),
-        Skip::NotRun => "the triage couldn't run".into(),
-        Skip::ModelFailed(error) => format!("its model failed ({error})"),
-        Skip::Blocked(why) => format!("it couldn't triage: {why}"),
-        Skip::Unformatted { why, .. } if why.is_empty() => {
-            "its report didn't follow the format".into()
-        }
-        Skip::Unformatted { why, .. } => format!("its report didn't follow the format: {why}"),
-    }
+    skip.reason(
+        "the triage",
+        "it couldn't triage",
+        "its report didn't follow the format",
+    )
 }
 
 impl Run {

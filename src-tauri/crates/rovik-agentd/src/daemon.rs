@@ -116,7 +116,7 @@ impl Daemon {
             Request::AgentConfigure(config) => {
                 let network = config.network.clone();
                 self.store
-                    .configure(computer, config)
+                    .configure(computer, *config)
                     .map(|()| {
                         rovik_core::net::set_host_network(network);
                         Response::Done

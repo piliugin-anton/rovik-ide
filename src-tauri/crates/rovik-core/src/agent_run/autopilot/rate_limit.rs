@@ -33,12 +33,19 @@ pub(super) const RATE_LIMIT_FLOOR: std::time::Duration = std::time::Duration::fr
 /// after a minute, then two, four…, while the task is within its budget
 /// (U04) and the stage's waits add up to an hour at most (its record keeps
 /// them, so a restart does too). None: the stage ends as before.
+/// What the provider's rate limit holds a stage up by: a wait, or nothing
+/// but the task's budget, spent, which ends it as over budget.
+pub(super) enum RateLimited {
+    Wait(std::time::Duration),
+    OverBudget,
+}
+
 pub(super) async fn rate_limit_wait(
     core: &Core,
     dialog_id: &str,
     run: &StageRun,
     outcome: &str,
-) -> Result<Option<std::time::Duration>, String> {
+) -> Result<Option<RateLimited>, String> {
     if outcome != "error" {
         return Ok(None);
     }
@@ -54,7 +61,7 @@ pub(super) async fn rate_limit_wait(
     let task = task_spent(core, dialog_id).await?;
     let budget = core.agents.config_for(dialog_id).autopilot.budget;
     if budget::over(&budget, &task).is_some() {
-        return Ok(None);
+        return Ok(Some(RateLimited::OverBudget));
     }
     let kept = record_in(core, dialog_id, &run.record)
         .await?
@@ -81,7 +88,7 @@ pub(super) async fn rate_limit_wait(
             "waitMs": wait.as_millis() as u64,
         }),
     );
-    Ok(Some(wait))
+    Ok(Some(RateLimited::Wait(wait)))
 }
 
 /// H07: the stage's run again once its wait is over (`until`, in ms since

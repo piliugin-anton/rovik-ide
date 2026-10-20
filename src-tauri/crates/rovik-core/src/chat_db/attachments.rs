@@ -8,7 +8,6 @@ use super::DbState;
 use regex::bytes::Regex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -73,10 +72,7 @@ pub fn file_for(data_dir: &Path, id: &str) -> Option<PathBuf> {
 
 /// An attachment's id: its bytes' SHA-256, in hex.
 pub fn id_of(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::file_guard::sha256_hex(bytes)
 }
 
 /// Stores bytes (deduplicated by hash) and returns the attachment id.

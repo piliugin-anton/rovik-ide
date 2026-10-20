@@ -313,7 +313,6 @@ impl HostsPage {
     /// by `follow_policies` (and what only a deploy runs), and its token's
     /// digest (a deploy makes a new one; the token itself isn't kept).
     fn made_of(&self, host: &Host) -> (String, Option<String>) {
-        use sha2::{Digest, Sha256};
         let mut made = host.clone();
         made.approval_policy = ApprovalPolicy::default();
         made.autonomy = AutonomySettings::default();
@@ -325,13 +324,7 @@ impl HostsPage {
                 })
             })
             .flatten()
-            .map(|token| {
-                let digest = Sha256::digest(token.0.as_bytes());
-                digest
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>()
-            });
+            .map(|token| rovik_core::file_guard::sha256_hex(token.0.as_bytes()));
         (serde_json::to_string(&made).unwrap_or_default(), token)
     }
 
@@ -459,9 +452,9 @@ impl HostsPage {
         #[cfg(not(unix))]
         {
             let _ = (&self.sockets, host);
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-            let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-            Ok(Local::Port(port))
+            // A free port each time the forward starts (`Local::Port(0)`):
+            // one picked here could be taken by then.
+            Ok(Local::Port(0))
         }
     }
 
@@ -608,15 +601,23 @@ impl HostsPage {
     /// old one; the rest (pinned key, deploy, policy) changes elsewhere.
     pub fn save(&self, mut host: Host, secrets: HostSecrets) -> Result<Host, String> {
         check(&host)?;
-        if host.id.is_empty() {
+        let new_host = host.id.is_empty();
+        if new_host {
             host.id = uuid::Uuid::new_v4().to_string();
         }
         // The secrets first: a host isn't saved without the password it was
-        // given, as when the store is locked.
+        // given, as when the store is locked. The secret its way of logging
+        // in doesn't use goes: a password left from before its key.
         let id = host.id.clone();
+        let gone = || Some(Secret(String::new()));
+        let (password, passphrase) = match host.auth {
+            AuthKind::Key => (gone(), secrets.passphrase),
+            AuthKind::Password | AuthKind::KeyboardInteractive => (secrets.password, gone()),
+            AuthKind::Agent | AuthKind::SystemSsh => (gone(), gone()),
+        };
         for (name, value) in [
-            (SecretName::Password { host: id.clone() }, secrets.password),
-            (SecretName::KeyPassphrase { host: id }, secrets.passphrase),
+            (SecretName::Password { host: id.clone() }, password),
+            (SecretName::KeyPassphrase { host: id }, passphrase),
         ] {
             let kept = match value {
                 None => Ok(()),
@@ -625,7 +626,7 @@ impl HostsPage {
             };
             kept.map_err(|e| e.to_string())?;
         }
-        let (saved, computer) = self.change(|settings| {
+        let changed = self.change(|settings| {
             match settings.host(&host.id) {
                 Some(old) => {
                     let same_server = old.host == host.host && old.port == host.port;
@@ -643,7 +644,26 @@ impl HostsPage {
             }
             settings.put(host.clone());
             Ok((host.clone(), settings.computer.clone()))
-        })?;
+        });
+        let (saved, computer) = match changed {
+            Ok(saved) => saved,
+            Err(e) => {
+                // A host that couldn't be saved keeps no secrets.
+                if new_host {
+                    for name in [
+                        SecretName::Password {
+                            host: host.id.clone(),
+                        },
+                        SecretName::KeyPassphrase {
+                            host: host.id.clone(),
+                        },
+                    ] {
+                        let _ = self.secrets.delete(&name);
+                    }
+                }
+                return Err(e);
+            }
+        };
         // Saved either way: a connection that can't be made (no token here
         // yet) is the host's state on the page, not the form's failure.
         if let Err(e) = self.connect(&computer, &saved) {

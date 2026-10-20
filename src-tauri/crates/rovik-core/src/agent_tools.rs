@@ -42,12 +42,10 @@ pub(crate) fn is_denylisted_name(name: &str) -> bool {
     if DENYLIST_DIRS.contains(&name) {
         return true;
     }
-    if let Some(ext) = name.rsplit('.').next() {
-        if DENYLIST_EXTENSIONS.contains(&ext) {
-            return true;
-        }
-    }
-    false
+    // Its extension, not a whole name without one: a folder called `key`
+    // isn't a key.
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| DENYLIST_EXTENSIONS.contains(&ext))
 }
 
 fn canonicalize_or_err(p: &Path) -> Result<PathBuf, String> {
@@ -453,7 +451,10 @@ pub fn report_editor_diagnostics(
         {
             return Err(format!("path must not contain '..': {path}"));
         }
-        path.trim().replace('\\', "/")
+        // As the tools name the file (`src/a.ts`, never `./src/a.ts`):
+        // the diagnostics look it up under that name.
+        let plain = path.trim().replace('\\', "/");
+        crate::agent_run::paths::norm_rel(&plain).unwrap_or(plain)
     };
     let mut markers = markers;
     for m in &mut markers {

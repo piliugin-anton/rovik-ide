@@ -182,6 +182,33 @@ pub enum Skip {
     Unformatted { why: String, text: String },
 }
 
+impl Skip {
+    /// Why the subagent gave no report, for a stage's record: `who` names
+    /// it ("the reviewer"; "it" in a note about it), `blocked` says what
+    /// it couldn't do when it was ("the reviewer couldn't review"), and
+    /// `unread` how a report that didn't follow the format is put ("its
+    /// report couldn't be read").
+    pub fn reason(&self, who: &str, blocked: &str, unread: &str) -> String {
+        match self {
+            Skip::NotStarted(why) => why.clone(),
+            Skip::NotRun => format!("{who} couldn't run"),
+            Skip::ModelFailed(error) => format!("{} model failed ({error})", possessive(who)),
+            Skip::Blocked(why) => format!("{blocked}: {}", why.trim()),
+            Skip::Unformatted { why, .. } if why.is_empty() => unread.to_string(),
+            Skip::Unformatted { why, .. } => format!("{unread}: {why}"),
+        }
+    }
+}
+
+/// "its" for "it", else "the reviewer's".
+fn possessive(who: &str) -> String {
+    match who {
+        "it" => "its".into(),
+        "It" => "Its".into(),
+        _ => format!("{who}'s"),
+    }
+}
+
 /// What an IDE-started subagent's outcome gives: its report, or not.
 pub enum SubOutcome {
     /// Boxed: a report is far bigger than the other outcomes.

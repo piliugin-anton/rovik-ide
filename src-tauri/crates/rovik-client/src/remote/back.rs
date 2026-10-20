@@ -288,12 +288,7 @@ impl Remote {
         {
             let mut state = self.lock();
             for chat in &chats {
-                state.chats.remove(chat);
-                state.running.remove(chat);
-                state.pulls.remove(chat);
-                state.last_sync.remove(chat);
-                state.syncs.remove(chat);
-                state.rechecks.remove(chat);
+                state.forget(chat);
             }
         }
         self.changed(dialog_id);

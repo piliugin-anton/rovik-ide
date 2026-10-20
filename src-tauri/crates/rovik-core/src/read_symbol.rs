@@ -130,8 +130,9 @@ fn find(symbols: &[Symbol], query: &str) -> Vec<usize> {
         .collect()
 }
 
-/// The declarations symbol `i` is in, innermost first.
-fn ancestors(symbols: &[Symbol], i: usize) -> Vec<usize> {
+/// The declarations symbol `i` is in, innermost first (the outline lists
+/// parents before children, with their depth).
+pub(crate) fn ancestors(symbols: &[Symbol], i: usize) -> Vec<usize> {
     let mut out = Vec::new();
     let mut depth = symbols[i].depth;
     for j in (0..i).rev() {

@@ -242,6 +242,19 @@ struct State {
     configured: bool,
 }
 
+impl State {
+    /// Forgets what was known of `chat` on its host: it left for this
+    /// computer, or was deleted there.
+    fn forget(&mut self, chat: &str) {
+        self.chats.remove(chat);
+        self.running.remove(chat);
+        self.pulls.remove(chat);
+        self.last_sync.remove(chat);
+        self.syncs.remove(chat);
+        self.rechecks.remove(chat);
+    }
+}
+
 impl Remote {
     pub fn new(core: Core) -> Arc<Remote> {
         let (jobs, queue) = mpsc::unbounded_channel();
@@ -497,7 +510,7 @@ impl Remote {
     /// has said, in its `Welcome`.
     pub fn serves(&self, host: &str, feature: &str) -> bool {
         let daemon = self.hosts.client(host).and_then(|c| c.daemon());
-        daemon.is_some_and(|d| d.features.iter().any(|f| f == feature))
+        daemon.is_some_and(|d| d.serves(feature))
     }
 
     pub(crate) fn policy(&self, host: &str) -> ApprovalPolicy {
@@ -506,6 +519,21 @@ impl Remote {
 
     /// `config` under the host's policy, and its block when it works on its
     /// own (`ApprovalPolicy::apply`).
+    /// `config`, as `host` takes it: without this computer's keys, which
+    /// the host has from the starts (D11), under the host's policy, and
+    /// with how its daemon connects (`network`).
+    fn config_for(
+        &self,
+        host: &str,
+        config: &AgentConfig,
+        network: &Option<HostNetwork>,
+    ) -> AgentConfig {
+        let mut config = config.without_keys();
+        self.apply_policy(host, &mut config);
+        config.network = network.clone();
+        config
+    }
+
     fn apply_policy(&self, host: &str, config: &mut AgentConfig) {
         let (policy, autonomy) = {
             let state = self.lock();
@@ -632,12 +660,7 @@ impl Remote {
         {
             let mut state = self.lock();
             for chat in &chats {
-                state.chats.remove(chat);
-                state.running.remove(chat);
-                state.pulls.remove(chat);
-                state.last_sync.remove(chat);
-                state.syncs.remove(chat);
-                state.rechecks.remove(chat);
+                state.forget(chat);
             }
         }
         if let Some(client) = self.hosts.client(&host) {
@@ -751,8 +774,10 @@ impl Remote {
         dialog_id: &str,
         message: &mut UserMessage,
     ) -> Result<(), Fail> {
-        let serves = |d: crate::DaemonInfo| d.features.iter().any(|f| f == features::ATTACHMENTS);
-        if client.daemon().is_some_and(|d| !serves(d)) {
+        if client
+            .daemon()
+            .is_some_and(|d| !d.serves(features::ATTACHMENTS))
+        {
             return Err(Fail::new(
                 FailCode::Version,
                 format!(
@@ -917,9 +942,7 @@ impl Remote {
         let sent = self.hosts.ready().into_iter().map(|(host, client)| {
             let mut request = request.clone();
             if let Request::AgentConfigure(config) = &mut request {
-                *config = config.without_keys();
-                self.apply_policy(&host, config);
-                config.network = network.clone();
+                **config = self.config_for(&host, config, &network);
             }
             async move {
                 if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
@@ -942,11 +965,9 @@ impl Remote {
         self.refresh_policies();
         let network = host_network().await;
         let sent = self.hosts.ready().into_iter().map(|(host, client)| {
-            let mut config = self.core.agents.config().without_keys();
-            self.apply_policy(&host, &mut config);
-            config.network = network.clone();
+            let config = self.config_for(&host, &self.core.agents.config(), &network);
             async move {
-                let request = Request::AgentConfigure(config);
+                let request = Request::AgentConfigure(Box::new(config));
                 if let Err(fail) = client.call_within(request, HOSTS_WAIT).await {
                     log::warn!("{host} didn't take how to connect: {fail}");
                 }
@@ -974,10 +995,8 @@ impl Remote {
         };
         self.refresh_policies();
         if self.lock().configured {
-            let mut config = self.core.agents.config().without_keys();
-            self.apply_policy(host, &mut config);
-            config.network = host_network().await;
-            let sent = client.call_within(Request::AgentConfigure(config), HOSTS_WAIT);
+            let config = self.config_for(host, &self.core.agents.config(), &host_network().await);
+            let sent = client.call_within(Request::AgentConfigure(Box::new(config)), HOSTS_WAIT);
             if let Err(fail) = sent.await {
                 log::warn!("{host} didn't take the configuration: {fail}");
             }
@@ -1351,8 +1370,9 @@ impl Remote {
 
 /// Whether the host takes projects (6.4): a daemon from before doesn't.
 fn takes_projects(client: &Client) -> bool {
-    let projects = |d: crate::DaemonInfo| d.features.iter().any(|f| f == features::PROJECTS);
-    client.daemon().is_some_and(projects)
+    client
+        .daemon()
+        .is_some_and(|d| d.serves(features::PROJECTS))
 }
 
 /// The editor context names files from the project's root, not by a local

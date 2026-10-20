@@ -2,7 +2,7 @@
 //! files attached in the chat input. A chat on a host is read from the
 //! mirror here, and written to on the host (6.1).
 
-use super::answer;
+use super::{answer, route};
 use crate::instances::Instances;
 use rovik_client::Remote;
 use rovik_core::agent_run::autopilot::{self, StageRow};
@@ -270,7 +270,7 @@ pub async fn chat_rename_dialog(
         dialog_id: dialog_id.clone(),
         title,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 #[tauri::command]
@@ -436,7 +436,7 @@ pub async fn chat_set_model(
         dialog_id: dialog_id.clone(),
         model,
     };
-    answer(remote.route(&dialog_id, request).await)
+    route(&remote, &dialog_id, request).await
 }
 
 /// The chat's saved model and effort, if any.

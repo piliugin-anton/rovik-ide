@@ -673,9 +673,9 @@ impl Remote {
                 format!("{} isn't connected.", client.name()),
             ));
         }
-        let takes = client.daemon().is_some_and(|d| {
-            d.protocol >= PROTOCOL && d.features.iter().any(|f| f == features::MIRROR)
-        });
+        let takes = client
+            .daemon()
+            .is_some_and(|d| d.protocol >= PROTOCOL && d.serves(features::MIRROR));
         if !takes {
             let name = self.host_name(host);
             return Err(Fail::new(

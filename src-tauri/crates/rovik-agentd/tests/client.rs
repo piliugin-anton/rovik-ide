@@ -350,7 +350,10 @@ async fn ssh_lets_each_way_in_once_the_host_key_is_pinned() {
         passphrase: None,
     };
     let locked = Ssh::connect(&target(&server, locked)).await.err();
-    assert!(matches!(locked, Some(SshError::Key(_))), "{locked:?}");
+    assert!(
+        matches!(locked, Some(SshError::KeyUnusable(_))),
+        "{locked:?}"
+    );
     let asked = SshAuth::KeyboardInteractive(answering("guess"));
     let wrong = Ssh::connect(&target(&server, asked)).await.err();
     assert!(matches!(wrong, Some(SshError::Denied(_))), "{wrong:?}");
