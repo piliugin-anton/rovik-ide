@@ -1366,6 +1366,39 @@ async function run() {
     await closeTerminal();
   });
 
+  // Bash before 5.3 garbles an input line taller than the terminal: held
+  // Backspace through a long paste blanked the row the caret moved up to.
+  // A terminal here gives readline a line that scrolls sideways instead
+  // (src-tauri/src/terminal.rs, `readline`): asked of a bash in it, whatever
+  // the user's shell. Windows' terminals run cmd.exe.
+  if (PLATFORM !== 'win32') {
+    await step('terminal: bash before 5.3 keeps a long line on one row', async () => {
+      await openTerminal();
+      await click('.xterm-screen');
+      await typeKeys(
+        `bash --norc -ic 'bind -v | grep horizontal-scroll-mode; echo "bash=\${BASH_VERSINFO[0]}.\${BASH_VERSINFO[1]}"'`
+      );
+      await keys(Keys.ENTER);
+      // Its answers, lines of their own: not the typed line.
+      const answer = async () => {
+        const lines = (await panelText('.xterm-rows')).split('\n').map((l) => l.trim());
+        const mode = lines.find((l) => /^set horizontal-scroll-mode (on|off)$/.test(l));
+        const version = lines.map((l) => /^bash=(\d+)\.(\d+)$/.exec(l)).find(Boolean);
+        return mode && version
+          ? { mode, major: Number(version[1]), minor: Number(version[2]) }
+          : null;
+      };
+      await waitFor(answer, 'bash’s answer', 20_000);
+      const { mode, major, minor } = await answer();
+      const scrolls = major < 5 || (major === 5 && minor < 3);
+      assert(
+        mode === `set horizontal-scroll-mode ${scrolls ? 'on' : 'off'}`,
+        `bash ${major}.${minor}: ${mode}`
+      );
+      await closeTerminal();
+    });
+  }
+
   // Run from an AppImage, what the terminal starts gets the system's
   // environment, not the AppImage's: with its libraries first
   // (LD_LIBRARY_PATH), the flatpak a login shell's profile runs stopped
