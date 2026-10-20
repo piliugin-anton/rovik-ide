@@ -117,15 +117,13 @@ async fn send_once(
     timeout: Duration,
     chat_id: Option<&str>,
 ) -> Result<serde_json::Value, ChatError> {
-    let mut req = client
+    let req = client
         .post(url.clone())
         .timeout(timeout)
         .headers(crate::opencode::headers(url.as_str(), chat_id))
         .json(body);
-    let key = api_key.trim();
-    if !key.is_empty() {
-        req = req.bearer_auth(key);
-    }
+    // A bearer token, or Anthropic's headers on its API (crate::anthropic).
+    let req = crate::anthropic::authorize(req, url.as_str(), api_key);
 
     let transport = |e: reqwest::Error| {
         let kind = if e.is_timeout() {

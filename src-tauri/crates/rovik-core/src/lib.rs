@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod agent_run;
 pub mod agent_tools;
+mod anthropic;
 mod api_log;
 pub mod atomic_file;
 pub mod browser_tools;

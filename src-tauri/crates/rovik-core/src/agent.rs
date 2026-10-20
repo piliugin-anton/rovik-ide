@@ -260,6 +260,14 @@ pub async fn run_with_reasoning(
     Result<(), crate::chat_request::ChatError>,
     Option<ReasoningSupport>,
 ) {
+    // Anthropic's own API, not its OpenAI-compatible one (crate::anthropic).
+    if crate::anthropic::is_anthropic(url) {
+        let base = url.strip_suffix("/chat/completions").unwrap_or(url);
+        return crate::anthropic::run(
+            client, base, api_key, body, streaming, limits, effort, &formats, chat_id, cancel, emit,
+        )
+        .await;
+    }
     let requested = !formats.is_empty();
     let mut rejected: Vec<String> = Vec::new();
     let mut stripped_blindly: Vec<String> = Vec::new();
@@ -1913,8 +1921,14 @@ pub struct RemoteModel {
     owned_by: Option<String>,
     /// Context window in tokens, when the server reports it. There's no
     /// standard field: OpenRouter/Together use `context_length`, vLLM
-    /// `max_model_len`, Groq `context_window`.
+    /// `max_model_len`, Groq `context_window`, Anthropic `max_input_tokens`.
     context_length: Option<u64>,
+    /// Whether it takes images and PDFs, when the server says (Anthropic's
+    /// Models API does).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vision: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdf: Option<bool>,
 }
 
 /// `GET {base_url}/models` on an OpenAI-compatible server.
@@ -1922,22 +1936,31 @@ pub struct RemoteModel {
 /// Accepts both the standard `{ "data": [...] }` envelope and a bare array,
 /// since a few self-hosted servers skip the envelope. Runs on the Rust side so
 /// local servers (Ollama, LM Studio, llama.cpp) aren't blocked by CORS.
+/// Anthropic's API (crate::anthropic) gets its own headers, and is asked
+/// for all its models at once (it pages them, 20 by default); what each
+/// takes is kept for its chats.
 pub async fn list_models(
     base_url: String,
     api_key: Option<String>,
 ) -> Result<Vec<RemoteModel>, String> {
-    let url = format!("{}/models", base_url.trim().trim_end_matches('/'));
+    let anthropic = crate::anthropic::is_anthropic(&base_url);
+    let url = if anthropic {
+        format!(
+            "{}/models?limit=1000",
+            crate::anthropic::api_base(&base_url)
+        )
+    } else {
+        format!("{}/models", base_url.trim().trim_end_matches('/'))
+    };
 
     // The chats' client: what this finds out about the connection (a proxy
     // that refuses it, a server that answers) is what the chats will meet.
     let client = crate::net::client().await;
-    let mut req = client
+    let req = client
         .get(&url)
         .timeout(std::time::Duration::from_secs(15))
         .headers(crate::opencode::headers(&url, None));
-    if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
-        req = req.bearer_auth(key);
-    }
+    let req = crate::anthropic::authorize(req, &url, api_key.as_deref().unwrap_or(""));
 
     let res = req.send().await.map_err(|e| {
         crate::net::refresh();
@@ -1980,19 +2003,36 @@ pub async fn list_models(
                 .get("owned_by")
                 .and_then(|o| o.as_str())
                 .map(str::to_string);
-            let context_length = ["context_length", "max_model_len", "context_window"]
-                .iter()
-                .find_map(|key| m.get(*key).and_then(|v| v.as_u64()))
-                .or_else(|| {
-                    m.get("top_provider")
-                        .and_then(|p| p.get("context_length"))
-                        .and_then(|v| v.as_u64())
-                })
-                .filter(|&n| n > 0);
+            let context_length = [
+                "context_length",
+                "max_model_len",
+                "context_window",
+                "max_input_tokens",
+            ]
+            .iter()
+            .find_map(|key| m.get(*key).and_then(|v| v.as_u64()))
+            .or_else(|| {
+                m.get("top_provider")
+                    .and_then(|p| p.get("context_length"))
+                    .and_then(|v| v.as_u64())
+            })
+            .filter(|&n| n > 0);
+            let (vision, pdf) = if anthropic {
+                let info = crate::anthropic::remember(&base_url, m);
+                // Kept in the list for the record, but no longer served.
+                if info.retired {
+                    return None;
+                }
+                (info.vision, info.pdf)
+            } else {
+                (None, None)
+            };
             Some(RemoteModel {
                 id,
                 owned_by,
                 context_length,
+                vision,
+                pdf,
             })
         })
         .collect();

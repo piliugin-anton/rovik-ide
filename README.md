@@ -53,7 +53,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 
 - Works with any OpenAI-compatible provider: OpenAI, Anthropic, Google,
   OpenRouter, Fireworks, or a local model in Ollama or LM Studio. You add
-  your own API key.
+  your own API key. Anthropic's API is spoken natively, so Claude models
+  get their reasoning effort, PDFs and prompt caching (see
+  [Anthropic's API](#anthropics-api)).
 - Two modes:
   - **Agent** does the work: reads code, edits files, runs commands and
     checks the result.
@@ -496,6 +498,7 @@ src-tauri/               backend (Rust), a Cargo workspace
     agent_run/           the AI agent: model turns, tool calls, approvals,
                          AI reviewer, verification checks
     chat_request.rs      sending requests to model providers
+    anthropic/           Anthropic's API, spoken natively (Messages API)
     chat_db/             chat storage (SQLite)
     clm/                 agent-managed context (CLM mode)
     overlay/             each chat's private view of the project
@@ -730,10 +733,11 @@ moves on to the next request with the next run. What changes between steps
 (the focus note, context notes) rides on the last message, after everything
 cacheable. Nothing long goes there: the end of the request is where the
 model looks for what to do next, and a map there read as the start of the
-task. On top of that, OpenAI gets a `prompt_cache_key` per chat and
-OpenRouter gets `cache_control` breakpoints (Anthropic models need them):
-on the system prompt and on the latest message the next step sends
-unchanged, never on the last one, whose notes the next step drops.
+task. On top of that, OpenAI gets a `prompt_cache_key` per chat, and
+OpenRouter and Anthropic's API get `cache_control` breakpoints (Anthropic
+models need them): on the system prompt and on the latest message the next
+step sends unchanged, never on the last one, whose notes the next step
+drops.
 The run log's reply lines carry `cachedTokens`, and the headless report
 the cache hit rate, so the effect of a change to the prompt can be seen.
 
@@ -749,9 +753,11 @@ the app talks to (`src/lib/attachmentFormats.ts`):
 | Text   | UTF-8 text: code, Markdown, CSV, JSON, logs, … | in the message, in an `<attached_file name="…">` block | all           |
 
 - OpenAI's models (GPT-4o and later) take PDFs, and OpenRouter takes them
-  for every model, reading out the text where a model can't. Anthropic's
-  and Gemini's OpenAI-compatible endpoints leave PDFs out, so PDF is off
-  until it's turned on for a model, as Vision is.
+  for every model, reading out the text where a model can't. Claude models
+  on Anthropic's API take them as documents; Anthropic's model list says
+  which models take images and PDFs, and fetching it sets Vision and PDF
+  for them. Gemini's OpenAI-compatible endpoint leaves PDFs out, so PDF is
+  off until it's turned on for a model, as Vision is.
 - An attached image (up to 50 MB) is stored as a PNG at most 768×768
   pixels, its shape kept and never enlarged (`src-tauri/crates/rovik-core/src/chat_db/images.rs`):
   read with the `image` crate, scaled with `fast_image_resize` (Lanczos3
@@ -767,3 +773,42 @@ the app talks to (`src/lib/attachmentFormats.ts`):
   the context estimate (a PDF by its pages). The current request's files go
   with every step of its run; earlier requests' files are dropped first
   when the history is over budget.
+
+### Anthropic's API
+
+A provider whose base URL is on `api.anthropic.com` (for example
+`https://api.anthropic.com/v1`) is spoken to in Anthropic's own Messages
+API, not its OpenAI-compatible endpoint, which ignores the reasoning
+effort, never returns the model's reasoning, drops PDFs and caches nothing
+(`src-tauri/crates/rovik-core/src/anthropic/`):
+
+- Every request there carries the headers Anthropic requires: the key as
+  `x-api-key` and `anthropic-version`, plus the `anthropic-beta` a
+  request's features need. The model list, asked for all models at once,
+  gets them too.
+- The request the app builds for every provider is translated on the way
+  out (system prompt, images, PDFs as documents, tool calls and results,
+  `cache_control` breakpoints) and the reply on the way in
+  (`chat_request/messages.rs`), so chats, subagents and the reviewer work
+  as with any provider.
+- What each model takes comes from Anthropic's Models API, once per model:
+  its thinking modes, effort levels and output limit. `max_tokens`, which
+  the API requires, is the model's most when streaming (it doesn't count
+  against the rate limits), at most 16,000 otherwise.
+- The effort picked in the chat goes in the model's own form: adaptive
+  thinking with `output_config.effort`, or a thinking budget on models from
+  before adaptive thinking. "No thinking" turns thinking off as far as the
+  model allows, and models that can't turn it off get their lowest effort.
+  The reasoning is shown, summarized, and its signed thinking blocks go
+  back with the run's next steps where they were. Anthropic binds those
+  blocks to the exact conversation, which the app's history doesn't keep
+  byte for byte (notes move on, old results shrink), so a request asks the
+  API to leave out a block whose conversation changed rather than refuse
+  the request.
+- A refusal naming something a model doesn't take (a thinking mode, an
+  effort level, a sampling parameter, a forced tool, more output than it
+  writes) gets the request sent again without it, and the model is
+  remembered that way while the app runs.
+- When a model's safety classifiers decline a request
+  (`stop_reason: "refusal"`), the chat shows why, and the request isn't
+  retried as it is.

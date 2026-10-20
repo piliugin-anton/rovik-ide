@@ -344,6 +344,8 @@ export type ChatErrorKind =
   | 'context_length'
   | 'length'
   | 'provider'
+  /** The model's safety classifiers declined the request; `message` says why. */
+  | 'refused'
   | 'cancelled'
   /** The agent's server restarted mid-reply, and settled what was stored of it. */
   | 'restarted';

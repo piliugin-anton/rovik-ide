@@ -12,8 +12,8 @@
 //! subagent, its kind and chats (`TAGS`).
 //! `raw` is the reply text as received: the SSE stream (`data: …` lines),
 //! the whole JSON for a non-streaming reply, or an error body. The API key
-//! is never written: it's only in the Authorization header, which isn't
-//! logged. The file grows fast (every request repeats the history); delete
+//! is never written: it's only in a header (Authorization, or Anthropic's
+//! x-api-key), and headers aren't logged. The file grows fast (every request repeats the history); delete
 //! it when done.
 
 use serde_json::{json, Value};
