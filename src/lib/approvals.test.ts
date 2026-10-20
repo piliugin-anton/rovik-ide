@@ -4,7 +4,6 @@ import {
   allow,
   clearApproval,
   decideRemaining,
-  onRevealEdit,
   pendingApproval,
   pendingApprovalsOfTask,
   pendingEditFor,
@@ -14,7 +13,7 @@ import {
   showRemoteEdit,
   type ApprovalRequest,
 } from './approvals';
-import { onCompareRequest, type CompareRequest } from './editorBridge';
+import { setEditorOpener, type Compare, type OpenInEditor } from './openInEditor';
 import { childOf, noteSubagentStarted } from './subagents';
 
 /*
@@ -186,10 +185,11 @@ test('no_cross_chat_leak: two leads with the same call id see their own child’
 });
 
 test('a remote edit approval doesn’t open the local file: it shows apart, allowed whole (K09)', () => {
-  const revealed: string[] = [];
-  const compared: CompareRequest[] = [];
-  const stopReveal = onRevealEdit((path) => revealed.push(path));
-  const stopCompare = onCompareRequest((request) => compared.push(request));
+  const opened: OpenInEditor[] = [];
+  setEditorOpener(async (request) => {
+    opened.push(request);
+  });
+  const comparison = (request: OpenInEditor) => (request.marks as { compare: Compare }).compare;
   const absPath = '/srv/rovik/work/chat/src/a.ts';
   registerApproval({
     toolCallId: 'remote-1',
@@ -199,40 +199,43 @@ test('a remote edit approval doesn’t open the local file: it shows apart, allo
     edit: { absPath, relPath: 'src/a.ts', current: 'one\n', proposed: 'two\n' },
     remote: true,
   });
-  assert.deepEqual(revealed, [], 'the local file isn’t opened');
+  assert.equal(opened.length, 1);
+  const shown = opened[0];
+  assert.ok(typeof shown.marks === 'object', 'the local file isn’t opened: a comparison is');
   assert.equal(pendingEditFor(absPath), undefined, 'nor reviewed on its tab');
   assert.equal(pendingApproval('remote-chat', 'remote-1')?.edit, undefined);
-  assert.equal(compared.length, 1);
-  const shown = compared[0];
+  const { fileName, before, after } = comparison(shown);
   assert.deepEqual(
-    { fileName: shown.fileName, before: shown.before, after: shown.after },
+    { fileName, before, after },
     { fileName: 'src/a.ts', before: 'one\n', after: 'two\n' }
   );
   // As it comes, by itself: the chat over the whole window stays.
-  assert.equal(shown.background, true);
+  assert.equal(shown.focus, false);
   // "Show the change" shows it again, asked for: it's seen.
   showRemoteEdit('remote-chat', 'remote-1');
-  assert.equal(compared.length, 2);
-  assert.equal(compared[1].id, shown.id, 'in the same tab');
-  assert.equal(compared[1].background, undefined);
-  stopReveal();
-  stopCompare();
+  assert.equal(opened.length, 2);
+  assert.equal(opened[1].path, shown.path, 'in the same tab');
+  assert.equal(opened[1].focus, true);
+  setEditorOpener(null);
   allow('remote-chat', 'remote-1');
   assert.deepEqual(decision('remote-1').decision, { kind: 'allow' });
   assert.equal(pendingApproval('remote-chat', 'remote-1'), undefined);
 });
 
-test('"Review in editor" asks to open the file; the reveal as the edit arrives doesn’t insist', () => {
-  // App opens the file for an explicit reveal whatever the editor settings
-  // say; one as the approval arrives only when files open after agent edits.
-  const revealed: [string, boolean][] = [];
-  const stopReveal = onRevealEdit((path, explicit) => revealed.push([path, explicit]));
+test('"Review in editor" opens the file at its next change; the edit arriving doesn’t insist', () => {
+  // The button opens the file whatever the editor settings say, and takes
+  // the keyboard; the approval arriving opens it only when files open
+  // after agent edits (off here).
+  const opened: OpenInEditor[] = [];
+  setEditorOpener(async (request) => {
+    opened.push(request);
+  });
   const id = review('one\n', 'two\n', 'reveal-chat');
   const absPath = pendingApproval('reveal-chat', id)?.edit?.absPath;
   assert.ok(absPath);
-  assert.deepEqual(revealed, [[absPath, false]], 'arriving: not explicit');
+  assert.deepEqual(opened, [], 'arriving: not with the setting off');
   revealEdit('reveal-chat', id, true);
-  assert.deepEqual(revealed[1], [absPath, true], 'the button: explicit');
-  stopReveal();
+  assert.deepEqual(opened, [{ path: absPath, focus: true, at: { line: 1 }, highlight: 'none' }]);
+  setEditorOpener(null);
   clearApproval('reveal-chat', id);
 });

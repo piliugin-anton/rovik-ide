@@ -18,7 +18,7 @@ import type { ChatMessage } from '../types';
 import { chatApi } from './chatApi';
 import { chatStore } from './chatStore';
 import { cloud, hostName } from './cloud';
-import { requestCompare, requestOpenFile } from './editorBridge';
+import { openInEditor } from './openInEditor';
 import { notify } from './notifications';
 
 /** A path inside the project's plans folder. */
@@ -60,18 +60,23 @@ export function readPlan(dialogId: string, path: string): Promise<string> {
 export async function openPlan(dialogId: string | null, path: string): Promise<void> {
   const place = dialogId ? chatStore.summaryOf(dialogId)?.place : undefined;
   if (!dialogId || !place) {
-    requestOpenFile({ path });
+    await openInEditor({ path, focus: true });
     return;
   }
   try {
     const text = await readPlan(dialogId, path);
     const name = path.split(/[\\/]/).pop() || path;
-    requestCompare({
-      id: `plan:${dialogId}:${path}`,
-      title: `${name} (on ${hostName(place.host, cloud.hosts)})`,
-      fileName: name,
-      before: text,
-      after: text,
+    await openInEditor({
+      path: `plan:${dialogId}:${path}`,
+      focus: true,
+      marks: {
+        compare: {
+          title: `${name} (on ${hostName(place.host, cloud.hosts)})`,
+          fileName: name,
+          before: text,
+          after: text,
+        },
+      },
     });
   } catch (err) {
     notify({

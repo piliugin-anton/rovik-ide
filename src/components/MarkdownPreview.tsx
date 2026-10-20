@@ -35,7 +35,8 @@ import { readImageFile } from '../lib/commands';
 import { editorSettings } from '../lib/editorSettings';
 import { applyTheme } from '../lib/monacoThemes';
 import { languageForAlias } from '../lib/language';
-import { requestOpenFile, resolveProjectFile } from '../lib/editorBridge';
+import { resolveProjectFile } from '../lib/editorBridge';
+import { openInEditor } from '../lib/openInEditor';
 import { toRelativePath } from '../lib/fileTools';
 import { notify } from '../lib/notifications';
 
@@ -547,7 +548,11 @@ export default function MarkdownPreview(props: MarkdownPreviewProps) {
         return;
       }
       if (link.anchor) requestHeading(file, link.anchor);
-      requestOpenFile({ path: file, line: link.line });
+      await openInEditor({
+        path: file,
+        focus: true,
+        ...(link.line ? { at: { line: link.line } } : {}),
+      });
     }
   }
 

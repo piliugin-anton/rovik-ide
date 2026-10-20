@@ -1,3 +1,13 @@
+/**
+ * One spelling of a path, for keys: `/` for `\`, runs of them collapsed,
+ * a Windows drive letter in lower case. The backend, the file tree and the
+ * chat each spell the same file their own way.
+ */
+export function normalizePath(path: string): string {
+  const slashes = path.replace(/\\/g, '/').replace(/\/+/g, '/');
+  return /^[A-Z]:\//.test(slashes) ? slashes[0].toLowerCase() + slashes.slice(1) : slashes;
+}
+
 /*
  * Strip the rootPath prefix from an absolute path.
  * Falls back to the original path if it isn't under the root.

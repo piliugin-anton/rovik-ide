@@ -11,13 +11,13 @@ import {
 } from 'solid-js';
 import type { Accessor } from 'solid-js';
 import * as monaco from 'monaco-editor';
-import type { RevealRequest } from '../types';
 import type { CursorInfo } from '../lib/activeContext';
 import { selectedLines } from '../lib/activeContext';
 import { selectionReference } from '../lib/fileReferences';
 import { addToChat, editorFocusRequest, takeEditorFocus } from '../lib/editorBridge';
-import { agentChangesFor, type AgentChange } from '../lib/agentChanges';
+import { agentChangesFor } from '../lib/agentChanges';
 import { gitBaseFor } from '../lib/gitMarks';
+import { pendingReveal, takeReveal, type Reveal } from '../lib/openInEditor';
 import { diffLines, splitLines } from '../lib/lineDiff';
 import { plural } from '../lib/textUtils';
 import {
@@ -40,12 +40,7 @@ import type { EditorConfigProps } from '../lib/editorconfig';
 import { applyIndentation, loadEditorConfig, prepareForSave } from '../lib/editorFormatting';
 import { registerFileFormatter } from '../lib/fileFormatters';
 import { applyTheme } from '../lib/monacoThemes';
-import {
-  hunkLine,
-  renderEditReview,
-  renderReviewUnavailable,
-  reviewMatchesModel,
-} from './editorReview';
+import { renderEditReview, renderReviewUnavailable, reviewMatchesModel } from './editorReview';
 import MarkdownPreview from './MarkdownPreview';
 import { headingLine } from '../lib/markdownPreview';
 import { addMarkdownEditing } from '../lib/markdownEditing';
@@ -73,9 +68,6 @@ interface EditorProps {
   onChange: (value: string) => void;
   onSave: () => void;
   onCursorChange?: (info: CursorInfo) => void;
-  /** Select and center a range (search results); cleared via onRevealed. */
-  reveal?: Accessor<RevealRequest | null>;
-  onRevealed?: () => void;
   /** Read-only preview (e.g. stashed content): no edits, with a message. */
   readOnly?: Accessor<boolean>;
   readOnlyMessage?: string;
@@ -353,39 +345,42 @@ export default function Editor(props: EditorProps) {
       addToChatWidget?.dispose();
     });
 
-    // Runs for an already-open file and for one that just opened (this
-    // effect is created after the editor exists).
+    // What was asked to be shown in this file (lib/openInEditor.ts): for a
+    // file open already as it's asked, for one opening as its tab comes up.
+    // After a frame, so the editor has its size (and a review's zones are
+    // in): the scroll then lands where it should.
+    let shownBefore = false;
     createEffect(() => {
-      const request = props.reveal?.();
-      if (!request || !editor || request.path !== props.currentFilePath) return;
+      const reveal = pendingReveal(props.currentFilePath);
+      if (!reveal || !editor) return;
       const ed = editor;
-      const model = ed.getModel();
-      if (!model) return;
-      const show = () => {
-        const end = request.column + Math.max(0, request.length);
-        // Clamped to the file: a line from an older read may be past its end now.
-        const range = model.validateRange(
-          new monaco.Range(request.line, request.column, request.line, end)
-        );
-        const selection = new monaco.Selection(
-          range.startLineNumber,
-          range.startColumn,
-          range.endLineNumber,
-          range.endColumn
-        );
-        ed.setSelection(selection);
-        ed.revealRangeInCenter(selection, monaco.editor.ScrollType.Smooth);
-        ed.focus();
-        props.onRevealed?.();
-      };
-      // A Markdown file showing only its preview: the match is in the
+      // A Markdown file showing only its preview: the place is in the
       // source, so show the source beside it, once it has its size.
-      if (untrack(view) !== 'preview') return show();
-      setMarkdownView(props.currentFilePath, 'split', false);
+      if (untrack(view) === 'preview') setMarkdownView(props.currentFilePath, 'split', false);
       requestAnimationFrame(() => {
-        if (disposed) return;
+        if (disposed || !ed.getModel()) return;
+        takeReveal(props.currentFilePath, reveal);
         ed.layout();
-        show();
+        // Smooth from a place the user was looking at; straight there on a
+        // tab that just came up.
+        const scroll = shownBefore
+          ? monaco.editor.ScrollType.Smooth
+          : monaco.editor.ScrollType.Immediate;
+        shownBefore = true;
+        const range = showReveal(ed, reveal, scroll);
+        // The panels around settling a frame later can lay the editor out
+        // again and lose the scroll: put it back then.
+        requestAnimationFrame(() => {
+          if (disposed || !range) return;
+          const seen = ed
+            .getVisibleRanges()
+            .some(
+              (r) =>
+                r.startLineNumber <= range.startLineNumber &&
+                range.startLineNumber <= r.endLineNumber
+            );
+          if (!seen) ed.revealRangeInCenter(range, monaco.editor.ScrollType.Immediate);
+        });
       });
     });
 
@@ -435,54 +430,19 @@ export default function Editor(props: EditorProps) {
       });
     });
 
-    // Scroll to the next undecided change when the review asks for it.
-    createEffect(() => {
-      const approval = review();
-      const nonce = approval?.edit?.revealNonce;
-      if (!approval?.edit || !nonce || !editor) return;
-      // Only the nonce triggers a scroll, not each decision.
-      const edit = approval.edit;
-      const next = untrack(() => edit.hunks.find((h) => h.state === 'pending') ?? edit.hunks[0]);
-      if (next) {
-        // After the zones are in, so the scroll accounts for them.
-        requestAnimationFrame(() =>
-          editor?.revealLineInCenter(hunkLine(next), monaco.editor.ScrollType.Smooth)
-        );
-      }
+    // The agent's unreviewed changes (lib/agentChanges.ts) and what differs
+    // from git (lib/gitMarks.ts), each marked against its base, and again
+    // as the text changes.
+    const agentMarks = createChangeMarks(
+      editor,
+      () => agentChangesFor(props.currentFilePath)?.baseline,
+      AGENT_MARKS
+    );
+    const gitMarks = createChangeMarks(editor, () => gitBaseFor(props.currentFilePath), GIT_MARKS);
+    onCleanup(() => {
+      agentMarks.dispose();
+      gitMarks.dispose();
     });
-
-    /*
-     * The agent's unreviewed edits (lib/agentChanges.ts): added and changed
-     * lines green, removed lines a red mark where they were. Drawn once
-     * the editor shows exactly what the agent wrote; after that Monaco keeps
-     * them on their lines as the user types. Cleared when the file is saved.
-     */
-    let agentMarks: monaco.editor.IEditorDecorationsCollection | undefined;
-    let drawnFor: AgentChange | undefined;
-    createEffect(() => {
-      const change = agentChangesFor(props.currentFilePath);
-      text(); // re-checked once the new content is in the editor
-      const ed = editor;
-      const model = ed?.getModel();
-      if (!ed || !model) return;
-      if (!change) {
-        agentMarks?.clear();
-        drawnFor = undefined;
-        return;
-      }
-      if (change === drawnFor) return;
-      const sameText = (a: string) => a.replace(/\r\n/g, '\n');
-      if (sameText(model.getValue()) !== sameText(change.current)) return;
-      agentMarks?.clear();
-      agentMarks = ed.createDecorationsCollection(agentChangeDecorations(change, model));
-      drawnFor = change;
-    });
-    onCleanup(() => agentMarks?.clear());
-
-    // Git change marks (lib/gitMarks.ts): recomputed against the base as the
-    // text changes, a moment after typing stops.
-    const gitMarks = createGitMarks(editor, () => gitBaseFor(props.currentFilePath));
-    onCleanup(() => gitMarks.dispose());
 
     // Definitions load in the background - never block editor creation on
     // them. Once per project (later mounts reuse them). While they load,
@@ -813,16 +773,96 @@ function mountAddToChat(
 /** Removed lines shown in full up to this many per place; the rest are counted. */
 const MAX_REMOVED_LINES_SHOWN = 200;
 
+/** How a line that differs from the base is drawn. */
+interface LineMark {
+  className: string;
+  gutter: string;
+  /** In the overview ruler. */
+  color: string;
+  hover: (removed: number) => string;
+}
+
+/** How a set of change marks looks. */
+interface MarkStyle {
+  added: LineMark;
+  /** Lines that replaced removed ones. */
+  modified: LineMark;
+  /**
+   * Lines removed: shown where they were, in a zone with their text, or
+   * marked with a red edge on the line that took their place.
+   */
+  removed: {
+    color: string;
+    zone: boolean;
+    above?: string;
+    below?: string;
+    hover: (removed: number) => string;
+  };
+}
+
 /**
- * Marks for differences from the git base: added lines tinted green and
- * changed lines yellow, each with a bar in the gutter, and the lines git
- * has that the file no longer does shown in red where they were (a view
- * zone with the old text), so an edit reads as what it replaced over what
- * it became. Tinted, not just gutter bars: the bars alone were easy to miss.
+ * Differences from the git base: added lines tinted green and changed
+ * lines yellow, each with a bar in the gutter, and the lines git has that
+ * the file no longer does shown in red where they were, so an edit reads
+ * as what it replaced over what it became. Tinted, not just gutter bars:
+ * the bars alone were easy to miss.
  */
-export function createGitMarks(
+const GIT_MARKS: MarkStyle = {
+  added: {
+    className: 'git-line-added',
+    gutter: 'git-mark git-mark-added',
+    color: '#587c0c',
+    hover: () => 'Added since the version in git',
+  },
+  modified: {
+    className: 'git-line-modified',
+    gutter: 'git-mark git-mark-modified',
+    color: '#dcb26a',
+    hover: (removed) =>
+      `Changed since the version in git: the ${plural(removed, 'line')} it replaced ${removed === 1 ? 'is' : 'are'} shown above in red`,
+  },
+  removed: {
+    color: '#94151b',
+    zone: true,
+    hover: (removed) => `${plural(removed, 'line')} removed since the version in git`,
+  },
+};
+
+/**
+ * The agent's unreviewed edits: added and changed lines green, removed
+ * lines a red edge where they were. Until the file is saved.
+ */
+const AGENT_MARKS: MarkStyle = {
+  added: {
+    className: 'agent-change-line',
+    gutter: 'agent-change-gutter',
+    color: '#9bb955',
+    hover: () => 'Added by the agent',
+  },
+  modified: {
+    className: 'agent-change-line',
+    gutter: 'agent-change-gutter',
+    color: '#9bb955',
+    hover: (removed) => `Changed by the agent (was ${plural(removed, 'line')})`,
+  },
+  removed: {
+    color: '#e06c75',
+    zone: false,
+    above: 'agent-change-removed-above',
+    below: 'agent-change-removed-below',
+    hover: (removed) => `${plural(removed, 'line')} removed by the agent`,
+  },
+};
+
+/**
+ * Marks for the lines that differ from `base`, in `style`, redrawn as the
+ * base arrives or changes and a moment after the text does. No base: no
+ * marks.
+ */
+export function createChangeMarks(
   editor: monaco.editor.IStandaloneCodeEditor,
-  base: () => string | undefined
+  base: () => string | undefined,
+  style: MarkStyle
 ): monaco.IDisposable {
   const marks = editor.createDecorationsCollection();
   let zoneIds: string[] = [];
@@ -837,6 +877,7 @@ export function createGitMarks(
     if (model && original !== undefined) {
       const hunks = diffLines(splitLines(original).lines, splitLines(model.getValue()).lines);
       const lineCount = model.getLineCount();
+      const stickiness = monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges;
       // Hunks count lines of the base; `shift` maps them onto the file as it is.
       let shift = 0;
       for (const hunk of hunks) {
@@ -846,13 +887,14 @@ export function createGitMarks(
           hunk.deleted.join('') === '' && hunk.deleted.length === 1 && original === ''
             ? 0
             : hunk.deleted.length;
-        if (removed > 0) {
+        if (removed > 0 && style.removed.zone) {
           // The old lines, above the ones that replaced them (or where they were).
           const after = Math.max(0, Math.min(start - 1, lineCount));
-          zones.push(removedLinesZone(editor, model, hunk.deleted, after));
+          const title = style.removed.hover(removed);
+          zones.push(removedLinesZone(editor, model, hunk.deleted, after, title));
         }
         if (hunk.added.length > 0) {
-          const kind = removed > 0 ? 'modified' : 'added';
+          const mark = removed > 0 ? style.modified : style.added;
           decorations.push({
             range: new monaco.Range(
               Math.min(start, lineCount),
@@ -862,30 +904,34 @@ export function createGitMarks(
             ),
             options: {
               isWholeLine: true,
-              className: `git-line-${kind}`,
-              linesDecorationsClassName: `git-mark git-mark-${kind}`,
-              stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-              hoverMessage: {
-                value:
-                  kind === 'added'
-                    ? 'Added since the version in git'
-                    : `Changed since the version in git: the ${plural(removed, 'line')} it replaced ${removed === 1 ? 'is' : 'are'} shown above in red`,
-              },
-              overviewRuler: {
-                color: kind === 'added' ? '#587c0c' : '#dcb26a',
-                position: monaco.editor.OverviewRulerLane.Left,
-              },
+              className: mark.className,
+              linesDecorationsClassName: mark.gutter,
+              stickiness,
+              hoverMessage: { value: mark.hover(removed) },
+              overviewRuler: { color: mark.color, position: monaco.editor.OverviewRulerLane.Left },
             },
           });
         } else if (removed > 0) {
-          // Only in the overview ruler: the zone shows the lines themselves.
+          // Nothing left to color: the ruler, and without a zone a red edge
+          // on the line where the text was.
+          const atEnd = start > lineCount;
           const line = Math.max(1, Math.min(start, lineCount));
+          const edge = style.removed.zone
+            ? undefined
+            : atEnd
+              ? style.removed.below
+              : style.removed.above;
           decorations.push({
             range: new monaco.Range(line, 1, line, 1),
             options: {
               isWholeLine: true,
-              stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-              overviewRuler: { color: '#94151b', position: monaco.editor.OverviewRulerLane.Left },
+              className: edge,
+              stickiness,
+              hoverMessage: edge ? { value: style.removed.hover(removed) } : undefined,
+              overviewRuler: {
+                color: style.removed.color,
+                position: monaco.editor.OverviewRulerLane.Left,
+              },
             },
           });
         }
@@ -902,7 +948,8 @@ export function createGitMarks(
     window.clearTimeout(timer);
     timer = window.setTimeout(update, 250);
   });
-  // The base arriving or changing (open from the Git tab, a commit): redraw.
+  // The base arriving or changing (open from the Git tab, a commit, the
+  // agent's next write, the save that clears it): redraw.
   const stop = createRoot((dispose) => {
     createEffect(() => {
       base();
@@ -923,16 +970,53 @@ export function createGitMarks(
   };
 }
 
+/** How long the place an open request points at stays lit. */
+const FLASH_MS = 1_400;
+
+/** Shows a reveal: the place centered, highlighted as asked. The range shown. */
+function showReveal(
+  ed: monaco.editor.IStandaloneCodeEditor,
+  reveal: Reveal,
+  scroll: monaco.editor.ScrollType
+): monaco.Range | undefined {
+  const model = ed.getModel();
+  if (!model) return undefined;
+  // Clamped to the file: a line from an older read may be past its end now.
+  const range = model.validateRange(
+    new monaco.Range(reveal.line, reveal.column, reveal.line, reveal.column + reveal.length)
+  );
+  if (reveal.highlight === 'selection') {
+    ed.setSelection(range);
+  } else if (reveal.highlight === 'flash') {
+    ed.setPosition(range.getStartPosition());
+    const lit = ed.createDecorationsCollection([
+      {
+        range: new monaco.Range(range.startLineNumber, 1, range.endLineNumber, 1),
+        options: {
+          isWholeLine: true,
+          className: 'editor-reveal-flash',
+          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+        },
+      },
+    ]);
+    window.setTimeout(() => lit.clear(), FLASH_MS);
+  }
+  ed.revealRangeInCenter(range, scroll);
+  if (reveal.focus) ed.focus();
+  return range;
+}
+
 /**
- * Lines the file had in git and no longer has, in red below `afterLineNumber`
- * (0: at the top), syntax highlighted like the editor's own lines, with a
- * red bar in the gutter where the changed lines have theirs.
+ * Lines the file had and no longer has, in red below `afterLineNumber` (0:
+ * at the top), syntax highlighted like the editor's own lines, with a red
+ * bar in the gutter where the changed lines have theirs.
  */
 function removedLinesZone(
   editor: monaco.editor.IStandaloneCodeEditor,
   model: monaco.editor.ITextModel,
   lines: string[],
-  afterLineNumber: number
+  afterLineNumber: number,
+  title: string
 ): monaco.editor.IViewZone {
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
   const fontInfo = editor.getOption(monaco.editor.EditorOption.fontInfo);
@@ -944,7 +1028,7 @@ function removedLinesZone(
   dom.style.fontFamily = fontInfo.fontFamily;
   dom.style.fontSize = `${fontInfo.fontSize}px`;
   dom.style.lineHeight = `${lineHeight}px`;
-  dom.title = `${plural(lines.length, 'line')} removed since the version in git`;
+  dom.title = title;
   // Plain text first, highlighted once colorize finishes.
   const rows = shown.map((line) => {
     const row = document.createElement('div');
@@ -981,61 +1065,4 @@ function removedLinesZone(
     domNode: dom,
     marginDomNode: margin,
   };
-}
-
-/** Decorations for the agent's changes, on the lines of the file as it is now. */
-function agentChangeDecorations(
-  change: AgentChange,
-  model: monaco.editor.ITextModel
-): monaco.editor.IModelDeltaDecoration[] {
-  const lineCount = model.getLineCount();
-  const out: monaco.editor.IModelDeltaDecoration[] = [];
-  // Hunks count lines of the old text; `shift` maps them onto the new one.
-  let shift = 0;
-  for (const hunk of change.hunks) {
-    const start = hunk.origStart + shift;
-    if (hunk.added.length > 0) {
-      const first = Math.min(start, lineCount);
-      const last = Math.min(start + hunk.added.length - 1, lineCount);
-      out.push({
-        range: new monaco.Range(first, 1, last, 1),
-        options: {
-          isWholeLine: true,
-          className: 'agent-change-line',
-          linesDecorationsClassName: 'agent-change-gutter',
-          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-          overviewRuler: {
-            color: '#9bb955',
-            position: monaco.editor.OverviewRulerLane.Left,
-          },
-          hoverMessage: {
-            // A new file diffs as "one empty line replaced": that's an addition.
-            value:
-              hunk.deleted.length > 0 && hunk.deleted.join('') !== ''
-                ? `Changed by the agent (was ${plural(hunk.deleted.length, 'line')})`
-                : `Added by the agent`,
-          },
-        },
-      });
-    } else if (hunk.deleted.length > 0) {
-      // Nothing left to color: a red line where the text was.
-      const atEnd = start > lineCount;
-      const line = Math.max(1, Math.min(start, lineCount));
-      out.push({
-        range: new monaco.Range(line, 1, line, 1),
-        options: {
-          isWholeLine: true,
-          className: atEnd ? 'agent-change-removed-below' : 'agent-change-removed-above',
-          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-          overviewRuler: {
-            color: '#e06c75',
-            position: monaco.editor.OverviewRulerLane.Left,
-          },
-          hoverMessage: { value: `${plural(hunk.deleted.length, 'line')} removed by the agent` },
-        },
-      });
-    }
-    shift += hunk.added.length - hunk.deleted.length;
-  }
-  return out;
 }

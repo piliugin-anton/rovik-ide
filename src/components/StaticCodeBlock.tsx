@@ -5,7 +5,7 @@
 // instance, so scrolling through a code-heavy chat creates none.
 //
 // "Open in editor" opens the file the code belongs to in the main editor
-// (lib/editorBridge.ts, requestOpenFile); a block that isn't tied to a
+// (lib/openInEditor.ts); a block that isn't tied to a
 // project file has no such button. It used to turn the block itself into
 // an editable inline editor.
 import { createEffect, createSignal, on, Show } from 'solid-js';

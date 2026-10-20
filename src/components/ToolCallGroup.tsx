@@ -13,7 +13,7 @@ import LineCounts from './LineCounts';
 import { pendingApproval, pendingApprovalsOfTask } from '../lib/approvals';
 import { childOf } from '../lib/subagents';
 import { pendingQuestions } from '../lib/questions';
-import { requestOpenFile } from '../lib/editorBridge';
+import { openInEditor } from '../lib/openInEditor';
 
 export default function ToolCallGroup(props: {
   name: string;
@@ -135,22 +135,23 @@ export default function ToolCallGroup(props: {
                       type="button"
                       class="tool-group-file"
                       title={`${item().title ?? path()}: open in the editor`}
-                      onClick={() =>
-                        requestOpenFile(
-                          // A written file: as the chat has it when that's
-                          // not the project's file yet, else marked against
-                          // git; centered on the first change unless the
-                          // call named a line.
-                          item().written
-                            ? {
-                                path: path(),
-                                line: item().line,
-                                changes: true,
-                                dialogId: props.dialogId,
-                              }
-                            : { path: path(), line: item().line ?? 1 }
-                        )
-                      }
+                      onClick={() => {
+                        // A written file: as the chat has it when that's
+                        // not the project's file yet, else with its changes
+                        // marked, centered on the first unless the call
+                        // named a line.
+                        const line = item().line;
+                        void openInEditor({
+                          path: path(),
+                          focus: true,
+                          ...(line !== undefined
+                            ? { at: { line } }
+                            : item().written
+                              ? { at: 'first-change' as const }
+                              : {}),
+                          ...(item().written ? { dialogId: props.dialogId } : {}),
+                        });
+                      }}
                     >
                       {item().text}
                     </button>

@@ -8,11 +8,8 @@ import assert from 'node:assert/strict';
 import { createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import FormattedText from './FormattedText';
-import {
-  onOpenFileRequest,
-  setProjectFileResolver,
-  type OpenFileRequest,
-} from '../lib/editorBridge';
+import { setProjectFileResolver } from '../lib/editorBridge';
+import { setEditorOpener, type OpenInEditor } from '../lib/openInEditor';
 import { dismiss, notifications } from '../lib/notifications';
 
 const sent: { cmd: string; args: any }[] = [];
@@ -41,8 +38,10 @@ function click(el: Element, button = 0) {
 }
 
 test('a path opens the file at its line, a web address the browser', async () => {
-  const opened: OpenFileRequest[] = [];
-  const stop = onOpenFileRequest((request) => opened.push(request));
+  const opened: OpenInEditor[] = [];
+  setEditorOpener(async (request) => {
+    opened.push(request);
+  });
   const root = container();
   const dispose = render(
     () => (
@@ -58,12 +57,12 @@ test('a path opens the file at its line, a web address the browser', async () =>
 
   click(link(root, 'a.ts'));
   await settle();
-  assert.deepEqual(opened, [{ path: '/p/src/a.ts', line: 3 }]);
+  assert.deepEqual(opened, [{ path: '/p/src/a.ts', focus: true, at: { line: 3 } }]);
 
   // A leading slash: the project's root, as on GitHub.
   click(link(root, 'b'));
   await settle();
-  assert.deepEqual(opened[1], { path: '/p/docs/b.md', line: undefined });
+  assert.deepEqual(opened[1], { path: '/p/docs/b.md', focus: true });
 
   click(link(root, 'gone'));
   await settle();
@@ -81,7 +80,7 @@ test('a path opens the file at its line, a web address the browser', async () =>
   assert.equal(opened.length, 2);
 
   dispose();
-  stop();
+  setEditorOpener(null);
 });
 
 test('a link stays the same element while the reply streams on', () => {

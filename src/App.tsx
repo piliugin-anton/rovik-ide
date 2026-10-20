@@ -36,13 +36,7 @@ import {
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
-import type {
-  FileWatchPayload,
-  LastProjectOpenFile,
-  OpenFile,
-  RevealRequest,
-  TreeRow,
-} from './types';
+import type { FileWatchPayload, LastProjectOpenFile, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext, CursorInfo } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
@@ -77,22 +71,24 @@ import {
 } from './lib/projects';
 import { chatApi, type ProjectSummary } from './lib/chatApi';
 import { rustFileSaved, stopRustSupport } from './lib/lsp/rustAnalyzer';
-import SearchPanel, { type SearchMatchTarget } from './components/SearchPanel';
-import { notifyFileWritten, onFileDeleted, onFileWritten, onRevealEdit } from './lib/approvals';
+import SearchPanel from './components/SearchPanel';
+import { notifyFileWritten, onFileDeleted, onFileWritten } from './lib/approvals';
 import { editorSettings } from './lib/editorSettings';
+import { onAddToChat, requestEditorFocus, setProjectFileResolver } from './lib/editorBridge';
 import {
-  onAddToChat,
-  onCompareRequest,
-  requestCompare,
-  requestEditorFocus,
-  onOpenFileRequest,
-  setProjectFileResolver,
-} from './lib/editorBridge';
-import { findSnippetLine } from './lib/codeLocation';
+  dropReveal,
+  openInEditor,
+  placeOf,
+  requestReveal,
+  setEditorOpener,
+  type Compare,
+  type Marks,
+  type OpenInEditor,
+} from './lib/openInEditor';
 import { isPlanFile, requestImplementPlan } from './lib/plans';
 import { isMarkdownLanguage } from './lib/markdownView';
 import { clearGitBase, markedFiles, setGitBase } from './lib/gitMarks';
-import { diffLines, splitLines } from './lib/lineDiff';
+import { diffLines, splitLines, type DiffHunk } from './lib/lineDiff';
 import {
   isProjectSource,
   modelUriFor,
@@ -187,7 +183,6 @@ export default function App() {
   const [activePath, setActivePath] = createSignal<string | null>(null);
   /** The Files tab shows search results instead of the tree while searching. */
   const [searchActive, setSearchActive] = createSignal(false);
-  const [revealRequest, setRevealRequest] = createSignal<RevealRequest | null>(null);
   const [sidebarTab, setSidebarTab] = createSignal<'files' | 'chat' | 'git'>('files');
   // The panel's full-window mode: the floating toggle in Resizable sets it,
   // and the `sidebar-expanded` class on `.app` hides the right pane.
@@ -535,19 +530,22 @@ export default function App() {
   /** Files being read for a new tab: a second open waits for the first. */
   const opening = new Set<string>();
 
-  async function openFile(row: TreeRow, opts: { activate?: boolean } = {}) {
-    const activate = opts.activate ?? true;
+  /**
+   * The tab of `row`'s file, read from disk when it isn't open yet:
+   * whether it was there already, came now, or couldn't (binary, unreadable).
+   */
+  async function openTab(row: TreeRow, activate: boolean): Promise<'created' | 'existing' | null> {
     // By path too: a file opened from search results may carry a different id.
     const existing = openFiles().find((f) => f.id === row.id || f.path === row.path);
     if (existing) {
       if (activate) setActivePath(existing.path);
-      return;
+      return 'existing';
     }
     // Two opens at once (two quick writes by the agent): one tab.
-    if (opening.has(row.path)) return;
+    if (opening.has(row.path)) return null;
     if (isLikelyBinary(row.name)) {
       window.alert(`"${row.name}" looks like a binary file and can't be opened in the editor.`);
-      return;
+      return null;
     }
     opening.add(row.path);
     try {
@@ -563,37 +561,132 @@ export default function App() {
       };
       setOpenFiles((prev) => [...prev, file]);
       if (activate) setActivePath(row.path);
+      return 'created';
     } catch (err) {
       console.error(`Failed to open ${row.path}:`, err);
       if (activate) window.alert(`Couldn't open ${row.name}: ${String(err)}`);
+      return null;
     } finally {
       opening.delete(row.path);
     }
   }
 
-  /** Opens a file by absolute path (e.g. an agent edit to review). */
-  async function openPath(path: string, opts: { activate?: boolean } = {}) {
+  /** The tree's row for an absolute path, or one made for a file it doesn't list. */
+  function rowFor(path: string): TreeRow {
     const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/';
     const name = path.split(sep).pop() ?? path;
-    const row: TreeRow = tree.files().find((r) => r.path === path) ?? {
-      id: path,
-      path,
-      name,
-      isDir: false,
-      depth: 0,
-    };
-    await openFile(row, opts);
+    return (
+      tree.files().find((r) => r.path === path) ?? { id: path, path, name, isDir: false, depth: 0 }
+    );
   }
 
-  // The agent's edits: open files to review them when the "Open files
-  // after agent edits" editor setting is on, and refresh open tabs
-  // after a write (an unsaved tab keeps the user's text).
-  // "Review in editor" (explicit) always opens it.
-  const stopReveal = onRevealEdit((path, explicit) => {
-    if (!explicit && !editorSettings().openFilesAfterAgentEdits) return;
-    if (explicit) showEditor();
-    void openPath(path);
-  });
+  const hunksBetween = (before: string, after: string) =>
+    diffLines(splitLines(before).lines, splitLines(after).lines);
+
+  /**
+   * Opens a file in a tab: the one way (lib/openInEditor.ts), from the
+   * tree, the chat, search, the Git tab and the agent's writes alike. The
+   * marks come first, then the place to show: the one asked for, else the
+   * first change when there is one, which a tab that's open already keeps
+   * only when the user asked for the file (the agent's writes come up by
+   * themselves).
+   */
+  async function openRequested(request: OpenInEditor): Promise<void> {
+    const { path, activate = true, focus = false, highlight = 'flash', marks = 'auto' } = request;
+    if (typeof marks === 'object') return openComparison(path, marks.compare, request);
+    const root = rootPath();
+    if (!root && !isContextPath(path)) return;
+    // A written file as its chat has it, when that isn't the project's
+    // file: an isolated chat's change that hasn't landed, a remote chat's.
+    // Before the project's file is looked for: an isolated chat's new file
+    // isn't there at all.
+    if (request.dialogId && root && marks !== 'none' && !isContextPath(path)) {
+      const rel = toRelativePath(toAbsolutePath(path, root), root);
+      if (await openChatVersion(request.dialogId, rel, request)) return;
+    }
+    const abs = await resolveOpenPath(path, root);
+    if (!abs && (await openRemoteContext(path, request))) return;
+    if (!abs) {
+      notify({
+        kind: 'warning',
+        title: `Can't open ${path}`,
+        message: path.includes('revisions')
+          ? 'Context revisions are not files; open them from the context panel.'
+          : "The agent's context folder is on the virtual volume, which isn't mounted.",
+        timeout: 8_000,
+      });
+      return;
+    }
+    const opened = await openTab(rowFor(abs), activate);
+    if (!opened) return;
+    if (focus) showEditor();
+    const hunks = await marksFor(abs, marks);
+    const at = request.at ?? (hunks?.length ? 'first-change' : undefined);
+    if (!at || (at === 'first-change' && opened === 'existing' && !focus)) return;
+    const text = openFiles().find((f) => f.path === abs)?.content ?? '';
+    const place = placeOf(at, text, hunks);
+    if (place) requestReveal(abs, place, { highlight, focus });
+  }
+  setEditorOpener(openRequested);
+  onCleanup(() => setEditorOpener(null));
+
+  /**
+   * The marks a tab shows, loaded: the agent's unreviewed changes when it
+   * has them, else git's (`marks` may ask for one of them only). Their
+   * hunks against the tab's text; none when there's nothing to mark.
+   */
+  async function marksFor(
+    abs: string,
+    marks: Exclude<Marks, { compare: Compare }>
+  ): Promise<DiffHunk[] | undefined> {
+    if (marks === 'none') return undefined;
+    const text = () => openFiles().find((f) => f.path === abs)?.content;
+    if (marks !== 'git') {
+      const agent = agentChangesFor(abs);
+      if (agent) return hunksBetween(agent.baseline, text() ?? agent.current);
+      if (marks === 'agent') return undefined;
+    }
+    const base = await loadGitBase(abs);
+    const current = text();
+    if (base === undefined || current === undefined) return undefined;
+    return hunksBetween(base ?? '', current);
+  }
+
+  /**
+   * A read-only tab comparing two versions of a file: `after` shown, what
+   * differs from `before` marked (an isolated chat's change against the
+   * project, a stash, a commit, a remote chat's edit or plan). Asked for
+   * again, the same tab shows the versions as they are now.
+   */
+  function openComparison(id: string, compare: Compare, request: OpenInEditor): Promise<void> {
+    const { activate = true, focus = false, highlight = 'flash' } = request;
+    const existed = openFiles().some((f) => f.path === id);
+    const tab: OpenFile = {
+      id,
+      path: id,
+      name: compare.title,
+      content: compare.after,
+      originalContent: compare.after,
+      dirty: false,
+      language: languageForFile(compare.fileName),
+      readOnly: true,
+      ...(compare.stash ? { stash: compare.stash } : {}),
+      ...(compare.commit ? { commit: compare.commit } : {}),
+    };
+    setGitBase(id, compare.fileName, compare.before);
+    setOpenFiles((prev) => (existed ? prev.map((f) => (f.path === id ? tab : f)) : [...prev, tab]));
+    if (activate) setActivePath(id);
+    if (focus) showEditor();
+    const hunks = hunksBetween(compare.before, compare.after);
+    const at = request.at ?? (hunks.length ? 'first-change' : undefined);
+    if (!at || (at === 'first-change' && existed && !focus)) return Promise.resolve();
+    const place = placeOf(at, compare.after, hunks);
+    if (place) requestReveal(id, place, { highlight, focus });
+    return Promise.resolve();
+  }
+
+  // The agent's writes: open tabs refresh after one (an unsaved tab keeps
+  // the user's text).
   const stopWritten = onFileWritten((path, content) => {
     setOpenFiles((prev) =>
       prev.map((f) =>
@@ -610,7 +703,7 @@ export default function App() {
     ) {
       return;
     }
-    void openPath(path, { activate: activePath() === null });
+    void openInEditor({ path, activate: activePath() === null });
   });
   // A file the agent removed (a rolled-back creation, P3.4): its tab goes,
   // unless it holds the user's unsaved text.
@@ -648,116 +741,37 @@ export default function App() {
     }
     if (open) return;
     if (!editorSettings().openFilesAfterAgentEdits) return;
-    // Newly opened by the agent's edit: center the first changed line,
-    // like openPathAtLine does for chat links and search results.
-    const line = Math.max(1, agentChangesFor(path)?.hunks[0]?.origStart ?? 1);
-    void (async () => {
-      await openPath(path, { activate: activePath() === null });
-      // Background tab (something else is being worked on): not visible,
-      // so there is nothing to scroll.
-      if (activePath() !== path) return;
-      setRevealRequest({ path, line, column: 1, length: 0, nonce: Date.now() });
-    })();
+    // Newly opened by the agent's edit: its changes marked, centered on the
+    // first one when the tab is shown.
+    void openInEditor({ path, activate: activePath() === null, marks: 'agent' });
   });
 
-  // A comparison tab (an isolated chat's change against the project):
-  // read-only, the chat's version shown with what differs marked.
-  const stopCompareRequests = onCompareRequest((request) => {
-    const tab: OpenFile = {
-      id: request.id,
-      path: request.id,
-      name: request.title,
-      content: request.after,
-      originalContent: request.after,
-      dirty: false,
-      language: languageForFile(request.fileName),
-      readOnly: true,
-    };
-    setGitBase(request.id, request.fileName, request.before);
-    setOpenFiles((prev) => [...prev.filter((f) => f.path !== request.id), tab]);
-    setActivePath(request.id);
-    if (!request.background) showEditor();
-  });
-  onCleanup(stopCompareRequests);
-
-  // "Open in editor" anywhere in the chat (lib/editorBridge.ts): open the
-  // file, then center its start position: the line given, or where the
-  // given code is found. Without either, the file just opens. A file the
-  // agent wrote opens with its changes marked against git, like the Git
-  // tab opens it, and centered on the first one; when the chat that wrote
-  // it is isolated and its change hasn't reached the project, the chat's
-  // version is shown instead, against the project's.
-  const stopOpenRequests = onOpenFileRequest(({ path, line, snippet, changes, dialogId }) => {
-    const root = rootPath();
-    if (!root && !isContextPath(path)) return;
-    void (async () => {
-      // Before the project's file is looked for: an isolated chat's new
-      // file isn't there at all.
-      if (changes && dialogId && root && !isContextPath(path)) {
-        const rel = toRelativePath(toAbsolutePath(path, root), root);
-        if (await openChatVersion(dialogId, rel, { line, snippet })) return;
-      }
-      const abs = await resolveOpenPath(path, root);
-      if (!abs && (await openRemoteContext(path))) return;
-      if (!abs) {
-        notify({
-          kind: 'warning',
-          title: `Can't open ${path}`,
-          message: path.includes('revisions')
-            ? 'Context revisions are not files; open them from the context panel.'
-            : "The agent's context folder is on the virtual volume, which isn't mounted.",
-          timeout: 8_000,
-        });
-        return;
-      }
-      // The context folder isn't in the project's repository.
-      const base = changes && !isContextPath(path) ? await loadGitBase(abs) : undefined;
-      let target = line;
-      if (target === undefined && snippet) {
-        // An open tab's text, unsaved edits included; else the file on disk.
-        const text =
-          openFiles().find((f) => f.path === abs)?.content ??
-          (await readFileContent(abs).catch(() => null));
-        target = text !== null ? (findSnippetLine(text, snippet) ?? undefined) : undefined;
-      }
-      if (target === undefined && base !== undefined) target = await firstChangeLine(abs, base);
-      showEditor();
-      if (target === undefined) await openPath(abs);
-      else await openPathAtLine(abs, target);
-    })();
-  });
   /**
    * A file as the chat that wrote it has it, when that isn't the project's
    * file: an isolated chat's change that hasn't landed, or a remote chat's,
-   * on its host (lib/overlay.ts). A read-only comparison tab, like the
-   * isolation bar's Compare, centered on the line asked for, else on the
-   * first change. False when the chat's version is the project's (the chat
-   * isn't isolated, or the change landed), so the file itself opens.
+   * on its host (lib/overlay.ts). A read-only comparison, like the
+   * isolation bar's Compare, at the place the request asks for, else at
+   * the first change. False when the chat's version is the project's (the
+   * chat isn't isolated, or the change landed), so the file itself opens.
    */
   async function openChatVersion(
     dialogId: string,
     rel: string,
-    at: { line?: number; snippet?: string }
+    request: OpenInEditor
   ): Promise<boolean> {
     const versions = await overlayFile(dialogId, rel).catch(() => null);
     if (!versions || versions.chat === null || versions.chat === versions.project) return false;
     const name = rel.split('/').pop() ?? rel;
-    const id = `chat:${dialogId}:${rel}`;
-    requestCompare({
-      id,
-      title: `${name} (this chat)`,
-      fileName: name,
-      before: versions.project ?? '',
-      after: versions.chat,
-    });
-    const found = at.snippet ? findSnippetLine(versions.chat, at.snippet) : null;
-    const target =
-      at.line ??
-      found ??
-      diffLines(splitLines(versions.project ?? '').lines, splitLines(versions.chat).lines)[0]
-        ?.origStart;
-    if (target !== undefined && activePath() === id)
-      setRevealRequest({ path: id, line: target, column: 1, length: 0, nonce: Date.now() });
+    await openComparison(
+      `chat:${dialogId}:${rel}`,
+      {
+        title: `${name} (this chat)`,
+        fileName: name,
+        before: versions.project ?? '',
+        after: versions.chat,
+      },
+      request
+    );
     return true;
   }
   /**
@@ -765,18 +779,21 @@ export default function App() {
    * folder it's in is on the server (U04). False when `path` isn't that
    * file, or the chat isn't remote.
    */
-  async function openRemoteContext(path: string): Promise<boolean> {
+  async function openRemoteContext(path: string, request: OpenInEditor): Promise<boolean> {
     const chat = chatStore.state.active;
     if (!chat?.place || !isLiveContextPath(path)) return false;
     const text = await remoteContextText(chat.id).catch(() => null);
     if (text === null) return false;
-    requestCompare({
-      id: `context:${chat.id}`,
-      title: `LIVE_CONTEXT.md (on ${hostName(chat.place.host, cloud.hosts)})`,
-      fileName: 'LIVE_CONTEXT.md',
-      before: text,
-      after: text,
-    });
+    await openComparison(
+      `context:${chat.id}`,
+      {
+        title: `LIVE_CONTEXT.md (on ${hostName(chat.place.host, cloud.hosts)})`,
+        fileName: 'LIVE_CONTEXT.md',
+        before: text,
+        after: text,
+      },
+      request
+    );
     return true;
   }
   /**
@@ -804,48 +821,11 @@ export default function App() {
   // "Show" on an agent question's notification.
   onCleanup(onShowChat(() => setSidebarTab('chat')));
   onCleanup(() => {
-    stopReveal();
     stopWritten();
     stopDeleted();
-    stopOpenRequests();
     stopAddToChat();
     stopAgentEdits();
   });
-
-  async function openPathAtLine(path: string, line: number) {
-    await openPath(path);
-    // The tab may already be open under the same path; openFile activated it.
-    if (activePath() !== path) return;
-    setRevealRequest({ path, line, column: 1, length: 0, nonce: Date.now() });
-  }
-
-  /** Opens a search result with the match selected. */
-  async function openSearchMatch(target: SearchMatchTarget) {
-    const root = rootPath();
-    if (!root) return;
-    const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/';
-    const relative = target.relativePath.replace(/[\\/]/g, sep);
-    const path = `${root.replace(/[\\/]+$/, '')}${sep}${relative}`;
-    const name = relative.split(sep).pop() ?? relative;
-
-    const row: TreeRow = tree.files().find((r) => r.path === path) ?? {
-      id: path,
-      path,
-      name,
-      isDir: false,
-      depth: 0,
-    };
-    await openFile(row);
-    if (activePath() === path) {
-      setRevealRequest({
-        path,
-        line: target.line,
-        column: target.column,
-        length: target.length,
-        nonce: Date.now(),
-      });
-    }
-  }
 
   function updateContent(path: string, content: string) {
     setOpenFiles((prev) =>
@@ -1038,26 +1018,6 @@ export default function App() {
     return base;
   }
 
-  /** The line of the first change from `base` in the file (an open tab's text, else the disk's). */
-  async function firstChangeLine(abs: string, base: string | null): Promise<number | undefined> {
-    const current =
-      openFiles().find((f) => f.path === abs)?.content ??
-      (await readFileContent(abs).catch(() => null));
-    if (current === null) return undefined;
-    return diffLines(splitLines(base ?? '').lines, splitLines(current).lines)[0]?.origStart;
-  }
-
-  /*
-   * From the Git tab: open a changed file with its changes marked against
-   * git (lib/gitMarks.ts), centered on the first change.
-   */
-  async function openFromGit(abs: string, file: string) {
-    const base = await loadGitBase(abs, file);
-    const first = base !== undefined ? await firstChangeLine(abs, base) : undefined;
-    if (first !== undefined) await openPathAtLine(abs, first);
-    else await openPath(abs);
-  }
-
   /*
    * From the Git tab's stash list: open a stashed file's stashed content in
    * a read-only tab, with change marks against the stash's base commit —
@@ -1080,40 +1040,20 @@ export default function App() {
     }
     // Deleted in the stash: nothing to open.
     if (preview.content === null) return;
-    const virtualPath = `stash@${index}:${abs}`;
-    const existing = openFiles().find((f) => f.path === virtualPath);
-    if (existing) {
-      setActivePath(existing.path);
-      return;
-    }
     const shortName = file.split('/').pop() ?? file;
-    const stashFile: OpenFile = {
-      id: virtualPath,
-      path: virtualPath,
-      name: `${shortName} (stash@${index})`,
-      content: preview.content,
-      originalContent: preview.content,
-      dirty: false,
-      language: languageForFile(shortName),
-      readOnly: true,
-      stash: { index, file, message },
-    };
-    setGitBase(virtualPath, file, preview.base ?? '');
-    setOpenFiles((prev) => [...prev, stashFile]);
-    setActivePath(virtualPath);
-    const first = diffLines(
-      splitLines(preview.base ?? '').lines,
-      splitLines(preview.content).lines
-    )[0];
-    if (first) {
-      setRevealRequest({
-        path: virtualPath,
-        line: first.origStart,
-        column: 1,
-        length: 0,
-        nonce: Date.now(),
-      });
-    }
+    await openInEditor({
+      path: `stash@${index}:${abs}`,
+      focus: true,
+      marks: {
+        compare: {
+          title: `${shortName} (stash@${index})`,
+          fileName: file,
+          before: preview.base ?? '',
+          after: preview.content,
+          stash: { index, file, message },
+        },
+      },
+    });
   }
 
   /** Stash list changed (push/pop/drop): indices shift, so drop preview tabs. */
@@ -1151,41 +1091,20 @@ export default function App() {
     }
     // Deleted in the commit: nothing to open.
     if (preview.content === null) return;
-    const short = oid.slice(0, 7);
-    const virtualPath = `commit@${oid}:${abs}`;
-    const existing = openFiles().find((f) => f.path === virtualPath);
-    if (existing) {
-      setActivePath(existing.path);
-      return;
-    }
     const shortName = file.split('/').pop() ?? file;
-    const commitFile: OpenFile = {
-      id: virtualPath,
-      path: virtualPath,
-      name: `${shortName} (${short})`,
-      content: preview.content,
-      originalContent: preview.content,
-      dirty: false,
-      language: languageForFile(shortName),
-      readOnly: true,
-      commit: { oid, file, summary },
-    };
-    setGitBase(virtualPath, file, preview.base ?? '');
-    setOpenFiles((prev) => [...prev, commitFile]);
-    setActivePath(virtualPath);
-    const first = diffLines(
-      splitLines(preview.base ?? '').lines,
-      splitLines(preview.content).lines
-    )[0];
-    if (first) {
-      setRevealRequest({
-        path: virtualPath,
-        line: first.origStart,
-        column: 1,
-        length: 0,
-        nonce: Date.now(),
-      });
-    }
+    await openInEditor({
+      path: `commit@${oid}:${abs}`,
+      focus: true,
+      marks: {
+        compare: {
+          title: `${shortName} (${oid.slice(0, 7)})`,
+          fileName: file,
+          before: preview.base ?? '',
+          after: preview.content,
+          commit: { oid, file, summary },
+        },
+      },
+    });
   }
 
   /**
@@ -1254,6 +1173,7 @@ export default function App() {
     // Closed meanwhile (or never open): nothing more to do.
     if (!openFiles().some((f) => f.path === path)) return;
     clearGitBase(path);
+    dropReveal(path);
 
     const remaining = openFiles().filter((f) => f.path !== path);
     setOpenFiles(remaining);
@@ -1918,7 +1838,7 @@ export default function App() {
     if (!row || row.loading) return;
 
     // Path is now in the tree → open it and clear pending
-    openFile(row);
+    void openInEditor({ path: row.path, focus: true });
     setPendingOpenPath(null);
   });
 
@@ -2095,11 +2015,7 @@ export default function App() {
               </Show>
             }
           >
-            <SearchPanel
-              rootPath={rootPath}
-              onOpenMatch={(target) => void openSearchMatch(target)}
-              onActiveChange={setSearchActive}
-            />
+            <SearchPanel rootPath={rootPath} onActiveChange={setSearchActive} />
           </Show>
           <Show when={rootPath() && !searchActive()}>
             <FileTree
@@ -2109,7 +2025,7 @@ export default function App() {
               activePath={activePath}
               selectedIds={selectedFileIds}
               onToggle={tree.toggle}
-              onOpenFile={openFile}
+              onOpenFile={(row) => void openInEditor({ path: row.path, focus: true })}
               onDrop={(ids, destDir) => void handleTreeDrop(ids, destDir)}
               onSelect={handleFileTreeSelect}
               onClearSelection={handleFileTreeClearSelection}
@@ -2174,7 +2090,7 @@ export default function App() {
             <Match when={!!rootPath()}>
               <GitPanel
                 projectPath={rootPath()!}
-                onOpenFile={(abs, file) => void openFromGit(abs, file)}
+                onOpenFile={(abs) => void openInEditor({ path: abs, focus: true, marks: 'git' })}
                 onOpenStashFile={(abs, file, index, message) =>
                   void openFromStash(abs, file, index, message)
                 }
@@ -2241,8 +2157,6 @@ export default function App() {
                 onChange={(value) => updateContent(path, value)}
                 onSave={() => saveActiveFile()}
                 onCursorChange={setCursorInfo}
-                reveal={revealRequest}
-                onRevealed={() => setRevealRequest(null)}
                 readOnly={() => openFiles().find((f) => f.path === path)?.readOnly ?? false}
                 readOnlyMessage={
                   openFiles().find((f) => f.path === path)?.commit

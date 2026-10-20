@@ -24,7 +24,7 @@ import { createEffect, createResource, createSignal, For, Index, Show, untrack }
 import { confirmDialog } from './ConfirmDialog';
 import { ConflictResolver, forgetConflictChoices, type ConflictSource } from './ConflictResolver';
 import type { GitOperation } from '../types';
-import { requestCompare } from '../lib/editorBridge';
+import { openInEditor } from '../lib/openInEditor';
 import { notify } from '../lib/notifications';
 import { plural } from '../lib/textUtils';
 import {
@@ -241,12 +241,17 @@ export default function IsolationBar(props: Props) {
     const versions = await overlayFile(props.dialogId, file.path).catch(() => null);
     if (!versions) return;
     const name = file.path.split('/').pop() ?? file.path;
-    requestCompare({
-      id: `chat:${props.dialogId}:${file.path}`,
-      title: `${name} (this chat)`,
-      fileName: name,
-      before: versions.project ?? '',
-      after: versions.chat ?? '',
+    await openInEditor({
+      path: `chat:${props.dialogId}:${file.path}`,
+      focus: true,
+      marks: {
+        compare: {
+          title: `${name} (this chat)`,
+          fileName: name,
+          before: versions.project ?? '',
+          after: versions.chat ?? '',
+        },
+      },
     });
   }
 
