@@ -2,10 +2,13 @@
 //
 // The command sandbox at app start (lib/sandbox.ts), in the background. On
 // Linux the agent's commands run under bubblewrap, on macOS under Seatbelt,
-// and are refused without it, so when it's missing or doesn't work one
-// notification says so, offering to install bubblewrap (the system asks for
-// permission). "Don't ask again" stops the notification; the commands stay
-// refused until it works.
+// and are refused without it. Where it's missing or blocked and the app can
+// fix that (bubblewrap's package, or the AppArmor profile Ubuntu 23.10+
+// needs), it sets it up by itself: the system asks for administrator
+// permission, nothing to click first. Only if that fails, or the permission
+// is refused, does a notification offer it again. The .deb and .rpm do the
+// same while installing, so this is for an AppImage or an older install.
+// "Don't ask again" stops it; the commands stay refused until it works.
 import { loadPrefs, savePrefs } from './localPrefs';
 import { notify } from './notifications';
 import { installSandbox, sandboxStatus, type SandboxStatus } from './sandbox';
@@ -26,13 +29,30 @@ const dontAsk = {
   run: () => savePrefs<Prefs>(PREFS_KEY, { quiet: true }),
 };
 
-async function install(program: string) {
+/**
+ * What the app does at start: nothing where the sandbox works (or isn't
+ * required, or the user said not to ask), sets it up by itself where it
+ * can (the system asks for permission, nothing to click first), and
+ * otherwise says what's missing.
+ */
+export function startupStep(status: SandboxStatus, quiet: boolean): 'none' | 'setUp' | 'tell' {
+  if (!status.required || status.working || quiet) return 'none';
+  return status.canInstall ? 'setUp' : 'tell';
+}
+
+/** Sets the sandbox up; a failure, or the permission refused, offers it again. */
+async function setUp(program: string) {
   notify({
     id: NOTE,
-    title: `Installing ${program}…`,
-    message: 'The system will ask for permission.',
+    title: `Setting up ${program} for the agent’s commands…`,
+    message: 'The system asks for administrator permission.',
     progress: 'busy',
   });
+  const again = {
+    label: 'Try again',
+    primary: true,
+    run: () => void setUp(program),
+  };
   try {
     const outcome = await installSandbox();
     if (outcome.status === 'installed') {
@@ -47,21 +67,21 @@ async function install(program: string) {
       notify({
         id: NOTE,
         kind: 'warning',
-        title: outcome.status === 'manual' ? 'Install it yourself' : 'Restart needed',
+        title: outcome.status === 'manual' ? 'Set it up yourself' : 'Restart needed',
         message:
           outcome.status === 'manual' && outcome.command
             ? `${outcome.message} ${outcome.command}`
             : outcome.message,
-        actions: [notNow],
+        actions: [notNow, dontAsk],
       });
     }
   } catch (err) {
     notify({
       id: NOTE,
       kind: 'error',
-      title: 'Installing failed',
-      message: String(err),
-      actions: [notNow],
+      title: `${program} couldn’t be set up`,
+      message: `${String(err)} Until it is, the agent’s commands are refused.`,
+      actions: [again, notNow, dontAsk],
     });
   }
 }
@@ -79,24 +99,18 @@ export async function startSandbox() {
   } catch {
     return; // not supported here
   }
-  if (!status.required || status.working) return;
-  if (loadPrefs<Prefs>(PREFS_KEY).quiet === true) return;
-  const detail = status.detail ? `${status.detail} ` : '';
-  notify({
-    id: NOTE,
-    kind: 'warning',
-    title: `The agent’s commands need ${status.program}`,
-    message: `${detail}The commands the agent runs are sandboxed with it, and refused without it.${status.canInstall ? ' Installing asks for administrator permission.' : ''}`,
-    actions: status.canInstall
-      ? [
-          {
-            label: `Install ${status.program}`,
-            primary: true,
-            run: () => void install(status.program),
-          },
-          notNow,
-          dontAsk,
-        ]
-      : [notNow, dontAsk],
-  });
+  switch (startupStep(status, loadPrefs<Prefs>(PREFS_KEY).quiet === true)) {
+    case 'none':
+      return;
+    case 'setUp':
+      return setUp(status.program);
+    case 'tell':
+      notify({
+        id: NOTE,
+        kind: 'warning',
+        title: `The agent’s commands need ${status.program}`,
+        message: `${status.detail ? `${status.detail} ` : ''}The commands the agent runs are sandboxed with it, and refused without it.`,
+        actions: [notNow, dontAsk],
+      });
+  }
 }
