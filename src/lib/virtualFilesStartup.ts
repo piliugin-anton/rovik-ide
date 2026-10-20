@@ -11,6 +11,7 @@ import { createSignal } from 'solid-js';
 import { loadPrefs, savePrefs } from './localPrefs';
 import { notify } from './notifications';
 import { installVfsDriver, mountVfs, vfsStatus, type MountProblem } from './virtualFiles';
+import { onWindows } from './wsl';
 
 const PREFS_KEY = 'rovik.virtualFiles';
 const NOTE = 'vfs-setup';
@@ -107,7 +108,9 @@ let started = false;
 
 /** Once per app run, in the background. */
 export async function startVirtualFiles() {
-  if (started) return;
+  // Windows has no driver to offer: the agent works in WSL, whose daemon
+  // serves the virtual files (wslStartup.ts sees to WSL).
+  if (started || onWindows()) return;
   started = true;
   let status;
   try {

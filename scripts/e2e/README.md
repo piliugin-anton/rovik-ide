@@ -62,9 +62,9 @@ msedgedriver attaches through the debugging port it asks WebView2 for
 ignores (Runtime 150 on): run it as a user, not as administrator (CI, whose
 runner is elevated: `gsudo --integrity Medium`). `webview2-probe.ps1 -App
 <exe>` shows whether the port opens, and what WebView2 was started with.
-Where it doesn't, the bridge (below) drives a Windows build too. Chats are
-isolated only with WinFsp installed; without it the agent's run says so and
-works in the project itself, which the run notes.
+Where it doesn't, the bridge (below) drives a Windows build too. On Windows
+a chat of a project runs in WSL, which the CI runner can't run (no nested
+virtualization): the scenarios that start one there need a real machine.
 
 ## macOS
 

@@ -238,10 +238,23 @@ impl Remote {
     /// (it goes with its lead's), one at work here already, which
     /// finishes here. A move that fails is the start's failure, as the
     /// chat here would refuse its commands; what the user does about it
-    /// is in Settings → This computer → WSL.
+    /// is in Settings → This computer → WSL. On Windows without WSL set up,
+    /// such a chat doesn't start: it would run un-isolated, its commands
+    /// refused.
     pub(super) async fn go_home(&self, dialog_id: &str) -> Result<(), Fail> {
         let Some(home) = self.home() else {
-            return Ok(());
+            // Windows isolates no chat of its own (no overlays), and the
+            // app runs no command here (`confine::require`): a chat of a
+            // project waits for WSL.
+            let why = cfg!(windows)
+                .then(rovik_core::overlay::confine::refusal)
+                .flatten();
+            return match why {
+                Some(why) if self.goes_home(dialog_id).await.map_err(internal)? => {
+                    Err(Fail::new(FailCode::Unreachable, why))
+                }
+                _ => Ok(()),
+            };
         };
         if !self.goes_home(dialog_id).await.map_err(internal)? {
             return Ok(());

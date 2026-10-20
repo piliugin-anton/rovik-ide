@@ -201,9 +201,9 @@ export default function Downloads(props: { visitor: Visitor | null; release: Rel
             </dd>
             <dt>Virtual files</dt>
             <dd>
-              On its first start Rovik may offer to install a virtual-files driver (FUSE, macFUSE or
-              WinFsp). It’s optional: it makes isolated chats faster and lets the agent manage its
-              own context.
+              On its first start Rovik may offer to install a virtual-files driver (FUSE or
+              macFUSE). It’s optional: it makes isolated chats faster and lets the agent manage its
+              own context. On Windows it offers WSL instead, which the agent works in.
             </dd>
           </dl>
         </details>

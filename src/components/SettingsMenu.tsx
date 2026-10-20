@@ -159,13 +159,16 @@ export default function SettingsMenu(props: SettingsMenuProps) {
           about="How many builds, tests and type checks run at once, from all chats and the terminal, so the machine stays responsive."
           state={workload() ? workloadSummary(workload()!) : undefined}
         />
-        <Item
-          page="vfs"
-          label="Virtual files"
-          about="The filesystem driver that lets each chat work on its own copy of your changes, and the agent manage its own context."
-          state={vfsLine()?.text}
-          warning={vfsLine()?.warning}
-        />
+        {/* On Windows, WSL serves them. */}
+        <Show when={!onWindows()}>
+          <Item
+            page="vfs"
+            label="Virtual files"
+            about="The filesystem driver that lets each chat work on its own copy of your changes, and the agent manage its own context."
+            state={vfsLine()?.text}
+            warning={vfsLine()?.warning}
+          />
+        </Show>
         <Show when={onWindows()}>
           <Item
             page="wsl"

@@ -77,7 +77,7 @@ jobs:
           fetch-depth: 0
       # The app's own crate builds against WebKitGTK; fuse3 gives the
       # overlay tests a mount (they skip themselves without one, as they do
-      # on macOS without macFUSE and on Windows without WinFsp), and
+      # on macOS without macFUSE; Windows has no driver), and
       # bubblewrap confines an isolated chat's commands, as the app's
       # packages recommend.
       - name: Install the system's packages

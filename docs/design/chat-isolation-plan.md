@@ -968,6 +968,15 @@ once; they touch different files. Everything else is sequential.
     command check also reads commands as cmd.exe splits them
     (`permissions::Shell`), so a second command can't hide behind a `'`
     or a `\` the POSIX reading took for quoting.
+  - Windows has no sandbox and, since WSL became required, no WinFsp: a
+    chat of a project runs in WSL, where the daemon gives it a worktree and
+    bubblewrap, and the app runs no command of the agent's on Windows
+    (`confine::require`). Without WSL set up such a chat doesn't start; a
+    chat without a project runs here, un-isolated, without commands. The
+    `winfsp` crates, their delay-load build hooks and the LLVM build
+    prerequisite went with the driver; WSL's results land through the
+    overlay store on disk, which needs no mount, and a chat moved out of
+    WSL lands its changes rather than keeping them in a view.
   - Settings → Builds & checks sets how many heavy commands run at once:
     Auto (one, or two on a big machine with room) or a fixed number from
     1 to 8, kept in the app's data folder (`workload-settings.json`) and

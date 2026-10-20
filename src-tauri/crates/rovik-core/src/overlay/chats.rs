@@ -7,9 +7,10 @@
 //! mounted at a short path of its own (`$XDG_RUNTIME_DIR/rovik-ide/chats/…`
 //! on Linux), so commands can use it unquoted.
 //!
-//! Isolation needs the virtual-files driver (FUSE, macFUSE or WinFsp). If
-//! it can't mount, the chat works in the project directly, as before
-//! isolation, and the run says so.
+//! Isolation needs the virtual-files driver (FUSE or macFUSE). If it can't
+//! mount, the chat works in the project directly, as before isolation, and
+//! the run says so. Windows has none: a chat of a project runs in WSL
+//! (the client's `Remote::go_home`), whose daemon gives it a worktree.
 
 use super::fs::{OverlayChange, OverlayFs, DEFAULT_LIMIT};
 // The markers put in a chat's files for it to resolve.

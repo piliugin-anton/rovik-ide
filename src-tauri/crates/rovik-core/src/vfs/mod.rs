@@ -2,8 +2,8 @@
 //! every other program.
 //!
 //! The app writes a file into [`VirtualFs`]; the volume is mounted through
-//! the OS's user-space filesystem driver (FUSE on Linux, macFUSE on macOS,
-//! WinFsp on Windows), so a command the AI agent runs can `cat`, `grep`,
+//! the OS's user-space filesystem driver (FUSE on Linux, macFUSE on macOS),
+//! so a command the AI agent runs can `cat`, `grep`,
 //! edit, `chmod +x` and execute it through ordinary system calls. Changes
 //! those commands make are visible to the app the same way.
 //!
@@ -37,8 +37,6 @@ pub mod store;
 mod fuse;
 #[cfg(target_os = "macos")]
 mod macfuse;
-#[cfg(windows)]
-mod winfsp_fs;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -64,12 +62,10 @@ const EVENT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50)
 /// A mounted volume; unmounted when dropped (or by `unmount`).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type Mount = fuse::FuseMount;
-#[cfg(windows)]
-pub type Mount = winfsp_fs::WinFspMount;
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub struct Mount;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl Mount {
     pub fn unmount(self) -> Result<(), String> {
         Ok(())
@@ -117,21 +113,10 @@ pub fn platform_mount(
     {
         fuse::mount(fs, requested)
     }
-    #[cfg(windows)]
-    {
-        let at = requested
-            .map(Path::to_path_buf)
-            .unwrap_or_else(default_mountpoint);
-        winfsp_fs::mount(fs, &at)
-            .map(|m| (m, at))
-            .map_err(MountProblem::failed)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (fs, requested);
-        Err(MountProblem::failed(
-            "virtual files aren't supported on this system",
-        ))
+        Err(MountProblem::failed(driver::UNSUPPORTED))
     }
 }
 
@@ -163,44 +148,10 @@ pub fn default_mountpoint() -> PathBuf {
     }
 }
 
-/// `path` canonicalized, as far as the file system it's on allows. On
-/// Windows a WinFsp volume mounted on a folder (a chat's view) can't be:
-/// asking for a path's final name there fails (ERROR_UNRECOGNIZED_VOLUME),
-/// and every agent tool in an isolated chat failed with it. Such a path is
-/// the folder the volume is mounted on, canonicalized, then the rest as
-/// written: that file system has no links of its own to resolve.
+/// `path` canonicalized: the one spelling the agent's tools compare paths
+/// by.
 pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
-    canonical_with(
-        path,
-        |p| p.canonicalize(),
-        |e| cfg!(windows) && e.raw_os_error() == Some(1005),
-    )
-}
-
-fn canonical_with(
-    path: &Path,
-    canonicalize: impl Fn(&Path) -> std::io::Result<PathBuf>,
-    unrecognized_volume: impl Fn(&std::io::Error) -> bool,
-) -> std::io::Result<PathBuf> {
-    let error = match canonicalize(path) {
-        Err(e) if unrecognized_volume(&e) => e,
-        done => return done,
-    };
-    let absolute = std::path::absolute(path)?;
-    let mut rest = Vec::new();
-    let mut at = absolute.as_path();
-    while let (Some(name), Some(parent)) = (at.file_name(), at.parent()) {
-        rest.push(name);
-        match canonicalize(parent) {
-            Ok(mut base) => {
-                base.extend(rest.iter().rev());
-                return Ok(base);
-            }
-            Err(e) if unrecognized_volume(&e) => at = parent,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(error)
+    path.canonicalize()
 }
 
 struct Mounted {
@@ -729,38 +680,6 @@ pub async fn vfs_remove(state: &VfsState, path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_path_on_a_folder_mounted_volume_is_canonical_up_to_its_folder() {
-        // As on Windows: the volume mounted on <data>/chats/c1 can't be
-        // canonicalized; the folders it's mounted in can (here, <data> is
-        // really <disk>). Both absolute where the test runs.
-        let (data, disk) = if cfg!(windows) {
-            (Path::new(r"C:\data"), Path::new(r"C:\mnt\disk"))
-        } else {
-            (Path::new("/data"), Path::new("/mnt/disk"))
-        };
-        let volume = data.join("chats").join("c1");
-        let unrecognized = || std::io::Error::from_raw_os_error(1005);
-        let canonicalize = |p: &Path| {
-            if p.starts_with(&volume) {
-                Err(unrecognized())
-            } else {
-                Ok(disk.join(p.strip_prefix(data).unwrap()))
-            }
-        };
-        let is = |e: &std::io::Error| e.raw_os_error() == Some(1005);
-        let canonical = |p: &Path| canonical_with(p, canonicalize, is).unwrap();
-        assert_eq!(
-            canonical(&volume.join("src").join("main.ts")),
-            disk.join("chats").join("c1").join("src").join("main.ts")
-        );
-        assert_eq!(canonical(&volume), disk.join("chats").join("c1"));
-        assert_eq!(canonical(&data.join("project")), disk.join("project"));
-        // Any other error is the error.
-        let missing = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert!(canonical_with(&data.join("x"), missing, is).is_err());
-    }
 
     #[test]
     fn clean_keeps_paths_inside_the_volume() {

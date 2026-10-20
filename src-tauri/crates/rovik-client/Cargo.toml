@@ -45,7 +45,3 @@ rovik-core = { workspace = true, features = ["testing"] }
 rusqlite.workspace = true
 # A release key and files it signed (release::fixture).
 rovik-protocol = { workspace = true, features = ["testing"] }
-
-# winfsp.dll is delay-loaded in this crate's test binaries too (build.rs).
-[target.'cfg(windows)'.build-dependencies]
-winfsp = { version = "0.13", default-features = false, features = ["delayload"] }

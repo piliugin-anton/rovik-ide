@@ -408,7 +408,8 @@ export default function ContextControls(props: {
           </p>
           <p>
             Install or enable the driver in Settings → Virtual files (FUSE on Linux, macFUSE on
-            macOS, WinFsp on Windows). Until then this chat uses Trimming.
+            macOS; on Windows, a chat of a project runs in WSL, which has them). Until then this
+            chat uses Trimming.
           </p>
           <div class="context-unavailable-actions">
             <button type="button" class="link-button" onClick={props.onOpenVirtualFiles}>

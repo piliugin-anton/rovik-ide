@@ -156,8 +156,7 @@ Built packages end up in `src-tauri/target/release/bundle/`.
 2. Install [Rust](https://rustup.rs) with the default
    `x86_64-pc-windows-msvc` toolchain (MinGW isn't supported).
 3. Install [Node.js](https://nodejs.org) 18 or newer.
-4. Install LLVM: `winget install LLVM.LLVM`
-5. From the project folder, run the same `npm` commands as on macOS.
+4. From the project folder, run the same `npm` commands as on macOS.
 
 WebView2 is already part of Windows 10 and 11.
 
@@ -167,7 +166,8 @@ More details on prerequisites:
 ### Optional: virtual files driver
 
 Some features work best with a virtual-file driver: FUSE on Linux, macFUSE
-on macOS, WinFsp on Windows. The app runs without one. When it's missing,
+on macOS. On Windows there's none to install: the agent works in WSL
+(Settings → This computer → WSL), which has FUSE. The app runs without one. When it's missing,
 the app offers to install it for you; you can also do it later in
 **Settings → Virtual files**. The driver is required for the agent's
 self-managed context (CLM mode), and it makes the agent's shell commands
@@ -502,7 +502,7 @@ src-tauri/               backend (Rust), a Cargo workspace
     chat_db/             chat storage (SQLite)
     clm/                 agent-managed context (CLM mode)
     overlay/             each chat's private view of the project
-    vfs/                 virtual files (FUSE / macFUSE / WinFsp)
+    vfs/                 virtual files (FUSE / macFUSE)
     workload/            queue for heavy commands (builds, tests)
     merge.rs             three-way merge (no git program needed)
     code_search.rs       project search
@@ -647,7 +647,7 @@ like real files to every other program. Commands the agent runs can `cat`,
 | ------- | ------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Linux   | FUSE 3  | the distro's `fuse3` package, via polkit (`pkexec`) | Mounted with `fusermount3`; libfuse isn't needed to build or run.                                                                                                                                  |
 | macOS   | macFUSE | the official `.dmg` (signature checked)             | On macOS 15.4+ with macFUSE 5.1+ it uses FSKit (no kernel extension; enable it once in System Settings), mounted at `/Volumes/RovikVirtualFiles`. Older systems need the kernel extension allowed. |
-| Windows | WinFsp  | the official `.msi` (signature checked)             | `winfsp.dll` is loaded on first use. Building needs LLVM (`libclang`) for the bindings.                                                                                                            |
+| Windows | none    | —                                                   | The agent works in WSL, whose daemon mounts them with FUSE. A chat of a project runs there; without WSL it doesn't start.                                                                          |
 
 The app starts without the driver; only mounting needs it. At startup it
 checks in the background and either mounts the volume or offers once to
@@ -687,7 +687,7 @@ Details:
   revisions per file and 256 MiB in total are kept, oldest dropped first;
   files over 32 MiB aren't versioned (`set_history_limits`).
 - Files: `store.rs` (the in-memory filesystem with POSIX semantics),
-  `fuse.rs` / `macfuse.rs` / `winfsp_fs.rs` (OS drivers), `problem.rs`
+  `fuse.rs` / `macfuse.rs` (OS drivers), `problem.rs`
   (mount errors), `events.rs`, `history.rs`, `driver.rs` (finding and
   installing the driver).
 
