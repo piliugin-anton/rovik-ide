@@ -42,9 +42,12 @@ pub struct Probe {
     pub chrome_headless: bool,
     /// Unprivileged user namespaces: Chrome's sandbox needs them.
     pub user_namespaces: bool,
-    /// `bwrap`, which sandboxes the agent's commands; without it they're
-    /// refused. Rovik's install adds it.
+    /// `bwrap`, which sandboxes the agent's commands. Rovik's install adds
+    /// it.
     pub bwrap: Option<String>,
+    /// Whether the kernel's Landlock can sandbox them instead, more lightly,
+    /// where bubblewrap isn't there: None where the probe can't tell.
+    pub landlock: Option<bool>,
     /// `/dev/fuse`, and the helper that mounts without root: the virtual
     /// files need both.
     pub fuse: bool,
@@ -105,6 +108,13 @@ impl Probe {
                 "chrome_headless" => probe.chrome_headless = yes,
                 "userns" => probe.user_namespaces = yes,
                 "bwrap" => probe.bwrap = some(),
+                "landlock" => {
+                    probe.landlock = match value {
+                        "yes" => Some(true),
+                        "no" => Some(false),
+                        _ => None,
+                    }
+                }
                 "fuse" => probe.fuse = yes,
                 "fusermount" => probe.fusermount = some(),
                 "systemd" => probe.systemd = yes,
@@ -288,12 +298,25 @@ impl Probe {
         if let Some(why) = virtual_files {
             missing.push(format!("{why}, so CLM chats fall back to trimming"));
         }
-        // bubblewrap isn't optional: the agent's commands are refused
-        // without it.
-        let required = self.bwrap.is_none().then_some(
-            "bubblewrap isn't installed, so the agent's commands are refused there until it is \
-             (Rovik's install adds it).",
-        );
+        // bubblewrap isn't optional: without it the agent's commands run
+        // under Landlock, a lighter sandbox, or where there's none, are
+        // refused.
+        let required = self.bwrap.is_none().then_some(match self.landlock {
+            Some(true) => {
+                "bubblewrap isn't installed, so the agent's commands run there under the kernel's \
+                 Landlock, a lighter sandbox (it doesn't hide the other processes), until it is \
+                 (Rovik's install adds it)."
+            }
+            Some(false) => {
+                "bubblewrap isn't installed, so the agent's commands are refused there until it is \
+                 (Rovik's install adds it)."
+            }
+            None => {
+                "bubblewrap isn't installed, so the agent's commands are refused there until it \
+                 is, unless the kernel's Landlock sandboxes them instead (Rovik's install adds \
+                 bubblewrap)."
+            }
+        });
         let optional = (!missing.is_empty()).then(|| format!("Optional: {}.", missing.join("; ")));
         match (required, optional) {
             (None, None) => Step::new(
@@ -639,10 +662,23 @@ socket=no
                 (Install, Warning),
             ]
         );
+        assert!(message(&probe, Isolation).contains("unless the kernel's Landlock"));
         assert!(message(&probe, Install).contains("there's no sudo"));
         assert!(message(&probe, Install).contains("someone with root"));
         assert!(message(&probe, Service).contains("No systemd"));
         assert!(message(&probe, Disk).contains("at least 1.0 GB"));
+    }
+
+    /// Without bubblewrap, the commands run under Landlock where the kernel
+    /// has it, and are refused where it hasn't.
+    #[test]
+    fn without_bubblewrap_landlock_or_nothing() {
+        let with = Probe::parse(&format!("{ALPINE}landlock=yes\n"));
+        assert_eq!(with.landlock, Some(true));
+        assert!(message(&with, Check::Isolation).contains("run there under the kernel's Landlock"));
+        let without = Probe::parse(&format!("{ALPINE}landlock=no\n"));
+        assert!(message(&without, Check::Isolation).contains("are refused there until it is"));
+        assert!(!message(&without, Check::Isolation).contains("Landlock"));
     }
 
     #[test]

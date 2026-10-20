@@ -169,9 +169,11 @@ what Rovik's folders take.
   capability, so they can't undo any of that. The installer adds
   bubblewrap from the distro's package and, where AppArmor restricts
   unprivileged user namespaces (Ubuntu 23.10 and later), the AppArmor
-  profile `rovik-bwrap`, which lets `/usr/bin/bwrap` make one; without
-  them the agent's commands are refused, which `rovik-agentd doctor` and
-  the app's connection test report. `admin bubblewrap` adds both again. A command that names `~/.rovik` still needs the user's approval.
+  profile `rovik-bwrap`, which lets `/usr/bin/bwrap` make one. Without
+  them the commands run under the kernel's Landlock (Linux 6.2 and later)
+  with the same folders, but seeing the other processes; with neither,
+  they're refused. `rovik-agentd doctor` and the app's connection test
+  report which. `admin bubblewrap` adds both again. A command that names `~/.rovik` still needs the user's approval.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
   read them, but root can. The app tells users: "Your API keys are stored in
   your account on this server, so chats there run while this computer is

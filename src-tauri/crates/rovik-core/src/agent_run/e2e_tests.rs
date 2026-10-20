@@ -787,12 +787,13 @@ async fn an_isolated_chat_changes_only_its_overlay() {
     h.start(request).await;
     assert_eq!(h.run_end().await, "done");
     let messages = h.messages().await;
-    // Commands are confined where bwrap or the app may make a namespace
-    // (Ubuntu 24.04's AppArmor forbids the app's own, and bwrap may not be
-    // installed): found out once, by the run's first command, and kept.
-    let confined = crate::overlay::confine::available(&crate::overlay::confine::Confine::hiding(
-        h.project.clone(),
-    ));
+    // The project's path shows the chat's view where the sandbox can
+    // redirect it (bubblewrap); under Landlock, or with no sandbox, the
+    // text check refuses the path instead.
+    let scratch = h.project.join(".redirect-probe");
+    let confined = crate::overlay::confine::available(
+        &crate::overlay::confine::Confine::redirecting(scratch, h.project.clone()),
+    );
     assert!(
         result_of(&messages, "b1").content.contains("hello"),
         "{}",

@@ -22,7 +22,11 @@
 //! (`bwrap`), which also hides the other processes, ends whatever a
 //! command leaves behind when it exits, and drops every capability, so a
 //! command can't undo its sandbox; the app offers to install it
-//! ([`status`], [`install`]). macOS has Seatbelt (`sandbox-exec`), part of
+//! ([`status`], [`install`]). Where bubblewrap can't run (not installed,
+//! user namespaces forbidden), Linux falls back on Landlock, the kernel's
+//! own sandbox (used from Linux 6.2), which needs nothing installed: it enforces the
+//! policy but for the redirect, and doesn't hide the other processes
+//! (confine/landlock.rs). macOS has Seatbelt (`sandbox-exec`), part of
 //! the system, which can't redirect a path: an isolated chat's commands
 //! there see the project read-only instead of the chat's view at its path,
 //! and the callers keep their text check for that (chats.rs, server.rs). On
@@ -275,9 +279,16 @@ trait Mechanism: Sync {
     fn command(&self, c: &Confine, program: &str, args: &[&str]) -> Command;
 
     /// Whether it can point the project's path at the view. A mechanism
-    /// that only hides (macOS's Seatbelt) says false.
+    /// that only hides (macOS's Seatbelt, Landlock) says false.
     fn can_redirect(&self) -> bool;
+
+    /// Whether the command sees no other process, and what it leaves
+    /// running ends with it (bubblewrap's pid namespace).
+    fn hides_processes(&self) -> bool;
 }
+
+#[cfg(target_os = "linux")]
+mod landlock;
 
 #[cfg(target_os = "linux")]
 use linux as os;
@@ -375,6 +386,26 @@ pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
     }
 }
 
+/// Whether the commands here see no other process, and what one leaves
+/// running ends with it: under bubblewrap. Not under Seatbelt or Landlock,
+/// nor without a sandbox.
+pub fn hides_processes() -> bool {
+    chosen().is_some_and(|m| m.hides_processes())
+}
+
+/// Whether the kernel's Landlock confines commands here: Linux's fallback
+/// where bubblewrap can't (confine/landlock.rs). False off Linux.
+pub fn landlock_works() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        works(&landlock::Landlock, &probe_policy())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// The policy for a command with no overlay (a server worktree, a chat that
 /// works in the project directly) — where it can be enforced here.
 pub fn hiding_if_available(root: &Path) -> Option<Confine> {
@@ -420,6 +451,9 @@ pub struct SandboxStatus {
     pub program: &'static str,
     /// It's there and confines commands.
     pub working: bool,
+    /// What confines them instead, while `program` can't: "Landlock" on
+    /// Linux, a lighter sandbox (`detail` says what it doesn't do).
+    pub fallback: Option<&'static str>,
     /// What's missing or wrong, for the user.
     pub detail: Option<String>,
     /// The app can install it (otherwise `detail` says how).
@@ -451,7 +485,10 @@ pub async fn install() -> Result<InstallOutcome, String> {
 /// host installer adds. Where AppArmor restricts unprivileged user
 /// namespaces (Ubuntu 23.10 and later) bwrap can't make its sandbox without
 /// a profile that lets it: the packages, the host installer and `install`
-/// here add `rovik-bwrap` (`distro::BWRAP_APPARMOR`).
+/// here add `rovik-bwrap` (`distro::BWRAP_APPARMOR`). Where it can't run,
+/// Landlock confines commands instead (confine/landlock.rs), without the
+/// redirect or the pid namespace; the status says so, and the app still
+/// offers bubblewrap.
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{Confine, InstallOutcome, Mechanism, SandboxStatus};
@@ -460,7 +497,7 @@ mod linux {
     use std::process::Command;
 
     pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
-    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[&Bwrap];
+    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[&Bwrap, &super::landlock::Landlock];
 
     const PACKAGE: Package = Package {
         name: "bubblewrap",
@@ -519,6 +556,10 @@ mod linux {
         fn can_redirect(&self) -> bool {
             true
         }
+
+        fn hides_processes(&self) -> bool {
+            true
+        }
     }
 
     /// `bwrap --version`'s first line.
@@ -546,22 +587,35 @@ mod linux {
     }
 
     pub(super) fn status() -> SandboxStatus {
-        let working = super::chosen().is_some();
+        let chosen = super::chosen().map(|m| m.name());
+        let full = chosen == Some(PROGRAM);
         let installed = distro::which(PROGRAM).is_some();
-        let detail = match (working, installed) {
+        let problem = match installed {
+            true => format!("bubblewrap is installed, but {}.", blocked()),
+            false => "bubblewrap isn't installed.".to_string(),
+        };
+        let fallback = (chosen == Some(super::landlock::NAME)).then_some("Landlock");
+        let detail = match (full, fallback) {
             (true, _) => None,
-            (false, true) => Some(format!("bubblewrap is installed, but {}.", blocked())),
-            (false, false) => Some("bubblewrap isn't installed.".to_string()),
+            (false, Some(_)) => Some(format!("{problem} {LANDLOCK_INSTEAD}")),
+            (false, None) => Some(problem),
         };
         SandboxStatus {
             required: true,
             program: PACKAGE.name,
-            working,
+            working: chosen.is_some(),
+            fallback,
             detail,
             can_install: (!installed && distro::install_script(&PACKAGE).is_some())
-                || (installed && !working && distro::userns_restricted()),
+                || (installed && !full && distro::userns_restricted()),
         }
     }
+
+    /// What the fallback does and doesn't, for the user.
+    const LANDLOCK_INSTEAD: &str = "The agent's commands run under Landlock instead, which \
+        keeps them out of your credentials and writing only in their own folders, but doesn't \
+        hide your other processes from them, and gives an isolated chat's commands the project \
+        read-only rather than the chat's own copy at its path.";
 
     /// Installs bubblewrap where it's missing, and where AppArmor restricts
     /// user namespaces adds the profile that lets it make its sandbox
@@ -593,7 +647,7 @@ mod linux {
         }
         super::forget();
         let now = status();
-        match now.working {
+        match now.working && now.fallback.is_none() {
             true => Ok(InstallOutcome::Installed { version: version() }),
             false => Ok(InstallOutcome::Manual {
                 message: now.detail.unwrap_or_default(),
@@ -616,6 +670,7 @@ mod linux {
         };
         format!(
             "Error: on Linux the agent's commands run in a bubblewrap sandbox, and {how}. \
+             (This kernel has no Landlock, version 3 or later (Linux 6.2), to fall back on.) \
              Then try again."
         )
     }
@@ -635,6 +690,7 @@ fn no_sandbox_yet() -> SandboxStatus {
         required: false,
         program: "",
         working: false,
+        fallback: None,
         detail: Some("There's no sandbox for the agent's commands on this system yet.".into()),
         can_install: false,
     }
@@ -756,6 +812,10 @@ mod macos {
         fn can_redirect(&self) -> bool {
             false
         }
+
+        fn hides_processes(&self) -> bool {
+            false
+        }
     }
 
     pub(super) fn missing() -> String {
@@ -771,6 +831,7 @@ mod macos {
             required: true,
             program: "Seatbelt",
             working,
+            fallback: None,
             detail: (!working).then(missing),
             can_install: false,
         }
@@ -812,6 +873,7 @@ mod windows {
             required: true,
             program: "WSL",
             working: false,
+            fallback: None,
             detail: Some(MISSING.into()),
             can_install: false,
         }
@@ -1266,22 +1328,24 @@ mod tests {
         assert!(!status().working);
     }
 
-    /// Linux has one mechanism, bubblewrap, and the status says whether it
+    /// Linux prefers bubblewrap, then Landlock, and the status says which
     /// works here; a working sandbox refuses nothing.
     #[test]
-    fn bubblewrap_is_the_mechanism() {
+    fn bubblewrap_is_the_mechanism_and_landlock_its_fallback() {
         // Read as the process started: tests don't set the variable.
         if std::env::var_os("ROVIK_CONFINE_COMMANDS").is_none() {
             let names: Vec<&str> = candidates().iter().map(|m| m.name()).collect();
-            assert_eq!(names, ["bwrap"]);
+            assert_eq!(names, ["bwrap", "landlock"]);
         }
         let status = status();
         assert!(status.required);
         assert_eq!(status.program, "bubblewrap");
         assert_eq!(status.working, chosen().is_some());
         assert_eq!(refusal().is_none(), status.working || switched_off());
-        if !status.working {
-            assert!(status.detail.is_some());
-        }
+        let name = chosen().map(|m| m.name());
+        assert_eq!(status.fallback.is_some(), name == Some("landlock"));
+        assert_eq!(hides_processes(), name == Some("bwrap"));
+        // Anything but bubblewrap at work says what's missing.
+        assert_eq!(status.detail.is_none(), name == Some("bwrap"));
     }
 }

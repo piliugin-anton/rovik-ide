@@ -8,8 +8,9 @@
 //! bwrap can't make its sandbox without a profile that lets it: the one the
 //! app's packages add too (`rovik_core::distro::BWRAP_APPARMOR`) goes in
 //! with it. `install` and `admin upgrade` put both in place, and `admin
-//! bubblewrap` tries again. Without them, the daemon refuses the agent's
-//! commands.
+//! bubblewrap` tries again. Without them, the daemon confines the agent's
+//! commands with the kernel's Landlock, more lightly (no other process
+//! hidden), where the kernel has it, and refuses them where it hasn't.
 
 use super::packages::PackageManager;
 use super::{System, INSTALLED};
@@ -63,8 +64,12 @@ pub(super) fn ensure_or_say(sys: &System) {
 
 /// What's said when bubblewrap couldn't be installed.
 pub(super) fn not_installed(why: &str) -> String {
+    let meanwhile = match rovik_core::overlay::confine::landlock_works() {
+        true => "run on this server under the kernel's Landlock, a lighter sandbox,",
+        false => "are refused on this server",
+    };
     format!(
-        "{PACKAGE} isn't installed: {why}\nThe agent's commands are refused on this server \
-         until it is. To try again: sudo {INSTALLED} admin bubblewrap"
+        "{PACKAGE} isn't installed: {why}\nThe agent's commands {meanwhile} until it is. To try \
+         again: sudo {INSTALLED} admin bubblewrap"
     )
 }

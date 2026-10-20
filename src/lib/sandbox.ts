@@ -2,9 +2,10 @@
 //
 // The sandbox the agent's commands run in
 // (src-tauri/crates/rovik-core/src/overlay/confine.rs): bubblewrap on Linux,
-// which the app offers to install at start (lib/sandboxStartup.ts), and
-// Seatbelt on macOS, part of the system; required on both. Windows has none:
-// its chats' commands run in WSL.
+// which the app sets up at start (lib/sandboxStartup.ts), with the kernel's
+// Landlock as the fallback where it can't run; Seatbelt on macOS, part of
+// the system; required on both. Windows has none: its chats' commands run in
+// WSL.
 import { invoke } from '@tauri-apps/api/core';
 import type { InstallOutcome } from './virtualFiles';
 
@@ -15,6 +16,11 @@ export interface SandboxStatus {
   program: string;
   /** It's there and confines commands. */
   working: boolean;
+  /**
+   * What confines them instead while `program` can't: "Landlock" on Linux, a
+   * lighter sandbox (`detail` says what it doesn't do); null otherwise.
+   */
+  fallback: string | null;
   /** What's missing or wrong, for the user. */
   detail: string | null;
   /** The app can install it (otherwise `detail` says how). */

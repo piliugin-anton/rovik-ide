@@ -43,9 +43,26 @@ else
     say userns no
   fi
 fi
-# bubblewrap sandboxes the agent's commands, which are refused without it;
-# Rovik's install adds it.
+# bubblewrap sandboxes the agent's commands; Rovik's install adds it.
 say bwrap "$(command -v bwrap 2>/dev/null)"
+# Where it can't, the kernel's Landlock does, more lightly: Linux 6.2 or
+# later, with Landlock among its security modules (maybe, where the list
+# can't be read). Without either, the commands are refused.
+release=$(uname -r)
+major=${release%%.*}
+rest=${release#*.}
+minor=${rest%%[!0-9]*}
+recent=no
+if [ "${major:-0}" -gt 6 ] 2>/dev/null || { [ "${major:-0}" -eq 6 ] && [ "${minor:-0}" -ge 2 ]; } 2>/dev/null; then
+  recent=yes
+fi
+if [ "$recent" = no ]; then
+  say landlock no
+elif [ -r /sys/kernel/security/lsm ]; then
+  if grep -qw landlock /sys/kernel/security/lsm; then say landlock yes; else say landlock no; fi
+else
+  say landlock maybe
+fi
 if [ -e /dev/fuse ]; then say fuse yes; else say fuse no; fi
 say fusermount "$(command -v fusermount3 2>/dev/null || command -v fusermount 2>/dev/null)"
 if [ -d /run/systemd/system ]; then say systemd yes; else say systemd no; fi

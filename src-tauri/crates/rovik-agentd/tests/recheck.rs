@@ -115,8 +115,13 @@ async fn a_check_failing_on_the_merge_is_fixed_and_then_lands() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn after_two_rounds_of_changing_again_the_result_waits() {
-    // Each run of the checks waits for the test's go.
-    let go = std::env::temp_dir().join(format!("recheck-go-{}", std::process::id()));
+    // Each run of the checks waits for the test's go: in a folder of its
+    // own, as the temporary folder holds the daemon's (hidden from the
+    // checks), and under Landlock a writable folder that holds a hidden one
+    // has its own entries writable, but nothing new made in it.
+    let gates = std::env::temp_dir().join(format!("recheck-gate-{}", std::process::id()));
+    std::fs::create_dir_all(&gates).unwrap();
+    let go = gates.join("go");
     let gate = format!(
         "while [ ! -f {go} ]; do sleep 0.05; done; rm -f {go}",
         go = go.display()
@@ -155,7 +160,7 @@ async fn after_two_rounds_of_changing_again_the_result_waits() {
         read(&setup.project.join("a.txt")),
         "1\n2\nTHREE\nFOUR\nFIVE\n"
     );
-    let _ = std::fs::remove_file(&go);
+    let _ = std::fs::remove_dir_all(&gates);
 }
 
 #[tokio::test(flavor = "multi_thread")]
