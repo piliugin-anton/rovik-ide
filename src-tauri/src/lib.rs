@@ -27,6 +27,8 @@ mod util;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The agent's commands run sandboxed or not at all: on Windows, in WSL.
+    rovik_core::overlay::confine::require();
     log_to_file();
     // First, while the process is still single-threaded.
     process::adopt_login_shell_path();

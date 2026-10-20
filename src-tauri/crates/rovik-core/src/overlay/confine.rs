@@ -96,6 +96,19 @@ impl Confine {
 /// (its own secret stores that aren't under `~/.rovik`).
 static PROTECTED: LazyLock<Mutex<Vec<PathBuf>>> = LazyLock::new(Default::default);
 
+/// Whether the app's commands may run only sandboxed: set by the app at its
+/// start (`require`). On Linux they may only ever run so; on Windows, which
+/// has no sandbox of its own, this is what keeps them in WSL.
+static REQUIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The app's commands run sandboxed or not at all, on every system: where
+/// there's no sandbox here (Windows), none of them runs here. The desktop
+/// app calls it at start; the library's own callers (tests, tools) run
+/// commands as the system allows.
+pub fn require() {
+    REQUIRED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Registers directories to hide from every chat's commands, in addition to
 /// the built-in list. The app calls it at start with its own secret stores;
 /// idempotent.
@@ -316,17 +329,26 @@ pub fn hiding_if_available(root: &Path) -> Option<Confine> {
 }
 
 /// Why no command of the agent's may run here, if none may: on Linux the
-/// sandbox is required, and its program is missing or can't make one; on
-/// Windows commands run in the computer's Linux side (WSL), never here.
-/// None where the sandbox works, where it's turned off, and on systems
-/// without a mechanism yet (their text checks apply).
+/// sandbox is required, and its program is missing or can't make one; in
+/// the Windows app (`require`) commands run in the computer's Linux side
+/// (WSL), never here. None where the sandbox works, where it's turned off,
+/// and on systems without a mechanism yet (their text checks apply).
 pub fn refusal() -> Option<String> {
+    refusal_if(REQUIRED.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// `refusal`, the app having required the sandbox (`required`) or not.
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn refusal_if(required: bool) -> Option<String> {
+    if switched_off() {
+        return None;
+    }
     #[cfg(target_os = "linux")]
-    if !switched_off() && chosen().is_none() {
+    if chosen().is_none() {
         return Some(linux::missing());
     }
     #[cfg(target_os = "windows")]
-    if !switched_off() {
+    if required {
         return Some(windows::MISSING.into());
     }
     None
@@ -805,6 +827,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&registered);
         assert!(writable_dirs(&std::env::temp_dir())
             .contains(&std::env::temp_dir().canonicalize().unwrap()));
+    }
+
+    /// Windows has no sandbox: the app, which requires one, runs no command
+    /// here (its chats' commands run in WSL); a caller that doesn't require
+    /// it runs them as before.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_app_runs_no_command_here() {
+        if std::env::var_os("ROVIK_CONFINE_COMMANDS").is_some() {
+            return;
+        }
+        let why = refusal_if(true).unwrap();
+        assert!(why.contains("Settings → This computer → WSL"), "{why}");
+        assert_eq!(refusal_if(false), None);
+        assert!(status().required);
+        assert!(!status().working);
     }
 
     /// Linux has one mechanism, bubblewrap, and the status says whether it
