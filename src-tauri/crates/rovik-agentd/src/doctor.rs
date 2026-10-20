@@ -153,13 +153,12 @@ pub fn gather(server: &Server) -> Doctor {
     }
     match &server.bwrap {
         Some(bwrap) => findings.ok(format!(
-            "bubblewrap: {} confines the chats' commands",
+            "bubblewrap: {} sandboxes the agent's commands",
             bwrap.display()
         )),
         None => findings.warning(format!(
-            "no bubblewrap: the chats' commands are confined with the daemon's own user \
-             namespace where the kernel allows one, else by text checks; sudo {} admin \
-             bubblewrap installs it",
+            "no bubblewrap: the agent's commands are refused until it's installed; sudo {} \
+             admin bubblewrap installs it",
             crate::installer::INSTALLED
         )),
     }
@@ -473,7 +472,7 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
   ok       virtual files: fuse3 3.14.0
   warning  no Chrome or Chromium: the browser tools won't work
   ok       unprivileged user namespaces are allowed
-  ok       bubblewrap: /usr/bin/bwrap confines the chats' commands
+  ok       bubblewrap: /usr/bin/bwrap sandboxes the agent's commands
   git      2.43.0
   storage  projects 3.0 MB, working copies 1.0 MB, chats and attachments 20 KB, temporary files 0 B
   logs     2.0 KB, rotated at 5 MB with 3 kept

@@ -20,6 +20,7 @@ pub mod hosts;
 pub mod network;
 pub mod overlay;
 pub mod project;
+pub mod sandbox;
 pub mod tools;
 pub mod vfs;
 pub mod workload;

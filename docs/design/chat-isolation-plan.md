@@ -949,17 +949,22 @@ once; they touch different files. Everything else is sequential.
     picks one), and on macOS and Windows, such commands are refused by the
     textual check as before. The .deb and .rpm packages recommend
     `bubblewrap`. The user's own terminal isn't confined.
-  - Confinement also hides the credential stores (`confine::secret_dirs`):
-    `~/.rovik` (a server's keys.json), `~/.ssh`, `~/.aws`, `~/.gnupg`,
-    `~/.config/gcloud`, `~/.config/gh`, `~/.kube` and `~/.docker` are an
-    empty tmpfs to the command, which also loses the capabilities its user
-    namespace gave it, so it can't unmount them. Every agent command gets
-    this policy (`command_tool::run_blocking`), a server's worktree
-    commands included; an isolated chat's gets the redirect on top. The
-    policy (`Confine`) is OS-independent and a `Mechanism` per OS enforces
-    it: Linux has bwrap and the app's own user namespace; macOS and
-    Windows have none yet, and their modules in `confine.rs` say what to
-    add (Seatbelt; a restricted token or AppContainer). On Windows the
+  - The sandbox (`overlay/confine.rs`): on Linux every agent command, an
+    isolated chat's or not, a server's worktree commands included, runs
+    under bubblewrap with the system read-only but for its own folders
+    (`Confine::writable`: the view or worktree, the build folder, `/tmp`,
+    the toolchains' caches), the credential stores an empty tmpfs
+    (`secret_dirs`: `~/.rovik`, `~/.ssh`, `~/.aws`, `~/.gnupg`, the cloud
+    CLIs', what the app registers with `protect`), a pid namespace, fresh
+    `/dev` and `/proc`, every capability dropped, dying with the app. The
+    policy (`Confine`) is OS-independent and a `Mechanism` per OS
+    enforces it. Linux has bubblewrap only (the app's own user namespace
+    was dropped: it duplicated bwrap in unsafe code and sandboxed less),
+    and requires it: without it commands are refused (`refusal`); the
+    .deb/.rpm depend on the package, the host installer adds it, and the
+    desktop offers to at start (`status`, `install`, through `distro.rs`,
+    which the FUSE driver's installer shares). macOS and Windows have no
+    mechanism yet, and their modules say what to add. On Windows the
     command check also reads commands as cmd.exe splits them
     (`permissions::Shell`), so a second command can't hide behind a `'`
     or a `\` the POSIX reading took for quoting.

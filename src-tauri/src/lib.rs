@@ -375,6 +375,8 @@ pub fn run() {
             commands::tools::outline_symbols,
             commands::vfs::vfs_status,
             commands::vfs::vfs_install_driver,
+            commands::sandbox::sandbox_status,
+            commands::sandbox::sandbox_install,
             commands::vfs::vfs_mount,
             commands::vfs::vfs_unmount,
             commands::vfs::vfs_open_settings,

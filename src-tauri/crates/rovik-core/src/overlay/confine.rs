@@ -1,35 +1,39 @@
-//! Keeping a chat's commands in their place: in the chat's view of the
-//! project, and out of the credential stores.
+//! The sandbox the agent's commands run in.
 //!
 //! A command the agent runs is the user's own process: whatever the
-//! permission rules let through runs with every file the user can open.
-//! Two things are worth more than a text check against that:
+//! permission rules let through would run with every file the user can
+//! open, and a text check is no match for a misled model. So each command
+//! runs under a [`Confine`] *policy*:
 //!
-//! - **The redirect.** An isolated chat's commands run in its view of the
-//!   project, but a command can still name the project's own folder by its
-//!   full path (`cd /home/me/app`, a build script with an absolute path)
-//!   and write there. Confined, the project's path *is* the chat's view:
-//!   whatever path a command uses, it reaches the chat's files.
-//! - **The hiding.** The provider keys (`~/.rovik`, keys.json on a server)
-//!   and the user's SSH, cloud and signing credentials are made invisible
-//!   to the command ([`secret_dirs`]). A chat's command has no business
-//!   reading them, and a misled model shouldn't be able to.
+//! - **The system is read-only** but for the command's own folders
+//!   (`writable`): the chat's view or worktree, its build folder, `/tmp`
+//!   and the toolchains' caches under the home folder.
+//! - **The credential stores are empty** (`hide`): the provider keys
+//!   (`~/.rovik`, keys.json on a server) and the user's SSH, cloud and
+//!   signing credentials ([`secret_dirs`]).
+//! - **The redirect**: an isolated chat's commands see its view at the
+//!   project's own path too, so one that names the project by its full
+//!   path (`cd /home/me/app`, a build script) still stays in the chat.
 //!
-//! The [`Confine`] *policy* says what a command may see; it is the same on
-//! every operating system. A [`Mechanism`] is how one OS enforces it, and
-//! each OS module ([`linux`], [`macos`], [`windows`]) lists its mechanisms
-//! in order of preference. The first that works on this machine, found
-//! once, confines every command. Where none does, [`available`] is false
-//! and the callers fall back to their text checks (chats.rs, server.rs).
-//!
-//! Linux has two mechanisms (mount namespaces: bubblewrap, then the app's
-//! own user namespace); macOS and Windows have none yet, and say in their
-//! modules what the one to add would be. `ROVIK_CONFINE_COMMANDS` picks one
-//! mechanism by name, or none (`0`).
+//! The policy is the same on every operating system. A [`Mechanism`] is how
+//! one OS enforces it, and each OS module ([`linux`], [`macos`],
+//! [`windows`]) lists its mechanisms in order of preference; the first that
+//! works here, found once, confines every command. Linux has bubblewrap
+//! (`bwrap`), which also hides the other processes, ends whatever a
+//! command leaves behind when it exits, and drops every capability, so a
+//! command can't undo its sandbox; there the sandbox is
+//! required, and without it commands are refused ([`refusal`]) and the app
+//! offers to install it ([`status`], [`install`]). macOS and Windows have no
+//! mechanism yet and say in their modules what the one to add would be;
+//! there [`available`] is false and the callers keep their text checks
+//! (chats.rs, server.rs). `ROVIK_CONFINE_COMMANDS=0` turns it all off, for
+//! troubleshooting.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
+
+pub use crate::vfs::driver::InstallOutcome;
 
 /*
  * ---------------------------------------------------------------------------
@@ -39,37 +43,47 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 
 /// What a confined command may see. The project's path shows the chat's
 /// `view` (no redirect when the two are the same: the command already runs
-/// in its own copy, as on a server), and the directories in `hide` are
-/// empty to it.
+/// in its own copy, as on a server), the directories in `hide` are empty to
+/// it, and it may write only under those in `writable`.
 #[derive(Clone, Debug)]
 pub struct Confine {
     pub view: PathBuf,
     pub project: PathBuf,
-    /// Directories made inaccessible to the command. Best-effort: only
-    /// those that exist, and only where a mechanism is available.
+    /// Directories made inaccessible to the command.
     pub hide: Vec<PathBuf>,
+    /// Directories the command may write to; the rest is read-only.
+    pub writable: Vec<PathBuf>,
 }
 
 impl Confine {
     /// An isolated chat's command: the project's path shows its view, and
-    /// the credential stores ([`secret_dirs`]) are hidden.
+    /// it may write to the view and the usual folders ([`writable_dirs`]).
     pub fn redirecting(view: PathBuf, project: PathBuf) -> Confine {
         Confine {
+            writable: writable_dirs(&view),
+            hide: secret_dirs(),
             view,
             project,
-            hide: secret_dirs(),
         }
     }
 
     /// A command that already runs in its own copy (a server worktree, or a
-    /// chat that works in the project directly): nothing is redirected, the
-    /// credential stores are still hidden.
+    /// chat that works in the project directly): nothing is redirected.
     pub fn hiding(root: PathBuf) -> Confine {
         Confine {
+            writable: writable_dirs(&root),
+            hide: secret_dirs(),
             view: root.clone(),
             project: root,
-            hide: secret_dirs(),
         }
+    }
+
+    /// With `dir` writable too (a chat's build folder).
+    pub fn also_writable(mut self, dir: PathBuf) -> Confine {
+        if !self.writable.contains(&dir) {
+            self.writable.push(dir);
+        }
+        self
     }
 
     /// Whether the project's path is pointed at the view.
@@ -94,14 +108,31 @@ pub fn protect(paths: impl IntoIterator<Item = PathBuf>) {
     }
 }
 
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| !h.as_os_str().is_empty())
+}
+
+/// Those of `dirs` that exist, each as the file system has it, once.
+fn existing(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = dirs
+        .into_iter()
+        .filter_map(|d| d.canonicalize().ok())
+        .filter(|d| d.is_dir())
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 /// The credential directories a chat's commands are kept out of: the app's
 /// own provider keys (`~/.rovik`, keys.json on a server) and the user's
 /// SSH, cloud, container and signing credentials, plus whatever the app
 /// registered with [`protect`]. Only those that exist right now. A command
 /// that legitimately needs one of these (network git over SSH, a cloud
 /// deploy) is one an isolated or server chat refuses anyway, and the user's
-/// own terminal isn't confined; `ROVIK_CONFINE_COMMANDS=0` turns all of
-/// this off.
+/// own terminal isn't confined.
 pub fn secret_dirs() -> Vec<PathBuf> {
     const UNDER_HOME: &[&str] = &[
         ".rovik",
@@ -113,24 +144,49 @@ pub fn secret_dirs() -> Vec<PathBuf> {
         ".kube",
         ".docker",
     ];
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|h| !h.as_os_str().is_empty());
-    let mut dirs: Vec<PathBuf> = home
+    let under_home = home()
+        .into_iter()
+        .flat_map(|home| UNDER_HOME.iter().map(move |rel| home.join(rel)));
+    let registered = PROTECTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .flat_map(|home| UNDER_HOME.iter().map(move |rel| home.join(rel)))
-        .collect();
+        .cloned()
+        .collect::<Vec<_>>();
+    existing(under_home.chain(registered))
+}
+
+/// Where a command run in `root` may write: `root` itself, the temporary
+/// folders, and the toolchains' caches and user installs under the home
+/// folder (what a build or a test run writes besides the project). Only
+/// those that exist right now. Everything else is read-only to it.
+pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
+    const UNDER_HOME: &[&str] = &[
+        ".cache",
+        ".cargo",
+        ".rustup",
+        ".npm",
+        ".yarn",
+        ".bun",
+        ".deno",
+        ".m2",
+        ".gradle",
+        ".nuget",
+        ".local/bin",
+        ".local/lib",
+        ".local/share/pnpm",
+        ".local/share/uv",
+        ".local/state",
+        "go",
+    ];
+    let mut dirs = vec![root.to_path_buf(), std::env::temp_dir()];
+    dirs.extend(std::env::var_os("TMPDIR").map(PathBuf::from));
     dirs.extend(
-        PROTECTED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .cloned(),
+        home()
+            .into_iter()
+            .flat_map(|home| UNDER_HOME.iter().map(move |rel| home.join(rel))),
     );
-    dirs.retain(|p| p.is_dir());
-    dirs.sort();
-    dirs.dedup();
-    dirs
+    existing(dirs)
 }
 
 /*
@@ -141,8 +197,8 @@ pub fn secret_dirs() -> Vec<PathBuf> {
 
 /// One way this operating system enforces a [`Confine`] on a command. To
 /// add one: implement it in the OS's module and list it in that module's
-/// `mechanisms()`, in order of preference. Nothing else changes.
-trait Mechanism: Send + Sync {
+/// `MECHANISMS`, in order of preference. Nothing else changes.
+trait Mechanism: Sync {
     /// Its name: what `ROVIK_CONFINE_COMMANDS` picks it by, and logs say.
     fn name(&self) -> &'static str;
 
@@ -165,12 +221,19 @@ use other as os;
 #[cfg(windows)]
 use windows as os;
 
+/// Whether confinement is turned off (`ROVIK_CONFINE_COMMANDS=0`).
+fn switched_off() -> bool {
+    std::env::var("ROVIK_CONFINE_COMMANDS").as_deref() == Ok("0")
+}
+
 /// This OS's mechanisms, in order of preference, as `ROVIK_CONFINE_COMMANDS`
 /// leaves them: all of them, one by name, or none (`0`).
-fn candidates() -> Vec<Box<dyn Mechanism>> {
-    let all = os::mechanisms();
+fn candidates() -> Vec<&'static dyn Mechanism> {
+    if switched_off() {
+        return Vec::new();
+    }
+    let all: Vec<&'static dyn Mechanism> = os::MECHANISMS.to_vec();
     match std::env::var("ROVIK_CONFINE_COMMANDS").as_deref() {
-        Ok("0") => Vec::new(),
         Ok(name) if all.iter().any(|m| m.name() == name) => {
             all.into_iter().filter(|m| m.name() == name).collect()
         }
@@ -178,10 +241,9 @@ fn candidates() -> Vec<Box<dyn Mechanism>> {
     }
 }
 
-/// Whether `mechanism` confines a command here: one that does nothing, run.
-/// Kernels and security modules may forbid what it needs (AppArmor on
-/// Ubuntu 24.04 forbids unprivileged user namespaces), or its program may
-/// not be installed.
+/// Whether `mechanism` confines a command here: one that does nothing, run
+/// under `c`. Kernels and security modules may forbid what it needs, or its
+/// program may not be installed.
 fn works(mechanism: &dyn Mechanism, c: &Confine) -> bool {
     let (program, args) = os::PROBE;
     let mut cmd = mechanism.command(c, program, args);
@@ -191,20 +253,34 @@ fn works(mechanism: &dyn Mechanism, c: &Confine) -> bool {
     cmd.status().is_ok_and(|s| s.success())
 }
 
+/// What the probe runs under: the process's temporary folder as the root.
+fn probe_policy() -> Confine {
+    Confine::hiding(std::env::temp_dir())
+}
+
+/// What was found, once (None: not looked yet).
+static CHOSEN: Mutex<Option<Option<&'static dyn Mechanism>>> = Mutex::new(None);
+
 /// The mechanism that confines commands here: the first candidate that
-/// works, found once, on the first policy asked for.
-fn chosen(c: &Confine) -> Option<&'static dyn Mechanism> {
-    static CHOSEN: OnceLock<Option<Box<dyn Mechanism>>> = OnceLock::new();
-    CHOSEN
-        .get_or_init(|| {
-            let found = candidates().into_iter().find(|m| works(m.as_ref(), c));
-            log::info!(
-                "chats' commands are confined by: {:?}",
-                found.as_ref().map(|m| m.name())
-            );
-            found
-        })
-        .as_deref()
+/// works, found once (again after [`forget`]).
+fn chosen() -> Option<&'static dyn Mechanism> {
+    let mut cache = CHOSEN.lock().unwrap_or_else(|e| e.into_inner());
+    *cache.get_or_insert_with(|| {
+        let policy = probe_policy();
+        let found = candidates().into_iter().find(|m| works(*m, &policy));
+        log::info!(
+            "the agent's commands are confined by: {:?}",
+            found.map(|m| m.name())
+        );
+        found
+    })
+}
+
+/// Forgets what was found, so the next command looks again: after the
+/// sandbox's program was installed.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn forget() {
+    *CHOSEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /*
@@ -216,13 +292,13 @@ fn chosen(c: &Confine) -> Option<&'static dyn Mechanism> {
 /// Whether `c` can be enforced here: a mechanism works, and it redirects
 /// if `c` asks for that.
 pub fn available(c: &Confine) -> bool {
-    chosen(c).is_some_and(|m| !c.redirects() || m.can_redirect())
+    chosen().is_some_and(|m| !c.redirects() || m.can_redirect())
 }
 
 /// `program` with `args`, confined by `c`. As it is where `c` can't be
-/// enforced, which callers ask first ([`available`]).
+/// enforced, which callers ask first ([`available`], [`refusal`]).
 pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
-    match chosen(c).filter(|_| available(c)) {
+    match chosen().filter(|_| available(c)) {
         Some(m) => m.command(c, program, args),
         None => {
             let mut cmd = crate::process::command(program);
@@ -233,73 +309,108 @@ pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
 }
 
 /// The policy for a command with no overlay (a server worktree, a chat that
-/// works in the project directly): nothing redirected, the credential
-/// stores hidden — where that can be done here.
+/// works in the project directly) — where it can be enforced here.
 pub fn hiding_if_available(root: &Path) -> Option<Confine> {
     let c = Confine::hiding(root.to_path_buf());
     available(&c).then_some(c)
 }
 
+/// Why no command of the agent's may run here, if none may: on Linux the
+/// sandbox is required, and its program is missing or can't make one.
+/// None where the sandbox works, where it's turned off, and on systems
+/// without a mechanism yet (their text checks apply).
+pub fn refusal() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    if !switched_off() && chosen().is_none() {
+        return Some(linux::missing());
+    }
+    None
+}
+
+/// The sandbox on this machine, for the app's settings and its offer to
+/// install it at start.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxStatus {
+    /// Commands are refused without it (Linux).
+    pub required: bool,
+    /// What makes it: "bubblewrap" on Linux; "" where there's none yet.
+    pub program: &'static str,
+    /// It's there and confines commands.
+    pub working: bool,
+    /// What's missing or wrong, for the user.
+    pub detail: Option<String>,
+    /// The app can install it (otherwise `detail` says how).
+    pub can_install: bool,
+}
+
+pub fn status() -> SandboxStatus {
+    os::status()
+}
+
+/// Installs the sandbox's program, asking the way the OS does (polkit's
+/// dialog on Linux), and looks again.
+pub async fn install() -> Result<InstallOutcome, String> {
+    os::install().await
+}
+
 /*
  * ---------------------------------------------------------------------------
- * Linux: mount namespaces
+ * Linux: bubblewrap
  * ---------------------------------------------------------------------------
  */
 
-/// Each command runs in a mount namespace of its own: the chat's view
-/// bind-mounted over the project's path, and an empty tmpfs over each
-/// hidden directory. Two mechanisms make it:
-///
-/// - [`Bwrap`], bubblewrap, where it's installed and may: Ubuntu 24.04's
-///   AppArmor forbids unprivileged user namespaces to other programs but
-///   gives bwrap a profile that allows them, and an older system's bwrap
-///   may be setuid. It also drops the command's capabilities, so the
-///   command can't undo the mounts: the strong one.
-/// - [`Unshare`], the app's own: a user namespace mapping the user to
-///   itself, so the mount namespace needs no privileges, wherever the
-///   kernel allows that. It drops the capabilities that namespace granted
-///   before the command runs, for the same reason.
+/// Each command runs under `bwrap` in namespaces of its own: the system
+/// read-only, the writable folders bound over it, the chat's view over the
+/// project's path, an empty tmpfs over each hidden directory, a pid
+/// namespace (it sees no other processes), fresh `/dev` and `/proc`, every
+/// capability dropped (so it can't undo any of this), and it dies with the
+/// app. The distro's package, which the .deb and .rpm depend on and the
+/// host installer adds: on Ubuntu 24.04 it's the package's AppArmor profile
+/// that lets anything make a user namespace at all.
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{Confine, Mechanism};
-    use std::ffi::CString;
-    use std::io;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::process::CommandExt;
+    use super::{Confine, InstallOutcome, Mechanism, SandboxStatus};
+    use crate::distro::{self, Package, RootRun};
     use std::process::Command;
 
     pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
+    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[&Bwrap];
 
-    pub(super) fn mechanisms() -> Vec<Box<dyn Mechanism>> {
-        vec![Box::new(Bwrap), Box::new(Unshare)]
-    }
+    const PACKAGE: Package = Package {
+        name: "bubblewrap",
+        gentoo: "sys-apps/bubblewrap",
+    };
+    const PROGRAM: &str = "bwrap";
 
-    /// `bwrap` makes the namespace and runs the command in it.
     pub(super) struct Bwrap;
 
     impl Mechanism for Bwrap {
         fn name(&self) -> &'static str {
-            "bwrap"
+            PROGRAM
         }
 
         fn command(&self, c: &Confine, program: &str, args: &[&str]) -> Command {
-            // The whole file system as it is, devices too, but for the
-            // project's path (the chat's view) and the hidden directories
-            // (a fresh tmpfs each). bwrap applies these in order, so the
-            // overmounts win over `--dev-bind / /`. The user stays itself,
-            // and the working folder is kept (found again in the namespace).
-            // Unprivileged, bwrap drops the command's capabilities on its
-            // own; run by root it keeps them unless told, and root's
-            // command could then unmount what hides its secrets.
-            let mut cmd = crate::process::command("bwrap");
-            cmd.arg("--dev-bind").args(["/", "/"]);
+            // bwrap applies the mounts in order, each over the ones before:
+            // the writable folders over the read-only system, the view over
+            // the project's path, the hidden directories over all. A folder
+            // gone since the policy was made is skipped: bwrap would refuse
+            // to start otherwise. The working folder is kept (found again
+            // in the namespace).
+            let mut cmd = crate::process::command(PROGRAM);
+            cmd.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
+            for dir in c.writable.iter().filter(|d| d.is_dir()) {
+                cmd.arg("--bind").arg(dir).arg(dir);
+            }
             if c.redirects() {
                 cmd.arg("--bind").arg(&c.view).arg(&c.project);
             }
-            for dir in &c.hide {
+            for dir in c.hide.iter().filter(|d| d.is_dir()) {
                 cmd.arg("--tmpfs").arg(dir);
             }
-            cmd.args(["--cap-drop", "ALL"]);
+            // Run by root, bwrap keeps the capabilities unless told; run by
+            // a user it drops them anyway.
+            cmd.args(["--unshare-pid", "--die-with-parent", "--cap-drop", "ALL"]);
             cmd.arg("--").arg(program).args(args);
             cmd
         }
@@ -309,172 +420,84 @@ mod linux {
         }
     }
 
-    /// The command's own process makes the namespace, between fork and
-    /// exec.
-    pub(super) struct Unshare;
+    /// `bwrap --version`'s first line.
+    fn version() -> Option<String> {
+        let out = crate::process::command(PROGRAM)
+            .arg("--version")
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+    }
 
-    impl Mechanism for Unshare {
-        fn name(&self) -> &'static str {
-            "unshare"
-        }
-
-        fn command(&self, c: &Confine, program: &str, args: &[&str]) -> Command {
-            let mut cmd = crate::process::command(program);
-            cmd.args(args);
-            // A policy whose paths can't be C strings (a NUL in one) isn't
-            // enforced; the probe then fails and the mechanism isn't chosen.
-            let _ = apply(&mut cmd, c);
-            cmd
-        }
-
-        fn can_redirect(&self) -> bool {
-            true
+    pub(super) fn status() -> SandboxStatus {
+        let working = super::chosen().is_some();
+        let installed = distro::which(PROGRAM).is_some();
+        let detail = match (working, installed) {
+            (true, _) => None,
+            (false, true) => Some(
+                "bubblewrap is installed but can't make a sandbox here (the kernel or a \
+                 security module may forbid user namespaces)."
+                    .to_string(),
+            ),
+            (false, false) => Some("bubblewrap isn't installed.".to_string()),
+        };
+        SandboxStatus {
+            required: true,
+            program: PACKAGE.name,
+            working,
+            detail,
+            can_install: !installed && distro::install_script(&PACKAGE).is_some(),
         }
     }
 
-    fn cstring(p: &std::path::Path) -> io::Result<CString> {
-        CString::new(p.as_os_str().as_bytes())
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
-    }
-
-    /// Writes a whole small file; for `/proc/self/*_map`.
-    fn write_proc(path: &CString, data: &[u8]) -> io::Result<()> {
-        // SAFETY: plain system calls on a valid path and buffer; nothing is
-        // allocated, which matters between fork and exec.
-        unsafe {
-            let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let n = libc::write(fd, data.as_ptr().cast(), data.len());
-            let err = io::Error::last_os_error();
-            libc::close(fd);
-            if n != data.len() as isize {
-                return Err(err);
-            }
-        }
-        Ok(())
-    }
-
-    /// Makes `cmd` enter a namespace of its own and set up `c`'s mounts
-    /// before it runs.
-    fn apply(cmd: &mut Command, c: &Confine) -> io::Result<()> {
-        let view = cstring(&c.view)?;
-        let project = cstring(&c.project)?;
-        let redirects = c.redirects();
-        let hide: Vec<CString> = c
-            .hide
-            .iter()
-            .map(|p| cstring(p))
-            .collect::<io::Result<_>>()?;
-        // Everything the child needs, made before the fork.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-        let uid_map = format!("{uid} {uid} 1").into_bytes();
-        let gid_map = format!("{gid} {gid} 1").into_bytes();
-        let setgroups = CString::new("/proc/self/setgroups").unwrap();
-        let uid_file = CString::new("/proc/self/uid_map").unwrap();
-        let gid_file = CString::new("/proc/self/gid_map").unwrap();
-        let root = CString::new("/").unwrap();
-        let tmpfs = CString::new("tmpfs").unwrap();
-        // SAFETY: the closure runs in the child between fork and exec and
-        // only makes system calls on data prepared above; it allocates
-        // nothing.
-        unsafe {
-            cmd.pre_exec(move || {
-                // A user namespace mapping the user to itself, so the mount
-                // namespace needs no privileges; root needs only the latter.
-                let flags = if uid == 0 {
-                    libc::CLONE_NEWNS
-                } else {
-                    libc::CLONE_NEWUSER | libc::CLONE_NEWNS
-                };
-                if libc::unshare(flags) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if uid != 0 {
-                    write_proc(&setgroups, b"deny")?;
-                    write_proc(&uid_file, &uid_map)?;
-                    write_proc(&gid_file, &gid_map)?;
-                }
-                // Mounts made here stay here.
-                if libc::mount(
-                    std::ptr::null(),
-                    root.as_ptr(),
-                    std::ptr::null(),
-                    libc::MS_REC | libc::MS_PRIVATE,
-                    std::ptr::null(),
-                ) != 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                if redirects
-                    && libc::mount(
-                        view.as_ptr(),
-                        project.as_ptr(),
-                        std::ptr::null(),
-                        libc::MS_BIND | libc::MS_REC,
-                        std::ptr::null(),
-                    ) != 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                // A fresh empty tmpfs over each hidden directory. One that
-                // can't be hidden (it went away since the policy was made)
-                // isn't worth failing the command over.
-                for dir in &hide {
-                    let _ = libc::mount(
-                        tmpfs.as_ptr(),
-                        dir.as_ptr(),
-                        tmpfs.as_ptr(),
-                        0,
-                        std::ptr::null(),
-                    );
-                }
-                // Give up the privileges this user namespace granted, so the
-                // command can't unmount what was just mounted (that needs
-                // CAP_SYS_ADMIN) or regain anything through a setuid exec.
-                drop_privileges();
-                Ok(())
+    pub(super) async fn install() -> Result<InstallOutcome, String> {
+        let Some(script) = distro::install_script(&PACKAGE) else {
+            return Ok(InstallOutcome::Manual {
+                message: "No supported package manager was found. Install bubblewrap (the \
+                          package is called bubblewrap nearly everywhere)."
+                    .into(),
+                command: None,
+            });
+        };
+        if let RootRun::Manual { message, command } =
+            distro::run_as_root(&format!("set -e; {script}"), "Installing bubblewrap").await?
+        {
+            return Ok(InstallOutcome::Manual {
+                message,
+                command: Some(command),
             });
         }
-        Ok(())
+        super::forget();
+        let now = status();
+        match now.working {
+            true => Ok(InstallOutcome::Installed { version: version() }),
+            false => Ok(InstallOutcome::Manual {
+                message: now.detail.unwrap_or_default(),
+                command: None,
+            }),
+        }
     }
 
-    /// Drops every capability and sets no-new-privileges for the command
-    /// about to run. Between fork and exec: only plain syscalls, no
-    /// allocation. Best-effort: the mounts are already in place, so the
-    /// command stays confined even if a step here is refused.
-    unsafe fn drop_privileges() {
-        let _ = libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-        // Clear the effective, permitted and inheritable sets (capability
-        // version 3: two 32-bit words each).
-        #[repr(C)]
-        struct Header {
-            version: u32,
-            pid: libc::c_int,
-        }
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        struct Data {
-            effective: u32,
-            permitted: u32,
-            inheritable: u32,
-        }
-        const VERSION_3: u32 = 0x2008_0522;
-        let header = Header {
-            version: VERSION_3,
-            pid: 0,
+    /// What a command is refused with while there's no sandbox.
+    pub(super) fn missing() -> String {
+        let how = match distro::which(PROGRAM) {
+            Some(_) => {
+                "it's installed but can't make a sandbox here (the kernel or a security \
+                        module may forbid user namespaces)"
+            }
+            None => {
+                "it isn't installed: the app offers to install it at start, or install the \
+                     bubblewrap package yourself"
+            }
         };
-        let data = [Data {
-            effective: 0,
-            permitted: 0,
-            inheritable: 0,
-        }; 2];
-        let _ = libc::syscall(libc::SYS_capset, &header as *const Header, data.as_ptr());
-        // Empty the bounding set too, so no capability survives the exec.
-        for cap in 0..64 {
-            let _ = libc::prctl(libc::PR_CAPBSET_DROP, cap as libc::c_ulong, 0, 0, 0);
-        }
+        format!(
+            "Error: on Linux the agent's commands run in a bubblewrap sandbox, and {how}. \
+             Then try again."
+        )
     }
 }
 
@@ -484,52 +507,88 @@ mod linux {
  * ---------------------------------------------------------------------------
  */
 
-/// No mechanism yet: the callers' text checks apply. The one to add is
-/// Seatbelt, `sandbox-exec -p <profile> -- program args`, with a profile
-/// that allows everything but `file-read*` and `file-write*` under each
-/// hidden directory (`(deny file-read* (subpath "/Users/me/.ssh"))`). macOS
-/// can't bind-mount, so that mechanism would say `can_redirect() == false`
-/// and the project's full path would stay refused by text. Implement
-/// [`Mechanism`] for it and list it in `mechanisms()`.
-#[cfg(target_os = "macos")]
-mod macos {
-    use super::Mechanism;
-
-    pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
-
-    pub(super) fn mechanisms() -> Vec<Box<dyn Mechanism>> {
-        Vec::new()
+/// A system with no mechanism yet: the callers' text checks apply, nothing
+/// is required, nothing can be installed.
+#[cfg(not(target_os = "linux"))]
+fn no_sandbox_yet() -> SandboxStatus {
+    SandboxStatus {
+        required: false,
+        program: "",
+        working: false,
+        detail: Some("There's no sandbox for the agent's commands on this system yet.".into()),
+        can_install: false,
     }
 }
 
-/// No mechanism yet: the callers' text checks apply. The one to add is a
-/// restricted token or an AppContainer profile for the command's process,
-/// with the hidden directories denied by ACL (and the job object
-/// command_tool.rs already puts the process in). Windows can't bind-mount
-/// either, so it would say `can_redirect() == false`. Note that
+#[cfg(not(target_os = "linux"))]
+async fn nothing_to_install() -> Result<InstallOutcome, String> {
+    Ok(InstallOutcome::Manual {
+        message: "There's no sandbox to install on this system yet.".into(),
+        command: None,
+    })
+}
+
+/// No mechanism yet. The one to add is Seatbelt, `sandbox-exec -p <profile>
+/// -- program args`, with a profile that denies `file-write*` but under the
+/// writable folders and `file-read*` under each hidden directory (`(deny
+/// file-read* (subpath "/Users/me/.ssh"))`). macOS can't bind-mount, so
+/// that mechanism would say `can_redirect() == false` and the project's
+/// full path would stay refused by text. Implement [`Mechanism`] for it,
+/// list it in `MECHANISMS`, and give `status` and `install` their answers.
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::{InstallOutcome, Mechanism, SandboxStatus};
+
+    pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
+    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[];
+
+    pub(super) fn status() -> SandboxStatus {
+        super::no_sandbox_yet()
+    }
+
+    pub(super) async fn install() -> Result<InstallOutcome, String> {
+        super::nothing_to_install().await
+    }
+}
+
+/// No mechanism yet. The one to add is a restricted token or an
+/// AppContainer profile for the command's process, with the hidden
+/// directories denied and the writable folders allowed by ACL (and the job
+/// object command_tool.rs already puts the process in). Windows can't
+/// bind-mount either, so it would say `can_redirect() == false`. Note that
 /// command_tool.rs builds the Windows shell line with `raw_arg` for cmd.exe
 /// (`/S /C "…"`); a mechanism here gets that line as `args` and must pass
 /// it on the same way.
 #[cfg(windows)]
 mod windows {
-    use super::Mechanism;
+    use super::{InstallOutcome, Mechanism, SandboxStatus};
 
     pub(super) const PROBE: (&str, &[&str]) = ("cmd.exe", &["/C", "exit", "0"]);
+    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[];
 
-    pub(super) fn mechanisms() -> Vec<Box<dyn Mechanism>> {
-        Vec::new()
+    pub(super) fn status() -> SandboxStatus {
+        super::no_sandbox_yet()
+    }
+
+    pub(super) async fn install() -> Result<InstallOutcome, String> {
+        super::nothing_to_install().await
     }
 }
 
 /// Any other Unix: no mechanism.
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod other {
-    use super::Mechanism;
+    use super::{InstallOutcome, Mechanism, SandboxStatus};
 
     pub(super) const PROBE: (&str, &[&str]) = ("/bin/sh", &["-c", "true"]);
+    pub(super) static MECHANISMS: &[&dyn Mechanism] = &[];
 
-    pub(super) fn mechanisms() -> Vec<Box<dyn Mechanism>> {
-        Vec::new()
+    pub(super) fn status() -> SandboxStatus {
+        super::no_sandbox_yet()
+    }
+
+    pub(super) async fn install() -> Result<InstallOutcome, String> {
+        super::nothing_to_install().await
     }
 }
 
@@ -537,182 +596,214 @@ mod other {
 mod tests {
     use super::*;
 
-    /// A fresh root for one test and one mechanism, under the temp folder.
-    fn fresh(test: &str, m: &dyn Mechanism) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("{test}-{}-{}", std::process::id(), m.name()));
+    const BWRAP: &dyn Mechanism = &linux::Bwrap;
+
+    /// A fresh root for one test, under the temp folder, and the policy on
+    /// it: nothing hidden, only `writable` writable.
+    fn fresh(test: &str, writable: &[&Path]) -> (PathBuf, Confine) {
+        let root = std::env::temp_dir().join(format!("{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        root
+        std::fs::create_dir_all(&root).unwrap();
+        let c = Confine {
+            view: root.clone(),
+            project: root.clone(),
+            hide: Vec::new(),
+            writable: writable.iter().map(|p| p.to_path_buf()).collect(),
+        };
+        (root, c)
     }
 
-    /// A command that writes to the project's path writes to the view,
-    /// with either mechanism, in the folder it was started in, its exit
-    /// code its own.
-    #[test]
-    fn the_projects_path_shows_the_view_either_way() {
-        for m in linux::mechanisms() {
-            let root = fresh("confine", m.as_ref());
-            let (view, project) = (root.join("view"), root.join("project"));
-            std::fs::create_dir_all(&view).unwrap();
-            std::fs::create_dir_all(&project).unwrap();
-            std::fs::write(project.join("a.txt"), "project\n").unwrap();
-            std::fs::write(view.join("a.txt"), "view\n").unwrap();
-            let c = Confine {
-                view: view.clone(),
-                project: project.clone(),
-                hide: Vec::new(),
-            };
-            if !works(m.as_ref(), &c) {
-                eprintln!("{} can't confine commands here: skipped", m.name());
-                continue;
-            }
-            let script = format!(
-                "cat {0}/a.txt && echo written > {0}/b.txt && pwd && exit 3",
-                project.display()
-            );
-            let out = m
-                .command(&c, "/bin/sh", &["-c", &script])
-                .current_dir(&view)
-                .output()
-                .unwrap();
-            assert_eq!(
-                out.status.code(),
-                Some(3),
-                "{}: {}",
-                m.name(),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let stdout = format!("view\n{}\n", view.display());
-            assert_eq!(String::from_utf8_lossy(&out.stdout), stdout, "{}", m.name());
-            assert_eq!(
-                std::fs::read_to_string(view.join("b.txt")).unwrap(),
-                "written\n",
-                "{}",
-                m.name()
-            );
-            assert!(
-                !project.join("b.txt").exists(),
-                "{}: the project wasn't touched",
-                m.name()
-            );
-            let _ = std::fs::remove_dir_all(&root);
+    /// Runs `script` under `c` in `cwd`: its output, or None where bwrap
+    /// can't make a sandbox here (the test is then skipped).
+    fn run(c: &Confine, cwd: &Path, script: &str) -> Option<std::process::Output> {
+        if !works(BWRAP, c) {
+            eprintln!("bwrap can't confine commands here: skipped");
+            return None;
         }
+        Some(
+            BWRAP
+                .command(c, "/bin/sh", &["-c", script])
+                .current_dir(cwd)
+                .output()
+                .unwrap(),
+        )
     }
 
-    /// A hidden directory is empty to the command, with either mechanism,
-    /// and the command can't undo that: unmounting takes a capability it
-    /// no longer has. The real directory is left as it was (the tmpfs is
-    /// only in the command's own mount namespace).
+    fn stdout(out: &std::process::Output) -> String {
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A command that writes to the project's path writes to the view, in
+    /// the folder it was started in, its exit code its own.
+    #[test]
+    fn the_projects_path_shows_the_view() {
+        let (root, mut c) = fresh("confine", &[]);
+        let (view, project) = (root.join("view"), root.join("project"));
+        std::fs::create_dir_all(&view).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.txt"), "project\n").unwrap();
+        std::fs::write(view.join("a.txt"), "view\n").unwrap();
+        (c.view, c.project, c.writable) = (view.clone(), project.clone(), vec![view.clone()]);
+        let script = format!(
+            "cat {0}/a.txt && echo written > {0}/b.txt && pwd && exit 3",
+            project.display()
+        );
+        let Some(out) = run(&c, &view, &script) else {
+            return;
+        };
+        assert_eq!(
+            out.status.code(),
+            Some(3),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(stdout(&out), format!("view\n{}\n", view.display()));
+        assert_eq!(
+            std::fs::read_to_string(view.join("b.txt")).unwrap(),
+            "written\n"
+        );
+        assert!(
+            !project.join("b.txt").exists(),
+            "the project wasn't touched"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A hidden directory is empty to the command, which can't undo that:
+    /// unmounting takes a capability it no longer has. The real directory
+    /// is left as it was (the tmpfs is only in the command's namespace).
     #[test]
     fn a_hidden_directory_is_empty_to_the_command() {
-        for m in linux::mechanisms() {
-            let root = fresh("hide", m.as_ref());
-            let (view, project, secret) =
-                (root.join("view"), root.join("project"), root.join("secret"));
-            for dir in [&view, &project, &secret] {
-                std::fs::create_dir_all(dir).unwrap();
-            }
-            std::fs::write(secret.join("keys.json"), "TOPSECRET\n").unwrap();
-            let c = Confine {
-                view: view.clone(),
-                project: project.clone(),
-                hide: vec![secret.clone()],
-            };
-            if !works(m.as_ref(), &c) {
-                eprintln!("{} can't confine commands here: skipped", m.name());
-                continue;
-            }
-            // Read it, list it, write into it, and try to unmount the
-            // tmpfs over it (both the program and the system call).
-            let script = format!(
-                "cat {0}/keys.json 2>/dev/null; umount {0} 2>/dev/null; \
-                 ls {0} | wc -l; echo planted > {0}/planted 2>/dev/null; true",
-                secret.display()
-            );
-            let out = m
-                .command(&c, "/bin/sh", &["-c", &script])
-                .current_dir(&view)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{}", m.name());
-            // Nothing read (no TOPSECRET), nothing listed (0 entries).
-            assert_eq!(String::from_utf8_lossy(&out.stdout), "0\n", "{}", m.name());
-            assert_eq!(
-                std::fs::read_to_string(secret.join("keys.json")).unwrap(),
-                "TOPSECRET\n",
-                "{}",
-                m.name()
-            );
-            assert!(!secret.join("planted").exists(), "{}", m.name());
-            let _ = std::fs::remove_dir_all(&root);
-        }
+        let (root, mut c) = fresh("hide", &[]);
+        let secret = root.join("secret");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("keys.json"), "TOPSECRET\n").unwrap();
+        c.hide = vec![secret.clone()];
+        c.writable = vec![root.clone()];
+        // Read it, unmount it, list it, write into it.
+        let script = format!(
+            "cat {0}/keys.json 2>/dev/null; umount {0} 2>/dev/null; \
+             ls {0} | wc -l; echo planted > {0}/planted 2>/dev/null; true",
+            secret.display()
+        );
+        let Some(out) = run(&c, &root, &script) else {
+            return;
+        };
+        assert!(out.status.success());
+        // Nothing read (no TOPSECRET), nothing listed (0 entries).
+        assert_eq!(stdout(&out), "0\n");
+        assert_eq!(
+            std::fs::read_to_string(secret.join("keys.json")).unwrap(),
+            "TOPSECRET\n"
+        );
+        assert!(!secret.join("planted").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The system is read-only but for the writable folders, the command
+    /// sees no other processes, and it has no capabilities.
+    #[test]
+    fn the_system_is_read_only_but_for_the_allowlist() {
+        let (root, mut c) = fresh("readonly", &[]);
+        let allowed = root.join("allowed");
+        std::fs::create_dir_all(&allowed).unwrap();
+        c.writable = vec![allowed.clone()];
+        let script = format!(
+            "echo x > {0}/ok 2>/dev/null && echo allowed-written; \
+             echo x > {1}/no 2>/dev/null || echo root-read-only; \
+             echo x > /usr/rovik-test 2>/dev/null || echo usr-read-only; \
+             echo x > /tmp/rovik-test-$$ 2>/dev/null || echo tmp-read-only; \
+             echo processes=$(ls /proc | grep -c '^[0-9]'); \
+             grep ^CapEff /proc/self/status | tr -s '\\t' ' '",
+            allowed.display(),
+            root.display()
+        );
+        let Some(out) = run(&c, &allowed, &script) else {
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = stdout(&out);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            &lines[..4],
+            &[
+                "allowed-written",
+                "root-read-only",
+                "usr-read-only",
+                "tmp-read-only"
+            ],
+            "{text}"
+        );
+        // Its own shell and pipeline, and bwrap's pid 1: no one else's.
+        let processes: u32 = lines[4].trim_start_matches("processes=").parse().unwrap();
+        assert!(processes <= 6, "{text}");
+        assert_eq!(lines[5], "CapEff: 0000000000000000", "{text}");
+        assert!(allowed.join("ok").exists());
+        assert!(!root.join("no").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The hiding-only policy (a server worktree, a chat in the project
-    /// directly) redirects nothing and still hides; the command runs where
-    /// it was started.
+    /// directly) redirects nothing: the command runs where it was started
+    /// and can write there.
     #[test]
     fn hiding_only_needs_no_redirect() {
-        for m in linux::mechanisms() {
-            let root = fresh("hideonly", m.as_ref());
-            let (worktree, secret) = (root.join("worktree"), root.join("secret"));
-            std::fs::create_dir_all(&worktree).unwrap();
-            std::fs::create_dir_all(&secret).unwrap();
-            std::fs::write(secret.join("keys.json"), "TOPSECRET\n").unwrap();
-            let c = Confine {
-                hide: vec![secret.clone()],
-                ..Confine::hiding(worktree.clone())
-            };
-            assert!(!c.redirects());
-            if !works(m.as_ref(), &c) {
-                eprintln!("{} can't confine commands here: skipped", m.name());
-                continue;
-            }
-            let script = format!("cat {}/keys.json 2>/dev/null; pwd", secret.display());
-            let out = m
-                .command(&c, "/bin/sh", &["-c", &script])
-                .current_dir(&worktree)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{}", m.name());
-            assert_eq!(
-                String::from_utf8_lossy(&out.stdout),
-                format!("{}\n", worktree.display()),
-                "{}",
-                m.name()
-            );
-            let _ = std::fs::remove_dir_all(&root);
-        }
+        let (root, _) = fresh("hideonly", &[]);
+        let c = Confine::hiding(root.clone());
+        assert!(!c.redirects());
+        assert!(c.writable.contains(&root.canonicalize().unwrap()));
+        let Some(out) = run(&c, &root, "pwd && echo x > here && cat here") else {
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(stdout(&out), format!("{}\nx\n", root.display()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The built-in list names the provider keys' folder and the user's
-    /// credential stores, only those that exist, and what the app
-    /// registers on top.
+    /// The built-in lists name only folders that exist, as the file system
+    /// has them; what the app registers is hidden too.
     #[test]
-    fn the_secret_dirs_are_the_existing_credential_stores() {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
-        for dir in secret_dirs() {
+    fn the_secret_and_writable_dirs_are_the_existing_ones() {
+        for dir in secret_dirs()
+            .iter()
+            .chain(&writable_dirs(&std::env::temp_dir()))
+        {
             assert!(dir.is_dir(), "{}", dir.display());
+            assert_eq!(dir, &dir.canonicalize().unwrap(), "{}", dir.display());
         }
         let registered = std::env::temp_dir().join(format!("protected-{}", std::process::id()));
         std::fs::create_dir_all(&registered).unwrap();
         protect([registered.clone(), registered.clone()]);
-        assert!(secret_dirs().contains(&registered));
-        if home.join(".rovik").is_dir() {
-            assert!(secret_dirs().contains(&home.join(".rovik")));
-        }
+        assert!(secret_dirs().contains(&registered.canonicalize().unwrap()));
         let _ = std::fs::remove_dir_all(&registered);
+        assert!(writable_dirs(&std::env::temp_dir())
+            .contains(&std::env::temp_dir().canonicalize().unwrap()));
     }
 
-    /// bwrap first, the app's own way after it; one, or none, by name.
+    /// Linux has one mechanism, bubblewrap, and the status says whether it
+    /// works here; a working sandbox refuses nothing.
     #[test]
-    fn the_mechanisms_tried() {
-        let names = |ms: Vec<Box<dyn Mechanism>>| -> Vec<&'static str> {
-            ms.iter().map(|m| m.name()).collect()
-        };
+    fn bubblewrap_is_the_mechanism() {
         // Read as the process started: tests don't set the variable.
         if std::env::var_os("ROVIK_CONFINE_COMMANDS").is_none() {
-            assert_eq!(names(candidates()), ["bwrap", "unshare"]);
+            let names: Vec<&str> = candidates().iter().map(|m| m.name()).collect();
+            assert_eq!(names, ["bwrap"]);
         }
-        assert_eq!(names(linux::mechanisms()), ["bwrap", "unshare"]);
+        let status = status();
+        assert!(status.required);
+        assert_eq!(status.program, "bubblewrap");
+        assert_eq!(status.working, chosen().is_some());
+        assert_eq!(refusal().is_none(), status.working || switched_off());
+        if !status.working {
+            assert!(status.detail.is_some());
+        }
     }
 }

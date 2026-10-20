@@ -608,18 +608,21 @@ lands on its own. Anything else (conflicts, failing checks) is shown in the
 bar above the chat's message box, where you can resolve conflicts, land
 anyway, discard, or undo a landing.
 
-On Linux, the commands a chat runs see its overlay at the project's own
-path too, so one that names the project by its full path still stays in
-the chat, and the credential stores are empty to them: the provider keys
-(`~/.rovik` on a server), `~/.ssh`, `~/.aws`, `~/.gnupg` and the cloud
-CLIs' folders. Every agent command gets that, isolated or not, a cloud
-host's worktrees included; your own terminal isn't confined. They run
-under bubblewrap (`bwrap`, which the .deb and .rpm packages recommend), or,
-without it, in a namespace the app makes itself. Where neither is allowed,
-and on macOS and Windows (no mechanism yet;
-`src-tauri/crates/rovik-core/src/overlay/confine.rs` says what to add), a
-command that names the project's full path is refused instead, and one
-that names a server's `~/.rovik` needs your approval.
+On Linux, every command the agent runs is sandboxed with bubblewrap
+(`bwrap`): the system is read-only to it but for the chat's own folders
+(its view or worktree, its build folder, `/tmp` and the toolchains' caches
+under your home), the credential stores (`~/.rovik`, `~/.ssh`, `~/.aws`,
+`~/.gnupg`, the cloud CLIs' folders) are empty to it, it sees no other
+process, and it has no capabilities, so it can't undo any of that. An
+isolated chat's commands also see its overlay at the project's own path,
+so one that names the project by its full path still stays in the chat.
+The .deb and .rpm packages depend on bubblewrap, and the app offers to
+install it at start where it's missing (the AppImage can't carry it);
+without it the agent's commands are refused. Your own terminal isn't
+sandboxed, and `ROVIK_CONFINE_COMMANDS=0` turns the sandbox off for
+troubleshooting. macOS and Windows have no sandbox yet
+(`src-tauri/crates/rovik-core/src/overlay/confine.rs` says what to add):
+there a command that names the project's full path is refused instead.
 
 Limits: 512 MiB of changed files per chat (warning at 80%). Build output and
 dependency folders don't count toward it. Heavy commands such as builds and

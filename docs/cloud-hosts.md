@@ -160,16 +160,16 @@ what Rovik's folders take.
 
 ## What can read what
 
-- The agent's commands run as the user, kept out of the credential stores:
-  `~/.rovik` (the API keys among it), `~/.ssh`, `~/.aws`, `~/.gnupg` and
-  the cloud CLIs' folders. Each command runs in a mount namespace where
-  those folders are empty, with its capabilities dropped so it can't undo
-  that: made by bubblewrap, which the installer adds from the distro's
-  package (on Ubuntu 24.04 only its AppArmor profile may make one), or by
-  the daemon itself where the kernel allows an unprivileged user
-  namespace. Where neither can be made, a command that names `~/.rovik`
-  needs the user's approval, and the rest is readable as the user.
-  `rovik-agentd doctor` and the app's connection test say which applies.
+- The agent's commands run as the user, in a bubblewrap sandbox: the
+  system is read-only to them but for the worktree, `/tmp` and the
+  toolchains' caches under the home folder; the credential stores
+  (`~/.rovik` with the API keys, `~/.ssh`, `~/.aws`, `~/.gnupg`, the cloud
+  CLIs' folders) are empty to them; they see no other process and hold no
+  capability, so they can't undo any of that. The installer adds
+  bubblewrap from the distro's package (on Ubuntu 24.04 only its AppArmor
+  profile may make a user namespace); without it the agent's commands are
+  refused, which `rovik-agentd doctor` and the app's connection test
+  report. A command that names `~/.rovik` still needs the user's approval.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
   read them, but root can. The app tells users: "Your API keys are stored in
   your account on this server, so chats there run while this computer is

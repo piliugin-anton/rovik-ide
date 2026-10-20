@@ -42,8 +42,8 @@ pub struct Probe {
     pub chrome_headless: bool,
     /// Unprivileged user namespaces: Chrome's sandbox needs them.
     pub user_namespaces: bool,
-    /// `bwrap`, which confines the chats' commands; without it the daemon's
-    /// own user namespace does, where allowed. Rovik's install adds it.
+    /// `bwrap`, which sandboxes the agent's commands; without it they're
+    /// refused. Rovik's install adds it.
     pub bwrap: Option<String>,
     /// `/dev/fuse`, and the helper that mounts without root: the virtual
     /// files need both.
@@ -280,13 +280,6 @@ impl Probe {
                 "unprivileged user namespaces are off, so Chrome runs without its sandbox".into(),
             );
         }
-        if self.bwrap.is_none() {
-            missing.push(
-                "bubblewrap isn't installed, so the chats' commands are confined with the \
-                 daemon's own user namespace where allowed (Rovik's install adds it)"
-                    .into(),
-            );
-        }
         let virtual_files = match (self.fuse, &self.fusermount) {
             (true, Some(_)) => None,
             (false, _) => Some("there's no /dev/fuse"),
@@ -295,16 +288,27 @@ impl Probe {
         if let Some(why) = virtual_files {
             missing.push(format!("{why}, so CLM chats fall back to trimming"));
         }
-        match missing.is_empty() {
-            true => Step::new(
+        // bubblewrap isn't optional: the agent's commands are refused
+        // without it.
+        let required = self.bwrap.is_none().then_some(
+            "bubblewrap isn't installed, so the agent's commands are refused there until it is \
+             (Rovik's install adds it).",
+        );
+        let optional = (!missing.is_empty()).then(|| format!("Optional: {}.", missing.join("; ")));
+        match (required, optional) {
+            (None, None) => Step::new(
                 Check::Isolation,
                 Outcome::Passed,
                 "User namespaces, bubblewrap and FUSE are there.".into(),
             ),
-            false => Step::new(
+            (None, Some(optional)) => Step::new(Check::Isolation, Outcome::Warning, optional),
+            (Some(required), None) => {
+                Step::new(Check::Isolation, Outcome::Warning, required.into())
+            }
+            (Some(required), Some(optional)) => Step::new(
                 Check::Isolation,
                 Outcome::Warning,
-                format!("Optional: {}.", missing.join("; ")),
+                format!("{required} {optional}"),
             ),
         }
     }

@@ -43,8 +43,8 @@ else
     say userns no
   fi
 fi
-# bubblewrap confines the chats' commands (the daemon's own user namespace
-# does without it, where allowed); Rovik's install adds it.
+# bubblewrap sandboxes the agent's commands, which are refused without it;
+# Rovik's install adds it.
 say bwrap "$(command -v bwrap 2>/dev/null)"
 if [ -e /dev/fuse ]; then say fuse yes; else say fuse no; fi
 say fusermount "$(command -v fusermount3 2>/dev/null || command -v fusermount 2>/dev/null)"

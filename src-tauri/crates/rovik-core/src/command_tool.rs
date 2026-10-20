@@ -398,6 +398,10 @@ fn run_blocking(
             root.display()
         ));
     }
+    // On Linux the sandbox is required: without it, no command runs.
+    if let Some(why) = crate::overlay::confine::refusal() {
+        return Err(why);
+    }
 
     // A command predicted heavy waits for a slot; the wait isn't part of
     // its time or its timeout.
@@ -583,13 +587,10 @@ mod tests {
         let out = shell_command("cat /proc/self/oom_score_adj", None).output();
         // An isolated chat's too, whichever way it's confined.
         let dir = std::env::temp_dir().join(format!("oom-confined-{}", std::process::id()));
-        let c = crate::overlay::confine::Confine {
-            view: dir.join("view"),
-            project: dir.join("project"),
-            hide: Vec::new(),
-        };
-        std::fs::create_dir_all(&c.view).unwrap();
-        std::fs::create_dir_all(&c.project).unwrap();
+        std::fs::create_dir_all(dir.join("view")).unwrap();
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        let c =
+            crate::overlay::confine::Confine::redirecting(dir.join("view"), dir.join("project"));
         let confined = crate::overlay::confine::available(&c)
             .then(|| shell_command("cat /proc/self/oom_score_adj", Some(&c)).output());
         let _ = std::fs::write(own, "0");
@@ -804,7 +805,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(out.timed_out);
+        // In the sandbox (Linux), the command's pid namespace ends with the
+        // shell: nothing it left behind outlives it to hold the output, so
+        // the command just ends. Elsewhere the child holds it until the
+        // timeout.
+        let sandboxed = crate::overlay::confine::hiding_if_available(&dir).is_some();
+        assert_eq!(out.timed_out, !sandboxed);
         assert_eq!(out.stdout.trim(), "up");
         assert_eq!(out.exit_code, Some(0));
     }

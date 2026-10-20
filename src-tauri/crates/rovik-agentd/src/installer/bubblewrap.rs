@@ -1,13 +1,13 @@
-//! bubblewrap on a cloud host: the strong way the daemon confines the
-//! commands the agent runs (`rovik_core::overlay::confine`). Each runs in
-//! a mount namespace where the credential stores (`~/.rovik`, the keys
-//! among them) are empty, with its capabilities dropped so it can't undo
-//! that. The distro's own package, never a download: on Ubuntu 24.04 it's
-//! the package's AppArmor profile that lets bwrap make a user namespace at
-//! all. `install` and `admin upgrade` put it in place when `bwrap` is
-//! missing, and `admin bubblewrap` tries again. Without it, the daemon
-//! makes a user namespace itself where the kernel allows one, and keeps to
-//! its text checks where not.
+//! bubblewrap on a cloud host: the sandbox the daemon runs the agent's
+//! commands in (`rovik_core::overlay::confine`), required on Linux. Each
+//! command runs with the system read-only but for its own folders, the
+//! credential stores (`~/.rovik`, the keys among them) empty, no other
+//! process in sight and every capability dropped, so it can't undo that.
+//! The distro's own package, never a download: on Ubuntu 24.04 it's the
+//! package's AppArmor profile that lets bwrap make a user namespace at all.
+//! `install` and `admin upgrade` put it in place when `bwrap` is missing,
+//! and `admin bubblewrap` tries again. Without it, the daemon refuses the
+//! agent's commands.
 
 use super::packages::PackageManager;
 use super::{System, INSTALLED};
@@ -28,7 +28,7 @@ pub(super) fn ensure(sys: &System) -> Result<(), String> {
         )
     })?;
     manager.install(sys, &[PACKAGE])?;
-    println!("{PACKAGE} is installed: the chats' commands are confined with it.");
+    println!("{PACKAGE} is installed: the agent's commands run sandboxed with it.");
     Ok(())
 }
 
@@ -43,8 +43,7 @@ pub(super) fn ensure_or_say(sys: &System) {
 /// What's said when bubblewrap couldn't be installed.
 pub(super) fn not_installed(why: &str) -> String {
     format!(
-        "{PACKAGE} isn't installed: {why}\nThe chats' commands are confined with the daemon's \
-         own user namespace where the kernel allows one, and by text checks where not. To try \
-         again: sudo {INSTALLED} admin bubblewrap"
+        "{PACKAGE} isn't installed: {why}\nThe agent's commands are refused on this server \
+         until it is. To try again: sudo {INSTALLED} admin bubblewrap"
     )
 }

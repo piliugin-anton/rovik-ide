@@ -64,8 +64,8 @@
       "icons/icon.ico"
     ],
     "linux": {
-      "deb": { "recommends": ["bubblewrap"] },
-      "rpm": { "recommends": ["bubblewrap"] }
+      "deb": { "depends": ["bubblewrap"] },
+      "rpm": { "depends": ["bubblewrap"] }
     }
   }
 }

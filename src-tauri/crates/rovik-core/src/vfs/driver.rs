@@ -46,13 +46,7 @@ pub enum InstallOutcome {
 // --- Linux ------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-fn which(name: &str) -> Option<std::path::PathBuf> {
-    let path = crate::process::child_var("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .chain(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(Into::into))
-        .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
-}
+use crate::distro::which;
 
 #[cfg(target_os = "linux")]
 pub fn status() -> DriverStatus {
@@ -87,19 +81,11 @@ pub fn status() -> DriverStatus {
 /// manager and loads the kernel module.
 #[cfg(target_os = "linux")]
 fn linux_install_script() -> Option<String> {
-    let install = [
-        ("apt-get", "export DEBIAN_FRONTEND=noninteractive; apt-get install -y fuse3 || { apt-get update && apt-get install -y fuse3; }"),
-        ("dnf", "dnf install -y fuse3"),
-        ("yum", "yum install -y fuse3"),
-        ("pacman", "pacman -S --needed --noconfirm fuse3"),
-        ("zypper", "zypper --non-interactive install fuse3"),
-        ("apk", "apk add fuse3"),
-        ("xbps-install", "xbps-install -y fuse3"),
-        ("emerge", "emerge --noreplace sys-fs/fuse:3"),
-    ]
-    .into_iter()
-    .find(|(manager, _)| which(manager).is_some())
-    .map(|(_, script)| script)?;
+    const FUSE3: crate::distro::Package = crate::distro::Package {
+        name: "fuse3",
+        gentoo: "sys-fs/fuse:3",
+    };
+    let install = crate::distro::install_script(&FUSE3)?;
     Some(format!(
         "set -e; {install}; modprobe fuse 2>/dev/null || true"
     ))
@@ -113,40 +99,13 @@ pub async fn install() -> Result<InstallOutcome, String> {
             command: None,
         });
     };
-    let is_root = unsafe { libc::geteuid() } == 0;
-    let graphical =
-        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let mut command = if is_root {
-        let mut c = crate::process::command("sh");
-        c.args(["-c", &script]);
-        c
-    } else if which("pkexec").is_some() && graphical {
-        let mut c = crate::process::command("pkexec");
-        c.args(["sh", "-c", &script]);
-        c
-    } else {
+    if let crate::distro::RootRun::Manual { message, command } =
+        crate::distro::run_as_root(&script, "Installing FUSE").await?
+    {
         return Ok(InstallOutcome::Manual {
-            message: "Installing FUSE needs administrator rights. Run this in a terminal:".into(),
-            command: Some(format!("sudo sh -c '{script}'")),
+            message,
+            command: Some(command),
         });
-    };
-    let out = crate::rt::spawn_blocking(move || command.output())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("starting the installer: {e}"))?;
-    match out.status.code() {
-        Some(0) => {}
-        // pkexec: the dialog was dismissed / not authorized.
-        Some(126) | Some(127) if !is_root => return Err("Installation was cancelled.".into()),
-        _ => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let last: Vec<&str> = stderr.lines().rev().take(5).collect();
-            return Err(format!(
-                "Installing FUSE failed ({}): {}",
-                out.status,
-                last.into_iter().rev().collect::<Vec<_>>().join("\n")
-            ));
-        }
     }
     let now = status();
     if now.installed {
