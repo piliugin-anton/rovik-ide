@@ -229,6 +229,9 @@ the page: `wsl --install -d <distro> --no-launch` run as an administrator
 restart brings it. The distribution isn't launched, so its default user
 is root; setting it up then makes a `rovik` user to run as.
 
+CI can't run WSL2 (no nested virtualization on its Windows runners): the
+checks to make by hand on a Windows machine are in `docs/wsl-checklist.md`.
+
 ## The browser
 
 The browser tools use Chrome for Testing, Google's build of Chromium for
