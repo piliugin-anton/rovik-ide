@@ -10,7 +10,9 @@ mod common;
 
 use common::ssh::{new_key, SshServer, PASSWORD, USER};
 use common::{start_request, until, Daemon, BINARY, COMPUTER};
-use rovik_client::connection_test::{test_connection, Check, Outcome, Step, TestOptions};
+use rovik_client::connection_test::{
+    test_connection, Check, Outcome, Step, TestOptions, TestTarget,
+};
 use rovik_client::ssh::{
     fingerprint, Answerer, Questions, ShellEvent, ShellOutput, Ssh, SshAuth, SshConnector,
     SshError, SshTarget,
@@ -224,7 +226,9 @@ async fn a_reply_too_big_for_a_frame_comes_through_post_call_while_events_keep_c
         .request::<Option<String>>(Request::AgentStart(Box::new(start)))
         .await
         .unwrap();
-    // The edit waits for the user, with an approval too big for a frame.
+    // The edit waits for the user, with an approval too big for a frame:
+    // it comes as a Resync. So does the model's message with the call, which
+    // is as big and comes first, so the approval is waited for itself.
     heard
         .until(|i| {
             matches!(
@@ -236,6 +240,18 @@ async fn a_reply_too_big_for_a_frame_comes_through_post_call_while_events_keep_c
             )
         })
         .await;
+    let waits = || async {
+        let status: AgentStatus = client.request(Request::AgentStatus).await.unwrap();
+        status.approvals.iter().any(|a| a.dialog_id == "chat-1")
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !waits().await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the edit never waited"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // Another chat, whose events come while the big read is answered.
     let (slow, _) = model(vec![Reply::Slow(300, Box::new(Reply::Text("Slowly.")))]).await;
@@ -535,7 +551,8 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
     let mut first = target(&server, password(PASSWORD));
     first.host_key = None;
     let options = TestOptions::default();
-    let steps = test_connection(&SshConnector::new(first), &options, &report).await;
+    let connector = SshConnector::new(first);
+    let steps = test_connection(TestTarget::Ssh(&connector), &options, &report).await;
     assert_eq!(
         outcomes(&steps),
         [
@@ -551,7 +568,8 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
 
     let mut wrong = target(&server, password("guess"));
     wrong.host_key = Some(seen.key.clone());
-    let steps = test_connection(&SshConnector::new(wrong), &options, &report).await;
+    let connector = SshConnector::new(wrong);
+    let steps = test_connection(TestTarget::Ssh(&connector), &options, &report).await;
     assert_eq!(
         outcomes(&steps),
         [
@@ -570,7 +588,7 @@ async fn the_connection_test_stops_at_the_key_then_goes_through_to_the_daemon() 
         ..Default::default()
     };
     told.lock().unwrap().clear();
-    let steps = test_connection(&connector, &options, &report).await;
+    let steps = test_connection(TestTarget::Ssh(&connector), &options, &report).await;
     assert_eq!(*told.lock().unwrap(), steps);
     let checks: Vec<Check> = steps.iter().map(|s| s.check).collect();
     let expected = [

@@ -11,9 +11,9 @@ mod common;
 
 use common::ssh::{Account, SshServer, PASSWORD, USER};
 use common::BINARY;
-use rovik_client::connection_test::{test_connection, Check, Outcome, TestOptions};
-use rovik_client::deploy::{self, Binary, Builds, DeployError, Layout};
-use rovik_client::ssh::{SshAuth, SshConnector, SshTarget};
+use rovik_client::connection_test::{test_connection, Check, Outcome, TestOptions, TestTarget};
+use rovik_client::deploy::{self, Binary, Builds, DeployError, Layout, Target};
+use rovik_client::ssh::{Ssh, SshAuth, SshConnector, SshTarget};
 use rovik_client::Identity;
 use rovik_protocol::{Secret, PROTOCOL};
 use sha2::{Digest, Sha256};
@@ -125,6 +125,18 @@ impl Host {
         SshConnector::new(target).with_attach(attach)
     }
 
+    /// What the deploy works on: an SSH host's session and connector, as
+    /// the hosts page gives it.
+    fn target<'a>(ssh: &'a Ssh, connector: &'a SshConnector) -> Target<'a> {
+        Target {
+            shell: ssh,
+            connector,
+            root: None,
+            name: "test",
+            browser: true,
+        }
+    }
+
     fn layout(&self) -> Layout {
         Layout {
             installed: self.installed().to_string_lossy().into_owned(),
@@ -203,10 +215,11 @@ fn texts_under(dir: &Path) -> Vec<(PathBuf, String)> {
 async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     let host = Host::new().await;
     let connector = host.connector();
+    let ssh = connector.session().await.unwrap();
     let build = Binary::at(host.bin.join("build")).unwrap();
     let password = Secret("the user's sudo password".into());
     let deployed = deploy::deploy(
-        &connector,
+        &Host::target(&ssh, &connector),
         &Builds::Own(build.clone()),
         "laptop",
         Some(&password),
@@ -256,11 +269,10 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     }
 
     // The check each connection makes (D5).
-    let ssh = connector.session().await.unwrap();
-    let checked = deploy::check_install(&ssh, &known, None, &user, &host.layout()).await;
+    let checked = deploy::check_install(ssh.as_ref(), &known, None, &user, &host.layout()).await;
     assert_eq!(checked.unwrap().sha256, known[0]);
     let other = ["00".repeat(32)];
-    let changed = deploy::check_install(&ssh, &other, None, &user, &host.layout()).await;
+    let changed = deploy::check_install(ssh.as_ref(), &other, None, &user, &host.layout()).await;
     let Err(DeployError::Changed(now)) = changed else {
         panic!("a binary changed behind the app's back wasn't reported: {changed:?}");
     };
@@ -277,14 +289,15 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
         layout: host.layout(),
         releases: None,
     };
-    let steps = test_connection(&connector, &options(&"00".repeat(32)), &|_| {}).await;
+    let tested = || TestTarget::Ssh(&connector);
+    let steps = test_connection(tested(), &options(&"00".repeat(32)), &|_| {}).await;
     let last = steps.last().unwrap();
     assert_eq!((last.check, last.outcome), (Check::Build, Outcome::Confirm));
     assert_eq!(
         last.build.as_ref().map(|b| b.sha256.as_str()),
         Some(known[0].as_str())
     );
-    let steps = test_connection(&connector, &options(&known[0]), &|_| {}).await;
+    let steps = test_connection(tested(), &options(&known[0]), &|_| {}).await;
     let build = steps.iter().find(|s| s.check == Check::Build).unwrap();
     assert_eq!(build.outcome, Outcome::Passed, "{}", build.message);
     // A connector that checks on each connection looks where the installer
@@ -297,7 +310,7 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     );
 
     // Removal: what goes, then gone.
-    let removal = deploy::removal(&connector).await.unwrap();
+    let removal = deploy::removal(ssh.as_ref()).await.unwrap();
     let folders: Vec<&str> = removal.folders.iter().map(|(p, _)| p.as_str()).collect();
     let home = host.home.display();
     let expected = [
@@ -306,7 +319,7 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     ];
     assert_eq!(folders, expected);
     assert!(removal.folders[0].1 > 0, "sizes: {removal:?}");
-    deploy::remove(&connector, &removal, &host.layout())
+    deploy::remove(&Host::target(&ssh, &connector), &removal, &host.layout())
         .await
         .unwrap();
     assert!(!host.home.join(".rovik").exists());
@@ -328,9 +341,9 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_setup_script_runs_at_home_and_says_how_it_went() {
     let host = Host::new().await;
-    let connector = host.connector();
+    let ssh = host.connector().session().await.unwrap();
     let script = "echo one\necho two >&2\ntouch setup-ran\nexit 3\n";
-    let run = deploy::run_setup(&connector, script).await.unwrap();
+    let run = deploy::run_setup(ssh.as_ref(), script).await.unwrap();
     assert_eq!(run.status, Some(3));
     assert_eq!(run.output, "one\ntwo\n");
     assert!(host.home.join("setup-ran").exists());
@@ -358,8 +371,10 @@ async fn a_root_login_is_refused() {
     };
     let build = dir.0.join("build");
     std::fs::write(&build, "#!/bin/sh\n").unwrap();
+    let connector = SshConnector::new(target);
+    let ssh = connector.session().await.unwrap();
     let refused = deploy::deploy(
-        &SshConnector::new(target),
+        &Host::target(&ssh, &connector),
         &Builds::Own(Binary::at(build).unwrap()),
         "laptop",
         None,
