@@ -4794,7 +4794,7 @@ dependencies = [
 
 [[package]]
 name = "rovik-agentd"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "axum",
  "futures-util",
@@ -4822,7 +4822,7 @@ dependencies = [
 
 [[package]]
 name = "rovik-client"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "argon2",
  "base64 0.23.1",
@@ -4853,7 +4853,7 @@ dependencies = [
 
 [[package]]
 name = "rovik-core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4960,7 +4960,7 @@ dependencies = [
 
 [[package]]
 name = "rovik-headless"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "rovik-core",
  "serde",
@@ -4972,7 +4972,7 @@ dependencies = [
 
 [[package]]
 name = "rovik-ide"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "flate2",
  "futures-util",
@@ -5005,7 +5005,7 @@ dependencies = [
 
 [[package]]
 name = "rovik-protocol"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "base64 0.23.1",
  "minisign-verify",
