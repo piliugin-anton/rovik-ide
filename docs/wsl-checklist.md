@@ -61,6 +61,13 @@ and `wsl --uninstall`).
 5. A second chat of the same project runs at the same time. _Each in its
    own worktree; neither sees the other's changes before they land._
 
+6. A new chat of a project set to CLMs (the context-mode menu): _no
+   "CLMs need Virtual files" warning before its first message; after it,
+   the context panel shows the agent's context file and its revisions, as
+   the daemon in WSL mounts the virtual files with FUSE. If it falls back
+   to Trimming instead, `wsl -d Ubuntu -u rovik -- ls /dev/fuse` and the
+   daemon's log (`~/.rovik/logs`) say why._
+
 ## 4. Startup failures are told plainly
 
 Each of these should show, on the WSL page and in a notification at the

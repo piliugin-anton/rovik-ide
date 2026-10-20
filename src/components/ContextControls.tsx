@@ -60,6 +60,11 @@ export default function ContextControls(props: {
   budget: number | null;
   /** A run is going: status is refreshed when it ends. */
   sending: boolean;
+  /**
+   * A Windows chat still on this computer: its first message takes it to
+   * WSL, whose virtual files its CLM context uses. This computer has none.
+   */
+  movesToWsl?: boolean;
   onOpenVirtualFiles: () => void;
 }) {
   const [status, setStatus] = createSignal<ClmStatus | null>(liveClmStatus(props.dialogId));
@@ -235,7 +240,7 @@ export default function ContextControls(props: {
   }
 
   const clm = () => mode() === 'clm';
-  const unavailable = () => clm() && status() !== null && !status()!.available;
+  const unavailable = () => clm() && status() !== null && !status()!.available && !props.movesToWsl;
 
   return (
     <div class="context-controls">
