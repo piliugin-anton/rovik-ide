@@ -2019,7 +2019,7 @@ pub async fn list_models(
     // that refuses it, a server that answers) is what the chats will meet.
     let client = crate::net::client().await;
     let req = client
-        .get(&url)
+        .get(crate::net::routed(&url).as_ref())
         .timeout(std::time::Duration::from_secs(15))
         .headers(crate::opencode::headers(&url, None));
     let req = crate::anthropic::authorize(req, &url, api_key.as_deref().unwrap_or(""));

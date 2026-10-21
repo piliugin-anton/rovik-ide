@@ -95,11 +95,12 @@ export function run(cmd, args, { env = {}, cwd, timeoutMs, logFile } = {}) {
  * A helper server that prints its URL on its first line (fake-model.mjs).
  * Rejects if it fails to start or exits before printing.
  */
-export function startServer(script, args) {
+export function startServer(script, args, { env = {} } = {}) {
   return new Promise((done, fail) => {
     installHandlers();
     const child = spawn(process.execPath, [script, ...args], {
       stdio: ['ignore', 'pipe', 'inherit'],
+      env: { ...process.env, ...env },
     });
     track(child, false);
     let started = false;

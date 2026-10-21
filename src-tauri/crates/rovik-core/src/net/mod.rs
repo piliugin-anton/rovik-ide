@@ -336,6 +336,48 @@ pub fn set_host_network(network: Option<HostNetwork>) {
     NET.set_host_network(network);
 }
 
+/// P08 (docs/design/evolve-plan.md): where requests to a provider go
+/// instead, if anywhere: (the provider's origin, the meter's).
+static METER: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// From now on the requests to `provider`'s origin (its scheme, host and
+/// port) go to `meter`'s instead, with the same path: an evaluation's
+/// meter, which counts what they use on their way to the provider and
+/// holds the key (scripts/eval/meter.mjs). Everything the app does by its
+/// provider (its API, its headers, its cache hints) still goes by the
+/// provider's URL: only where a request is sent changes ([`routed`]).
+pub fn meter_via(provider: &str, meter: &str) -> Result<(), String> {
+    let origin = |url: &str| {
+        reqwest::Url::parse(url.trim())
+            .map(|u| u.origin().ascii_serialization())
+            .map_err(|e| format!("{url}: {e}"))
+    };
+    let route = (origin(provider)?, origin(meter)?);
+    *METER.lock().unwrap_or_else(|e| e.into_inner()) = Some(route);
+    Ok(())
+}
+
+/// `url` as a request is sent to it: to the meter, for the provider it
+/// stands in for ([`meter_via`]); anything else as it is.
+pub fn routed(url: &str) -> std::borrow::Cow<'_, str> {
+    let route = METER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some((provider, meter)) = route else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    match reqwest::Url::parse(url) {
+        Ok(u) if u.origin().ascii_serialization() == provider => {
+            let query = u.query().map(|q| format!("?{q}")).unwrap_or_default();
+            std::borrow::Cow::Owned(format!("{meter}{}{query}", u.path()))
+        }
+        _ => std::borrow::Cow::Borrowed(url),
+    }
+}
+
+/// Requests go where they say again (a metered run is over).
+pub fn unmeter() {
+    *METER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// The proxy a request to `url` goes through, as a message says it ("the
 /// HTTP proxy at proxy.example.com:3128"); none when it goes directly or
 /// through the system's.

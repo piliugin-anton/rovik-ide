@@ -78,6 +78,7 @@ import { parseNameStatus, tamperCalls, tamperReasons, tampering } from './integr
 import { identityProblem } from './identity.mjs';
 import { detectableEffect, meanRunVariance, moduleOf, tasksFor } from './stats.mjs';
 import { ATTEMPT_ARMS, attemptsResult } from './arms.mjs';
+import { ledgerTotals, usageGap } from './usage.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -653,14 +654,33 @@ async function runOnce(task, rep, campaignDir, opts) {
     // unless the task allows them, from the web tools.
     ...confinementArgs({ hide: HIDDEN, show, writable, web: task.web === true }),
   ];
+  // P08: the meter in the provider's place: the run's tokens and cost are
+  // counted there, outside the build being evaluated, which gets a key
+  // that opens nothing.
+  const settings = readJson(opts.settings);
+  const ledger = join(dir, 'meter.jsonl');
+  rmSync(ledger, { force: true });
+  const meter = await startServer(
+    join(EVAL, 'meter.mjs'),
+    [new URL(settings.profile.baseUrl).origin, ledger, String(caps.maxTokens)],
+    { env: { ROVIK_METER_KEY: apiKeyOf(settings) } }
+  );
+  args.push('--meter', meter.url);
+  const metered = settings.apiKeyEnv ? { [settings.apiKeyEnv]: 'rovik-metered' } : {};
   const started = Date.now();
-  const r = await run(opts.runner, args, {
-    env: { ...env, ...(opts.env ?? {}) },
-    cwd: ws,
-    timeoutMs: (caps.timeoutSeconds + 300) * 1000,
-    logFile: join(dir, 'runner.log'),
-  });
+  let r;
+  try {
+    r = await run(opts.runner, args, {
+      env: { ...env, ...metered, ...(opts.env ?? {}) },
+      cwd: ws,
+      timeoutMs: (caps.timeoutSeconds + 300) * 1000,
+      logFile: join(dir, 'runner.log'),
+    });
+  } finally {
+    meter.stop();
+  }
   const rep_ = existsSync(report) ? readJson(report) : null;
+  const usage = meterUsage(ledger, settings.price, rep_);
   sh('git', ['-C', ws, 'add', '-A']);
   writeFileSync(join(dir, 'changes.diff'), sh('git', ['-C', ws, 'diff', '--cached', start]).stdout);
   const integrity = integrityOf(task, ws, start, opts.integrity);
@@ -674,13 +694,17 @@ async function runOnce(task, rep, campaignDir, opts) {
   const result = {
     task: task.id,
     rep,
-    // P02: the tests pass, and nothing decides differently how they run.
-    success: g.success && !integrity.tampered.length,
-    tampered: integrity.tampered,
+    // P02: the tests pass, and nothing decides differently how they run;
+    // P08: and the runner told the truth about what it used.
+    success: g.success && !integrity.tampered.length && !usage.gap,
+    tampered: [...integrity.tampered, ...(usage.gap ? [usage.gap] : [])],
     outcome: rep_?.outcome ?? (r.timedOut ? 'runner-timeout' : 'runner-failed'),
-    costUsd: rep_?.costUsd ?? null,
-    costSource: rep_?.costSource ?? 'unknown',
-    tokens: rep_?.usage?.totalTokens ?? 0,
+    // P08: by the meter, beside what the runner said.
+    costUsd: usage.costUsd,
+    costSource: usage.costSource,
+    tokens: usage.tokens,
+    runner: { costUsd: rep_?.costUsd ?? null, tokens: rep_?.usage?.totalTokens ?? 0 },
+    meter: { replies: usage.replies, missing: usage.missing },
     peakLeadContext: rep_?.usage?.peakLeadContext ?? 0,
     ms: rep_?.ms ?? Date.now() - started,
     interventions: rep_?.interventions ?? 0,
@@ -707,6 +731,27 @@ async function runOnce(task, rep, campaignDir, opts) {
   writeJson(join(dir, 'grade.json'), { ...g, integrity: integrity.flags, results });
   writeJson(resultFile, result);
   return result;
+}
+
+/** P08: the provider's key, as a settings file gives it: from the environment, or its own. */
+const apiKeyOf = (settings) =>
+  (settings.apiKeyEnv ? process.env[settings.apiKeyEnv] : settings.profile?.apiKey) ?? '';
+
+/**
+ * P08: what a run used, by its meter's ledger (`ledgerTotals`), and
+ * whether the runner's own count fell short of it (`usageGap`; a runner
+ * that wrote no report, having failed, isn't asked).
+ */
+function meterUsage(ledger, price, report) {
+  const lines = existsSync(ledger)
+    ? readFileSync(ledger, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : [];
+  const totals = ledgerTotals(lines, price);
+  const gap = report ? usageGap(report.usage?.totalTokens ?? 0, totals) : '';
+  return { ...totals, gap };
 }
 
 /**
@@ -1408,6 +1453,17 @@ const DRY_RUN_MODES = [
     applies: (task) => !!tamperCalls(task),
     model: (task) => ['cheat', callsFile(task, 'tamper', tamperCalls(task))],
   },
+  // P08: a runner built to claim a third of what it used (three replies
+  // of 1,050 tokens at the dry run's price): counted by the meter, caught.
+  {
+    mode: 'underreport',
+    rep: 5,
+    pass: false,
+    tampered: true,
+    runner: join(EVAL, 'fake-runner.mjs'),
+    costUsd: 3 * (1000 * 1 + 50 * 10) * 1e-6,
+    model: () => ['idle'],
+  },
 ];
 
 /** The pipeline end to end without a provider, each task with each model. */
@@ -1425,16 +1481,23 @@ async function dryRun(flags) {
     const settings = join(campaignDir, `settings-${task.id}-${m.mode}.json`);
     writeJson(settings, fakeSettings(model.url));
     try {
+      const runner = m.runner ?? bins.runner;
       const r = await runOne(task, m.rep, join(campaignDir, m.mode), {
         settings,
         policy,
         ...bins,
+        runner,
+        // P03: another runner, another build.
+        build: m.runner
+          ? { ...bins.build, runnerCommit: null, runnerHash: fileHash(runner) }
+          : bins.build,
         slot,
       });
       const runDir = join(campaignDir, m.mode, task.id, String(m.rep));
       const found = canariesIn(readRun(runDir), [canaryOf(task)]);
       const tampered = r.tampered.length > 0;
-      const ok = r.success === m.pass && !found.length && tampered === !!m.tampered;
+      const costRight = m.costUsd === undefined || Math.abs(r.costUsd - m.costUsd) < 1e-12;
+      const ok = r.success === m.pass && !found.length && tampered === !!m.tampered && costRight;
       console.log(
         `${task.id} (${m.mode}): ${r.success ? 'pass' : 'fail'}, ${r.outcome}, ` +
           `${r.grade.passed}/${r.grade.required} tests, $${(r.costUsd ?? 0).toFixed(4)} ` +

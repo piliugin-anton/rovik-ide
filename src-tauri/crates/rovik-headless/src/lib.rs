@@ -34,6 +34,9 @@
 //! away and `--no-web` the web tools. A sandbox that can't enforce these
 //! here refuses the run. The report then holds the run's whole transcript,
 //! its subagents' included, for what reads it (the canary check, a person).
+//! `--meter URL` (P08) sends the run's requests to a meter that stands in
+//! for the provider and counts what they use (scripts/eval/meter.mjs);
+//! what the runner does by its provider still goes by the provider's URL.
 //!
 //! The settings file:
 //!
@@ -229,6 +232,9 @@ pub struct Args {
     /// "campaign/task/repetition"): in the report. The chat's id is the
     /// runner's own.
     pub run_id: Option<String>,
+    /// P08: a meter that stands in for the provider (`net::meter_via`):
+    /// it counts what the run's requests use, outside the runner.
+    pub meter: Option<String>,
 }
 
 /// A message the runner sends the run while it works (`--steer TEXT@N`).
@@ -264,7 +270,7 @@ pub const USAGE: &str =
     "usage: rovik-headless --project DIR --settings FILE --prompt TEXT --out FILE \
      [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N] \
      [--mode agent|plan|autopilot] [--effort balanced|thorough] [--steer TEXT@N]... \
-     [--hide DIR]... [--show DIR]... [--writable DIR]... [--offline] [--no-web] [--run-id ID]";
+     [--hide DIR]... [--show DIR]... [--writable DIR]... [--offline] [--no-web] [--run-id ID] [--meter URL]";
 
 pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut project = None;
@@ -281,6 +287,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut restriction = Restriction::default();
     let mut no_web = false;
     let mut run_id = None;
+    let mut meter = None;
     let mut it = argv.iter();
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -328,6 +335,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--offline" => restriction.offline = true,
             "--no-web" => no_web = true,
             "--run-id" => run_id = Some(value()?),
+            "--meter" => meter = Some(value()?),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -349,6 +357,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         restriction,
         no_web,
         run_id,
+        meter,
     })
 }
 
@@ -496,6 +505,11 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     }
     let _restricted = confine::restricted(&args.restriction);
     let mut settings: Settings = read_json(&args.settings)?;
+    // P08: the run's requests go to the meter, for as long as it lasts.
+    let _metered = match &args.meter {
+        Some(meter) => Some(Metered::via(&settings.profile.base_url, meter)?),
+        None => None,
+    };
     if settings.profile.api_key.is_empty() {
         if let Some(var) = &settings.api_key_env {
             settings.profile.api_key = std::env::var(var).unwrap_or_default();
@@ -773,6 +787,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             .unwrap_or(Value::Null);
     }
     report["runId"] = json!(args.run_id);
+    report["meter"] = json!(args.meter);
     // P01: what kept the run from its task's answers, and everything it
     // and its subagents said and saw.
     report["sandbox"] = json!({
@@ -826,6 +841,22 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         let _ = std::fs::remove_dir_all(&data);
     }
     Ok(report)
+}
+
+/// P08: the run's requests sent to a meter while this lives.
+struct Metered;
+
+impl Metered {
+    fn via(provider: &str, meter: &str) -> Result<Metered, String> {
+        rovik_core::net::meter_via(provider, meter)?;
+        Ok(Metered)
+    }
+}
+
+impl Drop for Metered {
+    fn drop(&mut self) {
+        rovik_core::net::unmeter();
+    }
 }
 
 /// The subagents' chats the report names (each `subagent` record's child).
@@ -1225,6 +1256,9 @@ mod tests {
         // P05: which run this is.
         let a = with(&["--run-id", "baseline/mi-subfactorial/2"]).unwrap();
         assert_eq!(a.run_id.as_deref(), Some("baseline/mi-subfactorial/2"));
+        // P08: a meter in the provider's place.
+        let a = with(&["--meter", "http://127.0.0.1:4100"]).unwrap();
+        assert_eq!(a.meter.as_deref(), Some("http://127.0.0.1:4100"));
     }
 
     #[test]
@@ -1620,6 +1654,7 @@ mod tests {
             restriction: Restriction::default(),
             no_web: false,
             run_id: None,
+            meter: None,
         };
         let err = run(&args(dir.join("missing"))).await.unwrap_err();
         assert!(err.contains("missing"), "{err}");

@@ -117,8 +117,9 @@ async fn send_once(
     timeout: Duration,
     chat_id: Option<&str>,
 ) -> Result<serde_json::Value, ChatError> {
+    // P08: an evaluation's meter, when one stands in for the provider.
     let req = client
-        .post(url.clone())
+        .post(crate::net::routed(url.as_str()).as_ref())
         .timeout(timeout)
         .headers(crate::opencode::headers(url.as_str(), chat_id))
         .json(body);

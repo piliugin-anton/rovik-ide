@@ -140,6 +140,22 @@ stops with outcome `budget`) and 30 minutes (outcome `timeout`).
 - `run` (the baseline) starts only if the pilot's mean cost a run, times the
   runs planned, fits the $75 cap. Otherwise, run fewer tasks (`--tasks`) or
   repetitions (`--repeats`).
+- A run's tokens and cost are counted outside the runner (P08 in
+  [docs/design/evolve-plan.md](../../docs/design/evolve-plan.md)): each
+  run's requests go through a meter (`meter.mjs`, the runner's
+  `--meter`), which passes them on to the provider and writes what each
+  reply says it used to `meter.jsonl` in the run's folder. The runner gets
+  a key that opens nothing (its `apiKeyEnv` set to a dummy); the meter
+  holds the real one, so a runner that went around it would get no
+  answer. Everything the runner does by its provider (its API, its cache
+  hints) still goes by the provider's URL: only where requests are sent
+  changes (`net::routed`). The meter also refuses requests once a run has
+  used its tokens. A runner whose own count falls more than a tenth short
+  of the meter's is graded `tampered` (the dry run's fifth model is such a
+  runner, `fake-runner.mjs`); `result.json` keeps both counts (`runner`,
+  `meter`). Node's `fetch` takes no proxy from the environment unless told
+  (`NODE_USE_ENV_PROXY=1` where Node has it): a provider behind a proxy
+  needs it.
 - A run's cost is the provider's own figure when it reports one (`usage.cost`),
   else tokens × the `price` in the settings file. The settings must have a
   price, and a run whose cost can't be known stops the campaign. That
@@ -202,11 +218,14 @@ program by another name (a script, an alias) isn't caught. It allows everything 
 recommended answer to questions. Each question answered (and each approval,
 when settings ask for them) counts as an intervention in the report.
 
-`dry-run` runs each task three times with `fake-model.mjs`, a Python task
-four. The first model applies the reference change and must grade as a
+`dry-run` runs each task four times with `fake-model.mjs`, a Python task
+five. The first model applies the reference change and must grade as a
 success. The second changes nothing and must grade as a failure. The third
-looks for the answer and must find nothing (above). The fourth tampers with
-how the tests run and must be graded `tampered` (Grading). This checks the workspace, runner, sandbox, grading and
+looks for the answer and must find nothing (above). On a Python task, the
+fourth tampers with how the tests run and must be graded `tampered`
+(Grading). The last run is a runner that under-reports what it used
+(`fake-runner.mjs`): it must be graded `tampered`, its cost the meter's
+(Budget). This checks the workspace, runner, sandbox, grading and
 cost accounting without a provider. The scripted model's results say nothing
 about any real model.
 

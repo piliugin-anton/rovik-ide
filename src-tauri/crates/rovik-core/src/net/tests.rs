@@ -1327,3 +1327,29 @@ async fn a_proxy_that_never_answers_runs_out_the_timeout() {
     );
     assert!(started.elapsed() < Duration::from_secs(5));
 }
+
+/// P08: once a meter stands in for a provider, requests to the provider's
+/// origin go to the meter with the same path and query; any other, and
+/// the URL the app reasons by, stay as they are.
+#[test]
+fn a_meter_stands_in_for_its_provider() {
+    super::meter_via("https://openrouter.ai/api/v1", "http://127.0.0.1:4100").unwrap();
+    assert_eq!(
+        super::routed("https://openrouter.ai/api/v1/chat/completions?x=1"),
+        "http://127.0.0.1:4100/api/v1/chat/completions?x=1"
+    );
+    assert_eq!(
+        super::routed("https://api.anthropic.com/v1/messages"),
+        "https://api.anthropic.com/v1/messages"
+    );
+    assert_eq!(
+        super::routed("https://openrouter.ai:8443/x"),
+        "https://openrouter.ai:8443/x"
+    );
+    assert!(super::meter_via("not a url", "http://127.0.0.1:1").is_err());
+    super::unmeter();
+    assert_eq!(
+        super::routed("https://openrouter.ai/api/v1/chat/completions"),
+        "https://openrouter.ai/api/v1/chat/completions"
+    );
+}

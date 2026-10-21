@@ -1032,7 +1032,8 @@ async fn attempt(
     // Anthropic's API takes the key as `x-api-key` and wants its version
     // (and the betas the body uses) named (crate::anthropic); everyone
     // else, a bearer token.
-    let request = client.post(spec.url);
+    // P08: an evaluation's meter, when one stands in for the provider.
+    let request = client.post(crate::net::routed(spec.url).as_ref());
     let request = if spec.api == Api::Messages || crate::anthropic::is_anthropic(spec.url) {
         request.headers(crate::anthropic::headers(spec.api_key, Some(spec.body)))
     } else {
