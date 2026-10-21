@@ -24,9 +24,12 @@ const FRAME_START: &str = "[The user sent this message while you were working.";
 const DENIED_WITH_MESSAGE: &str = "Error: not run: the user denied an earlier call in this reply and sent a message. Read it first.";
 
 /// Commands wait for the user's approval: a run stops there, mid-reply,
-/// for as long as a test needs. No checklist gate, no checks.
+/// for as long as a test needs. Any command goes to the approval: one off
+/// the allowed list would be refused without asking (Windows' `dir`, which
+/// `list` runs there). No checklist gate, no checks.
 fn asks_for_commands() -> Permissions {
     Permissions {
+        allow_any_command: true,
         command_approval: permissions::ApprovalRule {
             required: true,
             by: permissions::Approver::User,
