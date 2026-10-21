@@ -422,8 +422,9 @@ This choice sets how far Evolve can go, and how much can go wrong.
 (lead, scout, reviewer, triage, test writer, judges) among those the user
 has enabled, its reasoning effort, the context mode (trimming or CLM),
 which subagent kinds are on and their budgets within today's limits
-(`SubagentConfig`), the checklist mode, Autopilot's effort, and the number
-of attempts per task once that exists (5.12 A).
+(`SubagentConfig`), the checklist mode, Autopilot's effort, the number of
+attempts per task once that exists (5.12 A), and, once they are settings,
+a few loop and context knobs (4.6).
 
 - **Pros:** a small, discrete space that a simple search covers well;
   nothing written by a model, so nothing to poison or inject; a change of a
@@ -530,6 +531,92 @@ profile changes only by adoption: no chat's agent writes `.rovik/profile/`
 (the write tool refuses it, and commands see it read-only where the
 sandbox can do that), and a change that arrives through git is used only
 after the user approves it (5.11 B).
+
+### 4.6 What a campaign produces
+
+In the mode, a campaign produces a **profile** for the project: a settings
+diff first, later a few lines of prompt text. Context handling and the loop
+are switched between options Rovik already has, not rewritten. Rewriting
+them takes code: scripts at hooks (stage 3b), or our own source campaign,
+which ends as a pull request.
+
+The agent's behaviour comes from three layers, and each stage reaches them
+differently:
+
+| What changes         | Prompt                                                                                                           | Context                                                                                                 | Loop flow                                                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| In Rovik today       | `CODING_AGENT_SYSTEM_PROMPT`, the project's instruction file, each subagent kind's prompt, the tool descriptions | History (trimming or CLM), the repo map (about 2% of the window), how check and tool output is cut down | The run loop, then the end-of-run chain: change review, checks, up to 3 repair rounds (rollback on regressions, triage for repeated failures); Autopilot's stages |
+| Stage 1: settings    | Only indirectly: a section appears when its feature is on                                                        | Trimming or CLM                                                                                         | Which existing paths run: subagent kinds, Balanced or Thorough, the checklist mode, the model and effort for each role                                            |
+| Stage 2: prose       | Additions: project notes, lessons, notes added to the named sections                                             | That text goes into every request                                                                       | It can only ask the model; the harness runs the same flow                                                                                                         |
+| Stage 3b: hooks      | —                                                                                                                | A note before a turn                                                                                    | A step added: a check before finishing, a note after the same failure twice                                                                                       |
+| Source campaign (us) | Anything                                                                                                         | Anything                                                                                                | Anything, through a pull request                                                                                                                                  |
+
+What each hands over, for example (the numbers are made up):
+
+- **Stage 1:** `.rovik/profile/settings.json`, with a card such as "success
+  the same within 10 points, 30% cheaper":
+
+  ```json
+  {
+    "lead": { "reasoningEffort": "medium" },
+    "contextMode": "clm",
+    "subagents": {
+      "enabled": true,
+      "kinds": { "scout": { "enabled": true, "models": ["<cheaper model>"] } }
+    }
+  }
+  ```
+
+- **Stage 2:** a short `instructions.md` ("Rust tests:
+  `cargo test --lib -p rovik-core <filter>`; the full suite takes about 10
+  minutes"; "a new Tauri command must also be registered in
+  `src-tauri/src/lib.rs`"), and lessons with their evidence and an expiry.
+- **Source campaign:** a pull request, such as "show the agent the first
+  error per file instead of the first 8,000 characters of check output".
+
+Which layer has paid off elsewhere:
+
+- The original DGM's coding gains (SWE-bench from 20% to 50%) came from
+  tools, context and the loop: its abstract names "better code editing
+  tools, long-context window management, peer-review mechanisms".
+- DGM-H's gains outside coding came from prompts: checklists, decision
+  rules, domain facts (app. E.2).
+- In coding, prompt text rarely helps: instruction files didn't raise
+  success in general, and added over 20% to cost (2.1).
+- Rovik already has what the DGM discovered: edits by exact text, outlines
+  and reads by symbol, trimming and CLM, a change reviewer, Thorough's two
+  implementers with a pick, and repair rounds with rollback.
+
+So, for Rovik, a campaign's result is most likely tuning rather than
+invention: a cheaper configuration per project, a few lines of project
+knowledge, and, through our own pull requests, the occasional fix to the
+loop or the context for everyone.
+
+**Loop and context knobs for stage 1.** The layers where coding gains came
+from are mostly out of the race's reach, because their knobs are constants
+in the code:
+
+- repair rounds: `MAX_VERIFY_ROUNDS` = 3 and `STALLED_ROUNDS` = 2
+  (`agent_run/verify.rs`);
+- the check output the agent sees: `FAILURE_OUTPUT_CHARS` = 8,000
+  (`agent_run/verify.rs`);
+- the repo map: about 2% of the window, rebuilt at most every 120 seconds
+  (`MAP_MAX_AGE`, `agent_run/run.rs`);
+- CLM's thresholds: `TIERS` at 25, 50 and 75%, `URGENT` at 90%
+  (`clm/prompt.rs`);
+- change reviews: `MAX_CHANGE_REVIEWS_PER_RUN` = 3 and
+  `MAX_REVIEWS_IN_ROW` = 2 (`agent_run/change_review.rs`); checklist
+  nudges: `MAX_CHECKLIST_NUDGES` = 2 (`agent_run/run.rs`).
+
+Making a few of them allowed settings would let the race tune the loop and
+the context with no model-written change and nothing to poison.
+
+- **Pros:** safe and measurable; it aims at the layers that paid off in
+  coding; the defaults stay as they are until a race beats them.
+- **Cons:** every exposed knob is something to support and document; knobs
+  interact; small effects need many runs to show (5.5 D).
+- **Verdict:** milestone R (R04), after the first race (R02) shows whether
+  settings move anything.
 
 ---
 
@@ -1167,11 +1254,12 @@ request, the exact check commands, tests in the same task, and a note under
 
 ### Milestone R: settings, raced
 
-| ID  | Task                                                                                                                                                                                            | Needs | Done when                                                                                      |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------- |
-| R01 | `eval.mjs race`: candidates from a list of allowed settings, run block by block on the same tasks, dropped by paired tests with Holm's correction (5.2 F), decided by D11                       | P07   | A dry run with scripted outcomes drops a clearly worse candidate and keeps a cheaper equal one |
-| R02 | The first race on our 30 tasks: the four subagent kinds (the subagents plan's G02 variants), the lead's reasoning effort, a cheaper model for scouts, reviewer and triage, CLM against trimming | R01   | Its result, with the MDE, in `docs/design/evolve-results.md`                                   |
-| R03 | A winning configuration goes into the defaults by hand, in a pull request, as `apply-defaults` does for the subagent kinds                                                                      | W03   | The pull request cites the race                                                                |
+| ID  | Task                                                                                                                                                                                            | Needs | Done when                                                                                              |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------ |
+| R01 | `eval.mjs race`: candidates from a list of allowed settings, run block by block on the same tasks, dropped by paired tests with Holm's correction (5.2 F), decided by D11                       | P07   | A dry run with scripted outcomes drops a clearly worse candidate and keeps a cheaper equal one         |
+| R02 | The first race on our 30 tasks: the four subagent kinds (the subagents plan's G02 variants), the lead's reasoning effort, a cheaper model for scouts, reviewer and triage, CLM against trimming | R01   | Its result, with the MDE, in `docs/design/evolve-results.md`                                           |
+| R03 | A winning configuration goes into the defaults by hand, in a pull request, as `apply-defaults` does for the subagent kinds                                                                      | W03   | The pull request cites the race                                                                        |
+| R04 | A few loop and context constants (4.6) become allowed settings, with today's values as their defaults, so a race can vary them                                                                  | R02   | A race varies `FAILURE_OUTPUT_CHARS` and `MAX_VERIFY_ROUNDS`; with the defaults, runs behave as before |
 
 ### Milestone M: tasks from history
 
@@ -1248,6 +1336,7 @@ Order at a glance:
 
 ```
 P01..P05 ─▶ P06 ─▶ P07 ─▶ R01 ─▶ R02 ─▶ W03 ─▶ R03     settings, for our defaults
+                                 R02 ─▶ R04              loop and context knobs
             P06 ─▶ N01                                   the notebook, for people
 P07 + P08 + P09 ─▶ E01..E04 ─┐
 M01 ─▶ M02 ─────────────────┼─▶ E05 ─▶ W01              the source experiment
