@@ -9417,6 +9417,39 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   margin: 0;
 }
 
+/* What the server says isn't in yet: a spinner where its sections go. */
+.host-waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.host-waiting .settings-hint {
+  margin: 0;
+}
+
+.host-spinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: host-spin 0.8s linear infinite;
+}
+
+@keyframes host-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .host-spinner {
+    animation: none;
+  }
+}
+
 .host-form select {
   background: var(--bg-editor);
   color: var(--fg);

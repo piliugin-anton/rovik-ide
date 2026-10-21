@@ -524,6 +524,17 @@ impl Remote {
         self.client(host)?.call(request).await
     }
 
+    /// `host_call`, its answer awaited for up to `timeout`: `CleanUp`, say,
+    /// which may take minutes.
+    pub async fn host_call_within(
+        &self,
+        host: &str,
+        request: Request,
+        timeout: Duration,
+    ) -> Result<Response, Fail> {
+        self.client(host)?.call_within(request, timeout).await
+    }
+
     /// Whether the host's daemon serves `feature` (4.5): false until it
     /// has said, in its `Welcome`.
     pub fn serves(&self, host: &str, feature: &str) -> bool {

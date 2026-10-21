@@ -5,7 +5,7 @@ use crate::client::Identity;
 use crate::connector::{Connecting, Connector, Stream};
 use futures_util::{SinkExt, StreamExt};
 use rovik_protocol::agent::AgentStatus;
-use rovik_protocol::host::HostInfo;
+use rovik_protocol::host::{HostInfo, Storage};
 use rovik_protocol::{Frame, Request, Response, Secret, PROTOCOL};
 use std::sync::{Arc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
@@ -41,16 +41,19 @@ pub struct Fake {
     /// What it answers `AgentStatus` with, once set: nothing going on
     /// until then.
     pub status: Arc<Mutex<Option<AgentStatus>>>,
+    /// What it answers `Storage` with, then `CleanUp` (what's left after
+    /// the cleanup), once set.
+    pub storage: Arc<Mutex<Option<(Storage, Storage)>>>,
 }
 
 impl Connector for Fake {
     fn connect(&self) -> Connecting<'_> {
         let (requests, info) = (self.requests.clone(), self.info.clone());
         let features = self.features.lock().unwrap().clone();
-        let status = self.status.clone();
+        let (status, storage) = (self.status.clone(), self.storage.clone());
         Box::pin(async move {
             let (client, server) = tokio::io::duplex(1 << 16);
-            tokio::spawn(serve(server, requests, info, features, status));
+            tokio::spawn(serve(server, requests, info, features, status, storage));
             Ok(Box::new(client) as Stream)
         })
     }
@@ -62,6 +65,7 @@ async fn serve(
     info: Arc<Mutex<Option<HostInfo>>>,
     features: Vec<String>,
     status: Arc<Mutex<Option<AgentStatus>>>,
+    storage: Arc<Mutex<Option<(Storage, Storage)>>>,
 ) {
     let Ok(mut socket) = tokio_tungstenite::accept_async(io).await else {
         return;
@@ -83,9 +87,12 @@ async fn serve(
             Ok(Frame::Call { id, req }) => {
                 let info = info.lock().unwrap().clone();
                 let status = status.lock().unwrap().clone();
-                let res = Ok(match (&req, info, status) {
-                    (Request::HostInfo, Some(info), _) => Response::HostInfo(info),
-                    (Request::AgentStatus, _, Some(status)) => Response::AgentStatus(status),
+                let measured = storage.lock().unwrap().clone();
+                let res = Ok(match (&req, info, status, measured) {
+                    (Request::HostInfo, Some(info), _, _) => Response::HostInfo(info),
+                    (Request::AgentStatus, _, Some(status), _) => Response::AgentStatus(status),
+                    (Request::Storage, _, _, Some((before, _))) => Response::Storage(before),
+                    (Request::CleanUp, _, _, Some((_, after))) => Response::Storage(after),
                     _ => answer(&req),
                 });
                 requests.lock().unwrap().push(req);

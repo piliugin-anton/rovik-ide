@@ -158,6 +158,7 @@ async fn run(
         store,
         projects: Projects::new(home.root.join("projects")),
         worktrees: home.work(),
+        tmp: home.tmp(),
         results,
         same_machine,
         virtual_files_problem,
@@ -168,8 +169,9 @@ async fn run(
 
     // 7. What a killed process left: lock files on the repositories and
     //    the result indexes, which would refuse every later write. Then
-    //    what deleted and forgotten chats left (R01), and the runs the
-    //    last process left going (5.4). The cleanup comes again each day.
+    //    what deleted and forgotten chats left (R01), the temporary files
+    //    a day unused, and the runs the last process left going (5.4).
+    //    The cleanup comes again each day.
     //    A stop meanwhile (an upgrade, a reboot) ends start-up where it
     //    is, and the runs started so far pause for the next start.
     // T05: a Thorough task's candidates work in worktrees beside its chat's.
@@ -181,6 +183,7 @@ async fn run(
     daemon.results.clear_stale_locks();
     let starting_up = async {
         work::collect(&daemon, now_ms() - gc::KEEP_RELEASED_MS).await;
+        gc::at_start(&daemon).await;
         restart::restart_interrupted(&daemon).await;
     };
     tokio::select! {

@@ -126,6 +126,20 @@ pub struct HostDetails {
     pub clean_up: bool,
 }
 
+/// How long "Clean up now" may take: gigabytes of worktrees and temporary
+/// files to delete, and a full `git gc` of each project's repository.
+const CLEAN_UP_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// What "Clean up now" did (R01).
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanedUp {
+    /// What Rovik's folders take on the host after.
+    pub storage: Storage,
+    /// How many bytes less they take than just before.
+    pub freed: u64,
+}
+
 /// A host as the chats show it: its name, and its connection once it's
 /// deployed.
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -1086,9 +1100,22 @@ impl HostsPage {
     }
 
     /// "Clean up now" (R01): what the host's daemon no longer needs goes,
-    /// as each day it does. What Rovik's folders take there after.
-    pub async fn clean_up(&self, id: &str) -> Result<Storage, String> {
-        self.call(id, Request::CleanUp).await
+    /// as each day it does. What Rovik's folders take there after, and how
+    /// much less than just before: measured then, not when the page asked,
+    /// so what changed meanwhile isn't counted as freed.
+    pub async fn clean_up(&self, id: &str) -> Result<CleanedUp, String> {
+        // Both measure every folder, which takes a while on a big server.
+        let ask = |request| async move {
+            let reply = self.remote.host_call_within(id, request, CLEAN_UP_WAIT);
+            let storage = reply.await.and_then(Storage::try_from);
+            storage.map_err(|fail| fail.message)
+        };
+        let before = ask(Request::Storage).await?;
+        let after = ask(Request::CleanUp).await?;
+        Ok(CleanedUp {
+            freed: before.total().saturating_sub(after.total()),
+            storage: after,
+        })
     }
 
     /// Forgets every key the host keeps; the next start there that brings
@@ -1879,6 +1906,49 @@ mod tests {
         let gone = setup.page.save(new_host(), password("pw")).unwrap();
         setup.page.remove(&gone.id).await.unwrap();
         assert_eq!(setup.page.list().await.unwrap().hosts.len(), 1);
+    }
+
+    /// "Clean up now": the host's folders measured just before the cleanup
+    /// and after it; the page gets what's left, and what went.
+    #[tokio::test]
+    async fn clean_up_says_what_it_freed_measured_just_before() {
+        use crate::testing::{identity, Fake};
+        let setup = setup();
+        let host = setup.page.save(new_host(), password("hunter2")).unwrap();
+        let gb = 1 << 30;
+        let before = Storage {
+            projects: gb,
+            work: 3 * gb,
+            data: gb,
+            tmp: 2 * gb,
+        };
+        let after = Storage {
+            work: gb,
+            tmp: 0,
+            ..before.clone()
+        };
+        let fake = Fake::default();
+        *fake.storage.lock().unwrap() = Some((before, after.clone()));
+        setup
+            .remote
+            .connect(&host.id, fake.clone(), identity(&host.name));
+        for _ in 0..400 {
+            if (setup.remote.states().iter())
+                .any(|(id, s)| *id == host.id && *s == HostState::Ready)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let cleaned = setup.page.clean_up(&host.id).await.unwrap();
+        assert_eq!(cleaned.storage, after);
+        assert_eq!(cleaned.freed, 4 * gb);
+        let asked = fake.requests.lock().unwrap().clone();
+        assert!(
+            matches!(asked[..], [.., Request::Storage, Request::CleanUp]),
+            "{asked:?}"
+        );
     }
 
     #[tokio::test]

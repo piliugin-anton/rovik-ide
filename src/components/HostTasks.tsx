@@ -3,10 +3,11 @@
 // A cloud host's page, connected: this computer's chats there, each with
 // its latest Autopilot task (autopilot-plan H08), as `rovik-agentd status`
 // lists them on the server: its stage and how it is, its outcome, what it
-// spent, and whether a run of it goes now.
-import { createResource, For, Show } from 'solid-js';
+// spent, and whether a run of it goes now. The page asks for them, with the
+// server's other details, and shows them once they're in.
+import { For, Show, type Resource } from 'solid-js';
 import { deliveredAsPartial, reportSpent, STAGE_LABELS, type StageName } from '../lib/autopilot';
-import { hostTasks, type ChatTask } from '../lib/hosts';
+import type { ChatTask } from '../lib/hosts';
 import { summaryParts } from './StageRecord';
 
 /** Where a chat's task is, in a few words; its stage as the strip names it. */
@@ -25,11 +26,13 @@ export function taskLine(chat: ChatTask): string {
   return `${where}${outcome} · ${reportSpent(task)}`;
 }
 
-export default function HostTasks(props: { hostId: string }) {
-  const [tasks, { refetch }] = createResource(
-    () => props.hostId,
-    (id) => hostTasks(id)
-  );
+export default function HostTasks(props: {
+  /** The chats and their tasks, as the server listed them (`hostTasks`). */
+  tasks: Resource<ChatTask[]>;
+  /** Asks the server again. */
+  onRefresh: () => void;
+}) {
+  const tasks = props.tasks;
   return (
     <section class="settings-section host-tasks">
       <div class="settings-section-title">Tasks on this server</div>
@@ -63,7 +66,7 @@ export default function HostTasks(props: { hostId: string }) {
         </Show>
       </Show>
       <div class="host-actions">
-        <button disabled={tasks.loading} onClick={() => void refetch()}>
+        <button disabled={tasks.loading} onClick={() => props.onRefresh()}>
           Refresh
         </button>
       </div>

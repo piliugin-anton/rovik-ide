@@ -40,6 +40,8 @@ pub struct Daemon {
     pub projects: Projects,
     /// Where the chats' worktrees go (6.4).
     pub worktrees: PathBuf,
+    /// The TMPDIR of the daemon and the agent's commands (K13).
+    pub tmp: PathBuf,
     /// The chats' results (6.5).
     pub results: Arc<Results>,
     /// `--same-machine`: a chat without a worktree runs in the folder its
