@@ -41,5 +41,10 @@
         "capUsd": 750
       }
     }
+  },
+  "attempts": {
+    "repeats": 3,
+    "costRatioMax": 2,
+    "capUsd": 150
   }
 }

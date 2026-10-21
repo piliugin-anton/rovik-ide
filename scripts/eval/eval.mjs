@@ -76,6 +76,7 @@ import {
 import { parseNameStatus, tamperCalls, tamperReasons, tampering } from './integrity.mjs';
 import { identityProblem } from './identity.mjs';
 import { moduleOf } from './stats.mjs';
+import { ATTEMPT_ARMS, attemptsResult } from './arms.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -576,16 +577,37 @@ function jobsOf(flags) {
 /** P02: what a run's line says when it's tampered: why. */
 const tamperNote = (r) => (r.tampered?.length ? ` TAMPERED: ${r.tampered.join('; ')}` : '');
 
-/** One run of one task: the agent, then the hidden tests. Resumable: a finished run is kept. */
+/**
+ * One repetition of one task: a run, or for the same-money arm (P06,
+ * `opts.attempts`) that many, the one the project's checks pick kept as
+ * the repetition's result (`attemptsResult`), what all cost counted.
+ * Resumable: a finished repetition, or attempt, is kept.
+ */
 async function runOne(task, rep, campaignDir, opts) {
-  const dir = join(campaignDir, task.id, String(rep));
+  if (!(opts.attempts > 1)) return runOnce(task, rep, campaignDir, opts);
+  const resultFile = join(campaignDir, task.id, String(rep), 'result.json');
+  if (existsSync(resultFile)) return { ...readJson(resultFile), reused: true };
+  const attempts = [];
+  for (let attempt = 1; attempt <= opts.attempts; attempt++)
+    attempts.push(await runOnce(task, rep, campaignDir, { ...opts, attempt }));
+  const result = attemptsResult(attempts.map(({ reused, ...r }) => r));
+  writeJson(resultFile, result);
+  return result;
+}
+
+/** One run of one task: the agent, then the hidden tests. Resumable: a finished run is kept. */
+async function runOnce(task, rep, campaignDir, opts) {
+  // P06: an attempt of a repetition has a folder of its own in it.
+  const attempt = opts.attempt ? `attempt-${opts.attempt}` : null;
+  const dir = join(campaignDir, task.id, String(rep), ...(attempt ? [attempt] : []));
   const resultFile = join(dir, 'result.json');
   if (existsSync(resultFile)) return { ...readJson(resultFile), reused: true };
   const expected = expectedOf(task);
   if (!expected)
     throw new Error(`${task.id} isn't validated: run \`eval.mjs validate --tasks ${task.id}\``);
   mkdirSync(dir, { recursive: true });
-  const ws = join(workRoot(), workspaceName(campaignDir, task.id, rep));
+  const label = attempt ? `${rep}-${opts.attempt}` : rep;
+  const ws = join(workRoot(), workspaceName(campaignDir, task.id, label));
   const { env, caches, show, writable, start } = prepare(task, task.base, ws, opts.slot);
   const report = join(dir, 'report.json');
   // G03: an Autopilot variant's caps are its own (`autopilotCaps`).
@@ -609,7 +631,7 @@ async function runOne(task, rep, campaignDir, opts) {
     String(caps.maxTokens),
     // P05: which run this is, in its report.
     '--run-id',
-    `${basename(campaignDir)}/${task.id}/${rep}`,
+    [basename(campaignDir), task.id, rep, ...(attempt ? [attempt] : [])].join('/'),
     // G03: `--mode autopilot --effort …` for an Autopilot variant.
     ...(opts.args ?? []),
     // D18 (steering-plan.md): the task's scripted messages, unless the
@@ -659,6 +681,9 @@ async function runOne(task, rep, campaignDir, opts) {
     verifyRounds: rep_?.verifyRounds ?? 0,
     mode: rep_?.mode ?? null,
     effort: rep_?.effort ?? null,
+    // P06: what the project's checks said last (the gate's verification):
+    // the same-money arm picks its attempt by it.
+    verification: rep_?.verification?.at(-1)?.status ?? null,
     stages: Array.isArray(rep_?.stages)
       ? rep_.stages.map(({ name, status, round, outcome }) => ({ name, status, round, outcome }))
       : null,
@@ -926,6 +951,8 @@ const kindsWanted = (flags) => {
 const ALL_VARIANTS = [
   ...MEASURED_KINDS.map((k) => ({ ...k, campaign: `kind-${k.id}`, kind: k.id })),
   ...AUTOPILOT_VARIANTS.map((v) => ({ ...v, campaign: v.id })),
+  // P06 (evolve-plan): the same-money arm, k attempts picked by the checks.
+  ...ATTEMPT_ARMS.map((v) => ({ ...v, campaign: v.id })),
 ];
 
 /** The variants asked for: `--variants` (campaign or kind ids), `--kinds` (kinds only), or all. */
@@ -952,6 +979,16 @@ function variantsWanted(flags) {
  * cap, and for Autopilot its caps a run and the runner's flags.
  */
 function variantPlan(variant, base) {
+  if (variant.attempts) {
+    const a = BUDGET.attempts;
+    return {
+      settings: structuredClone(base),
+      costRatioMax: a.costRatioMax,
+      capUsd: a.capUsd,
+      repeats: a.repeats,
+      run: { attempts: variant.attempts },
+    };
+  }
   if (variant.kind) {
     const v = BUDGET.variants;
     return {
@@ -1177,7 +1214,7 @@ async function dryRunVariants(flags) {
   const items = [null, ...wanted].flatMap((variant) => tasks.map((task) => ({ variant, task })));
   const { results } = await inParallel(items, jobsOf(flags), async ({ variant, task }, slot) => {
     const name = variant?.campaign ?? 'baseline';
-    const autopilot = !!variant && !variant.kind;
+    const autopilot = !!variant?.effort;
     const model = await fakeModel(
       autopilot ? ['autopilot', referenceFiles(task)] : ['oracle', referencePatch(task)]
     );

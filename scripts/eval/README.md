@@ -336,6 +336,32 @@ node scripts/eval/eval.mjs dry-run-variants # all of it with the scripted model,
   `DEFAULT_SUBAGENT_SETTINGS`. It refuses results from the scripted model.
   Then update the defaults test and link the results file in the pull request.
 
+## The same-money arm (P06)
+
+P06 in [docs/design/evolve-plan.md](../../docs/design/evolve-plan.md), its
+5.12 A: a change that costs more has to beat the current agent given the
+same money another way, or "a better agent" and "more compute" look the
+same. Beside Autopilot at each effort (below), `attempts-2` runs the
+baseline's settings twice at each task, in two workspaces, and keeps the
+attempt the project's own checks pick (`arms.mjs`): the one whose last
+verification passed, else one where none ran, else one whose checks
+passed with its tests weakened (`flagged`), else the first; never by the
+hidden tests. The repetition's result is the kept attempt's grade, with
+what both cost, and each attempt in brief (`attempts`, `picked`); the
+attempts' own runs are in `attempt-1/` and `attempt-2/`. Its budget is
+`budget.json` `attempts`: twice the baseline's cost a run, $150 for 30
+tasks × 3.
+
+```sh
+node scripts/eval/eval.mjs variants --settings my-settings.json --variants attempts-2
+node scripts/eval/eval.mjs compare baseline attempts-2
+```
+
+The pick needs checks to pick by: the baseline's settings have the app's
+default, the checks run when a run ends. The dry run's attempts both make
+the reference change, without checks: it tests the pipeline, not the pick
+(`arms.test.mjs` does).
+
 ## Autopilot at each effort (the Autopilot plan's G03)
 
 Beside the kinds, `variants` runs Autopilot at each effort, each a campaign
