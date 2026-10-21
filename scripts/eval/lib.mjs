@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pairedComparison } from './stats.mjs';
 
 /** Results of `cargo test` (libtest's plain output): name -> pass|fail|skip. */
 export function parseCargo(text) {
@@ -633,9 +634,17 @@ const rateAt = (rates, k) => (rates ?? []).find((r) => r.k === k)?.rate ?? null;
  * `summarize` results over those tasks): every number of each, and
  * whether `b` is better beyond the noise within its cost budget. The
  * noise is the larger spread between repetitions, and at least one task;
- * `costRatioMax` null: any cost.
+ * `costRatioMax` null: any cost. P04 (evolve-plan): beside it, task by
+ * task (`paired`): the mean difference, its standard error plain and
+ * clustered by module (`clusterOf`: a task's id to its module), a 95%
+ * bootstrap interval, and the tasks won, lost and tied. The verdict is
+ * G03's still.
  */
-export function compareCampaigns(a, b, { costRatioMax = null, minTasks = 5, stopped = null } = {}) {
+export function compareCampaigns(
+  a,
+  b,
+  { costRatioMax = null, minTasks = 5, stopped = null, clusterOf = (task) => task } = {}
+) {
   const tasks = Math.min(a.tasks.length, b.tasks.length);
   const noise = Math.max(
     width(a.successRateRange),
@@ -658,6 +667,7 @@ export function compareCampaigns(a, b, { costRatioMax = null, minTasks = 5, stop
     minutesRatio: ratioOf(a.meanMinutes, b.meanMinutes),
     passAt: ks.map((k) => ({ k, a: rateAt(a.passAt, k), b: rateAt(b.passAt, k) })),
     passHat: ks.map((k) => ({ k, a: rateAt(a.passHat, k), b: rateAt(b.passHat, k) })),
+    paired: (({ diffs, ...rest }) => rest)(pairedComparison(a.tasks, b.tasks, clusterOf)),
   };
   const verdict = (better, reason) => ({ better, reason, ...numbers });
   if (stopped) return verdict(null, `not enough runs: a campaign stopped (${stopped})`);
@@ -727,6 +737,7 @@ export function comparisonMarkdown(c) {
       pct(y.successRate),
       `${pctSigned(d.successDiff)} (noise ±${Math.round(d.noise * 100)})`
     ),
+    ...pairedRows(d.paired, row),
     ...d.passAt.filter((p) => p.k > 1).map((p) => row(`pass@${p.k}`, rate(p.a), rate(p.b))),
     ...d.passHat.filter((p) => p.k > 1).map((p) => row(`pass^${p.k}`, rate(p.a), rate(p.b))),
     row('Cost a run', money(x.meanCostUsd, 3), money(y.meanCostUsd, 3), ratio(d.costRatio)),
@@ -757,6 +768,31 @@ export function comparisonMarkdown(c) {
 }
 
 const width = (range) => (range?.length === 2 ? range[1] - range[0] : 0);
+
+/** Points, signed, to one decimal: "+3.3 pts". */
+const ptsSigned = (x) => `${x >= 0 ? '+' : '−'}${(Math.abs(x) * 100).toFixed(1)} pts`;
+const pts = (x) => (typeof x === 'number' ? `${(x * 100).toFixed(1)} pts` : 'n/a');
+
+/**
+ * P04: the paired comparison's rows: the tasks each side did better on,
+ * and the mean difference task by task with its errors and interval.
+ */
+function pairedRows(p, row) {
+  if (!p?.tasks) return [];
+  const interval = p.interval
+    ? `95% interval ${ptsSigned(p.interval[0])} to ${ptsSigned(p.interval[1])}`
+    : 'no interval (one module)';
+  return [
+    row('Tasks better (task by task)', p.losses, p.wins, `${p.ties} tied`),
+    row(
+      'Difference task by task',
+      '',
+      '',
+      `${ptsSigned(p.meanDiff)} (SE ${pts(p.se)}; clustered by module, ${p.clusters} of them, ` +
+        `${pts(p.seClustered)}; ${interval})`
+    ),
+  ];
+}
 
 /**
  * G02/G03: a variant against the baseline, over the tasks both ran, and the

@@ -705,6 +705,21 @@ describe('the Autopilot plan’s G03: pass@k and pass^k, the variants, any two c
     );
     // The noise: the larger spread between repetitions, here a tenth.
     assert.ok(Math.abs(better.noise - 0.1) < 1e-9);
+    // P04: task by task, t5 (1/3 → 1), t6 and t7 (0 → 1) better, the
+    // rest tied: a mean of (2/3 + 2)/10; one cluster per task by default.
+    const p = better.paired;
+    assert.deepEqual([p.tasks, p.wins, p.losses, p.ties, p.clusters], [10, 3, 0, 7, 10]);
+    assert.ok(Math.abs(p.meanDiff - (2 / 3 + 2) / 10) < 1e-9);
+    assert.ok(p.se > 0 && Math.abs(p.seClustered - p.se) < 1e-12);
+    assert.ok(p.interval[0] <= p.meanDiff && p.meanDiff <= p.interval[1]);
+    // In two modules: fewer clusters, another error, the same verdict.
+    const twoModules = compareCampaigns(base, campaign([8, 8, 8], 2.5), {
+      costRatioMax: 3,
+      clusterOf: (task) => (Number(task.slice(1)) < 5 ? 'a' : 'b'),
+    });
+    assert.equal(twoModules.paired.clusters, 2);
+    assert.notEqual(twoModules.paired.seClustered, p.se);
+    assert.equal(twoModules.better, better.better);
     const costly = compareCampaigns(base, campaign([8, 8, 8], 4), { costRatioMax: 3 });
     assert.equal(costly.better, false);
     assert.match(costly.reason, /over its 3× budget/);
@@ -751,6 +766,11 @@ describe('the Autopilot plan’s G03: pass@k and pass^k, the variants, any two c
     assert.match(md, /^# Evaluation: autopilot-balanced against baseline/);
     assert.match(md, /`node scripts\/eval\/eval\.mjs compare baseline autopilot-balanced`/);
     assert.match(md, /\| Success \| 53% \| 80% \| \+27 pts \(noise ±10\) \|/);
+    assert.match(md, /\| Tasks better \(task by task\) \| 0 \| 3 \| 7 tied \|/);
+    assert.match(
+      md,
+      /\| Difference task by task \| {2}\| {2}\| \+26\.7 pts \(SE [\d.]+ pts; clustered by module, 10 of them/
+    );
     assert.match(md, /\| pass@3 \| 60% \| 80% \|/);
     assert.match(md, /\| pass\^3 \| 50% \| 80% \|/);
     assert.match(md, /\| Cost a run \| \$1\.000 \| \$2\.000 \| 2\.00× \|/);

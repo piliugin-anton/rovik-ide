@@ -375,7 +375,13 @@ node scripts/eval/eval.mjs dry-run-variants --variants autopilot-balanced,autopi
   B is better when its success beats A's by more than the noise (the
   larger spread between repetitions, and at least one task) within its
   cost budget: a variant's own, `--cost-ratio N`, or none for other
-  campaigns. A campaign that stopped early, or fewer than 5 tasks in
+  campaigns. Beside that verdict, task by task (P04 in
+  [docs/design/evolve-plan.md](../../docs/design/evolve-plan.md),
+  `stats.mjs`): how many tasks each did better on, the mean difference
+  in success, its standard error, plain and clustered by module (tasks
+  from one module aren't independent), and a 95% interval from a
+  bootstrap that draws whole modules. A task's module is its file's
+  `module`, else its repository and the folder of its first hidden test. A campaign that stopped early, or fewer than 5 tasks in
   both (`--min-tasks`), decides nothing. It writes
   `eval-results/compare-A-B.md` and `.json`, or `--out`. Without names,
   `compare` is the kinds' comparison above.

@@ -73,6 +73,7 @@ import {
 } from './confinement.mjs';
 import { parseNameStatus, tamperCalls, tamperReasons, tampering } from './integrity.mjs';
 import { identityProblem } from './identity.mjs';
+import { moduleOf } from './stats.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -1079,10 +1080,13 @@ function compareTwo(aArg, bArg, flags) {
     : variant
       ? variantPlan(variant, {}).costRatioMax
       : null;
+  // P04: the paired comparison's errors are clustered by each task's module.
+  const modules = new Map(loadTasks().map((t) => [t.id, moduleOf(t)]));
   const decision = compareCampaigns(a, b, {
     costRatioMax,
     stopped: stoppedOf(aDir) ?? stoppedOf(bDir),
     minTasks: Number(flags['min-tasks'] ?? 5),
+    clusterOf: (task) => modules.get(task) ?? task,
   });
   const model = settingsOf(bDir)?.profile?.label ?? settingsOf(aDir)?.profile?.label ?? 'unknown';
   const comparison = {
