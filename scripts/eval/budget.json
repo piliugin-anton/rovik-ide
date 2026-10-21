@@ -46,5 +46,12 @@
     "repeats": 3,
     "costRatioMax": 2,
     "capUsd": 150
+  },
+  "race": {
+    "capUsd": 300,
+    "costRatioMax": 2,
+    "blockSize": 5,
+    "minTasks": 10,
+    "margin": 0.05
   }
 }

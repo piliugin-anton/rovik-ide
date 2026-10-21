@@ -9,6 +9,8 @@
 //   node scripts/eval/eval.mjs run --settings FILE [--jobs N]
 //   node scripts/eval/eval.mjs report DIR
 //   node scripts/eval/eval.mjs power [DIR] [--repeats 3,6] [--target 5]   (evolve-plan P07)
+//   node scripts/eval/eval.mjs race --settings FILE --candidates FILE      (evolve-plan R01)
+//   node scripts/eval/eval.mjs dry-run-race [--jobs N]
 //   node scripts/eval/eval.mjs variants --settings FILE [--kinds a,b | --variants a,b]   (G02)
 //   node scripts/eval/eval.mjs compare [--out FILE]                     (G02, G03)
 //   node scripts/eval/eval.mjs compare A B [--out FILE]                 (autopilot-plan G03)
@@ -43,11 +45,13 @@ import {
   applyDefaults,
   autopilotCaps,
   autopilotSettings,
+  budgetAllows,
   compareCampaigns,
   compareVariant,
   comparisonMarkdown,
   grade,
   inParallel,
+  knownSpend,
   parseCargo,
   parseGoJson,
   parseJunit,
@@ -80,6 +84,7 @@ import { detectableEffect, meanRunVariance, moduleOf, tasksFor } from './stats.m
 import { ATTEMPT_ARMS, attemptsResult } from './arms.mjs';
 import { ledgerTotals, usageGap } from './usage.mjs';
 import { monitorRun } from './monitor.mjs';
+import { candidateSettings, raceMarkdown, runRace, shuffled } from './race.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -1574,6 +1579,135 @@ function report(flags) {
   console.log(summaryMarkdown(s, `Evaluation: ${dir}`));
 }
 
+// -------------------------------------------------------------------- race
+
+/**
+ * R01 (evolve-plan): a race between settings. The current settings
+ * (`--settings`) against each candidate of `--candidates FILE`
+ * ([{ name, settings }]: patches of what a race may vary, `RACEABLE`), on
+ * the tasks in an order drawn from `--seed`, a block at a time; the
+ * clearly worse are dropped, and D11 decides (race.mjs). Each candidate's
+ * runs are a campaign of the race's folder, so a race resumes; its record
+ * is `race.md` and `race.json` there.
+ */
+async function race(flags) {
+  const { path, price } = settingsFor(flags);
+  const base = readJson(path);
+  if (!flags.candidates) throw new Error('--candidates FILE is required: [{ "name", "settings" }]');
+  const candidates = [{ name: 'current', settings: {} }, ...readJson(resolve(flags.candidates))];
+  const names = candidates.map((c) => c.name);
+  if (new Set(names).size !== names.length || names.some((n) => !/^[\w.-]+$/.test(n)))
+    throw new Error(
+      `the candidates need names of their own, letters, digits, . and - ("current" is taken)`
+    );
+  const dir = resolve(flags.out ?? join(RESULTS, 'race'));
+  const policy = resolve(flags.policy ?? join(EVAL, 'policy.json'));
+  const files = {};
+  for (const c of candidates) {
+    files[c.name] = join(dir, c.name, 'settings.json');
+    writeJson(files[c.name], candidateSettings(base, c));
+  }
+  const bins = builds(flags);
+  for (const c of candidates)
+    claimIdentity(join(dir, c.name), identityOf(bins.build, files[c.name], policy));
+  const byId = new Map(usableTasks(flags.tasks).map((t) => [t.id, t]));
+  const r = BUDGET.race;
+  const spent = [];
+  const firstEstimate = (BUDGET.perRun.maxTokens / 1e6) * price.inputPerMillion;
+  const record = await runRace({
+    candidates,
+    tasks: shuffled([...byId.keys()], Number(flags.seed ?? 1)),
+    blockSize: Number(flags.block ?? r.blockSize),
+    minTasks: r.minTasks,
+    margin: Number(flags.margin ?? r.margin * 100) / 100,
+    costRatioMax: r.costRatioMax,
+    clusterOf,
+    canAfford: (runs) =>
+      budgetAllows({ ...knownSpend(spent), cap: r.capUsd, firstEstimate, pending: runs - 1 }).ok,
+    runBlock: async (c, block) => {
+      const { results } = await inParallel(block, jobsOf(flags), (id, slot) =>
+        runOne(byId.get(id), 1, join(dir, c.name), {
+          settings: files[c.name],
+          policy,
+          ...bins,
+          slot,
+        })
+      );
+      spent.push(...results);
+      for (const x of results)
+        console.log(`[race] ${c.name} ${x.task}: ${x.success ? 'PASS' : 'fail'}${tamperNote(x)}`);
+      return results;
+    },
+  });
+  writeRace(dir, record, { fake: false });
+}
+
+/** A race's record into its folder, and on the console. */
+function writeRace(dir, record, { fake }) {
+  writeJson(join(dir, 'race.json'), {
+    ...record,
+    date: new Date().toISOString().slice(0, 10),
+    fake,
+  });
+  writeFileSync(join(dir, 'race.md'), raceMarkdown(record, { fake }));
+  console.log(`\n${raceMarkdown(record, { fake })}`);
+  console.log(`Written: ${join(dir, 'race.md')}`);
+}
+
+/**
+ * R01's dry run: the race's pipeline with scripted models on the
+ * evaluation's own tasks (the Go and Python ones, by default): the current
+ * settings (a model that makes the reference change), one that changes
+ * nothing (clearly worse), and the current at half the price (cheaper,
+ * and equal). The second must be dropped and the third chosen.
+ */
+async function dryRunRace(flags) {
+  const defaults = loadTasks()
+    .filter((t) => t.lang === 'go' || t.lang === 'python')
+    .map((t) => t.id);
+  const byId = new Map(usableTasks(flags.tasks ?? defaults.join(',')).map((t) => [t.id, t]));
+  const bins = builds(flags);
+  const policy = join(EVAL, 'policy.json');
+  const dir = resolve(flags.out ?? join(RESULTS, `dry-run-race-${Date.now()}`));
+  const price = (input) => ({ inputPerMillion: input, outputPerMillion: input * 10 });
+  const candidates = [
+    { name: 'current', settings: {}, model: 'oracle', price: price(1) },
+    { name: 'changes-nothing', settings: {}, model: 'idle', price: price(1) },
+    { name: 'half-price', settings: {}, model: 'oracle', price: price(0.5) },
+  ];
+  const record = await runRace({
+    candidates,
+    tasks: shuffled([...byId.keys()], Number(flags.seed ?? 1)),
+    clusterOf,
+    runBlock: async (c, block) =>
+      (
+        await inParallel(block, jobsOf(flags), async (id, slot) => {
+          const task = byId.get(id);
+          const model = await fakeModel(
+            c.model === 'oracle' ? ['oracle', referencePatch(task)] : ['idle']
+          );
+          const settings = join(dir, c.name, `settings-${id}.json`);
+          writeJson(settings, { ...fakeSettings(model.url), price: c.price });
+          try {
+            return await runOne(task, 1, join(dir, c.name), { settings, policy, ...bins, slot });
+          } finally {
+            model.stop();
+          }
+        })
+      ).results,
+  });
+  writeRace(dir, record, { fake: true });
+  const ok =
+    record.blocks.some((b) => b.dropped.includes('changes-nothing')) &&
+    record.chosen === 'half-price';
+  console.log(
+    ok
+      ? '\nThe race works.'
+      : '\nNOT AS EXPECTED: the race should drop changes-nothing and choose half-price.'
+  );
+  if (!ok) process.exitCode = 1;
+}
+
 // ------------------------------------------------------------------- power
 
 /**
@@ -1621,6 +1755,8 @@ const commands = {
   variants,
   compare: compareAll,
   power,
+  race,
+  'dry-run-race': dryRunRace,
   'apply-defaults': applyDefaultsCommand,
   'dry-run-variants': dryRunVariants,
 };
@@ -1632,6 +1768,7 @@ if (!command) {
       'run --settings FILE [--repeats N] [--tasks a,b] [--jobs N] | report [DIR] | ' +
       'variants --settings FILE [--kinds a,b | --variants a,b] | compare [A B] [--out FILE] | apply-defaults | ' +
       'power [DIR] [--repeats 3,6] [--target 5] | ' +
+      'race --settings FILE --candidates FILE [--tasks a,b] [--seed N] [--jobs N] | dry-run-race | ' +
       'dry-run-variants [--variants a,b]'
   );
   process.exit(2);
