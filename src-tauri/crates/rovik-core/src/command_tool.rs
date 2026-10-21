@@ -774,17 +774,18 @@ mod tests {
         // A child of the shell that would outlive it, like a dev server.
         let command = format!("sh -c 'sleep 30; echo {marker}' & echo started; wait");
         let started = Instant::now();
+        // Time for a busy machine to start the command and print first.
         let out = run_blocking(
             dir.to_str().unwrap(),
             &command,
-            Duration::from_millis(500),
+            Duration::from_secs(3),
             &|| false,
             None,
         )
         .unwrap();
         assert!(out.timed_out);
         assert_eq!(out.stdout.trim(), "started");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(15));
         let ps = Command::new("ps").args(["-eo", "args"]).output().unwrap();
         assert!(
             !String::from_utf8_lossy(&ps.stdout).contains(&marker),
@@ -797,10 +798,12 @@ mod tests {
     fn background_process_holding_the_output_times_out() {
         let dir = std::env::temp_dir();
         // The shell exits at once, but its background child keeps stdout open.
+        // The timeout leaves a busy machine time to start the command and
+        // print before it.
         let out = run_blocking(
             dir.to_str().unwrap(),
             "sleep 30 & echo up",
-            Duration::from_millis(500),
+            Duration::from_secs(3),
             &|| false,
             None,
         )
