@@ -375,6 +375,13 @@ pub struct Run {
     /// G02: the run's tool calls under way, for each one's `tool` line in
     /// the agent log as its result is stored.
     pub(super) calls: CallClock,
+    /// The messages the user sends it while it works (steer.rs).
+    pub(super) steer: Arc<super::steer::SteerQueue>,
+    /// Messages it read, and those it handed back (the `run` line).
+    pub(super) steers: u32,
+    pub(super) steers_returned: u32,
+    /// The user denied the call that just ended (D6, execute.rs).
+    pub(super) denied_by_user: bool,
 }
 
 /// G02 (autopilot-plan): which tool each of a run's calls is and when it
@@ -470,6 +477,25 @@ pub(super) struct TurnOutput {
     pub(super) repetition_cut: Option<usize>,
     /// `{ text, ms }`, when the model reasoned.
     pub(super) reasoning: Option<Value>,
+}
+
+/// Whether a run goes on with a message waiting where it would end with
+/// this outcome (3.3). The ends that can't hand it back instead: a stop,
+/// an error, a reply that kept repeating itself, checks waiting for the
+/// user's go (their state is put aside for "Run checks"), a pause, and
+/// Autopilot's own ends.
+pub(super) fn steer_goes_on(outcome: &str) -> bool {
+    !matches!(
+        outcome,
+        "stopped"
+            | "verify-stopped"
+            | "error"
+            | "repetition"
+            | "verify-needs-approval"
+            | "budget"
+            | "review-open"
+            | "unmet"
+    ) && !outcome.starts_with("paused-")
 }
 
 /// A reply up to where it started repeating itself (`cut`; all of it
@@ -1221,6 +1247,10 @@ impl Run {
             asked_integrity: false,
             befores: Default::default(),
             calls: CallClock::default(),
+            steer: controls.steer,
+            steers: 0,
+            steers_returned: 0,
+            denied_by_user: false,
         }
     }
 
@@ -1336,6 +1366,9 @@ impl Run {
         // a panic included.
         let _running = RunningGuard::new(&self.dialog_id, !self.plan_mode);
         let outcome = self.drive(entry).await;
+        // Whatever ended it, the run takes no more messages from here, and
+        // what it holds unread goes back to the user (D9, D15).
+        let unread = self.steer.close_and_take();
         crate::overlay::chats::set_running(&self.dialog_id, false);
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -1362,6 +1395,8 @@ impl Run {
             }
             _ => outcome,
         };
+        self.steers_returned += unread.len() as u32;
+        super::hand_back_steering(&self.core, &self.dialog_id, unread, &outcome);
         // P1.8: a lead's run that leaves no checks waiting leaves no state
         // for them either (an older run's is stale now).
         if self.sub().is_none() && outcome != "verify-needs-approval" {
@@ -1384,6 +1419,10 @@ impl Run {
         });
         if let Some(open) = self.open_steps_at_end {
             entry["openSteps"] = json!(open);
+        }
+        if self.steers > 0 || self.steers_returned > 0 {
+            entry["steers"] = json!(self.steers);
+            entry["steersReturned"] = json!(self.steers_returned);
         }
         if self.autopilot {
             entry["autopilot"] = json!(true);
@@ -1412,6 +1451,8 @@ impl Run {
             }
             Entry::Turn => {}
             Entry::Verify { record_id } => {
+                self.steer
+                    .note(super::steer::Doing::Checks, self.guard.tool_calls);
                 // What the last run's fix rounds knew (command approval on).
                 self.restore_verify_state(&record_id);
                 if self.carry_lost.is_some() {
@@ -1419,7 +1460,9 @@ impl Run {
                 }
                 // The waiting record becomes the running one, then the results.
                 let outcome = self.verify_at_end(true, Some(record_id)).await?;
-                if outcome != "continue" {
+                // A message sent while the checks ran is read with their
+                // results, and the run goes on (D8).
+                if outcome != "continue" && !self.read_before_merge(&outcome).await? {
                     // As at any other end: the project's newer changes to
                     // the same files are merged in and checked first, and
                     // conflict markers handed over meanwhile are mentioned.
@@ -1429,7 +1472,7 @@ impl Run {
                         None => Some(outcome),
                     };
                     if let Some(end) = end {
-                        if !self.remind_of_markers().await? {
+                        if !self.remind_of_markers().await? && !self.read_at_end(&end).await? {
                             return Ok(end);
                         }
                     }
@@ -1446,11 +1489,13 @@ impl Run {
             Entry::CheckMerged { files } => {
                 // As `take_project_changes` after a local merge: the checks
                 // run on the merged files, and a failure is a fix round.
+                self.steer
+                    .note(super::steer::Doing::Checks, self.guard.tool_calls);
                 self.merged_from_project = Some(files);
                 self.writes_since_verify = true;
                 let outcome = self.verify_at_end(false, None).await?;
                 self.merged_from_project = None;
-                if outcome != "continue" {
+                if outcome != "continue" && !self.read_at_end(&outcome).await? {
                     return Ok(outcome);
                 }
             }
@@ -1460,6 +1505,13 @@ impl Run {
         loop {
             if self.stopped() {
                 return Ok("stopped".into());
+            }
+            // P1, the next step (steering-plan.md): every tool call has its
+            // result here, so what the user sent meanwhile is stored now, for
+            // the next request. Not before an interrupted reply is picked up:
+            // its continuation must follow it.
+            if !self.continue_reply {
+                self.read_waiting("step").await?;
             }
             // Every tool call has its result here, and the checks are
             // between rounds: a move or a drain pauses the run (6.8, R02).
@@ -1552,6 +1604,11 @@ impl Run {
 
             // The model says it's done: the checks decide.
             if turn.tool_calls.is_empty() {
+                // P3: a message waiting is read instead: no reminder, review
+                // or check starts for a change that's about to change (D8).
+                if self.read_waiting("done").await? {
+                    continue;
+                }
                 // E03: test-writer tests it changed are listed for the user.
                 if self.sub().is_none() && self.tests_changed.len() > self.tests_changed_listed {
                     let line = super::test_writer::changed_tests_line(&self.tests_changed);
@@ -1577,6 +1634,8 @@ impl Run {
                     continue;
                 }
                 // A fresh-context review of the change, before the checks.
+                self.steer
+                    .note(super::steer::Doing::Checks, self.guard.tool_calls);
                 if self.review_change().await? {
                     continue;
                 }
@@ -1586,6 +1645,11 @@ impl Run {
                 }
                 if self.stopped() {
                     return Ok("stopped".into());
+                }
+                // P3a: a message sent while the review ran is read with its
+                // findings, before the checks start.
+                if self.read_waiting("review").await? {
+                    continue;
                 }
                 let outcome = self.verify_at_end(false, None).await?;
                 if outcome == "continue" {
@@ -1600,6 +1664,11 @@ impl Run {
                         .map(|c| c.items.into_iter().filter(|i| !plan::is_settled(i)).count())
                         .unwrap_or(0);
                     if open > 0 {
+                        // P4: a message sent meanwhile is read, and the run
+                        // goes on with it.
+                        if self.read_at_end("unfinished-checklist").await? {
+                            continue;
+                        }
                         let mut meta = recent
                             .iter()
                             .find(|m| m.id == turn.message_id)
@@ -1613,6 +1682,11 @@ impl Run {
                         return Ok("unfinished-checklist".into());
                     }
                 }
+                // A message sent while the checks ran is read with their
+                // results, before the project's newer changes are merged in.
+                if self.read_before_merge(&outcome).await? {
+                    continue;
+                }
                 // Isolated: the project's newer changes to the same files
                 // are merged in and checked before the run ends.
                 let end = match self.take_project_changes(&outcome).await? {
@@ -1622,6 +1696,11 @@ impl Run {
                 };
                 // Markers handed to it while the checks ran: told now.
                 if self.remind_of_markers().await? {
+                    continue;
+                }
+                // P4: the run would end here; a message sent meanwhile is
+                // read and the run goes on, else the queue closes with it.
+                if self.read_at_end(&end).await? {
                     continue;
                 }
                 return Ok(end);
@@ -1640,6 +1719,11 @@ impl Run {
 
             // Every tool call has its result, so the chat can wait here as
             // long as it likes: Continue picks up with the next request.
+            // P2: a message the user sent meanwhile is a go-ahead: it's read,
+            // and the pause doesn't happen (D12).
+            if self.guard.pause().is_some() && self.read_or_close("pause").await? {
+                continue;
+            }
             if let Some(pause) = self.guard.pause() {
                 // Autopilot: nobody would Continue. A loop's first pause
                 // goes on, the model told why; the next ends the run (U03).
@@ -1675,6 +1759,13 @@ impl Run {
     /// and the chat shows where it went, not a stuck agent (K29).
     /// `ContinueRun` goes on counting from it.
     pub(super) async fn pause_for(&mut self, request: PauseRequest) -> Result<String, String> {
+        // P6: what the user sent meanwhile is stored before the pause, so
+        // the chat takes it where it goes and the `ContinueRun` there reads
+        // it. The run takes no more.
+        if !self.stopped() {
+            let waiting = self.steer.close_and_take();
+            self.read_steering(waiting, request.kind).await?;
+        }
         let pause = super::guard::PauseInfo {
             kind: request.kind,
             tool_calls: self.guard.tool_calls,
@@ -1686,6 +1777,110 @@ impl Run {
         paused.meta = Some(json!({ "paused": pause }));
         self.append(vec![paused]).await?;
         Ok(format!("paused-{}", pause.kind))
+    }
+
+    /*
+     * -----------------------------------------------------------------------
+     * Messages the user sends while the run works (steering-plan.md)
+     * -----------------------------------------------------------------------
+     */
+
+    /// Why the run takes no messages while it works, if it doesn't: only
+    /// an Agent-mode lead's run takes them (D1).
+    pub(super) fn steering_refusal(&self) -> Option<&'static str> {
+        if self.sub().is_some() || self.core.agents.candidate_call(&self.dialog_id).is_some() {
+            Some("A subagent's run takes no messages: its lead's does.")
+        } else if self.autopilot {
+            Some("An Autopilot task works on its own: it takes no messages while it runs.")
+        } else if self.plan_mode {
+            Some("Plan mode takes no messages while it works: send this once the plan is ready.")
+        } else {
+            None
+        }
+    }
+
+    /// What the user sent meanwhile, read now: stored at the end of the
+    /// chat, for the next request. Nothing is read once the run is stopped:
+    /// what waits goes back with its end (3.4). True when something was.
+    pub(super) async fn read_waiting(&mut self, at: &str) -> Result<bool, String> {
+        if self.stopped() {
+            return Ok(false);
+        }
+        let waiting = self.steer.take();
+        self.read_steering(waiting, at).await
+    }
+
+    /// `read_waiting` where the run would end or pause: with nothing
+    /// waiting, the queue closes in the same step, so the run ends with
+    /// nothing left behind (D9).
+    async fn read_or_close(&mut self, at: &str) -> Result<bool, String> {
+        if self.stopped() {
+            return Ok(false);
+        }
+        let waiting = self.steer.take_or_close();
+        self.read_steering(waiting, at).await
+    }
+
+    /// After the checks, before the project's newer changes are merged in:
+    /// a message sent while they ran is read with their results, and the
+    /// run goes on (D8), after an end that can.
+    async fn read_before_merge(&mut self, outcome: &str) -> Result<bool, String> {
+        if !steer_goes_on(outcome) {
+            return Ok(false);
+        }
+        self.read_waiting("checks").await
+    }
+
+    /// P4, where the run ends with `end`: a message waiting is read, and the
+    /// run goes on; else the queue closes and the run ends. An end that
+    /// can't go on (`steer_goes_on`) hands what waits back instead.
+    async fn read_at_end(&mut self, end: &str) -> Result<bool, String> {
+        if !steer_goes_on(end) {
+            return Ok(false);
+        }
+        self.read_or_close("end").await
+    }
+
+    /// Stores the messages, in order, as user rows marked `meta.steer`
+    /// (3.5), which the next request sends. Read so, a message is a
+    /// go-ahead (D12). A write that fails hands them back, and the run ends
+    /// on its error. True when there were any.
+    pub(super) async fn read_steering(
+        &mut self,
+        queued: Vec<super::steer::Queued>,
+        at: &str,
+    ) -> Result<bool, String> {
+        if queued.is_empty() {
+            return Ok(false);
+        }
+        let clm = self.context_mode == crate::clm::MODE_CLM
+            && crate::clm::availability(&self.core.vfs).is_ok();
+        let rows = queued
+            .iter()
+            .map(|q| super::steer::stored_row(q, clm))
+            .collect();
+        if let Err(e) = self.append(rows).await {
+            self.steers_returned += queued.len() as u32;
+            super::hand_back_steering(&self.core, &self.dialog_id, queued, "error");
+            return Err(e);
+        }
+        self.guard.steered();
+        for q in &queued {
+            super::steer::release(&q.message.attachments);
+            super::steer::log_line(
+                &self.core,
+                &self.dialog_id,
+                &q.message.id,
+                "delivered",
+                json!({
+                    "waitedMs": q.waited_ms(),
+                    "callsMeanwhile": self.guard.tool_calls.saturating_sub(q.calls),
+                    "at": at,
+                }),
+            );
+        }
+        self.steers += queued.len() as u32;
+        Ok(true)
     }
 
     /// Before a loop pause: one reply without tools, in which the model
@@ -1761,6 +1956,8 @@ impl Run {
 
         // An effort picked since the last request applies from this one.
         self.take_effort();
+        self.steer
+            .note(super::steer::Doing::Reply, self.guard.tool_calls);
         let config = self.config();
         let clm = self.context_mode == crate::clm::MODE_CLM
             && crate::clm::availability(&self.core.vfs).is_ok();
@@ -2168,7 +2365,7 @@ impl Run {
         let recent = self.recent().await?;
         let mut submitted = None;
         for m in recent.iter().rev() {
-            if plan::is_users(m) {
+            if plan::is_request(m) {
                 break;
             }
             if m.role == "tool" {
@@ -2497,7 +2694,14 @@ impl Run {
         self.map_refreshed_at = Instant::now();
         let recent = self.recent().await?;
         let touched = touched_paths(&recent);
-        let request_text = self.current_user_content.clone().unwrap_or_default();
+        // The request, with what the user added while the run worked.
+        let request_text = {
+            let request = self.current_user_content.clone().unwrap_or_default();
+            match steering_text(&recent) {
+                added if added.is_empty() => request,
+                added => format!("{request}\n\n{added}"),
+            }
+        };
         let max_chars = self.repo_map_chars;
         let rebuilt = crate::rt::spawn_blocking(move || {
             let root_path = std::path::Path::new(&root);
@@ -2771,7 +2975,9 @@ impl Run {
         });
     }
 
-    /// The user's latest request in the chat, as sent (for the AI reviewer).
+    /// The user's latest request in the chat, as sent (for the AI reviewer),
+    /// with what they added while the run worked (steering-plan.md, D11):
+    /// the reviewers judge the change against the request as it is now.
     pub(super) async fn latest_user_request(&self) -> String {
         // A subagent acts for the lead's user request, not for the brief the
         // lead wrote (K06): the AI reviewer judges by the user's intent.
@@ -2781,11 +2987,11 @@ impl Run {
         let recent = self.recent().await.unwrap_or_default();
         let own = recent
             .iter()
-            .rev()
-            .find(|m| plan::is_users(m) && !m.failed)
-            .map(|m| sent_content(m).unwrap_or_else(|| m.content.clone()));
-        if let Some(request) = own {
-            return request;
+            .rposition(|m| plan::is_request(m) && !m.failed);
+        if let Some(at) = own {
+            let m = &recent[at];
+            let request = sent_content(m).unwrap_or_else(|| m.content.clone());
+            return with_steering(request, &recent[at + 1..]);
         }
         // D8, T05: a candidate's chat holds no request of its own: its
         // task's is the message that started the task, in the task's chat.
@@ -3411,7 +3617,7 @@ pub(super) fn sent_text(meta: Option<&serde_json::Value>) -> Option<String> {
 
 /// The mode of the request a run belongs to: its starting message's.
 fn run_mode_for(messages: &[MessageRow]) -> Option<String> {
-    let m = messages.iter().rev().find(|m| plan::is_users(m))?;
+    let m = messages.iter().rev().find(|m| plan::is_request(m))?;
     m.meta.as_ref()?.get("mode")?.as_str().map(str::to_string)
 }
 
@@ -3425,7 +3631,7 @@ fn plan_check_at_start(
     let named = recent
         .iter()
         .rev()
-        .find(|m| plan::is_users(m))
+        .find(|m| plan::is_request(m))
         .and_then(|m| {
             let rest = m.content.strip_prefix("Implement the plan in `")?;
             Some(rest[..rest.find('`')?].to_string())
@@ -3524,6 +3730,43 @@ fn touched_paths(messages: &[MessageRow]) -> Vec<String> {
 /// Files of the chat's history the map starts from, at most.
 const MAX_TOUCHED_PATHS: usize = 20;
 
+/// The request with what the user added while the run worked, in their
+/// words, numbered (D11). The editor context sent with each stays out: the
+/// reviewers judge by what was asked.
+pub(super) fn with_steering(request: String, after: &[MessageRow]) -> String {
+    let added: Vec<&str> = after
+        .iter()
+        .filter(|m| plan::is_steer(m) && !m.failed)
+        .map(|m| m.content.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
+    if added.is_empty() {
+        return request;
+    }
+    let mut text = request;
+    text.push_str("\n\nAdded by the user while the agent worked:");
+    for (i, added) in added.iter().enumerate() {
+        text.push_str(&format!("\n{}. {added}", i + 1));
+    }
+    text
+}
+
+/// The typed text of what the user added while the run worked, for the
+/// repository map's focus: the files and names they mention steer it too.
+fn steering_text(messages: &[MessageRow]) -> String {
+    let at = messages
+        .iter()
+        .rposition(|m| plan::is_request(m) && !m.failed)
+        .map_or(0, |i| i + 1);
+    messages[at..]
+        .iter()
+        .filter(|m| plan::is_steer(m) && !m.failed)
+        .map(|m| m.content.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// The latest delivered user message as it was sent to the model (with its
 /// editor context and file references): what a start without
 /// `current_user_content` sends.
@@ -3531,7 +3774,7 @@ pub fn last_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let m = messages
         .iter()
         .rev()
-        .find(|m| plan::is_users(m) && !m.failed)?;
+        .find(|m| plan::is_request(m) && !m.failed)?;
     sent_content(m).or_else(|| Some(m.content.clone()))
 }
 
@@ -3564,7 +3807,7 @@ fn restriction_reason(
 fn previous_user_wire_content(messages: &[MessageRow]) -> Option<String> {
     let mut real = messages
         .iter()
-        .filter(|m| plan::is_users(m) && !m.failed)
+        .filter(|m| plan::is_request(m) && !m.failed)
         .rev();
     real.next()?;
     let m = real.next()?;
@@ -3714,6 +3957,24 @@ mod tests {
         ];
         assert_eq!(run_mode_for(&messages).as_deref(), Some("plan"));
         assert_eq!(last_user_wire_content(&messages).as_deref(), Some("wire"));
+        // A message the user sent while the run worked isn't the request
+        // (steering-plan.md, 3.6): the mode and the wire stay the request's;
+        // the reviewers' request and the map's focus add what it says.
+        let mut steered = messages.clone();
+        steered.push(row(
+            "user",
+            Some(json!({ "steer": { "queuedAt": 1 }, "sentContent": "[frame]\n\nmore" })),
+        ));
+        assert_eq!(run_mode_for(&steered).as_deref(), Some("plan"));
+        assert_eq!(last_user_wire_content(&steered).as_deref(), Some("wire"));
+        assert_eq!(previous_user_wire_content(&steered), None);
+        steered.last_mut().unwrap().content = "use the client".into();
+        assert_eq!(
+            with_steering("fix it".into(), &steered[1..]),
+            "fix it\n\nAdded by the user while the agent worked:\n1. use the client"
+        );
+        assert_eq!(steering_text(&steered), "use the client");
+        assert_eq!(with_steering("fix it".into(), &messages[1..]), "fix it");
         assert_eq!(
             chat_plan_file(&messages).as_deref(),
             Some("/p/.rovik/plans/a.md")

@@ -8,13 +8,19 @@
 //!     --project ./repo --settings settings.json [--policy policy.json] \
 //!     --prompt "Fix the failing test" --out report.json [--data ./data] \
 //!     [--timeout 1800] [--max-tokens 1500000] \
-//!     [--mode agent|plan|autopilot] [--effort balanced|thorough]
+//!     [--mode agent|plan|autopilot] [--effort balanced|thorough] \
+//!     [--steer "TEXT@N"]...
 //!
 //! `--mode autopilot` (S10, docs/design/autopilot-plan.md) runs the prompt
 //! as an Autopilot task, at `--effort` (Balanced unless said): the runner
 //! waits for the whole task, not its first run, and the report lists its
 //! stages, its outcome and its report's facts. `--mode` wins over the
 //! settings file's `mode`.
+//!
+//! `--steer "TEXT@N"` (D18, docs/design/steering-plan.md) sends TEXT to
+//! the run while it works, once the lead chat has N tool results, as the
+//! message box would; it can be repeated. The report's `steers` say what
+//! became of each: read, handed back, or refused.
 //!
 //! `--max-tokens` stops the run once its requests (its subagents' included)
 //! have used that many tokens, as the provider reports them: a budget cap
@@ -52,7 +58,8 @@ pub use rovik_core::agent_run::budget::{usage_of, Price, Totals};
 use rovik_core::agent_run::events::AgentEvent;
 use rovik_core::agent_run::plan::{QuestionAnswer, QuestionsOutcome};
 use rovik_core::agent_run::{
-    self, AgentConfig, ApprovalDecision, ModelProfile, StartKind, StartRequest, UserMessage,
+    self, AgentConfig, ApprovalDecision, ModelProfile, StartKind, StartRequest, SteerReply,
+    UserMessage,
 };
 use rovik_core::chat_db::store::{self, NewDialog};
 use rovik_core::{Core, EventSink, Paths};
@@ -201,12 +208,43 @@ pub struct Args {
     pub mode: Option<String>,
     /// An Autopilot task's effort.
     pub effort: Option<Effort>,
+    /// Messages sent to the run while it works (`--steer`), in order.
+    pub steers: Vec<Steer>,
+}
+
+/// A message the runner sends the run while it works (`--steer TEXT@N`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Steer {
+    pub text: String,
+    /// Sent once the lead chat has this many tool results (0: once the
+    /// run has started).
+    pub after: u32,
+}
+
+impl Steer {
+    /// `TEXT@N`, split at its last `@`.
+    fn parse(value: &str) -> Result<Steer, String> {
+        let (text, after) = value
+            .rsplit_once('@')
+            .ok_or_else(|| format!("--steer takes TEXT@N\n{USAGE}"))?;
+        let after = after
+            .trim()
+            .parse()
+            .map_err(|_| format!("--steer takes TEXT@N, N a number of tool results\n{USAGE}"))?;
+        if text.trim().is_empty() {
+            return Err(format!("--steer needs a text\n{USAGE}"));
+        }
+        Ok(Steer {
+            text: text.to_string(),
+            after,
+        })
+    }
 }
 
 pub const USAGE: &str =
     "usage: rovik-headless --project DIR --settings FILE --prompt TEXT --out FILE \
      [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N] \
-     [--mode agent|plan|autopilot] [--effort balanced|thorough]";
+     [--mode agent|plan|autopilot] [--effort balanced|thorough] [--steer TEXT@N]...";
 
 pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut project = None;
@@ -219,6 +257,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut max_tokens = None;
     let mut mode = None;
     let mut effort = None;
+    let mut steers = Vec::new();
     let mut it = argv.iter();
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -259,6 +298,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
                     _ => return Err(format!("--effort is balanced or thorough\n{USAGE}")),
                 });
             }
+            "--steer" => steers.push(Steer::parse(&value()?)?),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -276,7 +316,65 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         max_tokens,
         mode,
         effort,
+        steers,
     })
+}
+
+/// A scripted message's way (`--steer`): its id once sent, and the reply.
+struct Steering {
+    steer: Steer,
+    id: String,
+    reply: Option<SteerReply>,
+}
+
+/// Sends the scripted messages due now: those whose number of tool results
+/// the lead chat has, in order, each once.
+async fn send_due(core: &Core, dialog_id: &str, steering: &mut [Steering], results: u32) {
+    for s in steering
+        .iter_mut()
+        .filter(|s| s.reply.is_none() && s.steer.after <= results)
+    {
+        let message = UserMessage {
+            id: s.id.clone(),
+            content: s.steer.text.clone(),
+            meta: None,
+            attachments: Vec::new(),
+        };
+        let reply = agent_run::agent_steer(core, dialog_id.to_string(), message).await;
+        s.reply = Some(reply.unwrap_or_else(|reason| SteerReply::Refused { reason }));
+    }
+}
+
+/// What became of each scripted message, for the report: when it was
+/// sent, the reply, and its `delivered` or `returned` line from the log.
+fn steers_report(steering: &[Steering], log: &Path) -> Value {
+    let lines: Vec<Value> = std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|l| l["event"] == "steer")
+        .collect();
+    let line_of = |id: &str, phase: &str| {
+        lines
+            .iter()
+            .find(|l| l["messageId"] == id && l["phase"] == phase)
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    json!(steering
+        .iter()
+        .map(|s| json!({
+            "text": s.steer.text,
+            "after": s.steer.after,
+            "reply": s.reply.as_ref().map(|r| match r {
+                SteerReply::Queued => json!("queued"),
+                SteerReply::Ended => json!("ended"),
+                SteerReply::Refused { reason } => json!({ "refused": reason }),
+            }),
+            "delivered": line_of(&s.id, "delivered"),
+            "returned": line_of(&s.id, "returned"),
+        }))
+        .collect::<Vec<_>>())
 }
 
 /// Reads the run log's new lines since `offset` (the log is appended to).
@@ -465,6 +563,19 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             Some((core.clone(), dialog_id.clone()));
     }
     agent_run::agent_start(&core, request).await?;
+    // The scripted messages, and the lead chat's tool results so far.
+    let mut steering: Vec<Steering> = args
+        .steers
+        .iter()
+        .map(|steer| Steering {
+            steer: steer.clone(),
+            id: uuid::Uuid::new_v4().to_string(),
+            reply: None,
+        })
+        .collect();
+    let mut tool_results = 0u32;
+    // The run started before its first event is read: those due at 0 go now.
+    send_due(&core, &dialog_id, &mut steering, tool_results).await;
 
     // Answer what it asks until it ends (or the time runs out).
     let mut approvals: Vec<Value> = Vec::new();
@@ -512,6 +623,15 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             }
         };
         match event["type"].as_str() {
+            Some("messagesAdded") if event["dialogId"] == dialog_id.as_str() => {
+                let results = event["messages"]
+                    .as_array()
+                    .map_or(0, |m| m.iter().filter(|m| m["role"] == "tool").count());
+                if results > 0 {
+                    tool_results += results as u32;
+                    send_due(&core, &dialog_id, &mut steering, tool_results).await;
+                }
+            }
             Some("subagentStarted") if event["dialogId"] == dialog_id.as_str() => {
                 if let Some(c) = event["childDialogId"].as_str() {
                     children.push(c.to_string());
@@ -585,6 +705,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         questions,
         &log_dir.join("agent-log.jsonl"),
     );
+    if !steering.is_empty() {
+        report["steers"] = steers_report(&steering, &log_dir.join("agent-log.jsonl"));
+    }
     if autopilot {
         let stages = agent_run::autopilot::task_stages(&core, &dialog_id)
             .await?
@@ -951,6 +1074,28 @@ mod tests {
         assert!(with(&["--effort", "max"])
             .unwrap_err()
             .contains("balanced or thorough"));
+        // D18: scripted messages, split at their last `@`, in order.
+        let a = with(&["--steer", "use @client@2", "--steer", "stop there@0"]).unwrap();
+        assert_eq!(
+            a.steers,
+            [
+                Steer {
+                    text: "use @client".into(),
+                    after: 2
+                },
+                Steer {
+                    text: "stop there".into(),
+                    after: 0
+                },
+            ]
+        );
+        assert!(with(&["--steer", "no count"])
+            .unwrap_err()
+            .contains("TEXT@N"));
+        assert!(with(&["--steer", "@3"])
+            .unwrap_err()
+            .contains("needs a text"));
+        assert!(with(&[]).unwrap().steers.is_empty());
     }
 
     #[test]
@@ -1342,6 +1487,7 @@ mod tests {
             max_tokens: None,
             mode: None,
             effort: None,
+            steers: Vec::new(),
         };
         let err = run(&args(dir.join("missing"))).await.unwrap_err();
         assert!(err.contains("missing"), "{err}");

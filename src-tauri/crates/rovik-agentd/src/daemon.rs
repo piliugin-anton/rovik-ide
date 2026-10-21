@@ -279,6 +279,8 @@ impl Daemon {
         status.subagents.retain(|s| is_mine(&s.parent_dialog_id));
         status.approvals.retain(|a| is_mine(&a.dialog_id));
         status.questions.retain(|q| is_mine(&q.dialog_id));
+        // The messages sent to its runs carry the user's words.
+        status.steering.retain(|s| is_mine(&s.dialog_id));
         Ok(status)
     }
 

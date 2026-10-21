@@ -11,6 +11,8 @@ import {
   onApiRouteLearned,
   onMessageUnanswered,
   onReasoningLearned,
+  onSteerReturned,
+  queuedMessage,
   toolNotes,
 } from './agentRuns';
 import { agentChangesFor, recordAgentEdit } from './agentChanges';
@@ -21,11 +23,15 @@ import { liveClmStatus } from './contextMode';
 import { notifications } from './notifications';
 import { pendingQuestions } from './questions';
 import { childOf, isSubagentChat, liveSubagent, seedRunningSubagent } from './subagents';
+import { saveSteerDraft, steerDraft, takeReturnedSteerDrafts } from './steerDrafts';
 
 const callbacks = new Map<number, (event: unknown) => void>();
 let listener: number | null = null;
 const status = {
-  runs: [{ dialogId: 'lead-3', runId: 'r1' }],
+  runs: [
+    { dialogId: 'lead-3', runId: 'r1' },
+    { dialogId: 'steered', runId: 'r2', steerable: true },
+  ],
   subagents: [1, 2, 3].map((n) => ({
     dialogId: `kid-3-${n}`,
     parentDialogId: 'lead-3',
@@ -39,6 +45,14 @@ const status = {
   approvals: [],
   questions: [],
   driving: ['task-9'],
+  // A message the run hasn't read yet, for a page loaded meanwhile.
+  steering: [
+    {
+      dialogId: 'steered',
+      message: { id: 'waiting', content: 'Use the HTTP client' },
+      queuedAt: 5,
+    },
+  ],
 };
 (globalThis as any).window = {
   __TAURI_INTERNALS__: {
@@ -213,10 +227,35 @@ test("the backend's events, as the shared fixtures have them, reach their stores
     onMessageUnanswered((dialogId, messageId) => unanswered.push([dialogId, messageId])),
   ];
   const message = (id: string) => chatStore.messagesOf('fx-chat').find((m) => m.id === id);
+  // A message sent to the run, which it ends without reading (steerReturned).
+  chatStore.queueSteer('fx-chat', {
+    message: queuedMessage({ id: 'fx-steer', content: 'Use the HTTP client' }),
+    queuedAt: 1,
+  });
+  saveSteerDraft({
+    dialogId: 'fx-chat',
+    messageId: 'fx-steer',
+    segments: [{ type: 'text', text: 'Use the HTTP client' }],
+    createdAt: new Date(1).toISOString(),
+  });
+  const returned: string[] = [];
+  const stopReturned = onSteerReturned((dialogId) => returned.push(dialogId));
   const last = <T>(list: T[]): T | undefined => list[list.length - 1];
   // What each type of event changes, checked right after it.
   const effects: Record<string, (e: FixtureEvent) => void> = {
-    runStarted: (e) => assert.ok(isRunning(e.dialogId)),
+    runStarted: (e) => {
+      assert.ok(isRunning(e.dialogId));
+      assert.equal(chatStore.isSteerable(e.dialogId), !!e.steerable);
+    },
+    steerReturned: (e) => {
+      // The bubbles go, and their drafts are to be put back in the input.
+      for (const id of e.messageIds) {
+        assert.ok(!chatStore.queuedOf(e.dialogId).some((q) => q.message.id === id), id);
+        assert.equal(steerDraft(id)?.returned, true, id);
+      }
+      assert.deepEqual(last(returned), e.dialogId);
+      assert.ok(notifications().some((n) => n.title === 'Your message is back in the input'));
+    },
     // Over, but for its task's driver at work (told before the run's end).
     runEnded: (e) => assert.equal(isRunning(e.dialogId), !!chatStore.state.driving[e.dialogId]),
     taskDriving: (e) => {
@@ -272,7 +311,77 @@ test("the backend's events, as the shared fixtures have them, reach their stores
     // The driver done too: nothing goes on in the chat.
     emit({ type: 'taskDriving', dialogId: 'fx-chat', driving: false });
     assert.ok(!isRunning('fx-chat'));
+    assert.deepEqual(
+      takeReturnedSteerDrafts('fx-chat').map((d) => d.messageId),
+      ['fx-steer']
+    );
+    assert.ok(!chatStore.isSteerable('fx-chat'), 'its end takes no more');
   } finally {
     for (const stop of stops) stop();
+    stopReturned();
   }
+});
+
+test('a page loaded mid-run shows the messages its run hasn’t read, and which runs take them', async () => {
+  await initAgentRuns();
+  assert.ok(chatStore.isSteerable('steered'));
+  assert.ok(!chatStore.isSteerable('lead-3'));
+  assert.deepEqual(
+    chatStore.queuedOf('steered').map((q) => [q.message.id, q.message.role, q.queuedAt]),
+    [['waiting', 'user', 5]]
+  );
+});
+
+test('a run that ends with a message it said nothing of: a local chat’s comes back', async () => {
+  await initAgentRuns();
+  const chat = 'ended-chat';
+  emit({ type: 'runStarted', dialogId: chat, runId: 'r', steerable: true });
+  chatStore.queueSteer(chat, {
+    message: queuedMessage({ id: 'unsaid', content: 'Also check the docs' }),
+    queuedAt: 2,
+  });
+  saveSteerDraft({
+    dialogId: chat,
+    messageId: 'unsaid',
+    segments: [{ type: 'text', text: 'Also check the docs' }],
+    createdAt: new Date(2).toISOString(),
+  });
+  // One read on the way: kept until the run's end, then let go.
+  saveSteerDraft({
+    dialogId: chat,
+    messageId: 'read',
+    segments: [{ type: 'text', text: 'Read this' }],
+    createdAt: new Date(3).toISOString(),
+  });
+  emit({
+    type: 'messagesAdded',
+    dialogId: chat,
+    messages: [
+      {
+        id: 'read',
+        dialogId: chat,
+        seq: 5,
+        role: 'user',
+        content: 'Read this',
+        bodyExternal: false,
+        bodyBytes: 9,
+        toolCalls: null,
+        toolCallId: null,
+        meta: { steer: { queuedAt: 3 } },
+        error: null,
+        failed: false,
+        finalized: true,
+        attachments: [],
+        createdAt: 3,
+      },
+    ],
+  });
+  assert.equal(steerDraft('read')?.stored, true);
+  emit({ type: 'runEnded', dialogId: chat, runId: 'r', outcome: 'done' });
+  assert.deepEqual(chatStore.queuedOf(chat), []);
+  assert.equal(steerDraft('read'), undefined, 'read, and the run went on');
+  assert.deepEqual(
+    takeReturnedSteerDrafts(chat).map((d) => d.messageId),
+    ['unsaid']
+  );
 });

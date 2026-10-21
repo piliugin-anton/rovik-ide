@@ -109,6 +109,8 @@ pub struct PauseInfo {
 pub struct Guard {
     /// Tool calls in this run so far, counting those before a Continue.
     pub tool_calls: u32,
+    /// The checkpoint setting: a pause after every this many calls.
+    every: Option<u32>,
     next_checkpoint: Option<u32>,
     recent_calls: VecDeque<(String, String, u64)>,
     recent_errors: VecDeque<String>,
@@ -130,11 +132,11 @@ impl Guard {
     /// `checkpoint_every`: pause after every this many tool calls (None: never).
     /// `start_at`: tool calls already made (continuing a paused run).
     pub fn new(checkpoint_every: Option<u32>, start_at: u32) -> Self {
+        let every = checkpoint_every.filter(|n| *n > 0);
         Guard {
             tool_calls: start_at,
-            next_checkpoint: checkpoint_every
-                .filter(|n| *n > 0)
-                .map(|n| (start_at / n + 1) * n),
+            every,
+            next_checkpoint: every.map(|n| (start_at / n + 1) * n),
             recent_calls: VecDeque::new(),
             recent_errors: VecDeque::new(),
             error_streak: 0,
@@ -346,6 +348,17 @@ impl Guard {
     pub fn resume_after_loop(&mut self) {
         self.stop_reason = None;
         self.reset_evidence();
+    }
+
+    /// The user sent a message the run reads now (steering-plan.md, D12): a
+    /// go-ahead. A loop's pause doesn't happen and its evidence starts again
+    /// (patterns already warned about stay so), and the next checkpoint
+    /// counts from here.
+    pub fn steered(&mut self) {
+        self.resume_after_loop();
+        if let Some(every) = self.every {
+            self.next_checkpoint = Some(self.tool_calls + every);
+        }
     }
 
     fn reset_evidence(&mut self) {

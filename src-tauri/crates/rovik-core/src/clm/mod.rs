@@ -82,7 +82,8 @@ pub fn task_file(dialog_id: &str) -> String {
     format!("{}/{}", context_dir(dialog_id), prompt::TASK_FILE)
 }
 
-/// A message the user wrote: protected from the agent's edits.
+/// A message the user wrote, a request or a message sent while the run
+/// worked: protected from the agent's edits.
 fn is_users(m: &CtxMsg) -> bool {
     m.role == "user" && !m.harness && m.label.is_none() && m.tool_call_id.is_none()
 }
@@ -606,9 +607,11 @@ pub async fn prepare(
         )
     };
 
+    // The request: the user's latest message that isn't one they sent
+    // while the run worked (steering-plan.md, 3.6).
     let request_id = effective
         .iter()
-        .rfind(|m| is_users(m))
+        .rfind(|m| is_users(m) && !m.steer)
         .map(|m| m.id.clone());
     state.tokens = tokens;
     state.budget = budget;

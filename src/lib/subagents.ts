@@ -12,6 +12,7 @@ import { createStore, produce } from 'solid-js/store';
 import type { ChatMessage } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 import { merged, type MessagePatch } from './chatStore';
+import { isRequestMessage } from './requests';
 import { SUBAGENT_KINDS } from './subagentSettings';
 import { plural } from './textUtils';
 
@@ -280,6 +281,10 @@ export const liveSubagent = (
   toolCallId: string
 ): LiveSubagent | undefined => (dialogId ? state.live[dialogId]?.[toolCallId] : undefined);
 
+/** Whether subagents of the chat's run are running (not ended yet). */
+export const runsSubagents = (dialogId: string | null): boolean =>
+  !!dialogId && Object.values(state.live[dialogId] ?? {}).some((live) => !live.status);
+
 /**
  * A parallel group's workers while they run: the live entries under
  * "<call>#<label>" (group.rs keys each worker's events so), by label.
@@ -506,7 +511,7 @@ export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
   let from = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === 'user' && !m.meta?.harness && !m.failed) {
+    if (isRequestMessage(m) && !m.failed) {
       from = i;
       break;
     }

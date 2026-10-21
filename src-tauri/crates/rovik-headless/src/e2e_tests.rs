@@ -824,3 +824,89 @@ async fn an_autopilot_task_runs_headless_to_its_report() {
         "ok"
     );
 }
+
+/// D01 (steering-plan.md): a scripted message sent once the lead chat has
+/// a tool result is read at the run's next step, and the report says so.
+#[tokio::test]
+async fn a_scripted_steer_is_read_and_reported() {
+    let dir = temp_dir();
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("a.txt"), "old\n").unwrap();
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "read",
+            args: json!({ "path": "a.txt" }),
+        },
+        // Slow: the message goes while this reply is on its way.
+        Reply::Slow(
+            400,
+            Box::new(Reply::Call {
+                id: "r2",
+                name: "read",
+                args: json!({ "path": "a.txt" }),
+            }),
+        ),
+        Reply::Text("Kept a.txt as it is, as asked."),
+    ])
+    .await;
+    let settings = dir.0.join("settings.json");
+    std::fs::write(
+        &settings,
+        json!({
+            "profile": { "id": "p::m", "label": "Test/m", "model": "m", "baseUrl": url, "stream": true, "contextTokens": 100000 },
+            "mode": "agent",
+            "config": { "permissions": { "verifyChanges": false, "checklist": "off" } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = dir.0.join("report.json");
+    let argv: Vec<String> = [
+        "--project",
+        project.to_str().unwrap(),
+        "--settings",
+        settings.to_str().unwrap(),
+        "--prompt",
+        "Look at a.txt",
+        "--out",
+        out.to_str().unwrap(),
+        "--timeout",
+        "60",
+        "--steer",
+        "don't change a.txt@1",
+        "--steer",
+        "never sent@99",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let args = crate::parse_args(&argv).unwrap();
+    crate::run(&args).await.unwrap();
+
+    let report: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(report["outcome"], "done");
+    let steers = report["steers"].as_array().unwrap();
+    assert_eq!(steers.len(), 2);
+    assert_eq!(steers[0]["text"], "don't change a.txt");
+    assert_eq!(steers[0]["after"], 1);
+    assert_eq!(steers[0]["reply"], "queued");
+    assert_eq!(steers[0]["delivered"]["phase"], "delivered", "{steers:?}");
+    assert_eq!(steers[0]["returned"], Value::Null);
+    // Its run ended first: never sent.
+    assert_eq!(steers[1]["reply"], Value::Null);
+    // The model's next request had it.
+    let requests = seen.lock().unwrap().clone();
+    assert!(requests
+        .iter()
+        .any(|r| r.to_string().contains("don't change a.txt")));
+    let run = report["runLog"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["event"] == "run")
+        .cloned()
+        .unwrap();
+    assert_eq!(run["steers"], 1, "{run}");
+}

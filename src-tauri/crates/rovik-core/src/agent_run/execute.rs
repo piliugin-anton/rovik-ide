@@ -20,6 +20,10 @@ use serde_json::{json, Map, Value};
 /// The agent's own context folder, as its file tools name it (CLM mode).
 const CONTEXT_PATH_PREFIX: &str = "@context";
 
+/// What a call after the one the user denied gets, when they sent a
+/// message meanwhile (D6): not run, and not counted by the loop guard.
+const DENIED_WITH_MESSAGE: &str = "Error: not run: the user denied an earlier call in this reply and sent a message. Read it first.";
+
 /// What authorizing a call decided.
 #[derive(Default)]
 struct Authorized {
@@ -38,6 +42,9 @@ struct Authorized {
     /// An approved edit: the file it was reviewed against. The file may
     /// change while the approval waits (reconcile_review).
     reviewed: Option<Reviewed>,
+    /// The "no" is the user's own, answering the approval: not their AI
+    /// reviewer's, their settings', nor Autopilot's deadline (D6).
+    by_user: bool,
 }
 
 /// The file an approved edit was reviewed against.
@@ -184,6 +191,8 @@ impl Run {
 
         // G02: calls an earlier run made (a resume) are this run's now.
         self.calls.made(calls);
+        self.steer
+            .note(super::steer::Doing::Calls, self.guard.tool_calls);
         let mut rest = calls;
         while !rest.is_empty() {
             // P2.2: a subagent's time runs out within a reply too: what's
@@ -232,6 +241,26 @@ impl Run {
                 self.execute_one(&rest[0], resume_note, clm, context_dir.as_deref())
                     .await?;
                 rest = &rest[1..];
+                // D6: the user denied that call with a message waiting: the
+                // message redirects the reply, whose later calls don't run.
+                // It's taken now, so the note below always has it after it.
+                if std::mem::take(&mut self.denied_by_user) && !rest.is_empty() && !self.stopped() {
+                    let waiting = self.steer.take();
+                    if !waiting.is_empty() {
+                        for tc in rest {
+                            self.calls.start(&tc.id);
+                            self.add_tool_result(
+                                &tc.id,
+                                DENIED_WITH_MESSAGE.into(),
+                                None,
+                                Vec::new(),
+                            )
+                            .await?;
+                        }
+                        self.read_steering(waiting, "deny").await?;
+                        return Ok(());
+                    }
+                }
             }
         }
         Ok(())
@@ -687,6 +716,8 @@ impl Run {
         if self.stopped() && (auth.refusal.is_some() || auth.approval.is_none()) {
             return self.stopped_result(tc).await;
         }
+        // Stop answers a waiting approval "no" too: that one ended above.
+        self.denied_by_user = auth.by_user && self.sub().is_none();
         // G02: its time is its own from here, not its approval's wait.
         self.calls.start(&tc.id);
         let mut args_json = auth
@@ -1304,6 +1335,7 @@ impl Run {
                 }),
                 approval: Some(approval_json(Approver::User, false, None, None, &[])),
                 rejected: true,
+                by_user: true,
                 ..Default::default()
             },
             // Some changes accepted: write the original with only those applied.
@@ -1335,6 +1367,7 @@ impl Run {
                         total,
                     )),
                     reviewed,
+                    by_user: false,
                 }
             }
         }
@@ -1772,7 +1805,7 @@ impl Run {
         let request = recent
             .iter()
             .rev()
-            .find(|m| plan::is_users(m))
+            .find(|m| plan::is_request(m))
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "plan".into());
         let existing = chat_plan_file(&recent);

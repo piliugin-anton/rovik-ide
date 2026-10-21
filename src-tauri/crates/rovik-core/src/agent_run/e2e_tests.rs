@@ -28,6 +28,10 @@ mod context_tests;
 #[path = "autopilot_e2e_tests.rs"]
 mod autopilot_tests;
 
+#[cfg(test)]
+#[path = "steer_e2e_tests.rs"]
+mod steer_tests;
+
 /*
  * The operations, as the app and the daemon call them: through `dispatch`.
  * These stand in for agent_run's functions of the same names, so every

@@ -56,6 +56,17 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
             tool_call_id,
             outcome,
         ))),
+        Request::AgentSteer { dialog_id, message } => {
+            agent_run::agent_steer(core, dialog_id, message)
+                .await
+                .map(Response::Steer)
+        }
+        Request::AgentUnsteer {
+            dialog_id,
+            message_id,
+        } => Ok(Response::Bool(agent_run::agent_unsteer(
+            core, dialog_id, message_id,
+        ))),
         Request::AgentStatus => Ok(Response::AgentStatus(agent_run::agent_status(core))),
         Request::AgentConfigure(config) => {
             agent_run::agent_configure(core, *config);

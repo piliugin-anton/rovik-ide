@@ -212,6 +212,9 @@ struct State {
     backs: HashMap<String, String>,
     /// The sends whose files are going up, by chat: Stop cancels one.
     uploads: HashMap<String, oneshot::Sender<()>>,
+    /// The messages sent to a run whose files are going up (steering), by
+    /// message id, with their chat: Stop cancels them, and stops the run.
+    steer_uploads: HashMap<String, (String, oneshot::Sender<()>)>,
     /// The host this computer's chats run on when they don't run here:
     /// its Linux side (the WSL distribution, on Windows), where their
     /// commands are sandboxed. A chat of a project moves there before its
@@ -619,8 +622,11 @@ impl Remote {
         if writes && self.is_moving_back(dialog_id) {
             return Err(Fail::new(FailCode::BadRequest, back::MOVING_BACK));
         }
-        // Stop during a send's upload cancels the send (6.11).
+        // Stop during a send's upload cancels the send (6.11): no run goes
+        // yet. One during a steer's (a message to a run that goes) cancels
+        // that too, and still stops the run.
         if matches!(request, Request::AgentStop { .. }) {
+            self.cancel_steer_uploads(dialog_id);
             if let Some(cancel) = self.lock().uploads.remove(dialog_id) {
                 let _ = cancel.send(());
                 return Ok(Response::Bool(true));
@@ -767,11 +773,68 @@ impl Remote {
         self.leave_out_known_text(&mut request).await;
         if let StartKind::Send { message } = &mut request.start {
             if !message.attachments.is_empty() {
-                self.send_files(&host, &client, &request.dialog_id, message)
+                self.files_up(&host, &client, &request.dialog_id, message, Upload::Send)
                     .await?;
             }
         }
         client.call(Request::AgentStart(Box::new(request))).await
+    }
+
+    /// A message for the chat's run while it works (steering-plan.md, 3.8).
+    /// A chat here goes to `dispatch`. For a chat on a host, the editor
+    /// context's local paths are written from the open project's folder,
+    /// as a start's are (K08), and its files go up first, in an upload of
+    /// its own that Stop cancels. Then the host's run takes it.
+    pub async fn steer(&self, dialog_id: &str, mut message: UserMessage) -> Result<Response, Fail> {
+        let Some(host) = self.host_of(dialog_id) else {
+            let request = Request::AgentSteer {
+                dialog_id: dialog_id.to_string(),
+                message,
+            };
+            return rovik_core::dispatch(&self.core, request).await;
+        };
+        let client = self.client(&host)?;
+        let root = self.lock().open.clone().map(|(_, folder)| folder);
+        if let Some(root) = root.as_deref().and_then(Path::to_str) {
+            let sent = message.meta.as_mut().and_then(|m| m.get_mut("sentContent"));
+            if let Some(serde_json::Value::String(text)) = sent {
+                *text = relative_to(text, root);
+            }
+        }
+        if !message.attachments.is_empty() {
+            self.files_up(&host, &client, dialog_id, &mut message, Upload::Steer)
+                .await?;
+        }
+        let request = Request::AgentSteer {
+            dialog_id: dialog_id.to_string(),
+            message,
+        };
+        self.route(dialog_id, request).await
+    }
+
+    /// Takes back a message the chat's run hasn't read yet.
+    pub async fn unsteer(&self, dialog_id: &str, message_id: String) -> Result<Response, Fail> {
+        let request = Request::AgentUnsteer {
+            dialog_id: dialog_id.to_string(),
+            message_id,
+        };
+        self.route(dialog_id, request).await
+    }
+
+    /// Cancels the uploads of the messages sent to the chat's run.
+    fn cancel_steer_uploads(&self, dialog_id: &str) {
+        let mut state = self.lock();
+        let ids: Vec<String> = state
+            .steer_uploads
+            .iter()
+            .filter(|(_, (chat, _))| chat == dialog_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some((_, cancel)) = state.steer_uploads.remove(&id) {
+                let _ = cancel.send(());
+            }
+        }
     }
 
     /// A start other than `Send` sends the request's text only when it
@@ -801,12 +864,13 @@ impl Remote {
     /// would, kept here from cleanup (sending cleared the draft that kept
     /// them), and those the host lacks uploaded, with progress on
     /// `cloud-event`. Stop cancels it, and the message isn't sent.
-    async fn send_files(
+    async fn files_up(
         &self,
         host: &str,
         client: &Client,
         dialog_id: &str,
         message: &mut UserMessage,
+        kind: Upload,
     ) -> Result<(), Fail> {
         if client
             .daemon()
@@ -832,7 +896,17 @@ impl Remote {
             .await
             .map_err(internal)?;
         let (cancel, cancelled) = oneshot::channel();
-        self.lock().uploads.insert(dialog_id.to_string(), cancel);
+        match kind {
+            Upload::Send => {
+                self.lock().uploads.insert(dialog_id.to_string(), cancel);
+            }
+            Upload::Steer => {
+                let chat = dialog_id.to_string();
+                self.lock()
+                    .steer_uploads
+                    .insert(message.id.clone(), (chat, cancel));
+            }
+        }
         let uploaded = tokio::select! {
             uploaded = self.upload(client, dialog_id, &message.id, ids) => uploaded,
             Ok(()) = cancelled => Err(Fail::new(
@@ -840,7 +914,14 @@ impl Remote {
                 "Stopped before the message's files were sent.",
             )),
         };
-        self.lock().uploads.remove(dialog_id);
+        match kind {
+            Upload::Send => {
+                self.lock().uploads.remove(dialog_id);
+            }
+            Upload::Steer => {
+                self.lock().steer_uploads.remove(&message.id);
+            }
+        }
         uploaded
     }
 
@@ -952,6 +1033,7 @@ impl Remote {
                         .extend(theirs.approvals.into_iter().map(mark_remote));
                     status.questions.extend(theirs.questions);
                     status.driving.extend(theirs.driving);
+                    status.steering.extend(theirs.steering);
                 }
                 Err(fail) => log::warn!("{host}'s status: {fail}"),
             }
@@ -1281,7 +1363,9 @@ impl Remote {
                 *request = mark_remote(request.clone());
             }
             AgentEvent::ContextUpdated { status, .. } => status.real_path = None,
-            AgentEvent::RunStarted { dialog_id, run_id } => {
+            AgentEvent::RunStarted {
+                dialog_id, run_id, ..
+            } => {
                 self.lock()
                     .running
                     .insert(dialog_id.clone(), run_id.clone());
@@ -1421,6 +1505,7 @@ impl Remote {
             let event = AgentEvent::RunStarted {
                 dialog_id: run.dialog_id,
                 run_id: run.run_id,
+                steerable: run.steerable,
             };
             self.agent_event(host, event).await;
         }
@@ -1533,6 +1618,14 @@ fn relative_to(text: &str, root: &str) -> String {
     }
     out.push_str(&text[from..]);
     out
+}
+
+/// Whose files go up (`Remote::files_up`): a send's, which starts a run,
+/// or a steer's, for a run that goes.
+#[derive(Clone, Copy)]
+enum Upload {
+    Send,
+    Steer,
 }
 
 /// An edit on the server is shown apart from the local file (K09).

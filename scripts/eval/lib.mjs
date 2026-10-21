@@ -586,6 +586,26 @@ export function autopilotSettings(base, effort, budget) {
 }
 
 /**
+ * The runner's flags for a task's scripted messages (steering-plan.md, D18):
+ * each of its `steers`, `{ text, after }`, sent to the run once the chat has
+ * `after` tool results (`--steer TEXT@N`). None with `steers: false`, so a
+ * campaign can run the same tasks without the facts they give mid-run.
+ */
+export function steerArgs(task, { steers = true } = {}) {
+  if (!steers || task.steers === undefined) return [];
+  if (!Array.isArray(task.steers)) throw new Error(`${task.id}: steers is a list`);
+  return task.steers.flatMap((s, i) => {
+    const ok =
+      typeof s?.text === 'string' &&
+      s.text.trim() !== '' &&
+      Number.isInteger(s.after) &&
+      s.after >= 0;
+    if (!ok) throw new Error(`${task.id}: steer ${i + 1} needs a text and an after (tool results)`);
+    return ['--steer', `${s.text}@${s.after}`];
+  });
+}
+
+/**
  * The runner's caps for an Autopilot run: a tenth over the task's own
  * budget, so the task's ends it first and the caps only catch a runaway.
  */

@@ -300,6 +300,7 @@ fn later_messages_are_added_once() {
         tool_call_id: None,
         attachments: vec![],
         harness: false,
+        steer: false,
         checklist_closed: false,
     };
     // The agent's version already has m2 (rewritten) and m3.

@@ -378,6 +378,16 @@ pub async fn chat_messages_answered(
     api::chat_messages_answered(&core.db, message_ids).await
 }
 
+/// Which of these messages are stored: one sent to a run while it worked
+/// is, once the run read it (steering-plan.md, 3.7).
+#[tauri::command]
+pub async fn chat_messages_stored(
+    core: State<'_, Core>,
+    message_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    api::chat_messages_stored(&core.db, message_ids).await
+}
+
 /// An image or a PDF attached in the chat input, stored until the message
 /// that sends it references it (or cleanup removes it). The bytes are the
 /// request's raw body, the file as it is: an image is made a PNG at most

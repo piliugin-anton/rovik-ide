@@ -265,6 +265,18 @@ pub async fn chat_messages_answered(
         .await
 }
 
+/// Which of these messages are stored, in their order.
+pub async fn chat_messages_stored(
+    db: &DbState,
+    message_ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    db.read(move |c| {
+        let rows = store::messages_by_id(c, &message_ids)?;
+        Ok(rows.into_iter().map(|m| m.id).collect())
+    })
+    .await
+}
+
 /// Debounced save of the chat input's unsent text (one row per chat).
 pub async fn chat_save_composer_draft(
     db: &DbState,

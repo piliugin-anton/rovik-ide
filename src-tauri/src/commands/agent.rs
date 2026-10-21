@@ -8,7 +8,9 @@ use rovik_core::agent::{
     RemoteModel, WireChatMessage,
 };
 use rovik_core::agent_run::plan::{CurrentChecklist, QuestionsOutcome};
-use rovik_core::agent_run::{AgentConfig, AgentStatus, ApprovalDecision, StartRequest};
+use rovik_core::agent_run::{
+    AgentConfig, AgentStatus, ApprovalDecision, StartRequest, SteerReply, UserMessage,
+};
 use rovik_core::chat_request::ChatRequests;
 use rovik_core::Core;
 use rovik_protocol::Request;
@@ -64,6 +66,28 @@ pub async fn agent_stop(remote: State<'_, Arc<Remote>>, dialog_id: String) -> Re
         dialog_id: dialog_id.clone(),
     };
     route(&remote, &dialog_id, request).await
+}
+
+/// A message for the chat's run while it works (steering-plan.md): it reads
+/// it at its next step. A chat on a host sends its files first.
+#[tauri::command]
+pub async fn agent_steer(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+    message: UserMessage,
+) -> Result<SteerReply, String> {
+    answer(remote.steer(&dialog_id, message).await)
+}
+
+/// Takes back a message the chat's run hasn't read yet: whether it was
+/// still waiting.
+#[tauri::command]
+pub async fn agent_unsteer(
+    remote: State<'_, Arc<Remote>>,
+    dialog_id: String,
+    message_id: String,
+) -> Result<bool, String> {
+    answer(remote.unsteer(&dialog_id, message_id).await)
 }
 
 #[tauri::command]

@@ -37,6 +37,7 @@ fn started(dialog: &str) -> AgentEvent {
     AgentEvent::RunStarted {
         dialog_id: dialog.into(),
         run_id: "r".into(),
+        steerable: false,
     }
 }
 

@@ -390,6 +390,32 @@ fn wiping_the_file_keeps_the_task() {
     });
 }
 
+/// steering-plan.md 3.6: a message the user sent while the run worked is
+/// theirs, so no edit drops it, but it isn't the request: what the IDE
+/// makes for the request stays on the request's message.
+#[test]
+fn a_steering_message_is_protected_and_not_the_request() {
+    run(async {
+        let chat = Chat::new().await;
+        chat.add(vec![
+            message("u1", "user", "the task"),
+            message("a1", "assistant", "working"),
+            NewMessage {
+                meta: Some(serde_json::json!({ "steer": { "queuedAt": 1 } })),
+                ..message("s1", "user", "the tests are in tests/unit")
+            },
+        ])
+        .await;
+        let p = chat.prepare(ROOMY).await;
+        assert_eq!(p.request_id.as_deref(), Some("u1"));
+        chat.write("");
+        let p = chat.prepare(ROOMY).await;
+        assert_eq!(ids(&p), ["u1", "s1"], "both put back");
+        assert!(chat.file().contains("the tests are in tests/unit"));
+        assert_eq!(p.request_id.as_deref(), Some("u1"));
+    });
+}
+
 #[test]
 fn wiping_the_file_keeps_what_came_after() {
     run(async {
@@ -1635,6 +1661,7 @@ fn restored_text_appends_only_newer_messages() {
         tool_call_id: None,
         attachments: vec![],
         harness: false,
+        steer: false,
         checklist_closed: false,
     };
     let stored: Vec<String> = ["u1", "a1", "u2", "a2"]

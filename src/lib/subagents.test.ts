@@ -131,6 +131,13 @@ test('tokens on a block, and the latest request’s total', () => {
   ];
   assert.deepEqual(runUsage(messages), { inputTokens: 305, outputTokens: 35, cost: 0.5 });
   assert.equal(runUsage([msg('user')]), null);
+  // A message sent to the run while it worked doesn't start a request: what
+  // came before it is still the request's.
+  assert.deepEqual(runUsage([...messages, msg('user', { steer: { queuedAt: 1 } })]), {
+    inputTokens: 305,
+    outputTokens: 35,
+    cost: 0.5,
+  });
   // P5.3: a check round's triage counts.
   const triaged = msg('assistant', {
     verification: {

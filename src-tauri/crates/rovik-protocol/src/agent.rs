@@ -261,6 +261,39 @@ pub struct ChildInfo {
 pub struct RunningRun {
     pub dialog_id: String,
     pub run_id: String,
+    /// The run takes messages while it works (`AgentSteer`): an Agent-mode
+    /// lead's. Absent: false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steerable: bool,
+}
+
+/// What became of a message sent to a run (`AgentSteer`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SteerReply {
+    /// It waits for the run's next step, which reads it.
+    Queued,
+    /// The run is ending, was stopped, or none goes: the message is for
+    /// the chat's next run, sent the usual way once this one has ended.
+    Ended,
+    /// The run takes no messages (Plan mode, an Autopilot task's), or too
+    /// many wait already: why, for the user.
+    Refused { reason: String },
+}
+
+/// A message waiting for its run's next step (`AgentSteer`), for a page
+/// loaded meanwhile.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedSteer {
+    pub dialog_id: String,
+    pub message: UserMessage,
+    /// When it was sent, in milliseconds since the epoch.
+    pub queued_at: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -286,4 +319,7 @@ pub struct AgentStatus {
     /// when none is, as from a daemon before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub driving: Vec<String>,
+    /// The messages waiting for their run's next step, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering: Vec<QueuedSteer>,
 }

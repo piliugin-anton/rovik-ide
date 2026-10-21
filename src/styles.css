@@ -1316,6 +1316,61 @@ body.tree-dragging {
   border-color: var(--error);
 }
 
+/* While a run that takes messages goes: Send (to the run) beside Stop. Its
+   own class: the app's e2e tells a run's end by a Send button that isn't Stop. */
+.chat-run-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A message sent to the run while it works, not read yet: dimmed at the
+   end of the chat, with what it waits for and ✕ to take it back. */
+.chat-queued {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-queued .chat-message-wrap {
+  padding-bottom: 0;
+}
+
+.chat-message.user.queued {
+  opacity: 0.6;
+}
+
+.chat-queued-status {
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.chat-queued-unsteer {
+  padding: 0 4px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-queued-unsteer:hover {
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+/* From the third message sent to one run: a quiet suggestion under the input. */
+.chat-steer-hint {
+  padding: 0 12px 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
 /* Status of a pending reply: waiting, retrying with a countdown. */
 .chat-pending.status {
   color: var(--fg-muted);
@@ -1464,7 +1519,8 @@ body.tree-dragging {
   flex-shrink: 0;
 }
 
-.chat-send-button {
+.chat-send-button,
+.chat-steer-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1479,11 +1535,13 @@ body.tree-dragging {
   cursor: pointer;
 }
 
-.chat-send-button svg {
+.chat-send-button svg,
+.chat-steer-button svg {
   flex-shrink: 0;
 }
 
-.chat-send-button:disabled {
+.chat-send-button:disabled,
+.chat-steer-button:disabled {
   opacity: 0.5;
   cursor: default;
 }

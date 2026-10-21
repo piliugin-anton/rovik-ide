@@ -119,3 +119,54 @@ test('a stage record the chat doesn’t hold is kept from its patch, and one tha
   store.applyPatch('chat', 'm8', { content: 'More' });
   assert.equal(kept().m8, undefined);
 });
+
+/** A message sent to the run while it works, as the panel queues it. */
+const queued = (id: string) => ({
+  message: { id, role: 'user' as const, content: `Use ${id}`, finalized: true },
+  queuedAt: 1,
+});
+
+test('a message sent to a run waits in its chat until the run reads it (steering)', async () => {
+  const store = createChatStore();
+  await store.openChat({ id: 'chat', title: 'Chat', createdAt: 1, updatedAt: 1, messageCount: 1 });
+  store.setSteerable('chat', true);
+  assert.ok(store.isSteerable('chat'));
+  store.queueSteer('chat', queued('s1'));
+  store.queueSteer('chat', queued('s1'));
+  store.queueSteer('chat', queued('s2'));
+  assert.deepEqual(
+    store.queuedOf('chat').map((q) => q.message.id),
+    ['s1', 's2'],
+    'once each, in order'
+  );
+
+  // Read: its row comes, with the same id, and shows where it was stored.
+  store.receiveMessages('chat', [
+    {
+      ...row,
+      id: 's1',
+      seq: 2,
+      role: 'user',
+      content: 'Use s1',
+      toolCalls: null,
+      meta: { steer: { queuedAt: 1 } },
+      finalized: true,
+    },
+  ]);
+  assert.deepEqual(
+    store.queuedOf('chat').map((q) => q.message.id),
+    ['s2']
+  );
+  const shown = store.messagesOf('chat');
+  assert.equal(shown[shown.length - 1]?.id, 's1');
+
+  // Too late for the run: it goes as a new message after it.
+  store.markSteerLate('chat', 's2');
+  assert.equal(store.queuedOf('chat')[0].late, true);
+  // Handed back (or taken back): it leaves the queue.
+  assert.equal(store.unqueueSteer('chat', 's2')?.message.id, 's2');
+  assert.equal(store.unqueueSteer('chat', 's2'), undefined);
+  assert.deepEqual(store.queuedOf('chat'), []);
+  store.setSteerable('chat', false);
+  assert.ok(!store.isSteerable('chat'));
+});

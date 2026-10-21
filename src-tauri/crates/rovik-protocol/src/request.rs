@@ -2,7 +2,10 @@
 //! are the arguments of the Tauri command of the same name, so the app's
 //! own calls and the daemon's are one list of operations (D3).
 
-use crate::agent::{AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest};
+use crate::agent::{
+    AgentConfig, AgentStatus, ApprovalDecision, OpenAIChatOptions, StartRequest, SteerReply,
+    UserMessage,
+};
 use crate::autopilot::{AutonomyConfig, ChatTask, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
@@ -43,6 +46,19 @@ pub enum Request {
         dialog_id: String,
         tool_call_id: String,
         outcome: QuestionsOutcome,
+    },
+    /// A message for the chat's run while it works (steering-plan.md): the
+    /// run reads it at its next step, as part of the request it works on.
+    /// Its attachments are the daemon's already. → `Steer`.
+    AgentSteer {
+        dialog_id: String,
+        message: UserMessage,
+    },
+    /// Takes back a message sent with `AgentSteer` that the run hasn't
+    /// read yet. → `Bool`: whether it was still waiting.
+    AgentUnsteer {
+        dialog_id: String,
+        message_id: String,
     },
     AgentStatus,
     /// Boxed as a start is: a configuration is far bigger than the rest.
@@ -309,7 +325,9 @@ impl Request {
             Request::AgentStop { dialog_id }
             | Request::AgentPause { dialog_id, .. }
             | Request::AgentResolveApproval { dialog_id, .. }
-            | Request::AgentAnswerQuestions { dialog_id, .. } => chat(dialog_id, Run),
+            | Request::AgentAnswerQuestions { dialog_id, .. }
+            | Request::AgentSteer { dialog_id, .. }
+            | Request::AgentUnsteer { dialog_id, .. } => chat(dialog_id, Run),
             Request::ChatChecklist { dialog_id }
             | Request::ChatChangesSince { dialog_id, .. }
             | Request::ChatOwner { dialog_id }
@@ -369,6 +387,8 @@ pub enum Response {
     /// `AgentSetEffort`: how many runs it reached.
     Count(usize),
     AgentStatus(AgentStatus),
+    /// `AgentSteer`: what became of the message.
+    Steer(SteerReply),
     Checklist(Option<CurrentChecklist>),
     ClmStatus(ClmStatus),
     Revisions(Vec<RevisionRow>),
@@ -438,6 +458,7 @@ replies! {
     RunId => Option<String>,
     Count => usize,
     AgentStatus => AgentStatus,
+    Steer => SteerReply,
     Checklist => Option<CurrentChecklist>,
     ClmStatus => ClmStatus,
     Revisions => Vec<RevisionRow>,

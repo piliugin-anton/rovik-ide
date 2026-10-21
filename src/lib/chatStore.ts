@@ -15,6 +15,7 @@ import { batch } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type { ChatMessage, ChatPlace, DialogCursor, DialogSummary, MessageStatus } from '../types';
 import { keptStage, readStage, type StageMeta } from './autopilot';
+import type { ChatMode } from './chatMode';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 import { sharedMap, type Entries } from './sharedState';
 
@@ -41,6 +42,22 @@ export interface OpenChat {
   stagePatches?: Record<string, StageMeta>;
 }
 
+/**
+ * A message sent to the chat's run while it works (steering), that the run
+ * hasn't read yet: shown at the end of the chat until it's read, taken back
+ * or handed back (docs/design/steering-plan.md 3.7).
+ */
+export interface QueuedSteer {
+  /** As it's stored once read: a user message, its text, files and meta. */
+  message: ChatMessage;
+  /** When it was sent, in milliseconds since the epoch. */
+  queuedAt: number;
+  /** The run could no longer take it: it's sent as a new message once the run has ended. */
+  late?: boolean;
+  /** The mode of the run it was sent to: a late one is sent in it. */
+  mode?: ChatMode;
+}
+
 interface ChatState {
   list: {
     items: DialogSummary[];
@@ -64,6 +81,10 @@ interface ChatState {
   driving: Record<string, true>;
   /** Chats whose run is being started (until the backend answers). */
   starting: Record<string, number>;
+  /** Chats whose run takes messages while it works: an Agent-mode run's (`runStarted`). */
+  steerable: Record<string, true>;
+  /** Messages sent to a run while it works that it hasn't read yet, by chat, oldest first. */
+  queued: Record<string, QueuedSteer[]>;
   /** Chats with agent messages the user hasn't seen yet (dot indicator). */
   unread: Record<string, true>;
   /** The chat panel is mounted (sidebar tab is "chat"): the active chat is seen. */
@@ -124,6 +145,8 @@ export function createChatStore() {
     running: {},
     driving: {},
     starting: {},
+    steerable: {},
+    queued: {},
     unread: unreadIds(marks.all()),
     chatVisible: false,
   });
@@ -418,6 +441,50 @@ export function createChatStore() {
     );
   }
 
+  /** The chat's run takes messages while it works, or no longer does. */
+  function setSteerable(dialogId: string, steerable: boolean) {
+    setState('steerable', flag(dialogId, steerable));
+  }
+
+  const isSteerable = (dialogId: string) => !!state.steerable[dialogId];
+
+  /*
+   * -------------------------------------------------------------------------
+   * Messages sent to a run while it works (steering)
+   * -------------------------------------------------------------------------
+   */
+
+  /** The chat's messages its run hasn't read yet, oldest first. */
+  const queuedOf = (dialogId: string): QueuedSteer[] => state.queued[dialogId] ?? [];
+
+  /** Shows a message sent to the chat's run at the end of the chat (once). */
+  function queueSteer(dialogId: string, queued: QueuedSteer) {
+    if (queuedOf(dialogId).some((q) => q.message.id === queued.message.id)) return;
+    setState('queued', dialogId, (list) => [...(list ?? []), queued]);
+  }
+
+  /** Takes a message off the chat's queue: it was read, taken back or handed back. */
+  function unqueueSteer(dialogId: string, messageId: string): QueuedSteer | undefined {
+    const found = queuedOf(dialogId).find((q) => q.message.id === messageId);
+    if (!found) return undefined;
+    setState(
+      'queued',
+      produce((all) => {
+        const rest = (all[dialogId] ?? []).filter((q) => q.message.id !== messageId);
+        if (rest.length > 0) all[dialogId] = rest;
+        else delete all[dialogId];
+      })
+    );
+    return found;
+  }
+
+  /** The run could no longer take the message: it goes as a new message after the run. */
+  function markSteerLate(dialogId: string, messageId: string) {
+    const list = queuedOf(dialogId);
+    const i = list.findIndex((q) => q.message.id === messageId);
+    if (i >= 0) setState('queued', dialogId, i, 'late', true);
+  }
+
   /**
    * A run is going on in the chat, or being started, or its Autopilot
    * task's driver is at work between two runs.
@@ -567,6 +634,8 @@ export function createChatStore() {
     const chat = state.open[dialogId];
     const known = new Set(chat?.messages.map((m) => m.id) ?? []);
     const added: ChatMessage[] = [];
+    // A queued message read by the run: its row shows where it was stored.
+    for (const row of rows) unqueueSteer(dialogId, row.id);
     // Opened around a search hit: the newest aren't loaded, so these wait for that.
     const showNew = !!chat && !chat.hasNewer;
     for (const row of rows) {
@@ -669,6 +738,12 @@ export function createChatStore() {
     setDriving,
     setStarting,
     isRunning,
+    setSteerable,
+    isSteerable,
+    queuedOf,
+    queueSteer,
+    unqueueSteer,
+    markSteerLate,
     createDialog,
     renameDialog,
     deleteDialog,

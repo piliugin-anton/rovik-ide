@@ -264,6 +264,7 @@ async fn events_reach_the_frontend_as_6_1_says() {
     let elsewhere = AgentEvent::RunStarted {
         dialog_id: "elsewhere".into(),
         run_id: "r".into(),
+        steerable: false,
     };
     remote.receive(HOST, event(elsewhere)).await;
 
@@ -314,6 +315,7 @@ async fn a_chat_the_database_puts_on_the_host_is_placed_by_its_first_event() {
         let started = AgentEvent::RunStarted {
             dialog_id: chat.into(),
             run_id: "r".into(),
+            steerable: false,
         };
         remote.receive(HOST, event(started)).await;
     }
@@ -1265,6 +1267,7 @@ async fn a_host_that_comes_back_tells_of_its_drivers_at_work() {
         runs: vec![RunningRun {
             dialog_id: "going".into(),
             run_id: "r1".into(),
+            steerable: false,
         }],
         driving: vec!["going".into()],
         ..Default::default()
@@ -1429,4 +1432,68 @@ async fn a_chat_is_pulled_by_one_window_at_a_time() {
     drop(held);
     let took = tokio::time::timeout(Duration::from_secs(5), waiting).await;
     assert_eq!(took.unwrap().unwrap(), Ok(true));
+}
+
+/// steering-plan.md 3.8: a message for a run on a host goes there with the
+/// editor context's local paths written from the open project's folder,
+/// as a start's are (K08), and the host's status adds what waits there.
+#[tokio::test]
+async fn a_steer_goes_to_the_chats_host_with_its_paths_from_the_project() {
+    let app = App::new();
+    app.chat("chat", None, Vec::new()).await;
+    let (remote, fake) = connected(&app).await;
+    remote.place("chat", HOST);
+    let folder = app.dir.0.join("project");
+    remote.set_open_project(Some(("p".into(), folder.clone())));
+    let local = folder.join("src").join("a.rs");
+    let message = UserMessage {
+        id: "s1".into(),
+        content: "use the client".into(),
+        meta: Some(serde_json::json!({
+            "sentContent": format!("[Active editor context — file {}]\n\nuse the client", local.display())
+        })),
+        attachments: Vec::new(),
+    };
+    remote.steer("chat", message.clone()).await.unwrap();
+    let sent = fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|r| match r {
+            Request::AgentSteer { dialog_id, message } if dialog_id == "chat" => {
+                Some(message.clone())
+            }
+            _ => None,
+        })
+        .expect("sent to the host");
+    assert_eq!(
+        sent.meta.unwrap()["sentContent"],
+        "[Active editor context — file src/a.rs]\n\nuse the client"
+    );
+    assert_eq!(sent.content, "use the client");
+
+    // What waits there shows in the status.
+    *fake.status.lock().unwrap() = Some(AgentStatus {
+        runs: vec![RunningRun {
+            dialog_id: "chat".into(),
+            run_id: "r1".into(),
+            steerable: true,
+        }],
+        steering: vec![rovik_protocol::agent::QueuedSteer {
+            dialog_id: "chat".into(),
+            message,
+            queued_at: 1,
+        }],
+        ..Default::default()
+    });
+    let status = remote.status().await.unwrap();
+    assert_eq!(status.steering.len(), 1);
+    assert!(status.runs.iter().any(|r| r.steerable));
+    // Taken back there too.
+    remote.unsteer("chat", "s1".into()).await.unwrap();
+    assert!(fake.requests.lock().unwrap().iter().any(|r| matches!(
+        r,
+        Request::AgentUnsteer { message_id, .. } if message_id == "s1"
+    )));
 }

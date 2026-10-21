@@ -18,6 +18,7 @@
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
 //!   change_review.rs  a fresh-context review of the change before the checks
 //!   tools.rs      tool schemas and running a tool
+//!   steer.rs      messages the user sends a run while it works
 //!   autopilot/    a task carried out with nobody there: its stages
 //!   candidates.rs Thorough's two implementers, each in its own copy, and
 //!                 the pick of the better
@@ -62,6 +63,7 @@ pub mod report;
 pub mod review;
 mod run;
 pub mod server;
+pub mod steer;
 pub mod subagent;
 mod subagent_run;
 pub mod test_writer;
@@ -83,7 +85,7 @@ use tokio::sync::{oneshot, watch};
 pub use landing::{checks_would_run, pending_reason, pending_reason_in};
 pub use rovik_protocol::agent::{
     AgentConfig, AgentStatus, ApprovalDecision, ChildInfo, ModelProfile, RunningRun,
-    RunningSubagent, StartKind, StartRequest, UserMessage,
+    RunningSubagent, StartKind, StartRequest, SteerReply, UserMessage,
 };
 pub use run::last_user_wire_content;
 
@@ -163,6 +165,9 @@ struct RunControl {
     pause: Arc<PauseSignal>,
     /// The reasoning effort picked while the run goes on (see `set_effort`).
     effort: watch::Sender<EffortPick>,
+    /// The messages the user sends it while it works (steer.rs). A
+    /// subagent's run has one that never takes any.
+    steer: Arc<steer::SteerQueue>,
     /// A subagent's: what its block shows, for a page reloaded mid-run (P1.5).
     child: Option<ChildInfo>,
     /// A lead's that carries out an Autopilot task's stage, with the task's
@@ -197,6 +202,7 @@ pub(super) struct Controls {
     pub stop: Arc<StopSignal>,
     pub pause: Arc<PauseSignal>,
     pub effort: watch::Receiver<EffortPick>,
+    pub steer: Arc<steer::SteerQueue>,
 }
 
 struct Waiting<T, R> {
@@ -587,6 +593,7 @@ impl AgentState {
             options,
             here: false,
         });
+        let steer = Arc::new(steer::SteerQueue::default());
         inner.runs.insert(
             dialog_id.to_string(),
             RunControl {
@@ -597,6 +604,7 @@ impl AgentState {
                 stop: stop.clone(),
                 pause: pause.clone(),
                 effort: effort_tx,
+                steer: steer.clone(),
                 child: None,
                 autopilot: None,
                 started: std::time::Instant::now(),
@@ -611,6 +619,7 @@ impl AgentState {
             stop,
             pause,
             effort: effort_rx,
+            steer,
         })
     }
 
@@ -1380,9 +1389,23 @@ pub(super) async fn start_run(
         }
     };
 
+    // An Agent-mode lead's run takes the messages the user sends it while
+    // it works (steering-plan.md, D1), from now on.
+    let steering = prepared.0.steer.clone();
+    let steerable = match prepared.0.steering_refusal() {
+        None => {
+            steering.open();
+            true
+        }
+        Some(why) => {
+            steering.refuse(why);
+            false
+        }
+    };
     core.emit(AgentEvent::RunStarted {
         dialog_id: dialog_id.clone(),
         run_id: run_id.clone(),
+        steerable,
     });
     let id = run_id.clone();
     let core = core.clone();
@@ -1396,6 +1419,9 @@ pub(super) async fn start_run(
             Ok(outcome) => outcome,
             Err(e) => {
                 eprintln!("agent: run {id} in chat {dialog_id} ended abnormally: {e}");
+                // What the user sent it that it didn't read goes back.
+                let left = steering.close_and_take();
+                hand_back_steering(&core, &dialog_id, left, "error");
                 "error".to_string()
             }
         };
@@ -1607,6 +1633,119 @@ pub fn agent_answer_questions(
         .answer_questions(core, &dialog_id, &tool_call_id, outcome)
 }
 
+/// A message for the chat's run while it works (steering-plan.md): it
+/// waits for the run's next step, which reads it as part of the request
+/// (`Queued`). `Ended` when no run goes there, it was stopped, or it
+/// decided to end: the message is for the chat's next run. `Refused` when
+/// the run takes none (Plan mode, an Autopilot task) or too many wait.
+pub async fn agent_steer(
+    core: &Core,
+    dialog_id: String,
+    mut message: UserMessage,
+) -> Result<SteerReply, String> {
+    check_attachments(&core.db, &mut message).await?;
+    // Its files wait with it: their grace period starts again now, and the
+    // cleanup keeps them while it waits (steer.rs).
+    if !message.attachments.is_empty() {
+        let ids = message.attachments.clone();
+        core.db
+            .write(move |c| crate::chat_db::attachments::renew(c, &ids))
+            .await?;
+    }
+    // What the run waits on, read before its queue's lock is taken. A
+    // queue's lock is taken under `AgentState`'s (agent_status), never the
+    // other way round.
+    let (queue, waits) = {
+        let inner = core.agents.lock();
+        let lead = inner
+            .runs
+            .get(&dialog_id)
+            .filter(|r| r.parent.is_none() && !inner.candidates.contains_key(&dialog_id));
+        let Some(run) = lead.filter(|r| !r.stop.is_set()) else {
+            return Ok(SteerReply::Ended);
+        };
+        let approval = inner.approvals.keys().any(|(d, _)| *d == dialog_id);
+        let subagents = inner
+            .runs
+            .values()
+            .any(|r| r.parent.as_deref() == Some(dialog_id.as_str()));
+        let waits = match (approval, subagents) {
+            (true, _) => Some("approval"),
+            (false, true) => Some("subagents"),
+            _ => None,
+        };
+        (run.steer.clone(), waits)
+    };
+    let (id, chars, files) = (
+        message.id.clone(),
+        message.content.chars().count(),
+        message.attachments.len(),
+    );
+    let reply = queue.push(message);
+    if reply == SteerReply::Queued {
+        let doing = waits.unwrap_or_else(|| queue.doing().id());
+        steer::log_line(
+            core,
+            &dialog_id,
+            &id,
+            "queued",
+            serde_json::json!({ "chars": chars, "attachments": files, "doing": doing }),
+        );
+    }
+    Ok(reply)
+}
+
+/// Takes back a message sent with `agent_steer` that the chat's run hasn't
+/// read yet: whether it was still waiting.
+pub fn agent_unsteer(core: &Core, dialog_id: String, message_id: String) -> bool {
+    let queue = {
+        let inner = core.agents.lock();
+        match inner.runs.get(&dialog_id).filter(|r| r.parent.is_none()) {
+            Some(run) => run.steer.clone(),
+            None => return false,
+        }
+    };
+    let Some(taken) = queue.withdraw(&message_id) else {
+        return false;
+    };
+    steer::log_line(
+        core,
+        &dialog_id,
+        &message_id,
+        "withdrawn",
+        serde_json::json!({ "waitedMs": taken.waited_ms() }),
+    );
+    true
+}
+
+/// Messages a run held but didn't read go back to the user's input
+/// (D15): told before the run's end, and logged.
+pub(super) fn hand_back_steering(
+    core: &Core,
+    dialog_id: &str,
+    left: Vec<steer::Queued>,
+    outcome: &str,
+) {
+    if left.is_empty() {
+        return;
+    }
+    for q in &left {
+        steer::release(&q.message.attachments);
+        steer::log_line(
+            core,
+            dialog_id,
+            &q.message.id,
+            "returned",
+            serde_json::json!({ "waitedMs": q.waited_ms(), "why": outcome }),
+        );
+    }
+    core.emit(AgentEvent::SteerReturned {
+        dialog_id: dialog_id.to_string(),
+        message_ids: left.into_iter().map(|q| q.message.id).collect(),
+        outcome: outcome.to_string(),
+    });
+}
+
 /// What's going on right now, for a frontend that (re)starts mid-run.
 pub fn agent_status(core: &Core) -> AgentStatus {
     let inner = core.agents.lock();
@@ -1623,6 +1762,7 @@ pub fn agent_status(core: &Core) -> AgentStatus {
             .map(|(dialog_id, r)| RunningRun {
                 dialog_id: dialog_id.clone(),
                 run_id: r.run_id.clone(),
+                steerable: r.steer.steerable(),
             })
             .collect(),
         subagents: inner
@@ -1663,6 +1803,12 @@ pub fn agent_status(core: &Core) -> AgentStatus {
             .keys()
             .filter(|dialog_id| !inner.candidates.contains_key(*dialog_id))
             .cloned()
+            .collect(),
+        steering: inner
+            .runs
+            .iter()
+            .filter(|(_, r)| r.parent.is_none())
+            .flat_map(|(dialog_id, r)| r.steer.status(dialog_id))
             .collect(),
     }
 }

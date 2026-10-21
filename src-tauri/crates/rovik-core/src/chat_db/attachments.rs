@@ -350,7 +350,8 @@ pub fn data_url(data_dir: &Path, id: &str) -> Option<String> {
 }
 
 /// Removes attachments no message references (older than the grace period),
-/// except images unsent chat input still holds.
+/// except images unsent chat input still holds, and the files of messages
+/// waiting for a run's next step (agent_run/steer.rs).
 pub fn collect_garbage(conn: &Connection, data_dir: &Path) -> DbResult<usize> {
     let drafts = in_drafts(conn)?;
     let ids: Vec<String> = {
@@ -370,7 +371,9 @@ pub fn collect_garbage(conn: &Connection, data_dir: &Path) -> DbResult<usize> {
             .map_err(err)?
             .collect::<Result<_, _>>()
             .map_err(err)?;
-        rows.into_iter().filter(|id| !drafts.contains(id)).collect()
+        rows.into_iter()
+            .filter(|id| !drafts.contains(id) && !crate::agent_run::steer::is_held(id))
+            .collect()
     };
     for id in &ids {
         conn.execute("DELETE FROM attachments WHERE id = ?1", params![id])

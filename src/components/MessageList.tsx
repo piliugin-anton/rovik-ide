@@ -18,7 +18,7 @@ import {
   untrack,
 } from 'solid-js';
 import type { ChatMessage, ChatToolCall } from '../types';
-import type { OpenChat } from '../lib/chatStore';
+import type { OpenChat, QueuedSteer } from '../lib/chatStore';
 import {
   afterAppend,
   afterPrepend,
@@ -56,6 +56,8 @@ import { indexToolResults } from '../lib/toolResults';
 import type { ReviewMeta } from '../lib/changeReview';
 import { openPlan } from '../lib/plans';
 import { isSettled, parseTodo } from '../lib/todo';
+import { isRequestMessage } from '../lib/requests';
+import { LATE_LABEL } from '../lib/steering';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
 
 const BOTTOM_TOLERANCE_PX = 8;
@@ -142,6 +144,15 @@ export default function MessageList(props: {
   onImplementPlan?: () => void;
   /** The chat can't change now (it's moving): no Retry, Continue or Implement. */
   readOnly?: boolean;
+  /**
+   * Messages sent to the run while it works that it hasn't read yet, shown
+   * after the chat's messages (docs/design/steering-plan.md 3.7).
+   */
+  queued?: QueuedSteer[];
+  /** What a queued message waits for, as its label says. */
+  queuedLabel?: string;
+  /** ✕ on a queued message: take it back into the input. */
+  onUnsteer?: (messageId: string) => void;
 }) {
   let scrollRef: HTMLDivElement | undefined;
   let innerRef: HTMLDivElement | undefined;
@@ -181,7 +192,7 @@ export default function MessageList(props: {
   const requestUndelivered = () => {
     const list = messages();
     for (let i = list.length - 1; i >= 0; i--) {
-      if (list[i].role === 'user' && !list[i].meta?.harness) return !!list[i].failed;
+      if (isRequestMessage(list[i])) return !!list[i].failed;
     }
     return false;
   };
@@ -1661,6 +1672,61 @@ export default function MessageList(props: {
               </div>
             )}
           </For>
+          {/* Sent to the run while it works, not read yet: once it's read, its
+              stored row shows where the run read it, and this goes. */}
+          <Show when={atNewest()}>
+            <For each={props.queued ?? []}>
+              {(q) => (
+                <div class="chat-queued" data-queued-id={q.message.id}>
+                  <div class="chat-message-wrap user">
+                    <div class="chat-message user queued">
+                      <Show when={!isBlank(q.message.content)}>
+                        <MessageContent content={q.message.content} streaming={false} />
+                      </Show>
+                      <Show when={userImages(q.message).length}>
+                        <div class="chat-message-images">
+                          <For each={userImages(q.message)}>
+                            {(id) => (
+                              <img
+                                class="chat-message-image"
+                                src={attachmentUrl(id)}
+                                alt="Attached image"
+                              />
+                            )}
+                          </For>
+                        </div>
+                      </Show>
+                      <Show when={userPdfs(q.message).length}>
+                        <div class="chat-message-files">
+                          <For each={userPdfs(q.message)}>
+                            {(pdf) => (
+                              <span class="chat-message-file" title={pdf.name}>
+                                <span class="chat-message-file-name">{pdf.name}</span>
+                              </span>
+                            )}
+                          </For>
+                        </div>
+                      </Show>
+                    </div>
+                  </div>
+                  <div class="chat-queued-status" role="status">
+                    <span class="chat-queued-label">
+                      {q.late ? LATE_LABEL : (props.queuedLabel ?? '')}
+                    </span>
+                    <button
+                      type="button"
+                      class="chat-queued-unsteer"
+                      title="Take it back into the input"
+                      aria-label="Take the message back into the input"
+                      onClick={() => props.onUnsteer?.(q.message.id)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              )}
+            </For>
+          </Show>
         </div>
 
         <div ref={bottomSentinel} class="chat-sentinel" aria-hidden="true" />

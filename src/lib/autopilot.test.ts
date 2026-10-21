@@ -107,6 +107,12 @@ test('autopilot: the current task is the latest, until a message of the user’s
   assert.equal(currentTask(later), null);
   assert.equal(unfinishedTask(later), false);
   assert.equal(currentTask([user('Hello')]), null);
+  // A message sent to a run while it worked is part of its request, not a new one.
+  const steered = [...messages, user('Use the HTTP client', { steer: { queuedAt: 1 } })];
+  assert.deepEqual(
+    currentTask(steered)?.map((r) => r.stage.task),
+    ['b']
+  );
 });
 
 test('autopilot: a task is over once delivered or stopped, unfinished otherwise', () => {

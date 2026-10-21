@@ -221,9 +221,10 @@ and their ids are held in a registry the cleanup reads (`collect_garbage`
 keeps them) until the message is stored or handed back: a message can wait
 behind an approval for longer than the cleanup's hour.
 
-The queue's lock and `AgentState`'s are never held together: what the run is
-doing (`doing`) is the run's own note, and what it waits on (an approval,
-subagents) is read from `AgentState` before or after, never under it.
+A queue's lock is taken under `AgentState`'s (`agent_status` lists what
+waits), never the other way round: what the run is doing (`doing`) is the
+run's own note, and what it waits on (an approval, subagents) is read from
+`AgentState` before the queue's lock is taken.
 
 `agent_steer(core, dialog_id, message)`:
 
@@ -277,9 +278,9 @@ current count plus the setting's interval. `Guard` keeps that interval for it.
 
 `Run::go` closes the queue as soon as `drive` returns, whatever ended it
 (`close_and_take`), before the landing. What it held goes back to the user:
-`SteerReturned { dialog_id, message_ids, why }`, emitted before `RunEnded`,
-and a `returned` line. `why` is shown in a notice: "The agent stopped before
-it read your message, so it's back in the input." The task wrapper in
+`SteerReturned { dialog_id, message_ids, outcome }`, emitted before
+`RunEnded`, and a `returned` line. The frontend's notice says why, by the
+outcome: "The agent stopped before it read your message." The task wrapper in
 `start_run` does the same when a run panics, and the `Err` path of
 `read_steering` (a failed write) hands back what it couldn't store.
 
@@ -440,7 +441,7 @@ rovik-protocol:
   `SteerReply = Queued | Ended | Refused { reason }`. `AgentUnsteer` answers
   `Bool`.
 - `AgentEvent::RunStarted { steerable }` and
-  `AgentEvent::SteerReturned { dialog_id, message_ids, why }`, which
+  `AgentEvent::SteerReturned { dialog_id, message_ids, outcome }`, which
   `dialog_id()` covers.
 - `RunningRun { steerable }` and `AgentStatus { steering: Vec<QueuedSteer> }`,
   `#[serde(default)]` as the protocol's new fields are.
@@ -472,12 +473,12 @@ registered in `src-tauri/src/lib.rs`, with wrappers in `src/lib/agentRuns.ts`.
 Each line is `{"event": "steer", "dialogId", "messageId", "phase", …}`
 (`agent_run/log.rs`):
 
-| `phase`     | Fields                                                                                        |
-| ----------- | --------------------------------------------------------------------------------------------- |
-| `queued`    | `chars`, `attachments`, `doing` (`reply`, `calls`, `approval`, `subagents`, `checks`)         |
-| `delivered` | `waitedMs`, `callsMeanwhile`, `at` (`step`, `pause`, `done`, `end`, `repair`, `move`, `deny`) |
-| `withdrawn` | `waitedMs`                                                                                    |
-| `returned`  | `waitedMs`, `why` (the run's outcome)                                                         |
+| `phase`     | Fields                                                                                                                     |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `queued`    | `chars`, `attachments`, `doing` (`reply`, `calls`, `approval`, `subagents`, `checks`)                                      |
+| `delivered` | `waitedMs`, `callsMeanwhile`, `at` (`step`, `pause`, `done`, `review`, `checks`, `end`, `repair`, `move`, `drain`, `deny`) |
+| `withdrawn` | `waitedMs`                                                                                                                 |
+| `returned`  | `waitedMs`, `why` (the run's outcome)                                                                                      |
 
 `doing` is the queue's `doing`, which the run sets when a reply starts, when
 its calls start and around the review and the checks; an approval or
@@ -685,4 +686,49 @@ every unanswered steering row.
 
 ## Notes from implementation
 
-(Each task adds its notes here.)
+Built in one go, all milestones (A–D), after the review against the code
+(section 8) and the user's word that older hosts needn't be supported (one
+user: the app and its hosts are updated together).
+
+- **A01:** `SteerReturned` carries the run's `outcome`, not a `why`: the
+  frontend words the notice (`lib/steering.ts`, `returnedNotice`).
+- **A03:** the queue is `agent_run/steer.rs`. A queued message's files are
+  renewed when it's pushed, and a registry (`steer::is_held`) keeps them
+  from `collect_garbage` while it waits. Every run gets a queue; only an
+  Agent-mode lead's opens (`Run::steering_refusal` says why the others
+  don't).
+- **A04:** the read points are `read_waiting` (take), `read_or_close` (take
+  or close), `read_before_merge` (P3a, after an end that goes on) and
+  `read_at_end` (P4), all `Run`'s; none reads once the run is stopped. The
+  ends that go on are those `run::steer_goes_on` doesn't list. P6 closes the
+  queue as it reads (`close_and_take`). The Deny rule is in
+  `execute_tool_calls`, after `execute_one`, from `Run::denied_by_user`.
+- **A05:** the focus note quotes the last five, 300 characters each;
+  `latest_user_request` numbers them (`run::with_steering`); the map's
+  focus adds their text (`run::steering_text`).
+- **A06:** the `at` values are those of 3.9, `review` and `checks` added for
+  P3a's two places.
+- **B01:** besides `agent_steer` and `agent_unsteer`, the app has
+  `chat_messages_stored`, which the frontend's recovery asks whether a
+  steering message's row is there.
+- **B02–B07:** the frontend's rules are in `lib/requests.ts`,
+  `lib/steering.ts` (the send decision, the labels, the hint, the judging of
+  drafts) and `lib/steerDrafts.ts`. A message the run could no longer take
+  is sent after it in the mode of its request; only the first such one is,
+  later ones come back into the input.
+- **B06:** `unsettled_sends` marks steering rows (`steer`), so another
+  window's are brought back as returned steer drafts (a chat has one
+  pending draft), after the send they followed.
+- **B08:** not done: the app's e2e needs the built desktop app with
+  WebKitWebDriver and tauri-driver, which the sandbox it was built in
+  doesn't have. The core's e2e tests (`steer_e2e_tests.rs`) and the
+  daemon's cover the same ground below the webview.
+- **C:** no feature flag. The daemon serves both requests through
+  `dispatch` and keeps its status's `steering` to the computer's chats. The
+  client keeps steer uploads apart from sends' (`steer_uploads`): Stop
+  cancels them and still reaches the host (`rovik-agentd/tests/attachments.rs`).
+- **D:** `--steer TEXT@N` splits at the last `@`; `N` = 0 sends once the run
+  has started. Evaluation tasks take `steers`, and `--no-steers` runs a
+  campaign without them.
+- **Tests:** the core's e2e covers 1–13 and 15–18 (`steer_e2e_tests.rs`;
+  15 as a unit test of `steer_goes_on`), test 14 is in `chat_db/tests.rs`.
