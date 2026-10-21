@@ -73,7 +73,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   fix it. It's told when a fix made no progress, a fix that breaks
   something that passed before is rolled back, and tests weakened to pass
   (skipped, deleted, fewer assertions) are flagged for you instead of
-  counting as verified.
+  counting as verified. A check that fails runs once more on the code
+  before the change (in an isolated chat): what fails there too, such as
+  the type errors many React Native apps have, isn't the agent's to fix and
+  doesn't hold its change back. A test script that runs Jest in watch
+  mode is run once.
 - **Several chats at once, safely.** Each chat works on its own private
   copy of your changes, so two chats (or a chat and you) never overwrite
   each other. When a chat finishes, its changes are merged into the
@@ -601,6 +605,30 @@ What one process must not do to another's work is guarded the same way:
   thread starts at that moment shares the open file until its exec, which
   kept a lock let go held meanwhile.
 
+### Project checks
+
+When the agent finishes a change, the IDE runs the project's checks (type
+check, lint, tests) and sends what fails back to it. What the checks know
+lives in tables (paths under `src-tauri/crates/rovik-core/src/`), so
+teaching them a new tool is usually one row:
+
+| To teach the checks…                                     | Add it to                                                                                                 |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| another package.json script name for a kind of check     | `CHECK_SCRIPTS` in `project_profile/node.rs` (and its copy in the frontend's `src/lib/projectProfile.ts`) |
+| a framework to name in the stack the agent is told about | `STACKS` in `project_profile/node.rs`                                                                     |
+| a test runner's watch mode, which never ends             | `WATCHERS` in `project_profile/node.rs`                                                                   |
+| a tool's way of printing its failures                    | a rule in `RULES`, `agent_run/command_output.rs`                                                          |
+| a cache or home folder a tool must write to              | `TOOL_DIRS` or `TOOL_HOMES` in `overlay/confine.rs`                                                       |
+
+A check that fails runs once more on the code before the change
+(`agent_run/before.rs`): in an isolated chat, the project as it is, in a
+throwaway overlay. Failures are compared by key (an error's file, code and
+message, or a test's name, with paths relative to where each run was), and
+those that fail there too are set apart: a check that fails only as it did
+before is `preexisting` in its record and doesn't hold the change back.
+React Native apps, whose bundler never type-checks, often have such
+failures.
+
 ### Chat isolation
 
 Every agent run works in an **overlay**: the project as it is on disk, with
@@ -615,8 +643,10 @@ On Linux, every command the agent runs is sandboxed with bubblewrap
 (`bwrap`): the system is read-only to it but for the chat's own folders
 (its view or worktree, its build folder, `/tmp` and the toolchains' caches
 under your home), the credential stores (`~/.rovik`, `~/.ssh`, `~/.aws`,
-`~/.gnupg`, the cloud CLIs' folders) are empty to it, it sees no other
-process, and it has no capabilities, so it can't undo any of that. An
+`~/.gnupg`, the cloud CLIs' folders, Expo's login in `~/.expo`) are empty
+to it, it sees no other process, and it has no capabilities, so it can't
+undo any of that. Expo's CLI, which writes its state on every run, gets a
+folder of its own under `~/.cache/rovik-ide` instead of `~/.expo`. An
 isolated chat's commands also see its overlay at the project's own path,
 so one that names the project by its full path still stays in the chat.
 The .deb and .rpm packages depend on bubblewrap, and the app offers to

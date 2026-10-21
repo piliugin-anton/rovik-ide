@@ -299,13 +299,15 @@ static ESLINT_ROW: LazyLock<Regex> = LazyLock::new(|| {
 /// (round 3: an error in that file, not "failed").
 static PYTEST_COLLECT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^ERROR (?P<file>\S+\.py)(?: - (?P<msg>.+))?$").unwrap());
-/// Failing tests: cargo, go, pytest, jest/vitest.
+/// Failing tests: cargo, go, pytest, jest/vitest. A duration after the
+/// name isn't part of it, with parentheses (jest's `✕ adds (12 ms)`) or
+/// without (vitest's `× adds 12ms`): it differs every run.
 static TEST_FAILS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"^test (?P<name>\S+) \.\.\. FAILED$",
         r"^\s*--- FAIL: (?P<name>\S+)",
         r"^(?:FAILED|ERROR) (?P<name>\S+::\S+)",
-        r"^\s*(?:✕|×|✗)\s+(?P<name>.+?)(?:\s+\d+\s*m?s)?$",
+        r"^\s*(?:✕|×|✗)\s+(?P<name>.+?)(?:\s+\(?\d+(?:\.\d+)?\s*m?s\)?)?$",
         r"^\s*FAIL\s+(?P<name>\S+\s+>\s+.+?)(?:\s+\d+\s*m?s)?$",
         r"^\s*●\s+(?P<name>.+›.+)$",
     ]
@@ -313,6 +315,21 @@ static TEST_FAILS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .map(|r| Regex::new(r).unwrap())
     .collect()
 });
+/// Jest's line for a test file's result, `FAIL __tests__/App.test.tsx` or
+/// `PASS …` (a slow one's duration after it).
+static JEST_FILE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*(?P<result>FAIL|PASS)\s+(?P<file>\S+\.[A-Za-z0-9]+)(?:\s+\([\d.]+\s*m?s\))?\s*$",
+    )
+    .unwrap()
+});
+/// Jest's heading for a test file that couldn't run.
+static JEST_SUITE_FAILED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*●\s+Test suite failed to run\s*$").unwrap());
+/// Jest's heading for a failing test, in a failed test file's block.
+static JEST_TEST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*●\s+(?P<name>.+)$").unwrap());
+/// Jest's headings in a test file's block that aren't tests.
+const JEST_NOT_TESTS: &[&str] = &["Console", "Cannot log after tests are done"];
 /// cargo's `Running unittests src/lib.rs (target/debug/deps/alpha-1a2b)`:
 /// the crate the tests after it are in (P3.1: two crates' `tests::it`).
 static CARGO_RUNNING: LazyLock<Regex> = LazyLock::new(|| {
@@ -344,134 +361,7 @@ fn key_path(path: &str) -> String {
 /// test, its name. Output with neither is the check alone. Each key once,
 /// sorted; at most MAX_KEYS (the rest are counted in one key).
 pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
-    let clean = clean_output(output);
-    let lines: Vec<&str> = clean.lines().collect();
-    let mut keys: Vec<String> = Vec::new();
-    let push = |k: String, keys: &mut Vec<String>| {
-        if !keys.contains(&k) {
-            keys.push(k);
-        }
-    };
-    let mut eslint_file: Option<String> = None;
-    // Keys from the generic `path:line: msg` shape: tracebacks, assertion
-    // lines. Next to failing tests they're the same failures again (P3.1).
-    let mut generic: Vec<String> = Vec::new();
-    let mut tests = false;
-    let mut krate: Option<String> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if let Some(c) = CARGO_RUNNING.captures(line) {
-            krate = Some(c["krate"].to_string());
-            continue;
-        }
-        if let Some(c) = TSC.captures(line) {
-            push(
-                format!(
-                    "{kind}|{}|{}|{}",
-                    key_path(&c["file"]),
-                    &c["code"],
-                    key_message(&c["msg"])
-                ),
-                &mut keys,
-            );
-            continue;
-        }
-        if let Some(c) = RUST_ERROR.captures(line) {
-            if RUST_SUMMARY.is_match(&c["msg"]) {
-                continue;
-            }
-            let file = lines[i + 1..lines.len().min(i + 6)]
-                .iter()
-                .find_map(|l| RUST_ARROW.captures(l).map(|a| key_path(&a["file"])))
-                .unwrap_or_default();
-            let code = c.name("code").map_or("", |m| m.as_str());
-            push(
-                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
-                &mut keys,
-            );
-            continue;
-        }
-        if let Some(c) = PYTEST_COLLECT.captures(line) {
-            let msg = c.name("msg").map_or("", |m| m.as_str());
-            push(
-                format!("{kind}|{}||{}", key_path(&c["file"]), key_message(msg)),
-                &mut keys,
-            );
-            continue;
-        }
-        if let Some(c) = TEST_FAILS.iter().find_map(|r| r.captures(line)) {
-            let name = c["name"].trim();
-            // In a cargo workspace, the crate too: `alpha::tests::it`.
-            let name = match &krate {
-                Some(k) if line.starts_with("test ") => format!("{k}::{name}"),
-                _ => name.to_string(),
-            };
-            push(format!("{kind}|test|{name}"), &mut keys);
-            tests = true;
-            continue;
-        }
-        if let Some(c) = ESLINT_FILE.captures(line) {
-            eslint_file = Some(key_path(&c["file"]));
-            continue;
-        }
-        if let (Some(file), Some(c)) = (&eslint_file, ESLINT_ROW.captures(line)) {
-            let code = c.name("code").map_or("", |m| m.as_str());
-            push(
-                format!("{kind}|{file}|{code}|{}", key_message(&c["msg"])),
-                &mut keys,
-            );
-            continue;
-        }
-        if line.trim().is_empty() {
-            eslint_file = None;
-        }
-        if let Some(c) = GENERIC.captures(line) {
-            let file = key_path(&c["file"]);
-            // Stack frames (indented) and library paths aren't the errors;
-            // a line that starts with its path is (go vet, gcc).
-            let indented = line.starts_with(char::is_whitespace);
-            if file.contains("node_modules/")
-                || indented && !FAILURE_LINE.is_match(line) && c.name("code").is_none()
-            {
-                continue;
-            }
-            if BARE_EXCEPTION.is_match(c["msg"].trim()) {
-                continue;
-            }
-            // Round 3: a compiler's note, warning or help line points at
-            // code that's fine (`src/b.h:3:5: note: declared here`).
-            let msg_lower = c["msg"].trim().to_ascii_lowercase();
-            if ["note:", "warning:", "help:"]
-                .iter()
-                .any(|p| msg_lower.starts_with(p))
-            {
-                continue;
-            }
-            let code = c.name("code").map_or("", |m| m.as_str());
-            let key = format!("{kind}|{file}|{code}|{}", key_message(&c["msg"]));
-            // Round 2, P3.1: a compiler's line (`./a.go:3:2: undefined: foo`:
-            // its path first, with a column) is an error of its own, even
-            // next to failing tests; tracebacks and assertion lines aren't.
-            if c.name("col").is_some() && !indented {
-                push(key, &mut keys);
-            } else if !generic.contains(&key) {
-                generic.push(key);
-            }
-        }
-    }
-    if !tests {
-        for k in generic {
-            push(k, &mut keys);
-        }
-    }
-    if keys.is_empty() && !timed_out {
-        keys.push(format!("{kind}|failed"));
-    }
-    keys.sort();
-    if keys.len() > MAX_KEYS {
-        let more = keys.len() - (MAX_KEYS - 1);
-        keys.truncate(MAX_KEYS - 1);
-        keys.push(format!("{kind}|and {more} more"));
-    }
+    let mut keys = cap_keys(kind, all_failure_keys(kind, output, timed_out));
     // Round 3: a check that timed out says nothing about the tests it
     // didn't reach, whatever it printed before the kill: the round can't
     // be compared (repair.rs `blind`), so the key is always there.
@@ -479,6 +369,311 @@ pub fn failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
         keys.push(format!("{kind}|timed out"));
     }
     keys
+}
+
+/// At most MAX_KEYS of `keys` (sorted): the rest are counted in one key.
+pub fn cap_keys(kind: &str, mut keys: Vec<String>) -> Vec<String> {
+    if keys.len() > MAX_KEYS {
+        let more = keys.len() - (MAX_KEYS - 1);
+        keys.truncate(MAX_KEYS - 1);
+        keys.push(format!("{kind}|and {more} more"));
+    }
+    keys
+}
+
+/// Every failure's key in a check's output ([`failure_keys`] without the
+/// cap), sorted: each line is read by the first of [`RULES`] that knows it.
+/// Output with no key is the check alone, unless it timed out.
+fn all_failure_keys(kind: &str, output: &str, timed_out: bool) -> Vec<String> {
+    let clean = clean_output(output);
+    let lines: Vec<&str> = clean.lines().collect();
+    let mut reading = Reading {
+        kind,
+        lines: &lines,
+        keys: Vec::new(),
+        seen: std::collections::HashSet::new(),
+        generic: Vec::new(),
+        tests: false,
+        eslint_file: None,
+        krate: None,
+        jest_file: None,
+    };
+    for i in 0..lines.len() {
+        for rule in RULES {
+            if rule(&mut reading, i) {
+                break;
+            }
+        }
+    }
+    let Reading {
+        mut keys,
+        mut seen,
+        generic,
+        tests,
+        ..
+    } = reading;
+    // P3.1: next to failing tests, the generic lines are the same failures
+    // again.
+    if !tests {
+        for k in generic {
+            if seen.insert(k.clone()) {
+                keys.push(k);
+            }
+        }
+    }
+    if keys.is_empty() && !timed_out {
+        keys.push(format!("{kind}|failed"));
+    }
+    keys.sort();
+    keys
+}
+
+/// What reading a check's output found so far: the keys, and what earlier
+/// lines said that the next ones need (the file an ESLint block is about,
+/// the crate cargo's tests are in, the test file a Jest block is about).
+struct Reading<'a> {
+    kind: &'a str,
+    lines: &'a [&'a str],
+    keys: Vec<String>,
+    seen: std::collections::HashSet<String>,
+    /// Keys from the generic `path:line: msg` shape: tracebacks, assertion
+    /// lines. Next to failing tests they're the same failures again (P3.1).
+    generic: Vec<String>,
+    /// A failing test was found.
+    tests: bool,
+    eslint_file: Option<String>,
+    krate: Option<String>,
+    jest_file: Option<String>,
+}
+
+impl Reading<'_> {
+    fn push(&mut self, key: String) {
+        if self.seen.insert(key.clone()) {
+            self.keys.push(key);
+        }
+    }
+
+    fn test(&mut self, name: &str) {
+        let key = format!("{}|test|{name}", self.kind);
+        self.push(key);
+        self.tests = true;
+    }
+}
+
+/// One way tools print a failure: whether line `i` of the output is one it
+/// knows, noting what it says (`true` ends that line's reading). The rules
+/// are tried in [`RULES`]' order. To teach the checks another tool's
+/// output, write its rule and list it.
+type Rule = fn(&mut Reading, usize) -> bool;
+
+const RULES: &[Rule] = &[
+    cargo_running,
+    tsc_error,
+    rust_error,
+    pytest_collection_error,
+    jest_test_file,
+    jest_suite_failed,
+    failing_test,
+    jest_top_level_test,
+    eslint_file,
+    eslint_error,
+    blank_line,
+    generic_location,
+];
+
+/// cargo's `Running …` line: the crate the next tests are in.
+fn cargo_running(r: &mut Reading, i: usize) -> bool {
+    let Some(c) = CARGO_RUNNING.captures(r.lines[i]) else {
+        return false;
+    };
+    r.krate = Some(c["krate"].to_string());
+    true
+}
+
+fn tsc_error(r: &mut Reading, i: usize) -> bool {
+    let Some(c) = TSC.captures(r.lines[i]) else {
+        return false;
+    };
+    let key = format!(
+        "{}|{}|{}|{}",
+        r.kind,
+        key_path(&c["file"]),
+        &c["code"],
+        key_message(&c["msg"])
+    );
+    r.push(key);
+    true
+}
+
+/// rustc's `error[E0308]: …`, its file on a `-->` line just below.
+fn rust_error(r: &mut Reading, i: usize) -> bool {
+    let Some(c) = RUST_ERROR.captures(r.lines[i]) else {
+        return false;
+    };
+    if RUST_SUMMARY.is_match(&c["msg"]) {
+        return true;
+    }
+    let file = r.lines[i + 1..r.lines.len().min(i + 6)]
+        .iter()
+        .find_map(|l| RUST_ARROW.captures(l).map(|a| key_path(&a["file"])))
+        .unwrap_or_default();
+    let code = c.name("code").map_or("", |m| m.as_str());
+    let key = format!("{}|{file}|{code}|{}", r.kind, key_message(&c["msg"]));
+    r.push(key);
+    true
+}
+
+fn pytest_collection_error(r: &mut Reading, i: usize) -> bool {
+    let Some(c) = PYTEST_COLLECT.captures(r.lines[i]) else {
+        return false;
+    };
+    let msg = c.name("msg").map_or("", |m| m.as_str());
+    let key = format!("{}|{}||{}", r.kind, key_path(&c["file"]), key_message(msg));
+    r.push(key);
+    true
+}
+
+/// Jest's `FAIL __tests__/App.test.tsx` (and `PASS …`): the test file the
+/// lines below are about, while it failed.
+fn jest_test_file(r: &mut Reading, i: usize) -> bool {
+    let Some(c) = JEST_FILE.captures(r.lines[i]) else {
+        return false;
+    };
+    r.jest_file = (&c["result"] == "FAIL").then(|| key_path(&c["file"]));
+    true
+}
+
+/// Jest's `● Test suite failed to run`: a test file none of whose tests
+/// ran (a module it can't load, as an unmocked native module in a React
+/// Native app; a syntax error). Its file and the first line of why.
+fn jest_suite_failed(r: &mut Reading, i: usize) -> bool {
+    if !JEST_SUITE_FAILED.is_match(r.lines[i]) {
+        return false;
+    }
+    let why = r.lines[i + 1..]
+        .iter()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+    let file = r.jest_file.clone().unwrap_or_default();
+    let key = format!(
+        "{}|{file}||Test suite failed to run: {}",
+        r.kind,
+        key_message(why)
+    );
+    r.push(key);
+    true
+}
+
+/// A failing test's line: cargo, go, pytest, jest, vitest (`TEST_FAILS`).
+fn failing_test(r: &mut Reading, i: usize) -> bool {
+    let line = r.lines[i];
+    let Some(c) = TEST_FAILS.iter().find_map(|re| re.captures(line)) else {
+        return false;
+    };
+    let name = c["name"].trim();
+    // In a cargo workspace, the crate too: `alpha::tests::it`.
+    let name = match &r.krate {
+        Some(k) if line.starts_with("test ") => format!("{k}::{name}"),
+        _ => name.to_string(),
+    };
+    r.test(&name);
+    true
+}
+
+/// Jest's heading of a failing test outside any `describe` (`● adds`, as
+/// React Native's template test is), in a failed test file's block: the
+/// ones inside are `● Suite › adds` (`TEST_FAILS`).
+fn jest_top_level_test(r: &mut Reading, i: usize) -> bool {
+    if r.jest_file.is_none() {
+        return false;
+    }
+    let Some(c) = JEST_TEST.captures(r.lines[i]) else {
+        return false;
+    };
+    let name = c["name"].trim();
+    if JEST_NOT_TESTS.iter().any(|n| name.starts_with(n)) {
+        return false;
+    }
+    r.test(name);
+    true
+}
+
+/// ESLint's stylish format: a file on its own line, its errors below it.
+fn eslint_file(r: &mut Reading, i: usize) -> bool {
+    let Some(c) = ESLINT_FILE.captures(r.lines[i]) else {
+        return false;
+    };
+    r.eslint_file = Some(key_path(&c["file"]));
+    true
+}
+
+fn eslint_error(r: &mut Reading, i: usize) -> bool {
+    let Some(file) = r.eslint_file.clone() else {
+        return false;
+    };
+    let Some(c) = ESLINT_ROW.captures(r.lines[i]) else {
+        return false;
+    };
+    let code = c.name("code").map_or("", |m| m.as_str());
+    let key = format!("{}|{file}|{code}|{}", r.kind, key_message(&c["msg"]));
+    r.push(key);
+    true
+}
+
+/// A blank line ends an ESLint file's block.
+fn blank_line(r: &mut Reading, i: usize) -> bool {
+    if !r.lines[i].trim().is_empty() {
+        return false;
+    }
+    r.eslint_file = None;
+    true
+}
+
+/// The generic `path:line: msg` shape (gcc, clang, go vet, ruff, and
+/// tracebacks and assertion lines, which only count without failing tests).
+fn generic_location(r: &mut Reading, i: usize) -> bool {
+    let line = r.lines[i];
+    let Some(c) = GENERIC.captures(line) else {
+        return false;
+    };
+    let file = key_path(&c["file"]);
+    // Stack frames (indented) and library paths aren't the errors;
+    // a line that starts with its path is (go vet, gcc).
+    let indented = line.starts_with(char::is_whitespace);
+    if file.contains("node_modules/")
+        || indented && !FAILURE_LINE.is_match(line) && c.name("code").is_none()
+    {
+        return true;
+    }
+    if BARE_EXCEPTION.is_match(c["msg"].trim()) {
+        return true;
+    }
+    // A location alone, `src/a.ts:11:5`, read as the line and the message
+    // `5`: a code frame's heading, not an error of its own.
+    if c["msg"].trim().chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+    // Round 3: a compiler's note, warning or help line points at
+    // code that's fine (`src/b.h:3:5: note: declared here`).
+    let msg_lower = c["msg"].trim().to_ascii_lowercase();
+    if ["note:", "warning:", "help:"]
+        .iter()
+        .any(|p| msg_lower.starts_with(p))
+    {
+        return true;
+    }
+    let code = c.name("code").map_or("", |m| m.as_str());
+    let key = format!("{}|{file}|{code}|{}", r.kind, key_message(&c["msg"]));
+    // Round 2, P3.1: a compiler's line (`./a.go:3:2: undefined: foo`:
+    // its path first, with a column) is an error of its own, even
+    // next to failing tests; tracebacks and assertion lines aren't.
+    if c.name("col").is_some() && !indented {
+        r.push(key);
+    } else {
+        r.generic.push(key);
+    }
+    true
 }
 
 /// How many tests a run ran, from its summary lines (cargo, vitest, jest,
@@ -533,6 +728,81 @@ fn go_tests_ran(clean: &str) -> Option<u32> {
         return None;
     }
     Some(RESULT.find_iter(clean).count() as u32)
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Failures before the change (before.rs)
+ * ---------------------------------------------------------------------------
+ */
+
+/// What failed in a check's output, the paths in it taken relative to
+/// where the check ran, so that a run in a copy of the project elsewhere
+/// compares: each failure's key ([`failure_keys`], not capped), and its
+/// failure lines, for output whose only key is the check's own (nothing
+/// told its failures apart).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Failed {
+    pub keys: std::collections::BTreeSet<String>,
+    pub lines: std::collections::BTreeSet<String>,
+}
+
+/// The failures in a failed check's `output`, run in one of `roots`.
+pub fn failed_in(kind: &str, output: &str, roots: &[String]) -> Failed {
+    let text = without_roots(output, roots);
+    Failed {
+        keys: all_failure_keys(kind, &text, false).into_iter().collect(),
+        lines: failure_lines(&text),
+    }
+}
+
+/// `now`'s failure keys split into those `before` doesn't have, the
+/// change's, and those it has (both sorted). The check's key alone (no
+/// failure told apart) is `before`'s when `before` failed that way too,
+/// with every failure line of `now`.
+pub fn split_by_before(kind: &str, now: &Failed, before: &Failed) -> (Vec<String>, Vec<String>) {
+    let alone = format!("{kind}|failed");
+    let (known, own): (Vec<String>, Vec<String>) = now.keys.iter().cloned().partition(|k| {
+        before.keys.contains(k) && (*k != alone || now.lines.is_subset(&before.lines))
+    });
+    (own, known)
+}
+
+/// `text` with each of `roots` (folders, absolute) taken off the paths in
+/// it: `/home/me/app/src/a.ts` is `src/a.ts` in a check run in
+/// `/home/me/app`. The longest first, so one inside another goes whole.
+pub fn without_roots(text: &str, roots: &[String]) -> String {
+    let mut roots: Vec<String> = roots
+        .iter()
+        .map(|r| r.replace('\\', "/").trim_end_matches('/').to_string())
+        .filter(|r| r.len() > 1)
+        .collect();
+    roots.sort_by_key(|r| std::cmp::Reverse(r.len()));
+    roots.iter().fold(text.to_string(), |text, root| {
+        text.replace(&format!("{root}/"), "")
+    })
+}
+
+/// A duration in a line (`(12 ms)`, `2.5 s`, `Done in 1.79s`): it differs
+/// every run.
+static DURATION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(?\b\d+(?:\.\d+)?\s?m?s\b\)?").unwrap());
+
+/// The lines that say something failed, as they compare between runs:
+/// without durations, spaces collapsed.
+fn failure_lines(text: &str) -> std::collections::BTreeSet<String> {
+    clean_output(text)
+        .lines()
+        .filter(|l| FAILURE_LINE.is_match(l) && !ALL_CLEAR.is_match(l))
+        .map(|l| {
+            DURATION
+                .replace_all(l, "")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
 }
 
 /*
@@ -979,6 +1249,84 @@ mod tests {
             Some(3)
         );
         assert_eq!(tests_ran("nothing to see"), None);
+    }
+
+    /// Jest, as a React Native app's tests print it: a test file that
+    /// couldn't run (an unmocked native module), a failing test outside any
+    /// `describe`, one inside; console output and passing files aren't
+    /// failures.
+    #[test]
+    fn jest_files_that_cant_run_and_top_level_tests_are_keyed() {
+        let jest = "FAIL __tests__/Fake.test.tsx\n  ● Test suite failed to run\n\n    Jest encountered an unexpected token\n\n    Details:\n\n    /home/me/app/node_modules/react-native-fake/index.js:1\n    SyntaxError: Cannot use import statement outside a module\n\n      at Runtime.createScriptFromCode (node_modules/jest-runtime/build/index.js:1505:14)\n\nFAIL __tests__/Math.test.ts (5.21 s)\n  ● adds\n\n    expect(received).toBe(expected) // Object.is equality\n\n      at Object.toBe (__tests__/Math.test.ts:1:36)\n\n  ● Console\n\n    console.log\n      hi\n\n  ● math › subtracts\n\n    expect(received).toBe(expected)\n\nPASS __tests__/App.test.tsx\n  ● Console\n\nTest Suites: 2 failed, 1 passed, 3 total\nTests:       2 failed, 1 passed, 3 total";
+        assert_eq!(
+            failure_keys("test", jest, false),
+            [
+                "test|__tests__/Fake.test.tsx||Test suite failed to run: Jest encountered an unexpected token",
+                "test|test|adds",
+                "test|test|math › subtracts",
+            ]
+        );
+        assert_eq!(tests_ran(jest), Some(3));
+        // A single test file prints its tests with their durations, which
+        // differ every run: not part of the name.
+        let verbose = "FAIL __tests__/App.test.tsx\n  ✕ renders correctly (370 ms)\n  ✓ adds (2 ms)\n\n  ● renders correctly\n";
+        let again = verbose.replace("370 ms", "1204 ms");
+        assert_eq!(
+            failure_keys("test", verbose, false),
+            ["test|test|renders correctly"]
+        );
+        assert_eq!(
+            failure_keys("test", verbose, false),
+            failure_keys("test", &again, false)
+        );
+    }
+
+    /// Before the change and after it, in different folders: the same
+    /// failures compare equal, paths relative to where each ran; a new one
+    /// is the change's.
+    #[test]
+    fn failures_compare_with_the_code_before_the_change() {
+        let before = failed_in(
+            "lint",
+            "/tmp/red-1/src/a.ts\n  2:7  error  'x' is never used  no-unused-vars\n",
+            &["/tmp/red-1".into(), "/home/me/app".into()],
+        );
+        let now = failed_in(
+            "lint",
+            "/tmp/chat/src/a.ts\n  3:7  error  'x' is never used  no-unused-vars\n\n/tmp/chat/src/b.ts\n  1:1  error  'y' is never used  no-unused-vars\n",
+            &["/tmp/chat".into(), "/home/me/app".into()],
+        );
+        let (own, known) = split_by_before("lint", &now, &before);
+        assert_eq!(own, ["lint|src/b.ts|no-unused-vars|'y' is never used"]);
+        assert_eq!(known, ["lint|src/a.ts|no-unused-vars|'x' is never used"]);
+        // The longest root first: one inside another goes whole.
+        assert_eq!(
+            without_roots(
+                "/a/b/c/x.ts /a/b/y.ts /a/bc/z.ts",
+                &["/a/b".into(), "/a/b/c/".into()]
+            ),
+            "x.ts y.ts /a/bc/z.ts"
+        );
+        assert_eq!(
+            without_roots("/x.ts", &["/".into(), String::new()]),
+            "/x.ts"
+        );
+    }
+
+    /// ESLint's React Compiler rules print a code frame under their error,
+    /// headed by its location alone: no error of its own.
+    #[test]
+    fn a_location_alone_is_no_error() {
+        let eslint = "/p/src/hooks/a.web.ts\n  11:5  error  Error: Calling setState synchronously within an effect\n\nEffects are intended to synchronize state.\n\n/p/src/hooks/a.web.ts:11:5\n   9 |\n> 11 |     setHasHydrated(true);\n\n✖ 1 problem (1 error, 0 warnings)";
+        assert_eq!(
+            failure_keys("lint", eslint, false),
+            ["lint|/p/src/hooks/a.web.ts||Error: Calling setState synchronously within an effect"]
+        );
+        // With a message, it's one (gcc, go vet).
+        assert_eq!(
+            failure_keys("lint", "./a.go:3:2: undefined: foo", false),
+            ["lint|a.go||undefined: foo"]
+        );
     }
 
     /// V08: `go test -v` counts its tests and subtests that ran; a skipped

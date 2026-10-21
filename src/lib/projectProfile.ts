@@ -192,13 +192,21 @@ export function workspaceMemberCommand(
   return { command, kind, source: `${member.path}/package.json scripts.${script}` };
 }
 
-/** Script name → check kind for "add script" suggestions. */
+/**
+ * The package.json scripts that run each kind of check, as the backend
+ * looks for them (CHECK_SCRIPTS in project_profile/node.rs): keep the two
+ * the same.
+ */
+const CHECK_SCRIPTS: [CheckKind, string[]][] = [
+  ['typecheck', ['typecheck', 'type-check', 'check-types', 'types', 'tsc']],
+  ['lint', ['lint', 'lint:check', 'check:lint', 'lint:ci']],
+  ['test', ['test']],
+  ['build', ['build']],
+];
+
+/** Script name → check kind for "add script" suggestions; any other is a test. */
 export function scriptKind(script: string): CheckKind {
-  if (['typecheck', 'type-check', 'check-types', 'types', 'tsc'].includes(script))
-    return 'typecheck';
-  if (script === 'lint') return 'lint';
-  if (script === 'build') return 'build';
-  return 'test';
+  return CHECK_SCRIPTS.find(([, names]) => names.includes(script))?.[0] ?? 'test';
 }
 
 export interface WorkspaceScriptSuggestion {

@@ -483,6 +483,66 @@ test('a suite too slow for its timeout, and the tests that ran instead (V06)', (
   assert.equal(root.querySelector('.chat-verify-title')?.textContent, 'Checks passed.');
 });
 
+test('a check that fails only as on the code before the change holds nothing back', () => {
+  const root = container();
+  render(
+    () => (
+      <VerificationRecord
+        meta={{
+          status: 'passed',
+          round: 2,
+          maxRounds: 3,
+          checks: [
+            {
+              kind: 'typecheck',
+              command: 'yarn tsc --noEmit',
+              status: 'preexisting',
+              exitCode: 2,
+              durationMs: 2100,
+              output: "src/old.ts(1,1): error TS2304: Cannot find name 'a'.",
+              preexisting: ["typecheck|src/old.ts|TS2304|Cannot find name 'a'."],
+            },
+            { kind: 'lint', command: 'yarn run lint', status: 'passed', durationMs: 900 },
+          ],
+          changedFiles: ['src/a.ts'],
+          preexistingTold: true,
+        }}
+        dialogId="d"
+        recordId="v2"
+        latest={false}
+        live={false}
+      />
+    ),
+    root
+  );
+  assert.equal(
+    root.querySelector('.chat-verify-title')?.textContent,
+    'Nothing new fails: what still fails, fails on the code before the change too.'
+  );
+  const rows = [...root.querySelectorAll('.chat-verify-check')];
+  assert.deepEqual(
+    rows.map((r) => r.className),
+    ['chat-verify-check preexisting', 'chat-verify-check passed']
+  );
+  // Its output, on demand, says why it isn't the change's.
+  assert.equal(
+    rows[0].querySelector('summary .chat-verify-note')?.textContent,
+    'fails as before the change, 2.1 s'
+  );
+  assert.equal(
+    rows[0].querySelector('.chat-verify-where')?.textContent,
+    'It fails only as it does on the code before the change: not the change’s to fix.'
+  );
+  assert.match(rows[0].querySelector('.chat-verify-output')?.textContent ?? '', /TS2304/);
+  assert.ok(
+    [...root.querySelectorAll('.chat-verify-progress')].some(
+      (p) =>
+        p.textContent ===
+        'The agent was told of them, in case fixing them is what it was asked to do.'
+    )
+  );
+});
+
 const button = (root: Element, text: string) =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === text);
 

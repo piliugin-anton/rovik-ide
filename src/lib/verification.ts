@@ -10,8 +10,11 @@ import type { SubagentUsage } from './subagents';
 import { plural } from './textUtils';
 
 /** slow: the whole suite timed out, and the tests of the changed files ran
- * in its place (Autopilot, V06). */
-export type CheckStatus = 'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'slow';
+ * in its place (Autopilot, V06). preexisting: it failed, but only as it does
+ * on the code before the change, so the change isn't held back by it
+ * (src-tauri/crates/rovik-core/src/agent_run/before.rs). */
+export type CheckStatus =
+  'pending' | 'running' | 'passed' | 'failed' | 'skipped' | 'slow' | 'preexisting';
 
 export interface CheckResult {
   kind: CheckKind;
@@ -37,6 +40,27 @@ export interface CheckResult {
   /** Autopilot, failed: the line saying the environment, not the code, failed
    * (a program or a module that isn't installed, V03). */
   environment?: string;
+  /** Failed or preexisting: the keys of its failures that fail on the code
+   * before the change too, not the change's. */
+  preexisting?: string[];
+}
+
+/** Whether some of the round's checks fail only as before the change. */
+export function failsAsBefore(meta: Pick<VerificationMeta, 'checks'>): boolean {
+  return meta.checks.some((c) => c.status === 'preexisting');
+}
+
+/** A failed or preexisting check's note on what fails before the change too. */
+export function beforeChangeLine(check: CheckResult): string | null {
+  const known = check.preexisting ?? [];
+  if (!known.length) return null;
+  if (check.status === 'preexisting')
+    return 'It fails only as it does on the code before the change: not the change’s to fix.';
+  // Past the cap, the last key counts the rest (command_output.rs).
+  const many = known.some((k) => /\|and \d+ more$/.test(k));
+  return many || known.length > 1
+    ? `${many ? 'Many' : known.length} of its failures are there on the code before the change too: not the change’s, so they weren’t sent to the agent.`
+    : 'One of its failures is there on the code before the change too: not the change’s, so it wasn’t sent to the agent.';
 }
 
 /** An install Autopilot ran after a check failed on the environment (V03). */
@@ -257,6 +281,9 @@ export interface VerificationMeta {
   noProgress?: boolean;
   /** failed: on the environment, not the code; the round isn't counted (V03). */
   environment?: EnvironmentMeta;
+  /** passed, with checks that fail only as before the change: the agent was
+   * told of them, in case fixing them is its task (agent_run/before.rs). */
+  preexistingTold?: boolean;
 }
 
 /** A failed round's attempt: "attempt 2 of 3", or in Autopilot "attempt 2". */

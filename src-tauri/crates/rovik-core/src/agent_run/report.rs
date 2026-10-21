@@ -100,7 +100,14 @@ fn facts_text(f: &ReportFacts) -> String {
             "- The last checks: {}.",
             f.checks
                 .iter()
-                .map(|c| format!("`{}` {}", c.command, c.status))
+                .map(|c| {
+                    // before.rs: it fails, but as on the code before the change.
+                    let status = match c.status.as_str() {
+                        "preexisting" => "failed as before the change",
+                        status => status,
+                    };
+                    format!("`{}` {status}", c.command)
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ));

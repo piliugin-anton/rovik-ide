@@ -14,6 +14,9 @@
 //! - **The redirect**: an isolated chat's commands see its view at the
 //!   project's own path too, so one that names the project by its full
 //!   path (`cd /home/me/app`, a build script) still stays in the chat.
+//! - **Tool homes**: a tool that keeps a login in the folder it writes its
+//!   other state to (Expo's CLI) is pointed at a folder of its own, by the
+//!   variable it reads ([`TOOL_HOMES`]), so it runs without the login.
 //!
 //! The policy is the same on every operating system. A [`Mechanism`] is how
 //! one OS enforces it, and each OS module ([`linux`], [`macos`],
@@ -162,6 +165,9 @@ pub fn secret_dirs() -> Vec<PathBuf> {
         ".config/gh",
         ".kube",
         ".docker",
+        // Expo's and EAS's login, beside the state Expo's CLI writes on
+        // every run: the CLI gets a folder of its own ([`TOOL_HOMES`]).
+        ".expo",
         // macOS: the keychains' files.
         "Library/Keychains",
     ];
@@ -201,6 +207,9 @@ const TOOL_DIRS: &[(&str, Make)] = &[
     (".deno", Make::With("deno")),
     (".m2", Make::With("mvn")),
     (".gradle", Make::With("gradle")),
+    // CocoaPods' copies of the specs repositories (`pod install` in a
+    // React Native app's ios/).
+    (".cocoapods", Make::With("pod")),
     (".nuget", Make::With("dotnet")),
     (".local/bin", Make::Never),
     (".local/lib", Make::Never),
@@ -258,6 +267,31 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
         dirs.extend(std::env::temp_dir().parent().map(|d| d.join("C")));
     }
     existing(dirs)
+}
+
+/// Tools that keep a login in the folder they write their other state to,
+/// a folder [`secret_dirs`] hides: the variable each reads its folder from,
+/// and the folder of its own a confined command gets instead, under
+/// [`TOOL_HOMES_DIR`]. Expo's CLI (`expo lint`, `expo install`, …) writes
+/// its state file on every run and fails where it can't; pointed there it
+/// works, without the user's Expo login.
+const TOOL_HOMES: &[(&str, &str)] = &[("__UNSAFE_EXPO_HOME_DIRECTORY", "expo")];
+
+/// Where [`TOOL_HOMES`] go, under the home folder: inside `.cache`, which
+/// the commands may write to ([`TOOL_DIRS`]).
+const TOOL_HOMES_DIR: &str = ".cache/rovik-ide";
+
+/// The variables that point [`TOOL_HOMES`] at their folders under `home`,
+/// each folder made if it can be.
+fn tool_home_env(home: &Path) -> Vec<(&'static str, PathBuf)> {
+    TOOL_HOMES
+        .iter()
+        .map(|(var, name)| {
+            let dir = home.join(TOOL_HOMES_DIR).join(name);
+            let _ = std::fs::create_dir_all(&dir);
+            (*var, dir)
+        })
+        .collect()
 }
 
 /*
@@ -373,11 +407,19 @@ pub fn available(c: &Confine) -> bool {
     chosen().is_some_and(|m| !c.redirects() || m.can_redirect())
 }
 
-/// `program` with `args`, confined by `c`. As it is where `c` can't be
-/// enforced, which callers ask first ([`available`], [`refusal`]).
+/// `program` with `args`, confined by `c`, the tools that keep a login
+/// where the policy hides it pointed at folders of their own
+/// ([`TOOL_HOMES`]). As it is where `c` can't be enforced, which callers
+/// ask first ([`available`], [`refusal`]).
 pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
     match chosen().filter(|_| available(c)) {
-        Some(m) => m.command(c, program, args),
+        Some(m) => {
+            let mut cmd = m.command(c, program, args);
+            for (var, dir) in home().map(|h| tool_home_env(&h)).unwrap_or_default() {
+                cmd.env(var, dir);
+            }
+            cmd
+        }
         None => {
             let mut cmd = crate::process::command(program);
             cmd.args(args);
@@ -898,6 +940,58 @@ mod other {
 
     pub(super) async fn install() -> Result<InstallOutcome, String> {
         super::nothing_to_install().await
+    }
+}
+
+#[cfg(test)]
+mod tool_home_tests {
+    use super::*;
+
+    /// Expo's CLI gets a folder of its own under the commands' cache, made
+    /// for it, whatever the home holds.
+    #[test]
+    fn a_tool_with_a_login_gets_a_folder_of_its_own_in_the_cache() {
+        let home = std::env::temp_dir().join(format!("tool-homes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".expo")).unwrap();
+        let env = tool_home_env(&home);
+        let expo = home.join(".cache/rovik-ide/expo");
+        assert_eq!(env, [("__UNSAFE_EXPO_HOME_DIRECTORY", expo.clone())]);
+        assert!(expo.is_dir());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A confined command has the variable, and may write where it points:
+    /// Expo's CLI writes its state file there instead of `~/.expo`, which
+    /// the sandbox hides (it holds the user's Expo login).
+    #[cfg(unix)]
+    #[test]
+    fn a_confined_command_writes_the_tools_state_in_its_own_folder() {
+        let root = std::env::temp_dir().join(format!("tool-home-run-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let c = Confine::hiding(root.clone());
+        if !available(&c) || home().is_none() {
+            eprintln!("no sandbox here: skipped");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let probe = format!("probe-{}.json", std::process::id());
+        let script = format!(
+            "echo '{{}}' > \"$__UNSAFE_EXPO_HOME_DIRECTORY/{probe}\" && cat \"$__UNSAFE_EXPO_HOME_DIRECTORY/{probe}\""
+        );
+        let out = command(&c, "/bin/sh", &["-c", &script])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let dir = home().unwrap().join(TOOL_HOMES_DIR).join("expo");
+        let _ = std::fs::remove_file(dir.join(&probe));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "{}\n");
     }
 }
 

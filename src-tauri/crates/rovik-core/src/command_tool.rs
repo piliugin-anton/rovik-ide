@@ -51,6 +51,30 @@ pub struct CommandOutput {
     pub waited: Option<crate::workload::Waited>,
 }
 
+impl CommandOutput {
+    /// Both streams as one text, stderr first: compilers print to either,
+    /// and a failure's lines are more often there.
+    pub fn text(&self) -> String {
+        joined(&self.stdout, &self.stderr)
+    }
+
+    /// [`CommandOutput::text`] of the whole output, when it was kept
+    /// (`Queued::whole`).
+    pub fn whole_text(&self) -> Option<String> {
+        self.whole
+            .as_ref()
+            .map(|(stdout, stderr)| joined(stdout, stderr))
+    }
+}
+
+fn joined(stdout: &str, stderr: &str) -> String {
+    [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A command run for a chat: it goes through the queue for heavy work
 /// (src/workload), which may make it wait for a CPU slot first. `note`
 /// shows what it waits for while it waits (`None`: no longer waiting).
