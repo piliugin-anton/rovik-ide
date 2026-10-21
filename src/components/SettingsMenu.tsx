@@ -4,8 +4,9 @@
 // chats, the open project, this computer), each with what it's for and
 // the state it's in now, so what a page affects is clear before it's
 // opened. The AI pages' state comes from the settings store, the editor's
-// from its store; this computer's from the backend, read when the menu
-// opens (best effort: a state that can't be read is left out).
+// from its store; the project's and this computer's from the backend, read
+// when the menu opens (best effort: a state that can't be read is left
+// out).
 import { createResource, Show, type JSX } from 'solid-js';
 import type { SettingsPage } from '../lib/appSettings';
 import {
@@ -26,6 +27,7 @@ import { hostsSummary, listHosts } from '../lib/hosts';
 import { networkSettings, networkSummary } from '../lib/network';
 import { onWindows, wslStatus, wslSummary } from '../lib/wsl';
 import { checkingForUpdates, updateInfo, updatesSummary, updateStatus } from '../lib/updates';
+import { countChecksThatRun, projectChecksSummary } from '../lib/projectProfile';
 
 interface SettingsMenuProps {
   /** The open project, for its group; none without a project. */
@@ -46,6 +48,11 @@ export default function SettingsMenu(props: SettingsMenuProps) {
   const [network] = createResource(() => networkSettings().catch(() => null));
   // WSL is this computer's Linux side on Windows alone.
   const [wsl] = createResource(() => (onWindows() ? wslStatus().catch(() => null) : null));
+  // How many of the open project's checks run: none until the user ticks one.
+  const [checksRunning] = createResource(
+    () => props.rootPath,
+    (root) => countChecksThatRun(root).catch(() => null)
+  );
   const vfsLine = () => {
     const status = vfs();
     return status ? vfsSummary(status) : null;
@@ -142,12 +149,10 @@ export default function SettingsMenu(props: SettingsMenuProps) {
               page="project"
               label="Project checks"
               about="The commands that check the agent’s changes in this project: type check, lint, tests, build."
-              state={ai(() =>
-                aiPermissions().verifyChanges
-                  ? 'Run when the agent finishes a change'
-                  : 'Not run: checking is off in Agent runs'
-              )}
-              warning={aiSettingsLoaded() && !aiPermissions().verifyChanges}
+              state={ai(() => projectChecksSummary(aiPermissions().verifyChanges, checksRunning()))}
+              warning={
+                aiSettingsLoaded() && (!aiPermissions().verifyChanges || checksRunning() === 0)
+              }
             />
           </Group>
         )}

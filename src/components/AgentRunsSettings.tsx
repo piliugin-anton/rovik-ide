@@ -17,7 +17,7 @@ import {
 } from '../lib/permissions';
 import { editorSettings, updateEditorSettings } from '../lib/editorSettings';
 import { vfsStatus } from '../lib/virtualFiles';
-import { detectProject, effectiveChecks, loadProjectSettings } from '../lib/projectProfile';
+import { countChecksThatRun } from '../lib/projectProfile';
 import { plural } from '../lib/textUtils';
 import { folderName } from './SettingsMenu';
 import { SettingRow, SettingStatus } from './SettingsControls';
@@ -47,17 +47,7 @@ export default function AgentRunsSettings(props: AgentRunsSettingsProps) {
   const noIsolation = () => vfs.state === 'ready' && vfs() !== undefined && !vfs()!.mountpoint;
 
   // The open project's checks, as Project checks has them: what would run.
-  const [checks] = createResource(
-    () => props.rootPath,
-    async (root) => {
-      const [detected, settings] = await Promise.all([
-        detectProject(root),
-        loadProjectSettings(root),
-      ]);
-      return effectiveChecks(detected, settings).filter((c) => c.enabled && c.command.trim())
-        .length;
-    }
-  );
+  const [checks] = createResource(() => props.rootPath, countChecksThatRun);
   const folder = () => (props.rootPath ? folderName(props.rootPath) : '');
 
   const pauseExplain = () =>

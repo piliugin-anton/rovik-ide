@@ -73,9 +73,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   which actions need your approval. Proposed file edits show as a diff in
   the editor, and you can accept or reject each change separately. You can
   also let a second "reviewer" AI model approve routine actions.
-- **Automatic checks.** When the agent finishes, the IDE runs the project's
-  type check, lint and tests. If anything fails, the agent is sent back to
-  fix it. It's told when a fix made no progress, a fix that breaks
+- **Automatic checks.** When the agent finishes, the IDE runs the project
+  checks you turned on: its type check, lint, tests or build. They're found
+  in the project's files, and each is off until you tick it in Settings →
+  Project checks. If anything fails, the agent is sent back to fix it.
+  It's told when a fix made no progress, a fix that breaks
   something that passed before is rolled back, and tests weakened to pass
   (skipped, deleted, fewer assertions) are flagged for you instead of
   counting as verified. A check that fails runs once more on the code
@@ -242,7 +244,7 @@ computer right now. The pages:
 | Agent runs             | While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats |
 | Subagents              | The helpers the agent can send, their models and limits                                                               |
 | Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                         |
-| Project checks         | The type-check / lint / test / build commands of the open project, as detected or as you fix them                     |
+| Project checks         | The type-check / lint / test / build commands of the open project, as detected (each off until you tick it) or fixed  |
 | Heavy commands         | How many builds and tests run at once on this computer, so it stays responsive                                        |
 | Virtual files          | The driver that isolates chats and lets the agent manage its own context: status, installation, troubleshooting       |
 | Cloud hosts            | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))                                                       |
@@ -662,7 +664,11 @@ What one process must not do to another's work is guarded the same way:
 ### Project checks
 
 When the agent finishes a change, the IDE runs the project's checks (type
-check, lint, tests) and sends what fails back to it. What the checks know
+check, lint, tests) and sends what fails back to it. Detection only
+suggests them: each check found is off until the user ticks it in
+Settings → Project checks, which saves the project's list
+(`agent_run/project.rs`, `effective_checks`). An Autopilot task with no
+check on runs its plan's validation commands instead. What the checks know
 lives in tables (paths under `src-tauri/crates/rovik-core/src/`), so
 teaching them a new tool is usually one row:
 

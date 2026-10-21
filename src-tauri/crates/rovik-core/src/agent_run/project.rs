@@ -1,7 +1,8 @@
 //! What the agent is told about the open project, and which commands check
-//! its changes. Detection is in project_profile.rs; the user can correct the
-//! detected checks per project (stored with `save_project_settings`), and
-//! those win once saved.
+//! its changes. Detection is in project_profile.rs; the user turns the
+//! detected checks on and corrects them per project (stored with
+//! `save_project_settings`), and those win once saved. Until then every
+//! detected check is off: detection never turns one on for the user.
 
 use crate::project_profile::{self, ProjectProfile};
 use serde::{Deserialize, Serialize};
@@ -45,7 +46,9 @@ fn saved_checks(settings: &serde_json::Value) -> Option<Vec<ProjectCheck>> {
     )
 }
 
-/// The checks in effect: the user's list when they saved one, else what's detected.
+/// The checks in effect: the user's list when they saved one, else what's
+/// detected, each off. A check runs once the user turns it on (Settings →
+/// Project checks, which saves the list), never because it was detected.
 pub fn effective_checks(
     profile: &ProjectProfile,
     settings: &serde_json::Value,
@@ -59,7 +62,7 @@ pub fn effective_checks(
         .map(|c| ProjectCheck {
             kind: c.kind.clone(),
             command: c.command.clone(),
-            enabled: c.default_enabled,
+            enabled: false,
         })
         .collect()
 }
@@ -153,8 +156,10 @@ pub fn load(
 }
 
 /// `load`, and with `below` (an Autopilot task's run, V09) the stacks one
-/// folder down too, each check run in its folder, unless the user saved
-/// the project's checks: theirs stand.
+/// folder down too, each check in its folder, unless the user saved the
+/// project's checks: theirs stand. Those checks are detected ones, so off
+/// like the project's own: with none on, a task is checked by its plan's
+/// validation commands (V02, run.rs).
 pub fn load_for(
     config_dir: &Path,
     root: &str,
@@ -179,7 +184,7 @@ pub fn load_for(
             checks.extend(found.checks.iter().map(|c| ProjectCheck {
                 kind: c.kind.clone(),
                 command: in_folder(&folder, &c.command),
-                enabled: c.default_enabled,
+                enabled: false,
             }));
         }
     }
@@ -726,27 +731,17 @@ mod tests {
 
     #[test]
     fn the_project_section() {
+        let detected = |kind: &str, command: &str| DetectedCheck {
+            kind: kind.into(),
+            command: command.into(),
+            source: "".into(),
+        };
         let profile = ProjectProfile {
             stack: vec!["Rust".into()],
             checks: vec![
-                DetectedCheck {
-                    kind: "test".into(),
-                    command: "cargo test".into(),
-                    source: "".into(),
-                    default_enabled: true,
-                },
-                DetectedCheck {
-                    kind: "typecheck".into(),
-                    command: "cargo check".into(),
-                    source: "".into(),
-                    default_enabled: true,
-                },
-                DetectedCheck {
-                    kind: "build".into(),
-                    command: "cargo build".into(),
-                    source: "".into(),
-                    default_enabled: false,
-                },
+                detected("test", "cargo test"),
+                detected("typecheck", "cargo check"),
+                detected("build", "cargo build"),
             ],
             instructions: Some(ProjectInstructions {
                 file: "AGENTS.md".into(),
@@ -755,7 +750,26 @@ mod tests {
             }),
             ..Default::default()
         };
-        let checks = effective_checks(&profile, &serde_json::Value::Null);
+        // Detected, and the user turned none on: each is off, and the agent
+        // isn't told of them.
+        let detected_only = effective_checks(&profile, &serde_json::Value::Null);
+        assert_eq!(detected_only.len(), 3);
+        assert!(
+            detected_only.iter().all(|c| !c.enabled),
+            "{detected_only:?}"
+        );
+        assert_eq!(
+            project_context(&profile, &detected_only, true),
+            "## Project\n\nStack: Rust.\n\nThe project's instructions for agents (AGENTS.md); follow them:\n\nBe nice."
+        );
+
+        // The user turned the tests and the type check on.
+        let turned_on = serde_json::json!({ "checks": [
+            { "kind": "test", "command": "cargo test", "enabled": true },
+            { "kind": "typecheck", "command": "cargo check", "enabled": true },
+            { "kind": "build", "command": "cargo build", "enabled": false },
+        ] });
+        let checks = effective_checks(&profile, &turned_on);
         let text = project_context(&profile, &checks, true);
         assert!(text.starts_with("## Project\n\nStack: Rust.\n\nChecks: when you finish"));
         assert!(text.contains("- Type check: `cargo check`\n- Tests: `cargo test`"));
@@ -806,10 +820,12 @@ mod tests {
     }
 
     /// V09: an Autopilot task's checks include the stacks one folder
-    /// down, each in its folder, and the prompt says so; anything else's,
-    /// and a project whose checks the user saved, stay as they were.
+    /// down, each in its folder, and the prompt names the stacks. Detected,
+    /// those checks are off like the project's own, so the agent isn't told
+    /// of them. Anything else's, and a project whose checks the user saved,
+    /// stay as they were.
     #[test]
-    fn an_autopilot_task_checks_the_stacks_one_folder_down() {
+    fn an_autopilot_task_finds_the_stacks_one_folder_down_with_their_checks_off() {
         let dir = crate::testing::temp_dir();
         let root = dir.0.join("project");
         let config = dir.0.join("config");
@@ -833,14 +849,12 @@ mod tests {
                 "cd web && npm test",
             ]
         );
+        assert!(checks.iter().all(|c| !c.enabled), "{checks:?}");
         assert!(
             context.contains("Go (api/)") && context.contains("JavaScript (web/)"),
             "{context}"
         );
-        assert!(
-            context.contains("- Tests: `cd web && npm test`"),
-            "{context}"
-        );
+        assert!(!context.contains("cd web && npm test"), "{context}");
         // Not an Autopilot task: as before.
         assert!(load_for(&config, &r, &r, true, false).0.is_empty());
         assert!(load(&config, &r, &r, true).0.is_empty());

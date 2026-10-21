@@ -1,11 +1,14 @@
 // projectProfile.ts
 //
 // What the agent is told about the open project, and which commands check
-// its changes. Detection is in the backend (src-tauri/src/project_profile.rs);
-// the user can correct the detected checks per project (ProjectChecksSettings),
-// which is stored separately and wins once saved. The backend builds the
-// agent's prompt section from them (src-tauri/src/agent_run/project.rs).
+// its changes. Detection is in the backend
+// (src-tauri/crates/rovik-core/src/project_profile.rs); a detected check is
+// off until the user turns it on. The user turns checks on and corrects
+// them per project (ProjectChecksSettings), which is stored separately and
+// wins once saved. The backend builds the agent's prompt section from them
+// (src-tauri/crates/rovik-core/src/agent_run/project.rs).
 import { invoke } from '@tauri-apps/api/core';
+import { plural } from './textUtils';
 
 export type CheckKind = 'typecheck' | 'lint' | 'test' | 'build';
 
@@ -18,12 +21,12 @@ export const CHECK_LABEL: Record<CheckKind, string> = {
   build: 'Build',
 };
 
+/** A check found in the project's files: off until the user turns it on. */
 export interface DetectedCheck {
   kind: CheckKind;
   command: string;
   /** Where it was found, e.g. "package.json scripts.test". */
   source: string;
-  defaultEnabled: boolean;
 }
 
 export interface WorkspaceMember {
@@ -99,9 +102,11 @@ function normalizeSettings(raw: unknown): ProjectSettings {
 
 /**
  * The checks in effect: the user's list when they saved one, else what's
- * detected. First open of a project has no saved settings, so detection —
- * including workspace-wide commands — pre-fills the list; from the first
- * edit on, the user's list wins.
+ * detected, each off. First open of a project has no saved settings, so
+ * detection — including workspace-wide commands — pre-fills the list, and
+ * nothing runs until the user turns a check on; from the first edit on,
+ * the user's list wins. The backend reads them the same way
+ * (agent_run/project.rs, `effective_checks`).
  */
 export function effectiveChecks(
   profile: ProjectProfile | null,
@@ -111,9 +116,38 @@ export function effectiveChecks(
   return (profile?.checks ?? []).map((c) => ({
     kind: c.kind,
     command: c.command,
-    enabled: c.defaultEnabled,
+    enabled: false,
     source: c.source,
   }));
+}
+
+/** Of `checks`, those that run after the agent's changes: on, with a command. */
+export function checksThatRun(checks: ProjectCheck[]): ProjectCheck[] {
+  return checks.filter((c) => c.enabled && c.command.trim() !== '');
+}
+
+/** How many of the project in `root`'s checks run after the agent's changes. */
+export async function countChecksThatRun(root: string): Promise<number> {
+  const [detected, settings] = await Promise.all([detectProject(root), loadProjectSettings(root)]);
+  return checksThatRun(effectiveChecks(detected, settings)).length;
+}
+
+/**
+ * The Settings menu's line for Project checks: whether checking is on
+ * (Agent runs), and how many of the project's checks run (`running`;
+ * undefined or null while that isn't known).
+ */
+export function projectChecksSummary(
+  verifyChanges: boolean,
+  running: number | null | undefined
+): string {
+  if (!verifyChanges) return 'Not run: checking is off in Agent runs';
+  if (running === 0) return 'Nothing to run: no check is turned on';
+  if (typeof running === 'number') {
+    const verb = running === 1 ? 'runs' : 'run';
+    return `${plural(running, 'check')} ${verb} when the agent finishes a change`;
+  }
+  return 'Run when the agent finishes a change';
 }
 
 /** One workspace-wide command running `script` in every package that has it. */
