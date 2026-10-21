@@ -1,4 +1,13 @@
-import { batch, createEffect, createSignal, For, onCleanup, Show, type Accessor } from 'solid-js';
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+  type Accessor,
+} from 'solid-js';
 import Terminal from './Terminal';
 import TerminalNewMenu from './TerminalNewMenu';
 import { cloud } from '../lib/cloud';
@@ -11,8 +20,10 @@ import {
 } from '../lib/terminal';
 
 interface TerminalPanelProps {
+  /** The current project's panel is closed. */
   collapsed: Accessor<boolean>;
   onCollapsedChange: (value: boolean) => void;
+  /** The current project's folder; null with none open. */
   rootPath: Accessor<string | null>;
 }
 
@@ -23,7 +34,12 @@ interface TerminalPanelProps {
  */
 interface TerminalTab {
   readonly key: number;
-  /** Folder it was opened in; new terminals follow the current project. */
+  /**
+   * The project it was opened in, whose terminals it's among: shown while
+   * that project is, kept running while another is.
+   */
+  readonly project: string | null;
+  /** Folder it was opened in: its project's, here; none on a host. */
   readonly cwd: string | null;
   /**
    * The cloud host it runs on, named as it was when it opened; null on this
@@ -69,9 +85,25 @@ function panelAction(e: KeyboardEvent): PanelAction | null {
 export default function TerminalPanel(props: TerminalPanelProps) {
   const [height, setHeight] = createSignal(DEFAULT_HEIGHT);
   const [dragging, setDragging] = createSignal(false);
+  /** Every project's terminals, in the order they opened. */
   const [tabs, setTabs] = createSignal<TerminalTab[]>([]);
-  const [activeKey, setActiveKey] = createSignal<number | null>(null);
+  /** Each project's terminal shown, by its folder ('' with none open). */
+  const [activeKeys, setActiveKeys] = createSignal<Record<string, number>>({});
   const [details, setDetails] = createSignal<Record<number, TabDetails>>({});
+  /** The current project's terminals: the tabs shown. */
+  const shown = createMemo(() => tabs().filter((t) => t.project === props.rootPath()));
+  /** The terminal shown: the one last chosen in the project, else its last. */
+  const activeKey = () => {
+    const list = shown();
+    const chosen = activeKeys()[props.rootPath() ?? ''];
+    return list.some((t) => t.key === chosen) ? chosen : (list[list.length - 1]?.key ?? null);
+  };
+  /** `key` is the terminal shown in `project` (none: its last). */
+  function setActiveKey(key: number | null, project = props.rootPath()) {
+    setActiveKeys(({ [project ?? '']: _was, ...rest }) =>
+      key === null ? rest : { ...rest, [project ?? '']: key }
+    );
+  }
   /** Where "+"'s menu is open, if it is. */
   const [menu, setMenu] = createSignal<{ x: number; y: number } | null>(null);
   let nextKey = 1;
@@ -83,18 +115,19 @@ export default function TerminalPanel(props: TerminalPanelProps) {
   /** The cloud hosts a terminal can open on now: once there's one, "+" asks where. */
   const remoteHosts = () => terminalHosts(cloud.hosts);
   /** The tabs say where they run once a host is connected, or one of them runs on one. */
-  const placed = () => remoteHosts().length > 0 || tabs().some((t) => t.host !== null);
+  const placed = () => remoteHosts().length > 0 || shown().some((t) => t.host !== null);
   /** A host's name as the app knows it now, or as it was when the tab opened. */
   const nameOf = (host: TerminalHost) =>
     cloud.hosts.find((h) => h.id === host.id)?.name ?? host.name;
 
-  /** A new terminal, on this computer or on `host`. */
+  /** A new terminal of the current project's, on this computer or on `host`. */
   function newTerminal(host: TerminalHost | null = null) {
     const key = nextKey++;
+    const project = props.rootPath();
     batch(() => {
       setMenu(null);
-      setTabs((t) => [...t, { key, cwd: host ? null : props.rootPath(), host }]);
-      setActiveKey(key);
+      setTabs((t) => [...t, { key, project, cwd: host ? null : project, host }]);
+      setActiveKey(key, project);
       if (props.collapsed()) props.onCollapsedChange(false);
     });
   }
@@ -152,24 +185,28 @@ export default function TerminalPanel(props: TerminalPanelProps) {
   });
 
   function closeTerminal(key: number) {
-    const list = tabs();
+    const tab = tabs().find((t) => t.key === key);
+    if (!tab) return;
+    // Its project's, which may not be the one shown (its shell exited).
+    const list = tabs().filter((t) => t.project === tab.project);
     const index = list.findIndex((t) => t.key === key);
-    if (index < 0) return;
     const remaining = list.filter((t) => t.key !== key);
     batch(() => {
-      // Closing the last one hides the panel; opening it again starts a
-      // fresh terminal (the effect below).
-      if (remaining.length === 0) props.onCollapsedChange(true);
-      if (activeKey() === key) {
-        setActiveKey(remaining[Math.min(index, remaining.length - 1)]?.key ?? null);
+      // Closing the last one shown hides the panel; opening it again starts
+      // a fresh terminal (the effect below).
+      if (remaining.length === 0 && tab.project === props.rootPath()) {
+        props.onCollapsedChange(true);
       }
-      setTabs(remaining);
+      if (activeKeys()[tab.project ?? ''] === key) {
+        setActiveKey(remaining[Math.min(index, remaining.length - 1)]?.key ?? null, tab.project);
+      }
+      setTabs((all) => all.filter((t) => t.key !== key));
       setDetails(({ [key]: _gone, ...rest }) => rest);
     });
   }
 
   function cycle(step: number) {
-    const list = tabs();
+    const list = shown();
     if (list.length < 2) return;
     const index = list.findIndex((t) => t.key === activeKey());
     setActiveKey(list[(index + step + list.length) % list.length].key);
@@ -180,9 +217,9 @@ export default function TerminalPanel(props: TerminalPanelProps) {
   }
 
   // Opening the panel with no terminal (first open, restored as expanded,
-  // or after the last one was closed) starts one.
+  // after the last one was closed, or a project with none) starts one.
   createEffect(() => {
-    if (!props.collapsed() && tabs().length === 0) newTerminal();
+    if (!props.collapsed() && shown().length === 0) newTerminal();
   });
 
   function runAction(action: PanelAction) {
@@ -214,7 +251,7 @@ export default function TerminalPanel(props: TerminalPanelProps) {
    * "bash (Build (remote))".
    */
   function label(tab: TerminalTab) {
-    return terminalLabel(labeled(tab), tabs().map(labeled), placed());
+    return terminalLabel(labeled(tab), shown().map(labeled), placed());
   }
 
   function toggle() {
@@ -278,14 +315,14 @@ export default function TerminalPanel(props: TerminalPanelProps) {
             <path d="M6 4l4 4-4 4" />
           </svg>
           Terminal
-          <Show when={props.collapsed() && tabs().length > 1}>
-            <span class="terminal-count">{tabs().length}</span>
+          <Show when={props.collapsed() && shown().length > 1}>
+            <span class="terminal-count">{shown().length}</span>
           </Show>
         </button>
 
         <Show when={!props.collapsed()}>
           <div class="terminal-tabs" role="tablist" aria-label="Terminals">
-            <For each={tabs()}>
+            <For each={shown()}>
               {(tab) => (
                 <div
                   class="terminal-tab"
@@ -382,7 +419,7 @@ export default function TerminalPanel(props: TerminalPanelProps) {
         style={{ height: props.collapsed() ? '0px' : `${height()}px` }}
       >
         {/* Every terminal stays mounted, so switching keeps each shell and its
-            scrollback; only the active one is shown. */}
+            scrollback, other projects' too; only the active one is shown. */}
         <For each={tabs()}>
           {(tab) => (
             <Terminal

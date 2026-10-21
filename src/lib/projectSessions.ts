@@ -1,8 +1,9 @@
 // projectSessions.ts
 //
-// Each project's tabs and open folders, for coming back to it: switching
-// projects closed them all, and the project came back with none (only the
-// one open at quit is restored, from last-project.json). Saved as they
+// Each project's tabs and open folders, and whether its terminal panel was
+// open, for coming back to it: switching projects closed them all, and the
+// project came back with none (only the one open at quit is restored, from
+// last-project.json). Saved as they
 // change, for the most recent projects, and shared by the windows
 // (lib/sharedState.ts): a project closed with its window comes back with
 // its tabs in another, which last-project.json, one project's, can't do.
@@ -22,6 +23,8 @@ export interface ProjectSession {
   active: string | null;
   /** Folders open in the tree. */
   expanded: string[];
+  /** Its terminal panel was open; unknown when kept by a Rovik before 0.1.18. */
+  terminalOpen?: boolean;
 }
 
 type Stored = ProjectSession & { at: number };
@@ -53,6 +56,7 @@ export function projectSession(root: string): ProjectSession | null {
     files: s.files.filter((f) => f && typeof f.path === 'string'),
     active: typeof s.active === 'string' ? s.active : null,
     expanded: Array.isArray(s.expanded) ? s.expanded.filter((p) => typeof p === 'string') : [],
+    terminalOpen: typeof s.terminalOpen === 'boolean' ? s.terminalOpen : undefined,
   };
 }
 
