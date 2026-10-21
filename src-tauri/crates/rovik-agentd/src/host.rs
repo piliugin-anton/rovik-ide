@@ -58,20 +58,17 @@ pub fn user_namespaces(sys: &Path) -> bool {
 /// What Rovik's folders take here (`Storage`), measured now: links not
 /// followed, other file systems (the virtual files' mount) not entered.
 pub async fn storage(daemon: &Daemon) -> Storage {
-    // The worktrees' folder and the temporary files' share a parent:
-    // ~/.local/share/rovik, or the folder --data names.
-    let share = daemon.worktrees.parent().map(Path::to_path_buf);
     let folders = (
         daemon.projects.dir().to_path_buf(),
         daemon.worktrees.clone(),
         daemon.core.paths.data_dir.clone(),
-        share.map(|s| s.join("tmp")),
+        daemon.tmp.clone(),
     );
     rovik_core::rt::spawn_blocking(move || Storage {
         projects: size_of(&folders.0),
         work: size_of(&folders.1),
         data: size_of(&folders.2),
-        tmp: folders.3.as_deref().map(size_of).unwrap_or(0),
+        tmp: size_of(&folders.3),
     })
     .await
     .unwrap_or_default()

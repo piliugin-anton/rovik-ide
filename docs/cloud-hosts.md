@@ -154,10 +154,18 @@ connection test reads the same once Rovik is deployed. The daemon's log,
 Each daemon cleans up after its user once a day, and when they click
 "Clean up now" on the host's page in Settings → Cloud hosts. What their
 deleted chats left goes, and so do the working copies of chats moved
-back to their computer, a week after the move. So do attachments no
-message uses, an hour after they were uploaded. Where git is installed,
-`git gc --auto` runs in each project's repository. The host's page shows
-what Rovik's folders take.
+back to their computer, a week after the move ("Clean up now" doesn't
+wait). So do attachments no message uses, an hour after they were
+uploaded, and the agent's temporary files in `~/.local/share/rovik/tmp`
+that nothing changed for a day, which go when the daemon starts too.
+"Clean up now" takes those nothing changed for an hour: a command may
+still use newer ones. A folder holding a socket stays. Where git is
+installed, `git gc --auto` runs in each project's repository; "Clean up
+now" runs a full `git gc`, which drops what no ref has reached for an
+hour, such as what deleted chats committed. A chat still on the server
+keeps everything: its messages, attachments and working copy. The
+host's page shows what Rovik's folders take, and what "Clean up now"
+freed.
 
 ## What can read what
 

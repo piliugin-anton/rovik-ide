@@ -7,6 +7,8 @@
 //   and trust the first time;
 // - Rovik deployed there, upgraded or removed;
 // - who approves while nobody is there (6.9);
+// - while what the server says isn't in yet, a spinner in place of the
+//   sections it fills;
 // - what Rovik's folders take on the server, and "Clean up now";
 // - the providers whose key the server keeps, never the keys, with
 //   "Remove keys from this server";
@@ -15,6 +17,7 @@
 import {
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   Match,
@@ -42,6 +45,7 @@ import {
   hostLimits,
   hostOf,
   hostStatus,
+  hostTasks,
   listHosts,
   onHostTest,
   removalOf,
@@ -69,7 +73,6 @@ import {
   type HostsList,
   type SetupRun,
   type Step,
-  type Storage,
 } from '../lib/hosts';
 
 /** Lets the Settings dialog title the page and step back within it. */
@@ -588,18 +591,29 @@ function HostPage(props: {
   }
 
   // What the daemon says, once connected.
+  const connected = () => deployed() && props.row.state === 'ready';
   const [details, setDetails] = createSignal<HostDetails | null>(null);
   const [detailsError, setDetailsError] = createSignal<string | null>(null);
+  // Asked and not in yet. Only the latest asking's answer counts.
+  const [asking, setAsking] = createSignal(connected());
+  let asked = 0;
   async function loadDetails() {
-    if (!deployed() || props.row.state !== 'ready') {
+    const ask = ++asked;
+    if (!connected()) {
       setDetails(null);
+      setAsking(false);
       return;
     }
+    setAsking(true);
     try {
-      setDetails(await hostDetails(id));
+      const answer = await hostDetails(id);
+      if (ask !== asked) return;
+      setDetails(answer);
       setDetailsError(null);
     } catch (err) {
-      setDetailsError(String(err));
+      if (ask === asked) setDetailsError(String(err));
+    } finally {
+      if (ask === asked) setAsking(false);
     }
   }
   // Asked again whenever the connection comes up, and after a deploy, an
@@ -609,19 +623,29 @@ function HostPage(props: {
     return `${deploy.state === 'deployed' ? deploy.version : 'none'} ${props.row.state ?? ''}`;
   });
   createEffect(on(connection, () => void loadDetails()));
+  // This computer's chats there and their tasks (H08), asked with the
+  // details.
+  const [tasks, { refetch: refetchTasks }] = createResource(
+    () => connected() && connection(),
+    () => hostTasks(id)
+  );
+  /**
+   * Connected, and what the server says not in yet: the sections it fills
+   * are hidden, a spinner in their place. Once in, they stay while the
+   * server is asked again.
+   */
+  const waiting = () => connected() && ((asking() && !details()) || tasks.state === 'pending');
 
-  // "Clean up now": what the server no longer needs goes, as each day.
+  // "Clean up now": what the server no longer needs goes, as each day, and
+  // what that freed, measured just before.
   const [cleaning, setCleaning] = createSignal(false);
   const [cleaned, setCleaned] = createSignal<string | null>(null);
   async function cleanUp() {
-    const before = details()?.storage;
     setCleaning(true);
     setCleaned(null);
     try {
-      const after = await cleanUpHost(id);
-      setDetails((d) => (d ? { ...d, storage: after } : d));
-      const total = (s: Storage) => s.projects + s.work + s.data + s.tmp;
-      const freed = before ? Math.max(0, total(before) - total(after)) : 0;
+      const { storage, freed } = await cleanUpHost(id);
+      setDetails((d) => (d ? { ...d, storage } : d));
       setCleaned(freed > 0 ? `${formatBytes(freed)} freed.` : 'Nothing more to clean up.');
     } catch (err) {
       setDetailsError(String(err));
@@ -760,89 +784,99 @@ function HostPage(props: {
         </Show>
       </section>
 
-      <section class="settings-section host-deploy">
-        <div class="settings-section-title">Rovik on this server</div>
-        <Show
-          when={deployed()}
-          fallback={
-            <>
-              <p class="settings-hint">
-                Rovik isn’t deployed for you here. Deploying installs it (with sudo, the first time
-                anyone does) and starts your daemon.
-              </p>
-              <Show
-                when={props.build}
-                fallback={
-                  <p class="settings-hint setting-explain warning">
-                    There’s no build to deploy: this build of Rovik has no release key to check a
-                    downloaded daemon with. Set ROVIK_AGENTD_BINARY to a rovik-agentd built for the
-                    server (scripts/build-agentd.sh makes one).
-                  </p>
-                }
-              >
-                <button
-                  class="chat-action-button primary"
-                  disabled={busy() != null}
-                  onClick={() => void deploy()}
-                >
-                  {busy() ?? 'Deploy'}
-                </button>
-              </Show>
-            </>
-          }
-        >
-          <p class="settings-hint">{deployedNote()}</p>
-          <Show when={details()?.upgrade && details()}>
-            {(d) => (
+      <Show
+        when={!waiting()}
+        fallback={
+          <section class="settings-section host-waiting" role="status">
+            <span class="host-spinner" aria-hidden="true" />
+            <span class="settings-hint">Asking the server…</span>
+          </section>
+        }
+      >
+        <section class="settings-section host-deploy">
+          <div class="settings-section-title">Rovik on this server</div>
+          <Show
+            when={deployed()}
+            fallback={
               <>
-                <p
-                  class="settings-hint host-upgrade"
-                  classList={{ 'setting-explain': !d().admin, warning: !d().admin }}
-                >
-                  {upgradeNote(d())}
+                <p class="settings-hint">
+                  Rovik isn’t deployed for you here. Deploying installs it (with sudo, the first
+                  time anyone does) and starts your daemon.
                 </p>
-                <Show when={d().admin}>
+                <Show
+                  when={props.build}
+                  fallback={
+                    <p class="settings-hint setting-explain warning">
+                      There’s no build to deploy: this build of Rovik has no release key to check a
+                      downloaded daemon with. Set ROVIK_AGENTD_BINARY to a rovik-agentd built for
+                      the server (scripts/build-agentd.sh makes one).
+                    </p>
+                  }
+                >
                   <button
                     class="chat-action-button primary"
                     disabled={busy() != null}
-                    onClick={() => void upgrade()}
+                    onClick={() => void deploy()}
                   >
-                    {busy() ?? 'Upgrade for everyone'}
+                    {busy() ?? 'Deploy'}
                   </button>
                 </Show>
               </>
-            )}
+            }
+          >
+            <p class="settings-hint">{deployedNote()}</p>
+            <Show when={details()?.upgrade && details()}>
+              {(d) => (
+                <>
+                  <p
+                    class="settings-hint host-upgrade"
+                    classList={{ 'setting-explain': !d().admin, warning: !d().admin }}
+                  >
+                    {upgradeNote(d())}
+                  </p>
+                  <Show when={d().admin}>
+                    <button
+                      class="chat-action-button primary"
+                      disabled={busy() != null}
+                      onClick={() => void upgrade()}
+                    >
+                      {busy() ?? 'Upgrade for everyone'}
+                    </button>
+                  </Show>
+                </>
+              )}
+            </Show>
+            <div class="host-actions">
+              <button
+                class="danger"
+                disabled={busy() != null}
+                onClick={() => void removeFromServer()}
+              >
+                Remove Rovik from this server…
+              </button>
+            </div>
           </Show>
-          <div class="host-actions">
-            <button
-              class="danger"
-              disabled={busy() != null}
-              onClick={() => void removeFromServer()}
-            >
-              Remove Rovik from this server…
-            </button>
-          </div>
-        </Show>
-        <Show when={failure()}>{(f) => <DeployProblem failure={f()} />}</Show>
-        <Show when={failure()?.kind === 'sudoPassword'}>
-          <div class="host-sudo">
-            <input
-              type="password"
-              value={sudoPassword()}
-              onInput={(e) => setSudoPassword(e.currentTarget.value)}
-              placeholder="Your password on the server, for sudo"
-              aria-label="sudo password"
-            />
-            <button
-              class="chat-action-button primary"
-              disabled={!sudoPassword() || busy() != null}
-              onClick={() => void deploy()}
-            >
-              Deploy
-            </button>
-          </div>
-        </Show>
-      </section>
+          <Show when={failure()}>{(f) => <DeployProblem failure={f()} />}</Show>
+          <Show when={failure()?.kind === 'sudoPassword'}>
+            <div class="host-sudo">
+              <input
+                type="password"
+                value={sudoPassword()}
+                onInput={(e) => setSudoPassword(e.currentTarget.value)}
+                placeholder="Your password on the server, for sudo"
+                aria-label="sudo password"
+              />
+              <button
+                class="chat-action-button primary"
+                disabled={!sudoPassword() || busy() != null}
+                onClick={() => void deploy()}
+              >
+                Deploy
+              </button>
+            </div>
+          </Show>
+        </section>
+      </Show>
 
       <Show when={deployed() && hasSetup()}>
         <section class="settings-section host-setup">
@@ -916,20 +950,18 @@ function HostPage(props: {
         </Show>
       </section>
 
-      <Show when={deployed()}>
+      <Show when={deployed() && !waiting()}>
         <Show when={detailsError()}>
           <p class="settings-hint setting-explain warning">{detailsError()}</p>
         </Show>
         <Show
           when={details()}
           fallback={
-            <section class="settings-section">
-              <p class="settings-hint">
-                {props.row.state === 'ready'
-                  ? 'Asking the server…'
-                  : 'Connect to the server to see its storage and keys.'}
-              </p>
-            </section>
+            <Show when={!connected()}>
+              <section class="settings-section">
+                <p class="settings-hint">Connect to the server to see its storage and keys.</p>
+              </section>
+            </Show>
           }
         >
           {(d) => (
@@ -945,8 +977,10 @@ function HostPage(props: {
                       <li>Temporary files: {formatBytes(s().tmp)}</li>
                     </ul>
                     <p class="settings-hint">
-                      What deleted chats and chats moved back left there, and files no message uses,
-                      go each day.
+                      What deleted chats and chats moved back left there, files no message uses, and
+                      temporary files unchanged for a day go each day. “Clean up now” doesn’t wait:
+                      only temporary files changed in the last hour stay, as a command may still use
+                      them.
                     </p>
                     <Show when={d().cleanUp}>
                       <div class="host-actions">
@@ -961,7 +995,7 @@ function HostPage(props: {
                   </section>
                 )}
               </Show>
-              <HostTasks hostId={id} />
+              <HostTasks tasks={tasks} onRefresh={() => void refetchTasks()} />
               <section class="settings-section host-keys">
                 <div class="settings-section-title">API keys on this server</div>
                 <p class="settings-hint">

@@ -110,6 +110,13 @@ const button = (root: ParentNode, label: string) =>
 
 const sent = (cmd: string) => calls.filter((c) => c.cmd === cmd).map((c) => c.args);
 
+/** An answer the test gives when it chooses. */
+function later<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
 function type(input: HTMLInputElement, value: string) {
   input.value = value;
   input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -342,14 +349,25 @@ test('“Clean up now”: what the server no longer needs goes, and it’s measu
   const after = { ...DETAILS.storage!, work: 128 * 1024 ** 2 };
   const { root } = await hostPage(hostsList(DEPLOYED), {
     hosts_details: () => DETAILS,
-    hosts_clean_up: () => after,
+    hosts_clean_up: () => ({ storage: after, freed: 384 * 1024 ** 2 }),
   });
-  assert.match(root.textContent!, /and files no message uses, go each day/);
+  assert.match(root.textContent!, /and temporary files unchanged for a day go each day/);
+  assert.match(root.textContent!, /only temporary files changed in the last hour stay/);
   button(root, 'Clean up now')!.click();
   await flush();
   assert.deepEqual(sent('hosts_clean_up'), [{ id: 'h1' }]);
   assert.match(root.textContent!, /Chats’ working copies: 128 MB/);
   assert.match(root.textContent!, /384 MB freed\./);
+});
+
+test('“Clean up now” that freed nothing says so', async () => {
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => DETAILS,
+    hosts_clean_up: () => ({ storage: DETAILS.storage, freed: 0 }),
+  });
+  button(root, 'Clean up now')!.click();
+  await flush();
+  assert.match(root.textContent!, /Nothing more to clean up\./);
 });
 
 test('a server whose Rovik can’t clean up when asked offers no “Clean up now”', async () => {
@@ -461,6 +479,73 @@ test('an administrator’s view: the limits for everyone, changed and saved', as
   assert.deepEqual(sent('hosts_set_limits'), [{ id: 'h1', changes: [['memory', '40%']] }]);
   assert.equal((root.querySelector('.host-limit input') as HTMLInputElement).value, '40%');
   assert.match(root.textContent!, /Each daemon takes the new limits when it next starts\./);
+});
+
+test('opening a connected host: a spinner till the server answers, what it fills hidden till then', async () => {
+  const details = later<HostDetails>();
+  const tasks = later<unknown[]>();
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => details.promise,
+    hosts_tasks: () => tasks.promise,
+  });
+  assert.deepEqual(sent('hosts_details'), [{ id: 'h1' }]);
+  assert.deepEqual(sent('hosts_tasks'), [{ id: 'h1' }], 'asked with the details, not after');
+  const waiting = root.querySelector('.host-waiting');
+  assert.ok(waiting?.querySelector('.host-spinner'), 'a spinner');
+  assert.equal(waiting!.getAttribute('role'), 'status');
+  const filled = ['.host-deploy', '.host-storage', '.host-tasks', '.host-keys'];
+  for (const section of filled) assert.equal(root.querySelector(section), null, section);
+  // What this computer knows of the host shows at once.
+  assert.match(root.textContent!, /Connected/);
+  assert.ok(root.querySelector('.host-test'));
+  assert.ok(root.querySelector('.host-policy'));
+
+  details.resolve(DETAILS);
+  await flush();
+  assert.ok(root.querySelector('.host-waiting'), 'the tasks aren’t in yet');
+  assert.equal(root.querySelector('.host-storage'), null);
+
+  tasks.resolve([]);
+  await flush();
+  assert.equal(root.querySelector('.host-waiting'), null);
+  for (const section of filled) assert.ok(root.querySelector(section), section);
+  assert.match(root.textContent!, /Version 0\.2\.0\. Its administrators: alice, bob\./);
+  assert.doesNotMatch(root.textContent!, /Asking the server/);
+});
+
+test('the server’s details not coming: why, and no spinner left spinning', async () => {
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => {
+      throw new Error('Build server didn’t answer in time.');
+    },
+    hosts_tasks: () => [],
+  });
+  assert.equal(root.querySelector('.host-waiting'), null);
+  assert.match(root.textContent!, /Build server didn’t answer in time\./);
+  assert.doesNotMatch(root.textContent!, /Asking the server/);
+  assert.ok(root.querySelector('.host-deploy'), 'what this computer knows of it');
+  assert.equal(root.querySelector('.host-storage'), null);
+});
+
+test('asked again, the server’s sections stay as they were till it answers', async () => {
+  let answer: Promise<HostDetails> = Promise.resolve(DETAILS);
+  const { root } = await hostPage(hostsList(DEPLOYED), {
+    hosts_details: () => answer,
+    hosts_tasks: () => [],
+    hosts_remove_keys: () => 1,
+  });
+  const again = later<HostDetails>();
+  answer = again.promise;
+  button(root, 'Remove keys from this server')!.click();
+  await flush();
+  (document.querySelector('.confirm-dialog-actions button.danger-filled') as HTMLElement).click();
+  await flush();
+  assert.equal(sent('hosts_details').length, 2);
+  assert.equal(root.querySelector('.host-waiting'), null);
+  assert.match(root.querySelector('.host-keys-list')!.textContent!, /OpenAI/);
+  again.resolve({ ...DETAILS, keys: [] });
+  await flush();
+  assert.match(root.querySelector('.host-keys-list')!.textContent!, /No keys are kept there\./);
 });
 
 test('the connection coming up asks the server for its details', async () => {

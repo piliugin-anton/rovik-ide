@@ -293,8 +293,15 @@ export const hostDetails = (id: string) => invoke<HostDetails>('hosts_details', 
 /** "Remove keys from this server": resolves with how many went. */
 export const removeKeys = (id: string) => invoke<number>('hosts_remove_keys', { id });
 
-/** "Clean up now": resolves with what Rovik's folders take on the host after. */
-export const cleanUpHost = (id: string) => invoke<Storage>('hosts_clean_up', { id });
+/** What "Clean up now" did: what Rovik's folders take on the host after. */
+export interface CleanedUp {
+  storage: Storage;
+  /** How many bytes less they take than just before. */
+  freed: number;
+}
+
+/** "Clean up now": resolves with what it did. */
+export const cleanUpHost = (id: string) => invoke<CleanedUp>('hosts_clean_up', { id });
 
 export const hostLimits = (id: string) => invoke<[string, string][]>('hosts_limits', { id });
 

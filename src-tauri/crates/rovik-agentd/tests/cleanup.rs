@@ -1,7 +1,8 @@
 //! What the daemon's cleanup takes (R01): what a chat deleted behind its
 //! back left, its worktree, branch and refs, with Rovik's folders measured
-//! after; and a file uploaded for a message that never came, once its
-//! grace period is over, while one `BlobsMissing` renewed stays.
+//! after; a file uploaded for a message that never came, once its grace
+//! period is over, while one `BlobsMissing` renewed stays; and none of the
+//! temporary files a command may still use.
 
 mod common;
 
@@ -99,4 +100,17 @@ async fn a_file_for_a_message_that_never_came_goes_after_its_grace() {
         .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 1);
+}
+
+/// "Clean up now" leaves the temporary files changed within the hour: a
+/// command going may still use them. They're measured with the rest.
+#[tokio::test]
+async fn clean_up_now_leaves_the_temporary_files_a_command_may_use() {
+    let setup = Setup::new().await;
+    let made = setup.daemon.data.join("tmp/cargo-build/out.bin");
+    write(&made, &"x".repeat(1 << 20));
+
+    let after: Storage = setup.client.request(Request::CleanUp).await.unwrap();
+    assert!(made.is_file());
+    assert!(after.tmp >= 1 << 20, "{after:?}");
 }

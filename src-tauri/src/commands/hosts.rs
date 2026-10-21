@@ -7,10 +7,9 @@ use rovik_client::connection_test::Step;
 use rovik_client::deploy::{Removal, SetupRun};
 use rovik_client::host_settings::Host;
 use rovik_client::hosts_page::{
-    DeployFailure, HostDetails, HostSecrets, HostSummary, HostsList, HostsPage,
+    CleanedUp, DeployFailure, HostDetails, HostSecrets, HostSummary, HostsList, HostsPage,
 };
 use rovik_client::ApprovalPolicy;
-use rovik_protocol::host::Storage;
 use rovik_protocol::Secret;
 use serde::Serialize;
 use std::sync::Arc;
@@ -213,12 +212,13 @@ pub async fn hosts_remove_keys(
     page.remove_keys(&id).await
 }
 
-/// "Clean up now" (R01): what Rovik's folders take on the host after.
+/// "Clean up now" (R01): what Rovik's folders take on the host after, and
+/// how much it freed.
 #[tauri::command]
 pub async fn hosts_clean_up(
     page: State<'_, Arc<HostsPage>>,
     id: String,
-) -> Result<Storage, String> {
+) -> Result<CleanedUp, String> {
     page.clean_up(&id).await
 }
 

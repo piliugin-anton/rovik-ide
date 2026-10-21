@@ -64,6 +64,13 @@ pub struct Storage {
     pub tmp: u64,
 }
 
+impl Storage {
+    /// What the folders take together.
+    pub fn total(&self) -> u64 {
+        self.projects + self.work + self.data + self.tmp
+    }
+}
+
 /// What `rovik-agentd doctor --json` says of the account and the server
 /// (R03): its checks, a line each, and what the connection test reads once
 /// the daemon is deployed (H04).
