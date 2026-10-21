@@ -1,10 +1,11 @@
 # Rovik IDE starts bash with this file (--init-file) in place of ~/.bashrc
 # where readline, bash's line editor, can't redraw an input line taller than
-# the terminal: bash 4.4 to 5.2 (readline before 8.3). Holding Backspace
-# through a long paste blanked the row the caret moved up to. A line kept on
-# one row that scrolls sideways (horizontal-scroll-mode) is never taller,
-# but doesn't wrap either. So here a line wraps, and goes on one row only
-# while it's too tall:
+# the terminal: bash 4.4 to 5.3. Holding Backspace through a long paste
+# blanked the row the caret moved up to; in 5.3, the rows that had scrolled
+# off the top stayed blank once the line fit again, the prompt's too. A line
+# kept on one row that scrolls sideways (horizontal-scroll-mode) is never
+# taller, but doesn't wrap either. So here a line wraps, and goes on one row
+# only while it's too tall:
 #
 #   ESC [ 9001 ~  one row: the terminal sends it before a paste that may not
 #                 fit, and before it gets smaller;
@@ -194,8 +195,8 @@ __rovik_prompt() {
 __rovik_setup() {
   local version=$((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1])) settings map
   # A key's command reads the line from 4.0 on, the prompt as shown from
-  # 4.4 on; from 5.3 on, readline draws a tall line right.
-  if ((version < 404 || version >= 503)); then
+  # 4.4 on. A bash newer than 5.3 isn't known to garble a tall line.
+  if ((version < 404 || version > 503)); then
     return
   fi
   # Editing with readline: not --noediting, nor another line editor (ble.sh).

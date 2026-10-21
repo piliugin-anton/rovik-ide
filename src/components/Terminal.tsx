@@ -52,7 +52,7 @@ const ANSWER_MS = 300;
 const HOST_ANSWER_MS = 1000;
 
 /**
- * The fewest rows the terminal is given. Bash 5.1's and 5.2's line editor,
+ * The fewest rows the terminal is given. Bash 5.1 to 5.3's line editor,
  * once it has drawn its line on a terminal one row high, keeps every line
  * from staying on one row for as long as it runs (lib/bashLine): a terminal
  * opened with its panel still opening was fitted to a sliver of it, one row.
@@ -280,7 +280,7 @@ export default function Terminal(props: TerminalProps) {
     setMenuVisible(true);
   }
 
-  // Bash's input line, as its start file says it is: bash before 5.3
+  // Bash's input line, as its start file says it is: bash up to 5.3
   // garbles one taller than the terminal, so the terminal has it go on one
   // row while it's too tall (lib/bashLine).
   let line: BashLine = NO_LINE;

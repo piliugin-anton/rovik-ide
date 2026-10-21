@@ -1,7 +1,8 @@
-//! Bash in a terminal, here or on a cloud host. Before readline 8.3 (bash
-//! 5.2 and older) bash can't redraw an input line taller than the
-//! terminal: holding Backspace through a long paste blanked the row the
-//! caret moved up to. Bash reads `bash.sh` as it starts, in place of
+//! Bash in a terminal, here or on a cloud host. Bash, up to 5.3 at least,
+//! can't redraw an input line taller than the terminal: holding Backspace
+//! through a long paste blanked the row the caret moved up to, and in 5.3
+//! the rows that had scrolled off the top, the prompt's too, stayed blank
+//! once the line fit again. Bash reads `bash.sh` as it starts, in place of
 //! ~/.bashrc (`--init-file`): it reads a login shell's files, then keeps
 //! such a line on one row while it's too tall, with the terminal's help
 //! (src/lib/bashLine.ts), and lets it wrap once it fits.
@@ -36,10 +37,11 @@ const SCRIPT: &str = include_str!("bash.sh");
 type Version = (u32, u32);
 
 /// Whether bash `version` takes the script: from 4.4, where a key's command
-/// reads the line and the prompt as it shows, to 5.2. From 5.3 on, readline
-/// draws a tall line as it should.
+/// reads the line and the prompt as it shows, to 5.3, the newest known to
+/// garble a tall line. A newer one starts as a login shell until it's
+/// known to need the script, and to take it.
 fn takes_script(version: Version) -> bool {
-    ((4, 4)..(5, 3)).contains(&version)
+    ((4, 4)..=(5, 3)).contains(&version)
 }
 
 /// The version `bash --version` says: "GNU bash, version 5.2.21(1)-release
@@ -306,8 +308,10 @@ mod tests {
             })
         );
         // A bash that doesn't take the file has none, whatever is said.
-        let newer = said.replace("5.1.16", "5.3.0");
-        assert_eq!(parse_on_host(&newer).unwrap().init_file, None);
+        for other in ["3.2.57", "5.4.0"] {
+            let other = said.replace("5.1.16", other);
+            assert_eq!(parse_on_host(&other).unwrap().init_file, None, "{other}");
+        }
         let zsh = parse_on_host("shell=/usr/bin/zsh\nversion=\n").unwrap();
         assert_eq!((zsh.name().as_str(), zsh.init_file), ("zsh", None));
         // No shell said: as before.
@@ -318,13 +322,13 @@ mod tests {
     #[test]
     fn the_versions_named_on_a_host_are_those_that_take_it() {
         let patterns = version_patterns();
-        for takes in ["4.4", "5.0", "5.1", "5.2"] {
+        for takes in ["4.4", "5.0", "5.1", "5.2", "5.3"] {
             assert!(
                 patterns.contains(&format!("*'version {takes}.'*")),
                 "{takes}: {patterns:?}"
             );
         }
-        for not in ["3.2", "4.3", "5.3", "6.0"] {
+        for not in ["3.2", "4.3", "5.4", "6.0"] {
             assert!(
                 !patterns.contains(&format!("*'version {not}.'*")),
                 "{not}: {patterns:?}"
@@ -390,11 +394,17 @@ mod tests {
         assert_eq!(ask(&home, &bash51), Some(start));
         let left = std::fs::metadata(&saved).unwrap().modified().unwrap();
         assert_eq!(written, left, "saved again");
+        // The oldest and the newest that take it: the same file.
+        for (name, version) in [("44", "4.4.20"), ("53", "5.3.9")] {
+            let bash = fake_bash(&dir, name, version);
+            let start = ask(&home, &bash).expect("the host said nothing");
+            assert_eq!(start.init_file.as_deref(), Some(&*saved.to_string_lossy()));
+        }
 
         let other = dir.join("other");
         std::fs::create_dir_all(&other).unwrap();
         for shell in [
-            fake_bash(&dir, "53", "5.3.0"),
+            fake_bash(&dir, "54", "5.4.0"),
             fake_bash(&dir, "32", "3.2.57"),
             "/bin/sh".to_string(),
         ] {
@@ -441,14 +451,14 @@ mod tests {
     }
 
     #[test]
-    fn bash_4_4_to_5_2_takes_it() {
+    fn bash_4_4_to_5_3_takes_it() {
         for old in [(3, 2), (4, 3)] {
             assert!(!takes_script(old), "{old:?}");
         }
-        for takes in [(4, 4), (5, 0), (5, 1), (5, 2)] {
+        for takes in [(4, 4), (5, 0), (5, 1), (5, 2), (5, 3)] {
             assert!(takes_script(takes), "{takes:?}");
         }
-        for new in [(5, 3), (5, 4), (6, 0)] {
+        for new in [(5, 4), (6, 0)] {
             assert!(!takes_script(new), "{new:?}");
         }
     }
@@ -472,7 +482,7 @@ mod tests {
 
     /// What the bash on PATH makes of the script, where there's one: run
     /// interactive, as a terminal's is, in a home with a login shell's
-    /// file and bracketed paste on. Bash 4.4 to 5.2 then has the keys, and
+    /// file and bracketed paste on. Bash 4.4 to 5.3 then has the keys, and
     /// its key's commands say how the line is; another reads the login file
     /// alone.
     #[cfg(unix)]

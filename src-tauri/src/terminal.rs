@@ -27,7 +27,7 @@
 // here, as a shell does. Rovik's SSH makes a connection of its own, with
 // the login shell on a pseudo-terminal there (rovik-client's `Ssh::shell`);
 // its reads are async, so a task pumps its output, and no thread waits.
-// Through Rovik's SSH and in WSL, a bash before 5.3 starts as it does here,
+// Through Rovik's SSH and in WSL, a bash 4.4 to 5.3 starts as it does here,
 // with the file of ours it reads in place of a login shell's (`bash`).
 
 use std::io::{ErrorKind, Read, Write};
@@ -245,7 +245,7 @@ pub fn spawn_terminal(
 ) -> Result<TerminalInfo, String> {
     let (shell, args) = default_shell();
     let mut cmd = CommandBuilder::new(&shell);
-    // Bash before 5.3 reads a file of ours in place of a login shell's
+    // Bash 4.4 to 5.3 reads a file of ours in place of a login shell's
     // (`bash`).
     #[cfg(unix)]
     let args: Vec<std::ffi::OsString> = match bash::init_file(&app, &shell) {
