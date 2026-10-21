@@ -29,9 +29,17 @@ the project's own history, evolves the agent's **profile** (its
 instructions, additions to its prompts and a short list of settings) with
 an archive and an **improver** that may rewrite its own procedure, keeps
 the grader and a held-out set of tasks out of the agent's reach, and
-leaves adoption to the user. Two things come before any of it: today an
-evaluated run can read the answers (3.2), and no evaluation campaign has
-run with a real model.
+leaves adoption to the user.
+
+**Fix this first:** in today's eval harness, a run being evaluated can
+read the answers. The sandbox leaves the whole disk readable. Workspaces
+sit inside the repository, so `.git`, `scripts/eval/expected/` and the
+upstream clones are all visible. Web search is always on. The grader also
+ignores the gate's flags for weakened tests, so adding a `conftest.py`
+that skips tests could count as a pass. A search for a higher score would
+find all of these. The first milestone (P, section 7) fixes them, then
+runs the baseline, which has never run with a real model. The details are
+in 3.2.
 
 Contents:
 
