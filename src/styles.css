@@ -5530,7 +5530,8 @@ summary.chat-verify-row::-webkit-details-marker {
   color: var(--error);
 }
 
-.chat-verify-check.slow svg {
+.chat-verify-check.slow svg,
+.chat-verify-check.preexisting svg {
   color: var(--warning);
 }
 

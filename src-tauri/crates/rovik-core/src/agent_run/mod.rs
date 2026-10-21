@@ -12,6 +12,7 @@
 //!   execute.rs    one turn's tool calls: permission, approval, running them
 //!   review.rs     the AI reviewer (approval "by AI")
 //!   verify.rs     the verification gate: the project's checks after a run
+//!   before.rs     a failed check against the code before the change
 //!   repair.rs     its fix rounds: progress, rollback, test integrity
 //!   guard.rs      checkpoints and loop detection
 //!   subagent.rs, subagent_run.rs: helper runs the lead starts (`task`)
@@ -25,6 +26,7 @@
 
 pub mod acceptance;
 pub mod autopilot;
+mod before;
 pub mod breaker;
 pub mod budget;
 pub mod candidates;

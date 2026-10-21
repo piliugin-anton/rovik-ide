@@ -9,7 +9,8 @@
 //! reads the same after a restart.
 
 use super::command_output::{
-    environment_failure, error_locations, failure_keys, focus_failures, split_by_changed, tests_ran,
+    environment_failure, error_locations, failure_keys, focus_failures, split_by_changed,
+    tests_ran, without_roots,
 };
 use super::log;
 use super::permissions::{check_command, denied_entry, Permissions, Verdict};
@@ -64,7 +65,9 @@ pub struct ErrorFiles {
 pub struct CheckResult {
     pub kind: String,
     pub command: String,
-    /// pending, running, passed, failed, skipped.
+    /// pending, running, passed, failed, skipped, slow (V06), and
+    /// preexisting: it failed, but only as it does on the code before the
+    /// change (before.rs).
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<Option<i32>>,
@@ -100,6 +103,10 @@ pub struct CheckResult {
     /// code (`command_output::environment_failure`, V03).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    /// Failed, or `preexisting`: the keys of its failures that fail on the
+    /// code before the change too, not the change's (before.rs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preexisting: Option<Vec<String>>,
 }
 
 impl CheckResult {
@@ -119,6 +126,7 @@ impl CheckResult {
             tests_ran: None,
             saved_output: None,
             environment: None,
+            preexisting: None,
         }
     }
 
@@ -161,6 +169,8 @@ pub struct VerifyCarry {
     /// Commands the waiting round's fix ran (P3.5): listed if it's rolled
     /// back after "Run checks" (round 2).
     round_commands: Vec<String>,
+    /// How the checks went on the code before the change (before.rs).
+    befores: super::before::Befores,
     /// When it was kept: one older than `CARRY_TTL` is dropped (P1.8).
     pub stored: std::time::Instant,
     /// Baseline contents past `CARRY_MEMORY_BYTES`, on disk until taken up.
@@ -198,6 +208,7 @@ impl VerifyCarry {
             ledger: Default::default(),
             rechecks: 0,
             round_commands: Vec::new(),
+            befores: Default::default(),
             stored: std::time::Instant::now() - age,
             spilled: Spilled(
                 spilled
@@ -336,6 +347,18 @@ pub(super) fn with(mut meta: Value, extra: Value) -> Value {
     meta
 }
 
+/// Whether a check ran to its end and said how the code is: passed,
+/// failed, or failed only as before the change (before.rs).
+fn has_run(r: &CheckResult) -> bool {
+    matches!(r.status, "passed" | "failed" | "preexisting")
+}
+
+/// Whether a check found nothing wrong with the change: it passed, or
+/// failed only as it does on the code before the change.
+fn clear(r: &CheckResult) -> bool {
+    matches!(r.status, "passed" | "preexisting")
+}
+
 /// This round's failures, for comparing rounds (repair.rs).
 fn round_failures(results: &[CheckResult]) -> RoundFailures {
     RoundFailures {
@@ -345,7 +368,7 @@ fn round_failures(results: &[CheckResult]) -> RoundFailures {
             .collect(),
         ran: results
             .iter()
-            .filter(|r| r.status == "passed" || r.status == "failed")
+            .filter(|r| has_run(r))
             .map(|r| r.kind.clone())
             .collect(),
         tests_ran: results
@@ -472,12 +495,22 @@ pub fn failure_report(
             }
         ),
     ]);
+    let named = |r: &&CheckResult| format!("{} (`{}`)", check_label(&r.kind), r.command);
     if !passed.is_empty() {
-        let list: Vec<String> = passed
-            .iter()
-            .map(|r| format!("{} (`{}`)", check_label(&r.kind), r.command))
-            .collect();
+        let list: Vec<String> = passed.iter().map(named).collect();
         lines.push(format!("Passed: {}", list.join(", ")));
+    }
+    // before.rs: what fails only as on the code before the change.
+    let as_before: Vec<String> = results
+        .iter()
+        .filter(|r| r.status == "preexisting")
+        .map(|r| named(&r))
+        .collect();
+    if !as_before.is_empty() {
+        lines.push(format!(
+            "Failing only as on the code before your change, so not yours to fix: {}",
+            as_before.join(", ")
+        ));
     }
     for r in &failed {
         let how = if r.timed_out == Some(true) {
@@ -496,6 +529,12 @@ pub fn failure_report(
         ));
         if let Some(where_) = r.error_files.as_ref().and_then(describe_error_files) {
             lines.push(where_);
+        }
+        if let (Some(_), Some(own)) = (&r.preexisting, &r.failures) {
+            lines.push(format!(
+                "Some of its failures are there on the code before your change too: they aren't yours, so leave them. Yours:\n{}",
+                repair::key_list(own, 20)
+            ));
         }
         lines.push(String::new());
         lines.push(r.output.clone().unwrap_or_default());
@@ -604,6 +643,7 @@ impl Run {
             ledger: take(&mut self.ledger),
             rechecks: self.rechecks,
             round_commands: take(&mut self.round_commands),
+            befores: take(&mut self.befores),
             stored: std::time::Instant::now(),
             spilled: Spilled::default(),
         }
@@ -646,6 +686,7 @@ impl Run {
         self.ledger = c.ledger;
         self.rechecks = c.rechecks;
         self.round_commands = c.round_commands;
+        self.befores = c.befores;
     }
 
     /// P3.9: the carried state was lost (a restart): what each file was
@@ -803,10 +844,7 @@ impl Run {
                     .last_verify_results
                     .iter()
                     .all(|r| r.status != "failed")
-                && self
-                    .last_verify_results
-                    .iter()
-                    .any(|r| r.status == "passed");
+                && self.last_verify_results.iter().any(clear);
             return Ok(match (passed, self.integrity_unchecked) {
                 (true, true) => "verify-unchecked",
                 (true, false) => "verified",
@@ -894,9 +932,7 @@ impl Run {
             .await?;
 
         let failed = results.iter().any(|r| r.status == "failed");
-        let ran = results
-            .iter()
-            .any(|r| r.status == "passed" || r.status == "failed");
+        let ran = results.iter().any(has_run);
         // V03 (D12): a check that failed on its environment, not the code (a
         // program or a package that isn't installed): in Autopilot, once a
         // run, the round isn't counted and Prepare runs again first.
@@ -1177,6 +1213,20 @@ impl Run {
             self.checkpoint = None;
             return Ok("unmet".into());
         }
+        // before.rs: nothing the change did fails, but some checks fail as
+        // they do on the code before it. Fixing them may be the task ("fix
+        // the tests"), which only the agent knows: it's told, and goes on
+        // or finishes; with nothing changed then, the run is verified as it
+        // is (above). Not on the last round: there's none left to go on in.
+        if status == "passed" && round < max_rounds {
+            if let Some(note) = super::before::note(&results) {
+                let told = with(meta.clone(), json!({ "preexistingTold": true }));
+                self.update_meta(&record_id, told).await?;
+                self.add_harness(note, "preexisting").await?;
+                self.take_checkpoint();
+                return Ok("continue".into());
+            }
+        }
         if status != "failed" {
             self.checkpoint = None;
             return Ok(match status {
@@ -1441,7 +1491,7 @@ impl Run {
             "stopped"
         } else if !failed.is_empty() {
             "failed"
-        } else if results.iter().any(|r| r.status == "passed") {
+        } else if results.iter().any(clear) {
             "passed"
         } else {
             "unverified"
@@ -1521,10 +1571,12 @@ impl Run {
     /// updating the record as each finishes. A check the user's command
     /// permissions don't allow is skipped, not run: the gate is held to the
     /// same rules as the agent. Tests are skipped when the type check
-    /// failed: its errors would only reappear as test failures.
+    /// failed: its errors would only reappear as test failures. A check
+    /// that fails is compared with the code before the change, where there
+    /// is a copy of it, and what fails there too is set apart (before.rs).
     #[allow(clippy::too_many_arguments)]
     async fn run_checks(
-        &self,
+        &mut self,
         root: &str,
         checks: &[ProjectCheck],
         permissions: &Permissions,
@@ -1539,6 +1591,12 @@ impl Run {
             .collect();
         let progress = |results: &[CheckResult]| record("running", round, results, changed, None);
         self.update_meta(record_id, progress(&results)).await?;
+        // Where the checks run, as their output names it: failure keys are
+        // relative to it, the same in a copy of the project elsewhere.
+        let roots = self.check_roots();
+        // The code before the change, for the checks that fail (before.rs):
+        // opened for the first, gone after the last.
+        let mut copy: Option<super::before::BeforeCopy> = None;
 
         // V06: the tests of the changed files, run where the whole suite
         // timed out: its index.
@@ -1584,13 +1642,14 @@ impl Run {
                 let waiting: Arc<Mutex<Option<Option<String>>>> = Arc::default();
                 let overlay = crate::overlay::chats::get(&self.dialog_id);
                 let noted = waiting.clone();
-                // V07: in Autopilot, kept whole for the failure keys.
+                // V07: kept whole for the failure keys, and for comparing
+                // them with the code before the change's (before.rs).
                 let queued =
                     crate::command_tool::Queued::check(&self.dialog_id, overlay.as_deref())
                         .noting(move |note| {
                             *noted.lock().unwrap_or_else(|e| e.into_inner()) = Some(note)
                         })
-                        .whole(self.in_autopilot());
+                        .whole(true);
                 let run = crate::command_tool::run_command(
                     root.into(),
                     results[i].command.clone(),
@@ -1611,6 +1670,9 @@ impl Run {
                         }
                     }
                 };
+                // A failed check's whole output, when what fails on the code
+                // before the change can be told apart in it (before.rs).
+                let mut compare: Option<String> = None;
                 let r = &mut results[i];
                 r.note = outcome
                     .as_ref()
@@ -1624,11 +1686,7 @@ impl Run {
                         r.exit_code = Some(out.exit_code);
                         r.timed_out = Some(out.timed_out);
                         // Compilers print to either stream; keep both, in order of usefulness.
-                        let combined = [out.stderr.trim(), out.stdout.trim()]
-                            .into_iter()
-                            .filter(|s| !s.is_empty())
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                        let combined = out.text();
                         // A scoped run's count isn't the suite's (P3.7 compares them).
                         if r.kind == "test" && scoped != Some(i) {
                             r.tests_ran = tests_ran(&combined);
@@ -1637,22 +1695,27 @@ impl Run {
                             r.status = "passed";
                         } else {
                             r.status = "failed";
+                            let environment = (!out.timed_out)
+                                .then(|| environment_failure(out.exit_code, &combined))
+                                .flatten();
                             // V03: in Autopilot, whether its environment failed.
-                            if self.in_autopilot() && !out.timed_out {
-                                r.environment = environment_failure(out.exit_code, &combined);
+                            if self.in_autopilot() {
+                                r.environment = environment.clone();
                             }
                             // From the whole output, not the focused part nor
                             // the start and end kept to show: every failure
                             // counts when rounds are compared (V07).
-                            let whole = out.whole.as_ref().map(|(stdout, stderr)| {
-                                [stderr.trim(), stdout.trim()]
-                                    .into_iter()
-                                    .filter(|s| !s.is_empty())
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            });
-                            let keyed = whole.as_deref().unwrap_or(&combined);
-                            r.failures = Some(failure_keys(&r.kind, keyed, out.timed_out));
+                            let whole = out.whole_text().unwrap_or_else(|| combined.clone());
+                            r.failures = Some(failure_keys(
+                                &r.kind,
+                                &without_roots(&whole, &roots),
+                                out.timed_out,
+                            ));
+                            // A timeout says nothing of what it didn't reach,
+                            // and an environment's failure nothing of the code.
+                            if !out.timed_out && environment.is_none() {
+                                compare = Some(whole);
+                            }
                             let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
                             let output = if focused.is_empty() {
                                 "(no output)".to_string()
@@ -1686,6 +1749,32 @@ impl Run {
                     }
                 }
                 self.update_meta(record_id, progress(&results)).await?;
+                // What fails on the code before the change too isn't the
+                // change's: the check runs there, once a run (before.rs).
+                if let (Some(output), Some(project)) = (compare, self.code_before()) {
+                    let command = results[i].command.clone();
+                    if self.befores.get(&command).is_none() {
+                        let note = results[i]
+                            .note
+                            .replace(super::before::RUNNING_BEFORE.into());
+                        results[i].status = "running";
+                        self.update_meta(record_id, progress(&results)).await?;
+                        let before = self.check_before(&results[i], &project, &mut copy).await;
+                        // Stopped, it's asked again next time.
+                        if !self.stopped() {
+                            self.befores.insert(&command, before);
+                        }
+                        results[i].status = "failed";
+                        results[i].note = note;
+                    }
+                    super::before::set_apart(
+                        &mut results[i],
+                        self.befores.get(&command),
+                        &output,
+                        &roots,
+                    );
+                    self.update_meta(record_id, progress(&results)).await?;
+                }
                 // V06: in Autopilot, a whole test suite that timed out is
                 // recorded slow, not failed, and the tests of the changed files
                 // run in its place: theirs is the round's result.
@@ -1720,6 +1809,9 @@ impl Run {
                 }
             }
             i += 1;
+        }
+        if let Some(copy) = copy {
+            copy.discard().await;
         }
         Ok(results)
     }
@@ -1850,5 +1942,57 @@ mod tests {
             json!({ "kind": "lint", "command": "eslint .", "status": "passed" })
         );
         assert_eq!(meta["verification"]["maxRounds"], 3);
+    }
+
+    /// What fails on the code before the change too (before.rs) is told
+    /// apart: a check that fails only so isn't the agent's to fix, and of
+    /// one that fails on the change too, the agent gets its own failures.
+    /// The round counts only those, and both checks ran.
+    #[test]
+    fn the_report_sets_apart_what_fails_before_the_change() {
+        let check = |kind: &str, command: &str, status| CheckResult {
+            status,
+            ..CheckResult::pending(&ProjectCheck {
+                kind: kind.into(),
+                command: command.into(),
+                enabled: true,
+            })
+        };
+        let mut lint = check("lint", "yarn run lint", "preexisting");
+        lint.preexisting = Some(vec!["lint|src/a.ts|no-unused-vars|'x' is unused".into()]);
+        let mut tsc = check("typecheck", "yarn tsc --noEmit", "failed");
+        tsc.exit_code = Some(Some(2));
+        tsc.output = Some("src/old.ts(1,1): error TS2304\nsrc/new.ts(9,3): error TS2322".into());
+        let own = "typecheck|src/new.ts|TS2322|Type 'string' is not assignable to type 'number'.";
+        tsc.failures = Some(vec![own.into()]);
+        tsc.preexisting = Some(vec![
+            "typecheck|src/old.ts|TS2304|Cannot find name 'a'.".into()
+        ]);
+        let results = vec![tsc, lint];
+        let text = failure_report(&results, &["src/new.ts".into()], 1, Some(3), &[]);
+        assert!(text.contains("Your changes are not done yet: a check fails (attempt 1 of 3)."));
+        assert!(
+            text.contains("Failing only as on the code before your change, so not yours to fix: Lint (`yarn run lint`)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Some of its failures are there on the code before your change too: they aren't yours, so leave them. Yours:\n- src/new.ts|TS2322|Type 'string' is not assignable to type 'number'.\n"),
+            "{text}"
+        );
+        let round = round_failures(&results);
+        assert_eq!(round.keys.into_iter().collect::<Vec<_>>(), [own]);
+        assert_eq!(
+            round.ran.into_iter().collect::<Vec<_>>(),
+            ["lint", "typecheck"]
+        );
+        assert_eq!(
+            record("failed", 1, &results[1..], &[], None)["verification"]["checks"][0],
+            json!({
+                "kind": "lint",
+                "command": "yarn run lint",
+                "status": "preexisting",
+                "preexisting": ["lint|src/a.ts|no-unused-vars|'x' is unused"]
+            })
+        );
     }
 }

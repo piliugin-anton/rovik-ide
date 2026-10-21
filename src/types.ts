@@ -290,7 +290,10 @@ export interface ToolMeta {
     /** Autopilot, Thorough: the planners' plan submitted for the run, or why none was (T01). */
     | 'thoroughPlan'
     /** Autopilot: what the task's report is written from (S09). */
-    | 'report';
+    | 'report'
+    /** Checks that fail only as on the code before the change: whether fixing
+     * them is its task, the agent decides (agent_run/before.rs). */
+    | 'preexisting';
   /** Dismiss the open checklist: don't carry it into the next request. */
   checklistClosed?: boolean;
   /** The checklist carry/continue note this harness message refers to. */

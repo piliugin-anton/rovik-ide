@@ -369,6 +369,9 @@ pub struct Run {
     /// The last round asked the agent about changes that weaken the checks
     /// (R05): the next round's new failures aren't a regression.
     pub(super) asked_integrity: bool,
+    /// How the checks that failed went on the code before the change, by
+    /// command: each runs there once a run (before.rs).
+    pub(super) befores: super::before::Befores,
     /// G02: the run's tool calls under way, for each one's `tool` line in
     /// the agent log as its result is stored.
     pub(super) calls: CallClock,
@@ -1216,6 +1219,7 @@ impl Run {
             rolled_back_attempts: Vec::new(),
             bonus_rounds: 0,
             asked_integrity: false,
+            befores: Default::default(),
             calls: CallClock::default(),
         }
     }

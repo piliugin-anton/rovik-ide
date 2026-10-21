@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  beforeChangeLine,
   causeLine,
   describeFailure,
+  failsAsBefore,
   progressLine,
   repairHeadline,
   reviewAfterGreenLine,
@@ -52,6 +54,34 @@ test('the round’s progress in one line', () => {
     }),
     '1 fixed · 1 new · 1 test ran (4 before)'
   );
+});
+
+test('what fails on the code before the change too is told apart', () => {
+  const check = {
+    kind: 'lint' as const,
+    command: 'yarn run lint',
+    status: 'failed' as const,
+  };
+  assert.equal(beforeChangeLine(check), null);
+  assert.equal(
+    beforeChangeLine({ ...check, preexisting: ['lint|src/a.ts|r|m'] }),
+    'One of its failures is there on the code before the change too: not the change’s, so it wasn’t sent to the agent.'
+  );
+  assert.equal(
+    beforeChangeLine({ ...check, preexisting: ['lint|a|r|m', 'lint|b|r|m'] }),
+    '2 of its failures are there on the code before the change too: not the change’s, so they weren’t sent to the agent.'
+  );
+  assert.match(
+    beforeChangeLine({ ...check, preexisting: ['lint|a|r|m', 'lint|and 80 more'] }) ?? '',
+    /^Many of its failures/
+  );
+  const preexisting = { ...check, status: 'preexisting' as const, preexisting: ['lint|a|r|m'] };
+  assert.equal(
+    beforeChangeLine(preexisting),
+    'It fails only as it does on the code before the change: not the change’s to fix.'
+  );
+  assert.equal(failsAsBefore({ checks: [check] }), false);
+  assert.equal(failsAsBefore({ checks: [check, preexisting] }), true);
 });
 
 test('failure keys read as words', () => {

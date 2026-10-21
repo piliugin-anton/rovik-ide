@@ -984,6 +984,128 @@ async fn checks_failing_on_the_projects_merged_changes_go_back_to_the_chat() {
     assert_eq!(h.file("a.txt").as_deref(), Some("chat\n2\n3\n4\nGOOD\n"));
 }
 
+/// The project's check fails before the chat changes anything (an error
+/// in `src/old.ts`, as React Native apps often have): the chat's failures
+/// are told apart from it by running the check on the project as it is
+/// (before.rs). Its own error goes back to it alone; once that's fixed, the
+/// check fails only as before. The agent hears of that, in case fixing it
+/// is its task; it isn't, it finishes, and the run is verified and lands.
+/// Needs FUSE (skipped without it).
+#[tokio::test]
+async fn a_check_failing_before_the_change_too_holds_nothing_back() {
+    if !crate::vfs::mount_works() {
+        return;
+    }
+    let check = "status=0\nfor f in src/*.ts; do\n  if grep -q TODO \"$f\"; then echo \"$f(1,1): error TS1000: A TODO is left.\"; status=1; fi\ndone\nexit $status\n";
+    let mut h = harness(&[
+        ("check.sh", check),
+        ("src/old.ts", "// TODO: someday\n"),
+        ("src/a.ts", "export const a = 0;\n"),
+    ])
+    .await;
+    h.isolate().await;
+    std::fs::create_dir_all(&h.core.paths.config_dir).unwrap();
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.to_string_lossy().into_owned(),
+        json!({ "checks": [{ "kind": "typecheck", "command": "sh check.sh", "enabled": true }] }),
+    )
+    .unwrap();
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "src/a.ts", "content": "export const a = 1; // TODO\n" }),
+        },
+        Reply::Text("Done."),
+        Reply::Call {
+            id: "w2",
+            name: "write",
+            args: json!({ "path": "src/a.ts", "content": "export const a = 1;\n" }),
+        },
+        Reply::Text("Fixed."),
+        Reply::Text("The TODO in src/old.ts was there before: I left it."),
+    ])
+    .await;
+    let mut request = h.request(
+        &url,
+        Harness::send("Set a to 1"),
+        Permissions {
+            allow_any_command: true,
+            checklist: ChecklistMode::Off,
+            ..Permissions::default()
+        },
+    );
+    request.isolate = Some(true);
+    h.start(request).await;
+    assert_eq!(h.run_end_within(Duration::from_secs(60)).await, "verified");
+
+    let messages = h.messages().await;
+    let records: Vec<&Value> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("verification"))
+        .collect();
+    assert_eq!(records.len(), 2, "{records:#?}");
+    let first = &records[0]["checks"][0];
+    assert_eq!(records[0]["status"], "failed");
+    assert_eq!(first["status"], "failed");
+    assert_eq!(
+        first["failures"],
+        json!(["typecheck|src/a.ts|TS1000|A TODO is left."])
+    );
+    assert_eq!(
+        first["preexisting"],
+        json!(["typecheck|src/old.ts|TS1000|A TODO is left."])
+    );
+    assert_eq!(records[1]["status"], "passed");
+    assert_eq!(records[1]["checks"][0]["status"], "preexisting");
+    assert_eq!(records[1]["preexistingTold"], true);
+    let notes = |kind: &str| {
+        harness_notes(&messages)
+            .into_iter()
+            .filter(|m| m.meta.as_ref().is_some_and(|x| x["harness"] == kind))
+            .collect::<Vec<_>>()
+    };
+    let told = notes("preexisting");
+    assert_eq!(told.len(), 1);
+    assert!(
+        told[0]
+            .content
+            .contains("Nothing your change did fails the checks.")
+            && told[0]
+                .content
+                .contains("- src/old.ts|TS1000|A TODO is left.")
+            && told[0]
+                .content
+                .contains("If it isn't, finish now without changing anything"),
+        "{}",
+        told[0].content
+    );
+    let reports = notes("verification");
+    assert_eq!(reports.len(), 1);
+    assert!(
+        reports[0].content.contains(
+            "they aren't yours, so leave them. Yours:\n- src/a.ts|TS1000|A TODO is left."
+        ),
+        "{}",
+        reports[0].content
+    );
+    // It landed; the project's own failure is as it was.
+    assert_eq!(h.file("src/a.ts").as_deref(), Some("export const a = 1;\n"));
+    assert_eq!(h.file("src/old.ts").as_deref(), Some("// TODO: someday\n"));
+    // The copy of the code before the change is gone.
+    let overlays = h._dir.0.join("data").join("overlays");
+    let left: Vec<String> = std::fs::read_dir(&overlays)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with(crate::overlay::chats::SCRATCH_PREFIX))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+}
+
 /// A conflict found while the chat runs goes to it: markers in its file and
 /// a note; it combines both changes and they land. Needs FUSE
 /// (skipped without it).

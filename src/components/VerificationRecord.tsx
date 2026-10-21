@@ -9,9 +9,11 @@ import { plural } from '../lib/textUtils';
 import { liveLabel, liveSubagent } from '../lib/subagents';
 import {
   attemptText,
+  beforeChangeLine,
   causeLine,
   describeFailure,
   environmentHeadline,
+  failsAsBefore,
   progressLine,
   repairHeadline,
   reviewAfterGreenLine,
@@ -42,7 +44,9 @@ function headline(meta: VerificationMeta, interrupted: boolean): string {
     case 'running':
       return 'Checking the changes…';
     case 'passed':
-      return 'Checks passed.';
+      return failsAsBefore(meta)
+        ? 'Nothing new fails: what still fails, fails on the code before the change too.'
+        : 'Checks passed.';
     case 'failed':
       if (meta.environment) return environmentHeadline(meta.environment);
       if (meta.repair?.status === 'recheck')
@@ -115,6 +119,12 @@ function StatusIcon(props: { status: CheckResult['status'] }) {
       <Match when={props.status === 'running'}>
         <svg {...common} class="verify-spin">
           <path d="M13 8a5 5 0 1 1-5-5" />
+        </svg>
+      </Match>
+      {/* Fails as it did before the change: the same. */}
+      <Match when={props.status === 'preexisting'}>
+        <svg {...common}>
+          <path d="M4.5 6.5h7M4.5 9.5h7" />
         </svg>
       </Match>
     </Switch>
@@ -302,7 +312,9 @@ export default function VerificationRecord(props: {
             {(check) => (
               <li class={`chat-verify-check ${shownStatus(check, interrupted())}`}>
                 <Show
-                  when={check.status === 'failed' && check.output}
+                  when={
+                    (check.status === 'failed' || check.status === 'preexisting') && check.output
+                  }
                   fallback={
                     <div class="chat-verify-row">
                       <StatusIcon status={shownStatus(check, interrupted())} />
@@ -315,7 +327,13 @@ export default function VerificationRecord(props: {
                             ? `${check.status}: ${check.reason}`
                             : check.status === 'running' && check.note
                               ? check.note
-                              : [seconds(check.durationMs), check.note].filter(Boolean).join(' · ')}
+                              : [
+                                  check.status === 'preexisting' && 'fails as before the change',
+                                  seconds(check.durationMs),
+                                  check.note,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
                       </span>
                     </div>
                   }
@@ -326,15 +344,20 @@ export default function VerificationRecord(props: {
                       <span class="chat-verify-kind">{CHECK_LABEL[check.kind]}</span>
                       <code class="chat-verify-command">{check.command}</code>
                       <span class="chat-verify-note">
-                        {check.timedOut
-                          ? 'timed out'
-                          : check.exitCode != null
-                            ? `exit ${check.exitCode}`
-                            : ''}
+                        {check.status === 'preexisting'
+                          ? 'fails as before the change'
+                          : check.timedOut
+                            ? 'timed out'
+                            : check.exitCode != null
+                              ? `exit ${check.exitCode}`
+                              : ''}
                         {check.durationMs !== undefined ? `, ${seconds(check.durationMs)}` : ''}
                         {check.note ? ` · ${check.note}` : ''}
                       </span>
                     </summary>
+                    <Show when={beforeChangeLine(check)}>
+                      {(line) => <div class="chat-verify-where">{line()}</div>}
+                    </Show>
                     <Show when={check.errorFiles}>
                       {(files) => (
                         <div class="chat-verify-where">
@@ -362,6 +385,12 @@ export default function VerificationRecord(props: {
 
       <Show when={props.meta.status !== 'running' && progressLine(props.meta)}>
         {(line) => <div class="chat-verify-progress">{line()}</div>}
+      </Show>
+
+      <Show when={props.meta.preexistingTold}>
+        <div class="chat-verify-progress">
+          The agent was told of them, in case fixing them is what it was asked to do.
+        </div>
       </Show>
 
       <Show when={props.meta.rolledBack}>

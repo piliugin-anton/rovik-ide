@@ -14,6 +14,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
+pub mod node;
 pub(crate) mod workspaces;
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -341,36 +342,18 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             "JavaScript"
         },
     );
-    for (dep, name) in [
-        ("react", "React"),
-        ("solid-js", "Solid"),
-        ("vue", "Vue"),
-        ("svelte", "Svelte"),
-        ("next", "Next.js"),
-        ("vite", "Vite"),
-        ("@tauri-apps/api", "Tauri"),
-        ("express", "Express"),
-    ] {
+    for (dep, name) in node::STACKS {
         if has_dep(dep) {
             push_stack(profile, name);
         }
     }
 
     let scripts = pkg.get("scripts").and_then(|s| s.as_object());
-    let script = |names: &[&str]| -> Option<String> {
-        let scripts = scripts?;
-        names
-            .iter()
-            .find(|n| {
-                scripts
-                    .get(**n)
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|v| !v.trim().is_empty())
-            })
-            .map(|n| n.to_string())
-    };
+    let body = |name: &str| -> Option<String> { scripts?.get(name)?.as_str().map(str::to_string) };
+    // The script that runs `kind`'s check (node.rs).
+    let script = |kind: &str| node::pick(node::check_scripts(kind), body);
 
-    match script(&["typecheck", "type-check", "check-types", "types", "tsc"]) {
+    match script("typecheck") {
         Some(name) => push_check(
             profile,
             "typecheck",
@@ -383,7 +366,7 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             }
         }
     }
-    if let Some(name) = script(&["lint"]) {
+    if let Some(name) = script("lint") {
         push_check(
             profile,
             "lint",
@@ -391,22 +374,19 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
             format!("package.json scripts.{name}"),
         );
     }
-    if let Some(name) = script(&["test"]) {
-        let body = scripts
-            .and_then(|s| s.get(&name))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+    if let Some(name) = script("test") {
+        let body = body(&name).unwrap_or_default();
         // npm init's placeholder fails on purpose.
         if !body.contains("no test specified") {
             push_check(
                 profile,
                 "test",
-                run(&name),
+                node::run_once(run(&name), &body, pm),
                 format!("package.json scripts.{name}"),
             );
         }
     }
-    if let Some(name) = script(&["build"]) {
+    if let Some(name) = script("build") {
         push_check(
             profile,
             "build",
@@ -442,16 +422,7 @@ fn detect_node(root: &Path, profile: &mut ProjectProfile) {
     push_stack(profile, "Workspaces");
 
     // For each kind, find the most common script name for it across members.
-    let candidates: &[(&str, &[&str])] = &[
-        (
-            "typecheck",
-            &["typecheck", "type-check", "check-types", "types", "tsc"],
-        ),
-        ("lint", &["lint"]),
-        ("test", &["test"]),
-        ("build", &["build"]),
-    ];
-    for (kind, names) in candidates {
+    for (kind, names) in node::CHECK_SCRIPTS {
         if profile.checks.iter().any(|c| c.kind == *kind) {
             continue;
         }
@@ -922,6 +893,58 @@ mod tests {
                 "typecheck: pnpm run typecheck",
                 "lint: pnpm run lint",
                 "test: pnpm run test"
+            ]
+        );
+    }
+
+    /// React Native's template, with Yarn: the type check from its
+    /// tsconfig.json, its lint and its tests, and the stack says so.
+    #[test]
+    fn a_react_native_app() {
+        let dir = project(&[
+            (
+                "package.json",
+                r#"{"scripts":{"android":"react-native run-android","lint":"eslint .","start":"react-native start","test":"jest"},
+                    "dependencies":{"react":"19","react-native":"0.88"},"devDependencies":{"typescript":"6","jest":"29"}}"#,
+            ),
+            ("yarn.lock", ""),
+            (
+                "tsconfig.json",
+                r#"{"extends":"@react-native/typescript-config","include":["**/*.ts","**/*.tsx"]}"#,
+            ),
+        ]);
+        let p = detect(&dir);
+        assert_eq!(p.stack, ["TypeScript", "React", "React Native"]);
+        assert_eq!(
+            commands(&p),
+            [
+                "typecheck: yarn tsc --noEmit",
+                "lint: yarn run lint",
+                "test: yarn run test"
+            ]
+        );
+    }
+
+    /// An Expo app from the SDK 50 and 51 templates: its tests ran Jest in
+    /// watch mode, which never ends; the check runs them once.
+    #[test]
+    fn an_expo_apps_watching_tests_run_once() {
+        let dir = project(&[
+            (
+                "package.json",
+                r#"{"scripts":{"start":"expo start","test":"jest --watchAll","lint":"expo lint"},
+                    "dependencies":{"expo":"~51.0.0","react":"18","react-native":"0.74"},"jest":{"preset":"jest-expo"}}"#,
+            ),
+            ("tsconfig.json", r#"{"extends":"expo/tsconfig.base"}"#),
+        ]);
+        let p = detect(&dir);
+        assert_eq!(p.stack, ["TypeScript", "React", "React Native", "Expo"]);
+        assert_eq!(
+            commands(&p),
+            [
+                "typecheck: npx tsc --noEmit",
+                "lint: npm run lint",
+                "test: npm test -- --watchAll=false"
             ]
         );
     }
