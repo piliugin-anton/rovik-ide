@@ -42,7 +42,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   sharing its chats too): opening it again brings that window to the front
   (see [Several windows](#several-windows)).
 - A built-in terminal that uses your own shell, on this computer or on a
-  connected [cloud host](#a-terminal-on-a-cloud-host).
+  connected [cloud host](#a-terminal-on-a-cloud-host). With bash before 5.3,
+  a command line longer than the terminal is wide stays on one row that
+  scrolls sideways: bash garbles a wrapped one taller than the terminal.
+  `set horizontal-scroll-mode off` in `~/.inputrc` wraps it again.
 - A Git panel: commit, branches, stash, history, pull and push, and a
   rebase onto any local or remote branch, found by searching. Merge
   conflicts are resolved in a side-by-side conflict resolver: the
