@@ -71,6 +71,12 @@ pub fn held_here() -> Vec<String> {
     HOLDS.held_here()
 }
 
+/// How many chats other processes are at work on: what closing every
+/// Rovik window (an update's installer, on Windows) would stop.
+pub fn at_work_elsewhere() -> usize {
+    HOLDS.at_work_elsewhere()
+}
+
 /// A deleted chat: its lock goes.
 pub fn forget(chat: &str) {
     HOLDS.forget(chat)
@@ -123,6 +129,28 @@ impl Holds {
     pub fn held_here(&self) -> Vec<String> {
         let held = self.held.lock().unwrap_or_else(|e| e.into_inner());
         held.keys().cloned().collect()
+    }
+
+    pub fn at_work_elsewhere(&self) -> usize {
+        let Some(dir) = self.dir.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return 0;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return 0;
+        };
+        // Looked at under the count, as `elsewhere` does: this process's
+        // own locks would look held elsewhere to a second look from here.
+        let held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let mine: std::collections::HashSet<String> = held.keys().map(|c| file_name(c)).collect();
+        entries
+            .flatten()
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".lock") && !mine.contains(name.as_ref())
+            })
+            .filter(|entry| crate::os_lock::held_elsewhere(&entry.path()))
+            .count()
     }
 
     fn forget(&self, chat: &str) {
@@ -219,6 +247,24 @@ mod tests {
             .filter(|e| is_lock(&e.path()))
             .collect();
         assert_eq!(left.len(), 1);
+    }
+
+    #[test]
+    fn the_chats_at_work_in_other_processes_are_counted() {
+        let (a, b, _) = two("elsewhere");
+        assert_eq!(b.at_work_elsewhere(), 0);
+        let first = Holds::take(&a, "chat-1").unwrap();
+        let second = Holds::take(&a, "chat-2").unwrap();
+        let own = Holds::take(&b, "chat-3").unwrap();
+        assert_eq!(b.at_work_elsewhere(), 2, "A's two, not B's own");
+        assert_eq!(a.at_work_elsewhere(), 1, "B's one");
+        drop(first);
+        assert_eq!(b.at_work_elsewhere(), 1, "a chat let go isn't at work");
+        drop((second, own));
+        assert_eq!(a.at_work_elsewhere(), 0);
+        assert_eq!(b.at_work_elsewhere(), 0);
+        // Without a folder there's no other process to see.
+        assert_eq!(Holds::default().at_work_elsewhere(), 0);
     }
 
     #[test]

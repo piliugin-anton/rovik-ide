@@ -25,6 +25,7 @@ import { vfsStatus, vfsSummary } from '../lib/virtualFiles';
 import { hostsSummary, listHosts } from '../lib/hosts';
 import { networkSettings, networkSummary } from '../lib/network';
 import { onWindows, wslStatus, wslSummary } from '../lib/wsl';
+import { checkingForUpdates, updateInfo, updatesSummary, updateStatus } from '../lib/updates';
 
 interface SettingsMenuProps {
   /** The open project, for its group; none without a project. */
@@ -189,6 +190,12 @@ export default function SettingsMenu(props: SettingsMenuProps) {
           label="Cloud hosts"
           about="Servers your chats can move to and keep running on, over SSH, with what they may do there while you’re away."
           state={hosts() ? hostsSummary(hosts()!) : undefined}
+        />
+        <Item
+          page="updates"
+          label="Updates"
+          about="New versions of Rovik: whether it looks for one every 30 minutes, and installing it here and on your cloud hosts."
+          state={updatesSummary(updateInfo(), updateStatus(), checkingForUpdates())}
         />
       </Group>
 

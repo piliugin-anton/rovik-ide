@@ -23,6 +23,7 @@ mod remote_chats;
 mod shared_state;
 mod terminal;
 mod typings;
+mod updates;
 mod util;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -37,6 +38,10 @@ pub fn run() {
     init_log();
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::new().build())
+        // Rovik's own updates (updates.rs): its commands only, none of the
+        // plugin's, which the window has no permission for.
+        .plugin(updates::plugin())
+        .manage(updates::Updates::default())
         .manage(terminal::terminals())
         .manage(lsp::servers())
         .manage(chat_request::ChatRequests::default())
@@ -409,20 +414,36 @@ pub fn run() {
             commands::clm::clm_tool_write,
             commands::clm::clm_recall_hint,
             open_url::open_url,
+            updates::update_info,
+            updates::update_check,
+            updates::update_download,
+            updates::update_install,
+            updates::update_restart,
+            updates::update_at_work,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                if let Some(core) = app.try_state::<Core>() {
-                    rt::block_on(core.shutdown());
-                }
-                // Only once the core is done with the project's chats.
-                if let Some(instances) = app.try_state::<Instances>() {
-                    instances.release();
-                }
+                before_exit(app);
+                // An update's restart (updates.rs), once all that's done.
+                updates::relaunch(app);
             }
         });
+}
+
+/// What the app does as it ends: the core done with the project's chats,
+/// then the project let go of, for another window or the next start. Also
+/// before an update's installer ends the process at once (Windows), on a
+/// thread off the runtime's.
+fn before_exit(app: &tauri::AppHandle) {
+    if let Some(core) = app.try_state::<Core>() {
+        rt::block_on(core.shutdown());
+    }
+    // Only once the core is done with the project's chats.
+    if let Some(instances) = app.try_state::<Instances>() {
+        instances.release();
+    }
 }
 
 /// Every window restores the one place saved (window-state): one started

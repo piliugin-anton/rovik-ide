@@ -1,6 +1,7 @@
 # Rovik's release key: the public key `npx tauri signer generate` wrote to
-# its .pub file, pasted on one line below this comment. The app's updater
-# takes the same key (plugins.updater.pubkey in tauri.conf.json).
+# its .pub file, pasted on one line below this comment. The app's own
+# updates are checked with it too (src/updates.rs); tauri.conf.json's
+# plugins.updater.pubkey is a copy, which a test keeps the same.
 #
 # Each release's daemon builds and their SHA256SUMS are signed with its
 # private half, which stays in the repository's secrets

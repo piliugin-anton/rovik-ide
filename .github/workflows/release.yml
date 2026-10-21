@@ -3,8 +3,12 @@
 # the app is built for each platform and the daemon for each CPU, signed
 # with the release key and published on the version's GitHub release:
 #
-# - the app's bundles (tauri-action), with the updater's latest.json once
-#   tauri.conf.json makes updater artifacts (bundle.createUpdaterArtifacts);
+# - the app's bundles (tauri-action), each signed for the app's updates
+#   (src-tauri/tauri.updater.conf.json turns that on here alone: a build
+#   without the key, a developer's or the end-to-end runs', makes none),
+#   and the updater's latest.json, which the publish job writes from their
+#   signatures (scripts/updater-manifest.mjs) once every platform's are on
+#   the release;
 # - rovik-agentd-<version>-<cpu> for x86_64 and aarch64, static builds
 #   for any Linux (scripts/build-agentd.sh), gzipped (.gz, a tenth of
 #   their size), each with the build's .sig, and their SHA256SUMS with its
@@ -275,7 +279,12 @@ jobs:
           # make one; the tag names the updater's download links.
           releaseId: ${{ needs.version.outputs.release }}
           tagName: ${{ needs.version.outputs.tag }}
-          args: ${{ matrix.args }}
+          # The updater's bundles too, each signed (createUpdaterArtifacts).
+          args: ${{ matrix.args }} --config src-tauri/tauri.updater.conf.json
+          # The publish job writes latest.json: each job adding its platform
+          # to the file on the release, as tauri-action does, loses one when
+          # two jobs end at once.
+          includeUpdaterJson: false
 
   publish:
     name: Sign the daemon, and publish
@@ -316,10 +325,36 @@ jobs:
             gzip -9 "$build"
           done
           ls -l
-      - name: Attach them, and publish the release
+      - name: Attach them
         env:
           GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" agentd/*.gz agentd/*.sig agentd/SHA256SUMS --clobber
+      # What the app's updates read (src-tauri/src/updates.rs): each kind of
+      # app's bundle on the release, with its signature. Every platform's
+      # are there by now; one missing stops the release, whose apps there
+      # would be told it has nothing for them.
+      - name: Write the updater's latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          gh release upload "$TAG" agentd/*.gz agentd/*.sig agentd/SHA256SUMS --clobber
-          # Published, it makes its tag on the commit it was built from.
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE" -F draft=false --jq .html_url
+          mkdir -p updater/sigs
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE/assets" --paginate \
+            --jq '.[] | "\(.id) \(.name)"' > updater/assets
+          cut -d' ' -f2- updater/assets > updater/assets.txt
+          # The signatures by their id: a draft has no tag to find it by yet.
+          { grep '\.sig$' updater/assets || true; } | while read -r id name; do
+            gh api "repos/$GITHUB_REPOSITORY/releases/assets/$id" \
+              -H 'Accept: application/octet-stream' > "updater/sigs/$name"
+          done
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE" --jq .body > updater/notes.md
+          node scripts/updater-manifest.mjs --version "$VERSION" --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY" --assets updater/assets.txt --sigs updater/sigs \
+            --notes updater/notes.md \
+            --expect linux-x86_64,windows-x86_64,darwin-aarch64,darwin-x86_64 > updater/latest.json
+          gh release upload "$TAG" updater/latest.json --clobber
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Published, it makes its tag on the commit it was built from.
+        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE" -F draft=false --jq .html_url

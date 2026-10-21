@@ -689,6 +689,47 @@ async fn a_saved_http_proxy_carries_requests_and_signs_in() {
     );
 }
 
+/// A builder made elsewhere (the app updater's own) goes the way the
+/// downloads go once `configure` has set it, through the saved proxy and
+/// signed in to it, and keeps what it was made with.
+#[tokio::test]
+async fn a_builder_made_elsewhere_goes_the_way_the_downloads_go() {
+    let (proxy_port, heads) = http_proxy("through the proxy").await;
+    let net = Net::default();
+    net.save(
+        through(vec![proxy(
+            "p",
+            ProxyKind::Http,
+            "127.0.0.1",
+            proxy_port,
+            Some("alice"),
+        )]),
+        &passwords(&[("p", Some("s3cret"))]),
+    )
+    .unwrap();
+    // As `ready` does before the updater's closure calls `configure`.
+    net.current().await;
+
+    let theirs = reqwest::Client::builder().user_agent("their-updater/2");
+    let client = net.configure(theirs).build().unwrap();
+    let response = client
+        .get("http://releases.invalid/latest.json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.text().await.unwrap(), "through the proxy");
+    let head = heads.lock().unwrap()[0].clone();
+    assert!(
+        head.starts_with("GET http://releases.invalid/latest.json HTTP/1.1\r\n"),
+        "{head}"
+    );
+    assert_eq!(
+        header(&head, "proxy-authorization"),
+        Some(tunnel::basic("alice", "s3cret").as_str())
+    );
+    assert_eq!(header(&head, "user-agent"), Some("their-updater/2"));
+}
+
 /// A SOCKS5 proxy is given the names to look up, and signed in to.
 #[tokio::test]
 async fn a_saved_socks5_proxy_carries_requests_by_name() {

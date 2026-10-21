@@ -75,5 +75,17 @@
         "postRemoveScript": "crates/rovik-core/linux/bwrap-apparmor-remove.sh"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDOTQ2MzgwNDM2RjM3QTYKUldTbU4yOURnR09VZkdXKzgwUVduWXh0bWtYRXVRZFZWdXAweC9aT3RMTE1EcWs4ZUpKOG1rbTcK",
+      "endpoints": [
+        "https://github.com/piliugin-anton/rovik-ide/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
