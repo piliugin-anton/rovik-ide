@@ -1379,9 +1379,11 @@ async function run() {
     await step('terminal: a paste too tall stays on one row until it fits', async () => {
       await openTerminal();
       await click('.xterm-screen');
-      await typeKeys(
-        'clear; echo "e2e-shell=${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} $(stty size)"'
-      );
+      // A key at a time, as typed: keys sent at once can reach the shell in
+      // another order (each is a write of its own).
+      for (const key of 'clear; echo "e2e-shell=${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} $(stty size)"') {
+        await typeKeys(key);
+      }
       await keys(Keys.ENTER);
       // Its answer, a line of its own: not the typed line.
       const answer = async () =>
