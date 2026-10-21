@@ -26,7 +26,7 @@ import {
   modelUriFor,
   setActiveTypesFile,
 } from '../lib/intellisense';
-import { touchModel } from '../lib/models';
+import { replaceKeepingUndo, touchModel } from '../lib/models';
 import { ensureOutlineIntelliSense } from '../lib/outlineIntelliSense';
 import { ensureDiagnosticsReporting } from '../lib/diagnostics';
 import {
@@ -71,22 +71,6 @@ interface EditorProps {
   /** Read-only preview (e.g. stashed content): no edits, with a message. */
   readOnly?: Accessor<boolean>;
   readOnlyMessage?: string;
-}
-
-/**
- * Puts outside text (an agent's write, a revert, a reload from disk) into
- * the model as one undoable edit. `setValue` would also clear the undo
- * history, so Ctrl+Z could no longer reach what was typed before.
- */
-function replaceKeepingUndo(model: monaco.editor.ITextModel, text: string) {
-  model.pushStackElement();
-  // Line endings come with the text, as setValue would take them.
-  const crlf = text.includes('\r\n');
-  if (model.getEOL() !== (crlf ? '\r\n' : '\n')) {
-    model.pushEOL(crlf ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
-  }
-  model.pushEditOperations([], [{ range: model.getFullModelRange(), text }], () => null);
-  model.pushStackElement();
 }
 
 export default function Editor(props: EditorProps) {

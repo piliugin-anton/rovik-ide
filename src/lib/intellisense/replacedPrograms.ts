@@ -22,15 +22,19 @@ interface Service {
 
 /**
  * The language service, with each program it replaces emptied once the
- * call that replaced it returns.
+ * call that replaced it returns. `onNewProgram` is told of each new one.
  */
-export function releasingReplacedPrograms<T extends Service>(service: T): T {
+export function releasingReplacedPrograms<T extends Service>(
+  service: T,
+  onNewProgram: () => void = () => {}
+): T {
   let current: object | undefined;
   const release = () => {
     const now = service.getCurrentProgram();
     if (now === current) return;
     if (current) emptyProgram(current);
     current = now;
+    if (now) onNewProgram();
   };
   const methods = new Map<PropertyKey, (...args: unknown[]) => unknown>();
   return new Proxy(service, {

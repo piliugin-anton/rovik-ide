@@ -1,10 +1,12 @@
 //! The project's file watcher: what changes on disk reaches the file tree
 //! and the Git tab as `fs-changes` and `git-changed` events, each path
-//! once per burst, git's own files and ignored ones left out.
+//! once per burst, in the order the changes happened, git's own files and
+//! ignored ones left out.
 
 use super::{build_gitignore, WatcherState};
 use crate::util::ErrText;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use notify::event::ModifyKind;
 use notify::{self, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -38,6 +40,16 @@ impl WatchOp {
             _ => None,
         }
     }
+}
+
+/// Whether an event can put a folder at its path: made there, or moved
+/// there (a rename's new name; where a platform doesn't say which name is
+/// which, both come as a rename of `Any` kind).
+fn may_bring_folder(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+    )
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, Hash)]
@@ -202,7 +214,7 @@ impl WatchBatch {
         self.events.retain(|payload, seen| {
             let due = overdue || now.duration_since(*seen) >= WATCH_DEBOUNCE;
             if due {
-                ready.push(payload.clone());
+                ready.push((*seen, payload.clone()));
             }
             !due
         });
@@ -210,11 +222,54 @@ impl WatchBatch {
             *self = WatchBatch::default();
         }
         if ready.is_empty() {
-            WatchFlush::Nothing
-        } else {
-            WatchFlush::Events(ready)
+            return WatchFlush::Nothing;
+        }
+        // In the order they happened (each as last seen), not the map's:
+        // a file removed and written again (git checkout, some editors'
+        // saves) came out in either order, and whoever took the last word
+        // on the path (IntelliSense) dropped a file that was there.
+        ready.sort_by_key(|(seen, _)| *seen);
+        WatchFlush::Events(ready.into_iter().map(|(_, payload)| payload).collect())
+    }
+}
+
+/// What's in `dir`, a folder that just appeared, as (path, is a folder):
+/// at most `limit` entries, never through a link, ignored ones (and what's
+/// in them) left out. inotify reports what happens in a new folder only
+/// once it watches the folder, a moment after the folder is made: what a
+/// landing, an unpacked archive or `mkdir -p x && echo > x/y` writes
+/// straight into it went unreported, and so did all of a folder moved in.
+fn folder_contents(
+    root: &Path,
+    ignores: &WatchIgnores,
+    dir: &Path,
+    limit: usize,
+) -> Vec<(PathBuf, bool)> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if found.len() >= limit {
+                return found;
+            }
+            // file_type() doesn't follow links: a linked folder is an entry.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if watch_path_kind(root, ignores, &path) != WatchPath::Visible {
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(path.clone());
+            }
+            found.push((path, file_type.is_dir()));
         }
     }
+    found
 }
 
 /// Bounds the fallback walk below: past this many watched dirs we stop
@@ -441,8 +496,9 @@ impl Watch {
             let Some(operation) = WatchOp::of(&event.kind) else {
                 continue;
             };
+            let brings_folder = may_bring_folder(&event.kind);
             for path in event.paths {
-                self.saw(&operation, path);
+                self.saw(&operation, path, brings_folder);
             }
         }
         false
@@ -450,8 +506,9 @@ impl Watch {
 
     /// One changed path. Git's own files and ignored paths (target/,
     /// node_modules/) aren't the user's files: reporting each one flooded
-    /// the app.
-    fn saw(&mut self, operation: &WatchOp, path: PathBuf) {
+    /// the app. `brings_folder`: the change can put a folder there (made,
+    /// or moved in), whose contents are then reported too.
+    fn saw(&mut self, operation: &WatchOp, path: PathBuf, brings_folder: bool) {
         match watch_path_kind(&self.root, &self.ignores, &path) {
             WatchPath::Git => {
                 self.git_touched = Some(Instant::now());
@@ -478,10 +535,11 @@ impl Watch {
             }
         }
         let is_dir = path.is_dir();
+        let appeared = brings_folder && is_dir && path.starts_with(&self.root);
         // A new dir isn't covered when the initial watch fell back to
         // per-dir watches: cover it now, best effort. (Under a recursive
-        // watcher this re-watch is harmless.)
-        if *operation == WatchOp::Create && is_dir && path.starts_with(&self.root) {
+        // watcher this re-watch is harmless.) Nor is one moved in.
+        if appeared {
             watch_new_dir(&state, &path);
         }
         let payload = FileWatchPayload {
@@ -490,6 +548,21 @@ impl Watch {
             is_dir,
         };
         self.batch.add(payload, Instant::now());
+        // What it holds already, which no event will report (watched first,
+        // so whatever comes after this look is reported by itself). Past a
+        // flush's worth, the batch turns into "re-check everything".
+        if appeared {
+            for (inner, inner_is_dir) in
+                folder_contents(&self.root, &self.ignores, &path, MAX_EVENTS_PER_FLUSH + 1)
+            {
+                let payload = FileWatchPayload {
+                    path: inner.to_string_lossy().into_owned(),
+                    operation: WatchOp::Create,
+                    is_dir: inner_is_dir,
+                };
+                self.batch.add(payload, Instant::now());
+            }
+        }
     }
 
     /// What's due, reported. A flood is one "re-check everything"
@@ -647,6 +720,105 @@ mod tests {
             (i * 200 + 50 >= 2_000, events),
             (true, vec![change("out.js")])
         );
+    }
+
+    #[test]
+    fn a_burst_is_reported_in_the_order_it_happened() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let op = |path: &str, operation: WatchOp| FileWatchPayload {
+            path: path.into(),
+            operation,
+            is_dir: false,
+        };
+        let mut b = WatchBatch::default();
+        // git checkout: the file removed, then written again...
+        b.add(op("a.ts", WatchOp::Remove), ms(0));
+        b.add(op("b.ts", WatchOp::Modify), ms(5));
+        b.add(op("a.ts", WatchOp::Create), ms(10));
+        b.add(op("a.ts", WatchOp::Modify), ms(12));
+        // ...and another written, then removed.
+        b.add(op("c.ts", WatchOp::Create), ms(14));
+        b.add(op("c.ts", WatchOp::Remove), ms(20));
+        // Seen again: it counts from the last time.
+        b.add(op("b.ts", WatchOp::Modify), ms(25));
+        assert_eq!(
+            b.take_due(ms(400)),
+            WatchFlush::Events(vec![
+                op("a.ts", WatchOp::Remove),
+                op("a.ts", WatchOp::Create),
+                op("a.ts", WatchOp::Modify),
+                op("c.ts", WatchOp::Create),
+                op("c.ts", WatchOp::Remove),
+                op("b.ts", WatchOp::Modify),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_new_folders_contents_are_found_without_links_or_ignored_ones() {
+        let dir = std::env::temp_dir().join(format!("watch-contents-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["src/utils/deep", "src/dist", "src/node_modules/m"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+        }
+        std::fs::write(dir.join(".gitignore"), "dist/\n").unwrap();
+        for f in [
+            "src/utils/format.ts",
+            "src/utils/deep/x.ts",
+            "src/dist/out.js",
+            "src/node_modules/m/index.js",
+        ] {
+            std::fs::write(dir.join(f), "export {};\n").unwrap();
+        }
+        // A link to a folder outside: an entry, never looked into.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(std::env::temp_dir(), dir.join("src/link")).unwrap();
+        let ignores = WatchIgnores::root_only(&dir);
+        let relative = |found: Vec<(PathBuf, bool)>| {
+            let mut found: Vec<(String, bool)> = found
+                .into_iter()
+                .map(|(p, is_dir)| {
+                    let rel = p.strip_prefix(&dir).unwrap().to_string_lossy();
+                    (rel.replace('\\', "/"), is_dir)
+                })
+                .collect();
+            found.sort();
+            found
+        };
+        let mut expected = vec![
+            ("src/utils".to_string(), true),
+            ("src/utils/deep".to_string(), true),
+            ("src/utils/deep/x.ts".to_string(), false),
+            ("src/utils/format.ts".to_string(), false),
+        ];
+        if cfg!(unix) {
+            expected.push(("src/link".to_string(), false));
+        }
+        expected.sort();
+        assert_eq!(
+            relative(folder_contents(&dir, &ignores, &dir.join("src"), 100)),
+            expected
+        );
+        // At most `limit`: past a flush's worth the batch reports everything.
+        assert_eq!(
+            folder_contents(&dir, &ignores, &dir.join("src"), 2).len(),
+            2
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_can_come_with_a_creation_or_a_rename() {
+        use notify::event::{CreateKind, DataChange, RemoveKind, RenameMode};
+        assert!(may_bring_folder(&EventKind::Create(CreateKind::Folder)));
+        for mode in [RenameMode::To, RenameMode::Both, RenameMode::Any] {
+            assert!(may_bring_folder(&EventKind::Modify(ModifyKind::Name(mode))));
+        }
+        assert!(!may_bring_folder(&EventKind::Modify(ModifyKind::Data(
+            DataChange::Any
+        ))));
+        assert!(!may_bring_folder(&EventKind::Remove(RemoveKind::Folder)));
     }
 
     #[test]

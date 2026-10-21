@@ -94,9 +94,11 @@ import {
   isProjectSource,
   modelUriFor,
   notifyProjectFileWritten,
+  updateProjectPath,
   updateProjectSource,
+  updateWholeProject,
 } from './lib/intellisense';
-import { scheduleModelPrune, trackModels } from './lib/models';
+import { followDisk, scheduleModelPrune, syncTabModels, trackModels } from './lib/models';
 import { agentChangesFor, clearAgentChanges, onAgentEdit } from './lib/agentChanges';
 import { movedPath, toAbsolutePath, toRelativePath } from './lib/fileTools';
 import { contextRealPath, isContextPath, remoteContextText } from './lib/contextMode';
@@ -186,7 +188,9 @@ export default function App() {
   // up to a limit, then the least recently used are disposed (lib/models.ts).
   trackModels(() => new Set(openFiles().map((f) => modelUriFor(f.path).toString())));
   createEffect(() => {
-    openFiles();
+    // Tabs in the background too: their models are what the TypeScript
+    // worker and the language servers read for their files.
+    syncTabModels(openFiles());
     scheduleModelPrune();
   });
   const [activePath, setActivePath] = createSignal<string | null>(null);
@@ -1213,6 +1217,9 @@ export default function App() {
     if (activePath() === path) {
       setActivePath(remaining.length ? remaining[remaining.length - 1].path : null);
     }
+    // Its model stays (lib/models.ts), the file to the worker from now on:
+    // edits thrown away go from it, as the file on disk has none of them.
+    if (file?.dirty) void followDisk(path);
   }
 
   function findRowAtPoint(x: number, y: number): TreeRow | null {
@@ -1767,6 +1774,9 @@ export default function App() {
 
     unlistenFSChanges = await listen<FileWatchPayload>('fs-changes', (event) => {
       const { path, operation, is_dir } = event.payload;
+      // Too much at once for the watcher to say what (a branch switch, an
+      // unpacked archive): everything open is checked again.
+      const everything = operation === 'unknown';
       switch (operation) {
         // Files are opened by whoever made them (the tree's New File, the
         // agent's writes), never because they appeared: dev servers and
@@ -1780,19 +1790,31 @@ export default function App() {
           tree.refresh();
           break;
       }
-      void syncDeletedTabs(operation === 'unknown' ? undefined : path);
       // Changed outside the editor (another program, a build, git): a tab
       // without unsaved edits shows the new text. Our own saves read back
       // the same text and change nothing.
-      if (!is_dir && (operation === 'create' || operation === 'modify')) {
-        void refreshCleanTab(path);
+      if (everything) {
+        void reloadOpenFiles();
+      } else {
+        void syncDeletedTabs(path);
+        if (!is_dir && (operation === 'create' || operation === 'modify')) {
+          void refreshCleanTab(path);
+        }
       }
-      // IntelliSense's copy of the project's sources (lib/intellisense.ts).
-      // Batched there: read and applied together once changes settle.
-      if (!is_dir && isProjectSource(path)) {
-        if (operation === 'remove') updateProjectSource(path, null);
-        else if (operation === 'create' || operation === 'modify') updateProjectSource(path);
-      }
+      // Models no tab holds (closed tabs, go to definition's) are what the
+      // TypeScript worker and the language servers read for their files:
+      // they follow the disk too (lib/models.ts).
+      void followDisk(path);
+      // IntelliSense's copy of the project's sources (lib/intellisense).
+      // Batched there: read and applied together once changes settle. Read
+      // whatever the event, the disk saying whether the file is there: a
+      // rename is a change of both paths, and a removal and a creation of
+      // one path can come in either order. A path that isn't a source may
+      // be a folder that went (renamed away, removed): its sources go too.
+      // A folder that came is reported with what's in it.
+      if (everything) updateWholeProject();
+      else if (!is_dir && isProjectSource(path, rootPath())) updateProjectSource(path);
+      else if (!is_dir) updateProjectPath(path);
       // A manifest write (package.json, lockfiles) means node_modules may
       // have changed (node_modules itself is watcher-ignored); a tsconfig
       // change can move files between configs or change `types`. Both are
