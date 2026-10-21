@@ -1,14 +1,14 @@
-// Bash's input line, as a terminal sees it. Up to 5.3, bash garbles a line
-// taller than the terminal: holding Backspace through a long paste blanked
-// the row the caret moved up to (in 5.3, the rows that had scrolled off the
-// top, the prompt's too). Its start file in a terminal here, on a cloud host
-// or in WSL (src-tauri/src/terminal/bash.sh), binds two keys: one puts the
-// line on one row that scrolls sideways, the other puts it there if it's too
-// tall and lets it wrap if it fits. The terminal sends the first before a
-// paste that may not fit and before it gets smaller, the second after those
-// and after deleting, and says nothing else to bash. Bash says where it is
-// (an OSC): at a prompt, its line on one row (and how many characters must
-// go before it may fit), or wrapping.
+// Bash's input line, as a terminal sees it. Up to 5.4 (in development), bash
+// garbles a line taller than the terminal: holding Backspace through a long
+// paste blanked the row the caret moved up to (from 5.3 on, the rows that
+// had scrolled off the top didn't come back). Its start file in a terminal
+// here, on a cloud host or in WSL (src-tauri/src/terminal/bash.sh), binds
+// two keys: one puts the line on one row that scrolls sideways, the other
+// puts it there if it's too tall and lets it wrap if it fits. The terminal
+// sends the first before a paste that may not fit and before it gets
+// smaller, the second after those and after deleting, and says nothing else
+// to bash. Bash says where it is (an OSC): at a prompt, its line on one row
+// (and how many characters must go before it may fit), or wrapping.
 //
 // Keys go only to bash's line editor at a prompt the file set up, and only
 // while every key since has kept it editing the line: a search (Ctrl+R),

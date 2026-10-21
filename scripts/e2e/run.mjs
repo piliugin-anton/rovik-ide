@@ -1366,13 +1366,13 @@ async function run() {
     await closeTerminal();
   });
 
-  // Bash up to 5.3 garbles an input line taller than the terminal: held
+  // Bash up to 5.4 garbles an input line taller than the terminal: held
   // Backspace through a long paste blanked the row the caret moved up to.
-  // A terminal here starts bash 4.4 to 5.3 with a file of its own
+  // A terminal here starts bash 4.4 to 5.4 with a file of its own
   // (src-tauri/src/terminal/bash.sh), and has a paste that may not fit go
   // on one row first, which wraps again once enough is deleted for it to
   // fit (src/lib/bashLine.ts). Asked of the terminal's own shell: bash 5.1
-  // to 5.3 (from 5.1 on, with bracketed paste on as it is by default). A
+  // to 5.4 (from 5.1 on, with bracketed paste on as it is by default). A
   // paste as a person makes it: not through the bridge (see below).
   // Windows' terminals run cmd.exe.
   if (PLATFORM !== 'win32' && DRIVER !== 'bridge') {
@@ -1393,8 +1393,8 @@ async function run() {
           .find(Boolean);
       await waitFor(answer, 'the shell’s answer', 20_000);
       const [, major, minor, rows, cols] = (await answer()).map(Number);
-      if (major !== 5 || minor < 1 || minor > 3) {
-        log(`  the shell is no bash 5.1 to 5.3 (${major}.${minor}): nothing to check`);
+      if (major !== 5 || minor < 1 || minor > 4) {
+        log(`  the shell is no bash 5.1 to 5.4 (${major}.${minor}): nothing to check`);
         await closeTerminal();
         return;
       }
