@@ -620,8 +620,15 @@ process, and it has no capabilities, so it can't undo any of that. An
 isolated chat's commands also see its overlay at the project's own path,
 so one that names the project by its full path still stays in the chat.
 The .deb and .rpm packages depend on bubblewrap, and the app offers to
-install it at start where it's missing (the AppImage can't carry it);
-without it the agent's commands are refused. Ubuntu 23.10 and later
+install it at start where it's missing (the AppImage can't carry it).
+Where bubblewrap can't run (not installed, or user namespaces forbidden,
+as in many containers), the commands run under the kernel's own sandbox,
+Landlock (Linux 6.2 and later, nothing to install), with the same policy
+but lighter: it doesn't hide the other processes or end what a command
+leaves running, and like Seatbelt below it can't redirect a path, and
+listing your home folder itself fails; the app then sets bubblewrap up by
+itself once, and offers it again if that fails. With neither, the agent's
+commands are refused. Ubuntu 23.10 and later
 restrict unprivileged user namespaces through AppArmor, which stops
 bubblewrap from making its sandbox: the packages add a small profile that
 lets `/usr/bin/bwrap` make one (`rovik-bwrap`, removed with Rovik), and the

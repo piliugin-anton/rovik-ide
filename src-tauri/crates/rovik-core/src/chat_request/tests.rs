@@ -565,11 +565,16 @@ async fn slow_reader(slow: usize, per_sec: usize) -> (String, Arc<std::sync::ato
 /// the request went out, not from when it started going.
 #[tokio::test]
 async fn a_slow_upload_that_keeps_moving_is_not_a_stall() {
-    // Half of it at 8 MB/s: 1.5 s, twice the limit. The rest at full
-    // speed, so what the client still holds when it hands over the last
-    // piece arrives at once.
-    let (url, served) = slow_reader(12 * MB, 8 * MB).await;
-    let (result, events) = run_body_against(&url, &big_body(24 * MB), limits_of(700), None).await;
+    // Half of it at 4 MB/s: 3 s, twice the limit. The rest at full speed,
+    // so what the client still holds when it hands over the last piece
+    // arrives at once; the limit leaves a busy machine time for that and
+    // the reply.
+    let (url, served) = slow_reader(12 * MB, 4 * MB).await;
+    let limits = Limits {
+        overall: Duration::from_secs(20),
+        ..limits_of(1500)
+    };
+    let (result, events) = run_body_against(&url, &big_body(24 * MB), limits, None).await;
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(
         names(&events),

@@ -155,7 +155,7 @@ fn launch_chrome_impl(
         }
     }
     let mut guard = ChildCleanupGuard::new(
-        cmd.spawn()
+        spawn_when_not_busy(&mut cmd)
             .map_err(|e| Error::Launch(format!("Failed to launch Chrome: {}", e)))?,
     );
     let child = guard
@@ -227,7 +227,7 @@ pub(crate) fn launch_chrome_with_pipe(
         return Err(Error::Launch("Browser launch was cancelled".into()));
     }
     let mut guard = ChildCleanupGuard::new(
-        cmd.spawn()
+        spawn_when_not_busy(&mut cmd)
             .map_err(|e| Error::Launch(format!("Failed to launch Chrome: {}", e)))?,
     );
     // Chrome has its own copies now. Ours must close, or Chrome's exit would
@@ -541,6 +541,25 @@ fn read_available_version_stdout(
     let count = buffer.len().min(available as usize);
     stdout.read(&mut buffer[..count])
 }
+/// `cmd.spawn()`, tried again for a moment while the program is "busy"
+/// (ETXTBSY): the patched copy of Chrome was just written, and another
+/// thread's fork may still hold it open for writing in its child until that
+/// child execs. A known race of fork and exec in a threaded process; it
+/// clears within milliseconds.
+fn spawn_when_not_busy(cmd: &mut std::process::Command) -> std::io::Result<Child> {
+    let mut wait = std::time::Duration::from_millis(5);
+    for _ in 0..8 {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(wait);
+                wait *= 2;
+            }
+            other => return other,
+        }
+    }
+    cmd.spawn()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

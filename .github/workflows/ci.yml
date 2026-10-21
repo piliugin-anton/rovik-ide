@@ -119,6 +119,20 @@ jobs:
       - name: cargo test --workspace
         working-directory: src-tauri
         run: cargo test --workspace --no-fail-fast ${{ matrix.args }}
+      # Where bubblewrap can't run, Landlock confines the commands: the
+      # core's and the daemon's tests again, under it alone.
+      - name: The core's tests under Landlock, bubblewrap's fallback
+        if: runner.os == 'Linux' && !cancelled()
+        working-directory: src-tauri
+        env:
+          ROVIK_CONFINE_COMMANDS: landlock
+        run: cargo test --no-fail-fast -p rovik-core --lib
+      - name: The daemon's tests under Landlock
+        if: runner.os == 'Linux' && !cancelled()
+        working-directory: src-tauri
+        env:
+          ROVIK_CONFINE_COMMANDS: landlock
+        run: cargo test --no-fail-fast -p rovik-agentd
       - name: The daemon and its tests build
         if: runner.os == 'macOS' && !cancelled()
         working-directory: src-tauri

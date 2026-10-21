@@ -63,6 +63,8 @@ pub struct Server {
     pub chrome: Option<PathBuf>,
     /// `bwrap`, which confines the chats' commands (overlay/confine.rs).
     pub bwrap: Option<PathBuf>,
+    /// The kernel's Landlock confines commands where bubblewrap isn't.
+    pub landlock: bool,
     pub git: Option<String>,
     /// A folder's file system: its free and total bytes.
     pub disk: fn(&Path) -> Option<(u64, u64)>,
@@ -91,6 +93,7 @@ impl Server {
             },
             chrome: rovik_core::browser_tools::chrome_path(),
             bwrap: crate::installer::find_on_path("bwrap"),
+            landlock: rovik_core::overlay::confine::landlock_works(),
             git: git_version(),
             disk: free_space,
         })
@@ -155,6 +158,12 @@ pub fn gather(server: &Server) -> Doctor {
         Some(bwrap) => findings.ok(format!(
             "bubblewrap: {} sandboxes the agent's commands",
             bwrap.display()
+        )),
+        None if server.landlock => findings.warning(format!(
+            "no bubblewrap: the agent's commands run under the kernel's Landlock, a lighter \
+             sandbox (it doesn't hide the other processes), until it's installed; sudo {} admin \
+             bubblewrap installs it",
+            crate::installer::INSTALLED
         )),
         None => findings.warning(format!(
             "no bubblewrap: the agent's commands are refused until it's installed; sudo {} \
@@ -455,6 +464,7 @@ mod tests {
             virtual_files: Ok("fuse3 3.14.0".into()),
             chrome: None,
             bwrap: Some("/usr/bin/bwrap".into()),
+            landlock: true,
             git: Some("2.43.0".into()),
             disk: |_| Some((12 << 30, 40 << 30)),
         };

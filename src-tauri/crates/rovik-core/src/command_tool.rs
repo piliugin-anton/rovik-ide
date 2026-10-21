@@ -774,17 +774,18 @@ mod tests {
         // A child of the shell that would outlive it, like a dev server.
         let command = format!("sh -c 'sleep 30; echo {marker}' & echo started; wait");
         let started = Instant::now();
+        // Time for a busy machine to start the command and print first.
         let out = run_blocking(
             dir.to_str().unwrap(),
             &command,
-            Duration::from_millis(500),
+            Duration::from_secs(3),
             &|| false,
             None,
         )
         .unwrap();
         assert!(out.timed_out);
         assert_eq!(out.stdout.trim(), "started");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(15));
         let ps = Command::new("ps").args(["-eo", "args"]).output().unwrap();
         assert!(
             !String::from_utf8_lossy(&ps.stdout).contains(&marker),
@@ -797,22 +798,22 @@ mod tests {
     fn background_process_holding_the_output_times_out() {
         let dir = std::env::temp_dir();
         // The shell exits at once, but its background child keeps stdout open.
+        // The timeout leaves a busy machine time to start the command and
+        // print before it.
         let out = run_blocking(
             dir.to_str().unwrap(),
             "sleep 30 & echo up",
-            Duration::from_millis(500),
+            Duration::from_secs(3),
             &|| false,
             None,
         )
         .unwrap();
         // In bubblewrap's sandbox (Linux), the command's pid namespace ends
         // with the shell: nothing it left behind outlives it to hold the
-        // output, so the command just ends. Seatbelt (macOS) has no pid
-        // namespace, and without a sandbox there's nothing either: the child
-        // holds the output until the timeout.
-        let sandboxed = crate::overlay::confine::hiding_if_available(&dir).is_some();
-        let ends_background = sandboxed && cfg!(target_os = "linux");
-        assert_eq!(out.timed_out, !ends_background);
+        // output, so the command just ends. Seatbelt (macOS) and Landlock
+        // have no pid namespace, and without a sandbox there's nothing
+        // either: the child holds the output until the timeout.
+        assert_eq!(out.timed_out, !crate::overlay::confine::hides_processes());
         assert_eq!(out.stdout.trim(), "up");
         assert_eq!(out.exit_code, Some(0));
     }
@@ -821,20 +822,26 @@ mod tests {
     #[test]
     fn stop_kills_the_command() {
         let dir = std::env::temp_dir();
+        // Stopped once it has said so, not after a set time: a busy machine
+        // may take longer than that to start the sandbox and the shell.
+        let said = dir.join(format!("stop-said-{}", std::process::id()));
+        let _ = std::fs::remove_file(&said);
+        let marker = said.clone();
         let started = Instant::now();
-        let stop = move || started.elapsed() >= Duration::from_millis(300);
+        let stop = move || marker.exists();
         let out = run_blocking(
             dir.to_str().unwrap(),
-            "sleep 30 & echo up; wait",
+            &format!("sleep 30 & echo up; touch {}; wait", said.display()),
             Duration::from_secs(60),
             &stop,
             None,
         )
         .unwrap();
+        let _ = std::fs::remove_file(&said);
         assert!(out.stopped);
         assert!(!out.timed_out);
         assert_eq!(out.stdout.trim(), "up");
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
 
     #[cfg(not(windows))]
