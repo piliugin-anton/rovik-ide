@@ -42,7 +42,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   sharing its chats too): opening it again brings that window to the front
   (see [Several windows](#several-windows)).
 - A built-in terminal that uses your own shell, on this computer or on a
-  connected [cloud host](#a-terminal-on-a-cloud-host). Bash before 5.3
+  connected [cloud host](#a-terminal-on-a-cloud-host). Each project has
+  its own terminals: switching to another project, its terminals are shown,
+  and the ones left keep running until you come back. Bash before 5.3
   garbles a command line taller than the terminal; with bash 5.1 or 5.2 on
   this computer, a paste that would make one stays on one row that scrolls
   sideways, and wraps again once you've deleted enough for it to fit.
