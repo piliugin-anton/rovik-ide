@@ -8,6 +8,7 @@
 //   node scripts/eval/eval.mjs pilot --settings FILE [--jobs N]
 //   node scripts/eval/eval.mjs run --settings FILE [--jobs N]
 //   node scripts/eval/eval.mjs report DIR
+//   node scripts/eval/eval.mjs power [DIR] [--repeats 3,6] [--target 5]   (evolve-plan P07)
 //   node scripts/eval/eval.mjs variants --settings FILE [--kinds a,b | --variants a,b]   (G02)
 //   node scripts/eval/eval.mjs compare [--out FILE]                     (G02, G03)
 //   node scripts/eval/eval.mjs compare A B [--out FILE]                 (autopilot-plan G03)
@@ -75,7 +76,7 @@ import {
 } from './confinement.mjs';
 import { parseNameStatus, tamperCalls, tamperReasons, tampering } from './integrity.mjs';
 import { identityProblem } from './identity.mjs';
-import { moduleOf } from './stats.mjs';
+import { detectableEffect, meanRunVariance, moduleOf, tasksFor } from './stats.mjs';
 import { ATTEMPT_ARMS, attemptsResult } from './arms.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
@@ -154,6 +155,17 @@ function loadTasks(only) {
 }
 
 const expectedPath = (task) => join(EVAL, 'expected', `${task.id}.json`);
+
+/**
+ * P04, P07: a task's module by its id (`moduleOf`), what comparisons'
+ * errors and a campaign's power are clustered by; an unknown task is its
+ * own.
+ */
+let modules = null;
+function clusterOf(task) {
+  modules ??= new Map(loadTasks().map((t) => [t.id, moduleOf(t)]));
+  return modules.get(task) ?? task;
+}
 
 /** P01: what every evaluated run is hidden from: the answers, and other runs. */
 const HIDDEN = [ROOT, CACHE, RESULTS, WORK];
@@ -853,7 +865,7 @@ async function campaignIn(
       return r;
     },
   });
-  const s = summarize(results);
+  const s = summarize(results, { clusterOf });
   writeJson(join(campaignDir, 'summary.json'), { ...s, stopped: stopped || null, cap });
   writeFileSync(join(campaignDir, 'summary.md'), summaryMarkdown(s, `Evaluation: ${name}`));
   console.log(`\n${summaryMarkdown(s, `Evaluation: ${name}`)}`);
@@ -1146,7 +1158,12 @@ function compareTwo(aArg, bArg, flags) {
   if (!bAll.length) throw new Error(`no results in ${bDir}`);
   const common = new Set(aAll.map((r) => r.task).filter((t) => bAll.some((r) => r.task === t)));
   if (!common.size) throw new Error(`${aDir} and ${bDir} have no task in common`);
-  const [a, b] = [aAll, bAll].map((all) => summarize(all.filter((r) => common.has(r.task))));
+  const [a, b] = [aAll, bAll].map((all) =>
+    summarize(
+      all.filter((r) => common.has(r.task)),
+      { clusterOf }
+    )
+  );
   const [aName, bName] = [basename(aDir), basename(bDir)];
   const variant = ALL_VARIANTS.find((v) => v.campaign === bName);
   const costRatioMax = flags['cost-ratio']
@@ -1155,12 +1172,11 @@ function compareTwo(aArg, bArg, flags) {
       ? variantPlan(variant, {}).costRatioMax
       : null;
   // P04: the paired comparison's errors are clustered by each task's module.
-  const modules = new Map(loadTasks().map((t) => [t.id, moduleOf(t)]));
   const decision = compareCampaigns(a, b, {
     costRatioMax,
     stopped: stoppedOf(aDir) ?? stoppedOf(bDir),
     minTasks: Number(flags['min-tasks'] ?? 5),
-    clusterOf: (task) => modules.get(task) ?? task,
+    clusterOf,
   });
   const model = settingsOf(bDir)?.profile?.label ?? settingsOf(aDir)?.profile?.label ?? 'unknown';
   const comparison = {
@@ -1450,10 +1466,45 @@ function readRun(runDir) {
 function report(flags) {
   const dir = resolve(flags._[1] ?? join(RESULTS, 'baseline'));
   if (!existsSync(dir)) throw new Error(`no results in ${dir}`);
-  const s = summarize(campaignResults(dir));
+  const s = summarize(campaignResults(dir), { clusterOf });
   writeJson(join(dir, 'summary.json'), s);
   writeFileSync(join(dir, 'summary.md'), summaryMarkdown(s, `Evaluation: ${dir}`));
   console.log(summaryMarkdown(s, `Evaluation: ${dir}`));
+}
+
+// ------------------------------------------------------------------- power
+
+/**
+ * P07 (evolve-plan): what a campaign's noise lets a paired comparison
+ * show: the smallest change with its tasks, at each number of
+ * repetitions (`--repeats 3,6`), and how many tasks a change of
+ * `--target` points (5) would take.
+ */
+function power(flags) {
+  const dir = resolve(flags._[1] ?? join(RESULTS, 'baseline'));
+  const results = campaignResults(dir);
+  if (!results.length) throw new Error(`no results in ${dir}`);
+  const s = summarize(results, { clusterOf });
+  const variance = meanRunVariance(s.tasks);
+  if (variance === null) throw new Error(`${dir}: no task ran twice, so its noise isn't known`);
+  const target = Number(flags.target ?? 5) / 100;
+  const deff = s.power.deff;
+  const lines = [
+    `${dir}: ${s.tasks.length} tasks; a run's outcome varies by ${variance.toFixed(3)} on ` +
+      `average; the modules' design effect is ${deff.toFixed(2)} (α ${s.power.alpha}, ` +
+      `power ${Math.round(s.power.power * 100)}%).`,
+  ];
+  for (const repeats of String(flags.repeats ?? '3,6')
+    .split(',')
+    .map(Number)) {
+    const mde = detectableEffect({ variance, tasks: s.tasks.length, repeats, deff });
+    const needed = tasksFor({ variance, repeats, target, deff });
+    lines.push(
+      `- ${repeats} repetitions an arm: ${(mde * 100).toFixed(1)} pts with these tasks; ` +
+        `${needed} tasks for ${(target * 100).toFixed(0)} pts`
+    );
+  }
+  console.log(lines.join('\n'));
 }
 
 // -------------------------------------------------------------------- main
@@ -1467,6 +1518,7 @@ const commands = {
   report,
   variants,
   compare: compareAll,
+  power,
   'apply-defaults': applyDefaultsCommand,
   'dry-run-variants': dryRunVariants,
 };
@@ -1477,6 +1529,7 @@ if (!command) {
       'pilot --settings FILE [--jobs N] | ' +
       'run --settings FILE [--repeats N] [--tasks a,b] [--jobs N] | report [DIR] | ' +
       'variants --settings FILE [--kinds a,b | --variants a,b] | compare [A B] [--out FILE] | apply-defaults | ' +
+      'power [DIR] [--repeats 3,6] [--target 5] | ' +
       'dry-run-variants [--variants a,b]'
   );
   process.exit(2);

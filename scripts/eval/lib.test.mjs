@@ -771,6 +771,13 @@ describe('the Autopilot plan’s G03: pass@k and pass^k, the variants, any two c
     );
     // The noise: the larger spread between repetitions, here a tenth.
     assert.ok(Math.abs(better.noise - 0.1) < 1e-9);
+    // P07: the baseline's noise is t5's alone (1 of 3: a variance of 1/3 a
+    // run), a 30th over 10 tasks; at 3 repetitions each, a change of
+    // (1.96 + 0.84) × √(2 × 1/30 / 3 / 10) ≈ 13.2 points shows.
+    assert.ok(Math.abs(base.power.mde - 0.132075) < 1e-4, `${base.power.mde}`);
+    assert.deepEqual([base.power.repeats, base.power.deff], [3, 1]);
+    assert.match(summaryMarkdown(base, 'T'), /- Smallest change it can show: 13\.2 pts, against/);
+    assert.ok(better.mde > 0 && better.mde < 0.2, `${better.mde}`);
     // P04: task by task, t5 (1/3 → 1), t6 and t7 (0 → 1) better, the
     // rest tied: a mean of (2/3 + 2)/10; one cluster per task by default.
     const p = better.paired;
@@ -833,6 +840,10 @@ describe('the Autopilot plan’s G03: pass@k and pass^k, the variants, any two c
     assert.match(md, /`node scripts\/eval\/eval\.mjs compare baseline autopilot-balanced`/);
     assert.match(md, /\| Success \| 53% \| 80% \| \+27 pts \(noise ±10\) \|/);
     assert.match(md, /\| Tasks better \(task by task\) \| 0 \| 3 \| 7 tied \|/);
+    assert.match(
+      md,
+      /\| Smallest change it can show \| {2}\| {2}\| [\d.]+ pts \(α 0\.05, power 80%\) \|/
+    );
     assert.match(
       md,
       /\| Difference task by task \| {2}\| {2}\| \+26\.7 pts \(SE [\d.]+ pts; clustered by module, 10 of them/

@@ -336,6 +336,27 @@ node scripts/eval/eval.mjs dry-run-variants # all of it with the scripted model,
   `DEFAULT_SUBAGENT_SETTINGS`. It refuses results from the scripted model.
   Then update the defaults test and link the results file in the pull request.
 
+## Power: the smallest change a comparison can show (P07)
+
+Before a comparison is believed, or paid for: how small a change in
+success it could find (its minimum detectable effect), at α = 0.05 and
+80% power, for a paired comparison of two campaigns over the same tasks.
+It comes from each task's run-to-run noise (p(1 − p) of its outcomes,
+corrected for few runs), the repetitions, and the modules' design effect:
+the campaign against itself, repetition against repetition, clustered by
+module and not (`stats.mjs`). `summary.md` has it ("Smallest change it can
+show"), and so does each comparison. With a baseline:
+
+```sh
+node scripts/eval/eval.mjs power eval-results/baseline --repeats 3,6 --target 5
+```
+
+prints it at 3 and 6 repetitions an arm, and how many tasks a change of
+5 points would need: the source experiment (milestone E) starts only at 5
+points or less. For scale, at p(1 − p) ≈ 0.1 a task, 30 tasks × 3
+repetitions can show about 13 points, and 5 points takes about 105 tasks
+× 6 or 210 × 3.
+
 ## The same-money arm (P06)
 
 P06 in [docs/design/evolve-plan.md](../../docs/design/evolve-plan.md), its

@@ -4,7 +4,13 @@
 import { createHash } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pairedComparison } from './stats.mjs';
+import {
+  designEffect,
+  detectableEffect,
+  meanRunVariance,
+  minimumDetectableEffect,
+  pairedComparison,
+} from './stats.mjs';
 
 /** Results of `cargo test` (libtest's plain output): name -> pass|fail|skip. */
 export function parseCargo(text) {
@@ -408,8 +414,9 @@ export function stageTotals(runs) {
  * The campaign's summary from its runs' results
  * ({task, rep, success, costUsd, tokens, peakLeadContext, ms, interventions, outcome},
  * and G02's toolErrors, toolErrorClasses, editMisses, verifyRounds, stages).
+ * `clusterOf`: a task's module (P04), for the power's design effect (P07).
  */
-export function summarize(results) {
+export function summarize(results, { clusterOf = (task) => task } = {}) {
   const byTask = new Map();
   for (const r of results) {
     if (!byTask.has(r.task)) byTask.set(r.task, []);
@@ -466,8 +473,41 @@ export function summarize(results) {
     // reliably it does (pass^k), over each task's repetitions.
     passAt: passRates(tasks, passAt),
     passHat: passRates(tasks, passHat),
+    power: powerOf(results, tasks, clusterOf),
     tasks,
   };
+}
+
+/** P07 (evolve-plan): the significance and power the smallest changes are told at. */
+const ALPHA = 0.05;
+const POWER = 0.8;
+
+/**
+ * P07: the smallest change in success a paired comparison of this
+ * campaign with another like it would find (`mde`), from its tasks'
+ * run-to-run noise, its repetitions and its modules' design effect.
+ */
+function powerOf(results, tasks, clusterOf) {
+  const repeats = Math.max(0, ...tasks.map((t) => t.runs));
+  const deff = designEffect(results, clusterOf);
+  return {
+    repeats,
+    deff,
+    alpha: ALPHA,
+    power: POWER,
+    mde: minimumDetectableEffect(tasks, { repeats, deff, alpha: ALPHA, power: POWER }),
+  };
+}
+
+/** P07: the power line of a summary. */
+function powerLine(p) {
+  if (!p) return [];
+  if (p.mde === null) return ['- Smallest change it can show: not known (no task ran twice)'];
+  return [
+    `- Smallest change it can show: ${(p.mde * 100).toFixed(1)} pts, against another campaign ` +
+      `like it (${p.repeats} repetitions each, α ${p.alpha}, power ${Math.round(p.power * 100)}%, ` +
+      `the modules' design effect ${p.deff.toFixed(2)})`,
+  ];
 }
 
 const pct = (x) => `${Math.round(x * 100)}%`;
@@ -525,6 +565,7 @@ export function summaryMarkdown(s, title) {
           `stdev ${pct(s.successRateStdev)})`
         : ''),
     ...(passes ? [passes] : []),
+    ...powerLine(s.power),
     ...(s.tampered
       ? [
           `- Tampered: ${s.tampered} run${s.tampered === 1 ? '' : 's'}, failed whatever ` +
@@ -712,6 +753,15 @@ export function compareCampaigns(
     passAt: ks.map((k) => ({ k, a: rateAt(a.passAt, k), b: rateAt(b.passAt, k) })),
     passHat: ks.map((k) => ({ k, a: rateAt(a.passHat, k), b: rateAt(b.passHat, k) })),
     paired: (({ diffs, ...rest }) => rest)(pairedComparison(a.tasks, b.tasks, clusterOf)),
+    // P07: the smallest change these tasks, these repetitions, can show.
+    mde: detectableEffect({
+      variance: meanRunVariance([...a.tasks, ...b.tasks]),
+      tasks,
+      repeats: Math.min(a.power?.repeats ?? 0, b.power?.repeats ?? 0),
+      deff: Math.max(a.power?.deff ?? 1, b.power?.deff ?? 1),
+      alpha: ALPHA,
+      power: POWER,
+    }),
   };
   const verdict = (better, reason) => ({ better, reason, ...numbers });
   if (stopped) return verdict(null, `not enough runs: a campaign stopped (${stopped})`);
@@ -782,6 +832,14 @@ export function comparisonMarkdown(c) {
       `${pctSigned(d.successDiff)} (noise ±${Math.round(d.noise * 100)})`
     ),
     ...pairedRows(d.paired, row),
+    row(
+      'Smallest change it can show',
+      '',
+      '',
+      typeof d.mde === 'number'
+        ? `${(d.mde * 100).toFixed(1)} pts (α ${ALPHA}, power ${Math.round(POWER * 100)}%)`
+        : 'not known (no task ran twice)'
+    ),
     ...d.passAt.filter((p) => p.k > 1).map((p) => row(`pass@${p.k}`, rate(p.a), rate(p.b))),
     ...d.passHat.filter((p) => p.k > 1).map((p) => row(`pass^${p.k}`, rate(p.a), rate(p.b))),
     row('Cost a run', money(x.meanCostUsd, 3), money(y.meanCostUsd, 3), ratio(d.costRatio)),
