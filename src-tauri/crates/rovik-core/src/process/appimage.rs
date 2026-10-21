@@ -12,6 +12,13 @@
 // start with PYTHONHOME in the AppImage. So the app's own environment stays
 // as it is, and each program it starts gets the user's back: the launcher's
 // changes, undone here.
+//
+// An earlier start of the same AppImage's are undone too. An older Rovik's
+// update restart started the new one with its own environment, the
+// launcher's changes in it, and in the AppImage's `usr` folder; the new
+// launcher added its own to that, at a mount of its own. The earlier mount
+// stayed, as the new process held a pipe its runtime keeps it for, so its
+// folders, still in the environment, still had their libraries.
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -23,11 +30,19 @@ pub(super) struct AppImage {
     /// Where its files are (`$APPDIR`, mounted or extracted), and the same
     /// with symlinks resolved, when that's different.
     dirs: Vec<PathBuf>,
+    /// Where its runtime mounts it, when it's mounted: the folder, and the
+    /// start of the mount's name, `.mount_` and the AppImage file's name,
+    /// without the six random letters at its end (`/tmp/.mount_Rovik.a1B2c3`).
+    /// An earlier start of it was mounted beside, under another such name.
+    mounts: Option<(PathBuf, OsString)>,
     /// Where a program the app starts starts when it isn't told: the folder
     /// the AppImage was started from (`$OWD`), which AppRun left for the
     /// AppImage's `usr` folder; the home folder when that isn't known.
     pub(super) start_dir: Option<PathBuf>,
 }
+
+/// The random letters at the end of a mount's name (mkdtemp's).
+const MOUNT_RANDOM: usize = 6;
 
 /// The runtime's own variables, which only mean something to this process.
 /// `ARGV0` does harm, too: zsh starts every command under that name.
@@ -46,31 +61,71 @@ pub(super) fn current() -> Option<&'static AppImage> {
             if !dir.is_absolute() || !exe.starts_with(&real) {
                 return None;
             }
-            let mut dirs = vec![dir];
-            if !dirs.contains(&real) {
-                dirs.push(real);
+            let mut image = AppImage {
+                mounts: mounts_of(&dir),
+                dirs: vec![dir],
+                start_dir: None,
+            };
+            if !image.dirs.contains(&real) {
+                image.dirs.push(real);
             }
-            let in_image =
-                std::env::current_dir().is_ok_and(|cwd| dirs.iter().any(|d| cwd.starts_with(d)));
-            let start_dir = in_image
-                .then(|| {
-                    ["OWD", "HOME"]
-                        .iter()
-                        .filter_map(std::env::var_os)
-                        .map(PathBuf::from)
-                        .find(|d| d.is_absolute() && d.is_dir())
-                })
-                .flatten();
-            Some(AppImage { dirs, start_dir })
+            let in_image = std::env::current_dir()
+                .is_ok_and(|cwd| image.dirs.iter().any(|d| cwd.starts_with(d)));
+            if in_image {
+                let candidates = ["OWD", "HOME"].iter().filter_map(std::env::var_os);
+                image.start_dir = image.start_dir_of(candidates.map(PathBuf::from));
+            }
+            Some(image)
         })
         .as_ref()
 }
 
+/// The runtime's mounts of an AppImage mounted at `dir`, if that's one:
+/// the folder, and the start of their names (`AppImage::mounts`).
+fn mounts_of(dir: &Path) -> Option<(PathBuf, OsString)> {
+    let name = dir.file_name()?.as_bytes();
+    if !name.starts_with(b".mount_") || name.len() <= ".mount_".len() + MOUNT_RANDOM {
+        return None;
+    }
+    let start = &name[..name.len() - MOUNT_RANDOM];
+    Some((
+        dir.parent()?.to_path_buf(),
+        OsString::from_vec(start.to_vec()),
+    ))
+}
+
 impl AppImage {
-    /// Whether `entry`, a path or one of a list's, is in the AppImage.
+    /// Whether `entry`, a path or one of a list's, is in the AppImage, or in
+    /// an earlier mount of it.
     fn has(&self, entry: &[u8]) -> bool {
         let path = Path::new(OsStr::from_bytes(entry));
-        path.is_absolute() && self.dirs.iter().any(|d| path.starts_with(d))
+        path.is_absolute()
+            && (self.dirs.iter().any(|d| path.starts_with(d)) || self.in_another_mount(path))
+    }
+
+    /// Whether `path` is in another mount of this AppImage: an earlier
+    /// start's, whose environment an older Rovik's restart handed on.
+    fn in_another_mount(&self, path: &Path) -> bool {
+        let Some((folder, start)) = &self.mounts else {
+            return false;
+        };
+        let Ok(rest) = path.strip_prefix(folder) else {
+            return false;
+        };
+        rest.components().next().is_some_and(|first| {
+            let name = first.as_os_str().as_bytes();
+            name.len() == start.len() + MOUNT_RANDOM && name.starts_with(start.as_bytes())
+        })
+    }
+
+    /// The first of `candidates` (the folder the AppImage was started from,
+    /// then the home folder) that's a folder of the user's: none in this
+    /// AppImage, or in an earlier mount of it, where an older Rovik's
+    /// restart started this one.
+    fn start_dir_of(&self, candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+        candidates
+            .into_iter()
+            .find(|d| d.is_absolute() && !self.has(d.as_os_str().as_bytes()) && d.is_dir())
     }
 
     /// The changes that give a program the app starts the environment the
@@ -138,8 +193,14 @@ mod tests {
     const DIR: &str = "/tmp/.mount_RovikAbC123";
 
     fn image() -> AppImage {
+        image_at(DIR)
+    }
+
+    /// The AppImage mounted at `dir`, as `current` finds it.
+    fn image_at(dir: &str) -> AppImage {
         AppImage {
-            dirs: vec![PathBuf::from(DIR)],
+            dirs: vec![PathBuf::from(dir)],
+            mounts: mounts_of(Path::new(dir)),
             start_dir: None,
         }
     }
@@ -332,33 +393,65 @@ mod tests {
         );
     }
 
-    /// The app started again by itself (an update's restart, "New window"),
-    /// at another mount: started with the user's environment, as a program
-    /// the app starts gets it, the new one's programs get the user's back.
-    /// Started with the app's own, as Tauri's restart did, they kept the old
-    /// AppImage's folders, its libraries first: a login shell's flatpak
-    /// loaded them, while the old mount stayed, and stopped.
+    /// The AppImage started again by itself (an update's restart, "New
+    /// window"), at another mount. Started with the user's environment, as
+    /// a program the app starts gets it, the new one's programs get the
+    /// user's back. Started with the app's own, as an older Rovik's update
+    /// restart did (Tauri's), the earlier mount's folders are taken out
+    /// too: they put its libraries first, and a login shell's flatpak
+    /// loaded them while that mount stayed, and stopped.
     #[test]
     fn the_app_started_again_by_itself_gives_its_programs_the_users_environment() {
         const NEW: &str = "/tmp/.mount_RovikXyZ789";
         let original = env(&[
             ("HOME", "/home/u"),
-            ("PATH", "/usr/bin:/bin"),
+            ("PATH", "/usr/bin:/bin:/home/u/.cargo/bin"),
             ("LD_LIBRARY_PATH", "/opt/cuda/lib64"),
+            ("PYTHONPATH", "/home/u/lib/python"),
+            (
+                "XDG_DATA_DIRS",
+                "/usr/share/gnome:/usr/local/share/:/usr/share/",
+            ),
         ]);
-        let new = AppImage {
-            dirs: vec![PathBuf::from(NEW)],
-            start_dir: None,
-        };
+        let new = image_at(NEW);
         let first = launch(&original, DIR);
         let again = launch(&child(&image(), &first), NEW);
         assert_eq!(child(&new, &again), original);
+        assert_eq!(child(&new, &launch(&first, NEW)), original);
+        // Unset before, unset after.
+        let bare = env(&[("HOME", "/home/u"), ("PATH", "/usr/bin:/bin")]);
+        assert_eq!(child(&new, &launch(&launch(&bare, DIR), NEW)), bare);
+    }
 
-        let raw = child(&new, &launch(&first, NEW));
-        assert!(
-            raw["LD_LIBRARY_PATH"].starts_with(&format!("{DIR}/usr/lib/")),
-            "{raw:?}"
+    /// Only this AppImage's mounts are: another AppImage's, and a name that
+    /// isn't one of the runtime's for it, stay the user's.
+    #[test]
+    fn another_appimages_folders_stay() {
+        let new = image_at("/tmp/.mount_RovikXyZ789");
+        let launched = env(&[(
+            "LD_LIBRARY_PATH",
+            "/tmp/.mount_OtherAbC123/usr/lib:/tmp/.mount_RovikAbC1234/lib:/tmp/x/.mount_RovikAbC123/lib:/opt/lib",
+        )]);
+        assert_eq!(child(&new, &launched), launched);
+        assert!(new.has(format!("{DIR}/usr/lib").as_bytes()));
+        // An extracted AppImage has no such mounts.
+        assert!(mounts_of(Path::new("/tmp/appimage_extracted_0123abcd")).is_none());
+        assert!(mounts_of(Path::new("/tmp/.mount_ab")).is_none());
+    }
+
+    /// Programs start in the folder the AppImage was started from, but not
+    /// in one of its mounts: an older Rovik's update restart started the
+    /// new one in the AppImage's `usr` folder, the runtime's `$OWD` then.
+    #[test]
+    fn programs_dont_start_in_an_earlier_mount() {
+        let new = image_at("/tmp/.mount_RovikXyZ789");
+        let user = std::env::temp_dir();
+        assert_eq!(
+            new.start_dir_of([PathBuf::from(format!("{DIR}/usr")), user.clone()]),
+            Some(user.clone())
         );
+        assert_eq!(new.start_dir_of([user.clone()]), Some(user));
+        assert_eq!(new.start_dir_of([PathBuf::from("relative")]), None);
     }
 
     #[test]
@@ -368,6 +461,7 @@ mod tests {
                 PathBuf::from("/tmp/.mount_x"),
                 PathBuf::from("/private/tmp/.mount_x"),
             ],
+            mounts: None,
             start_dir: None,
         };
         let launched = env(&[(
