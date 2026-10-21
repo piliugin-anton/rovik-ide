@@ -52,6 +52,13 @@ const SECOND_APP = args['second-app']
     ? APP
     : null;
 
+// The app's looks for a new version (src-tauri/src/updates.rs) go to a port
+// nothing listens on, in every Rovik the run starts (each takes this
+// environment): a branch behind the latest release would be offered it, in
+// a notification over what the scenarios click. A look that fails says
+// nothing.
+process.env.ROVIK_UPDATE_URL = 'https://127.0.0.1:9/latest.json';
+
 function parseArgs(list) {
   const out = {};
   for (let i = 0; i < list.length; i++) {

@@ -185,6 +185,33 @@ the app offers to install it for you; you can also do it later in
 self-managed context (CLM mode), and it makes the agent's shell commands
 faster in isolated chats.
 
+### Updates
+
+Rovik installed from a release (the AppImage, `.deb` or `.rpm`, the macOS
+disk image, the Windows installer or MSI package) updates itself. Every 30
+minutes it looks at the latest release on GitHub, and when there's a newer
+version, a notification offers it. **Update** downloads it, checks it
+against Rovik's release key, installs it and restarts Rovik, which opens
+your project again. Before the restart, Rovik asks about chats still at
+work (they stop, and you can continue them afterwards) and about tabs with
+unsaved changes. A `.deb` or `.rpm` update asks for an administrator's
+password. On Windows the installer closes every Rovik window and starts
+Rovik again once it's done; on Linux and macOS, Rovik's other windows keep
+the version they started with and offer a restart.
+
+**Settings → Updates** shows the version, has **Check now**, and turns the
+looks off (they're on by default). They go the way **Settings → Network**
+sends downloads. A build of your own isn't replaced: a new release is
+offered for download instead, and a development build (`npm run tauri
+dev`) looks only when you click **Check now**.
+
+Cloud hosts run a Rovik of their own, which the app's update leaves as it
+was. Once Rovik runs a new version, it offers once to bring your hosts to
+it: **Update hosts** upgrades the hosts where you're one of Rovik's
+administrators, for everyone on each (their runs pause while Rovik restarts
+there, then go on), and for the others it says whom to ask. WSL on Windows
+is brought to the app's version by itself.
+
 ---
 
 ## Getting started
@@ -219,6 +246,7 @@ computer right now. The pages:
 | Heavy commands         | How many builds and tests run at once on this computer, so it stays responsive                                        |
 | Virtual files          | The driver that isolates chats and lets the agent manage its own context: status, installation, troubleshooting       |
 | Cloud hosts            | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))                                                       |
+| Updates                | Rovik's version, the looks for a new one every 30 minutes, and installing it (see [Updates](#updates))                |
 
 The model, the mode (Agent, Plan or Autopilot), the reasoning effort and
 the context mode are chosen per chat, above its message box.
@@ -408,9 +436,12 @@ Every merge to master is released. The **Release** workflow
    image each for Apple silicon and Intel) and Windows (installer and MSI
    package), and the daemon for x86_64 and aarch64 Linux servers.
 4. It signs the builds and publishes them on the version's GitHub
-   release, tagged `v1.2.4`. The download buttons on
+   release, tagged `v1.2.4`, with `latest.json`, what the installed apps'
+   updates read (see [Updates](#updates)): each kind of app's bundle on
+   the release and its signature, written by `scripts/updater-manifest.mjs`
+   once every platform's are there. The download buttons on
    [rovik-ide.dev](https://rovik-ide.dev) show it at once: they ask GitHub
-   for the latest release.
+   for the latest release, and so do the apps.
 
 Nothing is published until every build is on the release, so a run that
 fails leaves the latest release as it was. The next merge publishes the
@@ -421,7 +452,17 @@ that version from the branch you pick.
 
 The app downloads the daemon for a server from its own version's release,
 and checks it against the release key before it goes to the server. The
-daemon on a server checks an upgrade against the same key.
+daemon on a server checks an upgrade against the same key, and so does the
+app's own update (tauri-plugin-updater, `src-tauri/src/updates.rs`), whose
+signatures also say the version they were made for: a `latest.json` that
+pairs a new version with an older release's bundle is refused.
+
+Only the release builds the updater's bundles and their signatures
+(`--config src-tauri/tauri.updater.conf.json`, which sets
+`bundle.createUpdaterArtifacts`): `tauri build` refuses to make them
+without the signing key, so a developer's build and the end-to-end runs
+make none. A pre-release isn't GitHub's latest release, so installed apps
+aren't offered it.
 
 Before the first release, make the key once:
 
@@ -432,10 +473,11 @@ Before the first release, make the key once:
    `TAURI_SIGNING_PRIVATE_KEY`, with the contents of `~/.tauri/rovik.key`,
    and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, with the password.
 3. Paste the public key, the one line in `~/.tauri/rovik.key.pub`, below
-   the comments in `src-tauri/release-key.pub`, and commit it. The app's
-   updater takes the same key (`plugins.updater.pubkey` in
-   `tauri.conf.json`); once `bundle.createUpdaterArtifacts` is `true`
-   there too, each release has the updater's `latest.json`.
+   the comments in `src-tauri/release-key.pub`, and in
+   `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` (the updater
+   takes it from `release-key.pub`, but `tauri build` checks the bundles'
+   signatures against this one; a test keeps the two the same), and
+   commit them.
 
 Versions have numbers only, such as `1.2.3`, or `1.2.3-4` for a
 pre-release, which GitHub publishes as one: a Windows installer refuses

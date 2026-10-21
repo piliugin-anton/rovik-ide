@@ -19,6 +19,9 @@ const KEY_FILE: &str = include_str!("../../../release-key.pub");
 /// `<RELEASES>/v<version>/<name>`.
 pub const RELEASES: &str = "https://github.com/piliugin-anton/rovik-ide/releases/download";
 
+/// A release's page, its notes and its downloads: `<PAGES>/v<version>`.
+pub const PAGES: &str = "https://github.com/piliugin-anton/rovik-ide/releases/tag";
+
 /// The list of a release's builds, as `sha256sum` writes it.
 pub const SUMS: &str = "SHA256SUMS";
 

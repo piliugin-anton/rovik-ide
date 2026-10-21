@@ -112,6 +112,13 @@ openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = "2"
+# The app's own updates (src/updates.rs). Its requests are built on the
+# workspace's reqwest (`configure_client`), so it's kept to one minor
+# version, the one whose reqwest that is; without its default features it
+# also takes that reqwest's TLS, rather than adding ring and making it the
+# TLS of every request in the process. Bundles of Tauri 1's kind (zipped)
+# aren't made here.
+tauri-plugin-updater = { version = "~2.14", default-features = false, features = ["system-proxy"] }
 
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]

@@ -3,7 +3,8 @@
 //! - One HTTP client is shared by the requests to model providers
 //!   (`client`), so their connections are kept open and reused, and on
 //!   HTTP/2 requests at once share one. Downloads build their own clients
-//!   from `builder`; cloud hosts' SSH connections start at
+//!   from `builder`, or have a builder of their own set the same way by
+//!   `configure` (the app's updater); cloud hosts' SSH connections start at
 //!   `open_cloud_host`; the agent's browser starts with `browser_proxy`.
 //! - Each kind of connection goes its own way (`Routes`): directly, through
 //!   the system's proxy, as reqwest finds it, or through one of the saved
@@ -278,6 +279,19 @@ pub fn refresh() {
 /// providers go, for a client of its own (a download).
 pub async fn builder() -> reqwest::ClientBuilder {
     NET.builder().await
+}
+
+/// The settings as another window may have saved them, and the proxies'
+/// passwords their route needs, read for `configure`, which can't wait.
+pub async fn ready() {
+    NET.current().await;
+}
+
+/// A builder another crate made (the app's updater makes its own) given
+/// what `builder` gives one: the settings' timeout and the way the
+/// downloads go. For a closure that can't wait: `ready` first.
+pub fn configure(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    NET.configure(builder)
 }
 
 /// A TCP connection to a cloud host's SSH server, the way the settings say
@@ -596,6 +610,10 @@ impl Net {
         base_builder(&effective(&state))
     }
 
+    fn configure(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        configured(builder, &effective(&self.lock()))
+    }
+
     async fn open_cloud_host(&self, host: &str, port: u16) -> Result<Link, String> {
         self.current().await;
         let (hop, timeout) = {
@@ -743,10 +761,15 @@ fn effective(state: &State) -> Effective {
     }
 }
 
-/// The settings' timeout and way. The system's proxy is reqwest's own,
-/// found as the client is built.
+/// The settings' timeout and way.
 fn base_builder(effective: &Effective) -> reqwest::ClientBuilder {
-    let builder = reqwest::Client::builder().connect_timeout(effective.timeout);
+    configured(reqwest::Client::builder(), effective)
+}
+
+/// `builder` with the settings' timeout and way. The system's proxy is
+/// reqwest's own, found as the client is built.
+fn configured(builder: reqwest::ClientBuilder, effective: &Effective) -> reqwest::ClientBuilder {
+    let builder = builder.connect_timeout(effective.timeout);
     let on_this_computer = || reqwest::NoProxy::from_string(settings::ON_THIS_COMPUTER);
     let nowhere = || {
         let nowhere = reqwest::Proxy::all(NOWHERE).expect("a proxy's URL");

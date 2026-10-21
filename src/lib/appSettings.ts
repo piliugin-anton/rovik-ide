@@ -24,7 +24,8 @@ export type SettingsPage =
   | 'vfs'
   | 'network'
   | 'hosts'
-  | 'wsl';
+  | 'wsl'
+  | 'updates';
 
 export const PAGE_TITLE: Record<SettingsPage, string> = {
   menu: 'Settings',
@@ -40,6 +41,7 @@ export const PAGE_TITLE: Record<SettingsPage, string> = {
   network: 'Network',
   hosts: 'Cloud hosts',
   wsl: 'WSL',
+  updates: 'Updates',
 };
 
 const [page, setPage] = createSignal<SettingsPage | null>(null);

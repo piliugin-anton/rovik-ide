@@ -6,8 +6,9 @@
 // (lib/editorSettings.ts); the AI settings (providers, permissions,
 // subagents, Autopilot) through lib/aiSettingsStore.ts, which saves them
 // at once and tells the chat panel; the rest (project checks, heavy
-// commands, virtual files, network, cloud hosts) by the backend. There's nothing to
-// save on close. Sub-pages keep a Back bar pinned under the header,
+// commands, virtual files, network, cloud hosts) by the backend, and
+// updates' switch in the windows' shared state. There's nothing to save on
+// close. Sub-pages keep a Back bar pinned under the header,
 // outside the scrolling body.
 import { createSignal, Match, onCleanup, onMount, Show, Switch } from 'solid-js';
 import { PAGE_TITLE, type SettingsPage } from '../lib/appSettings';
@@ -39,6 +40,7 @@ import VirtualFilesSettings from './VirtualFilesSettings';
 import NetworkSettings from './NetworkSettings';
 import CloudHostsSettings, { type HostsSettingsController } from './CloudHostsSettings';
 import WslSettings from './WslSettings';
+import UpdatesSettings from './UpdatesSettings';
 
 /** The pages that edit the AI settings: shown once those are read. */
 const AI_PAGES: SettingsPage[] = [
@@ -225,6 +227,9 @@ export default function SettingsDialog(props: SettingsDialogProps) {
             </Match>
             <Match when={page() === 'wsl'}>
               <WslSettings />
+            </Match>
+            <Match when={page() === 'updates'}>
+              <UpdatesSettings onOpenPage={setPage} />
             </Match>
           </Switch>
         </div>

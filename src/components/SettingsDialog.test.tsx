@@ -192,6 +192,8 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
     },
     { label: 'Network', state: 'No proxy: connections go directly', warning: false },
     { label: 'Cloud hosts', state: '2 hosts, 1 connected, 2 chats there', warning: false },
+    // Its version once the window's updater has asked (App starts it).
+    { label: 'Updates', state: 'Looks for updates every 30 minutes', warning: false },
   ]);
   // Every item says what its page affects.
   for (const b of root.querySelectorAll('.settings-menu-item')) {

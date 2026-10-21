@@ -287,6 +287,13 @@ other versions go. An upgrade
 from the app does the same for a server whose installed build is older
 than that.
 
+The app updates itself (README, Updates), and the server's Rovik stays as
+it was. Once an administrator's app runs a newer version than the
+server's, it offers them, once, to upgrade the server to that version:
+for everyone on it, as "Upgrade for everyone" on the host's page in
+Settings → Cloud hosts does. Other users' apps tell them which
+administrators to ask.
+
 ## Removing Rovik
 
 `admin uninstall` stops every daemon and removes everything listed above.

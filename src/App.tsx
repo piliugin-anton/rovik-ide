@@ -112,6 +112,8 @@ import {
 import { startBrowser } from './lib/browserStartup';
 import { startSandbox } from './lib/sandboxStartup';
 import { startWsl } from './lib/wslStartup';
+import { startUpdates } from './lib/updates';
+import { startHostUpdates } from './lib/hostUpdates';
 import { initAgentRuns, onShowChat } from './lib/agentRuns';
 import { cloud, hostName, initCloud } from './lib/cloud';
 import SettingsDialog from './components/SettingsDialog';
@@ -376,6 +378,23 @@ export default function App() {
     // A save refused (changed on disk and kept to compare, or an error).
     return !openFiles().some((f) => f.dirty && !f.readOnly);
   }
+
+  // Rovik's own updates (lib/updates.ts): a look every 30 minutes, and an
+  // update's restart, which reopens this window's project, its unsaved
+  // tabs saved or let go first, as closing the window does. Then, once a
+  // new version runs, the cloud hosts are offered it (lib/hostUpdates.ts).
+  onMount(() => {
+    void startUpdates({
+      folder: () => rootPath(),
+      settle: async () => {
+        if (!(await settleUnsavedTabs('app'))) return false;
+        await keepTabsNow();
+        return true;
+      },
+      confirm: confirmDialog,
+    });
+    void startHostUpdates();
+  });
 
   // Closing the window with unsaved tabs asks first.
   onMount(() => {
