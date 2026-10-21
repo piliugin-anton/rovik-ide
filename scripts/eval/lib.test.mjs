@@ -149,6 +149,10 @@ describe('tampered runs in the summary (P02 in evolve-plan)', () => {
     const s = summarize(runs);
     assert.equal(s.tampered, 1);
     assert.match(summaryMarkdown(s, 'T'), /- Tampered: 1 run, failed whatever the tests said/);
+    // P09: and the runs to read.
+    const read = summarize([{ ...runs[1], review: ['it dug in git’s history: git reflog'] }]);
+    assert.equal(read.review, 1);
+    assert.match(summaryMarkdown(read, 'T'), /- Marked for reading: 1 run/);
     assert.doesNotMatch(summaryMarkdown(summarize(runs.slice(1)), 'T'), /Tampered/);
   });
 });

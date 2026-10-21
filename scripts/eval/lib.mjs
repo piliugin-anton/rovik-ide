@@ -451,8 +451,11 @@ export function summarize(results, { clusterOf = (task) => task } = {}) {
   return {
     runs: results.length,
     successRate: mean(results.map((r) => (r.success ? 1 : 0))),
-    // P02 (evolve-plan): runs whose change decided how the tests ran.
+    // P02 (evolve-plan): runs whose change decided how the tests ran, and
+    // others the grader or the monitor found tampered (P08, P09); P09:
+    // runs whose transcript a person should read.
     tampered: results.filter((r) => r.tampered?.length).length,
+    review: results.filter((r) => r.review?.length).length,
     perRep,
     successRateStdev: stdev(rates),
     successRateRange: rates.length ? [Math.min(...rates), Math.max(...rates)] : [0, 0],
@@ -569,7 +572,13 @@ export function summaryMarkdown(s, title) {
     ...(s.tampered
       ? [
           `- Tampered: ${s.tampered} run${s.tampered === 1 ? '' : 's'}, failed whatever ` +
-            'the tests said: the change decided how they ran',
+            'the tests said (each result says why)',
+        ]
+      : []),
+    ...(s.review
+      ? [
+          `- Marked for reading: ${s.review} run${s.review === 1 ? '' : 's'} (their \`review\`: ` +
+            'a weak signal in what they did)',
         ]
       : []),
     `- Cost: $${s.totalCostUsd.toFixed(2)} in all, ${money(s.meanCostUsd, 3)} a run` +

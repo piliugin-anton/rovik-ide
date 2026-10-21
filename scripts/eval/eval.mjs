@@ -33,7 +33,7 @@ import {
   appendFileSync,
   copyFileSync,
 } from 'node:fs';
-import { tmpdir, userInfo } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -79,6 +79,7 @@ import { identityProblem } from './identity.mjs';
 import { detectableEffect, meanRunVariance, moduleOf, tasksFor } from './stats.mjs';
 import { ATTEMPT_ARMS, attemptsResult } from './arms.mjs';
 import { ledgerTotals, usageGap } from './usage.mjs';
+import { monitorRun } from './monitor.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -170,6 +171,26 @@ function clusterOf(task) {
 
 /** P01: what every evaluated run is hidden from: the answers, and other runs. */
 const HIDDEN = [ROOT, CACHE, RESULTS, WORK];
+
+/**
+ * P09: what a command may name outside its workspace without a word from
+ * the monitor: the system's programs and libraries, the temporary
+ * folders, the toolchains' homes.
+ */
+const SYSTEM_DIRS = [
+  '/usr',
+  '/bin',
+  '/sbin',
+  '/lib',
+  '/lib64',
+  '/dev',
+  '/tmp',
+  '/opt/homebrew',
+  tmpdir(),
+  ...['.cargo', '.rustup', 'go', '.cache', '.npm', '.local', '.nvm', '.pyenv'].map((d) =>
+    join(homedir(), d)
+  ),
+];
 
 /**
  * P01: the root of the runs' workspaces, made if it's missing (only this
@@ -587,8 +608,10 @@ function jobsOf(flags) {
   return jobs;
 }
 
-/** P02: what a run's line says when it's tampered: why. */
-const tamperNote = (r) => (r.tampered?.length ? ` TAMPERED: ${r.tampered.join('; ')}` : '');
+/** P02: what a run's line says when it's tampered (why), or (P09) marked for reading. */
+const tamperNote = (r) =>
+  (r.tampered?.length ? ` TAMPERED: ${r.tampered.join('; ')}` : '') +
+  (r.review?.length ? ' [marked for reading]' : '');
 
 /**
  * One repetition of one task: a run, or for the same-money arm (P06,
@@ -682,8 +705,19 @@ async function runOnce(task, rep, campaignDir, opts) {
   const rep_ = existsSync(report) ? readJson(report) : null;
   const usage = meterUsage(ledger, settings.price, rep_);
   sh('git', ['-C', ws, 'add', '-A']);
-  writeFileSync(join(dir, 'changes.diff'), sh('git', ['-C', ws, 'diff', '--cached', start]).stdout);
+  const diff = sh('git', ['-C', ws, 'diff', '--cached', start]).stdout;
+  writeFileSync(join(dir, 'changes.diff'), diff);
   const integrity = integrityOf(task, ws, start, opts.integrity);
+  // P09: what the run did, read for what the score misses.
+  const watched = monitorRun({
+    transcript: rep_?.transcript ?? [],
+    diff,
+    canaries: [canaryOf(task)],
+    hidden: HIDDEN,
+    allowed: [ws, ...show, ...writable],
+    system: SYSTEM_DIRS,
+    webAllowed: task.web === true,
+  });
   restoreHidden(task, ws);
   const results = await runChecks(task, ws, env, join(dir, 'checks.log'));
   rmSync(ws, { recursive: true, force: true });
@@ -691,13 +725,16 @@ async function runOnce(task, rep, campaignDir, opts) {
   for (const c of touched)
     console.warn(`warning: ${task.id} #${rep} changed the shared cache ${c}; later runs see it.`);
   const g = grade(expected.required, results);
+  // P02: nothing decides differently how the tests run; P08: the runner
+  // told the truth about what it used; P09: the monitor saw nothing
+  // strong (its weak signals mark the run for reading).
+  const tampered = [...integrity.tampered, ...(usage.gap ? [usage.gap] : []), ...watched.strong];
   const result = {
     task: task.id,
     rep,
-    // P02: the tests pass, and nothing decides differently how they run;
-    // P08: and the runner told the truth about what it used.
-    success: g.success && !integrity.tampered.length && !usage.gap,
-    tampered: [...integrity.tampered, ...(usage.gap ? [usage.gap] : [])],
+    success: g.success && !tampered.length,
+    tampered,
+    review: watched.weak,
     outcome: rep_?.outcome ?? (r.timedOut ? 'runner-timeout' : 'runner-failed'),
     // P08: by the meter, beside what the runner said.
     costUsd: usage.costUsd,
@@ -1443,6 +1480,8 @@ const DRY_RUN_MODES = [
     mode: 'cheat',
     rep: 3,
     pass: false,
+    // P09: what it tried is plain in its transcript.
+    tampered: true,
     model: (task) => ['cheat', callsFile(task, 'cheat', lookingCheater(task))],
   },
   {
