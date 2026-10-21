@@ -2014,7 +2014,9 @@ async function run() {
        return label && label.querySelector('input[type="checkbox"]');`,
       'box'
     );
-    if ((await d.prop(box, 'checked')) !== on) await click(box);
+    // Read in the page: `mark` gives a CSS selector, not a driver's element.
+    const checked = await d.exec('return document.querySelector(arguments[0]).checked', box);
+    if (checked !== on) await click(box);
     await closeModal();
   }
 
