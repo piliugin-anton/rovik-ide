@@ -149,6 +149,7 @@ mod tests {
         test.core.emit(AgentEvent::RunStarted {
             dialog_id: "d".into(),
             run_id: "r".into(),
+            steerable: false,
         });
         let events = test.events.lock().unwrap().clone();
         assert_eq!(events.len(), 1);

@@ -1615,7 +1615,7 @@ impl Run {
         let path = recent
             .iter()
             .rev()
-            .filter(|m| super::plan::is_users(m))
+            .filter(|m| super::plan::is_request(m))
             .find_map(|m| worker::plan_file_named(&m.content, base))
             .or_else(|| super::run::chat_plan_file(&recent))?;
         let text = std::fs::read_to_string(&path).ok()?;

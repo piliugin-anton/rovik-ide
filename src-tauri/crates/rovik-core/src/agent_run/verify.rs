@@ -609,6 +609,11 @@ impl Run {
             if outcome != "repaired" {
                 return Ok(outcome);
             }
+            // P5 (steering-plan.md): a message the user sent meanwhile is
+            // read first, and the checks run again at the next end.
+            if self.read_waiting("repair").await? {
+                return Ok("continue".into());
+            }
             // Between rounds is a safe point too: a move or a drain asked
             // meanwhile pauses the run here (6.8, R02), and the checks run
             // again where it continues.

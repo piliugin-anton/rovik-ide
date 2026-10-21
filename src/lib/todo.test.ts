@@ -68,6 +68,23 @@ describe('todo checklist parsing', () => {
     assert.equal(latestChecklist(messages), null);
   });
 
+  it('a message sent to the run while it worked stays in the request (steering)', () => {
+    const messages = [
+      msg({ id: 'u1', role: 'user' }),
+      todoMsg('a1', { items: ['step'] }),
+      msg({
+        id: 's1',
+        role: 'user',
+        content: 'Use the HTTP client',
+        meta: { steer: { queuedAt: 1 } },
+      }),
+    ];
+    assert.deepEqual(
+      latestChecklist(messages)?.map((i) => i.title),
+      ['step']
+    );
+  });
+
   it('a still-streaming (partial JSON) call falls back to the older call', () => {
     const m = msg({
       id: 'a1',

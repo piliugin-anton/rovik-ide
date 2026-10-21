@@ -56,6 +56,7 @@ import {
   summaryMarkdown,
   validation,
   variantSettings,
+  steerArgs,
 } from './lib.mjs';
 import { run, startServer } from './proc.mjs';
 import { changedCaches, copyTree, fingerprint, protect } from './caches.mjs';
@@ -407,6 +408,9 @@ async function runOne(task, rep, campaignDir, opts) {
     String(caps.maxTokens),
     // G03: `--mode autopilot --effort …` for an Autopilot variant.
     ...(opts.args ?? []),
+    // D18 (steering-plan.md): the task's scripted messages, unless the
+    // campaign runs without them (`--no-steers`).
+    ...steerArgs(task, { steers: opts.steers !== false }),
   ];
   const started = Date.now();
   const r = await run(opts.runner, args, {
@@ -503,6 +507,8 @@ async function campaign(name, tasks, repeats, cap, flags, variant = {}) {
       price,
       policy,
       runner,
+      // A task's scripted messages, unless `--no-steers` (steering-plan.md).
+      steers: !flags['no-steers'],
       ...variant,
     });
   } finally {
@@ -516,7 +522,7 @@ async function campaignIn(
   repeats,
   cap,
   campaignDir,
-  { settings, price, policy, runner, perRun, args }
+  { settings, price, policy, runner, perRun, args, steers }
 ) {
   // The first run's estimate: every token it may use at the input price.
   const caps = perRun ?? BUDGET.perRun;
@@ -534,7 +540,14 @@ async function campaignIn(
     firstEstimate,
     runOne: async ({ task, rep }) => {
       process.stdout.write(`[${name}] ${task.id} #${rep}: `);
-      const r = await runOne(task, rep, campaignDir, { settings, policy, runner, perRun, args });
+      const r = await runOne(task, rep, campaignDir, {
+        settings,
+        policy,
+        runner,
+        perRun,
+        args,
+        steers,
+      });
       const cost = typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(3)}` : 'cost unknown';
       console.log(
         `${r.success ? 'PASS' : 'fail'} (${r.outcome}, ${r.grade.passed}/${r.grade.required} tests, ` +

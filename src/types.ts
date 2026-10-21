@@ -309,6 +309,12 @@ export interface ToolMeta {
   /** A user message: the mode it was sent in (lib/chatMode.ts). */
   mode?: import('./lib/chatMode').ChatMode;
   /**
+   * A user message sent to the run while it worked (steering): part of the
+   * request it was sent into, never a request of its own (lib/requests.ts).
+   * `queuedAt`: when it was sent, in milliseconds since the epoch.
+   */
+  steer?: { queuedAt: number };
+  /**
    * A user message: the PDFs among its `attachments`, with their names and
    * pages (the backend sends them under these names).
    */

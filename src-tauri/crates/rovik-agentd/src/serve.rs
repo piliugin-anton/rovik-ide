@@ -331,9 +331,9 @@ struct Tap {
 impl EventSink for Tap {
     fn agent(&self, event: &AgentEvent) {
         match event {
-            AgentEvent::RunStarted { dialog_id, run_id } => {
-                self.store.run_started(dialog_id, run_id)
-            }
+            AgentEvent::RunStarted {
+                dialog_id, run_id, ..
+            } => self.store.run_started(dialog_id, run_id),
             // A run the daemon's stop paused stays running, for the next
             // start to continue (5.4), and has no result yet.
             AgentEvent::RunEnded { outcome, .. } if drained(outcome) => {}

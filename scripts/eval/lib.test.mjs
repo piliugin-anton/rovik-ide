@@ -33,6 +33,7 @@ import {
   summarize,
   summaryMarkdown,
   validation,
+  steerArgs,
 } from './lib.mjs';
 
 describe('test output', () => {
@@ -747,5 +748,28 @@ describe('the Autopilot plan’s G03: pass@k and pass^k, the variants, any two c
     assert.match(md, /## Stages \(autopilot-balanced\)/);
     assert.doesNotMatch(md, /Dry run/);
     assert.match(comparisonMarkdown({ ...c, fake: true }), /Dry run with a scripted model/);
+  });
+});
+
+describe('steers', () => {
+  it("are the runner's --steer flags, in order, and none without them", () => {
+    const task = {
+      id: 't',
+      steers: [
+        { text: 'the tests are in tests/unit', after: 2 },
+        { text: 'use @client', after: 0 },
+      ],
+    };
+    assert.deepEqual(steerArgs(task), [
+      '--steer',
+      'the tests are in tests/unit@2',
+      '--steer',
+      'use @client@0',
+    ]);
+    assert.deepEqual(steerArgs(task, { steers: false }), []);
+    assert.deepEqual(steerArgs({ id: 'u' }), []);
+    assert.throws(() => steerArgs({ id: 'v', steers: [{ text: '', after: 1 }] }), /steer 1/);
+    assert.throws(() => steerArgs({ id: 'w', steers: [{ text: 'x', after: -1 }] }), /steer 1/);
+    assert.throws(() => steerArgs({ id: 'x', steers: 'no' }), /a list/);
   });
 });

@@ -9,7 +9,7 @@ mod common;
 use common::{start_request, until, write, Daemon, COMPUTER};
 use rovik_client::{HostState, Identity, Remote, UnixConnector};
 use rovik_core::agent_run::permissions::Permissions;
-use rovik_core::agent_run::{AgentConfig, StartKind};
+use rovik_core::agent_run::{AgentConfig, ApprovalDecision, StartKind, SteerReply, UserMessage};
 use rovik_core::chat_db::store::{self, MessageRow, NewDialog};
 use rovik_core::testing::{model, Reply, TestCore};
 use rovik_protocol::{Request, Response, Secret};
@@ -312,4 +312,89 @@ async fn a_long_run_there_ends_each_request_with_its_latest_step() {
         assert!(!note.contains("Active editor context"), "{note}");
         assert!(!note.contains("explicitly referenced"), "{note}");
     }
+}
+
+/// A start of `CHAT`, whose edits wait for the user's approval
+/// (`start_request`): its run stops at its write, mid-reply, for as long
+/// as a test needs.
+fn asking_start(url: &str, project: &std::path::Path) -> rovik_core::agent_run::StartRequest {
+    start_request(url, project, "Look".into())
+}
+
+/// The reply that waits for its approval.
+fn a_write() -> Reply {
+    Reply::Call {
+        id: "w1",
+        name: "write",
+        args: json!({ "path": "a.txt", "content": "x\n" }),
+    }
+}
+
+fn steer_message(id: &str, text: &str) -> UserMessage {
+    UserMessage {
+        id: id.into(),
+        content: text.into(),
+        meta: None,
+        attachments: Vec::new(),
+    }
+}
+
+/// steering-plan.md 3.8 (C01): a message sent to a run on the daemon while
+/// it works waits there (the status lists it), the run reads it at its next
+/// step, and its row is mirrored here, marked as sent while it worked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_to_a_run_there_is_read_and_mirrored_here() {
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let (app, remote) = app(&daemon).await;
+    let (url, seen) = model(vec![a_write(), Reply::Text("Done, as asked.")]).await;
+    remote.start(asking_start(&url, &project)).await.unwrap();
+    let started = sent(&app, |e| e["type"] == "runStarted").await;
+    assert_eq!(started["steerable"], true, "{started}");
+    sent(&app, |e| e["type"] == "approvalRequested").await;
+    let reply = remote
+        .steer(CHAT, steer_message("s1", "keep it short"))
+        .await;
+    assert_eq!(reply, Ok(Response::Steer(SteerReply::Queued)));
+    let status = remote.status().await.unwrap();
+    assert_eq!(status.steering.len(), 1, "{status:?}");
+    assert!(status.runs.iter().all(|r| r.steerable));
+    let allow = Request::AgentResolveApproval {
+        dialog_id: CHAT.into(),
+        tool_call_id: "w1".into(),
+        decision: ApprovalDecision::Allow,
+    };
+    remote.route(CHAT, allow).await.unwrap();
+    sent(&app, |e| e["type"] == "runEnded").await;
+    let rows = settled(&app, 5).await;
+    let steer = rows.iter().find(|r| r.id == "s1").expect("mirrored here");
+    assert_eq!(steer.content, "keep it short");
+    assert!(steer.meta.as_ref().unwrap().get("steer").is_some());
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(last.to_string().contains("keep it short"), "{last}");
+}
+
+/// steering-plan.md 3.8 (C01): Stop on a run there with a message waiting:
+/// the message comes back to the app (`SteerReturned`), and no row of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_there_hands_a_waiting_message_back_to_the_app() {
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let (app, remote) = app(&daemon).await;
+    let (url, _) = model(vec![a_write(), Reply::Text("never")]).await;
+    remote.start(asking_start(&url, &project)).await.unwrap();
+    sent(&app, |e| e["type"] == "approvalRequested").await;
+    remote
+        .steer(CHAT, steer_message("s1", "on second thought"))
+        .await
+        .unwrap();
+    let stop = Request::AgentStop {
+        dialog_id: CHAT.into(),
+    };
+    assert_eq!(remote.route(CHAT, stop).await, Ok(Response::Bool(true)));
+    let returned = sent(&app, |e| e["type"] == "steerReturned").await;
+    assert_eq!(returned["messageIds"], json!(["s1"]));
+    assert_eq!(returned["outcome"], "stopped");
+    sent(&app, |e| e["type"] == "runEnded").await;
+    assert!(!daemon.rows(CHAT).iter().any(|r| r.id == "s1"));
 }

@@ -171,6 +171,10 @@ pub enum AgentEvent {
     RunStarted {
         dialog_id: String,
         run_id: String,
+        /// The run takes messages while it works (`AgentSteer`): an
+        /// Agent-mode lead's. Absent: false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        steerable: bool,
     },
     RunEnded {
         dialog_id: String,
@@ -256,6 +260,14 @@ pub enum AgentEvent {
         profile_id: String,
         route: String,
     },
+    /// Messages sent to the run (`AgentSteer`) that it ended without
+    /// reading: they go back into the chat's input. `outcome` is how the
+    /// run ended. Told before its `RunEnded`.
+    SteerReturned {
+        dialog_id: String,
+        message_ids: Vec<String>,
+        outcome: String,
+    },
     /// The first reply to a sent message settled: answered (`ok`), or not,
     /// in which case the message is marked failed and its draft comes back.
     UserMessageSettled {
@@ -333,6 +345,7 @@ impl AgentEvent {
             | AgentEvent::QuestionsSettled { dialog_id, .. }
             | AgentEvent::ToolNote { dialog_id, .. }
             | AgentEvent::UserMessageSettled { dialog_id, .. }
+            | AgentEvent::SteerReturned { dialog_id, .. }
             | AgentEvent::ContextUpdated { dialog_id, .. }
             | AgentEvent::Checklist { dialog_id, .. }
             | AgentEvent::SubagentStarted { dialog_id, .. }

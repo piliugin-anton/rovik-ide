@@ -379,6 +379,63 @@ async fn stop_during_a_slow_upload_starts_no_run() {
     assert!(seen.lock().unwrap().is_empty(), "no request to the model");
 }
 
+/// steering-plan.md 3.8 (C02): Stop while a message to a run there has
+/// its files going up cancels the upload, and still stops the run: the
+/// message fails (its text comes back into the input), and no row of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_during_a_steers_upload_stops_the_run() {
+    let daemon = Daemon::start(&["--same-machine"]).await;
+    let project = project(&daemon);
+    let app = App::through(&daemon, SlowConnector(UnixConnector(daemon.socket.clone()))).await;
+    let pdf = app.attach(pdf_file(2 << 20)).await;
+    // Its edit waits for the user's approval (`start_request`).
+    let (url, _) = model(vec![
+        Reply::Call {
+            id: "w1",
+            name: "write",
+            args: json!({ "path": "a.txt", "content": "x\n" }),
+        },
+        Reply::Text("never"),
+    ])
+    .await;
+    let mut start = start_request(&url, &project, "Look".into());
+    start.profile.pdf = true;
+    app.remote.start(start).await.unwrap();
+    until("the approval", || {
+        app.events()
+            .iter()
+            .any(|e| e["type"] == "approvalRequested")
+            .then_some(())
+    })
+    .await;
+    let remote = Arc::clone(&app.remote);
+    let message = UserMessage {
+        id: "s1".into(),
+        content: "read this".into(),
+        meta: Some(json!({ "pdfs": [{ "id": pdf, "name": "notes.pdf", "pages": 1 }] })),
+        attachments: vec![pdf.clone()],
+    };
+    let steering = tokio::spawn(async move { remote.steer(CHAT, message).await });
+    until("the upload under way", || {
+        (app.uploaded() > 0).then_some(())
+    })
+    .await;
+    let stop = Request::AgentStop {
+        dialog_id: CHAT.into(),
+    };
+    assert_eq!(app.remote.route(CHAT, stop).await, Ok(Response::Bool(true)));
+    let steered = steering.await.unwrap();
+    assert!(steered.is_err(), "{steered:?}");
+    app.ended(1).await;
+    let ended = app
+        .events()
+        .into_iter()
+        .find(|e| e["type"] == "runEnded")
+        .unwrap();
+    assert_eq!(ended["outcome"], "stopped", "{ended}");
+    assert!(!daemon.rows(CHAT).iter().any(|r| r.id == "s1"));
+}
+
 /// 6.1: a file only the daemon has, such as a screenshot a run took there,
 /// is here before the frontend hears of the row that names it. Another
 /// app of the same computer sends one, so no browser is needed.

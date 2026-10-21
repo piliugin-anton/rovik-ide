@@ -61,6 +61,10 @@ pub struct CtxMsg {
     /// Written by the IDE in the user role (check results), not the user.
     #[serde(default)]
     pub harness: bool,
+    /// Sent by the user while the run worked (steering-plan.md): their
+    /// words, part of the request, not a request of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steer: bool,
     /// The user dismissed the open checklist with this message.
     #[serde(default)]
     pub checklist_closed: bool,
@@ -77,6 +81,7 @@ impl CtxMsg {
             tool_call_id: m.tool_call_id.clone(),
             attachments: m.attachments.clone(),
             harness: m.harness,
+            steer: m.steer,
             checklist_closed: m.checklist_closed,
         }
     }
@@ -101,6 +106,7 @@ impl CtxMsg {
             tool_call_id: self.tool_call_id.clone(),
             attachments: self.attachments.clone(),
             harness: self.harness,
+            steer: self.steer,
             checklist_closed: self.checklist_closed,
             reasoning: None,
         }
@@ -121,6 +127,7 @@ impl CtxMsg {
             tool_call_id: None,
             attachments: Vec::new(),
             harness: false,
+            steer: false,
             checklist_closed: false,
         }
     }

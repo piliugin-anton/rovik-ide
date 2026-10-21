@@ -89,6 +89,7 @@ import ChatLocation from './ChatLocation';
 import UploadProgress from './UploadProgress';
 import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
+import { isRequestMessage } from '../lib/requests';
 import {
   dismissChecklist,
   liveChecklist,
@@ -103,20 +104,28 @@ import {
 import QuestionPanel from './QuestionPanel';
 import {
   configureAgent,
+  handBackSteers,
   initAgentRuns,
   isRunning,
   localDate,
   onMessageUnanswered,
   onReasoningLearned,
   onApiRouteLearned,
+  onRunEnded,
   onShowChat,
+  onSteerReturned,
+  onSteersLeft,
+  queuedMessage,
   setRunEffort,
   startRun,
+  steer,
   stopRun,
   toolNotes,
+  unsteer,
   type AgentConfig,
   type StartKind,
   type StartRequest,
+  type UserMessage,
 } from '../lib/agentRuns';
 import type { ShowTarget } from '../lib/remoteNotices';
 import { aiSettingsRevision, openAppSettings } from '../lib/appSettings';
@@ -142,7 +151,8 @@ import {
 } from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
-import { runUsage, transcript, transcriptHold, usageLabel } from '../lib/subagents';
+import { runsSubagents, runUsage, transcript, transcriptHold, usageLabel } from '../lib/subagents';
+import { chatsWaitingOnApprovals } from '../lib/approvals';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
   kindNames,
@@ -173,9 +183,28 @@ import {
   messageText,
   pdfsOf,
   segmentKind,
+  segmentsOfMessage,
   type ChipSegment,
   type DraftSegment,
 } from '../lib/composerSegments';
+import {
+  clearSteerDraft,
+  clearSteerDraftsOf,
+  listSteerDrafts,
+  returnSteerDrafts,
+  saveSteerDraft,
+  steerDraft,
+  takeReturnedSteerDrafts,
+  type SteerDraft,
+} from '../lib/steerDrafts';
+import {
+  checksRunning,
+  HINT_TEXT,
+  judgeSteerDrafts,
+  queuedLabel,
+  sendAction,
+  showsSteerHint,
+} from '../lib/steering';
 import {
   copiedSegments,
   copySegments,
@@ -242,6 +271,14 @@ export default function ChatPanel(props: ChatProps) {
    * Autopilot task's driver is at work between two of its runs.
    */
   const sending = () => isRunning(activeDialogId());
+  /**
+   * The open chat's run takes messages while it works (an Agent-mode run's,
+   * once it has started): what's typed goes to it (steering-plan.md 3.7).
+   */
+  const steerable = () => {
+    const id = activeDialogId();
+    return !!id && sending() && store.isSteerable(id);
+  };
   /** Chats with a run going on, being started, or their task's driver at work (spinner in the chat list). */
   const runningListIds = createMemo(() => ({
     ...store.state.running,
@@ -834,6 +871,7 @@ export default function ChatPanel(props: ChatProps) {
       // Runs going on are known before drafts are judged unanswered.
       await initAgentRuns();
       await recoverDraftsAfterRestart();
+      await recoverSteerDrafts(false);
       await recoverUnsettledSends(store.projectId());
       setDraftsJudged(true);
       const active = activeDialogId();
@@ -1099,6 +1137,7 @@ export default function ChatPanel(props: ChatProps) {
     // there once it can be.
     if (store.isRunning(id)) await stopRun(id).catch(() => undefined);
     takePendingDraft(id);
+    clearSteerDraftsOf(id);
     cancelComposerDraft(id);
     // A deleted chat leaves search results right away.
     setSearchRows((rows) => rows?.filter((r) => r.dialog.id !== id) ?? null);
@@ -2440,10 +2479,19 @@ export default function ChatPanel(props: ChatProps) {
    * draft is loaded on mount / dialog switch / restart.
    */
 
-  /** Loads the dialog's saved unsent input into the (empty) composer. */
+  /**
+   * Loads the dialog's saved unsent input into the (empty) composer, then
+   * the messages its run ended without reading, after it: the composer's
+   * next save keeps both.
+   */
   async function restoreComposerDraft(dialogId: string) {
     const segments = await loadComposerDraft(dialogId);
-    if (!segments || segments.length === 0 || !isMounted || activeDialogId() !== dialogId) return;
+    // Queued after the draft's own (below), so they come after its text.
+    const returned = () => queueMicrotask(() => restoreReturnedSteers(dialogId));
+    if (!segments || segments.length === 0 || !isMounted || activeDialogId() !== dialogId) {
+      returned();
+      return;
+    }
     queueMicrotask(() => {
       // Chips come back as chips: file references and pasted text are
       // rebuilt by the same path as sent-but-unanswered drafts. Legacy
@@ -2457,6 +2505,7 @@ export default function ChatPanel(props: ChatProps) {
         createdAt: new Date().toISOString(),
       });
     });
+    returned();
   }
 
   /** Schedules a debounced save of what's currently in the composer. */
@@ -2547,27 +2596,53 @@ export default function ChatPanel(props: ChatProps) {
     }
     if (!isMounted || store.projectId() !== projectId) return;
     const pending = new Set(listPendingDrafts().map((d) => d.messageId));
-    const drafts: PendingDraft[] = sends
-      .filter((s) => !judgedSends.has(s.messageId) && !pending.has(s.messageId))
+    // A message sent to a run is judged by its own draft (recoverSteerDrafts).
+    const steering = new Set(listSteerDrafts().map((d) => d.messageId));
+    const fresh = sends.filter(
+      (s) =>
+        !judgedSends.has(s.messageId) && !pending.has(s.messageId) && !steering.has(s.messageId)
+    );
+    // The messages that window's run was sent while it worked, never
+    // answered (none is at work on their chats now): marked failed, and
+    // back into the input after the send they followed, in order. A chat
+    // has one pending draft, so they come back as returned steer drafts.
+    const steers = fresh.filter((s) => s.steer);
+    const at = Date.now();
+    steers.forEach((s, i) => {
+      judgedSends.add(s.messageId);
+      markMessageFailed(s.dialogId, s.messageId);
+      saveSteerDraft({
+        dialogId: s.dialogId,
+        messageId: s.messageId,
+        segments: [{ type: 'text', text: s.content }],
+        createdAt: new Date(at + i).toISOString(),
+        returned: true,
+      });
+    });
+    const drafts: PendingDraft[] = fresh
+      .filter((s) => !s.steer)
       .map((s) => ({
         dialogId: s.dialogId,
         messageId: s.messageId,
         segments: [{ type: 'text', text: s.content }],
         createdAt: new Date().toISOString(),
       }));
-    if (drafts.length === 0) return;
+    if (drafts.length === 0 && steers.length === 0) return;
     for (const d of drafts) {
       judgedSends.add(d.messageId);
       savePendingDraft(d);
     }
     try {
-      await judgeDrafts(drafts);
+      if (drafts.length > 0) await judgeDrafts(drafts);
     } catch (err) {
       console.error('Judging unanswered sends failed:', err);
       return;
     }
     const active = activeDialogId();
-    if (active) restoreDraftForDialog(active);
+    if (!active) return;
+    restoreDraftForDialog(active);
+    // After the send's own text, which goes back in a microtask.
+    queueMicrotask(() => restoreReturnedSteers(active));
   }
 
   // Drafts are first judged once runs going on are known (onMount); a
@@ -2577,7 +2652,9 @@ export default function ChatPanel(props: ChatProps) {
     on(
       [draftsJudged, () => Object.keys(cloud.caughtUp).join(' ')],
       ([judged, hosts]) => {
-        if (judged && hosts) void recoverDraftsAfterRestart();
+        if (!judged || !hosts) return;
+        void recoverDraftsAfterRestart();
+        void recoverSteerDrafts();
       },
       { defer: true }
     )
@@ -2851,7 +2928,7 @@ export default function ChatPanel(props: ChatProps) {
     const list = store.messagesOf(dialogId);
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
-      if (m.role === 'user' && !m.meta?.harness) return m.meta?.mode ?? 'agent';
+      if (isRequestMessage(m)) return m.meta?.mode ?? 'agent';
     }
     return chatMode();
   }
@@ -2953,7 +3030,7 @@ export default function ChatPanel(props: ChatProps) {
     const list = messages();
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
-      if (m.role === 'user' && !m.meta?.harness) {
+      if (isRequestMessage(m)) {
         return /^Implement the plan in `([^`]+)`/.exec(m.content)?.[1];
       }
     }
@@ -3155,8 +3232,9 @@ export default function ChatPanel(props: ChatProps) {
     const list = store.messagesOf(dialogId);
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
-      // The IDE's own messages (check failures) aren't the user's request.
-      if (m.role !== 'user' || m.failed || m.meta?.harness) continue;
+      // The IDE's own messages (check failures) aren't the user's request,
+      // nor are the user's sent while a run worked (lib/requests.ts).
+      if (!isRequestMessage(m) || m.failed) continue;
       if (m.meta?.sentContent) return m.meta.sentContent;
       // Sent before the wire copy was stored: rebuild it from the current editor.
       return buildWireContent(m.content, []);
@@ -3229,6 +3307,15 @@ export default function ChatPanel(props: ChatProps) {
     if (readOnly()) return;
     // A question is waiting: what's typed is the answer, not a new request.
     const waiting = activeDialogId() ? pendingQuestionsIn(activeDialogId()!) : undefined;
+    const action = sendAction({
+      questionWaits: !!waiting,
+      running: sending(),
+      steerable: steerable(),
+    });
+    // A run that takes messages: this one goes to it. Any other run: the
+    // text stays until it has ended.
+    if (action === 'steer') return handleSteer();
+    if (action === 'hold') return;
     if (waiting) {
       const segments = serializeComposer();
       const reply = messageText(segments).trim();
@@ -3382,6 +3469,263 @@ export default function ChatPanel(props: ChatProps) {
       });
     }
   }
+
+  /*
+   * -----------------------------------------------------------------------
+   * Messages to the run while it works (steering-plan.md 3.7)
+   * -----------------------------------------------------------------------
+   */
+
+  /**
+   * Sends what's typed to the open chat's run while it works: the run reads
+   * it at its next step, as part of the request it works on. It's built as
+   * a message is (the text, chips, files and the editor's context), without
+   * a mode, and shows at once at the end of the chat as queued. Its draft
+   * keeps it until the run has read it, so a crash brings it back.
+   */
+  async function handleSteer() {
+    const text = input().trim();
+    const profile = activeProfile();
+    const dialog = activeDialog();
+    const selectedFiles = composerReferences();
+    const segments = serializeComposer();
+    const attachments = attachmentIds(segments);
+    if (!profile || !dialog || (!text && selectedFiles.length === 0 && attachments.length === 0)) {
+      return;
+    }
+    if (inputTextareaRef?.querySelector('.chat-loading-chip')) {
+      notify({
+        title: 'A file is still being added',
+        message: 'Send again in a moment.',
+        timeout: 4000,
+      });
+      return;
+    }
+    const notTaken = segments
+      .map(segmentKind)
+      .filter((kind): kind is AttachmentKind => !!kind && !modelTakes(profile, kind));
+    if (notTaken.length > 0) {
+      notifyNotTaken(notTaken);
+      return;
+    }
+    const wireContent = buildWireContent(text, selectedFiles);
+    const pdfs = pdfsOf(segments);
+    const message: UserMessage = {
+      id: crypto.randomUUID(),
+      content: text,
+      meta: {
+        ...(wireContent && wireContent !== text ? { sentContent: wireContent } : {}),
+        ...(pdfs.length > 0 ? { pdfs } : {}),
+      },
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+    const dialogId = dialog.id;
+    saveSteerDraft({
+      dialogId,
+      messageId: message.id,
+      segments,
+      createdAt: new Date().toISOString(),
+    });
+    store.queueSteer(dialogId, {
+      message: queuedMessage(message),
+      queuedAt: Date.now(),
+      mode: runModeFor(dialogId),
+    });
+    setFocusMessageId(null);
+    clearChatInput();
+    setFileSuggestionsOpen(false);
+    setFileTriggerStart(null);
+    setFileQuery('');
+    setSelectedSuggestionIndex(0);
+    clearComposerDraft(dialogId);
+    listController?.followLatest();
+
+    let reply;
+    try {
+      reply = await steer(dialogId, message);
+    } catch (err) {
+      handBackSteers(dialogId, [message.id], {
+        title: 'Your message wasn’t sent',
+        message: String(err),
+      });
+      return;
+    }
+    if (reply.kind === 'refused') {
+      handBackSteers(dialogId, [message.id], {
+        title: 'The agent can’t take your message now',
+        message: reply.reason,
+      });
+    } else if (reply.kind === 'ended') {
+      // The run was ending: the message is for the next one.
+      store.markSteerLate(dialogId, message.id);
+      if (!isRunning(dialogId)) void sendLateSteer(dialogId);
+    }
+  }
+
+  /**
+   * The messages the chat's run could no longer take (`ended`), now that it
+   * has ended: the first is sent as a new message, in the mode of the run
+   * it was meant for, as a send is (its draft the pending draft). A second
+   * one, or one the chat can't take now, comes back into the input.
+   */
+  async function sendLateSteer(dialogId: string) {
+    if (isRunning(dialogId)) return;
+    const late = store.queuedOf(dialogId).filter((q) => q.late);
+    if (late.length === 0) return;
+    const [first, ...rest] = late;
+    if (rest.length > 0) {
+      handBackSteers(
+        dialogId,
+        rest.map((q) => q.message.id),
+        {
+          title: 'Your messages are back in the input',
+          message: 'Only the first message sent while the agent was finishing goes as a new one.',
+        }
+      );
+    }
+    const blocked = !activeProfile()
+      ? 'Choose a model, then send it again.'
+      : activeDialogId() !== dialogId
+        ? 'Its chat wasn’t the one open when the agent finished.'
+        : readOnlyReason(store.summaryOf(dialogId)?.place, cloud.hosts);
+    if (blocked) {
+      handBackSteers(dialogId, [first.message.id], {
+        title: 'Your message wasn’t sent',
+        message: blocked,
+      });
+      return;
+    }
+    store.unqueueSteer(dialogId, first.message.id);
+    const segments = steerDraft(first.message.id)?.segments ?? segmentsOfMessage(first.message);
+    clearSteerDraft(first.message.id);
+    const meta = { ...first.message.meta, mode: first.mode ?? 'agent' };
+    const message = {
+      id: first.message.id,
+      content: first.message.content,
+      meta,
+      ...(first.message.attachments?.length ? { attachments: first.message.attachments } : {}),
+    };
+    // What's in the input now is what was typed since: it stays as it is.
+    const back = await sendKeepingInput(
+      { dialogId, messageId: message.id, segments, remote: !!store.summaryOf(dialogId)?.place },
+      () => sendMessage(dialogId, message, meta.sentContent),
+      {
+        savePending: savePendingDraft,
+        clearPending: clearPendingDraft,
+        saveDraft: async () => {},
+        clearDraft: () => {},
+        started: () => {},
+      }
+    );
+    if (back && activeDialogId() === dialogId) {
+      restoreDraftToComposer({
+        dialogId,
+        messageId: message.id,
+        segments: back,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  /** ✕ on a queued message: it comes back into the input, unless the run read it already. */
+  async function takeBackSteer(messageId: string) {
+    const dialogId = activeDialogId();
+    if (!dialogId) return;
+    const queued = store.queuedOf(dialogId).find((q) => q.message.id === messageId);
+    if (!queued) return;
+    // One to send after the run is the input's alone: the run never had it.
+    if (queued.late) return handBackSteers(dialogId, [messageId]);
+    let taken: boolean;
+    try {
+      taken = await unsteer(dialogId, messageId);
+    } catch (err) {
+      notify({
+        kind: 'error',
+        title: 'The message couldn’t be taken back',
+        message: String(err),
+        timeout: 8000,
+      });
+      return;
+    }
+    if (taken) handBackSteers(dialogId, [messageId]);
+    else {
+      notify({
+        title: 'The agent read it already',
+        message: 'Your message was read before it could be taken back.',
+        timeout: 6000,
+      });
+    }
+  }
+
+  /** The open chat's messages that came back from its run go into the input, oldest first. */
+  function restoreReturnedSteers(dialogId: string) {
+    if (!isMounted || activeDialogId() !== dialogId) return;
+    const drafts = takeReturnedSteerDrafts(dialogId);
+    if (drafts.length === 0) return;
+    for (const draft of drafts) restoreDraftToComposer(draft);
+    scheduleComposerDraftSave();
+  }
+
+  // Messages that came back from a run go into its chat's input (the open one's now).
+  onCleanup(onSteerReturned((dialogId) => queueMicrotask(() => restoreReturnedSteers(dialogId))));
+  // A run ended: a message sent too late for it goes as a new one.
+  onCleanup(onRunEnded((dialogId) => void sendLateSteer(dialogId)));
+  // A host chat's run ended with messages it said nothing of: judged once the host caught up.
+  onCleanup(onSteersLeft(() => void recoverSteerDrafts()));
+
+  /**
+   * The steering drafts no run holds any more (lib/steering.ts
+   * `judgeSteerDrafts`): after a restart, and after a host chat's run ended
+   * with messages it said nothing of. A running chat's, and a host chat's
+   * until its host has caught up, wait. What comes back goes into the open
+   * chat's input (`restoreNow`; at startup, after its saved draft:
+   * restoreComposerDraft), another chat's when it's opened.
+   */
+  async function recoverSteerDrafts(restoreNow = true) {
+    const drafts: SteerDraft[] = listSteerDrafts().filter((d) => !d.returned);
+    if (drafts.length === 0) return;
+    try {
+      // Another window's run may read its chat's yet (lib/instances.ts).
+      const elsewhere = await chatsAtWorkElsewhere(drafts.map((d) => d.dialogId));
+      await judgeSteerDrafts(drafts, {
+        isRunning: (id) => store.isRunning(id) || elsewhere.has(id),
+        isQueued: (id, messageId) => store.queuedOf(id).some((q) => q.message.id === messageId),
+        placeOf: async (id) => {
+          const known = store.summaryOf(id);
+          return known ? known.place : (await chatApi.getDialog(id).catch(() => null))?.place;
+        },
+        caughtUp: cloud.caughtUp,
+        stored: (ids) => chatApi.messagesStored(ids),
+        answered: (ids) => chatApi.messagesAnswered(ids),
+        clear: clearSteerDraft,
+        markFailed: markMessageFailed,
+        giveBack: (draft) => returnSteerDrafts([draft.messageId]),
+      });
+    } catch (err) {
+      console.error('Judging the messages sent to runs failed:', err);
+      return;
+    }
+    const active = activeDialogId();
+    if (active && restoreNow) restoreReturnedSteers(active);
+  }
+
+  /** What a queued message waits for, as the open chat shows it. */
+  const queuedNow = createMemo(() => {
+    const id = activeDialogId();
+    return id ? store.queuedOf(id) : [];
+  });
+  const queuedLabelNow = createMemo(() => {
+    const id = activeDialogId();
+    return queuedLabel({
+      approval: !!id && !!chatsWaitingOnApprovals()[id],
+      subagents: runsSubagents(id),
+      checks: checksRunning(messages()),
+    });
+  });
+  /** From the third message sent to one request's run: the hint under the input (D16). */
+  const steerHint = createMemo(() =>
+    showsSteerHint(messages(), queuedNow().filter((q) => !q.late).length)
+  );
 
   /** Line wrappers the webview puts composer lines in (Enter splits them). */
   function isComposerBlock(n: Node | null): boolean {
@@ -3965,6 +4309,9 @@ export default function ChatPanel(props: ChatProps) {
         planMessageId={planMessageId()}
         onImplementPlan={implementPlan}
         readOnly={!!readOnly()}
+        queued={queuedNow()}
+        queuedLabel={queuedLabelNow()}
+        onUnsteer={(id) => void takeBackSteer(id)}
       />
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
@@ -4068,11 +4415,13 @@ export default function ChatPanel(props: ChatProps) {
                   ? 'Add a model in settings first'
                   : waitingQuestion()
                     ? 'Answer the question above, or type your own answer…'
-                    : chatMode() === 'plan'
-                      ? 'Describe what to plan…'
-                      : chatMode() === 'autopilot'
-                        ? 'Describe the task…'
-                        : 'Message the model...'
+                    : steerable()
+                      ? 'Add to the task: the agent reads it at its next step'
+                      : chatMode() === 'plan'
+                        ? 'Describe what to plan…'
+                        : chatMode() === 'autopilot'
+                          ? 'Describe the task…'
+                          : 'Message the model...'
             }
           />
 
@@ -4192,26 +4541,58 @@ export default function ChatPanel(props: ChatProps) {
                 </button>
               }
             >
-              <button
-                onClick={stopRequest}
-                class="chat-send-button stop"
-                title="Stop"
-                aria-label="Stop the response"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="12"
-                  height="12"
-                  fill="currentColor"
-                  aria-hidden="true"
+              <div class="chat-run-actions">
+                {/* A run that takes messages: Send, to it, beside Stop (D3). */}
+                <Show
+                  when={
+                    steerable() &&
+                    (!!input().trim() || referencedFiles().length > 0 || attachmentCount() > 0)
+                  }
                 >
-                  <rect x="5" y="5" width="14" height="14" rx="2" />
-                </svg>
-              </button>
+                  <button
+                    onClick={() => void handleSend()}
+                    disabled={!activeProfile() || !!readOnly()}
+                    class="chat-steer-button"
+                    title="Send to the agent: it reads it at its next step"
+                    aria-label="Send to the agent"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="14"
+                      height="14"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z" />
+                    </svg>
+                  </button>
+                </Show>
+                <button
+                  onClick={stopRequest}
+                  class="chat-send-button stop"
+                  title="Stop"
+                  aria-label="Stop the response"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="12"
+                    height="12"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <rect x="5" y="5" width="14" height="14" rx="2" />
+                  </svg>
+                </button>
+              </div>
             </Show>
           </div>
         </div>
       </div>
+      <Show when={steerHint()}>
+        <div class="chat-steer-hint" role="note">
+          {HINT_TEXT}
+        </div>
+      </Show>
       <div class="chat-model-select">
         <div class="chat-model-select-row">
           <ModeSelector />

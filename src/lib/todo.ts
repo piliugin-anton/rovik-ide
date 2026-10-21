@@ -6,6 +6,7 @@
 // the whole list, so the latest call in a run is the current state; there's
 // no separate storage, the tool calls are the record.
 import type { ChatMessage } from '../types';
+import { isRequestMessage } from './requests';
 
 export type TodoStatus = 'pending' | 'in_progress' | 'done' | 'skipped' | 'changed';
 
@@ -69,7 +70,8 @@ function todoInMessage(m: ChatMessage): TodoItem[] | null {
 
 /**
  * The checklist of the current request in a chat: the latest todo call since
- * the user's last message (the IDE's own messages don't start a request).
+ * the user's last message (the IDE's own messages don't start a request, nor
+ * do the user's sent while the run worked: lib/requests.ts).
  *
  * Parsing only: this stays to show a call while it streams. Everything else
  * uses the backend (`chat_checklist` when idle, the `checklist` event while
@@ -79,7 +81,7 @@ function todoInMessage(m: ChatMessage): TodoItem[] | null {
 export function latestChecklist(messages: ChatMessage[]): TodoItem[] | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role === 'user' && !m.meta?.harness) return null;
+    if (isRequestMessage(m)) return null;
     const items = todoInMessage(m);
     if (items) return items;
   }

@@ -1915,9 +1915,20 @@ pub fn is_harness(m: &MessageRow) -> bool {
 }
 
 /// Whether a stored message is a request of the user's: theirs, not one
-/// the IDE wrote in their name.
-pub fn is_users(m: &MessageRow) -> bool {
-    m.role == "user" && !is_harness(m)
+/// the IDE wrote in their name, nor one they sent while the run worked
+/// (`is_steer`), which is part of the request it was sent in.
+pub fn is_request(m: &MessageRow) -> bool {
+    m.role == "user" && !is_harness(m) && !is_steer(m)
+}
+
+/// A message the user sent while the run worked (`meta.steer`,
+/// steering-plan.md): their words, part of the current request.
+pub fn is_steer(m: &MessageRow) -> bool {
+    m.role == "user"
+        && m.meta
+            .as_ref()
+            .and_then(|meta| meta.get("steer"))
+            .is_some_and(|s| !s.is_null())
 }
 
 /// Whether the user dismissed a checklist here (`meta.checklistClosed`):
@@ -1981,7 +1992,7 @@ fn todo_in_message(m: &MessageRow) -> Option<Vec<TodoItem>> {
 /// tells the model to close the old one when the new message is a different
 /// task.
 pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
-    let last_user = messages.iter().rposition(is_users);
+    let last_user = messages.iter().rposition(is_request);
     let Some(last) = last_user else {
         // No user message yet: whatever the latest todo call says.
         for m in messages.iter().rev() {
@@ -2018,7 +2029,7 @@ pub fn current_checklist(messages: &[MessageRow]) -> Option<CurrentChecklist> {
     // The previous request only: past the last user message, up to the one
     // before it. A second user message stops the search, so an old
     // checklist doesn't linger across unrelated work.
-    let prev_user = messages[..last].iter().rposition(is_users);
+    let prev_user = messages[..last].iter().rposition(is_request);
     let from = prev_user.map(|p| p + 1).unwrap_or(0);
     for m in messages[from..last].iter().rev() {
         if let Some(items) = todo_in_message(m) {
@@ -3372,6 +3383,24 @@ mod tests {
         assert_eq!(carried.from_message_id.as_deref(), Some("a1"));
         assert_eq!(carried.items.len(), 2);
         assert_eq!(open_steps(&carried.items).len(), 1);
+    }
+
+    /// 3.6: a message the user sent while the run worked is part of its
+    /// request: the run's own checklist stays its own, not carried.
+    #[test]
+    fn a_steering_message_doesnt_carry_the_runs_checklist() {
+        let messages = vec![
+            row("u1", "user", None),
+            todo_row(
+                "a1",
+                json!({ "items": [{ "title": "a", "status": "done" }, { "title": "b", "status": "pending" }] }),
+            ),
+            row("s1", "user", Some(json!({ "steer": { "queuedAt": 1 } }))),
+        ];
+        assert!(is_steer(&messages[2]) && !is_request(&messages[2]));
+        let current = current_checklist(&messages).expect("the run's");
+        assert!(!current.carried, "{current:?}");
+        assert_eq!(current.from_message_id.as_deref(), Some("a1"));
     }
 
     /// A fully settled checklist is not carried: the agent is wrapping up.

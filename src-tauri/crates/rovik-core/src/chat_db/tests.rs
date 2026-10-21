@@ -527,17 +527,98 @@ fn unsettled_sends_are_the_chats_latest_unanswered() {
                 dialog_id: "cut-mid-reply".into(),
                 message_id: "c-u2".into(),
                 content: "Crash me".into(),
+                steer: false,
             },
             UnsettledSend {
                 dialog_id: "nothing-back".into(),
                 message_id: "n-u".into(),
                 content: "anyone?".into(),
+                steer: false,
             },
         ]
     );
     let loose = unsettled_sends(&conn, None).unwrap();
     assert_eq!(loose.len(), 1);
     assert_eq!(loose[0].message_id, "x-u");
+}
+
+/// steering-plan.md 3.7 (test 14): the app ended with messages sent to a
+/// run while it worked stored after the chat's last finished reply: each
+/// comes back, in order, with the send they followed when no reply came
+/// after it either. One a reply came after doesn't.
+#[test]
+fn unsettled_sends_take_the_steering_messages_after_the_latest_send() {
+    let mut conn = db();
+    let steer = |id: &str, text: &str| {
+        let mut m = message(id, "user", text);
+        m.meta = Some(serde_json::json!({ "steer": { "queuedAt": 1 } }));
+        m
+    };
+    let partial = |id: &str| {
+        let mut m = message(id, "assistant", "");
+        m.finalized = false;
+        m
+    };
+    let chat = |conn: &mut Connection, id: &str, messages| {
+        create_dialog(
+            conn,
+            &NewDialog {
+                id: id.into(),
+                title: id.into(),
+                created_at: now_ms(),
+                updated_at: now_ms(),
+                project_id: None,
+            },
+        )
+        .unwrap();
+        add(conn, id, messages);
+    };
+    // Read before the run's first reply finished: the request with them.
+    chat(
+        &mut conn,
+        "before-a-reply",
+        vec![
+            message("b-u1", "user", "first"),
+            steer("b-s0", "answered since"),
+            message("b-a1", "assistant", "done"),
+            message("b-u2", "user", "the request"),
+            steer("b-s1", "one"),
+            steer("b-s2", "two"),
+            partial("b-a2"),
+        ],
+    );
+    // Read after a reply of the run: the request was answered.
+    chat(
+        &mut conn,
+        "mid-run",
+        vec![
+            message("m-u", "user", "the request"),
+            message("m-a", "assistant", "working on it"),
+            steer("m-s1", "three"),
+            steer("m-s2", "four"),
+            partial("m-a2"),
+        ],
+    );
+    let sends = unsettled_sends(&conn, None).unwrap();
+    let of = |chat: &str| -> Vec<(String, bool)> {
+        sends
+            .iter()
+            .filter(|s| s.dialog_id == chat)
+            .map(|s| (s.content.clone(), s.steer))
+            .collect()
+    };
+    assert_eq!(
+        of("before-a-reply"),
+        [
+            ("the request".to_string(), false),
+            ("one".to_string(), true),
+            ("two".to_string(), true),
+        ]
+    );
+    assert_eq!(
+        of("mid-run"),
+        [("three".to_string(), true), ("four".to_string(), true)]
+    );
 }
 
 #[test]

@@ -1207,15 +1207,20 @@ pub struct UnsettledSend {
     pub dialog_id: String,
     pub message_id: String,
     pub content: String,
+    /// A message the user sent the run while it worked (`meta.steer`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steer: bool,
 }
 
 /// The sends of the chats of `project` (None: those without one) that no
 /// reply settled: in each chat owned here (a lead chat, not on a host or
 /// on its way to one), the user's latest message (not one of the app's
 /// own, `meta.harness`) when it isn't failed and no finished reply came
-/// after it. A run cut short by its process ending (another window's
-/// crash) leaves one; whether a run is still at work on it is the
-/// caller's to judge (chat_hold).
+/// after it, and the messages they sent its run after it while it worked
+/// (`meta.steer`, steering-plan.md 3.7), each in its chat's order. A run
+/// cut short by its process ending (another window's crash) leaves them;
+/// whether a run is still at work on them is the caller's to judge
+/// (chat_hold).
 pub fn unsettled_sends(conn: &Connection, project: Option<&str>) -> DbResult<Vec<UnsettledSend>> {
     let mut stmt = conn
         .prepare_cached(
@@ -1236,22 +1241,39 @@ pub fn unsettled_sends(conn: &Connection, project: Option<&str>) -> DbResult<Vec
         .map_err(err)?
         .collect::<Result<_, _>>()
         .map_err(err)?;
-    let mut seen = std::collections::HashSet::new();
-    let mut sends = Vec::new();
+    // Newest first: each chat's steering messages, back to its latest send.
+    let mut reached = std::collections::HashSet::new();
+    let mut found: Vec<(String, String, bool)> = Vec::new();
     for (dialog_id, message_id, meta, failed) in rows {
-        let harness = meta
-            .as_deref()
-            .and_then(|m| serde_json::from_str::<Value>(m).ok())
-            .is_some_and(|m| m.get("harness").is_some());
-        // The chat's latest send only: one failed already was told.
-        if harness || !seen.insert(dialog_id.clone()) || failed {
+        if reached.contains(&dialog_id) {
             continue;
         }
+        let meta = meta
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<Value>(m).ok());
+        let has = |key: &str| meta.as_ref().is_some_and(|m| m.get(key).is_some());
+        if has("harness") {
+            continue;
+        }
+        let steer = has("steer");
+        // The chat's latest send ends the search: one failed already was told.
+        if !steer {
+            reached.insert(dialog_id.clone());
+        }
+        if !failed {
+            found.push((dialog_id, message_id, steer));
+        }
+    }
+    // Each chat's in the order they were sent.
+    found.reverse();
+    let mut sends = Vec::with_capacity(found.len());
+    for (dialog_id, message_id, steer) in found {
         let content = get_message_body(conn, &message_id)?;
         sends.push(UnsettledSend {
             dialog_id,
             message_id,
             content,
+            steer,
         });
     }
     Ok(sends)

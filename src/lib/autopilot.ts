@@ -9,6 +9,7 @@
 // after a restart and in a remote chat's mirror, and nothing here keeps
 // state of its own.
 import type { ChatMessage } from '../types';
+import { isRequestMessage } from './requests';
 
 export type StageName =
   | 'plan'
@@ -219,7 +220,7 @@ export function currentTask(messages: ChatMessage[]): StageRow[] | null {
   const task = rows.filter((r) => r.stage.task === last.stage.task);
   const from = messages.findIndex((m) => m.id === task[0].id);
   const later = messages.slice(from + 1);
-  if (later.some((m) => m.role === 'user' && !m.meta?.harness && !m.failed)) return null;
+  if (later.some(isRequest)) return null;
   return task;
 }
 
@@ -248,8 +249,10 @@ export function unfinishedTask(messages: ChatMessage[]): boolean {
  * ---------------------------------------------------------------------------
  */
 
-/** A message of the user's: one that starts a request. */
-const isRequest = (m: ChatMessage) => m.role === 'user' && !m.meta?.harness && !m.failed;
+/** A message of the user's: one that starts a request (lib/requests.ts), delivered. */
+function isRequest(m: ChatMessage): boolean {
+  return isRequestMessage(m) && !m.failed;
+}
 
 /**
  * The current task's records, for the strip: those stored (`stored`, as

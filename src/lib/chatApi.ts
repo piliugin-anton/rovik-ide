@@ -29,6 +29,8 @@ export interface UnsettledSend {
   dialogId: string;
   messageId: string;
   content: string;
+  /** A message the user sent the run while it worked; absent: false. */
+  steer?: boolean;
 }
 
 export interface MessagePage {
@@ -159,6 +161,10 @@ export const chatApi = {
 
   messagesAnswered: (messageIds: string[]) =>
     invoke<string[]>('chat_messages_answered', { messageIds }),
+
+  /** Which of these messages are stored: one sent to a run is, once the run read it. */
+  messagesStored: (messageIds: string[]) =>
+    invoke<string[]>('chat_messages_stored', { messageIds }),
 
   /**
    * The sends of a project's chats (null: the chats with no project) that a

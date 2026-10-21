@@ -276,6 +276,19 @@ fn a_configuration_carries_how_the_host_connects() {
     assert_eq!(unset, HostNetwork::default());
 }
 
+/// A message as a steer sends it: the text with its editor context, an
+/// image.
+fn steer_message() -> UserMessage {
+    UserMessage {
+        id: "s".into(),
+        content: "Use the existing HTTP client.".into(),
+        meta: Some(
+            json!({ "sentContent": "[Active file: src/a.ts]\n\nUse the existing HTTP client." }),
+        ),
+        attachments: vec!["img".into()],
+    }
+}
+
 fn start() -> StartRequest {
     StartRequest {
         dialog_id: "d".into(),
@@ -443,6 +456,14 @@ fn every_request_round_trips() {
             })),
             Request::AgentStop {
                 dialog_id: "d".into(),
+            },
+            Request::AgentSteer {
+                dialog_id: "d".into(),
+                message: steer_message(),
+            },
+            Request::AgentUnsteer {
+                dialog_id: "d".into(),
+                message_id: "s".into(),
             },
             Request::AgentPause {
                 dialog_id: "d".into(),
@@ -671,10 +692,18 @@ fn every_request_round_trips() {
 #[test]
 fn every_response_round_trips() {
     let status = AgentStatus {
-        runs: vec![RunningRun {
-            dialog_id: "d".into(),
-            run_id: "r".into(),
-        }],
+        runs: vec![
+            RunningRun {
+                dialog_id: "d".into(),
+                run_id: "r".into(),
+                steerable: true,
+            },
+            RunningRun {
+                dialog_id: "plan".into(),
+                run_id: "r2".into(),
+                steerable: false,
+            },
+        ],
         subagents: vec![
             RunningSubagent {
                 dialog_id: "kid".into(),
@@ -698,12 +727,18 @@ fn every_response_round_trips() {
         approvals: vec![approval()],
         questions: vec![questions()],
         driving: vec!["d".into()],
+        steering: vec![QueuedSteer {
+            dialog_id: "d".into(),
+            message: steer_message(),
+            queued_at: 1_761_060_000_000,
+        }],
     };
     covers(
         "t",
         &[
             Response::Done,
             Response::Bool(false),
+            Response::Steer(SteerReply::Queued),
             Response::RunId(Some("r".into())),
             Response::RunId(None),
             Response::Count(2),
@@ -923,6 +958,7 @@ fn every_event_round_trips() {
             Event::Agent(AgentEvent::RunStarted {
                 dialog_id: "d".into(),
                 run_id: "r".into(),
+                steerable: true,
             }),
             Event::Agent(AgentEvent::TaskDriving {
                 dialog_id: "d".into(),
@@ -1275,6 +1311,77 @@ fn later_fields_are_optional() {
         .unwrap()
         .get("remote")
         .is_none());
+}
+
+/// What became of a steer: each reply round-trips, and reads from the JSON
+/// the frontend gets.
+#[test]
+fn every_steer_reply_round_trips() {
+    covers(
+        "kind",
+        &[
+            SteerReply::Queued,
+            SteerReply::Ended,
+            SteerReply::Refused {
+                reason: "Plan mode takes no messages while it works.".into(),
+            },
+        ],
+    );
+    let refused: SteerReply =
+        serde_json::from_value(json!({ "kind": "refused", "reason": "Too many wait." })).unwrap();
+    assert_eq!(
+        refused,
+        SteerReply::Refused {
+            reason: "Too many wait.".into()
+        }
+    );
+    assert_eq!(
+        SteerReply::try_from(Response::Steer(SteerReply::Ended)),
+        Ok(SteerReply::Ended)
+    );
+}
+
+/// The steering fields: a run that takes no messages, and a status with
+/// none waiting, leave them out, and read as before without them.
+#[test]
+fn steering_fields_are_optional() {
+    let started: AgentEvent =
+        serde_json::from_value(json!({ "type": "runStarted", "dialogId": "d", "runId": "r" }))
+            .unwrap();
+    assert!(matches!(
+        started,
+        AgentEvent::RunStarted {
+            steerable: false,
+            ..
+        }
+    ));
+    let plain = round_trip(&started);
+    assert!(plain.get("steerable").is_none(), "{plain}");
+    let status: AgentStatus = serde_json::from_value(
+        json!({ "runs": [{ "dialogId": "d", "runId": "r" }], "subagents": [], "approvals": [], "questions": [] }),
+    )
+    .unwrap();
+    assert!(status.steering.is_empty());
+    assert!(!status.runs[0].steerable);
+    let out = round_trip(&status);
+    assert!(out.get("steering").is_none(), "{out}");
+    assert!(out["runs"][0].get("steerable").is_none(), "{out}");
+}
+
+/// A steer is a control of the run, as Stop is: allowed while its chat
+/// moves (6.8), and the run takes it along.
+#[test]
+fn a_steer_controls_the_run() {
+    let steer = Request::AgentSteer {
+        dialog_id: "d".into(),
+        message: steer_message(),
+    };
+    assert_eq!(steer.target(), Some((Target::Chat("d"), Access::Run)));
+    let unsteer = Request::AgentUnsteer {
+        dialog_id: "d".into(),
+        message_id: "s".into(),
+    };
+    assert_eq!(unsteer.target(), Some((Target::Chat("d"), Access::Run)));
 }
 
 /// D11: the models a configuration names, each subagent kind's included,

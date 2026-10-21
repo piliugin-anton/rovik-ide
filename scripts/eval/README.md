@@ -41,6 +41,13 @@ test-name filters for `cargo test --lib`), `ts` (`files`, run by `ts-test.mjs` a
 (node_modules from the base's lock file, cached), `cargo` (a shared target
 directory), `python` (a virtualenv with pytest), `go`.
 
+A task can also name `steers`: messages sent to the run while it works, as
+the user would send them (docs/design/steering-plan.md), each once the chat has
+`after` tool results:
+`"steers": [{ "text": "The helper is in src/util.rs", "after": 3 }]`. They
+go to the runner as `--steer TEXT@N`. `--no-steers` runs a campaign without
+them, so a task can be compared with and without the fact given mid-run.
+
 Contamination: the more-itertools and lo changes are public and older than
 current models' training data, so a model may have seen them; this
 repository's are newer. Read results per source as well as overall.

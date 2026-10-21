@@ -25,6 +25,9 @@
 //! "The current request" starts at the user's latest message. Messages the
 //! IDE adds in the user role (check failures, `harness` in their meta) are
 //! part of the run, not new requests: the user's request is never dropped.
+//! Nor are the messages the user sends while the run works (`steer` in
+//! their meta, steering-plan.md): they're part of the request they were
+//! sent in.
 //! Only the copy sent to the model is trimmed; stored messages are untouched.
 //!
 //! Once a run is long, the request ends with a focus note (`focus_note`):
@@ -90,6 +93,9 @@ pub struct Msg {
     pub attachments: Vec<Attachment>,
     /// Written by the IDE in the user role (check failures), not by the user.
     pub harness: bool,
+    /// Sent by the user while the run worked (`meta.steer`): their words,
+    /// part of the request it was sent in, never a request of its own.
+    pub steer: bool,
     /// The user dismissed the open checklist with this message
     /// (`meta.checklistClosed`): don't carry an old checklist into it.
     pub checklist_closed: bool,
@@ -235,18 +241,25 @@ fn estimate(m: &Msg, cost: Cost) -> usize {
 
 /// Which messages' files go with a request, by index (`to_wire` attaches
 /// exactly these, of the kinds the model takes): the current request's
-/// (the files the user sent with it, needed for the whole run), and those
-/// of the last MAX_IMAGES other messages that have any the model takes.
+/// (the files the user sent with it and with the messages they sent while
+/// the run worked, needed for the whole run), and those of the last
+/// MAX_IMAGES other messages that have any the model takes.
 fn attached_files(messages: &[Msg], accepts: Accepts) -> Vec<bool> {
     let takes = |m: &Msg| m.attachments.iter().any(|a| a.taken_by(accepts));
     let mut attached = vec![false; messages.len()];
     let request = messages.iter().rposition(starts_request);
-    if let Some(i) = request {
+    let users: Vec<usize> = match request {
+        Some(i) => std::iter::once(i)
+            .chain((i + 1..messages.len()).filter(|&k| messages[k].steer))
+            .collect(),
+        None => Vec::new(),
+    };
+    for &i in &users {
         attached[i] = takes(&messages[i]);
     }
     let others = (0..messages.len())
         .rev()
-        .filter(|&i| Some(i) != request && takes(&messages[i]))
+        .filter(|&i| !users.contains(&i) && takes(&messages[i]))
         .take(MAX_IMAGES);
     for i in others {
         attached[i] = true;
@@ -673,9 +686,10 @@ fn replace_outdated(messages: &mut [Msg]) -> usize {
     changed
 }
 
-/// A user message that starts a request (not one the IDE wrote).
+/// A user message that starts a request: not one the IDE wrote, nor one
+/// the user sent while the run worked (steering-plan.md, 3.6).
 pub fn starts_request(m: &Msg) -> bool {
-    m.role == "user" && !m.harness
+    m.role == "user" && !m.harness && !m.steer
 }
 
 /*
@@ -692,6 +706,10 @@ const FOCUS_AFTER_TOOL_RESULTS: usize = 6;
 const FOCUS_REQUEST_CHARS: usize = 600;
 /// A loop warning this many tool results back or fewer is named again.
 const FOCUS_LOOP_WINDOW: usize = 5;
+/// The messages the user sent while the run worked that the note quotes
+/// (the latest), and how much of each.
+const FOCUS_STEERS: usize = 5;
+const FOCUS_STEER_CHARS: usize = 300;
 
 /// A typed request shorter than this says nothing about the task on its own
 /// ("continue"): the focus note quotes the previous real request as well.
@@ -786,6 +804,30 @@ pub fn focus_note(messages: &[Msg]) -> Option<String> {
     if !files.is_empty() {
         let files = files_phrase(&files);
         note.push_str(&format!("\nThe user attached {files} to the request."));
+    }
+    // What the user added while the run worked (steering-plan.md, D11): the
+    // instructions given mid-run are the ones most often lost.
+    let steers: Vec<&Msg> = run.iter().filter(|m| m.steer).collect();
+    if !steers.is_empty() {
+        note.push_str("\nAdded by the user while you worked (quoted, oldest first):");
+        let earlier = steers.len().saturating_sub(FOCUS_STEERS);
+        if earlier > 0 {
+            let messages = if earlier == 1 { "message" } else { "messages" };
+            note.push_str(&format!("\n(and {earlier} earlier {messages})"));
+        }
+        for m in &steers[earlier..] {
+            let text = typed_text(m).trim();
+            let quoted = char_prefix(text, FOCUS_STEER_CHARS);
+            let more = if quoted.len() < text.len() || m.needs_body {
+                " …"
+            } else {
+                ""
+            };
+            for (k, line) in format!("{quoted}{more}").lines().enumerate() {
+                let lead = if k == 0 { "- >" } else { "  >" };
+                note.push_str(&format!("\n{lead} {line}"));
+            }
+        }
     }
     if text.chars().count() < SHORT_REQUEST_CHARS {
         if let Some(prev) = messages[..start].iter().rposition(starts_request) {
@@ -1282,6 +1324,10 @@ pub fn load_messages_in(
                     .meta
                     .as_ref()
                     .is_some_and(|meta| meta.get("harness").is_some()),
+                steer: m.role == "user"
+                    && m.meta
+                        .as_ref()
+                        .is_some_and(|meta| meta.get("steer").is_some()),
                 checklist_closed: m.meta.as_ref().is_some_and(|meta| {
                     meta.get("checklistClosed")
                         .or_else(|| meta.get("checklist_closed"))
@@ -1359,6 +1405,7 @@ pub fn answer_unanswered_calls(messages: Vec<Msg>) -> Vec<Msg> {
                 tool_call_id: Some(id),
                 attachments: Vec::new(),
                 harness: false,
+                steer: false,
                 checklist_closed: false,
                 reasoning: None,
             });
@@ -1586,6 +1633,7 @@ mod tests {
             tool_call_id: None,
             attachments: Vec::new(),
             harness: false,
+            steer: false,
             checklist_closed: false,
             reasoning: None,
         }
@@ -1958,6 +2006,140 @@ mod tests {
         let last = history.last().unwrap();
         assert!(last.text.ends_with("\n\nNOTE"));
         assert_eq!(last.full_chars, last.text.chars().count());
+    }
+
+    /// A message the user sent while the run worked (steering-plan.md): its
+    /// frame, then what they typed.
+    fn steer(text: &str) -> Msg {
+        let mut m = msg(
+            "user",
+            &format!("[The user sent this message while you were working.]\n\n{text}"),
+        );
+        m.id = format!("steer-{text}");
+        m.typed = Some(text.into());
+        m.steer = true;
+        m
+    }
+
+    /// 3.6: a message sent while the run works is part of its request: the
+    /// request's message keeps its sent form, and the steering message its own.
+    #[test]
+    fn a_message_sent_while_the_run_works_is_part_of_its_request() {
+        let mut history = vec![
+            msg("user", "an earlier request"),
+            msg("assistant", "done"),
+            sent(msg("user", "rename the helper")),
+            call(&["c1"]),
+            tool("c1", 10),
+            steer("use the existing client"),
+            call(&["c2"]),
+            tool("c2", 10),
+        ];
+        assert_eq!(history.iter().rposition(starts_request), Some(2));
+        use_sent_content(&mut history, Some("[ctx]\n\nrename the helper"));
+        assert_eq!(history[2].text, "[ctx]\n\nrename the helper");
+        assert!(
+            history[5].text.starts_with("[The user sent this message"),
+            "{}",
+            history[5].text
+        );
+        // The repository map goes on the request's message, not on it.
+        let request = history
+            .iter()
+            .rfind(|m| starts_request(m))
+            .map(|m| m.id.clone());
+        add_request_context(&mut history, request.as_deref(), "## Repository map");
+        assert!(history[2].text.starts_with("## Repository map"));
+        assert!(!history[5].text.contains("Repository map"));
+    }
+
+    /// 3.6: over budget, the run's own results before a steering message
+    /// stay the current request's: only the earlier request's are cut.
+    #[test]
+    fn the_runs_results_before_a_steering_message_arent_an_old_requests() {
+        let history = vec![
+            msg("user", "q1"),
+            call(&["c1"]),
+            tool("c1", BIG),
+            msg("assistant", "a1"),
+            msg("user", "q2"),
+            call(&["c2"]),
+            tool("c2", BIG),
+            steer("the tests are in tests/unit"),
+            call(&["c3"]),
+            tool("c3", 6000),
+        ];
+        let cost = Cost {
+            accepts: TEXT_ONLY,
+            chars_per_token: DEFAULT_CHARS_PER_TOKEN,
+        };
+        let budget = total(&history, cost) - 1000;
+        let (out, info) = fit_with(history, budget, cost);
+        assert!(info.trimmed);
+        assert_eq!(info.dropped_turns, 0);
+        assert!(out[2].text.chars().count() < BIG, "the earlier request's");
+        assert_eq!(
+            out[6].text.chars().count(),
+            BIG,
+            "the run's own stays whole"
+        );
+        assert!(pairing_ok(&out));
+    }
+
+    /// 3.6: a steering message's files go with every step of the run, as
+    /// the request's do; the screenshots' rule is for the others.
+    #[test]
+    fn a_steering_messages_files_go_with_the_run() {
+        let image = |mut m: Msg, id: &str| {
+            m.attachments.push(Attachment::image(id));
+            m
+        };
+        let history = vec![
+            image(msg("user", "fix the layout"), "r"),
+            call(&["c1"]),
+            image(tool("c1", 10), "s1"),
+            image(steer("like this mockup"), "m"),
+            call(&["c2"]),
+            image(tool("c2", 10), "s2"),
+            call(&["c3"]),
+            image(tool("c3", 10), "s3"),
+        ];
+        let attached = attached_files(&history, IMAGES);
+        assert!(attached[0], "the request's");
+        assert!(attached[3], "the steering message's");
+        assert!(attached[5] && attached[7], "the two latest screenshots");
+        assert!(!attached[2], "an older screenshot goes");
+    }
+
+    /// D11: a long run's focus note quotes what the user added while it
+    /// worked, as typed: the latest five, oldest first.
+    #[test]
+    fn the_focus_note_quotes_the_steering_messages() {
+        let mut history = long_run("rename the helper");
+        history.insert(5, steer("use the existing client"));
+        let note = focus_note(&history).unwrap();
+        assert!(
+            note.contains(
+                "Added by the user while you worked (quoted, oldest first):\n- > use the existing client"
+            ),
+            "{note}"
+        );
+        assert!(
+            !note.contains("[The user sent this message"),
+            "as typed: {note}"
+        );
+
+        let mut history = long_run("rename the helper");
+        for i in 0..7 {
+            history.insert(5, steer(&format!("note {}", 7 - i)));
+        }
+        let note = focus_note(&history).unwrap();
+        assert!(
+            note.contains("(and 2 earlier messages)\n- > note 3"),
+            "{note}"
+        );
+        assert!(note.contains("- > note 7"), "{note}");
+        assert!(!note.contains("note 2"), "{note}");
     }
 
     #[test]

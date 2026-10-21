@@ -1,7 +1,7 @@
 {
   "_comment": "Shared by src/lib/agentRuns.test.ts and src-tauri/crates/rovik-protocol/src/tests.rs: one agent-event of each type, as the backend sends it, in an order the frontend can follow. The backend reads each into AgentEvent and writes it back unchanged; the frontend's handler puts each where it belongs.",
   "events": [
-    { "type": "runStarted", "dialogId": "fx-chat", "runId": "fx-run" },
+    { "type": "runStarted", "dialogId": "fx-chat", "runId": "fx-run", "steerable": true },
     {
       "type": "messagesAdded",
       "dialogId": "fx-chat",
@@ -184,6 +184,12 @@
     },
     { "type": "userMessageSettled", "dialogId": "fx-chat", "messageId": "fx-user", "ok": false },
     { "type": "taskDriving", "dialogId": "fx-chat", "driving": true },
+    {
+      "type": "steerReturned",
+      "dialogId": "fx-chat",
+      "messageIds": ["fx-steer"],
+      "outcome": "stopped"
+    },
     { "type": "runEnded", "dialogId": "fx-chat", "runId": "fx-run", "outcome": "done" }
   ]
 }
