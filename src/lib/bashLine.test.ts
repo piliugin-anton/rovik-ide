@@ -33,12 +33,20 @@ test('what bash says of its line: its own words alone', () => {
 });
 
 test('a prompt starts afresh; the line editor done with the line, nothing goes', () => {
-  const before: BashLine = { prompt: true, away: true, oneRow: true, need: 4, vi: false };
+  const before: BashLine = {
+    prompt: true,
+    away: true,
+    oneRow: true,
+    need: 4,
+    checking: true,
+    vi: false,
+  };
   assert.deepEqual(lineAfter(before, { kind: 'prompt', vi: true }), {
     prompt: true,
     away: false,
     oneRow: false,
     need: 0,
+    checking: false,
     vi: true,
   });
   assert.equal(lineDone(oneRow(3)).prompt, false);
@@ -100,14 +108,32 @@ test('deleting on one row: checked once the line may fit', () => {
   let sent = withBashKeys(line, '\x7f', fits);
   assert.deepEqual(sent, { data: '\x7f', line: { ...line, need: 1 }, keys: 0 });
   sent = withBashKeys(sent.line, '\x7f', fits);
-  assert.deepEqual(sent, { data: '\x7f' + CHECK, line: { ...line, need: 0 }, keys: 1 });
-  // Until bash says, each deletion is checked.
+  assert.deepEqual(sent, {
+    data: '\x7f' + CHECK,
+    line: { ...line, need: 0, checking: true },
+    keys: 1,
+  });
+  // Until bash says, no other check goes: a host's answer comes a round
+  // trip later, and the deletions go on meanwhile.
   sent = withBashKeys(sent.line, '\x08', fits);
-  assert.equal(sent.data, '\x08' + CHECK);
-  // A kill may take many rows: always checked.
-  line = oneRow(40);
-  for (const kill of ['\x17', '\x15', '\x0b', '\x1b\x7f', '\x1bd']) {
-    assert.equal(withBashKeys(line, kill, fits).data, kill + CHECK, JSON.stringify(kill));
+  assert.deepEqual(sent, {
+    data: '\x08',
+    line: { ...line, need: -1, checking: true },
+    keys: 0,
+  });
+  // It said the line is still too tall: counted down again, and checked
+  // where it may fit.
+  line = lineAfter(sent.line, { kind: 'one-row', need: 2 });
+  assert.equal(line.checking, false);
+  sent = withBashKeys(line, '\x7f', fits);
+  assert.equal(sent.data, '\x7f');
+  sent = withBashKeys(sent.line, '\x7f', fits);
+  assert.equal(sent.data, '\x7f' + CHECK);
+  // A kill may take many rows: always checked, a check on its way or not.
+  for (line of [oneRow(40), sent.line]) {
+    for (const kill of ['\x17', '\x15', '\x0b', '\x1b\x7f', '\x1bd']) {
+      assert.equal(withBashKeys(line, kill, fits).data, kill + CHECK, JSON.stringify(kill));
+    }
   }
   // Each character typed is one more to delete.
   sent = withBashKeys(oneRow(1), 'abc', fits);

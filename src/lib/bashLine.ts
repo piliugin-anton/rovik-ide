@@ -31,6 +31,12 @@ export interface BashLine {
   oneRow: boolean;
   /** How many characters must go, at least, before the line may fit. */
   need: number;
+  /**
+   * A check sent after a deletion, not answered yet: deleting sends no other
+   * meanwhile. A host's bash answers a network's round trip later, and each
+   * deletion in between had sent one.
+   */
+  checking: boolean;
   /** Bash edits in vi mode. */
   vi: boolean;
 }
@@ -40,6 +46,7 @@ export const NO_LINE: BashLine = {
   away: false,
   oneRow: false,
   need: 0,
+  checking: false,
   vi: false,
 };
 
@@ -59,11 +66,11 @@ export function parseBashSaid(text: string): BashSaid | null {
 export function lineAfter(line: BashLine, said: BashSaid): BashLine {
   switch (said.kind) {
     case 'prompt':
-      return { prompt: true, away: false, oneRow: false, need: 0, vi: said.vi };
+      return { prompt: true, away: false, oneRow: false, need: 0, checking: false, vi: said.vi };
     case 'one-row':
-      return { ...line, oneRow: true, need: said.need };
+      return { ...line, oneRow: true, need: said.need, checking: false };
     case 'wrap':
-      return { ...line, oneRow: false, need: 0 };
+      return { ...line, oneRow: false, need: 0, checking: false };
   }
 }
 
@@ -150,7 +157,8 @@ export function withBashKeys(
     case 'delete': {
       if (!line.oneRow) return as(line);
       const need = line.need - 1;
-      return need > 0 ? as({ ...line, need }) : as({ ...line, need }, data + CHECK, 1);
+      if (need > 0 || line.checking) return as({ ...line, need });
+      return as({ ...line, need, checking: true }, data + CHECK, 1);
     }
     case 'kill':
       return line.oneRow ? as(line, data + CHECK, 1) : as(line);
