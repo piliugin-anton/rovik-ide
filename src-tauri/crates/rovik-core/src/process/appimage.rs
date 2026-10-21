@@ -332,6 +332,35 @@ mod tests {
         );
     }
 
+    /// The app started again by itself (an update's restart, "New window"),
+    /// at another mount: started with the user's environment, as a program
+    /// the app starts gets it, the new one's programs get the user's back.
+    /// Started with the app's own, as Tauri's restart did, they kept the old
+    /// AppImage's folders, its libraries first: a login shell's flatpak
+    /// loaded them, while the old mount stayed, and stopped.
+    #[test]
+    fn the_app_started_again_by_itself_gives_its_programs_the_users_environment() {
+        const NEW: &str = "/tmp/.mount_RovikXyZ789";
+        let original = env(&[
+            ("HOME", "/home/u"),
+            ("PATH", "/usr/bin:/bin"),
+            ("LD_LIBRARY_PATH", "/opt/cuda/lib64"),
+        ]);
+        let new = AppImage {
+            dirs: vec![PathBuf::from(NEW)],
+            start_dir: None,
+        };
+        let first = launch(&original, DIR);
+        let again = launch(&child(&image(), &first), NEW);
+        assert_eq!(child(&new, &again), original);
+
+        let raw = child(&new, &launch(&first, NEW));
+        assert!(
+            raw["LD_LIBRARY_PATH"].starts_with(&format!("{DIR}/usr/lib/")),
+            "{raw:?}"
+        );
+    }
+
     #[test]
     fn the_appimage_is_also_found_where_symlinks_lead() {
         let image = AppImage {

@@ -573,21 +573,9 @@ async fn project_check(
 /// Starts another Rovik: a window of its own, for a project of its own.
 #[tauri::command]
 fn new_window() -> Result<(), String> {
-    use std::process::Stdio;
-    // From an AppImage, the AppImage again, as the desktop starts it; this
-    // binary would need the AppImage's environment and folder.
-    let mut cmd = match std::env::var_os("APPIMAGE") {
-        Some(image) => process::command(image),
-        None => std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?),
-    };
-    cmd.arg(NEW_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // Out of this one's terminal, if it was started from one: neither
-    // stopped by it nor ended with it (process::own_session).
-    process::own_session(&mut cmd);
+    let mut cmd = another_rovik()?;
     let mut child = cmd
+        .arg(NEW_WINDOW)
         .spawn()
         .map_err(|e| format!("Couldn't start another Rovik: {e}"))?;
     // Reaped if it ends first; it doesn't end with this one.
@@ -595,6 +583,44 @@ fn new_window() -> Result<(), String> {
         let _ = child.wait();
     });
     Ok(())
+}
+
+/// A command that starts another Rovik as the desktop starts one: for "New
+/// window", and for an update's restart (updates.rs).
+///
+/// - From an AppImage, the AppImage again, with the user's environment and
+///   in the folder it was started from, as every program the app starts
+///   (process::command). This binary would need the AppImage's environment
+///   and folder; and the new AppImage's launcher adds its own to the
+///   environment it's given, so given this process's, its terminals kept
+///   this AppImage's folders, its libraries first.
+/// - Else this binary, by the path it started from: on Linux a package's
+///   update may have replaced it since, and the path the system gives for
+///   it then ends in "(deleted)".
+///
+/// Out of this one's terminal, if it was started from one: neither stopped
+/// by it nor ended with it (process::own_session). And holding none of its
+/// files (process::close_inherited): this AppImage's mount goes once this
+/// process ends.
+fn another_rovik() -> Result<std::process::Command, String> {
+    use std::process::Stdio;
+    let mut cmd = match std::env::var_os("APPIMAGE") {
+        Some(image) => process::command(image),
+        None => {
+            let binary = if cfg!(target_os = "linux") {
+                tauri::utils::platform::current_exe()
+            } else {
+                std::env::current_exe()
+            };
+            std::process::Command::new(binary.map_err(|e| e.to_string())?)
+        }
+    };
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    process::own_session(&mut cmd);
+    process::close_inherited(&mut cmd);
+    Ok(cmd)
 }
 
 /// `chat-attachment://localhost/<sha256>`'s response: the attachment, or 404.
