@@ -45,6 +45,12 @@ interface TerminalProps {
 /** How long the terminal's size has to hold still before it's fitted to. */
 const SETTLE_MS = 150;
 
+/** How long bash has to answer one of its keys (lib/bashLine) before the terminal goes on. */
+const ANSWER_MS = 300;
+
+/** As `ANSWER_MS`, for a bash on a host: its answer comes back over the network. */
+const HOST_ANSWER_MS = 1000;
+
 /**
  * The fewest rows the terminal is given. Bash 5.1's and 5.2's line editor,
  * once it has drawn its line on a terminal one row high, keeps every line
@@ -274,7 +280,7 @@ export default function Terminal(props: TerminalProps) {
     setMenuVisible(true);
   }
 
-  // Bash's input line, as its start file here says it is: bash before 5.3
+  // Bash's input line, as its start file says it is: bash before 5.3
   // garbles one taller than the terminal, so the terminal has it go on one
   // row while it's too tall (lib/bashLine).
   let line: BashLine = NO_LINE;
@@ -343,7 +349,7 @@ export default function Terminal(props: TerminalProps) {
         onBashSaid = onBashSaid.filter((f) => f !== done);
         resolve();
       };
-      const timer = setTimeout(done, 300);
+      const timer = setTimeout(done, props.host ? HOST_ANSWER_MS : ANSWER_MS);
       onBashSaid.push(done);
       holdDrawing(1);
       void writeToTerminal(id, key).catch(done);
@@ -491,38 +497,36 @@ export default function Terminal(props: TerminalProps) {
     onCleanup(sendInputMethodText(term, containerEl));
     term.onTitleChange((title) => props.onTitleChange?.(title));
 
-    // What bash's start file here says of its line, and bash's line editor
-    // done with a line: it turns bracketed paste off. A shell on a host
-    // has no such file.
-    if (!props.host) {
-      term.parser.registerOscHandler(BASH_LINE_OSC, (text) => {
-        const said = parseBashSaid(text);
-        if (!said) return false;
-        if (said.kind === 'prompt') {
-          promptMarker?.dispose();
-          promptMarker = term.registerMarker(0);
-        }
-        line = lineAfter(line, said);
-        // A prompt anew: what was sent before it may have gone unread (Ctrl+C).
-        if (said.kind === 'prompt') drawAgain();
-        else bashAnswered();
-        for (const done of onBashSaid) done();
-        return true;
-      });
-      term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
-        if (params.includes(2004)) line = lineDone(line);
-        return false;
-      });
-      // The screen cleared at a prompt (Ctrl+L): bash draws it again from
-      // where the caret is now, the top.
-      term.parser.registerCsiHandler({ final: 'J' }, (params) => {
-        if (line.prompt && params[0] === 2) {
-          promptMarker?.dispose();
-          promptMarker = term.registerMarker(0);
-        }
-        return false;
-      });
-    }
+    // What bash's start file says of its line, here or on a host (none
+    // there through the user's own ssh), and bash's line editor done with a
+    // line: it turns bracketed paste off.
+    term.parser.registerOscHandler(BASH_LINE_OSC, (text) => {
+      const said = parseBashSaid(text);
+      if (!said) return false;
+      if (said.kind === 'prompt') {
+        promptMarker?.dispose();
+        promptMarker = term.registerMarker(0);
+      }
+      line = lineAfter(line, said);
+      // A prompt anew: what was sent before it may have gone unread (Ctrl+C).
+      if (said.kind === 'prompt') drawAgain();
+      else bashAnswered();
+      for (const done of onBashSaid) done();
+      return true;
+    });
+    term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+      if (params.includes(2004)) line = lineDone(line);
+      return false;
+    });
+    // The screen cleared at a prompt (Ctrl+L): bash draws it again from
+    // where the caret is now, the top.
+    term.parser.registerCsiHandler({ final: 'J' }, (params) => {
+      if (line.prompt && params[0] === 2) {
+        promptMarker?.dispose();
+        promptMarker = term.registerMarker(0);
+      }
+      return false;
+    });
 
     // Input typed before the shell is up is kept, not dropped.
     let queued = '';

@@ -1,17 +1,32 @@
-//! Bash in a terminal here. Before readline 8.3 (bash 5.2 and older) bash
-//! can't redraw an input line taller than the terminal: holding Backspace
-//! through a long paste blanked the row the caret moved up to. Bash reads
-//! `bash.sh` as it starts, in place of ~/.bashrc (`--init-file`): it reads
-//! a login shell's files, then keeps such a line on one row while it's too
-//! tall, with the terminal's help (src/lib/bashLine.ts), and lets it wrap
-//! once it fits.
+//! Bash in a terminal, here or on a cloud host. Before readline 8.3 (bash
+//! 5.2 and older) bash can't redraw an input line taller than the
+//! terminal: holding Backspace through a long paste blanked the row the
+//! caret moved up to. Bash reads `bash.sh` as it starts, in place of
+//! ~/.bashrc (`--init-file`): it reads a login shell's files, then keeps
+//! such a line on one row while it's too tall, with the terminal's help
+//! (src/lib/bashLine.ts), and lets it wrap once it fits.
+//!
+//! Here the file goes in the app's data, and each bash's version is asked
+//! once (`init_file`). On a host, a WSL distribution too, one command
+//! there says what the login shell is and, for a bash that takes the file,
+//! saves it in ~/.rovik/terminal (`on_host`).
 
+#[cfg(unix)]
 use std::io::Read;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Stdio;
+#[cfg(unix)]
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
+use rovik_client::host_shell::HostShell;
+use rovik_client::ssh::quote;
+use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use tauri::{AppHandle, Manager};
 
 /// What bash reads as it starts.
@@ -39,6 +54,7 @@ fn parse_version(text: &str) -> Option<Version> {
 
 /// The version of the bash at `program`, as it says; None when it doesn't
 /// within a second.
+#[cfg(unix)]
 fn ask_version(program: &str) -> Option<Version> {
     let mut child = rovik_core::process::command(program)
         .arg("--version")
@@ -69,6 +85,7 @@ fn ask_version(program: &str) -> Option<Version> {
 
 /// [`ask_version`], asked once a program: a terminal opens on the app's
 /// main thread.
+#[cfg(unix)]
 fn version(program: &str) -> Option<Version> {
     static KNOWN: Mutex<Vec<(String, Option<Version>)>> = Mutex::new(Vec::new());
     let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
@@ -82,6 +99,7 @@ fn version(program: &str) -> Option<Version> {
 
 /// Writes the script to `path`, left alone when it says that already: a
 /// write waits for the disk. False when it can't be written.
+#[cfg(unix)]
 fn write(path: &Path) -> bool {
     if std::fs::read(path).is_ok_and(|now| now == SCRIPT.as_bytes()) {
         return true;
@@ -99,6 +117,7 @@ fn write(path: &Path) -> bool {
 /// The file `shell` reads as it starts (`--init-file`) in a terminal here,
 /// when it's a bash that takes it; None for any other shell, which starts
 /// as a login shell.
+#[cfg(unix)]
 pub(super) fn init_file(app: &AppHandle, shell: &str) -> Option<PathBuf> {
     let dir = app.path().app_data_dir().ok()?.join("terminal");
     // Readline's settings, which 0.1.17 wrote for every terminal (INPUTRC):
@@ -112,16 +131,296 @@ pub(super) fn init_file(app: &AppHandle, shell: &str) -> Option<PathBuf> {
     write(&path).then_some(path)
 }
 
+/// How a terminal on a host starts: as the login shell there, or, for a
+/// bash that takes the file, as that bash reading it.
+#[derive(Debug, PartialEq)]
+pub(super) struct HostStart {
+    /// The login shell's path there: "/bin/bash".
+    shell: String,
+    /// Where the file is there, for a bash that takes it.
+    init_file: Option<String>,
+}
+
+impl HostStart {
+    /// What the terminal's tab calls it: "bash".
+    pub(super) fn name(&self) -> String {
+        let name = self.shell.rsplit('/').next().unwrap_or_default();
+        match name.is_empty() {
+            true => "shell".into(),
+            false => name.into(),
+        }
+    }
+
+    /// The program and its arguments, for a bash that takes the file:
+    /// what a terminal there runs in place of the login shell.
+    pub(super) fn argv(&self) -> Option<[&str; 3]> {
+        let file = self.init_file.as_deref()?;
+        Some([self.shell.as_str(), "--init-file", file])
+    }
+
+    /// [`Self::argv`] as a command for sh there.
+    pub(super) fn command(&self) -> Option<String> {
+        let argv = self.argv()?.map(quote);
+        Some(format!("exec {}", argv.join(" ")))
+    }
+}
+
+/// How long a host may take to say how its terminal starts; past that,
+/// it starts as the login shell.
+const ON_HOST_WAIT: Duration = Duration::from_secs(10);
+
+/// The file's name on a host: its content's. A host that computers with
+/// different Rovik versions share keeps each version's file, and one
+/// that's there is the one wanted.
+fn host_file_name() -> String {
+    let digest = Sha256::digest(SCRIPT.as_bytes());
+    let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("bash-{hex}.sh")
+}
+
+/// The versions `bash --version` names that take the file, as patterns
+/// for sh's `case`: "*'version 5.2.'*" for 5.2.
+fn version_patterns() -> Vec<String> {
+    (4..=5)
+        .flat_map(|major| (0..10).map(move |minor| (major, minor)))
+        .filter(|&version| takes_script(version))
+        .map(|(major, minor)| format!("*'version {major}.{minor}.'*"))
+        .collect()
+}
+
+/// The command a host runs, through sh, with the file on its stdin. It
+/// says the login shell (`$SHELL`, as sshd and WSL set it, else the
+/// account's) and, for bash, its version; a bash that takes the file gets
+/// it saved in ~/.rovik/terminal, and then where it is. Whatever the file
+/// isn't saved for, its stdin is read to the end: a program sending it
+/// mustn't find the pipe closed. One line: `wsl.exe` passes it on too.
+fn on_host_command() -> String {
+    let file = format!("\"$HOME\"/.rovik/terminal/{}", host_file_name());
+    let patterns = version_patterns().join("|");
+    format!(
+        "shell=${{SHELL:-}}; \
+         [ -n \"$shell\" ] || shell=$(getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f7); \
+         printf 'shell=%s\\n' \"$shell\"; \
+         version=; \
+         case ${{shell##*/}} in bash) version=$(LC_ALL=C \"$shell\" --version 2>/dev/null | head -n 1);; esac; \
+         printf 'version=%s\\n' \"$version\"; \
+         case $version in {patterns}) \
+         file={file}; \
+         if [ ! -s \"$file\" ]; then \
+         mkdir -p \"${{file%/*}}\" && cat > \"$file.$$\" && mv -f \"$file.$$\" \"$file\" || rm -f \"$file.$$\"; \
+         fi; \
+         [ -s \"$file\" ] && printf 'file=%s\\n' \"$file\";; \
+         esac; \
+         cat > /dev/null"
+    )
+}
+
+/// What a host said of its login shell: None without a shell's path.
+fn parse_on_host(said: &str) -> Option<HostStart> {
+    let field = |key: &str| said.lines().find_map(|line| line.strip_prefix(key));
+    let shell = field("shell=").filter(|shell| shell.starts_with('/'))?;
+    let takes = field("version=")
+        .and_then(parse_version)
+        .is_some_and(takes_script);
+    let init_file = field("file=")
+        .filter(|file| takes && file.starts_with('/'))
+        .map(str::to_string);
+    Some(HostStart {
+        shell: shell.to_string(),
+        init_file,
+    })
+}
+
+/// How a terminal on `host` starts, as the host says; for a bash that
+/// takes the file, the file saved there first. None when the host doesn't
+/// say: the terminal starts as the login shell, as it always has.
+pub(super) async fn on_host(host: &dyn HostShell) -> Option<HostStart> {
+    let command = on_host_command();
+    let said = host.run(&command, SCRIPT.as_bytes(), ON_HOST_WAIT).await;
+    match said {
+        Ok(output) => parse_on_host(&String::from_utf8_lossy(&output.stdout)),
+        Err(e) => {
+            log::warn!("terminal: the host didn't say how its shell starts: {e}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use rovik_client::host_shell::ProcessShell;
+    #[cfg(unix)]
     use std::process::Command;
 
+    #[cfg(unix)]
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("terminal-bash-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_bash_on_a_host_starts_reading_the_file_where_it_is() {
+        let start = HostStart {
+            shell: "/usr/local/bin/bash".into(),
+            init_file: Some("/home/o'brien/.rovik/terminal/bash-0123.sh".into()),
+        };
+        assert_eq!(start.name(), "bash");
+        assert_eq!(
+            start.argv(),
+            Some([
+                "/usr/local/bin/bash",
+                "--init-file",
+                "/home/o'brien/.rovik/terminal/bash-0123.sh"
+            ])
+        );
+        assert_eq!(
+            start.command().as_deref(),
+            Some(
+                r"exec '/usr/local/bin/bash' '--init-file' '/home/o'\''brien/.rovik/terminal/bash-0123.sh'"
+            )
+        );
+        // Another shell, or a bash without the file: the login shell.
+        let zsh = HostStart {
+            shell: "/usr/bin/zsh".into(),
+            init_file: None,
+        };
+        assert_eq!((zsh.name().as_str(), zsh.command()), ("zsh", None));
+        assert_eq!(zsh.argv(), None);
+    }
+
+    #[test]
+    fn a_host_saying_its_shell_is_read() {
+        let file = "/home/me/.rovik/terminal/bash-0123.sh";
+        let said = format!(
+            "shell=/bin/bash\nversion=GNU bash, version 5.1.16(1)-release (x86_64-pc-linux-gnu)\nfile={file}\n"
+        );
+        assert_eq!(
+            parse_on_host(&said),
+            Some(HostStart {
+                shell: "/bin/bash".into(),
+                init_file: Some(file.into()),
+            })
+        );
+        // A bash that doesn't take the file has none, whatever is said.
+        let newer = said.replace("5.1.16", "5.3.0");
+        assert_eq!(parse_on_host(&newer).unwrap().init_file, None);
+        let zsh = parse_on_host("shell=/usr/bin/zsh\nversion=\n").unwrap();
+        assert_eq!((zsh.name().as_str(), zsh.init_file), ("zsh", None));
+        // No shell said: as before.
+        assert_eq!(parse_on_host("shell=\nversion=\n"), None);
+        assert_eq!(parse_on_host(""), None);
+    }
+
+    #[test]
+    fn the_versions_named_on_a_host_are_those_that_take_it() {
+        let patterns = version_patterns();
+        for takes in ["4.4", "5.0", "5.1", "5.2"] {
+            assert!(
+                patterns.contains(&format!("*'version {takes}.'*")),
+                "{takes}: {patterns:?}"
+            );
+        }
+        for not in ["3.2", "4.3", "5.3", "6.0"] {
+            assert!(
+                !patterns.contains(&format!("*'version {not}.'*")),
+                "{not}: {patterns:?}"
+            );
+        }
+        let name = host_file_name();
+        assert!(name.starts_with("bash-") && name.ends_with(".sh"), "{name}");
+        assert_eq!(name.len(), "bash-.sh".len() + 16, "{name}");
+    }
+
+    /// A fake bash at `dir`/`name`/bash that says it's `version`.
+    #[cfg(unix)]
+    fn fake_bash(dir: &Path, name: &str, version: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join(name);
+        std::fs::create_dir_all(&bin).unwrap();
+        let bash = bin.join("bash");
+        let said = format!("GNU bash, version {version}(1)-release (x86_64-pc-linux-gnu)");
+        std::fs::write(&bash, format!("#!/bin/sh\necho '{said}'\n")).unwrap();
+        std::fs::set_permissions(&bash, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bash.to_string_lossy().into_owned()
+    }
+
+    /// A host that is this machine, with `home` and the login shell `shell`.
+    #[cfg(unix)]
+    fn host(home: &Path, shell: &str) -> ProcessShell {
+        ProcessShell {
+            program: "env".into(),
+            args: vec![
+                format!("HOME={}", home.display()).into(),
+                format!("SHELL={shell}").into(),
+            ],
+            name: "this machine".into(),
+        }
+    }
+
+    /// The command a terminal's host runs, run by a real sh: a bash that
+    /// takes the file gets it, saved once, and starts with it; another
+    /// shell, or a bash that doesn't take it, gets nothing, and starts as
+    /// the login shell.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_saves_the_file_for_a_bash_that_takes_it() {
+        let dir = temp_dir("host");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let ask = |home: &Path, shell: &str| rovik_core::rt::block_on(on_host(&host(home, shell)));
+
+        let bash51 = fake_bash(&dir, "51", "5.1.16");
+        let start = ask(&home, &bash51).expect("the host said nothing");
+        let saved = home.join(".rovik/terminal").join(host_file_name());
+        assert_eq!(
+            start,
+            HostStart {
+                shell: bash51.clone(),
+                init_file: Some(saved.to_string_lossy().into_owned()),
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), SCRIPT);
+        // Once is enough: there already, it's left alone.
+        let written = std::fs::metadata(&saved).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(ask(&home, &bash51), Some(start));
+        let left = std::fs::metadata(&saved).unwrap().modified().unwrap();
+        assert_eq!(written, left, "saved again");
+
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        for shell in [
+            fake_bash(&dir, "53", "5.3.0"),
+            fake_bash(&dir, "32", "3.2.57"),
+            "/bin/sh".to_string(),
+        ] {
+            let start = ask(&other, &shell).expect("the host said nothing");
+            assert_eq!(start.init_file, None, "{shell}");
+            assert_eq!(start.shell, shell);
+        }
+        assert!(!other.join(".rovik").exists(), "a file saved for nothing");
+
+        // A home the file can't go in: the login shell, as before.
+        let not_a_folder = dir.join("file");
+        std::fs::write(&not_a_folder, "").unwrap();
+        let start = ask(&not_a_folder, &bash51).expect("the host said nothing");
+        assert_eq!(start.init_file, None);
+
+        // The bash here, as it says it is.
+        let Ok(found) = Command::new("sh").args(["-c", "command -v bash"]).output() else {
+            return;
+        };
+        let bash = String::from_utf8_lossy(&found.stdout).trim().to_string();
+        if bash.is_empty() {
+            return;
+        }
+        let takes = ask_version(&bash).is_some_and(takes_script);
+        let start = ask(&dir.join("real"), &bash).expect("the host said nothing");
+        assert_eq!(start.init_file.is_some(), takes, "{bash}: {start:?}");
     }
 
     #[test]
@@ -154,6 +453,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn it_is_written_once_and_again_when_it_changed() {
         let dir = temp_dir("write");
@@ -175,6 +475,7 @@ mod tests {
     /// file and bracketed paste on. Bash 4.4 to 5.2 then has the keys, and
     /// its key's commands say how the line is; another reads the login file
     /// alone.
+    #[cfg(unix)]
     #[test]
     fn bash_reads_the_login_files_then_binds_the_keys() {
         let dir = temp_dir("bash");

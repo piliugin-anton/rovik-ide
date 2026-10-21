@@ -90,6 +90,15 @@ impl Wsl {
         args
     }
 
+    /// What a terminal here runs `wsl.exe` with to run `argv` in the
+    /// distribution, as the user, in place of the login shell: a shell
+    /// started as the app starts one (bash with the terminal's file).
+    pub fn terminal_running(&self, argv: &[&str]) -> Vec<OsString> {
+        let mut args = self.exec_args(self.user.as_deref());
+        args.extend(argv.iter().map(OsString::from));
+        args
+    }
+
     /// "WSL: Ubuntu", or "WSL: Ubuntu (ann)" as a named user.
     pub fn display(&self) -> String {
         match &self.user {
@@ -483,6 +492,19 @@ mod tests {
             ["-d", "Ubuntu", "-u", "root", "--exec"]
         );
         assert_eq!(wsl.terminal_args(), ["-d", "Ubuntu", "-u", "ann"]);
+        assert_eq!(
+            wsl.terminal_running(&["/bin/bash", "--init-file", "/home/ann/f.sh"]),
+            [
+                "-d",
+                "Ubuntu",
+                "-u",
+                "ann",
+                "--exec",
+                "/bin/bash",
+                "--init-file",
+                "/home/ann/f.sh"
+            ]
+        );
         assert_eq!(wsl.display(), "WSL: Ubuntu (ann)");
         // The default user: no -u.
         let wsl = Wsl::new("Debian", Some("  ".into()));

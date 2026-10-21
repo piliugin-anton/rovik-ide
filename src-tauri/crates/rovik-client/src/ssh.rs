@@ -384,16 +384,6 @@ impl Ssh {
         Ok(output)
     }
 
-    /// The name of the user's login shell on the host ("bash"), as its
-    /// `$SHELL` says; None when it says nothing.
-    pub async fn login_shell(&self) -> Option<String> {
-        let asked = self.exec_within("printf '%s' \"$SHELL\"", &[], CONNECT_WAIT);
-        let output = asked.await.ok()?;
-        let path = String::from_utf8_lossy(&output.stdout);
-        let name = path.trim().rsplit('/').next()?;
-        (output.status == Some(0) && !name.is_empty()).then(|| name.to_string())
-    }
-
     /// The user's login shell on the host, on a pseudo-terminal there of
     /// `cols` columns and `rows` rows that takes `term`'s escapes: what's
     /// typed goes in through the `Shell`, what the shell prints comes out
@@ -405,6 +395,31 @@ impl Ssh {
         cols: u32,
         rows: u32,
     ) -> Result<(Shell, ShellOutput), SshError> {
+        self.terminal(term, cols, rows, None).await
+    }
+
+    /// `command` in place of the login shell, through sh, on a
+    /// pseudo-terminal as [`Self::shell`]'s: a shell started as the app
+    /// starts one (bash with the terminal's file). The host prints no
+    /// login banner for it (motd, last login), as it doesn't for ssh given
+    /// a command.
+    pub async fn shell_running(
+        self: Arc<Self>,
+        term: &str,
+        cols: u32,
+        rows: u32,
+        command: &str,
+    ) -> Result<(Shell, ShellOutput), SshError> {
+        self.terminal(term, cols, rows, Some(command)).await
+    }
+
+    async fn terminal(
+        self: Arc<Self>,
+        term: &str,
+        cols: u32,
+        rows: u32,
+        command: Option<&str>,
+    ) -> Result<(Shell, ShellOutput), SshError> {
         let failed = |e: russh::Error| SshError::Failed(format!("A shell on the host: {e}"));
         let channel = self.handle.channel_open_session().await.map_err(failed)?;
         // No reply asked for: a host that gives no terminal still runs the
@@ -413,7 +428,14 @@ impl Ssh {
             .request_pty(false, term, cols, rows, 0, 0, &[])
             .await
             .map_err(failed)?;
-        channel.request_shell(true).await.map_err(failed)?;
+        match command {
+            None => channel.request_shell(true).await.map_err(failed)?,
+            // Through sh, as `exec`'s are: the login shell may be another.
+            Some(command) => {
+                let through_sh = format!("sh -c {}", quote(command));
+                channel.exec(true, through_sh).await.map_err(failed)?
+            }
+        }
         let (mut read, write) = channel.split();
         let early = match tokio::time::timeout(CONNECT_WAIT, started(&mut read)).await {
             Ok(early) => early?,

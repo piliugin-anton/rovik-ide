@@ -27,6 +27,8 @@
 // here, as a shell does. Rovik's SSH makes a connection of its own, with
 // the login shell on a pseudo-terminal there (rovik-client's `Ssh::shell`);
 // its reads are async, so a task pumps its output, and no thread waits.
+// Through Rovik's SSH and in WSL, a bash before 5.3 starts as it does here,
+// with the file of ours it reads in place of a login shell's (`bash`).
 
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
@@ -42,7 +44,6 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
-#[cfg(unix)]
 mod bash;
 
 /// What the terminals take: xterm.js is xterm-compatible.
@@ -281,8 +282,12 @@ pub async fn spawn_remote_terminal(
     let target = match page.shell_access(&host)? {
         ShellAccess::Ssh(target) => target,
         ShellAccess::Wsl(wsl) => {
+            let start = bash::on_host(&wsl.shell()).await;
             let mut cmd = CommandBuilder::new(rovik_client::wsl::PROGRAM);
-            cmd.args(wsl.terminal_args());
+            match start.as_ref().and_then(bash::HostStart::argv) {
+                Some(argv) => cmd.args(wsl.terminal_running(&argv)),
+                None => cmd.args(wsl.terminal_args()),
+            }
             in_home(&app, &mut cmd);
             // What runs in it runs in the distribution: nothing counts here.
             let id = spawn_pty(&app, &state, cmd, size, on_event, false)?;
@@ -304,10 +309,14 @@ pub async fn spawn_remote_terminal(
         }
     };
     let ssh = Arc::new(Ssh::connect(&target).await.err_text()?);
-    // Its name first: what the shell prints waits unread until its output
-    // is pumped, and enough of it would hold up the answer.
-    let name = ssh.login_shell().await;
-    let opened = ssh.shell(TERM, size.cols.into(), size.rows.into()).await;
+    // How its shell starts, first: what the shell prints waits unread until
+    // its output is pumped, and enough of it would hold up the answer.
+    let start = bash::on_host(&*ssh).await;
+    let (cols, rows) = (size.cols.into(), size.rows.into());
+    let opened = match start.as_ref().and_then(bash::HostStart::command) {
+        Some(command) => ssh.shell_running(TERM, cols, rows, &command).await,
+        None => ssh.shell(TERM, cols, rows).await,
+    };
     let (shell, mut output) = opened.err_text()?;
     let id = Uuid::new_v4().to_string();
     state.insert(id.clone(), Session::Ssh(shell));
@@ -341,7 +350,7 @@ pub async fn spawn_remote_terminal(
     });
     Ok(TerminalInfo {
         id,
-        shell: name.unwrap_or_else(|| "shell".into()),
+        shell: start.map_or_else(|| "shell".into(), |start| start.name()),
     })
 }
 

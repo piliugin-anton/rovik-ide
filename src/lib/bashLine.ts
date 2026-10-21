@@ -1,7 +1,8 @@
-// Bash's input line, as a terminal here sees it. Before 5.3, bash garbles a
+// Bash's input line, as a terminal sees it. Before 5.3, bash garbles a
 // line taller than the terminal: holding Backspace through a long paste
-// blanked the row the caret moved up to. Its start file in a terminal here
-// (src-tauri/src/terminal/bash.sh) binds two keys: one puts the line on one
+// blanked the row the caret moved up to. Its start file in a terminal here,
+// on a cloud host or in WSL (src-tauri/src/terminal/bash.sh), binds two
+// keys: one puts the line on one
 // row that scrolls sideways, the other puts it there if it's too tall and
 // lets it wrap if it fits. The terminal sends the first before a paste that
 // may not fit and before it gets smaller, the second after those and after
