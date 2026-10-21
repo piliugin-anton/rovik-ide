@@ -6,7 +6,7 @@
 // lets it wrap if it fits. The terminal sends the first before a paste that
 // may not fit, the second after it and after deleting, and says nothing
 // else to bash. Bash says where it is (an OSC): at a prompt, its line on
-// one row (and how many rows too tall it is), or wrapping.
+// one row (and how many characters must go before it may fit), or wrapping.
 //
 // Keys go only to bash's line editor at a prompt the file set up, and only
 // while every key since has kept it editing the line: a search (Ctrl+R),
@@ -17,7 +17,7 @@
 export const ONE_ROW = '\x1b[9001~';
 /** On one row if the line is too tall, wrapping if it fits (`__rovik_check`). */
 export const CHECK = '\x1b[9003~';
-/** The OSC bash says how its line is with: "rovik;prompt;emacs", "rovik;one-row;6", "rovik;wrap". */
+/** The OSC bash says how its line is with: "rovik;prompt;emacs", "rovik;one-row;250", "rovik;wrap". */
 export const BASH_LINE_OSC = 7777;
 
 export interface BashLine {
@@ -27,8 +27,8 @@ export interface BashLine {
   away: boolean;
   /** The line is on one row. */
   oneRow: boolean;
-  /** How many rows too tall the line is, at least: deletions before it may fit. */
-  excess: number;
+  /** How many characters must go, at least, before the line may fit. */
+  need: number;
   /** Bash edits in vi mode. */
   vi: boolean;
 }
@@ -37,19 +37,19 @@ export const NO_LINE: BashLine = {
   prompt: false,
   away: false,
   oneRow: false,
-  excess: 0,
+  need: 0,
   vi: false,
 };
 
 /** What bash said, from its OSC's text; null when it isn't bash.sh's. */
 export type BashSaid =
-  { kind: 'prompt'; vi: boolean } | { kind: 'one-row'; excess: number } | { kind: 'wrap' };
+  { kind: 'prompt'; vi: boolean } | { kind: 'one-row'; need: number } | { kind: 'wrap' };
 
 export function parseBashSaid(text: string): BashSaid | null {
   const [who, kind, arg] = text.split(';');
   if (who !== 'rovik') return null;
   if (kind === 'prompt') return { kind, vi: arg === 'vi' };
-  if (kind === 'one-row') return { kind, excess: Number.parseInt(arg ?? '', 10) || 0 };
+  if (kind === 'one-row') return { kind, need: Number.parseInt(arg ?? '', 10) || 0 };
   if (kind === 'wrap') return { kind };
   return null;
 }
@@ -57,11 +57,11 @@ export function parseBashSaid(text: string): BashSaid | null {
 export function lineAfter(line: BashLine, said: BashSaid): BashLine {
   switch (said.kind) {
     case 'prompt':
-      return { prompt: true, away: false, oneRow: false, excess: 0, vi: said.vi };
+      return { prompt: true, away: false, oneRow: false, need: 0, vi: said.vi };
     case 'one-row':
-      return { ...line, oneRow: true, excess: said.excess };
+      return { ...line, oneRow: true, need: said.need };
     case 'wrap':
-      return { ...line, oneRow: false, excess: 0 };
+      return { ...line, oneRow: false, need: 0 };
   }
 }
 
@@ -122,6 +122,8 @@ export function keyKind(data: string, vi: boolean): KeyKind {
 export interface Sent {
   data: string;
   line: BashLine;
+  /** Bash's keys in it: bash answers each, and draws its line anew. */
+  keys: number;
 }
 
 /**
@@ -134,31 +136,29 @@ export function withBashKeys(
   data: string,
   mayOverflow: (text: string) => boolean
 ): Sent {
-  if (!line.prompt || line.away) return { data, line };
+  const as = (line: BashLine, sent = data, keys = 0): Sent => ({ data: sent, line, keys });
+  if (!line.prompt || line.away) return as(line);
   switch (keyKind(data, line.vi)) {
     case 'paste': {
-      if (line.oneRow) return { data: data + CHECK, line };
+      if (line.oneRow) return as(line, data + CHECK, 1);
       const text = data.slice(PASTE_START.length, data.length - PASTE_END.length);
-      if (mayOverflow(text)) return { data: ONE_ROW + data + CHECK, line };
-      return { data, line };
+      if (mayOverflow(text)) return as(line, ONE_ROW + data + CHECK, 2);
+      return as(line);
     }
     case 'delete': {
-      if (!line.oneRow) return { data, line };
-      // A character less is a row less at most.
-      const excess = line.excess - 1;
-      return { data: excess > 0 ? data : data + CHECK, line: { ...line, excess } };
+      if (!line.oneRow) return as(line);
+      const need = line.need - 1;
+      return need > 0 ? as({ ...line, need }) : as({ ...line, need }, data + CHECK, 1);
     }
     case 'kill':
-      return line.oneRow ? { data: data + CHECK, line } : { data, line };
+      return line.oneRow ? as(line, data + CHECK, 1) : as(line);
     case 'text':
-      // A character more is a row more at most.
-      return line.oneRow
-        ? { data, line: { ...line, excess: line.excess + [...data].length } }
-        : { data, line };
+      // A character typed is one more to delete.
+      return line.oneRow ? as({ ...line, need: line.need + [...data].length }) : as(line);
     case 'move':
-      return { data, line };
+      return as(line);
     case 'other':
-      return { data, line: { ...line, away: true } };
+      return as({ ...line, away: true });
   }
 }
 

@@ -283,6 +283,40 @@ export default function Terminal(props: TerminalProps) {
   let promptMarker: IMarker | undefined;
   /** Called when bash next says how its line is. */
   let onBashSaid: (() => void)[] = [];
+  /** Bash's keys sent and not answered yet. */
+  let unanswered = 0;
+  let drawingHeld: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Drawing held while bash answers `keys` of its keys: it clears its line
+   * as a key's command starts and draws it again once it's done, and a
+   * frame drawn between showed it blank (synchronized output, mode 2026).
+   */
+  function holdDrawing(keys: number) {
+    if (!xterm || keys === 0) return;
+    if (unanswered === 0) xterm.write('\x1b[?2026h');
+    unanswered += keys;
+    clearTimeout(drawingHeld);
+    drawingHeld = setTimeout(drawAgain, 1000);
+  }
+
+  /** Bash answered a key: its line comes drawn again right after. */
+  function bashAnswered() {
+    if (unanswered === 0) return;
+    unanswered--;
+    if (unanswered > 0) return;
+    clearTimeout(drawingHeld);
+    drawingHeld = setTimeout(drawAgain, 20);
+  }
+
+  function drawAgain() {
+    clearTimeout(drawingHeld);
+    if (unanswered === 0 && drawingHeld === undefined) return;
+    drawingHeld = undefined;
+    unanswered = 0;
+    xterm?.write('\x1b[?2026l');
+  }
+  onCleanup(() => clearTimeout(drawingHeld));
 
   /** The rows bash's line takes, about: from its prompt to the last row with text below. */
   function lineRows(term: XTerm): number {
@@ -309,6 +343,7 @@ export default function Terminal(props: TerminalProps) {
       };
       const timer = setTimeout(done, 300);
       onBashSaid.push(done);
+      holdDrawing(1);
       void writeToTerminal(id, key).catch(done);
     });
   }
@@ -466,6 +501,9 @@ export default function Terminal(props: TerminalProps) {
           promptMarker = term.registerMarker(0);
         }
         line = lineAfter(line, said);
+        // A prompt anew: what was sent before it may have gone unread (Ctrl+C).
+        if (said.kind === 'prompt') drawAgain();
+        else bashAnswered();
         for (const done of onBashSaid) done();
         return true;
       });
@@ -483,6 +521,7 @@ export default function Terminal(props: TerminalProps) {
         pasteMayOverflow(text, term.cols, term.rows, lineRows(term), term.buffer.active.cursorX)
       );
       line = sent.line;
+      holdDrawing(sent.keys);
       if (!terminalId) {
         queued += sent.data;
         return;
@@ -496,6 +535,7 @@ export default function Terminal(props: TerminalProps) {
         .then(() => {
           // On one row, the line may fit now: bash says, once it has the size.
           if (line.oneRow && line.prompt && !line.away && !exited) {
+            holdDrawing(1);
             void writeToTerminal(id, CHECK).catch(() => {});
           }
         })

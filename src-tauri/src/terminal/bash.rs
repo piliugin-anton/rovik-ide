@@ -227,10 +227,11 @@ mod tests {
             "2",
             "bash {version:?} hasn't the keys:\n{said}"
         );
-        // 100 characters and a prompt of 2 take 11 rows, 6 too many for 5;
-        // 7 and 2 take one.
+        // 100 characters and a prompt of 2 take 11 rows, 6 too many for 5:
+        // 53 of them must go before it fits (the rest, 49, takes 5). 7 and
+        // 2 take one.
         assert!(
-            said.contains(r"033]7777;rovik;one-row;6\a"),
+            said.contains(r"033]7777;rovik;one-row;53\a"),
             "bash {version:?}: the long line not on one row:\n{said}"
         );
         assert!(

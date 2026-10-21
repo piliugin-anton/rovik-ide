@@ -20,8 +20,8 @@
 # what these do.
 
 # How the line is, told to the terminal: "prompt;emacs" (or ";vi", the
-# editing mode) at a prompt, "one-row;N" with the line N rows too tall
-# (none or fewer: it fits), "wrap". On stderr, as bash's prompt and
+# editing mode) at a prompt, "one-row;N" with N characters to delete at
+# least before it may fit, "wrap". On stderr, as bash's prompt and
 # readline's output are.
 __rovik_say() {
   builtin printf '\e]7777;rovik;%s\a' "$1" >&2
@@ -53,13 +53,29 @@ __rovik_columns() {
   fi
 }
 
+# The most columns a character of $1 takes, into __rovik_n: what one
+# deletion may take away.
+__rovik_widest() {
+  local s=$1
+  local LC_ALL=C
+  __rovik_n=1
+  if [[ $s == *$'\t'* ]]; then
+    __rovik_n=8
+  elif [[ -z $__rovik_utf8 && $s == *[$'\x80'-$'\xff']* ]]; then
+    __rovik_n=4
+  elif [[ $s == *[$'\xe0'-$'\xf7'$'\001'-$'\037'$'\177']* ]]; then
+    __rovik_n=2
+  fi
+}
+
 # How many rows too tall the line being edited is, into __rovik_excess: none
 # or fewer when it fits with a row to spare. Its rows, wrapped: from the
 # prompt's last line, a row per COLUMNS columns of each of its lines, and
-# one more.
+# one more. And how many characters must go before it may fit, at least,
+# into __rovik_need: the terminal asks again once they have.
 __rovik_measure() {
   local u=$'\xc3\xa9' text=${READLINE_LINE-} cols=${COLUMNS:-80} limit=$((${LINES:-24} - 1))
-  local prompt= plain= line t chars breaks width rows
+  local prompt= plain= line rest t chars breaks width rows
   __rovik_utf8=
   if ((${#u} == 1)); then
     __rovik_utf8=1
@@ -84,31 +100,45 @@ __rovik_measure() {
   # Its characters alone say a long line's too tall: the most a row takes
   # is COLUMNS of them, or a line break and fewer.
   chars=${#text}
-  rows=$(((__rovik_pw + chars + cols) / cols))
-  if ((rows > limit)); then
-    __rovik_excess=$((rows - limit))
-    return
-  fi
-  # A short one's line breaks say it, a row each; then its lines do.
-  t=${text//$'\n'/}
-  breaks=$((chars - ${#t}))
-  if ((breaks >= limit)); then
-    __rovik_excess=$((breaks + 1 - limit))
-    return
-  fi
-  rows=0
-  width=$__rovik_pw
-  while :; do
-    line=${text%%$'\n'*}
-    __rovik_columns "$line"
-    rows=$((rows + (width + __rovik_n) / cols + 1))
-    width=0
-    if [[ $text != *$'\n'* ]]; then
-      break
+  width=$((__rovik_pw + chars))
+  rows=$(((width + cols) / cols))
+  if ((rows <= limit)); then
+    # A short one's line breaks say it, a row each; then its lines do.
+    t=${text//$'\n'/}
+    breaks=$((chars - ${#t}))
+    if ((breaks >= limit)); then
+      rows=$((breaks + 1))
+    else
+      rows=0
+      width=$__rovik_pw
+      rest=$text
+      while :; do
+        line=${rest%%$'\n'*}
+        __rovik_columns "$line"
+        width=$((width + __rovik_n))
+        rows=$((rows + width / cols + 1))
+        if [[ $rest != *$'\n'* ]]; then
+          break
+        fi
+        rest=${rest#*$'\n'}
+        width=0
+      done
     fi
-    text=${text#*$'\n'}
-  done
+  fi
   __rovik_excess=$((rows - limit))
+  # A deletion takes a row away at most; on one line, the columns of the
+  # widest character at most.
+  __rovik_need=$__rovik_excess
+  if ((__rovik_excess > 0)) && [[ $text != *$'\n'* ]]; then
+    __rovik_widest "$text"
+    t=$(((width - limit * cols + __rovik_n) / __rovik_n))
+    if ((t > __rovik_need)); then
+      __rovik_need=$t
+    fi
+  fi
+  if ((__rovik_need < 0)); then
+    __rovik_need=0
+  fi
 }
 
 # The line on one row ("one-row") or wrapping ("wrap"), and the terminal
@@ -119,7 +149,7 @@ __rovik_show() {
       builtin bind 'set horizontal-scroll-mode on'
       __rovik_one_row=1
     fi
-    __rovik_say "one-row;$__rovik_excess"
+    __rovik_say "one-row;$__rovik_need"
   else
     if [[ -n $__rovik_one_row ]]; then
       builtin bind 'set horizontal-scroll-mode off'
@@ -181,7 +211,7 @@ __rovik_setup() {
   if [[ $settings != *'horizontal-scroll-mode off'* || $settings != *'enable-bracketed-paste on'* ]]; then
     return
   fi
-  __rovik_bash=1 __rovik_one_row= __rovik_pw= __rovik_utf8= __rovik_n=0 __rovik_excess=0
+  __rovik_bash=1 __rovik_one_row= __rovik_pw= __rovik_utf8= __rovik_n=0 __rovik_excess=0 __rovik_need=0
   for map in emacs vi-insert vi-command; do
     builtin bind -m "$map" -x '"\e[9001~": __rovik_one_row'
     builtin bind -m "$map" -x '"\e[9003~": __rovik_check'

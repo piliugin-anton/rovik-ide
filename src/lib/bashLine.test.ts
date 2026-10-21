@@ -18,15 +18,15 @@ import {
 
 const paste = (text: string) => `\x1b[200~${text}\x1b[201~`;
 const atPrompt = (vi = false): BashLine => lineAfter(NO_LINE, { kind: 'prompt', vi });
-const oneRow = (excess: number): BashLine => lineAfter(atPrompt(), { kind: 'one-row', excess });
+const oneRow = (need: number): BashLine => lineAfter(atPrompt(), { kind: 'one-row', need });
 const tooTall = () => true;
 const fits = () => false;
 
 test('what bash says of its line: its own words alone', () => {
   assert.deepEqual(parseBashSaid('rovik;prompt;emacs'), { kind: 'prompt', vi: false });
   assert.deepEqual(parseBashSaid('rovik;prompt;vi'), { kind: 'prompt', vi: true });
-  assert.deepEqual(parseBashSaid('rovik;one-row;6'), { kind: 'one-row', excess: 6 });
-  assert.deepEqual(parseBashSaid('rovik;one-row;-7'), { kind: 'one-row', excess: -7 });
+  assert.deepEqual(parseBashSaid('rovik;one-row;250'), { kind: 'one-row', need: 250 });
+  assert.deepEqual(parseBashSaid('rovik;one-row;0'), { kind: 'one-row', need: 0 });
   assert.deepEqual(parseBashSaid('rovik;wrap'), { kind: 'wrap' });
   assert.equal(parseBashSaid('rovik;later'), null);
   assert.equal(parseBashSaid('someone;prompt'), null);
@@ -34,19 +34,19 @@ test('what bash says of its line: its own words alone', () => {
 });
 
 test('a prompt starts afresh; the line editor done with the line, nothing goes', () => {
-  const before: BashLine = { prompt: true, away: true, oneRow: true, excess: 4, vi: false };
+  const before: BashLine = { prompt: true, away: true, oneRow: true, need: 4, vi: false };
   assert.deepEqual(lineAfter(before, { kind: 'prompt', vi: true }), {
     prompt: true,
     away: false,
     oneRow: false,
-    excess: 0,
+    need: 0,
     vi: true,
   });
   assert.equal(lineDone(oneRow(3)).prompt, false);
   // Outside bash's prompt (a program running, a shell without the file): as typed.
   for (const line of [NO_LINE, lineDone(oneRow(3))]) {
     for (const data of ['\x7f', paste('x'.repeat(5000)), 'a', '\r']) {
-      assert.deepEqual(withBashKeys(line, data, tooTall), { data, line });
+      assert.deepEqual(withBashKeys(line, data, tooTall), { data, line, keys: 0 });
     }
   }
 });
@@ -76,11 +76,19 @@ test('keys, by what they do to the line', () => {
 test('a paste that may not fit goes on one row first, and is checked after', () => {
   const line = atPrompt();
   const long = paste('x'.repeat(2000));
-  assert.deepEqual(withBashKeys(line, long, tooTall), { data: ONE_ROW + long + CHECK, line });
+  assert.deepEqual(withBashKeys(line, long, tooTall), {
+    data: ONE_ROW + long + CHECK,
+    line,
+    keys: 2,
+  });
   // One that fits goes as it is.
-  assert.deepEqual(withBashKeys(line, paste('ls'), fits), { data: paste('ls'), line });
-  // On one row already: checked after, for how tall the line is now.
-  assert.deepEqual(withBashKeys(oneRow(3), long, fits).data, long + CHECK);
+  assert.deepEqual(withBashKeys(line, paste('ls'), fits), { data: paste('ls'), line, keys: 0 });
+  // On one row already: checked after, for how much must go now.
+  assert.deepEqual(withBashKeys(oneRow(3), long, fits), {
+    data: long + CHECK,
+    line: oneRow(3),
+    keys: 1,
+  });
   // The paste's own text is what's measured.
   let measured = '';
   withBashKeys(line, paste('a\rb'), (text) => ((measured = text), false));
@@ -88,12 +96,12 @@ test('a paste that may not fit goes on one row first, and is checked after', () 
 });
 
 test('deleting on one row: checked once the line may fit', () => {
-  // Two rows too tall: a deletion is a row less at most.
+  // Two characters to go, a deletion each.
   let line = oneRow(2);
   let sent = withBashKeys(line, '\x7f', fits);
-  assert.deepEqual(sent, { data: '\x7f', line: { ...line, excess: 1 } });
+  assert.deepEqual(sent, { data: '\x7f', line: { ...line, need: 1 }, keys: 0 });
   sent = withBashKeys(sent.line, '\x7f', fits);
-  assert.equal(sent.data, '\x7f' + CHECK);
+  assert.deepEqual(sent, { data: '\x7f' + CHECK, line: { ...line, need: 0 }, keys: 1 });
   // Until bash says, each deletion is checked.
   sent = withBashKeys(sent.line, '\x08', fits);
   assert.equal(sent.data, '\x08' + CHECK);
@@ -102,20 +110,24 @@ test('deleting on one row: checked once the line may fit', () => {
   for (const kill of ['\x17', '\x15', '\x0b', '\x1b\x7f', '\x1bd']) {
     assert.equal(withBashKeys(line, kill, fits).data, kill + CHECK, JSON.stringify(kill));
   }
-  // Typing adds as many rows at most as characters.
+  // Each character typed is one more to delete.
   sent = withBashKeys(oneRow(1), 'abc', fits);
-  assert.deepEqual(sent, { data: 'abc', line: { ...oneRow(1), excess: 4 } });
+  assert.deepEqual(sent, { data: 'abc', line: { ...oneRow(1), need: 4 }, keys: 0 });
   // Wrapping, deleting needs nothing.
-  assert.deepEqual(withBashKeys(atPrompt(), '\x7f', fits), { data: '\x7f', line: atPrompt() });
+  assert.deepEqual(withBashKeys(atPrompt(), '\x7f', fits), {
+    data: '\x7f',
+    line: atPrompt(),
+    keys: 0,
+  });
   // Bash says it fits: wrapping again, nothing more.
   line = lineAfter(oneRow(1), { kind: 'wrap' });
-  assert.deepEqual(withBashKeys(line, '\x7f', fits), { data: '\x7f', line });
+  assert.deepEqual(withBashKeys(line, '\x7f', fits), { data: '\x7f', line, keys: 0 });
 });
 
 test('after a key that may take the editor elsewhere, nothing more until the next prompt', () => {
   // Ctrl+R: a search, where Escape would end it and the rest go into it.
   let sent = withBashKeys(oneRow(1), '\x12', fits);
-  assert.deepEqual(sent, { data: '\x12', line: { ...oneRow(1), away: true } });
+  assert.deepEqual(sent, { data: '\x12', line: { ...oneRow(1), away: true }, keys: 0 });
   for (const data of ['\x7f', '\x15', paste('x'.repeat(5000)), 'a']) {
     assert.equal(withBashKeys(sent.line, data, tooTall).data, data);
   }
