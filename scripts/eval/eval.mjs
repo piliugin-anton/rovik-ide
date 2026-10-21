@@ -26,6 +26,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
   appendFileSync,
   copyFileSync,
@@ -71,6 +72,7 @@ import {
   workRootProblem,
 } from './confinement.mjs';
 import { parseNameStatus, tamperCalls, tamperReasons, tampering } from './integrity.mjs';
+import { identityProblem } from './identity.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -443,9 +445,13 @@ async function validate(flags) {
 
 // -------------------------------------------------------------------- runs
 
+/** This commit's builds: the runner, and the grader's integrity check (P02). */
+const OWN_RUNNER = join(ROOT, 'src-tauri', 'target', 'debug', 'rovik-headless');
+const OWN_INTEGRITY = join(ROOT, 'src-tauri', 'target', 'debug', 'rovik-integrity');
+
 function runnerPath(flags) {
   if (flags.runner) return resolve(flags.runner);
-  const bin = join(ROOT, 'src-tauri', 'target', 'debug', 'rovik-headless');
+  const bin = OWN_RUNNER;
   if (!flags['no-build']) {
     console.log('Building the headless runner…');
     sh('cargo', ['build', '-p', 'rovik-headless'], {
@@ -463,7 +469,7 @@ function runnerPath(flags) {
  * can't weaken what grades it.
  */
 function integrityPath(flags) {
-  const bin = join(ROOT, 'src-tauri', 'target', 'debug', 'rovik-integrity');
+  const bin = OWN_INTEGRITY;
   if (!flags['no-build']) {
     sh('cargo', ['build', '-p', 'rovik-headless', '--bin', 'rovik-integrity'], {
       cwd: join(ROOT, 'src-tauri'),
@@ -474,8 +480,67 @@ function integrityPath(flags) {
   return bin;
 }
 
-/** The builds a campaign uses: the runner it evaluates, and the grader's own check (P02). */
-const builds = (flags) => ({ runner: runnerPath(flags), integrity: integrityPath(flags) });
+/**
+ * The builds a campaign uses: the runner it evaluates, the grader's own
+ * check (P02), and (P03) their part of what its runs are made with.
+ */
+function builds(flags) {
+  const runner = runnerPath(flags);
+  const integrity = integrityPath(flags);
+  const build = {
+    runnerCommit: runnerCommit(runner, flags),
+    runnerHash: fileHash(runner),
+    integrityHash: fileHash(integrity),
+  };
+  return { runner, integrity, build };
+}
+
+/** P03: a file's SHA-256. */
+const fileHash = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
+
+/**
+ * P03: the commit the runner was built from: this repository's HEAD for
+ * its own build ("+dirty" with changes under src-tauri the commit doesn't
+ * hold), `--runner-commit` for another, else unknown.
+ */
+function runnerCommit(runner, flags) {
+  if (resolve(runner) !== OWN_RUNNER) return flags['runner-commit'] ?? null;
+  const head = sh('git', ['-C', ROOT, 'rev-parse', 'HEAD']).stdout.trim();
+  const dirty = sh('git', ['-C', ROOT, 'status', '--porcelain', '--', 'src-tauri']).stdout.trim();
+  return dirty ? `${head}+dirty` : head;
+}
+
+/** P03: what a run is made with: its builds (`builds`), its settings and its policy. */
+const identityOf = (build, settings, policy) => ({
+  ...build,
+  settingsHash: fileHash(settings),
+  policyHash: fileHash(policy),
+});
+
+/**
+ * P03: claims a campaign's folder for `identity`, which `identity.json`
+ * keeps from its first run: a resume with another refuses
+ * (`identityProblem`), and so does a folder with runs and no record.
+ */
+function claimIdentity(campaignDir, identity) {
+  const file = join(campaignDir, 'identity.json');
+  if (existsSync(file)) {
+    const problem = identityProblem(campaignDir, readJson(file), identity);
+    if (problem) throw new Error(problem);
+    return;
+  }
+  if (campaignResults(campaignDir).length)
+    throw new Error(
+      `${campaignDir} has runs but no record of what they were made with: start a new campaign (--out)`
+    );
+  writeJson(file, identity);
+}
+
+/** P03: a file's size and time, which a rebuild changes. */
+const stamp = (p) => {
+  const s = statSync(p);
+  return `${s.size}:${s.mtimeMs}`;
+};
 
 /** P02: what a run's line says when it's tampered: why. */
 const tamperNote = (r) => (r.tampered?.length ? ` TAMPERED: ${r.tampered.join('; ')}` : '');
@@ -564,6 +629,8 @@ async function runOne(task, rep, campaignDir, opts) {
       ? rep_.stages.map(({ name, status, round, outcome }) => ({ name, status, round, outcome }))
       : null,
     grade: g,
+    // P03: the runner, the grader's check, the settings and the policy.
+    identity: identityOf(opts.build, opts.settings, opts.policy),
     ...(touched.length ? { changedCaches: touched } : {}),
   };
   writeJson(join(dir, 'grade.json'), { ...g, integrity: integrity.flags, results });
@@ -651,11 +718,13 @@ async function campaign(name, tasks, repeats, cap, flags, variant = {}) {
   const campaignDir = resolve(flags.out ?? join(RESULTS, name));
   const unlock = lockCampaign(campaignDir);
   try {
+    const bins = builds(flags);
+    claimIdentity(campaignDir, identityOf(bins.build, settings, policy));
     return await campaignIn(name, tasks, repeats, cap, campaignDir, {
       settings,
       price,
       policy,
-      ...builds(flags),
+      ...bins,
       // A task's scripted messages, unless `--no-steers` (steering-plan.md).
       steers: !flags['no-steers'],
       ...variant,
@@ -671,8 +740,19 @@ async function campaignIn(
   repeats,
   cap,
   campaignDir,
-  { settings, price, policy, runner, integrity, perRun, args, steers }
+  { settings, price, policy, runner, integrity, build, perRun, args, steers }
 ) {
+  // P03: what the runs are made with mustn't change under the campaign.
+  const files = [runner, integrity, settings, policy];
+  const stamps = files.map(stamp);
+  const unchanged = () => {
+    const changed = files.filter((f, i) => stamp(f) !== stamps[i]);
+    if (changed.length)
+      throw new Error(
+        `changed during the campaign: ${changed.join(', ')}; its runs so far are kept, and ` +
+          'resuming checks what they were made with'
+      );
+  };
   // The first run's estimate: every token it may use at the input price.
   const caps = perRun ?? BUDGET.perRun;
   const firstEstimate = (caps.maxTokens / 1e6) * price.inputPerMillion;
@@ -688,12 +768,14 @@ async function campaignIn(
     cap,
     firstEstimate,
     runOne: async ({ task, rep }) => {
+      unchanged();
       process.stdout.write(`[${name}] ${task.id} #${rep}: `);
       const r = await runOne(task, rep, campaignDir, {
         settings,
         policy,
         runner,
         integrity,
+        build,
         perRun,
         args,
         steers,

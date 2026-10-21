@@ -206,7 +206,18 @@ Results go to `eval-results/<campaign>/<task>/<repetition>/`:
 - `result.json`
 
 The campaign directory also gets `summary.json` and `summary.md`. A campaign
-can be resumed: finished runs are kept. Caches (clones, node_modules, the
+can be resumed: finished runs are kept.
+
+What the runs are made with is recorded (P03 in
+[docs/design/evolve-plan.md](../../docs/design/evolve-plan.md)):
+`result.json`'s `identity` and the campaign's `identity.json` hold the
+runner's commit (this repository's HEAD for its own build, `+dirty` with
+uncommitted changes under `src-tauri`; `--runner-commit` for another
+runner) and the SHA-256 of the runner, the grader's integrity check, the
+settings file and the policy file. A campaign resumed with any of those
+four changed refuses and says which, as does one whose files change while
+it runs: its runs would mix two builds without a word. A changed commit
+alone, the binary the same, isn't another build. Caches (clones, node_modules, the
 virtualenv, cargo's target directory) are in `.eval-cache/`.
 `ROVIK_EVAL_CACHE` and `ROVIK_EVAL_RESULTS` move them.
 
