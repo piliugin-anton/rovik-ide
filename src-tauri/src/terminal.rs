@@ -27,6 +27,8 @@
 // here, as a shell does. Rovik's SSH makes a connection of its own, with
 // the login shell on a pseudo-terminal there (rovik-client's `Ssh::shell`);
 // its reads are async, so a task pumps its output, and no thread waits.
+// Through Rovik's SSH and in WSL, a bash 4.4 to 5.4 starts as it does here,
+// with the file of ours it reads in place of a login shell's (`bash`).
 
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
@@ -41,6 +43,8 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
+
+mod bash;
 
 /// What the terminals take: xterm.js is xterm-compatible.
 const TERM: &str = "xterm-256color";
@@ -230,251 +234,6 @@ fn in_home(app: &AppHandle, cmd: &mut CommandBuilder) {
     }
 }
 
-/// What readline, bash's line editor, reads first in a terminal here
-/// (INPUTRC), before the user's own settings.
-#[cfg(unix)]
-mod readline {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::OsStrExt;
-    use std::path::{Path, PathBuf};
-    use tauri::{AppHandle, Manager};
-
-    /// Before readline 8.3 (bash 5.2 and older) bash can't redraw an input
-    /// line taller than the terminal: holding Backspace through a long
-    /// paste, each row the caret moved up to went blank, and a pasted block
-    /// of lines came out garbled. A line kept on one row that scrolls
-    /// sideways (`horizontal-scroll-mode`) is never taller. From 8.3 on a
-    /// long line wraps, as it did. Bash 5.0's and 5.1's readline compare
-    /// versions the wrong way round: there `version >= 8.3` holds and
-    /// `version >= 8.0` doesn't, which keeps the line scrolling. One older
-    /// than 8.0 takes `version` for a program's name, not bash's, and skips
-    /// both.
-    const DEFAULTS: &str = "\
-# Rovik IDE's terminals read this first (INPUTRC), then your own readline
-# settings, which win. Bash before 5.3 garbles an input line taller than the
-# terminal: there the line stays on one row that scrolls sideways.
-$if Bash
-set horizontal-scroll-mode on
-$if version >= 8.3
-$if version >= 8.0
-set horizontal-scroll-mode off
-$endif
-$endif
-$endif
-";
-
-    /// The init file readline would read for the user, found as readline
-    /// finds it: their INPUTRC, else ~/.inputrc if there is one, else
-    /// /etc/inputrc. `ours` is the file that includes it: when INPUTRC names
-    /// that already (a Rovik started from one of its terminals), the search
-    /// goes on, as readline includes without a limit and bash would crash
-    /// including ours in itself.
-    fn users_inputrc(
-        inputrc: Option<OsString>,
-        home: Option<PathBuf>,
-        ours: &Path,
-    ) -> Option<PathBuf> {
-        let named = inputrc.filter(|name| !name.is_empty()).map(PathBuf::from);
-        if let Some(named) = named.filter(|name| name != ours) {
-            return Some(named);
-        }
-        home.map(|home| home.join(".inputrc"))
-            .filter(|file| file.is_file())
-            .or_else(|| Some(PathBuf::from("/etc/inputrc")).filter(|file| file.is_file()))
-    }
-
-    /// The file: the defaults, then `users`, the user's own init file. None
-    /// when its name can't go on an `$include` line (a line break in it, or
-    /// space before it): the user's settings are never left out.
-    fn text(users: Option<&Path>) -> Option<Vec<u8>> {
-        let mut text = DEFAULTS.as_bytes().to_vec();
-        if let Some(users) = users {
-            let name = users.as_os_str().as_bytes();
-            if name.contains(&b'\n') || name.first().is_some_and(u8::is_ascii_whitespace) {
-                return None;
-            }
-            text.extend_from_slice(b"$include ");
-            text.extend_from_slice(name);
-            text.push(b'\n');
-        }
-        Some(text)
-    }
-
-    /// Writes `path` for a user whose INPUTRC is `inputrc` and whose home is
-    /// `home`. Left alone when it says that already: a write waits for the
-    /// disk, and a terminal opens on the app's main thread. False when it
-    /// can't be written: readline then reads the user's own settings, as
-    /// anywhere else.
-    fn write(path: &Path, inputrc: Option<OsString>, home: Option<PathBuf>) -> bool {
-        let Some(text) = text(users_inputrc(inputrc, home, path).as_deref()) else {
-            return false;
-        };
-        if std::fs::read(path).is_ok_and(|now| now == text) {
-            return true;
-        }
-        // Whole or not at all: a shell starting meanwhile reads one or the other.
-        match rovik_core::atomic_file::write_atomic(path, &text) {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!("terminal: couldn't write {}: {e}", path.display());
-                false
-            }
-        }
-    }
-
-    /// The file, in the app's data, for the user a terminal's shell runs
-    /// as; None when there's none to give.
-    pub(super) fn init_file(app: &AppHandle) -> Option<PathBuf> {
-        use rovik_core::process::child_var;
-        let path = app
-            .path()
-            .app_data_dir()
-            .ok()?
-            .join("terminal")
-            .join("inputrc");
-        let home = child_var("HOME")
-            .map(PathBuf::from)
-            .or_else(|| app.path().home_dir().ok());
-        write(&path, child_var("INPUTRC"), home).then_some(path)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use std::process::{Command, Stdio};
-
-        fn temp_dir(tag: &str) -> PathBuf {
-            let dir =
-                std::env::temp_dir().join(format!("terminal-inputrc-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            dir
-        }
-
-        #[test]
-        fn the_users_own_settings_are_found_as_readline_finds_them() {
-            let dir = temp_dir("find");
-            let ours = dir.join("ours");
-            let home = dir.join("home");
-            std::fs::create_dir_all(&home).unwrap();
-            let system = Some(PathBuf::from("/etc/inputrc")).filter(|f| f.is_file());
-            // No INPUTRC and no ~/.inputrc: the system's, if it has one.
-            assert_eq!(users_inputrc(None, Some(home.clone()), &ours), system);
-            assert_eq!(
-                users_inputrc(Some("".into()), Some(home.clone()), &ours),
-                system
-            );
-            // ~/.inputrc once there is one.
-            std::fs::write(home.join(".inputrc"), "set bell-style none\n").unwrap();
-            assert_eq!(
-                users_inputrc(None, Some(home.clone()), &ours),
-                Some(home.join(".inputrc"))
-            );
-            // INPUTRC first, as it is, whether or not its file is there (readline
-            // reads nothing else then either).
-            let named = users_inputrc(
-                Some("~/.config/readline/inputrc".into()),
-                Some(home.clone()),
-                &ours,
-            );
-            assert_eq!(named, Some(PathBuf::from("~/.config/readline/inputrc")));
-            // Ours already (Rovik started in one of its terminals): never itself.
-            assert_eq!(
-                users_inputrc(Some(ours.clone().into()), Some(home.clone()), &ours),
-                Some(home.join(".inputrc"))
-            );
-        }
-
-        #[test]
-        fn the_file_says_the_setting_then_includes_the_users_own() {
-            let with =
-                String::from_utf8(text(Some(Path::new("/home/a b/.inputrc"))).unwrap()).unwrap();
-            assert!(with.starts_with(DEFAULTS), "{with}");
-            assert!(
-                with.ends_with("$endif\n$include /home/a b/.inputrc\n"),
-                "{with}"
-            );
-            assert_eq!(text(None).unwrap(), DEFAULTS.as_bytes());
-            // A name no `$include` line can say: no file, so readline reads theirs.
-            assert_eq!(text(Some(Path::new("/home/a\nb/.inputrc"))), None);
-            assert_eq!(text(Some(Path::new(" inputrc"))), None);
-        }
-
-        #[test]
-        fn it_is_written_once_and_again_when_the_users_settings_move() {
-            let dir = temp_dir("write");
-            let path = dir.join("terminal").join("inputrc");
-            let home = dir.join("home");
-            std::fs::create_dir_all(&home).unwrap();
-            assert!(write(&path, Some("/a/inputrc".into()), Some(home.clone())));
-            let first = std::fs::read_to_string(&path).unwrap();
-            assert!(first.ends_with("$include /a/inputrc\n"), "{first}");
-            assert!(write(&path, Some("/b/inputrc".into()), Some(home)));
-            let second = std::fs::read_to_string(&path).unwrap();
-            assert!(second.ends_with("$include /b/inputrc\n"), "{second}");
-        }
-
-        /// Bash's own answer, where there's a bash: what `bind -v` says with
-        /// the file, which reads without an error and keeps the user's own
-        /// settings. Its readline's version is taken to be bash's (5.2 has
-        /// 8.2), as bash builds its own. One bash says both, the one on PATH
-        /// (macOS has two: its own 3.2, and Homebrew's). Interactive, as a
-        /// terminal's is: bash 3.2 reads readline's settings only then.
-        #[test]
-        fn bash_scrolls_a_long_line_before_readline_8_3_and_keeps_the_users_settings() {
-            let dir = temp_dir("bash");
-            let users = dir.join("users-inputrc");
-            std::fs::write(&users, "set bell-style visible\n").unwrap();
-            let path = dir.join("inputrc");
-            assert!(write(&path, Some(users.into()), Some(dir.clone())));
-            let out = Command::new("bash")
-                .args([
-                    "--norc",
-                    "--noprofile",
-                    "-i",
-                    "-c",
-                    "bind -v; echo \"bash=${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}\"",
-                ])
-                .env_clear()
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-                .env("HOME", &dir)
-                .env("TERM", "dumb")
-                .env("INPUTRC", &path)
-                .stdin(Stdio::null())
-                .output();
-            let Ok(out) = out else {
-                eprintln!("no bash here: skipped");
-                return;
-            };
-            let said = String::from_utf8_lossy(&out.stdout);
-            let version = said.lines().find_map(|line| line.strip_prefix("bash="));
-            let mut parts = version
-                .unwrap_or_default()
-                .split_whitespace()
-                .map(|n| n.parse::<u32>().unwrap_or(0));
-            let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-            let errors = String::from_utf8_lossy(&out.stderr);
-            assert!(
-                !errors.contains("readline:"),
-                "readline couldn't read it: {errors}"
-            );
-            assert!(
-                said.contains("set bell-style visible"),
-                "the user's settings were left out:\n{said}"
-            );
-            let scrolls = (major, minor) < (5, 3);
-            let want = format!(
-                "set horizontal-scroll-mode {}",
-                if scrolls { "on" } else { "off" }
-            );
-            assert!(
-                said.contains(&want),
-                "bash {major}.{minor}: not `{want}`:\n{said}"
-            );
-        }
-    }
-}
-
 #[tauri::command]
 pub fn spawn_terminal(
     app: AppHandle,
@@ -486,17 +245,18 @@ pub fn spawn_terminal(
 ) -> Result<TerminalInfo, String> {
     let (shell, args) = default_shell();
     let mut cmd = CommandBuilder::new(&shell);
+    // Bash 4.4 to 5.4 reads a file of ours in place of a login shell's
+    // (`bash`).
+    #[cfg(unix)]
+    let args: Vec<std::ffi::OsString> = match bash::init_file(&app, &shell) {
+        Some(file) => vec!["--init-file".into(), file.into()],
+        None => args.into_iter().map(Into::into).collect(),
+    };
     cmd.args(args);
     // A project folder that was moved or deleted shouldn't make spawning fail.
     match cwd.as_deref().filter(|dir| Path::new(dir).is_dir()) {
         Some(dir) => cmd.cwd(dir),
         None => in_home(&app, &mut cmd),
-    }
-    // Readline's settings (`readline`), then the user's own: for the shell,
-    // and for a bash run in it.
-    #[cfg(unix)]
-    if let Some(inputrc) = readline::init_file(&app) {
-        cmd.env("INPUTRC", inputrc);
     }
     let id = spawn_pty(&app, &state, cmd, size(cols, rows), on_event, true)?;
     Ok(TerminalInfo {
@@ -522,8 +282,12 @@ pub async fn spawn_remote_terminal(
     let target = match page.shell_access(&host)? {
         ShellAccess::Ssh(target) => target,
         ShellAccess::Wsl(wsl) => {
+            let start = bash::on_host(&wsl.shell()).await;
             let mut cmd = CommandBuilder::new(rovik_client::wsl::PROGRAM);
-            cmd.args(wsl.terminal_args());
+            match start.as_ref().and_then(bash::HostStart::argv) {
+                Some(argv) => cmd.args(wsl.terminal_running(&argv)),
+                None => cmd.args(wsl.terminal_args()),
+            }
             in_home(&app, &mut cmd);
             // What runs in it runs in the distribution: nothing counts here.
             let id = spawn_pty(&app, &state, cmd, size, on_event, false)?;
@@ -545,10 +309,14 @@ pub async fn spawn_remote_terminal(
         }
     };
     let ssh = Arc::new(Ssh::connect(&target).await.err_text()?);
-    // Its name first: what the shell prints waits unread until its output
-    // is pumped, and enough of it would hold up the answer.
-    let name = ssh.login_shell().await;
-    let opened = ssh.shell(TERM, size.cols.into(), size.rows.into()).await;
+    // How its shell starts, first: what the shell prints waits unread until
+    // its output is pumped, and enough of it would hold up the answer.
+    let start = bash::on_host(&*ssh).await;
+    let (cols, rows) = (size.cols.into(), size.rows.into());
+    let opened = match start.as_ref().and_then(bash::HostStart::command) {
+        Some(command) => ssh.shell_running(TERM, cols, rows, &command).await,
+        None => ssh.shell(TERM, cols, rows).await,
+    };
     let (shell, mut output) = opened.err_text()?;
     let id = Uuid::new_v4().to_string();
     state.insert(id.clone(), Session::Ssh(shell));
@@ -582,7 +350,7 @@ pub async fn spawn_remote_terminal(
     });
     Ok(TerminalInfo {
         id,
-        shell: name.unwrap_or_else(|| "shell".into()),
+        shell: start.map_or_else(|| "shell".into(), |start| start.name()),
     })
 }
 

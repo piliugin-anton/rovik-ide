@@ -500,9 +500,6 @@ async fn a_shell_on_the_host_runs_on_a_terminal_of_the_size_asked() {
         .await
         .unwrap();
     let ssh = Arc::new(ssh);
-    let login = std::env::var("SHELL").unwrap_or_default();
-    let name = login.rsplit('/').next().filter(|name| !name.is_empty());
-    assert_eq!(ssh.login_shell().await.as_deref(), name, "from $SHELL");
 
     let opened = Arc::clone(&ssh).shell("xterm-256color", 100, 30).await;
     let (shell, mut output) = opened.unwrap();
@@ -529,6 +526,34 @@ async fn a_shell_on_the_host_runs_on_a_terminal_of_the_size_asked() {
     let (printed, ended) = printed_until(&mut output, "not printed").await;
     assert_eq!(ended, Some(None), "hung up on: {printed}");
     assert!(shell.write(b"echo too late\n").is_err());
+}
+
+/// A remote terminal's shell started as the app starts one (bash with the
+/// terminal's file): the command runs through sh in place of the login
+/// shell, on a terminal of the type and size asked, and the terminal is
+/// the shell's it starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_runs_on_a_terminal_in_place_of_the_login_shell() {
+    let server = SshServer::start().await;
+    let ssh = Ssh::connect(&target(&server, password(PASSWORD)))
+        .await
+        .unwrap();
+    let command = "echo \"it's $0\"; exec sh";
+    let opened = Arc::new(ssh)
+        .shell_running("xterm-256color", 90, 20, command)
+        .await;
+    let (shell, mut output) = opened.unwrap();
+    let (printed, ended) = printed_until(&mut output, "it's sh").await;
+    assert_eq!(ended, None, "{printed}");
+    assert_eq!(
+        *server.terminals.lock().unwrap(),
+        ["pty xterm-256color 90x20"]
+    );
+    shell.write(b"echo then the shell\n").unwrap();
+    printed_until(&mut output, "then the shell").await;
+    shell.write(b"exit 4\n").unwrap();
+    let (printed, ended) = printed_until(&mut output, "not printed").await;
+    assert_eq!(ended, Some(Some(4)), "{printed}");
 }
 
 /// H04: the connection test, a step at a time. The first run stops at the

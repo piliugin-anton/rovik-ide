@@ -9,7 +9,7 @@
 import { container } from '../test/dom';
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSignal } from 'solid-js';
+import { batch, createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import TerminalPanel from './TerminalPanel';
 import { initCloud, refreshHosts, type HostSummary } from '../lib/cloud';
@@ -174,6 +174,59 @@ test('no host to open one on: "+" opens a terminal here, and the tabs say nothin
     ['/work/project', '/work/project']
   );
   assert.deepEqual(sent('spawn_remote_terminal'), []);
+});
+
+test("each project's terminals: another's aren't shown, and come back with it", async () => {
+  await app([]);
+  const root = container();
+  const [project, setProject] = createSignal<string | null>('/work/a');
+  const [collapsed, setCollapsed] = createSignal(false);
+  disposeLast = render(
+    () => (
+      <TerminalPanel collapsed={collapsed} onCollapsedChange={setCollapsed} rootPath={project} />
+    ),
+    root
+  );
+  await flush();
+  plus(root).click();
+  await flush();
+  assert.deepEqual(labels(root), ['bash 1', 'bash 2']);
+  // Another project, the panel open: none of the first's, and one of its own.
+  setProject('/work/b');
+  await flush();
+  assert.deepEqual(labels(root), ['bash']);
+  assert.deepEqual(tooltips(root), ['/work/b']);
+  assert.deepEqual(
+    sent('spawn_terminal').map((a) => a.cwd),
+    ['/work/a', '/work/a', '/work/b']
+  );
+  // The first's still run, out of sight.
+  assert.deepEqual(sent('close_terminal'), []);
+  assert.equal(root.querySelectorAll('.terminal-instance.hidden').length, 2);
+  // Back to the first: its two, as they were, and none started.
+  setProject('/work/a');
+  await flush();
+  assert.deepEqual(labels(root), ['bash 1', 'bash 2']);
+  assert.deepEqual(tooltips(root), ['/work/a', '/work/a']);
+  assert.equal(sent('spawn_terminal').length, 3);
+  // A project whose panel was closed, as App sets it with the project: none starts.
+  batch(() => {
+    setCollapsed(true);
+    setProject('/work/c');
+  });
+  await flush();
+  assert.equal(sent('spawn_terminal').length, 3);
+  // A clean exit of a terminal out of sight closes its tab, and leaves this
+  // project's panel as it is.
+  setCollapsed(false);
+  await flush();
+  assert.equal(sent('spawn_terminal').length, 4, 'opened on the third project: one there');
+  send(0, { type: 'exit', code: 0 });
+  await flush();
+  assert.equal(collapsed(), false);
+  setProject('/work/a');
+  await flush();
+  assert.deepEqual(labels(root), ['bash']);
 });
 
 test('a connected host: "+" asks where, and each tab says where it runs', async () => {

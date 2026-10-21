@@ -1,4 +1,5 @@
 import {
+  batch,
   createSignal,
   createMemo,
   Show,
@@ -431,7 +432,14 @@ export default function App() {
     setTabsComing(folder);
     try {
       if (session) tree.presetExpanded(folder, session.expanded);
-      setRootPath(folder);
+      // Its terminal panel as it was left, with its own terminals
+      // (TerminalPanel), or as it is now for a project that has none kept:
+      // set together, or the panel open on the project left would start a
+      // terminal in this one.
+      batch(() => {
+        if (session?.terminalOpen !== undefined) setTerminalCollapsed(!session.terminalOpen);
+        setRootPath(folder);
+      });
       setOpenFiles([]);
       setActivePath(null);
       if (!session?.files.length) return;
@@ -1802,7 +1810,13 @@ export default function App() {
     const files: SessionFile[] = openFiles()
       .filter((f) => !f.readOnly)
       .map(({ id, path, name, language }) => ({ id, path, name, language }));
-    return JSON.stringify({ root, files, active: activePath(), expanded: [...tree.expanded()] });
+    return JSON.stringify({
+      root,
+      files,
+      active: activePath(),
+      expanded: [...tree.expanded()],
+      terminalOpen: !terminalCollapsed(),
+    });
   });
   let tabsTimer: ReturnType<typeof setTimeout> | undefined;
   /** Keeps the tabs shown now as their project's (lib/projectSessions.ts). */
