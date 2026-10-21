@@ -46,6 +46,14 @@ interface TerminalProps {
 /** How long the terminal's size has to hold still before it's fitted to. */
 const SETTLE_MS = 150;
 
+/**
+ * The fewest rows the terminal is given. Bash 5.1's and 5.2's line editor,
+ * once it has drawn its line on a terminal one row high, keeps every line
+ * from staying on one row for as long as it runs (lib/bashLine): a terminal
+ * opened with its panel still opening was fitted to a sliver of it, one row.
+ */
+const MIN_ROWS = 2;
+
 /** Ctrl with these keys, by physical key: the control characters of `[`, `\` and `]`. */
 const CONTROL_PUNCTUATION: Record<string, string> = {
   BracketLeft: '\x1b',
@@ -308,12 +316,30 @@ export default function Terminal(props: TerminalProps) {
   /** A fit waiting for bash to put its line on one row. */
   let fitWaits = false;
 
-  /** Fit to the container; skipped while hidden (xterm can't lay out at 0×0). */
+  /** The size that fits the container, of `MIN_ROWS` at least; none while hidden (xterm can't lay out at 0×0). */
+  function fittingSize(): { cols: number; rows: number } | null {
+    if (!containerEl || containerEl.clientWidth === 0 || containerEl.clientHeight === 0)
+      return null;
+    const size = fitAddon?.proposeDimensions();
+    if (!size || isNaN(size.cols) || isNaN(size.rows)) return null;
+    return { cols: size.cols, rows: Math.max(MIN_ROWS, size.rows) };
+  }
+
+  /** The terminal at `size`: the shell's resized to it too (onResize). */
+  function resizeTo(size: { cols: number; rows: number } | null) {
+    const term = xterm;
+    if (!term || !size || (size.cols === term.cols && size.rows === term.rows)) return;
+    // As the fit addon resizes, drawn anew, unless that's too few rows.
+    const fitted = fitAddon?.proposeDimensions();
+    if (fitted?.cols === size.cols && fitted.rows === size.rows) fitAddon?.fit();
+    else term.resize(size.cols, size.rows);
+  }
+
+  /** Fit to the container. */
   function fit() {
     if (fitWaits) return; // done once bash has answered, to the size then
-    if (!containerEl || containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
     const term = xterm;
-    const size = fitAddon?.proposeDimensions();
+    const size = fittingSize();
     // Bash redraws its line as the terminal resizes, garbled if it's too tall
     // then: a line that may be goes on one row first.
     if (
@@ -328,12 +354,11 @@ export default function Terminal(props: TerminalProps) {
       fitWaits = true;
       void tellBash(ONE_ROW).then(() => {
         fitWaits = false;
-        if (disposed || !containerEl) return;
-        if (containerEl.clientWidth > 0 && containerEl.clientHeight > 0) fitAddon?.fit();
+        if (!disposed) resizeTo(fittingSize());
       });
       return;
     }
-    fitAddon?.fit();
+    resizeTo(size);
   }
 
   // A size still changing is fitted to once it holds still. The chat panel
