@@ -1,5 +1,5 @@
 import { onMount, onCleanup, createEffect, createSignal, Show } from 'solid-js';
-import { Terminal as XTerm } from '@xterm/xterm';
+import { Terminal as XTerm, type IMarker } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import {
@@ -11,6 +11,19 @@ import {
   type TerminalEvent,
   type TerminalHost,
 } from '../lib/terminal';
+import {
+  BASH_LINE_OSC,
+  CHECK,
+  NO_LINE,
+  ONE_ROW,
+  lineAfter,
+  lineDone,
+  mayOverflowResized,
+  parseBashSaid,
+  pasteMayOverflow,
+  withBashKeys,
+  type BashLine,
+} from '../lib/bashLine';
 import TerminalContextMenu from './TerminalContextMenu';
 
 interface TerminalProps {
@@ -254,9 +267,72 @@ export default function Terminal(props: TerminalProps) {
     setMenuVisible(true);
   }
 
+  // Bash's input line, as its start file here says it is: bash before 5.3
+  // garbles one taller than the terminal, so the terminal has it go on one
+  // row while it's too tall (lib/bashLine).
+  let line: BashLine = NO_LINE;
+  /** Where bash's last prompt starts. */
+  let promptMarker: IMarker | undefined;
+  /** Called when bash next says how its line is. */
+  let onBashSaid: (() => void)[] = [];
+
+  /** The rows bash's line takes, about: from its prompt to the last row with text below. */
+  function lineRows(term: XTerm): number {
+    const buffer = term.buffer.active;
+    const caret = buffer.baseY + buffer.cursorY;
+    const marked = promptMarker && !promptMarker.isDisposed ? promptMarker.line : -1;
+    const top = marked >= 0 && marked <= caret ? marked : caret;
+    let bottom = caret;
+    for (let y = caret + 1; y < buffer.baseY + term.rows; y++) {
+      if (buffer.getLine(y)?.translateToString(true)) bottom = y;
+    }
+    return bottom - top + 1;
+  }
+
+  /** Sends bash `key`, then waits for it to say how its line is now, a moment at most. */
+  function tellBash(key: string): Promise<void> {
+    const id = terminalId;
+    if (!id) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        onBashSaid = onBashSaid.filter((f) => f !== done);
+        resolve();
+      };
+      const timer = setTimeout(done, 300);
+      onBashSaid.push(done);
+      void writeToTerminal(id, key).catch(done);
+    });
+  }
+
+  /** A fit waiting for bash to put its line on one row. */
+  let fitWaits = false;
+
   /** Fit to the container; skipped while hidden (xterm can't lay out at 0×0). */
   function fit() {
+    if (fitWaits) return; // done once bash has answered, to the size then
     if (!containerEl || containerEl.clientWidth === 0 || containerEl.clientHeight === 0) return;
+    const term = xterm;
+    const size = fitAddon?.proposeDimensions();
+    // Bash redraws its line as the terminal resizes, garbled if it's too tall
+    // then: a line that may be goes on one row first.
+    if (
+      term &&
+      size &&
+      line.prompt &&
+      !line.away &&
+      !line.oneRow &&
+      (size.cols < term.cols || size.rows < term.rows) &&
+      mayOverflowResized(lineRows(term), term.cols, size.cols, size.rows)
+    ) {
+      fitWaits = true;
+      void tellBash(ONE_ROW).then(() => {
+        fitWaits = false;
+        if (disposed || !containerEl) return;
+        if (containerEl.clientWidth > 0 && containerEl.clientHeight > 0) fitAddon?.fit();
+      });
+      return;
+    }
     fitAddon?.fit();
   }
 
@@ -353,18 +429,52 @@ export default function Terminal(props: TerminalProps) {
     onCleanup(sendInputMethodText(term, containerEl));
     term.onTitleChange((title) => props.onTitleChange?.(title));
 
+    // What bash's start file here says of its line, and bash's line editor
+    // done with a line: it turns bracketed paste off. A shell on a host
+    // has no such file.
+    if (!props.host) {
+      term.parser.registerOscHandler(BASH_LINE_OSC, (text) => {
+        const said = parseBashSaid(text);
+        if (!said) return false;
+        if (said.kind === 'prompt') {
+          promptMarker?.dispose();
+          promptMarker = term.registerMarker(0);
+        }
+        line = lineAfter(line, said);
+        for (const done of onBashSaid) done();
+        return true;
+      });
+      term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
+        if (params.includes(2004)) line = lineDone(line);
+        return false;
+      });
+    }
+
     // Input typed before the shell is up is kept, not dropped.
     let queued = '';
-    term.onData((data) => {
+    term.onData((typed) => {
       if (exited) return;
+      const sent = withBashKeys(line, typed, (text) =>
+        pasteMayOverflow(text, term.cols, term.rows, lineRows(term), term.buffer.active.cursorX)
+      );
+      line = sent.line;
       if (!terminalId) {
-        queued += data;
+        queued += sent.data;
         return;
       }
-      void writeToTerminal(terminalId, data).catch(() => {});
+      void writeToTerminal(terminalId, sent.data).catch(() => {});
     });
     term.onResize(({ cols, rows }) => {
-      if (terminalId && !exited) void resizeTerminal(terminalId, cols, rows).catch(() => {});
+      const id = terminalId;
+      if (!id || exited) return;
+      void resizeTerminal(id, cols, rows)
+        .then(() => {
+          // On one row, the line may fit now: bash says, once it has the size.
+          if (line.oneRow && line.prompt && !line.away && !exited) {
+            void writeToTerminal(id, CHECK).catch(() => {});
+          }
+        })
+        .catch(() => {});
     });
 
     // A host takes a moment to reach: said until its shell's first output.

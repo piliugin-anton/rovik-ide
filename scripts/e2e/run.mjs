@@ -1368,33 +1368,84 @@ async function run() {
 
   // Bash before 5.3 garbles an input line taller than the terminal: held
   // Backspace through a long paste blanked the row the caret moved up to.
-  // A terminal here gives readline a line that scrolls sideways instead
-  // (src-tauri/src/terminal.rs, `readline`): asked of a bash in it, whatever
-  // the user's shell. Windows' terminals run cmd.exe.
-  if (PLATFORM !== 'win32') {
-    await step('terminal: bash before 5.3 keeps a long line on one row', async () => {
+  // A terminal here starts bash 4.4 to 5.2 with a file of its own
+  // (src-tauri/src/terminal/bash.sh), and has a paste that may not fit go
+  // on one row first, which wraps again once enough is deleted for it to
+  // fit (src/lib/bashLine.ts). Asked of the terminal's own shell: bash 5.1
+  // or 5.2 (from 5.1 on, with bracketed paste on as it is by default). A
+  // paste as a person makes it: not through the bridge (see below).
+  // Windows' terminals run cmd.exe.
+  if (PLATFORM !== 'win32' && DRIVER !== 'bridge') {
+    await step('terminal: a paste too tall stays on one row until it fits', async () => {
       await openTerminal();
       await click('.xterm-screen');
       await typeKeys(
-        `bash --norc -ic 'bind -v | grep horizontal-scroll-mode; echo "bash=\${BASH_VERSINFO[0]}.\${BASH_VERSINFO[1]}"'`
+        'clear; echo "e2e-shell=${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]} $(stty size)"'
       );
       await keys(Keys.ENTER);
-      // Its answers, lines of their own: not the typed line.
-      const answer = async () => {
-        const lines = (await panelText('.xterm-rows')).split('\n').map((l) => l.trim());
-        const mode = lines.find((l) => /^set horizontal-scroll-mode (on|off)$/.test(l));
-        const version = lines.map((l) => /^bash=(\d+)\.(\d+)$/.exec(l)).find(Boolean);
-        return mode && version
-          ? { mode, major: Number(version[1]), minor: Number(version[2]) }
-          : null;
-      };
-      await waitFor(answer, 'bash’s answer', 20_000);
-      const { mode, major, minor } = await answer();
-      const scrolls = major < 5 || (major === 5 && minor < 3);
-      assert(
-        mode === `set horizontal-scroll-mode ${scrolls ? 'on' : 'off'}`,
-        `bash ${major}.${minor}: ${mode}`
+      // Its answer, a line of its own: not the typed line.
+      const answer = async () =>
+        (await panelText('.xterm-rows'))
+          .split('\n')
+          .map((l) => /^e2e-shell=(\d*)\.(\d*) (\d+) (\d+)$/.exec(l.trim()))
+          .find(Boolean);
+      await waitFor(answer, 'the shell’s answer', 20_000);
+      const [, major, minor, rows, cols] = (await answer()).map(Number);
+      if (major !== 5 || (minor !== 1 && minor !== 2)) {
+        log(`  the shell is no bash 5.1 or 5.2 (${major}.${minor}): nothing to check`);
+        await closeTerminal();
+        return;
+      }
+      // The terminal as drawn: each row's text, and the caret's row.
+      const drawn = () =>
+        d.exec(`const inst = document.querySelector('.terminal-instance:not(.hidden)');
+          const rows = [...inst.querySelectorAll('.xterm-rows > div')];
+          const caret = rows.findIndex((row) => row.querySelector('.xterm-cursor'));
+          return { rows: rows.map((row) => row.textContent.replace(/\u00a0/g, ' ').trimEnd()), caret };`);
+      // A line of text two rows taller than the terminal, then Ctrl+Shift+V.
+      const words = 'the quick brown fox jumps over the lazy dog ';
+      const text = words.repeat(Math.ceil(((rows + 2) * cols) / words.length));
+      const copied = await d.exec(
+        'return navigator.clipboard.writeText(arguments[0]).then(() => true, (e) => String(e));',
+        text
       );
+      assert(copied === true, `the clipboard holds the text: ${copied}`);
+      await typeKeys('clear');
+      await keys(Keys.ENTER);
+      await sleep(500);
+      if (X) xdo('key', 'ctrl+shift+v');
+      else await keys([Keys.CTRL, Keys.SHIFT, 'v']);
+      // On one row: readline's mark for a line scrolled sideways, before the
+      // text's end, at the caret.
+      const oneRow = async () => {
+        const { rows: shown, caret } = await drawn();
+        return (
+          caret >= 0 &&
+          shown[caret].startsWith('<') &&
+          shown[caret].endsWith(text.trimEnd().slice(-10))
+        );
+      };
+      await waitFor(oneRow, 'the paste on one row', 10_000);
+      // Deleted a row at a time: the caret's row never blank, and the line
+      // wraps once it fits.
+      let wrapped = false;
+      for (let deleted = 0; deleted < text.length && !wrapped; deleted += cols) {
+        if (X) xdo('key', '--delay', '0', ...Array(cols).fill('BackSpace'));
+        else await keys(...Array(cols).fill(Keys.BACKSPACE));
+        await sleep(400);
+        const { rows: shown, caret } = await drawn();
+        assert(
+          caret >= 0 && shown[caret] !== '',
+          `the caret on a blank row, ${deleted + cols} deleted:\n${shown.join('\n')}`
+        );
+        wrapped = !shown[caret].startsWith('<') && caret > 0 && shown[caret - 1] !== '';
+      }
+      assert(wrapped, 'the line never wrapped again');
+      // What's left, wrapped: its rows end where the text does, and the caret's row with it.
+      const { rows: shown, caret } = await drawn();
+      const kept = shown.slice(0, caret + 1).join('');
+      assert(kept.includes(words.trim()), `the text wrapped:\n${shown.join('\n')}`);
+      await keys([Keys.CTRL, 'c']);
       await closeTerminal();
     });
   }
