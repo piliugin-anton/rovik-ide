@@ -9,7 +9,6 @@ import {
   keyKind,
   lineAfter,
   lineDone,
-  mayOverflowResized,
   parseBashSaid,
   pasteMayOverflow,
   withBashKeys,
@@ -159,15 +158,4 @@ test('a paste that may not fit: by its rows, and the line it goes in', () => {
   assert.equal(pasteMayOverflow('ж'.repeat(800), 100, 12, 1, 0), false);
   // A huge one is looked at no further than it takes.
   assert.equal(pasteMayOverflow('x'.repeat(5_000_000), 100, 12, 1, 0), true);
-});
-
-test('a resize that may leave the line too tall', () => {
-  // A line of 3 rows of 100: taller than fits in 3 rows, not in 12.
-  assert.equal(mayOverflowResized(3, 100, 100, 3), true);
-  assert.equal(mayOverflowResized(3, 100, 100, 12), false);
-  // Half as wide: twice the rows, and one.
-  assert.equal(mayOverflowResized(3, 100, 50, 8), false);
-  assert.equal(mayOverflowResized(3, 100, 50, 7), true);
-  // Wider: no more rows.
-  assert.equal(mayOverflowResized(5, 80, 120, 7), false);
 });

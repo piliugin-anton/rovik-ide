@@ -7,7 +7,7 @@
 # while it's too tall:
 #
 #   ESC [ 9001 ~  one row: the terminal sends it before a paste that may not
-#                 fit, and before it shrinks with a line that may not fit;
+#                 fit, and before it gets smaller;
 #   ESC [ 9003 ~  one row if the line is too tall, wrapping if it fits: sent
 #                 after such a paste, after deleting, and after a resize.
 #

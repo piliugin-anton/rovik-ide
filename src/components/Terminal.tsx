@@ -18,7 +18,6 @@ import {
   ONE_ROW,
   lineAfter,
   lineDone,
-  mayOverflowResized,
   parseBashSaid,
   pasteMayOverflow,
   withBashKeys,
@@ -322,8 +321,11 @@ export default function Terminal(props: TerminalProps) {
   function lineRows(term: XTerm): number {
     const buffer = term.buffer.active;
     const caret = buffer.baseY + buffer.cursorY;
+    // The caret's row and those it wrapped from, and from the prompt on.
+    let top = caret;
+    while (top > 0 && buffer.getLine(top)?.isWrapped) top--;
     const marked = promptMarker && !promptMarker.isDisposed ? promptMarker.line : -1;
-    const top = marked >= 0 && marked <= caret ? marked : caret;
+    if (marked >= 0 && marked < top) top = marked;
     let bottom = caret;
     for (let y = caret + 1; y < buffer.baseY + term.rows; y++) {
       if (buffer.getLine(y)?.translateToString(true)) bottom = y;
@@ -376,15 +378,15 @@ export default function Terminal(props: TerminalProps) {
     const term = xterm;
     const size = fittingSize();
     // Bash redraws its line as the terminal resizes, garbled if it's too tall
-    // then: a line that may be goes on one row first.
+    // then: going smaller, the line goes on one row first, and wraps again
+    // after if it fits (onResize).
     if (
       term &&
       size &&
       line.prompt &&
       !line.away &&
       !line.oneRow &&
-      (size.cols < term.cols || size.rows < term.rows) &&
-      mayOverflowResized(lineRows(term), term.cols, size.cols, size.rows)
+      (size.cols < term.cols || size.rows < term.rows)
     ) {
       fitWaits = true;
       void tellBash(ONE_ROW).then(() => {
@@ -509,6 +511,15 @@ export default function Terminal(props: TerminalProps) {
       });
       term.parser.registerCsiHandler({ prefix: '?', final: 'l' }, (params) => {
         if (params.includes(2004)) line = lineDone(line);
+        return false;
+      });
+      // The screen cleared at a prompt (Ctrl+L): bash draws it again from
+      // where the caret is now, the top.
+      term.parser.registerCsiHandler({ final: 'J' }, (params) => {
+        if (line.prompt && params[0] === 2) {
+          promptMarker?.dispose();
+          promptMarker = term.registerMarker(0);
+        }
         return false;
       });
     }

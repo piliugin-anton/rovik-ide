@@ -202,20 +202,3 @@ export function pasteMayOverflow(
   }
   return false;
 }
-
-/**
- * Whether bash's line, taking `lineRows` rows of `cols` columns now, may be
- * too tall once the terminal is `newCols`×`newRows`: then it goes on one row
- * before, as bash redraws a line too tall wrong as it resizes. Generous: a
- * row may take as many as the narrower width needs for the wider one.
- */
-export function mayOverflowResized(
-  lineRows: number,
-  cols: number,
-  newCols: number,
-  newRows: number
-): boolean {
-  const rowsThen =
-    newCols >= cols ? lineRows : lineRows * Math.ceil(cols / Math.max(1, newCols)) + 1;
-  return rowsThen > newRows - 1;
-}
