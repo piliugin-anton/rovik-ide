@@ -66,6 +66,21 @@ describe('SourceChangeQueue', () => {
     assert.equal(r.applied.length, 1);
     q.dispose();
   });
+
+  it('reloadAll: what was queued waits for the reload, which comes once quiet', async () => {
+    const r = recorder();
+    const q = new SourceChangeQueue(r.sink, timing);
+    q.queue('/p/a.ts');
+    q.reloadAll();
+    await sleep(15);
+    q.queue('/p/b.ts'); // pushes the reload back
+    await sleep(15);
+    assert.equal(r.reloads(), 0);
+    await sleep(15);
+    assert.equal(r.reloads(), 1);
+    assert.equal(r.applied.length, 0, 'the reload has them');
+    q.dispose();
+  });
 });
 
 describe('QuietRunner', () => {

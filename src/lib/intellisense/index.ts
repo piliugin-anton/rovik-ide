@@ -7,7 +7,9 @@
 //
 //   - the project's own JS/TS sources are loaded once per project
 //     (src-tauri/src/typings/sources.rs) and kept current from the file
-//     watcher, in batches (sourceChanges.ts);
+//     watcher, in batches (sourceChanges.ts): a file that's gone (removed,
+//     renamed, its folder moved away) is dropped, and when the watcher
+//     loses count they are all loaded again;
 //   - its dependencies' typings are loaded with them, as the closure of
 //     what the code imports (rovik_core::typings): the packages the
 //     sources, configs and manifests name, from every node_modules folder
@@ -61,10 +63,27 @@ export function isIntelliSenseReady(root: string | null): boolean {
 
 /**
  * A source file changed on disk: `content` if known, null when deleted,
- * undefined to read it. Applied with others once changes settle.
+ * undefined to read it (a file that's gone is dropped). Applied with
+ * others once changes settle.
  */
 export function updateProjectSource(path: string, content?: string | null): void {
   current?.sourceChanged(path, content);
+}
+
+/**
+ * Something that isn't a source changed: when it's a folder that went
+ * (removed, renamed away), the sources in it are checked and dropped.
+ */
+export function updateProjectPath(path: string): void {
+  current?.pathChanged(path);
+}
+
+/**
+ * Too much changed for the watcher to tell (its "re-check everything"):
+ * the project's sources and typings are read again once it settles.
+ */
+export function updateWholeProject(): void {
+  current?.everythingChanged();
 }
 
 /**

@@ -53,6 +53,18 @@ export class SourceChangeQueue {
     this.flushTimer = setTimeout(() => void this.flush(), wait);
   }
 
+  /**
+   * Too much changed to say what (the watcher's "re-check everything"):
+   * every source is loaded again once changes settle, as after a burst.
+   */
+  reloadAll(): void {
+    clearTimeout(this.flushTimer);
+    this.pending.clear();
+    this.firstQueuedAt = null;
+    this.stale = true;
+    this.scheduleReload();
+  }
+
   dispose(): void {
     clearTimeout(this.flushTimer);
     clearTimeout(this.reloadTimer);

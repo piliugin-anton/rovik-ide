@@ -39,11 +39,20 @@
 // emptied (replacedPrograms.ts). Under JavaScriptCore every program stayed
 // reachable from the next, with its type checker, and typing in a big
 // project grew the worker until the web view was killed.
+//
+// Imports that found nothing. TypeScript keeps what a file's imports
+// resolved to until that file changes; tsserver also watches where a
+// failed lookup looked, which a language service host can't. So a file
+// arriving later (a new source outside the active config, a package's
+// typings once it's installed) left its importers saying it doesn't exist
+// until they were edited. When the libs gain or lose a file, the next
+// program resolves every import again (hasInvalidatedResolutions).
 import {
   libFileMap,
   ts,
   TypeScriptWorker,
   type CreateData,
+  type ExtraLib,
   type MirrorModel,
   type WorkerContext,
 } from 'monaco-editor/language/typescript/ts.worker.js';
@@ -58,12 +67,32 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
   private linksCache: { version: number; links: ReadonlyMap<string, string> } | undefined;
   private projectCache:
     { version: number; project: TsProject | null; covered: Map<string, boolean> } | undefined;
+  /** Bumped each time a file comes to the libs or goes. */
+  private filesVersion = 0;
+  /** The files the current program's imports were resolved against. */
+  private resolvedWith = -1;
 
   constructor(ctx: WorkerContext, createData: CreateData) {
     super(ctx, createData);
-    // Every call of Monaco's and ours goes through it.
-    this._languageService = releasingReplacedPrograms(this._languageService);
+    // Every call of Monaco's and ours goes through it. A new program has
+    // resolved every import it had to against the libs as they are.
+    this._languageService = releasingReplacedPrograms(this._languageService, () => {
+      this.resolvedWith = this.filesVersion;
+    });
   }
+
+  override async updateExtraLibs(extraLibs: Record<string, ExtraLib>): Promise<void> {
+    if (!sameNames(this.getExtraLibs(), extraLibs)) this.filesVersion++;
+    return super.updateExtraLibs(extraLibs);
+  }
+
+  /**
+   * Whether a file's imports must be resolved again, though the file
+   * didn't change: once the libs gained or lost a file since the program
+   * was built. TypeScript asks this of every file of the program (unbound,
+   * hence an arrow) while it decides whether the program is current.
+   */
+  readonly hasInvalidatedResolutions = (): boolean => this.resolvedWith !== this.filesVersion;
 
   override getScriptFileNames(): string[] {
     const models = this._ctx
@@ -262,6 +291,13 @@ function libKeyOf(path: string): string {
   } catch {
     return path;
   }
+}
+
+/** Whether two lib sets hold the same files (whatever their contents). */
+function sameNames(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const names = Object.keys(b);
+  if (names.length !== Object.keys(a).length) return false;
+  return names.every((name) => name in a);
 }
 
 /** `path` with its longest leading link (a folder) replaced by that link's target. */

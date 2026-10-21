@@ -82,6 +82,20 @@ export async function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>('path_exists', { path });
 }
 
+/**
+ * A changed file's text, or null when it's gone. The disk decides, not
+ * the watcher's kind of change: a rename comes as a change of both paths,
+ * and a removal and a creation of one path can come in either order.
+ * Undefined for a file that's there but can't be read (binary, too large).
+ */
+export async function readFileUnlessGone(path: string): Promise<string | null | undefined> {
+  try {
+    return await readFileContent(path);
+  } catch {
+    return (await pathExists(path).catch(() => true)) ? undefined : null;
+  }
+}
+
 /** A command-line formatter for a file (src-tauri/src/formatter.rs). */
 export interface FormatterInfo {
   id: string;

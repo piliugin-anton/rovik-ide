@@ -19,6 +19,7 @@ import {
   loadProjectSources,
   loadProjectTypings,
   readFileContent,
+  readFileUnlessGone,
 } from '../commands';
 import type { ImportSite, LoadedFiles, LoadedTypings } from '../../types';
 import { notify } from '../notifications';
@@ -79,6 +80,8 @@ export class IntelliSenseProject {
   private readonly typingUris = new Set<string>();
   /** Imports whose package isn't loaded, by importing file, until looked up. */
   private readonly wanted = new Map<string, Set<string>>();
+  /** The sources the worker has, path by lib URI: a folder that goes takes its own. */
+  private readonly sourcePaths = new Map<string, string>();
   /** Open models edited since their imports were last looked at. */
   private readonly editedModels = new Set<monaco.editor.ITextModel>();
   private readonly modelListeners: monaco.IDisposable[] = [];
@@ -129,6 +132,30 @@ export class IntelliSenseProject {
     this.sources.queue(path, content);
   }
 
+  /**
+   * Something that isn't a source changed: if it was a folder that went
+   * (removed, or renamed away: a rename reports the folder alone), the
+   * sources the worker has in it are read again, and go with it.
+   */
+  pathChanged(path: string): void {
+    if (!this.owns(path)) return;
+    const inside = `${modelUriFor(path).toString().replace(/\/+$/, '')}/`;
+    for (const [uri, file] of this.sourcePaths) {
+      if (uri.startsWith(inside)) this.sources.queue(file);
+    }
+  }
+
+  /**
+   * Too much changed for the watcher to say what (a branch switch, an
+   * unpacked archive): the sources, their configs and the dependencies'
+   * typings are read again once it settles.
+   */
+  everythingChanged(): void {
+    if (!this.ready) return; // the first load is reading it all already
+    this.sources.reloadAll();
+    this.typingsRefresh.trigger();
+  }
+
   /** Any file was written: a manifest or a tsconfig means more than one source. */
   fileWritten(path: string): void {
     // The initial load reads node_modules and the configs itself.
@@ -171,6 +198,7 @@ export class IntelliSenseProject {
       this.types.configure(config);
       this.applyInstalled();
       workerLibs.replace([...typingLibs, ...this.sourceLibs(sources)], isLoadedLib);
+      this.noteSources(sources);
     } finally {
       // Even a throw must not leave validation off and the overlay up
       // forever: mark it ready, clear the markers of the half-loaded
@@ -190,19 +218,20 @@ export class IntelliSenseProject {
   ): Promise<void> {
     const read = await Promise.all(
       [...changes].map(async ([path, content]) => {
-        // A read that fails leaves the lib as it is: a deletion comes as
-        // its own event.
-        const text =
-          content !== undefined ? content : await readFileContent(path).catch(() => undefined);
+        // Gone: its lib goes. There but unreadable (binary, too large): it stays.
+        const text = content !== undefined ? content : await readFileUnlessGone(path);
         return [path, text] as const;
       })
     );
     if (this.disposed) return;
     for (const [path, text] of read) {
       const uri = modelUriFor(path).toString();
-      if (text === null) workerLibs.delete(uri);
-      else if (text !== undefined) {
+      if (text === null) {
+        workerLibs.delete(uri);
+        this.sourcePaths.delete(uri);
+      } else if (text !== undefined) {
         workerLibs.set(uri, text);
+        this.sourcePaths.set(uri, path);
         this.noteImports(path, text);
       }
     }
@@ -215,8 +244,11 @@ export class IntelliSenseProject {
     this.warnIfTruncated('sources', sources);
     this.noteConfigs(sources);
     workerLibs.replace(this.sourceLibs(sources), isSourceLib);
+    this.noteSources(sources);
     for (const file of sources.files) this.noteImports(file.path, file.content);
     if (this.wanted.size > 0) this.importsLookup.trigger();
+    // Configs may have come, gone or changed with the rest.
+    this.configReload.trigger();
   }
 
   private async refreshTypings(): Promise<void> {
@@ -330,6 +362,12 @@ export class IntelliSenseProject {
 
   private noteConfigs(sources: LoadedFiles): void {
     this.configPaths = new Set(sources.files.map((f) => f.path).filter(isTsConfig));
+  }
+
+  /** The sources just loaded are all the worker has. */
+  private noteSources(sources: LoadedFiles): void {
+    this.sourcePaths.clear();
+    for (const f of sources.files) this.sourcePaths.set(modelUriFor(f.path).toString(), f.path);
   }
 
   /** The sources, with the package.json files the worker reads for node16 resolution. */

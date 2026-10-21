@@ -300,6 +300,64 @@ describe('ProjectTypeScriptWorker', () => {
     assert.notEqual(program().getSourceFile(`${NM}/@types/node/index.d.ts`), node);
   });
 
+  it('an import that found nothing finds a file that comes later, its importer unchanged', async () => {
+    // A source outside the active config (not a root of the program), and
+    // a package's typings once it's installed: both reach the worker as
+    // libs the program doesn't list, so only a lookup made again finds them.
+    const SHARED = `${ROOT}/shared/x.ts`;
+    const config = {
+      path: '/home/u/my proj/tsconfig.json',
+      include: ['/home/u/my proj/src/**/*'],
+      files: [],
+      exclude: [],
+    };
+    const text =
+      "import { x } from '../shared/x'; import { z } from 'zod'; export const n = x + z;";
+    const project = { [PROJECT_LIB]: { content: JSON.stringify(config), version: 1 } };
+    const w = worker([model(APP, text)], { ...OPTIONS, types: [] }, project);
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2307, 2307]);
+    await w.updateExtraLibs({
+      ...project,
+      [SHARED]: { content: 'export const x = 1;', version: 1 },
+    });
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2307], 'the new source is found');
+    await w.updateExtraLibs({
+      ...project,
+      [SHARED]: { content: 'export const x = 1;', version: 1 },
+      [`${NM}/zod/package.json`]: { content: '{"name":"zod","types":"index.d.ts"}', version: 1 },
+      [`${NM}/zod/index.d.ts`]: { content: 'export declare const z: number;', version: 1 },
+    });
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [], "the package's typings too");
+    // And a file that goes is missed again.
+    await w.updateExtraLibs({ ...project });
+    assert.deepEqual(codes(await w.getSemanticDiagnostics(APP)), [2307, 2307]);
+  });
+
+  it('files coming or going rebuild the program once; other lib changes keep it', async () => {
+    const w = worker([model(APP, APP_TEXT)], { ...OPTIONS, types: ['node', 'vite/client'] });
+    await w.getSemanticDiagnostics(APP);
+    const program = () => w.getLanguageService().getProgram();
+    const first = program();
+    // A file nothing reaches changes: the program stays as it is.
+    await w.updateExtraLibs({
+      ...LIBS,
+      [`${NM}/big/index.d.ts`]: { content: 'export declare const big: string;', version: 2 },
+    });
+    await w.getSemanticDiagnostics(APP);
+    assert.equal(program(), first, 'same files, nothing to resolve again');
+    // A file comes: one new program, then it's kept.
+    await w.updateExtraLibs({
+      ...LIBS,
+      [`${NM}/new/index.d.ts`]: { content: 'export declare const fresh: number;', version: 1 },
+    });
+    await w.getSemanticDiagnostics(APP);
+    const second = program();
+    assert.notEqual(second, first);
+    await w.getSemanticDiagnostics(APP);
+    await w.getQuickInfoAtPosition(APP, 10);
+    assert.equal(program(), second, 'not rebuilt on every call');
+  });
+
   it('a program an edit replaced is emptied; the answers follow the edits', async () => {
     // An open tab being typed in: each edit is a new version of its model.
     let text = 'export const n: number = 1;';
