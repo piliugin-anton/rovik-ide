@@ -9,6 +9,8 @@ Electron-based editors.
 
 Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 
+![Rovik IDE, with the file tree, the editor and an AI chat open](screenshot.png)
+
 - [Features](#features)
 - [Installing and running](#installing-and-running)
 - [Getting started](#getting-started)
