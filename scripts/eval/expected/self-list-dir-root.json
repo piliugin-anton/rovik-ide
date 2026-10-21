@@ -1,6 +1,7 @@
 {
   "id": "self-list-dir-root",
   "reference": "4f348aee7265e0568d7b8323739a39e70d7f49e4",
+  "canary": "rovik-canary-a27fa83e4717608e447ad4b0a4fb333f",
   "ok": true,
   "problems": [],
   "failingAtBase": [

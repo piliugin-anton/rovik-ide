@@ -1,6 +1,7 @@
 {
   "id": "mi-seekable-getitem",
   "reference": "264b18d8dfbab42fdbd969fc09abf602c6ea58b3",
+  "canary": "rovik-canary-411239ead6235cb5a89a9fc453791ea6",
   "ok": true,
   "problems": [],
   "failingAtBase": [

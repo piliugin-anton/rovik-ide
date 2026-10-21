@@ -1,6 +1,7 @@
 {
   "id": "self-clm-heads-up",
   "reference": "7d8760f45d68407c06d9108b7a9c2f2abb9e7cfe",
+  "canary": "rovik-canary-39f64f4c314dbb1ff7a217210f4e2b7f",
   "ok": true,
   "problems": [],
   "failingAtBase": [

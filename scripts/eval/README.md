@@ -67,6 +67,43 @@ left out. A task is usable when some required test fails at the base. The
 result goes to `expected/<task>.json` and is committed with the task. Grading
 uses it, and a task whose reference changed must be validated again.
 
+## What a run is kept from
+
+P01 in [docs/design/evolve-plan.md](../../docs/design/evolve-plan.md): a run
+being evaluated mustn't reach its task's answer, or a search for a higher
+score would find it.
+
+- **Its workspace is elsewhere**: in `ROVIK_EVAL_WORK`, by default
+  `/var/tmp/rovik-eval-<user>`, outside this repository and the caches. Not
+  inside the system's temporary folders, which every command may write:
+  Landlock can't hide a folder there without breaking what commands make
+  beside it, so the evaluation refuses such a folder.
+- **Its commands can't see the answers**: the runner hides this repository
+  (its history, today's source, `expected/`, and by default the caches and
+  results), the cache and results folders wherever they are, and the other
+  runs' workspaces (`--hide`). The shared virtualenv stays readable
+  (`--show`) and cargo's target folder writable (`--writable`).
+- **No network**: its commands are offline (`--offline`). Under bubblewrap
+  they get a network of their own with only its own loopback; under
+  Landlock (version 4, Linux 6.7) no TCP at all, and under macOS's Seatbelt
+  no IP, this machine's included (a proxy there would be the internet). A
+  sandbox that can't, or none, refuses the run rather than run it
+  unconfined.
+- **No web tools** (`--no-web`), unless the task allows them
+  (`"web": true` in its file).
+- **Canaries**: each task has one (`canaryOf` in `confinement.mjs`), a
+  last comment in the hidden tests the grader puts back, a field of
+  `expected/<task>.json` and a git note on the reference commit in the
+  clones. Whatever reads them has the canary in its transcript: the report
+  holds the run's whole transcript, its subagents' included, and the
+  sandbox it ran under.
+
+The dry run's third model is a cheater that knows where the answers are:
+it reads the history and the real repository, `expected/`, the caches and
+the other runs, browses the task's repository and fetches it with `curl`,
+then applies the reference change if it found it. It must fail, with no
+canary in its transcript or its change.
+
 ## Budget
 
 | Campaign                 | Runs                               | Cap                   |
@@ -101,8 +138,12 @@ their spread is the noise any later comparison (G02, G03) has to beat.
 ## Running
 
 Prerequisites: Rust and the app's build dependencies (to build the runner and
-check the Rust tasks), Node, Python 3 and Go, plus network access to GitHub,
-npm, PyPI, the Go module proxy and the model's provider.
+check the Rust tasks), the app's own `node_modules` (`npm ci`: the grader's
+TypeScript runner uses its esbuild), Node, Python 3 and Go, plus network
+access to GitHub, npm, PyPI, the Go module proxy and the model's provider.
+A sandbox that can take the network away: bubblewrap, or Landlock from
+Linux 6.7, or macOS. The self tasks need this repository's whole history
+(`git fetch --unshallow` in a shallow clone).
 
 ```sh
 node scripts/eval/eval.mjs validate                 # all tasks (Rust ones take a while)
@@ -131,9 +172,10 @@ program by another name (a script, an alias) isn't caught. It allows everything 
 recommended answer to questions. Each question answered (and each approval,
 when settings ask for them) counts as an intervention in the report.
 
-`dry-run` runs each task twice with `fake-model.mjs`. The first model applies
-the reference change and must grade as a success. The second changes nothing
-and must grade as a failure. This checks the workspace, runner, grading and
+`dry-run` runs each task three times with `fake-model.mjs`. The first model
+applies the reference change and must grade as a success. The second changes
+nothing and must grade as a failure. The third looks for the answer and must
+find nothing (above). This checks the workspace, runner, sandbox, grading and
 cost accounting without a provider. The scripted model's results say nothing
 about any real model.
 

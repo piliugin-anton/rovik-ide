@@ -1,6 +1,7 @@
 {
   "id": "self-chat-title-markers",
   "reference": "11eda4f8078539ae2d48386d40f0b5fb0b21c76b",
+  "canary": "rovik-canary-212b40a1cecba6baf7141707b3fde7bb",
   "ok": true,
   "problems": [],
   "failingAtBase": [

@@ -13,7 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "tsc -p tsconfig.test.json --noEmit && node scripts/test.mjs",
-    "test:eval": "node --test scripts/eval/lib.test.mjs scripts/eval/proc.test.mjs scripts/eval/caches.test.mjs",
+    "test:eval": "node --test scripts/eval/lib.test.mjs scripts/eval/proc.test.mjs scripts/eval/caches.test.mjs scripts/eval/confinement.test.mjs",
     "test:scripts": "node --test scripts/release-notes.test.mjs scripts/updater-manifest.test.mjs"
   },
   "dependencies": {

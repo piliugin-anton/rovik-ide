@@ -1,6 +1,7 @@
 {
   "id": "lo-sum-by",
   "reference": "109ef0cf2d5a414288fa70a637209ddd2592aefb",
+  "canary": "rovik-canary-b0b284036f796bd2beae85a329becd06",
   "ok": true,
   "problems": [],
   "failingAtBase": [

@@ -1,6 +1,7 @@
 {
   "id": "lo-find-index",
   "reference": "adfe5d41aed6013a8ae2d8572be0207dc7d45d0e",
+  "canary": "rovik-canary-0b0cc1178f4867091fb0e0105edc3b9e",
   "ok": true,
   "problems": [],
   "failingAtBase": [

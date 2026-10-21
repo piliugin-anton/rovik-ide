@@ -1,6 +1,7 @@
 {
   "id": "self-tool-alone",
   "reference": "2f2375940f231607fa381894cbda680a3639087f",
+  "canary": "rovik-canary-71e6e674524ce49d186f46d4d605bd50",
   "ok": true,
   "problems": [],
   "failingAtBase": [

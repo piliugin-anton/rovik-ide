@@ -1050,6 +1050,9 @@ pub fn count_arg(v: Option<&serde_json::Value>) -> Option<u32> {
 
 /// Permission first, then who (if anyone) has to approve.
 pub fn check_tool_call(name: &str, args_json: &str, permissions: &Permissions) -> ToolVerdict {
+    if !permissions.web_tools && super::tools::WEB_TOOLS.contains(&name) {
+        return ToolVerdict::Refused("The web tools are off for this run.".into());
+    }
     if name == "bash" {
         let command = str_arg(args_json, "command").unwrap_or_default();
         if command.trim().is_empty() {

@@ -1,6 +1,7 @@
 {
   "id": "self-undo-retry",
   "reference": "7b41784c79d2653af8fd12efe53accfb5f0594a6",
+  "canary": "rovik-canary-57e4743c1bdfc3e0ff508e961d94b339",
   "ok": true,
   "problems": [],
   "failingAtBase": [

@@ -18,6 +18,12 @@
 //! round). Listing a folder that holds a hidden one fails the same way
 //! (`ls ~`), though what's in it can be read.
 //!
+//! A shown folder inside a hidden one (`Confine::show`) is a rule of its
+//! own, to read. Offline (`Confine::offline`), from version 4 (Linux 6.7),
+//! the ruleset handles TCP and allows none of it: no connection and no
+//! listening, on the loopback too, where bubblewrap keeps one. UDP isn't
+//! covered (a name still resolves; nothing connects).
+//!
 //! What it can't do that bubblewrap does: point the project's path at a
 //! chat's view (so an isolated chat's commands get the project read-only,
 //! as under Seatbelt, and the callers keep their text check), hide the
@@ -67,9 +73,16 @@ mod sys {
     /// Version 3.
     pub const TRUNCATE: u64 = 1 << 14;
 
+    /// Version 4: TCP.
+    pub const NET_BIND_TCP: u64 = 1 << 0;
+    pub const NET_CONNECT_TCP: u64 = 1 << 1;
+
+    /// The ruleset's attribute; a ruleset without network rules passes
+    /// only its first field's size, which version 3 takes.
     #[repr(C)]
     pub struct RulesetAttr {
         pub handled_access_fs: u64,
+        pub handled_access_net: u64,
     }
 
     #[repr(C, packed)]
@@ -81,6 +94,8 @@ mod sys {
 
 /// The version it needs: the first that can forbid truncating.
 const MIN_ABI: i64 = 3;
+/// The version that can cut the network (TCP, Linux 6.7).
+const NET_ABI: i64 = 4;
 
 /// What a rule lets a command do beneath its folder.
 const READ: u64 = sys::EXECUTE | sys::READ_FILE | sys::READ_DIR;
@@ -148,6 +163,10 @@ pub(super) fn grants(c: &Confine) -> Vec<(PathBuf, Grant)> {
     cover(Path::new("/"), Grant::Read, &hidden, &mut seen, &mut out);
     for dir in c.writable.iter().filter(|d| d.is_dir()) {
         cover(dir, Grant::Write, &hidden, &mut seen, &mut out);
+    }
+    // A shown folder inside a hidden one: a rule of its own, to read.
+    for dir in c.show.iter().filter(|d| d.is_dir()) {
+        cover(dir, Grant::Read, &hidden, &mut seen, &mut out);
     }
     for device in DEVICES {
         let device = Path::new(device);
@@ -222,15 +241,31 @@ fn ruleset(c: &Confine) -> std::io::Result<OwnedFd> {
             ),
         ));
     }
+    if c.offline && *ABI < NET_ABI {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "Landlock version {NET_ABI} (Linux 6.7) is needed to cut the network; this \
+                 kernel has {}",
+                *ABI
+            ),
+        ));
+    }
+    // Offline: every TCP bind and connection handled, and none allowed.
     let attr = sys::RulesetAttr {
         handled_access_fs: HANDLED,
+        handled_access_net: sys::NET_BIND_TCP | sys::NET_CONNECT_TCP,
     };
-    // SAFETY: `attr` is a valid ruleset attribute of the size passed.
+    let size = match c.offline {
+        true => std::mem::size_of::<sys::RulesetAttr>(),
+        false => std::mem::size_of::<u64>(),
+    };
+    // SAFETY: `attr` is a valid ruleset attribute at least the size passed.
     let fd = unsafe {
         libc::syscall(
             sys::CREATE_RULESET,
             &attr as *const sys::RulesetAttr,
-            std::mem::size_of::<sys::RulesetAttr>(),
+            size,
             0u32,
         )
     };
@@ -344,6 +379,10 @@ impl Mechanism for Landlock {
     fn hides_processes(&self) -> bool {
         false
     }
+
+    fn cuts_network(&self) -> bool {
+        *ABI >= NET_ABI
+    }
 }
 
 #[cfg(test)]
@@ -380,6 +419,7 @@ mod tests {
             project: work.clone(),
             hide: vec![secret.clone(), root.join("gone")],
             writable: vec![cache.clone(), work.clone()],
+            ..Confine::default()
         };
         let rules = grants(&c);
         let has = |p: &Path, g: Grant| rules.iter().any(|(q, h)| q == p && *h == g);
@@ -421,6 +461,7 @@ mod tests {
             project: root.to_path_buf(),
             hide: hide.iter().map(|p| p.to_path_buf()).collect(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
+            ..Confine::default()
         }
     }
 
@@ -533,6 +574,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// P01 (evolve-plan): a shown folder inside a hidden one gets a rule
+    /// to read; the rest of the hidden folder stays out of reach, and the
+    /// shown one isn't written.
+    #[test]
+    fn a_shown_folder_inside_a_hidden_one_reads_but_isnt_written() {
+        let root = fresh("llshown");
+        let cache = root.join("cache");
+        let (venv, repos, work) = (cache.join("venv"), cache.join("repos"), root.join("work"));
+        for d in [&venv, &repos, &work] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(venv.join("pytest"), "tool\n").unwrap();
+        std::fs::write(repos.join("answer"), "ANSWER\n").unwrap();
+        let c = Confine {
+            show: vec![venv.clone()],
+            ..policy(&work, &[&cache], &[&work])
+        };
+        assert!(grants(&c).contains(&(venv.clone(), Grant::Read)));
+        let script = format!(
+            "cat {v}/pytest; cat {r}/answer 2>/dev/null || echo no-answer; \
+             echo x > {v}/planted 2>/dev/null || echo read-only",
+            v = venv.display(),
+            r = repos.display()
+        );
+        let Some(out) = run(&c, &work, &script) else {
+            return;
+        };
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "tool\nno-answer\nread-only\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!venv.join("planted").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P01: offline (version 4 on), no TCP connection is made, to this
+    /// machine's loopback either; with the network, it is.
+    #[test]
+    fn an_offline_command_makes_no_connection() {
+        let root = fresh("lloffline");
+        let online = policy(&root, &[], &[&root]);
+        if !Path::new("/bin/bash").exists() || !super::super::works(&Landlock, &online) {
+            eprintln!("Landlock or bash missing here: skipped");
+            return;
+        }
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        let connects = |c: &Confine| {
+            let script = format!(
+                "(exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && echo connected || echo refused"
+            );
+            let out = Landlock
+                .command(c, "/bin/bash", &["-c", &script])
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        assert_eq!(connects(&online), "connected\n");
+        let offline = Confine {
+            offline: true,
+            ..online.clone()
+        };
+        if Landlock.cuts_network() {
+            assert_eq!(connects(&offline), "refused\n");
+        } else {
+            // Too old to cut it: the command doesn't run at all.
+            assert!(!super::super::works(&Landlock, &offline));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Nothing hidden: one rule reads the whole system.
     #[test]
     fn with_nothing_hidden_one_rule_reads_everything() {
@@ -542,6 +657,7 @@ mod tests {
             project: root.clone(),
             hide: Vec::new(),
             writable: vec![root.clone()],
+            ..Confine::default()
         };
         let rules = grants(&c);
         assert_eq!(rules[0], (PathBuf::from("/"), Grant::Read));

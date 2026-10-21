@@ -910,3 +910,136 @@ async fn a_scripted_steer_is_read_and_reported() {
         .unwrap();
     assert_eq!(run["steers"], 1, "{run}");
 }
+
+/// P01 (docs/design/evolve-plan.md): a run being evaluated reaches no
+/// answer. Its commands can't read a hidden folder, only the shown one
+/// inside it, nor reach a server outside the sandbox; the web tools aren't
+/// offered, and one called anyway is refused. The report says what the
+/// run ran under, and holds its transcript.
+#[tokio::test]
+async fn an_evaluated_run_reaches_no_answer() {
+    if !std::path::Path::new("/bin/bash").exists() {
+        eprintln!("no bash for /dev/tcp: skipped");
+        return;
+    }
+    let dir = temp_dir();
+    let project = dir.0.join("project");
+    let answers = dir.0.join("answers");
+    let venv = answers.join("venv");
+    for d in [&project, &venv] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(answers.join("expected.json"), "THE-ANSWER\n").unwrap();
+    std::fs::write(venv.join("tool"), "THE-TOOL\n").unwrap();
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let read = format!(
+        "cat {}/expected.json 2>/dev/null || echo no-answer; cat {}/tool",
+        answers.display(),
+        venv.display()
+    );
+    let connect = format!(
+        "bash -c '(exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && echo connected || echo refused'"
+    );
+    let (url, requests) = model(vec![
+        Reply::Call {
+            id: "c1",
+            name: "bash",
+            args: json!({ "command": read }),
+        },
+        Reply::Call {
+            id: "c2",
+            name: "bash",
+            args: json!({ "command": connect }),
+        },
+        Reply::Call {
+            id: "c3",
+            name: "browse_url",
+            args: json!({ "url": "https://example.com" }),
+        },
+        Reply::Text("Found nothing."),
+    ])
+    .await;
+    let settings = dir.0.join("settings.json");
+    std::fs::write(
+        &settings,
+        json!({
+            "profile": { "id": "p::m", "label": "Test/m", "model": "m", "baseUrl": url, "stream": true, "contextTokens": 100000 },
+            "mode": "agent",
+            "config": { "permissions": { "allowAnyCommand": true, "verifyChanges": false, "checklist": "off" } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out = dir.0.join("report.json");
+    let argv: Vec<String> = [
+        "--project",
+        project.to_str().unwrap(),
+        "--settings",
+        settings.to_str().unwrap(),
+        "--prompt",
+        "Find the answer",
+        "--out",
+        out.to_str().unwrap(),
+        "--data",
+        dir.0.join("data").to_str().unwrap(),
+        "--timeout",
+        "60",
+        "--hide",
+        answers.to_str().unwrap(),
+        "--show",
+        venv.to_str().unwrap(),
+        "--offline",
+        "--no-web",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let args = crate::parse_args(&argv).unwrap();
+    let report = match crate::run(&args).await {
+        Ok(report) => report,
+        // No sandbox here that can do it: the run is refused, not unconfined.
+        Err(e) if e.starts_with("not starting:") => {
+            eprintln!("{e}: skipped");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(report["outcome"], "done");
+    let result = |id: &str| {
+        report["transcript"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool" && m["toolCallId"] == id)
+            .map(|m| m["content"].as_str().unwrap_or("").to_string())
+            .unwrap_or_default()
+    };
+    // A command's result echoes its line: what it printed comes after.
+    let printed = |id: &str| {
+        let r = result(id);
+        r.split_once("--- stdout ---\n")
+            .map(|(_, out)| out.trim().to_string())
+            .unwrap_or(r)
+    };
+    assert_eq!(printed("c1"), "no-answer\nTHE-TOOL");
+    assert_eq!(printed("c2"), "refused");
+    let c3 = result("c3");
+    assert!(c3.contains("The web tools are off for this run"), "{c3}");
+    // Not offered either.
+    let offered: Vec<String> = requests.lock().unwrap()[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+        .collect();
+    assert!(offered.contains(&"bash".to_string()), "{offered:?}");
+    assert!(!offered
+        .iter()
+        .any(|n| n == "browse_url" || n == "web_search"));
+    assert_eq!(report["sandbox"]["offline"], true);
+    assert_eq!(report["sandbox"]["webTools"], false);
+    assert!(report["sandbox"]["mechanism"].is_string());
+    // The restriction was this run's: a command after it isn't offline.
+    assert!(!rovik_core::overlay::confine::Confine::hiding(project.clone()).offline);
+}

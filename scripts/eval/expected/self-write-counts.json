@@ -1,6 +1,7 @@
 {
   "id": "self-write-counts",
   "reference": "389da75fcdaffd584c0ef282ea8a7bf6413568ed",
+  "canary": "rovik-canary-a0122a6972d25444c79401de65864c21",
   "ok": true,
   "problems": [],
   "failingAtBase": [

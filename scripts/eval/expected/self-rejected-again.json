@@ -1,6 +1,7 @@
 {
   "id": "self-rejected-again",
   "reference": "441acd2b7c1cf99060d56778d5e7d24c7a1d6e01",
+  "canary": "rovik-canary-8eed794a4e06d20cbec48e350b9faeeb",
   "ok": true,
   "problems": [],
   "failingAtBase": [

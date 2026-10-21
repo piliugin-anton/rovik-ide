@@ -1,6 +1,7 @@
 {
   "id": "lo-from-ptr-or",
   "reference": "83b311dccf601be69def09885ab1b8694eb20a4c",
+  "canary": "rovik-canary-d846e2c1f08844ae7c251aaa5f0904e1",
   "ok": true,
   "problems": [],
   "failingAtBase": [

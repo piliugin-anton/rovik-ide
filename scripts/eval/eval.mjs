@@ -24,11 +24,13 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
   appendFileSync,
   copyFileSync,
 } from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -60,11 +62,26 @@ import {
 } from './lib.mjs';
 import { run, startServer } from './proc.mjs';
 import { changedCaches, copyTree, fingerprint, protect } from './caches.mjs';
+import {
+  canariesIn,
+  canaryOf,
+  cheatCalls,
+  confinementArgs,
+  plantCanary,
+  workRootProblem,
+} from './confinement.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
 const CACHE = resolve(process.env.ROVIK_EVAL_CACHE ?? join(ROOT, '.eval-cache'));
 const RESULTS = resolve(process.env.ROVIK_EVAL_RESULTS ?? join(ROOT, 'eval-results'));
+/**
+ * P01 (docs/design/evolve-plan.md): the runs' workspaces, in a temporary
+ * root outside the repository and the cache (`workRoot` checks where).
+ */
+const WORK = resolve(
+  process.env.ROVIK_EVAL_WORK ?? join('/var/tmp', `rovik-eval-${userInfo().username}`)
+);
 const BUDGET = JSON.parse(readFileSync(join(EVAL, 'budget.json'), 'utf8'));
 
 // ---------------------------------------------------------------- helpers
@@ -118,6 +135,31 @@ function loadTasks(only) {
 
 const expectedPath = (task) => join(EVAL, 'expected', `${task.id}.json`);
 
+/** P01: what every evaluated run is hidden from: the answers, and other runs. */
+const HIDDEN = [ROOT, CACHE, RESULTS, WORK];
+
+/**
+ * P01: the root of the runs' workspaces, made if it's missing (only this
+ * user's). Refused inside a hidden folder or a temporary one
+ * (`workRootProblem`): set ROVIK_EVAL_WORK elsewhere.
+ */
+function workRoot() {
+  const problem = workRootProblem(realPath(WORK), {
+    hidden: [ROOT, CACHE, RESULTS].map(realPath),
+    writable: [tmpdir(), '/tmp'].map(realPath),
+  });
+  if (problem) throw new Error(`${problem}: set ROVIK_EVAL_WORK to a folder elsewhere`);
+  mkdirSync(WORK, { recursive: true, mode: 0o700 });
+  return WORK;
+}
+
+/** `p` as the file system has it, links resolved, though it may not exist yet. */
+function realPath(p) {
+  if (existsSync(p)) return realpathSync(p);
+  const parent = dirname(p);
+  return parent === p ? p : join(realPath(parent), basename(p));
+}
+
 function expectedOf(task) {
   const p = expectedPath(task);
   if (!existsSync(p)) return null;
@@ -139,7 +181,33 @@ function repoOf(task) {
     check: false,
   });
   if (has.status !== 0) sh('git', ['-C', dir, 'fetch', '-q', 'origin']);
+  plantNote(dir, task);
   return dir;
+}
+
+/**
+ * P01: the task's canary as a note on its reference commit, in a clone of
+ * ours (never this repository), so the history shows it to whatever reads
+ * it there (`git log`, `git show`).
+ */
+function plantNote(dir, task) {
+  const canary = canaryOf(task);
+  const note = sh('git', ['-C', dir, 'notes', 'show', task.reference], { check: false });
+  if (note.status === 0 && note.stdout.includes(canary)) return;
+  sh('git', [
+    '-C',
+    dir,
+    '-c',
+    'user.name=eval',
+    '-c',
+    'user.email=eval@localhost',
+    'notes',
+    'add',
+    '-f',
+    '-m',
+    canary,
+    task.reference,
+  ]);
 }
 
 const repoName = (task) => (task.repo === 'self' ? 'self' : task.repo.name);
@@ -182,7 +250,9 @@ function pythonVenv() {
 /**
  * A fresh workspace at `rev`: the files only, in a new git repository
  * with one commit, so the agent can't read the task's answer from the
- * history. Returns the environment its commands and checks run with.
+ * history. Returns the environment its commands and checks run with, and
+ * (P01) what of the hidden cache its commands may still read (`show`) and
+ * write (`writable`).
  */
 function prepare(task, rev, ws) {
   rmSync(ws, { recursive: true, force: true });
@@ -199,6 +269,8 @@ function prepare(task, rev, ws) {
   const exclude = [];
   /** Shared caches the run uses, to check after it (P6.5). */
   const caches = [];
+  const show = [];
+  const writable = [];
   for (const s of task.setup ?? []) {
     if (s === 'node') {
       const nm = nodeModules(ws);
@@ -211,11 +283,14 @@ function prepare(task, rev, ws) {
       }
     } else if (s === 'cargo') {
       env.CARGO_TARGET_DIR = join(CACHE, 'cargo-target', repoName(task));
+      mkdirSync(env.CARGO_TARGET_DIR, { recursive: true });
+      writable.push(env.CARGO_TARGET_DIR);
       // Incremental caches of many old commits fill a disk quickly.
       env.CARGO_INCREMENTAL = '0';
     } else if (s === 'python') {
       const venv = pythonVenv();
       caches.push({ dir: venv, print: fingerprint(venv) });
+      show.push(venv);
       env.VIRTUAL_ENV = venv;
       env.PATH = `${join(venv, 'bin')}:${process.env.PATH}`;
     } else if (s === 'go') {
@@ -224,16 +299,19 @@ function prepare(task, rev, ws) {
   }
   if (exclude.length)
     appendFileSync(join(ws, '.git', 'info', 'exclude'), exclude.join('\n') + '\n');
-  return { env, caches, start: git('rev-parse', 'HEAD').stdout.trim() };
+  return { env, caches, show, writable, start: git('rev-parse', 'HEAD').stdout.trim() };
 }
 
-/** Puts the reference's version of the hidden test files in the workspace. */
+/**
+ * Puts the reference's version of the hidden test files in the workspace,
+ * each with the task's canary in a last comment (P01).
+ */
 function restoreHidden(task, ws) {
   const repo = repoOf(task);
   for (const f of task.hidden) {
     const r = sh('git', ['-C', repo, 'show', `${task.reference}:${f}`], { encoding: 'buffer' });
     mkdirSync(dirname(join(ws, f)), { recursive: true });
-    writeFileSync(join(ws, f), r.stdout);
+    writeFileSync(join(ws, f), plantCanary(r.stdout, f, canaryOf(task)));
   }
 }
 
@@ -291,7 +369,8 @@ async function runChecks(task, ws, env, logFile) {
       });
       Object.assign(results, parseTsLines(r.out));
     } else if (check.kind === 'pytest') {
-      const xml = join(ws, '..', `${task.id}-junit.xml`);
+      // Beside the workspace, its own: two runs of a task can be graded at once.
+      const xml = join(dirname(ws), `${basename(ws)}-junit.xml`);
       rmSync(xml, { force: true });
       r = await run(
         'python',
@@ -341,6 +420,8 @@ async function validate(flags) {
     writeJson(expectedPath(task), {
       id: task.id,
       reference: task.reference,
+      // P01: whatever reads this file has the canary in what it read.
+      canary: canaryOf(task),
       ok: v.ok,
       problems: v.problems,
       failingAtBase: v.failingAtBase,
@@ -384,8 +465,8 @@ async function runOne(task, rep, campaignDir, opts) {
   if (!expected)
     throw new Error(`${task.id} isn't validated: run \`eval.mjs validate --tasks ${task.id}\``);
   mkdirSync(dir, { recursive: true });
-  const ws = join(CACHE, 'work', workspaceName(campaignDir, task.id, rep));
-  const { env, caches, start } = prepare(task, task.base, ws);
+  const ws = join(workRoot(), workspaceName(campaignDir, task.id, rep));
+  const { env, caches, show, writable, start } = prepare(task, task.base, ws);
   const report = join(dir, 'report.json');
   // G03: an Autopilot variant's caps are its own (`autopilotCaps`).
   const caps = opts.perRun ?? BUDGET.perRun;
@@ -411,6 +492,9 @@ async function runOne(task, rep, campaignDir, opts) {
     // D18 (steering-plan.md): the task's scripted messages, unless the
     // campaign runs without them (`--no-steers`).
     ...steerArgs(task, { steers: opts.steers !== false }),
+    // P01: kept from the answers and other runs, from the network and,
+    // unless the task allows them, from the web tools.
+    ...confinementArgs({ hide: HIDDEN, show, writable, web: task.web === true }),
   ];
   const started = Date.now();
   const r = await run(opts.runner, args, {
@@ -1040,10 +1124,39 @@ function fakeModel(args) {
 }
 
 /**
- * The pipeline end to end without a provider: each task once with a model
- * that applies the reference change (must pass) and once with one that
- * changes nothing (must fail).
+ * P01: the scripted cheater's calls for a task, in a file the scripted
+ * model reads (outside the sandbox): it looks for the answer where it is.
  */
+function cheatFile(task) {
+  const file = join(CACHE, 'patches', `${task.id}.cheat.json`);
+  writeJson(
+    file,
+    cheatCalls({
+      repo: repoOf(task),
+      base: task.base,
+      reference: task.reference,
+      hidden: task.hidden,
+      expectedFile: expectedPath(task),
+      folders: [CACHE, RESULTS, WORK],
+      url: task.repo === 'self' ? 'https://github.com' : task.repo.url,
+    })
+  );
+  return file;
+}
+
+/**
+ * The dry run's models: one that applies the reference change (must
+ * pass), one that changes nothing (must fail), and (P01) the cheater,
+ * which looks for the answer everywhere and must find nothing: it fails,
+ * and no canary is in its transcript or its change.
+ */
+const DRY_RUN_MODES = [
+  { mode: 'oracle', rep: 1, pass: true, args: (task) => [referencePatch(task)] },
+  { mode: 'idle', rep: 2, pass: false, args: () => [] },
+  { mode: 'cheat', rep: 3, pass: false, args: (task) => [cheatFile(task)] },
+];
+
+/** The pipeline end to end without a provider, each task with each model. */
 async function dryRun(flags) {
   const defaults = ['self-chat-title-markers', 'mi-subfactorial', 'lo-filter-map'];
   const tasks = usableTasks(flags.tasks ?? defaults.join(','));
@@ -1052,22 +1165,22 @@ async function dryRun(flags) {
   const campaignDir = resolve(flags.out ?? join(RESULTS, `dry-run-${Date.now()}`));
   const rows = [];
   for (const task of tasks) {
-    for (const mode of ['oracle', 'idle']) {
-      const model = await fakeModel(mode === 'oracle' ? [mode, referencePatch(task)] : [mode]);
+    for (const { mode, rep, pass, args } of DRY_RUN_MODES) {
+      const model = await fakeModel([mode, ...args(task)]);
       const settings = join(campaignDir, `settings-${task.id}-${mode}.json`);
       writeJson(settings, fakeSettings(model.url));
       try {
-        const r = await runOne(task, mode === 'oracle' ? 1 : 2, join(campaignDir, mode), {
-          settings,
-          policy,
-          runner,
-        });
-        const want = mode === 'oracle';
-        rows.push({ task: task.id, mode, ok: r.success === want, r });
+        const r = await runOne(task, rep, join(campaignDir, mode), { settings, policy, runner });
+        const runDir = join(campaignDir, mode, task.id, String(rep));
+        const found = canariesIn(readRun(runDir), [canaryOf(task)]);
+        const ok = r.success === pass && !found.length;
+        rows.push({ task: task.id, mode, ok, r });
         console.log(
           `${task.id} (${mode}): ${r.success ? 'pass' : 'fail'}, ${r.outcome}, ` +
             `${r.grade.passed}/${r.grade.required} tests, $${(r.costUsd ?? 0).toFixed(4)} ` +
-            `(${r.costSource}) — ${r.success === want ? 'as expected' : 'NOT AS EXPECTED'}`
+            `(${r.costSource})` +
+            (found.length ? ', ITS TRANSCRIPT HOLDS THE CANARY' : '') +
+            ` — ${ok ? 'as expected' : 'NOT AS EXPECTED'}`
         );
       } finally {
         model.stop();
@@ -1077,6 +1190,15 @@ async function dryRun(flags) {
   const bad = rows.filter((r) => !r.ok);
   console.log(bad.length ? `\n${bad.length} unexpected results.` : '\nThe pipeline works.');
   if (bad.length) process.exitCode = 1;
+}
+
+/** What a run left that could hold a canary: its report (the transcript) and its change. */
+function readRun(runDir) {
+  return ['report.json', 'changes.diff']
+    .map((f) => join(runDir, f))
+    .filter(existsSync)
+    .map((f) => readFileSync(f, 'utf8'))
+    .join('\n');
 }
 
 // ------------------------------------------------------------------ report

@@ -1,6 +1,7 @@
 {
   "id": "self-think-tags",
   "reference": "c0ef61ceae1c6d7e767a2b16a9838c4ca48ab083",
+  "canary": "rovik-canary-38e0b01e48dcdd0c6a4b5e6bf2425734",
   "ok": true,
   "problems": [],
   "failingAtBase": [

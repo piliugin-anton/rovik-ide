@@ -1,6 +1,7 @@
 {
   "id": "mi-synchronized",
   "reference": "68a4c96b547378831f4ddffc6a5d1675715422cd",
+  "canary": "rovik-canary-b036dcd3ac4b6b743ed2886c1466dcac",
   "ok": true,
   "problems": [],
   "failingAtBase": [

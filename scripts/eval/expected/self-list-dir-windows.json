@@ -1,6 +1,7 @@
 {
   "id": "self-list-dir-windows",
   "reference": "cc2356727491b4dfe83eb22e3e05d7b3d0c149ff",
+  "canary": "rovik-canary-e5e4225843bfb3a2343cff80927c7681",
   "ok": true,
   "problems": [],
   "failingAtBase": [

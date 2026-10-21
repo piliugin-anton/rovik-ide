@@ -2,10 +2,16 @@
 // (`eval.mjs dry-run`): it tests the pipeline, not a model.
 //
 //   node scripts/eval/fake-model.mjs oracle <patch-file>
-//     applies the patch with one bash call (`git apply`), then says done:
-//     the run should grade as a success.
+//     writes the patch into the workspace and applies it (`git apply`),
+//     then says done: the run should grade as a success. The patch comes
+//     in the write call: the run's commands can't read the cache (P01).
 //   node scripts/eval/fake-model.mjs idle
 //     says done without changing anything: the run should grade as a failure.
+//   node scripts/eval/fake-model.mjs cheat <calls.json>
+//     P01 (docs/design/evolve-plan.md): makes each call of the file in
+//     turn (the scripted cheater's, confinement.mjs `cheatCalls`), looking
+//     for the task's answer, then says done: in a sound sandbox it finds
+//     nothing and the run fails.
 //   node scripts/eval/fake-model.mjs autopilot <files.json>
 //     an Autopilot task's model (G03 in docs/design/autopilot-plan.md):
 //     a plan naming the files, the answer each stage's brief is read for,
@@ -19,14 +25,19 @@ import { createServer } from 'node:http';
 import { appendFileSync, readFileSync } from 'node:fs';
 
 const [mode, patch] = process.argv.slice(2);
-if (!['oracle', 'idle', 'autopilot'].includes(mode) || (mode !== 'idle' && !patch)) {
-  console.error('usage: fake-model.mjs oracle <patch-file> | idle | autopilot <files.json>');
+if (!['oracle', 'idle', 'autopilot', 'cheat'].includes(mode) || (mode !== 'idle' && !patch)) {
+  console.error(
+    'usage: fake-model.mjs oracle <patch-file> | idle | autopilot <files.json> | cheat <calls.json>'
+  );
   process.exit(2);
 }
 /** Autopilot's change: path -> the file's content at the reference. */
 const files = mode === 'autopilot' ? JSON.parse(readFileSync(patch, 'utf8')) : {};
-
-const shellQuote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+/** The oracle's patch, and where in the workspace it writes it. */
+const oraclePatch = mode === 'oracle' ? readFileSync(patch, 'utf8') : '';
+const ORACLE_FILE = '.rovik-oracle.patch';
+/** The cheater's calls, in order: [{ name, args }]. */
+const cheats = mode === 'cheat' ? JSON.parse(readFileSync(patch, 'utf8')) : [];
 
 // ------------------------------------------------------------- Autopilot
 
@@ -175,17 +186,23 @@ function autopilot(body) {
 
 function reply(body) {
   if (mode === 'autopilot') return autopilot(body);
-  const ranTool = (body.messages ?? []).some((m) => m.role === 'tool');
-  if (
-    mode === 'oracle' &&
-    !ranTool &&
-    (body.tools ?? []).some((t) => t.function?.name === 'bash')
-  ) {
+  const ran = (body.messages ?? []).filter((m) => m.role === 'tool').length;
+  if (mode === 'cheat') {
+    const call = cheats[ran];
+    return call ? { tool: { id: `call_cheat_${ran}`, ...call } } : { text: 'Done.' };
+  }
+  const bash = (body.tools ?? []).some((t) => t.function?.name === 'bash');
+  if (mode === 'oracle' && bash && ran === 0) {
+    return {
+      tool: { id: 'call_patch', name: 'write', args: { path: ORACLE_FILE, content: oraclePatch } },
+    };
+  }
+  if (mode === 'oracle' && bash && ran === 1) {
     return {
       tool: {
         id: 'call_apply',
         name: 'bash',
-        args: { command: `git apply --whitespace=nowarn ${shellQuote(patch)}` },
+        args: { command: `git apply --whitespace=nowarn ${ORACLE_FILE} && rm ${ORACLE_FILE}` },
       },
     };
   }

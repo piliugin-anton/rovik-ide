@@ -1,6 +1,7 @@
 {
   "id": "self-loop-summary",
   "reference": "2328ba375ac4db5fefee7ffee3719b70dee5eb11",
+  "canary": "rovik-canary-1faf4da117e9d7ec90c3bcf46f67f2a4",
   "ok": true,
   "problems": [],
   "failingAtBase": [

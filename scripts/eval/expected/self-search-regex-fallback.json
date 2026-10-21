@@ -1,6 +1,7 @@
 {
   "id": "self-search-regex-fallback",
   "reference": "220770f114783c4991bcdf8c7373e7a09ba38860",
+  "canary": "rovik-canary-ef24add42c79528baee46178b35237cb",
   "ok": true,
   "problems": [],
   "failingAtBase": [

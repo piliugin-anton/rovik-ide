@@ -26,6 +26,15 @@
 //! have used that many tokens, as the provider reports them: a budget cap
 //! for evaluations (scripts/eval).
 //!
+//! A run being evaluated mustn't reach its task's answers (P01,
+//! docs/design/evolve-plan.md): `--hide DIR` hides a folder from its
+//! commands, `--show DIR` lets them read one inside a hidden folder (a
+//! shared Python environment in the hidden cache), `--writable DIR` lets
+//! them write one (a shared build folder), `--offline` takes their network
+//! away and `--no-web` the web tools. A sandbox that can't enforce these
+//! here refuses the run. The report then holds the run's whole transcript,
+//! its subagents' included, for what reads it (the canary check, a person).
+//!
 //! The settings file:
 //!
 //!   { "profile": { "id": "p::m", "label": "P/m", "model": "m",
@@ -62,6 +71,7 @@ use rovik_core::agent_run::{
     UserMessage,
 };
 use rovik_core::chat_db::store::{self, NewDialog};
+use rovik_core::overlay::confine::{self, Restriction};
 use rovik_core::{Core, EventSink, Paths};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -210,6 +220,11 @@ pub struct Args {
     pub effort: Option<Effort>,
     /// Messages sent to the run while it works (`--steer`), in order.
     pub steers: Vec<Steer>,
+    /// What the run's commands are kept from (P01): folders hidden, shown
+    /// and writable, and the network.
+    pub restriction: Restriction,
+    /// No web tools (P01).
+    pub no_web: bool,
 }
 
 /// A message the runner sends the run while it works (`--steer TEXT@N`).
@@ -244,7 +259,8 @@ impl Steer {
 pub const USAGE: &str =
     "usage: rovik-headless --project DIR --settings FILE --prompt TEXT --out FILE \
      [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N] \
-     [--mode agent|plan|autopilot] [--effort balanced|thorough] [--steer TEXT@N]...";
+     [--mode agent|plan|autopilot] [--effort balanced|thorough] [--steer TEXT@N]... \
+     [--hide DIR]... [--show DIR]... [--writable DIR]... [--offline] [--no-web]";
 
 pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut project = None;
@@ -258,6 +274,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut mode = None;
     let mut effort = None;
     let mut steers = Vec::new();
+    let mut restriction = Restriction::default();
+    let mut no_web = false;
     let mut it = argv.iter();
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -299,6 +317,11 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
                 });
             }
             "--steer" => steers.push(Steer::parse(&value()?)?),
+            "--hide" => restriction.hide.push(PathBuf::from(value()?)),
+            "--show" => restriction.show.push(PathBuf::from(value()?)),
+            "--writable" => restriction.writable.push(PathBuf::from(value()?)),
+            "--offline" => restriction.offline = true,
+            "--no-web" => no_web = true,
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -317,6 +340,8 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         mode,
         effort,
         steers,
+        restriction,
+        no_web,
     })
 }
 
@@ -453,6 +478,13 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     // One run at a time: tests find the run under way in TEST_RUN.
     static ONE_RUN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = ONE_RUN.lock().await;
+    // P01: kept from the answers, or not run at all.
+    if let Some(why) = confine::unenforceable(&args.restriction) {
+        return Err(format!(
+            "not starting: {why}, and a run being evaluated would reach its task's answers"
+        ));
+    }
+    let _restricted = confine::restricted(&args.restriction);
     let mut settings: Settings = read_json(&args.settings)?;
     if settings.profile.api_key.is_empty() {
         if let Some(var) = &settings.api_key_env {
@@ -552,6 +584,8 @@ pub async fn run(args: &Args) -> Result<Value, String> {
                 .permissions
                 .denied_commands
                 .extend(policy.denied_commands());
+            // P01: the web tools off, the task's answers being on the web.
+            config.permissions.web_tools &= !args.no_web;
             config
         }),
         isolate: Some(false),
@@ -690,10 +724,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     }
 
     let id = dialog_id.clone();
-    let messages = db
-        .read(move |c| store::get_messages(c, &id, None, 100_000))
-        .await?
-        .messages;
+    let messages = db.read(move |c| store::get_all_messages(c, &id)).await?;
     let mut report = report(
         &dialog_id,
         &outcome,
@@ -731,6 +762,36 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             .find_map(|m| m.meta.as_ref()?.get("report").cloned())
             .unwrap_or(Value::Null);
     }
+    // P01: what kept the run from its task's answers, and everything it
+    // and its subagents said and saw.
+    report["sandbox"] = json!({
+        "mechanism": confine::mechanism_name(),
+        "hidden": args.restriction.hide,
+        "shown": args.restriction.show,
+        "writable": args.restriction.writable,
+        "offline": args.restriction.offline,
+        "webTools": !args.no_web,
+    });
+    let mut chats = vec![dialog_id.clone()];
+    for child in children.iter().chain(&report_children(&report)) {
+        if !chats.contains(child) {
+            chats.push(child.clone());
+        }
+    }
+    report["transcript"] = json!(
+        db.read(move |c| {
+            let mut lines = Vec::new();
+            for chat in &chats {
+                lines.extend(
+                    store::get_all_messages(c, chat)?
+                        .iter()
+                        .map(transcript_line),
+                );
+            }
+            Ok(lines)
+        })
+        .await?
+    );
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&args.out, text).map_err(|e| format!("{}: {e}", args.out.display()))?;
     // Closed first: Windows won't remove an open database's folder. The
@@ -754,6 +815,32 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         let _ = std::fs::remove_dir_all(&data);
     }
     Ok(report)
+}
+
+/// The subagents' chats the report names (each `subagent` record's child).
+fn report_children(report: &Value) -> Vec<String> {
+    report["subagents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["childDialogId"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// One message of the transcript: who said it, in which chat, the text,
+/// the calls it made or the call it answers, and its error.
+fn transcript_line(m: &store::MessageRow) -> Value {
+    json!({
+        "dialogId": m.dialog_id,
+        "role": m.role,
+        "content": m.content,
+        "toolCalls": m.tool_calls.as_ref().map(|calls| calls
+            .iter()
+            .map(|c| json!({ "id": c.id, "name": c.name, "arguments": c.arguments }))
+            .collect::<Vec<_>>()),
+        "toolCallId": m.tool_call_id,
+        "error": m.error,
+    })
 }
 
 /// S10: an Autopilot task's outcome once it's over: its stages are done
@@ -1096,6 +1183,32 @@ mod tests {
             .unwrap_err()
             .contains("needs a text"));
         assert!(with(&[]).unwrap().steers.is_empty());
+        // P01: what an evaluated run's commands are kept from.
+        let a = with(&[
+            "--hide",
+            "/repo",
+            "--hide",
+            "/cache",
+            "--show",
+            "/cache/venv",
+            "--writable",
+            "/cache/target",
+            "--offline",
+            "--no-web",
+        ])
+        .unwrap();
+        assert_eq!(
+            a.restriction,
+            Restriction {
+                hide: vec!["/repo".into(), "/cache".into()],
+                show: vec!["/cache/venv".into()],
+                writable: vec!["/cache/target".into()],
+                offline: true,
+            }
+        );
+        assert!(a.no_web);
+        let a = with(&[]).unwrap();
+        assert!(a.restriction.is_empty() && !a.no_web);
     }
 
     #[test]
@@ -1488,6 +1601,8 @@ mod tests {
             mode: None,
             effort: None,
             steers: Vec::new(),
+            restriction: Restriction::default(),
+            no_web: false,
         };
         let err = run(&args(dir.join("missing"))).await.unwrap_err();
         assert!(err.contains("missing"), "{err}");

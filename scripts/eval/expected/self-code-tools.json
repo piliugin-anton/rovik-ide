@@ -1,6 +1,7 @@
 {
   "id": "self-code-tools",
   "reference": "def0058f91beb037c2faa2849722ba19f7bdd75e",
+  "canary": "rovik-canary-6e8b47a398847da0a256504d311003e1",
   "ok": true,
   "problems": [],
   "failingAtBase": [

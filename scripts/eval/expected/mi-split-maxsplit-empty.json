@@ -1,6 +1,7 @@
 {
   "id": "mi-split-maxsplit-empty",
   "reference": "3e87c08ac878f4bb79349d38ac69ba75c45dc5bf",
+  "canary": "rovik-canary-09851fa1efabc1c00f62e9201bbbc01b",
   "ok": true,
   "problems": [],
   "failingAtBase": [

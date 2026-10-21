@@ -1,6 +1,7 @@
 {
   "id": "self-imported-types",
   "reference": "3c7e847bba4501610a1e54b3d5d767367f6519fe",
+  "canary": "rovik-canary-0e09b138a0aa0400c575e5491fa4f7b0",
   "ok": true,
   "problems": [],
   "failingAtBase": [

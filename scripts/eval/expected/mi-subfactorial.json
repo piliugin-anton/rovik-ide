@@ -1,6 +1,7 @@
 {
   "id": "mi-subfactorial",
   "reference": "504b087128d853d7b2cc6478237626e585514935",
+  "canary": "rovik-canary-d8310ec00ca3b426d221d5993088982e",
   "ok": true,
   "problems": [],
   "failingAtBase": [

@@ -1,6 +1,7 @@
 {
   "id": "self-checklist-clear",
   "reference": "e2a9a1ed77e9264fe963c138f3b701c936a33b33",
+  "canary": "rovik-canary-6daf8982447ab9df02ad8d793f9e878a",
   "ok": true,
   "problems": [],
   "failingAtBase": [

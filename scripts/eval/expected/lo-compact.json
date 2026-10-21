@@ -1,6 +1,7 @@
 {
   "id": "lo-compact",
   "reference": "2fd7a5ae9893acae1c97c5959a6c44cd35671ae3",
+  "canary": "rovik-canary-29e61bae60a9f7599f7166894f100f78",
   "ok": true,
   "problems": [],
   "failingAtBase": [

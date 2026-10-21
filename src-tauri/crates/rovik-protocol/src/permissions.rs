@@ -57,6 +57,10 @@ pub struct Permissions {
     /// An isolated chat that's still running resolves conflicts with the
     /// project itself (markers in its files); off: they wait for the user.
     pub chat_resolves_conflicts: bool,
+    /// Offer the web tools (search, pages, screenshots). Off for a run
+    /// being evaluated, whose tasks' answers are on the web (the headless
+    /// runner's `--no-web`); the app's settings don't show it.
+    pub web_tools: bool,
 }
 
 /// When the agent must keep a checklist.
@@ -114,6 +118,7 @@ impl Default for Permissions {
             verify_changes: true,
             checklist: ChecklistMode::Auto,
             chat_resolves_conflicts: true,
+            web_tools: true,
         }
     }
 }

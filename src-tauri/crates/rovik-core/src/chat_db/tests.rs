@@ -201,6 +201,25 @@ fn large_tool_output_moves_out_and_loads_on_demand() {
     assert_eq!(reply.content, long_reply);
 }
 
+/// A whole chat, past a page of 500 and with its large bodies put back
+/// (the headless runner's transcript).
+#[test]
+fn all_messages_come_whole_past_a_page() {
+    let mut conn = db();
+    dialog(&mut conn, "d", "Long", 0);
+    let big = "line of output\n".repeat(1000);
+    let mut t = message("t0", "tool", &big);
+    t.tool_call_id = Some("c0".into());
+    let mut batch = vec![t];
+    batch.extend((1..=600).map(|i| message(&format!("m{i}"), "user", &format!("message {i}"))));
+    add(&mut conn, "d", batch);
+    let all = get_all_messages(&conn, "d").unwrap();
+    assert_eq!(all.len(), 601);
+    assert_eq!(all[0].content, big, "the body, not its preview");
+    assert_eq!(all[600].content, "message 600");
+    assert!(all.windows(2).all(|w| w[0].seq < w[1].seq), "in order");
+}
+
 /// A flag set on a finalized tool message runs finalize again: the body
 /// that moved out must stay, and its size must stay the body's.
 #[test]

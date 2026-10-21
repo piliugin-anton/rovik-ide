@@ -1,6 +1,7 @@
 {
   "id": "self-clm-later-once",
   "reference": "2a38c297f04724a3c563aadb0379e5a22e30f722",
+  "canary": "rovik-canary-0110ef087ed1eda1d747701997915e07",
   "ok": true,
   "problems": [],
   "failingAtBase": [

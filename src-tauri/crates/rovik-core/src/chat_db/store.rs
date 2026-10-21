@@ -1076,6 +1076,29 @@ pub fn get_messages(
 
 /// Up to `before` messages before `message_id`, the message itself, and up
 /// to `after` after it: for opening a chat at a search hit.
+/// A chat's messages, every one (`get_messages` pages them, 500 at most)
+/// and whole: a large tool result's body, kept apart behind a preview
+/// (`finalize`), is put back. For reading a run in full (the headless
+/// runner's transcript).
+pub fn get_all_messages(conn: &Connection, dialog_id: &str) -> DbResult<Vec<MessageRow>> {
+    let mut all: Vec<MessageRow> = Vec::new();
+    let mut before = None;
+    loop {
+        let page = get_messages(conn, dialog_id, before, 500)?;
+        before = page.messages.first().map(|m| m.seq);
+        let mut older = page.messages;
+        older.append(&mut all);
+        all = older;
+        if !page.has_older || before.is_none() {
+            break;
+        }
+    }
+    for m in all.iter_mut().filter(|m| m.body_external) {
+        m.content = get_message_body(conn, &m.id)?;
+    }
+    Ok(all)
+}
+
 pub fn get_messages_around(
     conn: &Connection,
     message_id: &str,

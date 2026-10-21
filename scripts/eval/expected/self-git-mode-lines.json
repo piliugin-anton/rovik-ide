@@ -1,6 +1,7 @@
 {
   "id": "self-git-mode-lines",
   "reference": "0443ad021f1285c578ee46829b9f3008319b3683",
+  "canary": "rovik-canary-8d1eecbde6417645bc770289216c48a3",
   "ok": true,
   "problems": [],
   "failingAtBase": [

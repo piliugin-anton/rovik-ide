@@ -1,6 +1,7 @@
 {
   "id": "self-formatter-kill-tree",
   "reference": "7e8b5e58757870b80c461aeec249bc0229ab1b31",
+  "canary": "rovik-canary-506d7dac9c482c839677c900462c58b3",
   "ok": true,
   "problems": [],
   "failingAtBase": [

@@ -1,6 +1,7 @@
 {
   "id": "self-edit-counts",
   "reference": "a99282b299b36be9fce91e3e5df4428fcaef3ce7",
+  "canary": "rovik-canary-28562e852fe5ca06f0acc317ccd295d7",
   "ok": true,
   "problems": [],
   "failingAtBase": [

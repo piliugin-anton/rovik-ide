@@ -1,6 +1,7 @@
 {
   "id": "self-clm-stable-prompt",
   "reference": "b6245e9f3efd6e1b94b0892683660d0f196c1877",
+  "canary": "rovik-canary-e80d9b6dcea052cccc50d56a5f2a4ed3",
   "ok": true,
   "problems": [],
   "failingAtBase": [

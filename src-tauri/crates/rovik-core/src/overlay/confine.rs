@@ -53,24 +53,36 @@ pub use crate::vfs::driver::InstallOutcome;
 /// What a confined command may see. The project's path shows the chat's
 /// `view` (no redirect when the two are the same: the command already runs
 /// in its own copy, as on a server), the directories in `hide` are empty to
-/// it, and it may write only under those in `writable`.
-#[derive(Clone, Debug)]
+/// it but for those in `show` inside them, and it may write only under
+/// those in `writable`. `offline`: it has no network.
+#[derive(Clone, Debug, Default)]
 pub struct Confine {
     pub view: PathBuf,
     pub project: PathBuf,
     /// Directories made inaccessible to the command.
     pub hide: Vec<PathBuf>,
+    /// Directories inside hidden ones that the command may still read (an
+    /// evaluation's shared Python environment, in its hidden cache).
+    pub show: Vec<PathBuf>,
     /// Directories the command may write to; the rest is read-only.
     pub writable: Vec<PathBuf>,
+    /// The command has no network: a run being evaluated, whose tasks'
+    /// answers are public (docs/design/evolve-plan.md, P01). Bubblewrap
+    /// gives it a loopback of its own; Landlock (TCP) and Seatbelt (IP) cut
+    /// this machine's too, where a proxy would be the internet.
+    pub offline: bool,
 }
 
 impl Confine {
     /// An isolated chat's command: the project's path shows its view, and
     /// it may write to the view and the usual folders ([`writable_dirs`]).
     pub fn redirecting(view: PathBuf, project: PathBuf) -> Confine {
+        let added = added();
         Confine {
             writable: writable_dirs(&view),
             hide: secret_dirs(),
+            show: existing(added.show),
+            offline: added.offline,
             view,
             project,
         }
@@ -79,12 +91,7 @@ impl Confine {
     /// A command that already runs in its own copy (a server worktree, or a
     /// chat that works in the project directly): nothing is redirected.
     pub fn hiding(root: PathBuf) -> Confine {
-        Confine {
-            writable: writable_dirs(&root),
-            hide: secret_dirs(),
-            view: root.clone(),
-            project: root,
-        }
+        Confine::redirecting(root.clone(), root)
     }
 
     /// With `dir` writable too (a chat's build folder).
@@ -101,9 +108,95 @@ impl Confine {
     }
 }
 
-/// Credential directories the app registers on top of the built-in list
-/// (its own secret stores that aren't under `~/.rovik`).
-static PROTECTED: LazyLock<Mutex<Vec<PathBuf>>> = LazyLock::new(Default::default);
+/// What the process adds to every command's policy, on top of the built-in
+/// one: the app's own secret stores that aren't under `~/.rovik`
+/// ([`protect`]), and what a run being evaluated is kept from
+/// ([`restrict`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Restriction {
+    /// Directories hidden from every command.
+    pub hide: Vec<PathBuf>,
+    /// Directories inside hidden ones that commands may still read.
+    pub show: Vec<PathBuf>,
+    /// Directories every command may write, besides its own folders.
+    pub writable: Vec<PathBuf>,
+    /// No command has the network.
+    pub offline: bool,
+}
+
+impl Restriction {
+    /// Whether it adds anything.
+    pub fn is_empty(&self) -> bool {
+        *self == Restriction::default()
+    }
+}
+
+static ADDED: LazyLock<Mutex<Restriction>> = LazyLock::new(Default::default);
+
+/// What the process has added so far.
+fn added() -> Restriction {
+    ADDED.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Adds `r` to every command's policy from now on: its folders hidden,
+/// shown and writable, and the network cut if it says so. Idempotent. The
+/// headless runner calls it before a run that's being evaluated, having
+/// checked that the sandbox here can enforce it ([`unenforceable`]).
+pub fn restrict(r: &Restriction) {
+    let mut added = ADDED.lock().unwrap_or_else(|e| e.into_inner());
+    let merge = |into: &mut Vec<PathBuf>, from: &[PathBuf]| {
+        for path in from {
+            if !into.contains(path) {
+                into.push(path.clone());
+            }
+        }
+    };
+    merge(&mut added.hide, &r.hide);
+    merge(&mut added.show, &r.show);
+    merge(&mut added.writable, &r.writable);
+    added.offline |= r.offline;
+}
+
+/// [`restrict`] while the scope lives: what was added before is all that's
+/// left once it drops. A headless run's, so that runs one after another in
+/// one process (its tests) each have only their own.
+#[must_use]
+pub struct Scope(Restriction);
+
+pub fn restricted(r: &Restriction) -> Scope {
+    let before = added();
+    restrict(r);
+    Scope(before)
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        *ADDED.lock().unwrap_or_else(|e| e.into_inner()) = std::mem::take(&mut self.0);
+    }
+}
+
+/// Why `r` can't be enforced on this process's commands, if it can't: no
+/// sandbox works here (or it's turned off), or the one that does can't cut
+/// the network (Landlock before version 4, Linux 6.7). A run being
+/// evaluated doesn't start then: unconfined, it would see the answers.
+pub fn unenforceable(r: &Restriction) -> Option<String> {
+    if r.is_empty() {
+        return None;
+    }
+    let Some(mechanism) = chosen() else {
+        return Some(match switched_off() {
+            true => "the sandbox is turned off (ROVIK_CONFINE_COMMANDS=0)".into(),
+            false => "no sandbox can confine commands here".into(),
+        });
+    };
+    (r.offline && !mechanism.cuts_network()).then(|| {
+        format!(
+            "the sandbox here ({}) can't cut the network: it takes bubblewrap, Landlock \
+             version 4 (Linux 6.7) or macOS's Seatbelt",
+            mechanism.name()
+        )
+    })
+}
 
 /// Whether the app's commands may run only sandboxed: set by the app at its
 /// start (`require`). On Linux they may only ever run so; on Windows, which
@@ -122,12 +215,10 @@ pub fn require() {
 /// the built-in list. The app calls it at start with its own secret stores;
 /// idempotent.
 pub fn protect(paths: impl IntoIterator<Item = PathBuf>) {
-    let mut protected = PROTECTED.lock().unwrap_or_else(|e| e.into_inner());
-    for path in paths {
-        if !protected.contains(&path) {
-            protected.push(path);
-        }
-    }
+    restrict(&Restriction {
+        hide: paths.into_iter().collect(),
+        ..Restriction::default()
+    });
 }
 
 fn home() -> Option<PathBuf> {
@@ -150,11 +241,11 @@ fn existing(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 
 /// The credential directories a chat's commands are kept out of: the app's
 /// own provider keys (`~/.rovik`, keys.json on a server) and the user's
-/// SSH, cloud, container and signing credentials, plus whatever the app
-/// registered with [`protect`]. Only those that exist right now. A command
-/// that legitimately needs one of these (network git over SSH, a cloud
-/// deploy) is one an isolated or server chat refuses anyway, and the user's
-/// own terminal isn't confined.
+/// SSH, cloud, container and signing credentials, plus whatever the
+/// process registered ([`protect`], [`restrict`]). Only those that exist
+/// right now. A command that legitimately needs one of these (network git
+/// over SSH, a cloud deploy) is one an isolated or server chat refuses
+/// anyway, and the user's own terminal isn't confined.
 pub fn secret_dirs() -> Vec<PathBuf> {
     const UNDER_HOME: &[&str] = &[
         ".rovik",
@@ -174,13 +265,7 @@ pub fn secret_dirs() -> Vec<PathBuf> {
     let under_home = home()
         .into_iter()
         .flat_map(|home| UNDER_HOME.iter().map(move |rel| home.join(rel)));
-    let registered = PROTECTED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    existing(under_home.chain(registered))
+    existing(under_home.chain(added().hide))
 }
 
 /// When a folder of [`TOOL_DIRS`] that isn't there yet is made before a
@@ -266,6 +351,9 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
     if cfg!(target_os = "macos") {
         dirs.extend(std::env::temp_dir().parent().map(|d| d.join("C")));
     }
+    // What the process lets every command write ([`restrict`]): an
+    // evaluation's build folder.
+    dirs.extend(added().writable);
     existing(dirs)
 }
 
@@ -319,6 +407,10 @@ trait Mechanism: Sync {
     /// Whether the command sees no other process, and what it leaves
     /// running ends with it (bubblewrap's pid namespace).
     fn hides_processes(&self) -> bool;
+
+    /// Whether it can take the network away (`Confine::offline`). One that
+    /// can't fails an offline command rather than run it with the network.
+    fn cuts_network(&self) -> bool;
 }
 
 #[cfg(target_os = "linux")]
@@ -365,9 +457,14 @@ fn works(mechanism: &dyn Mechanism, c: &Confine) -> bool {
     cmd.status().is_ok_and(|s| s.success())
 }
 
-/// What the probe runs under: the process's temporary folder as the root.
+/// What the probe runs under: the process's temporary folder as the root,
+/// with the network: whether a mechanism can cut it is its own question
+/// ([`unenforceable`]).
 fn probe_policy() -> Confine {
-    Confine::hiding(std::env::temp_dir())
+    Confine {
+        offline: false,
+        ..Confine::hiding(std::env::temp_dir())
+    }
 }
 
 /// What was found, once (None: not looked yet).
@@ -426,6 +523,12 @@ pub fn command(c: &Confine, program: &str, args: &[&str]) -> Command {
             cmd
         }
     }
+}
+
+/// The name of what confines commands here ("bwrap", "landlock",
+/// "seatbelt"), for a report; None without a sandbox.
+pub fn mechanism_name() -> Option<&'static str> {
+    chosen().map(|m| m.name())
 }
 
 /// Whether the commands here see no other process, and what one leaves
@@ -572,21 +675,31 @@ mod linux {
             for dir in c.hide.iter().filter(|d| d.is_dir()) {
                 cmd.arg("--tmpfs").arg(dir);
             }
-            // A writable folder inside a hidden one stays the command's
-            // (`--data` puts a daemon's worktrees in its own folder), and
-            // what's hidden inside it stays hidden.
+            // A shown folder inside a hidden one can be read again, and a
+            // writable one stays the command's (`--data` puts a daemon's
+            // worktrees in its own folder); what's hidden inside either
+            // stays hidden.
             let inside = |d: &Path, of: &[PathBuf]| of.iter().any(|o| d != o && d.starts_with(o));
-            let back: Vec<PathBuf> = c
-                .writable
-                .iter()
-                .filter(|d| d.is_dir() && inside(d, &c.hide))
-                .cloned()
-                .collect();
+            let back_in = |dirs: &[PathBuf]| -> Vec<PathBuf> {
+                dirs.iter()
+                    .filter(|d| d.is_dir() && inside(d, &c.hide))
+                    .cloned()
+                    .collect()
+            };
+            let (shown, back) = (back_in(&c.show), back_in(&c.writable));
+            for dir in &shown {
+                cmd.arg("--ro-bind").arg(dir).arg(dir);
+            }
             for dir in &back {
                 cmd.arg("--bind").arg(dir).arg(dir);
             }
-            for dir in c.hide.iter().filter(|d| d.is_dir() && inside(d, &back)) {
+            let again = [shown, back].concat();
+            for dir in c.hide.iter().filter(|d| d.is_dir() && inside(d, &again)) {
                 cmd.arg("--tmpfs").arg(dir);
+            }
+            // A network namespace of its own: only the loopback, up.
+            if c.offline {
+                cmd.arg("--unshare-net");
             }
             // Run by root, bwrap keeps the capabilities unless told; run by
             // a user it drops them anyway.
@@ -600,6 +713,10 @@ mod linux {
         }
 
         fn hides_processes(&self) -> bool {
+            true
+        }
+
+        fn cuts_network(&self) -> bool {
             true
         }
     }
@@ -768,20 +885,26 @@ const SEATBELT_DEVICES: &[&str] = &[
 /// the paths it names, as `sandbox-exec -D` parameters: a path never goes
 /// into the profile's text, so none can break it. Everything is allowed
 /// but what the policy forbids: writes outside the writable folders and
-/// those devices, and anything under a hidden folder, but for the writable
-/// folders inside one (a daemon's worktrees in its own folder, `--data`).
-/// The folders are as the file system has them: Seatbelt sees `/tmp` as
-/// `/private/tmp`. Nothing is redirected: Seatbelt can't.
+/// those devices, anything under a hidden folder, but for the writable and
+/// shown folders inside one (a daemon's worktrees in its own folder,
+/// `--data`; an evaluation's Python environment), and, offline, any
+/// connection over IP. The folders are as the file system has
+/// them: Seatbelt sees `/tmp` as `/private/tmp`. Nothing is redirected:
+/// Seatbelt can't.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
     let writable: Vec<&PathBuf> = c.writable.iter().filter(|d| d.is_dir()).collect();
     let hidden: Vec<&PathBuf> = c.hide.iter().filter(|d| d.is_dir()).collect();
+    let shown: Vec<&PathBuf> = c.show.iter().filter(|d| d.is_dir()).collect();
     let mut params: Vec<(String, PathBuf)> = Vec::new();
     for (i, dir) in writable.iter().enumerate() {
         params.push((format!("W{i}"), dir.to_path_buf()));
     }
     for (i, dir) in hidden.iter().enumerate() {
         params.push((format!("H{i}"), dir.to_path_buf()));
+    }
+    for (i, dir) in shown.iter().enumerate() {
+        params.push((format!("S{i}"), dir.to_path_buf()));
     }
     let under = |name: String| format!(r#"(subpath (param "{name}"))"#);
     let any = |filters: Vec<String>| format!("(require-any {})", filters.join(" "));
@@ -792,12 +915,20 @@ fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
         .collect();
     writes.extend(SEATBELT_DEVICES.iter().map(|d| d.to_string()));
     profile += &format!("(deny file-write* (require-not {}))\n", any(writes));
+    // A hidden folder can't be read or written, but for the writable and
+    // shown folders inside it (a shown one is still read-only: the rule
+    // above denies its writes).
+    let inner: Vec<(String, &PathBuf)> = writable
+        .iter()
+        .enumerate()
+        .map(|(j, w)| (format!("W{j}"), *w))
+        .chain(shown.iter().enumerate().map(|(j, d)| (format!("S{j}"), *d)))
+        .collect();
     for (i, dir) in hidden.iter().enumerate() {
-        let inside: Vec<String> = writable
+        let inside: Vec<String> = inner
             .iter()
-            .enumerate()
-            .filter(|(_, w)| *w != dir && w.starts_with(dir))
-            .map(|(j, _)| under(format!("W{j}")))
+            .filter(|(_, w)| *w != *dir && w.starts_with(dir))
+            .map(|(name, _)| under(name.clone()))
             .collect();
         let filter = if inside.is_empty() {
             under(format!("H{i}"))
@@ -809,6 +940,11 @@ fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
             )
         };
         profile += &format!("(deny file-read* file-write* {filter})\n");
+    }
+    // Offline: no connection over IP, to this machine either (a proxy
+    // there would be the internet); its own sockets' files still work.
+    if c.offline {
+        profile += "(deny network-outbound (remote ip \"*:*\"))\n";
     }
     (profile, params)
 }
@@ -857,6 +993,10 @@ mod macos {
 
         fn hides_processes(&self) -> bool {
             false
+        }
+
+        fn cuts_network(&self) -> bool {
+            true
         }
     }
 
@@ -1012,6 +1152,7 @@ mod seatbelt_profile_tests {
             project: work.clone(),
             hide: vec![daemon.clone(), secret.clone(), root.join("gone")],
             writable: vec![work.clone(), root.join("gone-too")],
+            ..Confine::default()
         };
         let (profile, params) = seatbelt_profile(&c);
         let names: Vec<(&str, &Path)> = params
@@ -1039,6 +1180,23 @@ mod seatbelt_profile_tests {
             r#"(deny file-read* file-write* (require-all (subpath (param "H0")) (require-not (require-any (subpath (param "W0"))))))"#
         ));
         assert!(profile.contains(r#"(deny file-read* file-write* (subpath (param "H1")))"#));
+        assert!(!profile.contains("network"), "online by default");
+        // P01: a shown folder inside a hidden one is let through to read
+        // (its writes stay denied by the rule on writes); offline, no
+        // connection but to this machine.
+        let venv = secret.join("venv");
+        std::fs::create_dir_all(&venv).unwrap();
+        let c = Confine {
+            show: vec![venv.clone()],
+            offline: true,
+            ..c
+        };
+        let (profile, params) = seatbelt_profile(&c);
+        assert!(params.contains(&("S0".to_string(), venv.clone())));
+        assert!(profile.contains(
+            r#"(deny file-read* file-write* (require-all (subpath (param "H1")) (require-not (require-any (subpath (param "S0"))))))"#
+        ));
+        assert!(profile.ends_with("(deny network-outbound (remote ip \"*:*\"))\n"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -1099,6 +1257,7 @@ mod macos_tests {
             project: mine.clone(),
             hide: Vec::new(),
             writable: vec![mine.clone()],
+            ..Confine::default()
         };
         let script = format!(
             "echo ok > {m}/a.txt && echo gone > /dev/null && \
@@ -1137,6 +1296,7 @@ mod macos_tests {
             project: work.clone(),
             hide: vec![secret.clone(), daemon.clone(), deep.clone()],
             writable: vec![work.clone(), secret.clone()],
+            ..Confine::default()
         };
         let script = format!(
             "cat {s}/key {d}/keys.json {w}/.ssh/id 2>/dev/null; \
@@ -1176,6 +1336,7 @@ mod tests {
             project: root.clone(),
             hide: Vec::new(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
+            ..Confine::default()
         };
         (root, c)
     }
@@ -1296,6 +1457,74 @@ mod tests {
         assert_eq!(stdout(&out), "moved\n");
         assert!(work.join("new.rs").exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P01 (evolve-plan): a shown folder inside a hidden one reads, but
+    /// can't be written, and the rest of the hidden folder stays hidden.
+    #[test]
+    fn a_shown_folder_inside_a_hidden_one_reads_but_isnt_written() {
+        let (root, mut c) = fresh("shown", &[]);
+        let cache = root.join("cache");
+        let (venv, repos) = (cache.join("venv"), cache.join("repos"));
+        let work = root.join("work");
+        for d in [&venv, &repos, &work] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(venv.join("pytest"), "tool\n").unwrap();
+        std::fs::write(repos.join("answer"), "ANSWER\n").unwrap();
+        c.hide = vec![cache.clone()];
+        c.show = vec![venv.clone()];
+        c.writable = vec![work.clone()];
+        let script = format!(
+            "cat {v}/pytest; cat {r}/answer 2>/dev/null || echo no-answer; \
+             echo x > {v}/planted 2>/dev/null || echo read-only",
+            v = venv.display(),
+            r = repos.display()
+        );
+        let Some(out) = run(&c, &work, &script) else {
+            return;
+        };
+        assert_eq!(
+            stdout(&out),
+            "tool\nno-answer\nread-only\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!venv.join("planted").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P01: offline, a command can't reach a server outside its sandbox
+    /// (one on this machine's loopback here, to need no internet); with
+    /// the network, it can.
+    #[test]
+    fn an_offline_command_reaches_no_server() {
+        let (root, mut c) = fresh("offline", &[]);
+        c.writable = vec![root.clone()];
+        assert!(offline_connects(&c, &root).is_none_or(|connected| connected));
+        c.offline = true;
+        assert!(offline_connects(&c, &root).is_none_or(|connected| !connected));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Whether a command under `c` connects to a server outside it; None
+    /// where bwrap can't run here, or there's no bash for `/dev/tcp`.
+    fn offline_connects(c: &Confine, cwd: &Path) -> Option<bool> {
+        if !Path::new("/bin/bash").exists() || !works(BWRAP, c) {
+            eprintln!("bwrap or bash missing here: skipped");
+            return None;
+        }
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        let script = format!(
+            "(exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && echo connected || echo refused"
+        );
+        let out = BWRAP
+            .command(c, "/bin/bash", &["-c", &script])
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        Some(stdout(&out) == "connected\n")
     }
 
     /// The system is read-only but for the writable folders, the command

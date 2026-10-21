@@ -1,6 +1,7 @@
 {
   "id": "mi-one-falsy-exception",
   "reference": "b2f3aff7633057d234ec9186c18a53f4df306d08",
+  "canary": "rovik-canary-3604ac407f54482690fc3d4e338d6bef",
   "ok": true,
   "problems": [],
   "failingAtBase": [

@@ -1,6 +1,7 @@
 {
   "id": "lo-filter-map",
   "reference": "3df5ddb66ee641cbe5d3286904e6b004afae9f4a",
+  "canary": "rovik-canary-305a5520ca060be9624fe6131799e3c9",
   "ok": true,
   "problems": [],
   "failingAtBase": [

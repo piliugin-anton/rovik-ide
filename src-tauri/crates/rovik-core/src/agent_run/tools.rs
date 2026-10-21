@@ -148,6 +148,11 @@ fn file_tool_schemas() -> Vec<Value> {
     ]
 }
 
+/// The tools that reach the web, through the app's own browser (not the
+/// commands' sandbox): offered unless the permissions turn them off, as a
+/// run being evaluated's do (`Permissions::web_tools`).
+pub const WEB_TOOLS: &[&str] = &["web_search", "browse_url", "browser_screenshot"];
+
 /// Web tools: available with or without an open project.
 fn web_tool_schemas() -> Vec<Value> {
     vec![
@@ -436,9 +441,11 @@ pub fn tools_for(
             all.push(run_command_schema(permissions));
         }
     }
-    all.extend(web_tool_schemas());
-    if vision {
-        all.push(browser_screenshot_tool_schema());
+    if permissions.web_tools {
+        all.extend(web_tool_schemas());
+        if vision {
+            all.push(browser_screenshot_tool_schema());
+        }
     }
     if !plan_mode {
         // Agent mode: the checklist on top of the project tools.
@@ -1742,6 +1749,35 @@ mod tests {
             !names(tools_for(true, false, false, &none, false, false, false))
                 .contains(&"bash".to_string())
         );
+    }
+
+    /// P01 (evolve-plan): a run being evaluated is offered no web tool, and
+    /// one called anyway is refused.
+    #[test]
+    fn the_web_tools_can_be_turned_off() {
+        let off = Permissions {
+            web_tools: false,
+            ..Permissions::default()
+        };
+        let offered: Vec<String> = tools_for(true, true, false, &off, false, false, false)
+            .iter()
+            .map(|t| tool_name(t).to_string())
+            .collect();
+        assert!(offered.contains(&"bash".to_string()), "{offered:?}");
+        assert!(
+            !offered.iter().any(|n| WEB_TOOLS.contains(&n.as_str())),
+            "{offered:?}"
+        );
+        for name in WEB_TOOLS {
+            assert!(matches!(
+                super::super::permissions::check_tool_call(name, "{}", &off),
+                super::super::permissions::ToolVerdict::Refused(_)
+            ));
+        }
+        assert!(matches!(
+            super::super::permissions::check_tool_call("browse_url", "{}", &Permissions::default()),
+            super::super::permissions::ToolVerdict::Permitted { .. }
+        ));
     }
 
     #[test]
