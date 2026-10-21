@@ -225,6 +225,10 @@ pub struct Args {
     pub restriction: Restriction,
     /// No web tools (P01).
     pub no_web: bool,
+    /// P05: which run this is, for whoever started it (an evaluation's
+    /// "campaign/task/repetition"): in the report. The chat's id is the
+    /// runner's own.
+    pub run_id: Option<String>,
 }
 
 /// A message the runner sends the run while it works (`--steer TEXT@N`).
@@ -260,7 +264,7 @@ pub const USAGE: &str =
     "usage: rovik-headless --project DIR --settings FILE --prompt TEXT --out FILE \
      [--policy FILE] [--data DIR] [--timeout SECONDS] [--max-tokens N] \
      [--mode agent|plan|autopilot] [--effort balanced|thorough] [--steer TEXT@N]... \
-     [--hide DIR]... [--show DIR]... [--writable DIR]... [--offline] [--no-web]";
+     [--hide DIR]... [--show DIR]... [--writable DIR]... [--offline] [--no-web] [--run-id ID]";
 
 pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut project = None;
@@ -276,6 +280,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut steers = Vec::new();
     let mut restriction = Restriction::default();
     let mut no_web = false;
+    let mut run_id = None;
     let mut it = argv.iter();
     while let Some(flag) = it.next() {
         let mut value = || {
@@ -322,6 +327,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--writable" => restriction.writable.push(PathBuf::from(value()?)),
             "--offline" => restriction.offline = true,
             "--no-web" => no_web = true,
+            "--run-id" => run_id = Some(value()?),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -342,6 +348,7 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
         steers,
         restriction,
         no_web,
+        run_id,
     })
 }
 
@@ -475,7 +482,10 @@ impl EventSink for Events {
 
 /// Runs once and writes the report; returns it too.
 pub async fn run(args: &Args) -> Result<Value, String> {
-    // One run at a time: tests find the run under way in TEST_RUN.
+    // One run at a time in a process: its commands' sandbox restriction
+    // (P01) is the process's, and tests find the run under way in
+    // TEST_RUN. Runs side by side are processes of their own (P05), each
+    // with its own data and log folders.
     static ONE_RUN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = ONE_RUN.lock().await;
     // P01: kept from the answers, or not run at all.
@@ -762,6 +772,7 @@ pub async fn run(args: &Args) -> Result<Value, String> {
             .find_map(|m| m.meta.as_ref()?.get("report").cloned())
             .unwrap_or(Value::Null);
     }
+    report["runId"] = json!(args.run_id);
     // P01: what kept the run from its task's answers, and everything it
     // and its subagents said and saw.
     report["sandbox"] = json!({
@@ -1210,7 +1221,10 @@ mod tests {
         );
         assert!(a.no_web);
         let a = with(&[]).unwrap();
-        assert!(a.restriction.is_empty() && !a.no_web);
+        assert!(a.restriction.is_empty() && !a.no_web && a.run_id.is_none());
+        // P05: which run this is.
+        let a = with(&["--run-id", "baseline/mi-subfactorial/2"]).unwrap();
+        assert_eq!(a.run_id.as_deref(), Some("baseline/mi-subfactorial/2"));
     }
 
     #[test]
@@ -1605,6 +1619,7 @@ mod tests {
             steers: Vec::new(),
             restriction: Restriction::default(),
             no_web: false,
+            run_id: None,
         };
         let err = run(&args(dir.join("missing"))).await.unwrap_err();
         assert!(err.contains("missing"), "{err}");

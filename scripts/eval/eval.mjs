@@ -4,9 +4,9 @@
 // and grades each run with the tasks' hidden tests. See README.md.
 //
 //   node scripts/eval/eval.mjs validate [--tasks a,b]
-//   node scripts/eval/eval.mjs dry-run [--tasks a,b]
-//   node scripts/eval/eval.mjs pilot --settings FILE
-//   node scripts/eval/eval.mjs run --settings FILE
+//   node scripts/eval/eval.mjs dry-run [--tasks a,b] [--jobs N]
+//   node scripts/eval/eval.mjs pilot --settings FILE [--jobs N]
+//   node scripts/eval/eval.mjs run --settings FILE [--jobs N]
 //   node scripts/eval/eval.mjs report DIR
 //   node scripts/eval/eval.mjs variants --settings FILE [--kinds a,b | --variants a,b]   (G02)
 //   node scripts/eval/eval.mjs compare [--out FILE]                     (G02, G03)
@@ -25,6 +25,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -45,6 +46,7 @@ import {
   compareVariant,
   comparisonMarkdown,
   grade,
+  inParallel,
   parseCargo,
   parseGoJson,
   parseJunit,
@@ -110,6 +112,19 @@ const writeJson = (p, v) => {
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(v, null, 2) + '\n');
 };
+
+/**
+ * P05: a file written whole or not at all (into its place by a rename),
+ * for what a run that may be starting beside this one reads: a scripted
+ * model's patch, say.
+ */
+let atomicWrites = 0;
+function writeAtomic(p, content) {
+  mkdirSync(dirname(p), { recursive: true });
+  const part = `${p}.${process.pid}.${atomicWrites++}.part`;
+  writeFileSync(part, content);
+  renameSync(part, p);
+}
 
 function parseFlags(argv) {
   const flags = { _: [] };
@@ -256,9 +271,9 @@ function pythonVenv() {
  * with one commit, so the agent can't read the task's answer from the
  * history. Returns the environment its commands and checks run with, and
  * (P01) what of the hidden cache its commands may still read (`show`) and
- * write (`writable`).
+ * write (`writable`). `slot`: the worker's (P05), for its build folder.
  */
-function prepare(task, rev, ws) {
+function prepare(task, rev, ws, slot = 0) {
   rmSync(ws, { recursive: true, force: true });
   mkdirSync(ws, { recursive: true });
   const repo = repoOf(task);
@@ -286,7 +301,14 @@ function prepare(task, rev, ws) {
         exclude.push('node_modules');
       }
     } else if (s === 'cargo') {
-      env.CARGO_TARGET_DIR = join(CACHE, 'cargo-target', repoName(task));
+      // P05: a target folder per worker, so builds side by side don't
+      // wait on each other's lock, or lose what the pruning takes.
+      env.CARGO_TARGET_DIR = join(
+        CACHE,
+        'cargo-target',
+        ...(slot ? [`job-${slot}`] : []),
+        repoName(task)
+      );
       mkdirSync(env.CARGO_TARGET_DIR, { recursive: true });
       writable.push(env.CARGO_TARGET_DIR);
       // Incremental caches of many old commits fill a disk quickly.
@@ -543,6 +565,14 @@ const stamp = (p) => {
   return `${s.size}:${s.mtimeMs}`;
 };
 
+/** P05: how many runs at once (`--jobs`, one by default). */
+function jobsOf(flags) {
+  const jobs = Number(flags.jobs ?? 1);
+  if (!Number.isInteger(jobs) || jobs < 1)
+    throw new Error('--jobs takes a whole number, 1 or more');
+  return jobs;
+}
+
 /** P02: what a run's line says when it's tampered: why. */
 const tamperNote = (r) => (r.tampered?.length ? ` TAMPERED: ${r.tampered.join('; ')}` : '');
 
@@ -556,7 +586,7 @@ async function runOne(task, rep, campaignDir, opts) {
     throw new Error(`${task.id} isn't validated: run \`eval.mjs validate --tasks ${task.id}\``);
   mkdirSync(dir, { recursive: true });
   const ws = join(workRoot(), workspaceName(campaignDir, task.id, rep));
-  const { env, caches, show, writable, start } = prepare(task, task.base, ws);
+  const { env, caches, show, writable, start } = prepare(task, task.base, ws, opts.slot);
   const report = join(dir, 'report.json');
   // G03: an Autopilot variant's caps are its own (`autopilotCaps`).
   const caps = opts.perRun ?? BUDGET.perRun;
@@ -577,6 +607,9 @@ async function runOne(task, rep, campaignDir, opts) {
     String(caps.timeoutSeconds),
     '--max-tokens',
     String(caps.maxTokens),
+    // P05: which run this is, in its report.
+    '--run-id',
+    `${basename(campaignDir)}/${task.id}/${rep}`,
     // G03: `--mode autopilot --effort …` for an Autopilot variant.
     ...(opts.args ?? []),
     // D18 (steering-plan.md): the task's scripted messages, unless the
@@ -728,6 +761,7 @@ async function campaign(name, tasks, repeats, cap, flags, variant = {}) {
       ...bins,
       // A task's scripted messages, unless `--no-steers` (steering-plan.md).
       steers: !flags['no-steers'],
+      jobs: jobsOf(flags),
       ...variant,
     });
   } finally {
@@ -741,7 +775,7 @@ async function campaignIn(
   repeats,
   cap,
   campaignDir,
-  { settings, price, policy, runner, integrity, build, perRun, args, steers }
+  { settings, price, policy, runner, integrity, build, jobs, perRun, args, steers }
 ) {
   // P03: what the runs are made with mustn't change under the campaign.
   const files = [runner, integrity, settings, policy];
@@ -768,9 +802,9 @@ async function campaignIn(
   const { results, stopped } = await runCampaign(plan, {
     cap,
     firstEstimate,
-    runOne: async ({ task, rep }) => {
+    jobs,
+    runOne: async ({ task, rep }, slot) => {
       unchanged();
-      process.stdout.write(`[${name}] ${task.id} #${rep}: `);
       const r = await runOne(task, rep, campaignDir, {
         settings,
         policy,
@@ -780,10 +814,13 @@ async function campaignIn(
         perRun,
         args,
         steers,
+        slot,
       });
+      // A whole line once the run is over: runs side by side don't mix theirs.
       const cost = typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(3)}` : 'cost unknown';
       console.log(
-        `${r.success ? 'PASS' : 'fail'} (${r.outcome}, ${r.grade.passed}/${r.grade.required} tests, ` +
+        `[${name}] ${task.id} #${rep}: ` +
+          `${r.success ? 'PASS' : 'fail'} (${r.outcome}, ${r.grade.passed}/${r.grade.required} tests, ` +
           `${cost}, ${(r.tokens / 1000).toFixed(0)}k tokens)` +
           tamperNote(r) +
           (r.reused ? ' [kept from before]' : '')
@@ -1137,46 +1174,45 @@ async function dryRunVariants(flags) {
   const policy = join(EVAL, 'policy.json');
   const dir = resolve(flags.out ?? join(RESULTS, `dry-run-variants-${Date.now()}`));
   const wanted = variantsWanted(flags);
-  let bad = 0;
-  for (const variant of [null, ...wanted]) {
+  const items = [null, ...wanted].flatMap((variant) => tasks.map((task) => ({ variant, task })));
+  const { results } = await inParallel(items, jobsOf(flags), async ({ variant, task }, slot) => {
     const name = variant?.campaign ?? 'baseline';
     const autopilot = !!variant && !variant.kind;
-    for (const task of tasks) {
-      const model = await fakeModel(
-        autopilot ? ['autopilot', referenceFiles(task)] : ['oracle', referencePatch(task)]
+    const model = await fakeModel(
+      autopilot ? ['autopilot', referenceFiles(task)] : ['oracle', referencePatch(task)]
+    );
+    const settings = join(dir, name, `settings-${task.id}.json`);
+    const base = fakeSettings(model.url);
+    const plan = variant
+      ? variantPlan(variant, base)
+      : { settings: variantSettings(base, null), run: {} };
+    writeJson(settings, plan.settings);
+    writeJson(join(dir, name, 'settings.json'), { ...plan.settings, profile: base.profile });
+    try {
+      const r = await runOne(task, 1, join(dir, name), {
+        settings,
+        policy,
+        ...bins,
+        ...plan.run,
+        slot,
+      });
+      const stages = r.stages ?? [];
+      const whole = !autopilot || reachedDelivery(stages);
+      const failing = autopilot ? failingChecks(join(dir, name, task.id, '1', 'report.json')) : [];
+      console.log(
+        `${name} ${task.id}: ${r.success && whole ? 'pass' : 'FAIL'} (${r.outcome}, ` +
+          `$${(r.costUsd ?? 0).toFixed(4)}, ${r.toolErrors} tool errors)${tamperNote(r)}` +
+          (autopilot ? ` — ${stages.map((st) => `${st.name} ${st.status}`).join(', ')}` : '') +
+          (failing.length ? `; the project's own checks failed: ${failing.join(', ')}` : '')
       );
-      const settings = join(dir, name, `settings-${task.id}.json`);
-      const base = fakeSettings(model.url);
-      const plan = variant
-        ? variantPlan(variant, base)
-        : { settings: variantSettings(base, null), run: {} };
-      writeJson(settings, plan.settings);
-      writeJson(join(dir, name, 'settings.json'), { ...plan.settings, profile: base.profile });
-      try {
-        const r = await runOne(task, 1, join(dir, name), {
-          settings,
-          policy,
-          ...bins,
-          ...plan.run,
-        });
-        const stages = r.stages ?? [];
-        const whole = !autopilot || reachedDelivery(stages);
-        if (!r.success || !whole) bad++;
-        const failing = autopilot
-          ? failingChecks(join(dir, name, task.id, '1', 'report.json'))
-          : [];
-        console.log(
-          `${name} ${task.id}: ${r.success && whole ? 'pass' : 'FAIL'} (${r.outcome}, ` +
-            `$${(r.costUsd ?? 0).toFixed(4)}, ${r.toolErrors} tool errors)${tamperNote(r)}` +
-            (autopilot ? ` — ${stages.map((st) => `${st.name} ${st.status}`).join(', ')}` : '') +
-            (failing.length ? `; the project's own checks failed: ${failing.join(', ')}` : '')
-        );
-      } finally {
-        model.stop();
-      }
+      return r.success && whole;
+    } finally {
+      model.stop();
     }
-    writeJson(join(dir, name, 'summary.json'), { stopped: null });
-  }
+  });
+  let bad = results.filter((ok) => !ok).length;
+  for (const variant of [null, ...wanted])
+    writeJson(join(dir, variant?.campaign ?? 'baseline', 'summary.json'), { stopped: null });
   const comparisons = [];
   if (wanted.some((v) => v.kind))
     comparisons.push(
@@ -1244,7 +1280,7 @@ function referenceFiles(task) {
   if (!Object.keys(files).length)
     throw new Error(`${task.id}: its reference writes no file, only deletes: no Autopilot dry run`);
   const file = join(CACHE, 'patches', `${task.id}.files.json`);
-  writeJson(file, files);
+  writeAtomic(file, JSON.stringify(files, null, 2) + '\n');
   return file;
 }
 
@@ -1266,8 +1302,7 @@ function referencePatch(task) {
     ...exclude,
   ]);
   const file = join(CACHE, 'patches', `${task.id}.patch`);
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, diff.stdout);
+  writeAtomic(file, diff.stdout);
   return file;
 }
 
@@ -1279,7 +1314,7 @@ function fakeModel(args) {
 /** A scripted cheater's calls (fake-model.mjs `cheat`), in a file it reads outside the sandbox. */
 function callsFile(task, name, calls) {
   const file = join(CACHE, 'patches', `${task.id}.${name}.json`);
-  writeJson(file, calls);
+  writeAtomic(file, JSON.stringify(calls, null, 2) + '\n');
   return file;
 }
 
@@ -1329,35 +1364,36 @@ async function dryRun(flags) {
   const bins = builds(flags);
   const policy = join(EVAL, 'policy.json');
   const campaignDir = resolve(flags.out ?? join(RESULTS, `dry-run-${Date.now()}`));
-  const rows = [];
-  for (const task of tasks) {
-    for (const m of DRY_RUN_MODES.filter((m) => !m.applies || m.applies(task))) {
-      const model = await fakeModel(m.model(task));
-      const settings = join(campaignDir, `settings-${task.id}-${m.mode}.json`);
-      writeJson(settings, fakeSettings(model.url));
-      try {
-        const r = await runOne(task, m.rep, join(campaignDir, m.mode), {
-          settings,
-          policy,
-          ...bins,
-        });
-        const runDir = join(campaignDir, m.mode, task.id, String(m.rep));
-        const found = canariesIn(readRun(runDir), [canaryOf(task)]);
-        const tampered = r.tampered.length > 0;
-        const ok = r.success === m.pass && !found.length && tampered === !!m.tampered;
-        rows.push({ task: task.id, mode: m.mode, ok, r });
-        console.log(
-          `${task.id} (${m.mode}): ${r.success ? 'pass' : 'fail'}, ${r.outcome}, ` +
-            `${r.grade.passed}/${r.grade.required} tests, $${(r.costUsd ?? 0).toFixed(4)} ` +
-            `(${r.costSource})${tamperNote(r)}` +
-            (found.length ? ', ITS TRANSCRIPT HOLDS THE CANARY' : '') +
-            ` — ${ok ? 'as expected' : 'NOT AS EXPECTED'}`
-        );
-      } finally {
-        model.stop();
-      }
+  const items = tasks.flatMap((task) =>
+    DRY_RUN_MODES.filter((m) => !m.applies || m.applies(task)).map((m) => ({ task, m }))
+  );
+  const { results: rows } = await inParallel(items, jobsOf(flags), async ({ task, m }, slot) => {
+    const model = await fakeModel(m.model(task));
+    const settings = join(campaignDir, `settings-${task.id}-${m.mode}.json`);
+    writeJson(settings, fakeSettings(model.url));
+    try {
+      const r = await runOne(task, m.rep, join(campaignDir, m.mode), {
+        settings,
+        policy,
+        ...bins,
+        slot,
+      });
+      const runDir = join(campaignDir, m.mode, task.id, String(m.rep));
+      const found = canariesIn(readRun(runDir), [canaryOf(task)]);
+      const tampered = r.tampered.length > 0;
+      const ok = r.success === m.pass && !found.length && tampered === !!m.tampered;
+      console.log(
+        `${task.id} (${m.mode}): ${r.success ? 'pass' : 'fail'}, ${r.outcome}, ` +
+          `${r.grade.passed}/${r.grade.required} tests, $${(r.costUsd ?? 0).toFixed(4)} ` +
+          `(${r.costSource})${tamperNote(r)}` +
+          (found.length ? ', ITS TRANSCRIPT HOLDS THE CANARY' : '') +
+          ` — ${ok ? 'as expected' : 'NOT AS EXPECTED'}`
+      );
+      return { task: task.id, mode: m.mode, ok, r };
+    } finally {
+      model.stop();
     }
-  }
+  });
   const bad = rows.filter((r) => !r.ok);
   console.log(bad.length ? `\n${bad.length} unexpected results.` : '\nThe pipeline works.');
   if (bad.length) process.exitCode = 1;
@@ -1400,8 +1436,9 @@ const commands = {
 const command = commands[flags._[0]];
 if (!command) {
   console.error(
-    'usage: eval.mjs validate [--tasks a,b] | dry-run [--tasks a,b] | pilot --settings FILE | ' +
-      'run --settings FILE [--repeats N] [--tasks a,b] | report [DIR] | ' +
+    'usage: eval.mjs validate [--tasks a,b] | dry-run [--tasks a,b] [--jobs N] | ' +
+      'pilot --settings FILE [--jobs N] | ' +
+      'run --settings FILE [--repeats N] [--tasks a,b] [--jobs N] | report [DIR] | ' +
       'variants --settings FILE [--kinds a,b | --variants a,b] | compare [A B] [--out FILE] | apply-defaults | ' +
       'dry-run-variants [--variants a,b]'
   );

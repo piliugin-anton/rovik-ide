@@ -20,6 +20,7 @@ import {
   subagentsOn,
   variantSettings,
   grade,
+  inParallel,
   knownSpend,
   lockCampaign,
   workspaceName,
@@ -490,6 +491,71 @@ describe('campaign (P6.6)', () => {
     const { stopped, ran } = await campaign(plan, made, { cap: 8 });
     assert.deepEqual(ran, ['a#1', 'b#1', 'c#1']);
     assert.match(stopped, /\$6\.00 spent; another run \(~\$3\.00\) would pass the \$8 cap/);
+  });
+});
+
+describe('runs side by side (P05 in evolve-plan)', () => {
+  const later = (ms, value) => new Promise((done) => setTimeout(() => done(value), ms));
+
+  it('at most `jobs` at once, started in order, each with its slot', async () => {
+    let now = 0;
+    let most = 0;
+    const started = [];
+    const slots = new Set();
+    // The first run ends only once the other four have, on the other slot.
+    let others = 0;
+    let release;
+    const othersDone = new Promise((done) => (release = done));
+    const { results, stopped } = await inParallel([1, 2, 3, 4, 5], 2, async (n, slot) => {
+      started.push(n);
+      slots.add(slot);
+      most = Math.max(most, ++now);
+      if (n === 1) await othersDone;
+      else await later(1);
+      if (n !== 1 && ++others === 4) release();
+      now--;
+      return n;
+    });
+    assert.equal(stopped, '');
+    assert.equal(most, 2);
+    assert.deepEqual(started, [1, 2, 3, 4, 5]);
+    assert.deepEqual([...slots].sort(), [0, 1]);
+    assert.deepEqual([...results].sort(), [1, 2, 3, 4, 5]);
+    assert.equal(results[results.length - 1], 1, 'the slow one finished last');
+  });
+
+  it('the budget counts the runs under way at the estimate', async () => {
+    const plan = ['a', 'b', 'c', 'd'].map((task) => ({ task, rep: 1, done: false }));
+    const ran = [];
+    const { stopped } = await runCampaign(plan, {
+      cap: 3,
+      firstEstimate: 1,
+      jobs: 4,
+      runOne: async ({ task }) => {
+        ran.push(task);
+        await later(5);
+        return { task, rep: 1, success: true, costUsd: 1, outcome: 'done' };
+      },
+    });
+    assert.deepEqual(ran, ['a', 'b', 'c']);
+    assert.match(
+      stopped,
+      /\$0\.00 spent and 3 runs under way; another run \(~\$1\.00\) would pass the \$3 cap/
+    );
+  });
+
+  it('an error stops what hasn’t started, lets the rest finish, then is thrown', async () => {
+    const finished = [];
+    await assert.rejects(
+      inParallel([1, 2, 3, 4], 2, async (n) => {
+        if (n === 1) throw new Error('boom');
+        await later(10);
+        finished.push(n);
+        return n;
+      }),
+      /boom/
+    );
+    assert.deepEqual(finished, [2]);
   });
 });
 

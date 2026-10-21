@@ -114,17 +114,19 @@ const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 /**
  * Whether the next run may start. `spent` is what the campaign's runs
  * cost so far; the next run is assumed to cost their mean (or, before
- * any run, `firstEstimate`).
+ * any run, `firstEstimate`), and so is each of the `pending` runs under
+ * way (P05: runs side by side).
  */
-export function budgetAllows({ cap, spent, costs, firstEstimate }) {
+export function budgetAllows({ cap, spent, costs, firstEstimate, pending = 0 }) {
   const estimate = costs.length ? sum(costs) / costs.length : firstEstimate;
-  const ok = spent + estimate <= cap;
+  const ok = spent + estimate * (pending + 1) <= cap;
+  const underWay = pending ? ` and ${pending} run${pending === 1 ? '' : 's'} under way` : '';
   return {
     ok,
     estimate,
     reason: ok
       ? ''
-      : `$${spent.toFixed(2)} spent; another run (~$${estimate.toFixed(2)}) would pass the $${cap} cap`,
+      : `$${spent.toFixed(2)} spent${underWay}; another run (~$${estimate.toFixed(2)}) would pass the $${cap} cap`,
   };
 }
 
@@ -257,25 +259,67 @@ function alive(pid) {
 }
 
 /**
- * A campaign's runs in order. `plan` lists them, each with `done` when its
- * result is kept from an earlier pass; `runOne(item)` makes the run (or
- * reads its kept result back). A new run starts only if the budget allows
- * it (`budgetAllows` over `knownSpend`), and the campaign stops where
- * `stopAfter` says. Returns the results and why it stopped ('' if it didn't).
+ * P05 (evolve-plan): `run(item, slot)` for each of `items`, at most `jobs`
+ * at once, started in their order. `slot` (0 to jobs − 1) is the
+ * worker's, for what one run at a time may use (a build folder).
+ * `before(item, results, running)` can refuse to start an item and
+ * `after(results)` stop after a run: their reason ('' to go on) stops
+ * what hasn't started, while the runs under way finish. So does an
+ * error, thrown once they have. Returns the results, in the order they
+ * finished, and why it stopped ('' if it didn't).
  */
-export async function runCampaign(plan, { cap, firstEstimate, runOne }) {
+export async function inParallel(items, jobs, run, { before = () => '', after = () => '' } = {}) {
   const results = [];
-  for (const item of plan) {
-    if (!item.done) {
-      const { spent, costs } = knownSpend(results);
-      const allowed = budgetAllows({ cap, spent, costs, firstEstimate });
-      if (!allowed.ok) return { results, stopped: allowed.reason };
+  let stopped = '';
+  let failure = null;
+  let next = 0;
+  let running = 0;
+  const worker = async (slot) => {
+    while (!stopped && !failure && next < items.length) {
+      const item = items[next];
+      const refused = before(item, results, running);
+      if (refused) {
+        stopped = refused;
+        return;
+      }
+      next++;
+      running++;
+      try {
+        results.push(await run(item, slot));
+      } catch (e) {
+        failure ??= e;
+        return;
+      } finally {
+        running--;
+      }
+      stopped ||= after(results);
     }
-    results.push(await runOne(item));
-    const stopped = stopAfter(results);
-    if (stopped) return { results, stopped };
-  }
-  return { results, stopped: '' };
+  };
+  const workers = Math.max(1, Math.min(jobs, items.length));
+  await Promise.all(Array.from({ length: workers }, (_, slot) => worker(slot)));
+  if (failure) throw failure;
+  return { results, stopped };
+}
+
+/**
+ * A campaign's runs, in order, `jobs` at once (P05). `plan` lists them,
+ * each with `done` when its result is kept from an earlier pass;
+ * `runOne(item, slot)` makes the run (or reads its kept result back). A
+ * new run starts only if the budget allows it (`budgetAllows` over
+ * `knownSpend`, the runs under way counted at the estimate), and the
+ * campaign stops where `stopAfter` says. Returns the results and why it
+ * stopped ('' if it didn't).
+ */
+export function runCampaign(plan, { cap, firstEstimate, runOne, jobs = 1 }) {
+  return inParallel(plan, jobs, runOne, {
+    before: (item, results, running) => {
+      if (item.done) return '';
+      const { spent, costs } = knownSpend(results);
+      const allowed = budgetAllows({ cap, spent, costs, firstEstimate, pending: running });
+      return allowed.ok ? '' : allowed.reason;
+    },
+    after: stopAfter,
+  });
 }
 
 /**

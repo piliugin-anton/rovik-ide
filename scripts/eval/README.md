@@ -165,11 +165,23 @@ Linux 6.7, or macOS. The self tasks need this repository's whole history
 
 ```sh
 node scripts/eval/eval.mjs validate                 # all tasks (Rust ones take a while)
-node scripts/eval/eval.mjs dry-run                  # the pipeline, with a scripted model
+node scripts/eval/eval.mjs dry-run [--jobs 3]       # the pipeline, with a scripted model
 node scripts/eval/eval.mjs pilot --settings my-settings.json
 node scripts/eval/eval.mjs run --settings my-settings.json
 node scripts/eval/eval.mjs report eval-results/baseline
 ```
+
+Runs side by side (P05 in
+[docs/design/evolve-plan.md](../../docs/design/evolve-plan.md)): `--jobs N`
+runs N at once, in a campaign and in both dry runs, started in the plan's
+order; a campaign's budget counts the runs under way at the estimate. Each
+run is a runner process of its own, with its own data and log folders, and
+its id (`campaign/task/repetition`, the runner's `--run-id`) is in its
+report. Each worker has its own cargo target folder
+(`.eval-cache/cargo-target/job-<n>/`; the first worker keeps the one runs
+always used), so Rust builds side by side neither wait on each other's
+lock nor lose what the pruning takes. Several heavy builds at once need
+the memory for them.
 
 The settings file is the runner's (see `settings.example.json` and the top of
 its [src/lib.rs](../../src-tauri/crates/rovik-headless/src/lib.rs)), with
