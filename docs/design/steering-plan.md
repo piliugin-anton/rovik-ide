@@ -63,7 +63,7 @@ Contents:
 | D16 | **Two strikes.** From the third steering message in one request, a quiet line under the input suggests a fresh start. Nothing else changes.                                                                                                                                                                                                                                                                                     | The user's choice. After two corrections that didn't work, a clean start with one consolidated message usually does better than more steering.                                                                                                                                             |
 | D17 | **On hosts from the start.** `AgentSteer` and `AgentUnsteer` are requests behind a new feature, `steer`. A host without it takes no messages: Enter says the host needs updating, and the text stays.                                                                                                                                                                                                                           | The user's choice. On a host the run is the same code; only the routing and the files' upload are new.                                                                                                                                                                                     |
 | D18 | **Measured.** The run log gets a `steer` line at each step of a message's life (queued, read, taken back, handed back), with how long it waited, what the run was doing and where it was read. The run line counts them. The headless runner can send scripted messages (`--steer`).                                                                                                                                            | The user's choice. People misjudge whether supervising an agent pays off; the logs and the evaluations can tell.                                                                                                                                                                           |
-| D19 | **Safe through a crash.** The frontend keeps a draft of each queued message until it's read or taken back, so a crash puts it back into the input. A move or a drain stores what's waiting before the run pauses, so it's read wherever the chat goes.                                                                                                                                                                          | In-memory controls go when a process ends, and a message is the user's work.                                                                                                                                                                                                               |
+| D19 | **Safe through a crash.** The frontend keeps a draft of each queued message until it's read or taken back, so a crash puts it back into the input; one stored but not answered yet comes back too (3.7). Nothing is sent on its own after a restart. A move or a drain stores what's waiting before the run pauses, so it's read wherever the chat goes.                                                                        | In-memory controls go when a process ends, and a message is the user's work.                                                                                                                                                                                                               |
 
 ---
 
@@ -383,10 +383,29 @@ request (its rows plus the queued bubbles), a line under the input: "Several
 corrections in one run: a fresh start with one message that says it all often
 works better."
 
-**After a restart.** `recoverDrafts` also goes through the steer drafts. A
-stored row with the draft's id: the draft goes. A run that still holds it
-(`agent_status.steering`): its bubble shows again. Otherwise: back into the
-input. A page loaded mid-run gets `steerable` and the queued bubbles from
+**After a restart.** Nothing is sent on its own. A message the agent hadn't
+read comes back into the input, as an unanswered message does today; one it
+had read stays in the chat. Each message is in one of four states when the
+app ends:
+
+- **Still queued** (the common case: the agent was running a command or
+  waiting on subagents). The run went with the app. `recoverDrafts` also goes
+  through the steer drafts: this one's draft has no stored row, so its text
+  comes back into the input.
+- **Stored, but no reply finished after it** (the moment between P1 and the
+  agent's next reply). The restart check for unanswered sends
+  (`store::unsettled_sends`) takes every steering row after the chat's last
+  finished reply, not only the chat's latest user message. Each is marked
+  failed, so it's never sent to the model, and their texts come back into the
+  input, in order. The steer drafts of stored rows are dropped, whatever the
+  row's state, so each text comes back once.
+- **Read** (a reply finished after it). It stays in the chat, and its draft
+  goes.
+- **On a host, when only the app ended.** The run there still holds the
+  message (`agent_status.steering`), so its bubble shows again and the run
+  reads it as usual.
+
+A page loaded mid-run gets `steerable` and the queued bubbles from
 `agent_status`.
 
 ### 3.8 On a cloud host
@@ -491,7 +510,7 @@ Rules for every task:
 | B03  | `src/lib/agentRuns.ts`, `src/lib/chatStore.ts`, `test-fixtures/agent-events.json`                                                                   | `steer`, `unsteer`; `RunStarted.steerable`, `SteerReturned`, status seeding; the per-chat `queued` list.                                                                                               | `agentRuns.test.ts`, `chatStore.test.ts`: queued, read (row with the id), handed back, still queued at `RunEnded`.                                                                                                                                                                                        |
 | B04  | `src/components/ChatPanel.tsx`                                                                                                                      | Send beside Stop, Enter, the placeholder, the send path, `Ended` (send after `RunEnded`), `Refused`.                                                                                                   | A lib-level test of the send decision (as `remoteGuards.ts` is tested).                                                                                                                                                                                                                                   |
 | B05  | `src/components/MessageList.tsx`                                                                                                                    | Queued bubbles after the rows, the labels, ✕.                                                                                                                                                          | `chatInput.test.tsx`-style render: a bubble per queued message, its label, ✕ calls `agent_unsteer`.                                                                                                                                                                                                       |
-| B06  | `src/lib/steerDrafts.ts` (new), `src/lib/remoteGuards.ts`, `ChatPanel.tsx`                                                                          | Drafts, and recovery after a restart.                                                                                                                                                                  | Unit: stored → dropped; still held → bubble; else → input.                                                                                                                                                                                                                                                |
+| B06  | `src/lib/steerDrafts.ts` (new), `src/lib/remoteGuards.ts`, `ChatPanel.tsx`, `chat_db/store.rs`                                                      | Drafts, and recovery after a restart (3.7): `unsettled_sends` returns every steering row after the last finished reply.                                                                                | Unit: a stored row's draft → dropped; still held → bubble; else → input. Test 14 in section 6.                                                                                                                                                                                                            |
 | B07  | `ChatPanel.tsx`                                                                                                                                     | The hint.                                                                                                                                                                                              | Unit: shown from the third message in a request, not across requests.                                                                                                                                                                                                                                     |
 | B08  | `scripts/e2e/run.mjs`, `scripts/e2e/fake-model.mjs`                                                                                                 | The app steers a run: type while a slow command runs; the bubble is queued, then read; the fake model's next request has it.                                                                           | The e2e itself.                                                                                                                                                                                                                                                                                           |
 | C01  | `rovik-agentd/src/session.rs`                                                                                                                       | `STEER` in `FEATURES`.                                                                                                                                                                                 | `rovik-agentd/tests/remote.rs`: steer a run on the daemon; the row is mirrored; `SteerReturned` reaches the app on Stop.                                                                                                                                                                                  |
@@ -534,6 +553,9 @@ Rules for every task:
 13. A long run: the focus note quotes the message; the change reviewer's and
     the AI reviewer's request has it; the checklist stays the request's; a
     steering message's image is sent; CLM mode keeps it in the context file.
+14. The app ends with two messages stored after the last finished reply:
+    `unsettled_sends` returns both, in order (`chat_db/tests.rs`). One with a
+    reply after it isn't returned.
 
 **The protocol:** every new variant in `covers()`; a `RunStarted` without
 `steerable` reads as false; an `AgentStatus` without `steering` reads as
