@@ -45,11 +45,11 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   connected [cloud host](#a-terminal-on-a-cloud-host). Each project has
   its own terminals: switching to another project, its terminals are shown,
   and the ones left keep running until you come back. Bash before 5.3
-  garbles a command line taller than the terminal; with bash 5.1 or 5.2 on
-  this computer, a paste that would make one stays on one row that scrolls
-  sideways, and wraps again once you've deleted enough for it to fit.
-  `set horizontal-scroll-mode on` in `~/.inputrc` keeps every long line on
-  one row.
+  garbles a command line taller than the terminal; with bash 5.1 or 5.2,
+  on this computer, a cloud host or in WSL, a paste that would make one
+  stays on one row that scrolls sideways, and wraps again once you've
+  deleted enough for it to fit. `set horizontal-scroll-mode on` in
+  `~/.inputrc` keeps every long line on one row.
 - A Git panel: commit, branches, stash, history, pull and push, and a
   rebase onto any local or remote branch, found by searching. Merge
   conflicts are resolved in a side-by-side conflict resolver: the
@@ -343,6 +343,13 @@ where it runs: `bash (local)`, `bash (Build server (remote))`.
 A remote terminal logs in as the host's settings say, on a connection of its
 own. On a host set to **My system ssh**, it runs your own `ssh` to the host,
 with your configuration.
+
+Where your login shell there is bash 4.4 to 5.2, Rovik starts it as it does
+on this computer: with a file of Rovik's, saved in `~/.rovik/terminal`, that
+reads the same login files and keeps a long pasted line from being garbled
+(see the terminal above). Started this way, the host shows no login banner
+(the message of the day, "Last login"). Through **My system ssh** the shell
+starts as your ssh starts it.
 
 ---
 
