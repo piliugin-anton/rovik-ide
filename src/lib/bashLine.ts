@@ -4,9 +4,10 @@
 // (src-tauri/src/terminal/bash.sh) binds two keys: one puts the line on one
 // row that scrolls sideways, the other puts it there if it's too tall and
 // lets it wrap if it fits. The terminal sends the first before a paste that
-// may not fit, the second after it and after deleting, and says nothing
-// else to bash. Bash says where it is (an OSC): at a prompt, its line on
-// one row (and how many characters must go before it may fit), or wrapping.
+// may not fit and before it gets smaller, the second after those and after
+// deleting, and says nothing else to bash. Bash says where it is (an OSC):
+// at a prompt, its line on one row (and how many characters must go before
+// it may fit), or wrapping.
 //
 // Keys go only to bash's line editor at a prompt the file set up, and only
 // while every key since has kept it editing the line: a search (Ctrl+R),
