@@ -284,10 +284,35 @@ pub fn relaunch(app: &AppHandle) {
     let Some(args) = lock(&updates.relaunch).take() else {
         return;
     };
-    let mut env = app.env();
-    env.args_os = args;
     app.cleanup_before_exit();
-    tauri::process::restart(&env);
+    // Linux: as "New window" starts another Rovik (lib.rs, `another_rovik`),
+    // with the user's environment and holding none of this one's files.
+    // Tauri's restart gave the new one this process's environment, which
+    // an AppImage's launcher had changed. The new AppImage's launcher added
+    // its own to it, and the new one's terminals kept the old AppImage's
+    // folders, its libraries first, its mount kept by a pipe the new one
+    // held: a login shell's flatpak loaded them and stopped.
+    #[cfg(target_os = "linux")]
+    {
+        // Its arguments, after the program's name.
+        let started = crate::another_rovik().and_then(|mut cmd| {
+            cmd.args(args.iter().skip(1))
+                .spawn()
+                .map_err(|e| e.to_string())
+        });
+        if let Err(e) = started {
+            log::error!("updates: Rovik couldn't start again: {e}");
+        }
+        std::process::exit(0);
+    }
+    // macOS: through LaunchServices, which takes the app bundle as an
+    // update left it. (On Windows the installer starts the app again.)
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut env = app.env();
+        env.args_os = args;
+        tauri::process::restart(&env);
+    }
 }
 
 /// The updater: tauri.conf.json's endpoint (or `ROVIK_UPDATE_URL`'s), its

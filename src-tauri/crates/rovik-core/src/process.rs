@@ -196,6 +196,34 @@ pub fn own_session(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+/// What `cmd` starts holds none of the files this process has open, but its
+/// standard input and outputs: they're closed as it starts. For another
+/// Rovik (the app's "New window", an update's restart): an AppImage's
+/// runtime keeps its mount while any process holds a pipe it gave the app,
+/// which a program the app starts inherits. Before Linux 5.11, which can't
+/// do it this way, and off Linux, they're inherited as before.
+pub fn close_inherited(cmd: &mut Command) -> &mut Command {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: between fork and exec it makes one async-signal-safe
+        // system call. It marks the files to close on exec rather than
+        // closing them: std's own pipe, which says when exec failed, is one.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::syscall(
+                    libc::SYS_close_range,
+                    3 as libc::c_uint,
+                    libc::c_uint::MAX,
+                    libc::CLOSE_RANGE_CLOEXEC,
+                );
+                Ok(())
+            });
+        }
+    }
+    cmd
+}
+
 /// The user's login shell (`$SHELL`), if set.
 #[cfg(unix)]
 pub fn user_shell() -> Option<String> {
@@ -407,6 +435,48 @@ mod tests {
         assert_eq!(sid, pid, "it leads its session");
         // SAFETY: getsid(0) only reads this process's session.
         assert_ne!(sid, unsafe { libc::getsid(0) }, "not ours");
+    }
+
+    /// Another Rovik holds none of this process's files: a pipe left open
+    /// across exec, as an AppImage's runtime leaves the one its mount stays
+    /// for, is open in a program started as usual, and not in one started
+    /// with `close_inherited`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn another_rovik_holds_none_of_this_ones_files() {
+        // A kernel before 5.11 has no close_range: there's nothing to see.
+        // SAFETY: marks no file, a range far above any open one.
+        let supported = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                900_000 as libc::c_uint,
+                900_001 as libc::c_uint,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        } == 0;
+        if !supported {
+            return;
+        }
+        let mut ends = [0; 2];
+        // SAFETY: a pipe whose ends a child inherits (no O_CLOEXEC), closed
+        // below.
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+        let open_in = |cmd: &mut Command| {
+            let out = cmd
+                .args(["-c", &format!("test -e /proc/self/fd/{}", ends[0])])
+                .status()
+                .unwrap();
+            out.success()
+        };
+        let inherited = open_in(&mut Command::new("sh"));
+        let closed = !open_in(close_inherited(&mut Command::new("sh")));
+        // SAFETY: the pipe's own ends, closed once.
+        unsafe {
+            libc::close(ends[0]);
+            libc::close(ends[1]);
+        }
+        assert!(inherited, "a program the app starts inherits it");
+        assert!(closed, "another Rovik doesn't");
     }
 
     /// A program is on the PATH the app's programs get when a folder of it
