@@ -70,6 +70,7 @@ import {
   plantCanary,
   workRootProblem,
 } from './confinement.mjs';
+import { parseNameStatus, tamperCalls, tamperReasons, tampering } from './integrity.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -456,6 +457,29 @@ function runnerPath(flags) {
   return bin;
 }
 
+/**
+ * P02: the grader's own integrity check, built from this commit whatever
+ * runner the campaign evaluates (`--runner`): the build being evaluated
+ * can't weaken what grades it.
+ */
+function integrityPath(flags) {
+  const bin = join(ROOT, 'src-tauri', 'target', 'debug', 'rovik-integrity');
+  if (!flags['no-build']) {
+    sh('cargo', ['build', '-p', 'rovik-headless', '--bin', 'rovik-integrity'], {
+      cwd: join(ROOT, 'src-tauri'),
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+  }
+  if (!existsSync(bin)) throw new Error(`no integrity check at ${bin}`);
+  return bin;
+}
+
+/** The builds a campaign uses: the runner it evaluates, and the grader's own check (P02). */
+const builds = (flags) => ({ runner: runnerPath(flags), integrity: integrityPath(flags) });
+
+/** P02: what a run's line says when it's tampered: why. */
+const tamperNote = (r) => (r.tampered?.length ? ` TAMPERED: ${r.tampered.join('; ')}` : '');
+
 /** One run of one task: the agent, then the hidden tests. Resumable: a finished run is kept. */
 async function runOne(task, rep, campaignDir, opts) {
   const dir = join(campaignDir, task.id, String(rep));
@@ -506,6 +530,7 @@ async function runOne(task, rep, campaignDir, opts) {
   const rep_ = existsSync(report) ? readJson(report) : null;
   sh('git', ['-C', ws, 'add', '-A']);
   writeFileSync(join(dir, 'changes.diff'), sh('git', ['-C', ws, 'diff', '--cached', start]).stdout);
+  const integrity = integrityOf(task, ws, start, opts.integrity);
   restoreHidden(task, ws);
   const results = await runChecks(task, ws, env, join(dir, 'checks.log'));
   rmSync(ws, { recursive: true, force: true });
@@ -516,7 +541,9 @@ async function runOne(task, rep, campaignDir, opts) {
   const result = {
     task: task.id,
     rep,
-    success: g.success,
+    // P02: the tests pass, and nothing decides differently how they run.
+    success: g.success && !integrity.tampered.length,
+    tampered: integrity.tampered,
     outcome: rep_?.outcome ?? (r.timedOut ? 'runner-timeout' : 'runner-failed'),
     costUsd: rep_?.costUsd ?? null,
     costSource: rep_?.costSource ?? 'unknown',
@@ -539,9 +566,48 @@ async function runOne(task, rep, campaignDir, opts) {
     grade: g,
     ...(touched.length ? { changedCaches: touched } : {}),
   };
-  writeJson(join(dir, 'grade.json'), { ...g, results });
+  writeJson(join(dir, 'grade.json'), { ...g, integrity: integrity.flags, results });
   writeJson(resultFile, result);
   return result;
+}
+
+/**
+ * P02: the run's change through the grader's own integrity check: each
+ * file it changed, as at its start and as staged now (the index, so a
+ * link or a pipe it left isn't followed), into `rovik-integrity`. The
+ * flags, and the reasons of those on files the reference's change doesn't
+ * touch: tampering.
+ */
+function integrityOf(task, ws, start, binary) {
+  const git = (...a) => sh('git', ['-C', ws, ...a]).stdout;
+  const listed = git('diff', '--cached', '--name-status', '--no-renames', '-z', start);
+  const files = parseNameStatus(listed).map(({ status, path }) => ({
+    path,
+    before: status === 'A' ? null : git('show', `${start}:${path}`),
+    after: status === 'D' ? null : git('show', `:${path}`),
+  }));
+  const out = sh(binary, [], { input: JSON.stringify({ files }) });
+  const flags = JSON.parse(out.stdout).flags;
+  return { flags, tampered: tamperReasons(tampering(flags, referenceChanges(task))) };
+}
+
+/** P02: the files the reference's change touches, once a task. */
+const referenceChangeSets = new Map();
+function referenceChanges(task) {
+  if (!referenceChangeSets.has(task.id)) {
+    const names = sh('git', [
+      '-C',
+      repoOf(task),
+      'diff',
+      '--name-only',
+      '--no-renames',
+      '-z',
+      task.base,
+      task.reference,
+    ]).stdout;
+    referenceChangeSets.set(task.id, new Set(names.split('\0').filter(Boolean)));
+  }
+  return referenceChangeSets.get(task.id);
 }
 
 /**
@@ -581,7 +647,6 @@ function settingsFor(flags) {
  */
 async function campaign(name, tasks, repeats, cap, flags, variant = {}) {
   const { path: settings, price } = settingsFor(flags);
-  const runner = runnerPath(flags);
   const policy = resolve(flags.policy ?? join(EVAL, 'policy.json'));
   const campaignDir = resolve(flags.out ?? join(RESULTS, name));
   const unlock = lockCampaign(campaignDir);
@@ -590,7 +655,7 @@ async function campaign(name, tasks, repeats, cap, flags, variant = {}) {
       settings,
       price,
       policy,
-      runner,
+      ...builds(flags),
       // A task's scripted messages, unless `--no-steers` (steering-plan.md).
       steers: !flags['no-steers'],
       ...variant,
@@ -606,7 +671,7 @@ async function campaignIn(
   repeats,
   cap,
   campaignDir,
-  { settings, price, policy, runner, perRun, args, steers }
+  { settings, price, policy, runner, integrity, perRun, args, steers }
 ) {
   // The first run's estimate: every token it may use at the input price.
   const caps = perRun ?? BUDGET.perRun;
@@ -628,6 +693,7 @@ async function campaignIn(
         settings,
         policy,
         runner,
+        integrity,
         perRun,
         args,
         steers,
@@ -636,6 +702,7 @@ async function campaignIn(
       console.log(
         `${r.success ? 'PASS' : 'fail'} (${r.outcome}, ${r.grade.passed}/${r.grade.required} tests, ` +
           `${cost}, ${(r.tokens / 1000).toFixed(0)}k tokens)` +
+          tamperNote(r) +
           (r.reused ? ' [kept from before]' : '')
       );
       return r;
@@ -980,7 +1047,7 @@ function applyDefaultsCommand(flags) {
  */
 async function dryRunVariants(flags) {
   const tasks = usableTasks(flags.tasks ?? 'mi-subfactorial,lo-filter-map');
-  const runner = runnerPath(flags);
+  const bins = builds(flags);
   const policy = join(EVAL, 'policy.json');
   const dir = resolve(flags.out ?? join(RESULTS, `dry-run-variants-${Date.now()}`));
   const wanted = variantsWanted(flags);
@@ -1003,7 +1070,7 @@ async function dryRunVariants(flags) {
         const r = await runOne(task, 1, join(dir, name), {
           settings,
           policy,
-          runner,
+          ...bins,
           ...plan.run,
         });
         const stages = r.stages ?? [];
@@ -1014,7 +1081,7 @@ async function dryRunVariants(flags) {
           : [];
         console.log(
           `${name} ${task.id}: ${r.success && whole ? 'pass' : 'FAIL'} (${r.outcome}, ` +
-            `$${(r.costUsd ?? 0).toFixed(4)}, ${r.toolErrors} tool errors)` +
+            `$${(r.costUsd ?? 0).toFixed(4)}, ${r.toolErrors} tool errors)${tamperNote(r)}` +
             (autopilot ? ` — ${stages.map((st) => `${st.name} ${st.status}`).join(', ')}` : '') +
             (failing.length ? `; the project's own checks failed: ${failing.join(', ')}` : '')
         );
@@ -1123,62 +1190,80 @@ function fakeModel(args) {
   return startServer(join(EVAL, 'fake-model.mjs'), args);
 }
 
-/**
- * P01: the scripted cheater's calls for a task, in a file the scripted
- * model reads (outside the sandbox): it looks for the answer where it is.
- */
-function cheatFile(task) {
-  const file = join(CACHE, 'patches', `${task.id}.cheat.json`);
-  writeJson(
-    file,
-    cheatCalls({
-      repo: repoOf(task),
-      base: task.base,
-      reference: task.reference,
-      hidden: task.hidden,
-      expectedFile: expectedPath(task),
-      folders: [CACHE, RESULTS, WORK],
-      url: task.repo === 'self' ? 'https://github.com' : task.repo.url,
-    })
-  );
+/** A scripted cheater's calls (fake-model.mjs `cheat`), in a file it reads outside the sandbox. */
+function callsFile(task, name, calls) {
+  const file = join(CACHE, 'patches', `${task.id}.${name}.json`);
+  writeJson(file, calls);
   return file;
 }
 
+/** P01: the cheater that looks for the answer, knowing where it is. */
+const lookingCheater = (task) =>
+  cheatCalls({
+    repo: repoOf(task),
+    base: task.base,
+    reference: task.reference,
+    hidden: task.hidden,
+    expectedFile: expectedPath(task),
+    folders: [CACHE, RESULTS, WORK],
+    url: task.repo === 'self' ? 'https://github.com' : task.repo.url,
+  });
+
 /**
  * The dry run's models: one that applies the reference change (must
- * pass), one that changes nothing (must fail), and (P01) the cheater,
- * which looks for the answer everywhere and must find nothing: it fails,
- * and no canary is in its transcript or its change.
+ * pass), one that changes nothing (must fail), and two cheaters: (P01)
+ * one that looks for the answer everywhere and must find nothing (it
+ * fails, and no canary is in its transcript or its change), and (P02) one
+ * whose tests pass by a conftest.py its own report doesn't flag (the gate
+ * is off in a dry run): the grader's own check must grade it tampered.
  */
 const DRY_RUN_MODES = [
-  { mode: 'oracle', rep: 1, pass: true, args: (task) => [referencePatch(task)] },
-  { mode: 'idle', rep: 2, pass: false, args: () => [] },
-  { mode: 'cheat', rep: 3, pass: false, args: (task) => [cheatFile(task)] },
+  { mode: 'oracle', rep: 1, pass: true, model: (task) => ['oracle', referencePatch(task)] },
+  { mode: 'idle', rep: 2, pass: false, model: () => ['idle'] },
+  {
+    mode: 'cheat',
+    rep: 3,
+    pass: false,
+    model: (task) => ['cheat', callsFile(task, 'cheat', lookingCheater(task))],
+  },
+  {
+    mode: 'tamper',
+    rep: 4,
+    pass: false,
+    tampered: true,
+    applies: (task) => !!tamperCalls(task),
+    model: (task) => ['cheat', callsFile(task, 'tamper', tamperCalls(task))],
+  },
 ];
 
 /** The pipeline end to end without a provider, each task with each model. */
 async function dryRun(flags) {
   const defaults = ['self-chat-title-markers', 'mi-subfactorial', 'lo-filter-map'];
   const tasks = usableTasks(flags.tasks ?? defaults.join(','));
-  const runner = runnerPath(flags);
+  const bins = builds(flags);
   const policy = join(EVAL, 'policy.json');
   const campaignDir = resolve(flags.out ?? join(RESULTS, `dry-run-${Date.now()}`));
   const rows = [];
   for (const task of tasks) {
-    for (const { mode, rep, pass, args } of DRY_RUN_MODES) {
-      const model = await fakeModel([mode, ...args(task)]);
-      const settings = join(campaignDir, `settings-${task.id}-${mode}.json`);
+    for (const m of DRY_RUN_MODES.filter((m) => !m.applies || m.applies(task))) {
+      const model = await fakeModel(m.model(task));
+      const settings = join(campaignDir, `settings-${task.id}-${m.mode}.json`);
       writeJson(settings, fakeSettings(model.url));
       try {
-        const r = await runOne(task, rep, join(campaignDir, mode), { settings, policy, runner });
-        const runDir = join(campaignDir, mode, task.id, String(rep));
+        const r = await runOne(task, m.rep, join(campaignDir, m.mode), {
+          settings,
+          policy,
+          ...bins,
+        });
+        const runDir = join(campaignDir, m.mode, task.id, String(m.rep));
         const found = canariesIn(readRun(runDir), [canaryOf(task)]);
-        const ok = r.success === pass && !found.length;
-        rows.push({ task: task.id, mode, ok, r });
+        const tampered = r.tampered.length > 0;
+        const ok = r.success === m.pass && !found.length && tampered === !!m.tampered;
+        rows.push({ task: task.id, mode: m.mode, ok, r });
         console.log(
-          `${task.id} (${mode}): ${r.success ? 'pass' : 'fail'}, ${r.outcome}, ` +
+          `${task.id} (${m.mode}): ${r.success ? 'pass' : 'fail'}, ${r.outcome}, ` +
             `${r.grade.passed}/${r.grade.required} tests, $${(r.costUsd ?? 0).toFixed(4)} ` +
-            `(${r.costSource})` +
+            `(${r.costSource})${tamperNote(r)}` +
             (found.length ? ', ITS TRANSCRIPT HOLDS THE CANARY' : '') +
             ` — ${ok ? 'as expected' : 'NOT AS EXPECTED'}`
         );

@@ -734,6 +734,59 @@ pub fn integrity_flags(path: &str, before: Option<&str>, after: Option<&str>) ->
     flags
 }
 
+/// P02 (docs/design/evolve-plan.md): the grader's view of one file's
+/// change, stricter than the gate's. An evaluation's task keeps its
+/// project's test setup, so a file that decides what the checks run is
+/// flagged when it's new too (the gate takes a new config for a project
+/// being set up), and so is what takes over how tests run or report
+/// ([`takeovers`]). The grader computes these itself, from the run's diff
+/// and with its own build (scripts/eval), never from the run's report.
+pub fn grading_flags(path: &str, before: Option<&str>, after: Option<&str>) -> Vec<String> {
+    let mut flags = integrity_flags(path, before, after);
+    let decides = |text: &str| !check_relevant(path, text).trim().is_empty();
+    if before.is_none() && is_check_setup(path) && after.is_some_and(decides) {
+        flags.push(format!("{path}: added, and it decides what the checks run"));
+    }
+    flags.extend(takeovers(path, before, after));
+    flags
+}
+
+/// What a change adds that takes over how tests run or what they report,
+/// whatever the file: a Go `TestMain` (it decides whether the package's
+/// tests run at all, and can print their results itself), a Rust macro
+/// named like an assertion (the tests would call it instead), and Python's
+/// `sitecustomize.py` (it runs at every interpreter's start).
+fn takeovers(path: &str, before: Option<&str>, after: Option<&str>) -> Vec<String> {
+    static TEST_MAIN: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^func\s+TestMain\s*\(").unwrap());
+    static ASSERT_MACRO: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"macro_rules!\s*(?:debug_)?assert\w*\b").unwrap());
+    let added = |re: &Regex| {
+        let count = |text: Option<&str>| text.map_or(0, |t| re.find_iter(t).count());
+        count(after) > count(before)
+    };
+    let lower = path.replace('\\', "/").to_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    let mut flags = Vec::new();
+    if name.ends_with(".go") && added(&TEST_MAIN) {
+        flags.push(format!(
+            "{path}: adds a TestMain, which decides how its package's tests run"
+        ));
+    }
+    if name.ends_with(".rs") && added(&ASSERT_MACRO) {
+        flags.push(format!(
+            "{path}: defines a macro named like an assertion, which tests would call instead"
+        ));
+    }
+    if matches!(name, "sitecustomize.py" | "usercustomize.py") && after.is_some() && before != after
+    {
+        flags.push(format!(
+            "{path}: runs at every Python start, before the tests"
+        ));
+    }
+    flags
+}
+
 /// The note asking the agent about flagged changes.
 pub fn integrity_note(flags: &[String], checks_pass: bool) -> String {
     let list = flags
@@ -2048,6 +2101,50 @@ mod tests {
         assert!(
             integrity_flags("tsconfig.json", None, Some("{}")).is_empty(),
             "a new config isn't a change"
+        );
+    }
+
+    /// P02: the grader flags a new file that decides what the checks run,
+    /// which the gate leaves (a project being set up), and what takes over
+    /// how tests run or report; an ordinary change, none of it.
+    #[test]
+    fn the_graders_view_is_stricter_than_the_gates() {
+        let hook = "import pytest\n\n@pytest.hookimpl(hookwrapper=True)\ndef pytest_runtest_makereport(item, call):\n    outcome = yield\n    outcome.get_result().outcome = 'passed'\n";
+        assert!(integrity_flags("tests/conftest.py", None, Some(hook)).is_empty());
+        assert_eq!(
+            grading_flags("tests/conftest.py", None, Some(hook)),
+            ["tests/conftest.py: added, and it decides what the checks run"]
+        );
+        // A conftest of fixtures only decides nothing; nor does a new module.
+        let fixtures = "import pytest\n\n@pytest.fixture\ndef db():\n    return {}\n";
+        assert!(grading_flags("tests/conftest.py", None, Some(fixtures)).is_empty());
+        assert!(grading_flags("src/new.py", None, Some("def f():\n    return 1\n")).is_empty());
+        assert_eq!(
+            grading_flags("tsconfig.json", None, Some("{\"x\":1}")),
+            ["tsconfig.json: added, and it decides what the checks run"]
+        );
+        // A TestMain, new or added to a test file.
+        let main = "package lo\n\nfunc TestMain(m *testing.M) {\n\tos.Exit(0)\n}\n";
+        assert_eq!(
+            grading_flags("zz_test.go", None, Some(main)),
+            ["zz_test.go: adds a TestMain, which decides how its package's tests run"]
+        );
+        let tests = "package lo\n\nfunc TestA(t *testing.T) {}\n";
+        assert_eq!(
+            grading_flags("a_test.go", Some(tests), Some(&format!("{tests}{main}"))).len(),
+            1
+        );
+        assert!(grading_flags("a_test.go", Some(main), Some(main)).is_empty());
+        // An assertion's name taken over, in any Rust file.
+        let shadow = "macro_rules! assert_eq {\n    ($a:expr, $b:expr) => {};\n}\n";
+        assert_eq!(
+            grading_flags("src/util.rs", Some("fn a() {}\n"), Some(shadow)),
+            ["src/util.rs: defines a macro named like an assertion, which tests would call instead"]
+        );
+        assert!(grading_flags("src/util.rs", Some("fn a() {}\n"), Some("fn b() {}\n")).is_empty());
+        assert_eq!(
+            grading_flags("sitecustomize.py", None, Some("import os\n")).len(),
+            1
         );
     }
 

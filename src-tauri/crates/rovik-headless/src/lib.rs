@@ -1097,6 +1097,8 @@ pub fn main_cli() -> i32 {
     }
 }
 
+pub mod integrity;
+
 #[cfg(test)]
 mod e2e_tests;
 

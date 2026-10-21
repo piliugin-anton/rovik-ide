@@ -58,7 +58,25 @@ SWE-bench style. The agent works in a fresh repository holding only the base
 commit's files (no history, so the answer can't be read from it). After the
 run, the reference's version of the `hidden` test files is put in the workspace
 (over anything the agent did to them) and the checks run. A run succeeds when
-every test the reference passes also passes.
+every test the reference passes also passes, and its change didn't decide
+how they ran (below).
+
+The tests passing isn't enough (P02 in
+[docs/design/evolve-plan.md](../../docs/design/evolve-plan.md)): the grader
+also checks the run's change itself, with its own build of the checks
+(`rovik-integrity`, built from this commit whatever `--runner` a campaign
+evaluates), never with the run's report. Each file the run changed, as it
+was and as it is, goes through the gate's integrity rules
+(`repair::integrity_flags`: tests removed, skipped or emptied, assertions
+dropped, what decides the checks changed) and stricter ones of its own
+(`repair::grading_flags`): a new file that decides what the checks run (a
+`conftest.py` with a hook, a `pytest.ini`), a Go `TestMain`, a Rust macro
+named like an assertion, a `sitecustomize.py`. A flag on a file the
+reference's change doesn't touch grades the run `tampered`: it fails,
+whatever the tests said, and its result says why (`tampered`; the flags are
+in `grade.json`). The dry run's fourth model, on a Python task, is a
+cheater whose `conftest.py` reports every failed test as passed: its tests
+pass, and it must be graded tampered.
 
 `validate` decides which tests those are. It runs the checks at the base (with
 the hidden tests) and at the reference, twice. Required tests are the ones that
@@ -172,10 +190,11 @@ program by another name (a script, an alias) isn't caught. It allows everything 
 recommended answer to questions. Each question answered (and each approval,
 when settings ask for them) counts as an intervention in the report.
 
-`dry-run` runs each task three times with `fake-model.mjs`. The first model
-applies the reference change and must grade as a success. The second changes
-nothing and must grade as a failure. The third looks for the answer and must
-find nothing (above). This checks the workspace, runner, sandbox, grading and
+`dry-run` runs each task three times with `fake-model.mjs`, a Python task
+four. The first model applies the reference change and must grade as a
+success. The second changes nothing and must grade as a failure. The third
+looks for the answer and must find nothing (above). The fourth tampers with
+how the tests run and must be graded `tampered` (Grading). This checks the workspace, runner, sandbox, grading and
 cost accounting without a provider. The scripted model's results say nothing
 about any real model.
 

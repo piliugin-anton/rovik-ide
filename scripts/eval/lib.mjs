@@ -399,6 +399,8 @@ export function summarize(results) {
   return {
     runs: results.length,
     successRate: mean(results.map((r) => (r.success ? 1 : 0))),
+    // P02 (evolve-plan): runs whose change decided how the tests ran.
+    tampered: results.filter((r) => r.tampered?.length).length,
     perRep,
     successRateStdev: stdev(rates),
     successRateRange: rates.length ? [Math.min(...rates), Math.max(...rates)] : [0, 0],
@@ -478,6 +480,12 @@ export function summaryMarkdown(s, title) {
           `stdev ${pct(s.successRateStdev)})`
         : ''),
     ...(passes ? [passes] : []),
+    ...(s.tampered
+      ? [
+          `- Tampered: ${s.tampered} run${s.tampered === 1 ? '' : 's'}, failed whatever ` +
+            'the tests said: the change decided how they ran',
+        ]
+      : []),
     `- Cost: $${s.totalCostUsd.toFixed(2)} in all, ${money(s.meanCostUsd, 3)} a run` +
       (s.unknownCosts
         ? ` (${s.unknownCosts} run${s.unknownCosts === 1 ? '' : 's'} not counted: cost unknown)`

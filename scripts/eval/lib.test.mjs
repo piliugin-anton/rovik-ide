@@ -138,6 +138,20 @@ describe('budget', () => {
   });
 });
 
+describe('tampered runs in the summary (P02 in evolve-plan)', () => {
+  it('are counted, and said', () => {
+    const runs = [
+      { task: 'a', rep: 1, success: false, tampered: ['conftest.py: added'] },
+      { task: 'a', rep: 2, success: true, tampered: [] },
+      { task: 'b', rep: 1, success: true },
+    ];
+    const s = summarize(runs);
+    assert.equal(s.tampered, 1);
+    assert.match(summaryMarkdown(s, 'T'), /- Tampered: 1 run, failed whatever the tests said/);
+    assert.doesNotMatch(summaryMarkdown(summarize(runs.slice(1)), 'T'), /Tampered/);
+  });
+});
+
 describe('summary', () => {
   const r = (task, rep, success, costUsd, extra = {}) => ({
     task,
