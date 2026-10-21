@@ -1813,7 +1813,7 @@ export default function App() {
       // be a folder that went (renamed away, removed): its sources go too.
       // A folder that came is reported with what's in it.
       if (everything) updateWholeProject();
-      else if (!is_dir && isProjectSource(path)) updateProjectSource(path);
+      else if (!is_dir && isProjectSource(path, rootPath())) updateProjectSource(path);
       else if (!is_dir) updateProjectPath(path);
       // A manifest write (package.json, lockfiles) means node_modules may
       // have changed (node_modules itself is watcher-ignored); a tsconfig

@@ -179,9 +179,21 @@ export async function followDisk(
     .filter(
       (m) => !m.isDisposed() && !open.has(m.key) && (m.key === at || m.key.startsWith(`${at}/`))
     );
+  // Each model's file spelled as the watcher spells `path` (a UNC path of
+  // WSL's, say, doesn't come back whole from a URI).
+  const fileOf = (model: FileModel): string => {
+    if (model.key === at) return path;
+    try {
+      const rest = decodeURIComponent(model.key.slice(at.length));
+      const sep = path.includes('\\') && !path.includes('/') ? '\\' : '/';
+      return path.replace(/[\\/]+$/, '') + rest.replace(/\//g, sep);
+    } catch {
+      return model.path;
+    }
+  };
   await Promise.all(
     idle.map(async (model) => {
-      const text = await read(model.path);
+      const text = await read(fileOf(model));
       // Opened in a tab meanwhile: the tab has it now.
       if (model.isDisposed() || openTabs().has(model.key)) return;
       if (text === null) model.dispose();

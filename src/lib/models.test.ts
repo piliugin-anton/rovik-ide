@@ -104,6 +104,36 @@ describe('followDisk', () => {
     ]);
   });
 
+  it("files are read as the watcher spells them, not as their model's URI does", async () => {
+    // Keys as modelUriFor makes them: forward slashes, the drive letter
+    // lower-cased and its colon encoded, a space as %20.
+    const keyOf = (p: string) =>
+      'file:///' +
+      p
+        .replace(/\\/g, '/')
+        .replace(/^([A-Za-z]):/, (_, d: string) => `${d.toLowerCase()}%3A`)
+        .replace(/ /g, '%20');
+    const { model } = fakeModels({ x: { text: 'old' } });
+    const base = model('x');
+    const inner: FileModel = {
+      ...base,
+      key: keyOf('C:\\my proj\\src\\deep\\a.ts'),
+      path: '\\wrong',
+    };
+    const models: FileModels = { keyOf, forPath: () => undefined, all: () => [inner] };
+    const read: string[] = [];
+    await followDisk('C:\\my proj\\src', {
+      models,
+      read: async (path) => {
+        read.push(path);
+        return 'new';
+      },
+      openTabs: () => new Set(),
+    });
+    assert.deepEqual(read, ['C:\\my proj\\src\\deep\\a.ts']);
+    assert.deepEqual(model('x').edits, ['new']);
+  });
+
   it('a file opened in a tab while it was read is left to the tab', async () => {
     const { models, model } = fakeModels({ '/p/a.ts': { text: 'old' } });
     let open = new Set<string>();

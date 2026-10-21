@@ -82,6 +82,11 @@ export class IntelliSenseProject {
   private readonly wanted = new Map<string, Set<string>>();
   /** The sources the worker has, path by lib URI: a folder that goes takes its own. */
   private readonly sourcePaths = new Map<string, string>();
+  /**
+   * Changes that came while the first load ran: its walk may have been
+   * before them, and the set it gives the worker replaces every source.
+   */
+  private readonly early = new Map<string, string | null | undefined>();
   /** Open models edited since their imports were last looked at. */
   private readonly editedModels = new Set<monaco.editor.ITextModel>();
   private readonly modelListeners: monaco.IDisposable[] = [];
@@ -128,7 +133,7 @@ export class IntelliSenseProject {
 
   /** A source changed on disk: `content` if known, null when deleted, undefined to read it. */
   sourceChanged(path: string, content?: string | null): void {
-    if (!this.owns(path) || !isProjectSource(path)) return;
+    if (!this.owns(path) || !isProjectSource(path, this.root)) return;
     this.sources.queue(path, content);
   }
 
@@ -209,6 +214,12 @@ export class IntelliSenseProject {
         setSemanticValidationEnabled(true);
         // Imports typed while the project loaded.
         if (this.editedModels.size > 0) this.importsLookup.trigger();
+        // Files changed meanwhile, on top of what it loaded.
+        if (this.early.size > 0) {
+          const early = new Map(this.early);
+          this.early.clear();
+          void this.applySourceChanges(early);
+        }
       }
     }
   }
@@ -216,6 +227,10 @@ export class IntelliSenseProject {
   private async applySourceChanges(
     changes: ReadonlyMap<string, string | null | undefined>
   ): Promise<void> {
+    if (!this.ready) {
+      for (const [path, content] of changes) this.early.set(path, content);
+      return;
+    }
     const read = await Promise.all(
       [...changes].map(async ([path, content]) => {
         // Gone: its lib goes. There but unreadable (binary, too large): it stays.

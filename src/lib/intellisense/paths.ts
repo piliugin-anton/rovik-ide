@@ -10,9 +10,22 @@ export const SOURCE_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
 const SKIPPED_DIR =
   /[\\/](node_modules|\.git|dist|build|out|target|\.next|\.svelte-kit|coverage)[\\/]/;
 
-/** A file of the project's sources: one the worker's program is made of. */
-export function isProjectSource(path: string): boolean {
-  return SOURCE_FILE.test(path) && !SKIPPED_DIR.test(path);
+/**
+ * A file of the project's sources: one the worker's program is made of.
+ * With the project's `root`, only the folders below it count, as for the
+ * backend's walk: a project that is itself in a folder named `build` or
+ * `out` has sources all the same, which its changes never reached.
+ */
+export function isProjectSource(path: string, root?: string | null): boolean {
+  return SOURCE_FILE.test(path) && !SKIPPED_DIR.test(belowRoot(path, root));
+}
+
+/** The part of `path` below `root` (from its separator on), or all of it. */
+function belowRoot(path: string, root: string | null | undefined): string {
+  if (!root) return path;
+  const file = path.replace(/\\/g, '/');
+  const base = root.replace(/\\/g, '/').replace(/\/+$/, '');
+  return file.startsWith(`${base}/`) ? file.slice(base.length) : path;
 }
 
 /**
