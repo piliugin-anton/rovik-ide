@@ -6,6 +6,8 @@
 //! it runs at the start of every agent run instead of being cached. The
 //! agent puts the result in its system prompt and the verification gate runs
 //! the checks when the agent says it's done (agent_run/project.rs, verify.rs).
+//! A detected check is a suggestion: it runs once the user turns it on in
+//! Settings → Project checks, never before.
 //!
 //! Also here: per-project settings (the user's corrections to the detected
 //! checks) and the agent diagnostics log.
@@ -17,6 +19,8 @@ use std::path::Path;
 pub mod node;
 pub(crate) mod workspaces;
 
+/// A check found in the project's files. It's off until the user turns it
+/// on (`agent_run::project::effective_checks`).
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectedCheck {
@@ -25,8 +29,6 @@ pub struct DetectedCheck {
     pub command: String,
     /// Where it came from, e.g. "package.json scripts.test".
     pub source: String,
-    /// Detected but not run by default (builds are slow and rarely needed).
-    pub default_enabled: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -148,7 +150,6 @@ fn push_check(profile: &mut ProjectProfile, kind: &str, command: String, source:
     }
     profile.checks.push(DetectedCheck {
         kind: kind.into(),
-        default_enabled: kind != "build",
         command,
         source,
     });
@@ -873,7 +874,6 @@ mod tests {
                 "test: cargo test --manifest-path src-tauri/Cargo.toml",
             ]
         );
-        assert!(!p.checks[1].default_enabled, "builds are off by default");
         // A README isn't instructions for agents.
         assert!(p.instructions.is_none());
     }

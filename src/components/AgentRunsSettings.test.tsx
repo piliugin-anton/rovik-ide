@@ -27,20 +27,23 @@ const flush = async () => {
 
 const DEMO = '/home/me/demo';
 
-/** A project with `n` detected checks, all on. */
-const project = (n: number) => ({
-  project_profile: () => ({
-    stack: ['node'],
-    checks: Array.from({ length: n }, (_, i) => ({
-      kind: 'test',
-      command: `npm run check${i}`,
-      source: 'package.json',
-      defaultEnabled: true,
-    })),
-    instructions: null,
-  }),
-  load_project_settings: () => null,
-});
+/**
+ * A project with `n` checks found in its files, each ticked in Project
+ * checks (the user's list then) unless `ticked` is false: found alone, a
+ * check is off.
+ */
+const project = (n: number, ticked = true) => {
+  const checks = Array.from({ length: n }, (_, i) => ({
+    kind: 'test',
+    command: `npm run check${i}`,
+    source: 'package.json',
+  }));
+  return {
+    project_profile: () => ({ stack: ['node'], checks, instructions: null }),
+    load_project_settings: () =>
+      ticked && n > 0 ? { checks: checks.map((c) => ({ ...c, enabled: true })) } : null,
+  };
+};
 
 async function page(
   options: { permissions?: Partial<AgentPermissions>; rootPath?: string | null } = {}
@@ -136,6 +139,12 @@ test('agent runs: no checks set up, or no project open, is said', async () => {
   backend = { vfs_status: () => ({ mountpoint: '/mnt/vfs' }), ...project(0) };
   const none = await page();
   assert.deepEqual(statuses(none.root), [
+    { text: 'Nothing to run: no checks are set up for demo. Project checks', warning: true },
+  ]);
+  // Found in the project's files, none ticked: none is set up.
+  backend = { vfs_status: () => ({ mountpoint: '/mnt/vfs' }), ...project(2, false) };
+  const unticked = await page();
+  assert.deepEqual(statuses(unticked.root), [
     { text: 'Nothing to run: no checks are set up for demo. Project checks', warning: true },
   ]);
   const closed = await page({ rootPath: null });

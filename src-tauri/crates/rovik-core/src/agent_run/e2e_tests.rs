@@ -123,6 +123,10 @@ struct Harness {
     _isolated: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
+/// A chat in a project of `files`, whose detected checks are turned on, as
+/// a user who set the project's checks up has them: detection alone turns
+/// none on (`project::effective_checks`). A test of what runs without them
+/// saves its own settings over these, or calls `checks_as_detected`.
 async fn harness(files: &[(&str, &str)]) -> Harness {
     let TestCore { core, events, dir } = TestCore::new();
     let project = dir.0.join("project");
@@ -132,6 +136,7 @@ async fn harness(files: &[(&str, &str)]) -> Harness {
         std::fs::write(p, content).unwrap();
     }
     std::fs::create_dir_all(&project).unwrap();
+    turn_on_detected_checks(&core.paths.config_dir, &project);
     let dialog_id = uuid::Uuid::new_v4().to_string();
     let dialog = NewDialog {
         id: dialog_id.clone(),
@@ -154,12 +159,42 @@ async fn harness(files: &[(&str, &str)]) -> Harness {
     }
 }
 
+/// Saves the checks detected in `project`, each turned on, as its checks
+/// (what ticking them in Settings → Project checks saves); nothing when
+/// none is detected.
+fn turn_on_detected_checks(config_dir: &std::path::Path, project: &std::path::Path) {
+    let detected = crate::project_profile::detect(project);
+    if detected.checks.is_empty() {
+        return;
+    }
+    let checks: Vec<Value> = detected
+        .checks
+        .iter()
+        .map(|c| json!({ "kind": c.kind, "command": c.command, "enabled": true }))
+        .collect();
+    let root = project.to_string_lossy().into_owned();
+    crate::project_profile::save_project_settings(config_dir, root, json!({ "checks": checks }))
+        .unwrap();
+}
+
 impl Harness {
     /// Isolated chats: the overlays' data folder is this test's, and no
     /// other isolated test runs meanwhile.
     async fn isolate(&mut self) {
         self._isolated = Some(crate::overlay::chats::TEST_DATA.clone().lock_owned().await);
         crate::overlay::chats::init(&self._dir.0.join("data"));
+    }
+
+    /// The project's checks as detection leaves them, the user having
+    /// turned none on: its saved settings, the harness's, are removed.
+    fn checks_as_detected(&self) {
+        let root = self.project.to_string_lossy().into_owned();
+        crate::project_profile::save_project_settings(
+            &self.core.paths.config_dir,
+            root,
+            Value::Null,
+        )
+        .unwrap();
     }
 }
 
@@ -4825,6 +4860,70 @@ async fn a_project_without_checks_is_unverified_and_disallowed_checks_are_skippe
     assert_eq!(
         record["checks"][0]["reason"],
         "not in your allowed commands"
+    );
+}
+
+/// A check found in the project's files doesn't run until the user turns
+/// it on (Settings → Project checks): until then a run is unverified, as in
+/// a project without checks, and the agent isn't told of it. Once the user
+/// turned the tests on, they run.
+#[tokio::test]
+async fn a_detected_check_runs_only_once_the_user_turns_it_on() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
+    let h = harness(&[("package.json", PASSING_TESTS)]).await;
+    h.checks_as_detected();
+    let write = |content: &str| Reply::Call {
+        id: "w1",
+        name: "write",
+        args: json!({ "path": "x.txt", "content": content }),
+    };
+    let (url, seen) = model(vec![write("x"), Reply::Text("Done.")]).await;
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..Permissions::default()
+    };
+    h.start(h.request(&url, Harness::send("Write"), permissions.clone()))
+        .await;
+    assert_eq!(h.run_end().await, "unverified");
+    let messages = h.messages().await;
+    let record = messages.last().unwrap().meta.as_ref().unwrap()["verification"].clone();
+    assert_eq!(record["reason"], "no checks are set up for this project");
+    let system = |seen: &Arc<Mutex<Vec<Value>>>| {
+        seen.lock().unwrap()[0]["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // The project's section is there, with no check in it.
+    let first = system(&seen);
+    assert!(
+        first.contains("## Project") && !first.contains("- Tests:"),
+        "{first}"
+    );
+
+    // The user ticks the tests: the list is theirs, with the tests on.
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.to_string_lossy().into_owned(),
+        json!({ "checks": [{ "kind": "test", "command": "npm test", "enabled": true }] }),
+    )
+    .unwrap();
+    let (url, seen) = model(vec![write("y"), Reply::Text("Done.")]).await;
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, Harness::send("Write again"), permissions))
+        .await;
+    assert_eq!(h.run_end().await, "verified");
+    let messages = h.messages().await;
+    let record = messages.last().unwrap().meta.as_ref().unwrap()["verification"].clone();
+    assert_eq!(record["checks"][0]["command"], "npm test");
+    assert_eq!(record["checks"][0]["status"], "passed");
+    assert!(
+        system(&seen).contains("- Tests: `npm test`"),
+        "{}",
+        system(&seen)
     );
 }
 

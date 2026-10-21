@@ -259,9 +259,56 @@ test('settings dialog: a change on a page is saved at once, and the menu shows i
   assert.equal(saved.providers.length, 1, 'the providers kept');
   (root.querySelector('.modal-back-button') as HTMLButtonElement).click();
   await flush();
+  // Checking is on now, but the project has no check to run.
   const project = items(root).find((i) => i.label === 'Project checks')!;
-  assert.equal(project.state, 'Run when the agent finishes a change');
-  assert.equal(project.warning, false);
+  assert.equal(project.state, 'Nothing to run: no check is turned on');
+  assert.equal(project.warning, true);
+});
+
+test('settings menu: Project checks counts the checks that run, none until the user ticks one', async () => {
+  saved = { ...saved, permissions: { ...saved.permissions, verifyChanges: true } };
+  let projectSettings: unknown = null;
+  const { root } = await dialog({
+    answers: {
+      project_profile: () => ({
+        stack: ['TypeScript'],
+        checks: [
+          { kind: 'typecheck', command: 'npx tsc --noEmit', source: 'tsconfig.json' },
+          { kind: 'test', command: 'npm test', source: 'package.json scripts.test' },
+        ],
+        instructions: null,
+      }),
+      load_project_settings: () => projectSettings,
+      save_project_settings: ({ settings }: { settings: unknown }) => {
+        projectSettings = settings;
+      },
+    },
+  });
+  const project = () => items(root).find((i) => i.label === 'Project checks');
+  assert.deepEqual(project(), {
+    label: 'Project checks',
+    state: 'Nothing to run: no check is turned on',
+    warning: true,
+  });
+  item(root, 'Project checks').click();
+  await flush();
+  const boxes = [
+    ...root.querySelectorAll('.project-check-row input[type="checkbox"]'),
+  ] as HTMLInputElement[];
+  assert.deepEqual(
+    boxes.map((b) => b.checked),
+    [false, false],
+    'found, none ticked'
+  );
+  boxes[1].click();
+  await flush();
+  (root.querySelector('.modal-back-button') as HTMLButtonElement).click();
+  await flush();
+  assert.deepEqual(project(), {
+    label: 'Project checks',
+    state: '1 check runs when the agent finishes a change',
+    warning: false,
+  });
 });
 
 test('settings dialog: the pages open on the saved settings, cross-links between them work', async () => {

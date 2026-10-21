@@ -3484,10 +3484,13 @@ async fn a_suite_that_times_out_runs_the_changed_files_tests_instead() {
 }
 
 /// V09: a monorepo of two packages, `api/` and `web/`, nothing at its
-/// root: each package's test passes once its ok.txt says ok.
+/// root: each package's test passes once its ok.txt says ok. The user set
+/// each package's test up as one of the project's checks, run in its
+/// folder: found one folder down, they'd be off, as every detected check
+/// is until the user turns it on.
 async fn two_package_project() -> Harness {
     let check = "const fs = require('fs'); if (fs.readFileSync('ok.txt', 'utf8').trim() !== 'ok') { console.error('ok.txt:1: error: not ok'); process.exit(1); }";
-    harness(&[
+    let h = harness(&[
         (
             "api/package.json",
             r#"{ "name": "api", "scripts": { "test": "node check.js" } }"#,
@@ -3503,10 +3506,20 @@ async fn two_package_project() -> Harness {
         // What the plan names.
         ("ok.txt", "no"),
     ])
-    .await
+    .await;
+    crate::project_profile::save_project_settings(
+        &h.core.paths.config_dir,
+        h.project.to_string_lossy().into_owned(),
+        json!({ "checks": [
+            { "kind": "test", "command": "cd api && npm test", "enabled": true },
+            { "kind": "test", "command": "cd web && npm test", "enabled": true },
+        ] }),
+    )
+    .unwrap();
+    h
 }
 
-/// V09: in Autopilot, the stacks one folder down are the checks, each run
+/// V09: in Autopilot, the checks of the packages one folder down run each
 /// in its folder, all of them every round: web's failure goes back while
 /// api's pass stands, and the fix verifies the task.
 #[tokio::test]

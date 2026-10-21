@@ -3,16 +3,18 @@
 // Settings → Project checks: the open project's checks, what the
 // verification gate runs when the agent finishes a change
 // (src-tauri/crates/rovik-core/src/agent_run/verify.rs). Shows what was
-// detected and lets the user correct it; the corrected list is saved per
-// project right away and wins over detection from then on. Whether the
-// checks run at all is set for every project on Settings → Agent runs;
-// this page says what that setting is.
+// detected, each check off until the user ticks it, and lets the user
+// correct it; the list is saved per project at the first change and wins
+// over detection from then on. Whether the checks run at all is set for
+// every project on Settings → Agent runs; this page says what that
+// setting is.
 import { createMemo, createSignal, For, onMount, Show } from 'solid-js';
 import type { SettingsPage } from '../lib/appSettings';
 import { SettingStatus } from './SettingsControls';
 import {
   CHECK_KINDS,
   CHECK_LABEL,
+  checksThatRun,
   detectProject,
   effectiveChecks,
   loadProjectSettings,
@@ -137,6 +139,9 @@ export default function ProjectChecksSettings(props: {
   /** Whether the user's command permissions let this check run. */
   const allowed = (command: string) => !command.trim() || checkCommand(command, p()).permitted;
 
+  /** No check is ticked (with a command): nothing would run. */
+  const noneRuns = () => !loading() && checksThatRun(checks()).length === 0;
+
   function allow(command: string) {
     props.onPermissionsChange({
       ...p(),
@@ -148,10 +153,12 @@ export default function ProjectChecksSettings(props: {
     <div class="permissions-settings project-checks">
       <section class="settings-section">
         <div class="settings-section-title">When they run</div>
-        <SettingStatus warning={!p().verifyChanges}>
-          {p().verifyChanges
-            ? 'After a run in which the agent changed files, these checks run; a failure goes back to the agent to fix.'
-            : 'Checking is off: these checks don’t run after the agent’s changes.'}{' '}
+        <SettingStatus warning={!p().verifyChanges || noneRuns()}>
+          {!p().verifyChanges
+            ? 'Checking is off: these checks don’t run after the agent’s changes.'
+            : noneRuns()
+              ? 'No check is ticked: nothing runs after the agent’s changes until you tick one below.'
+              : 'After a run in which the agent changed files, the ticked checks run; a failure goes back to the agent to fix.'}{' '}
           <button class="link-button" onClick={() => props.onOpenPage('agent')}>
             Agent runs
           </button>
@@ -164,7 +171,7 @@ export default function ProjectChecksSettings(props: {
           <p class="settings-hint">
             {customized()
               ? 'Your list for this project.'
-              : 'Found in the project’s files. Edit them to make the list yours.'}{' '}
+              : 'Found in the project’s files. None runs until you tick it; ticking or editing one makes the list yours.'}{' '}
             They run in this order: type check, lint, tests, build. A check’s command must be among
             the agent’s allowed commands, or it’s skipped.
             <Show when={customized()}>
