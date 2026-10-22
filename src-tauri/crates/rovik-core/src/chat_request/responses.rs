@@ -8,10 +8,11 @@
 //! Which route: a model starts on the route it was last found to work on
 //! (remembered here, and saved with the model in the settings), else on
 //! `/responses`. A refusal that suggests the other route (`wrong_route`; a
-//! provider without the Responses API, or without the model on it) sends
-//! the same request there once (`agent::run_with_reasoning`); when that
-//! works, the model is remembered on it and the frontend is told, so it's
-//! saved (`ChatStreamEvent::ApiRoute`).
+//! provider without the Responses API, without the model on it, or whose
+//! Responses API can't read the request, even with ids on its tool calls:
+//! `add_call_ids`) sends the same request there once
+//! (`agent::run_with_reasoning`); when that works, the model is remembered
+//! on it and the frontend is told, so it's saved (`ChatStreamEvent::ApiRoute`).
 
 use super::{classify_body_error, ChatError, ErrorKind, ReplyParser};
 use crate::agent::ChatStreamEvent;
@@ -92,6 +93,24 @@ pub fn uses_phases(phase_key: &str) -> bool {
     PHASES.lock().is_ok_and(|p| p.contains(phase_key))
 }
 
+/// Models whose Responses API was found to want an `id` on each tool call
+/// sent back (`add_call_ids`), by chat completions URL and model.
+static CALL_IDS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+/// Whether this model's tool calls go back with ids (`add_call_ids`): its
+/// Responses API couldn't read them without since the app started.
+pub fn needs_call_ids(chat_url: &str, model: &str) -> bool {
+    CALL_IDS
+        .lock()
+        .is_ok_and(|c| c.contains(&key(chat_url, model)))
+}
+
+pub fn remember_call_ids(chat_url: &str, model: &str) {
+    if let Ok(mut c) = CALL_IDS.lock() {
+        c.insert(key(chat_url, model));
+    }
+}
+
 /// The route this model was found to work on since the app started.
 pub fn remembered(chat_url: &str, model: &str) -> Option<Api> {
     ROUTES
@@ -130,7 +149,9 @@ pub fn responses_url(chat_url: &str) -> Option<String> {
 ///   which every OpenAI-compatible provider has, is worth the one try;
 /// - "ModelProtocolUnsupported" / "Model does not support this protocol.",
 ///   which doesn't say which API the model wants: the other one, either way
-///   (`super::looks_like_unsupported_protocol`).
+///   (`super::looks_like_unsupported_protocol`);
+/// - on `/responses`, a server that can't read the request's `input`
+///   (`input_unreadable`).
 ///
 /// A rejected field, an auth failure, a model missing from
 /// `/chat/completions`: not the route.
@@ -138,12 +159,7 @@ pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
     if error.partial || !matches!(error.kind, ErrorKind::BadRequest | ErrorKind::NotFound) {
         return false;
     }
-    let text = format!(
-        "{} {}",
-        error.message,
-        error.details.as_deref().unwrap_or("")
-    )
-    .to_lowercase();
+    let text = words_of(error);
     let (needles, path): (&[&str], &str) = match sent_to {
         Api::ChatCompletions => (
             &[
@@ -188,7 +204,78 @@ pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
                 .and_then(|v| super::error_message_from(&v))
                 .is_none());
     let protocol = super::looks_like_unsupported_protocol(&text);
-    named || invalid_url || no_route || protocol
+    let unreadable = sent_to == Api::Responses && input_unreadable(&text);
+    named || invalid_url || no_route || protocol || unreadable
+}
+
+/// A refusal's message and details, lowercase.
+fn words_of(error: &ChatError) -> String {
+    format!(
+        "{} {}",
+        error.message,
+        error.details.as_deref().unwrap_or("")
+    )
+    .to_lowercase()
+}
+
+/// A refusal on `/responses` of a request whose `input` the server
+/// couldn't read (`input_unreadable`).
+pub fn cant_read_input(error: &ChatError) -> bool {
+    !error.partial && error.kind == ErrorKind::BadRequest && input_unreadable(&words_of(error))
+}
+
+/// A Responses API whose own types don't take the request's `input`, the
+/// items `request_body` sends, as serde words it (a Rust server's: OpenAI
+/// words its refusals otherwise). SGLang's router wants an `id` on every
+/// `function_call` item, which OpenAI doesn't, so a run's first request
+/// works there and the next, with the run's tool calls in it, doesn't:
+/// "Failed to deserialize the JSON body into the target type: input: data
+/// did not match any variant of untagged enum ResponseInput". Such a
+/// request goes again with ids on its calls (`add_call_ids`), and when the
+/// server still can't read it, to chat completions, which takes the same
+/// history. `text` is lowercase.
+pub(super) fn input_unreadable(text: &str) -> bool {
+    // Serde's own phrasing: OpenAI's "Invalid type for 'input[2]…'" is
+    // a refusal of what was sent, not of how.
+    let unreadable = [
+        "deserialize",
+        "did not match any variant",
+        "unknown variant `",
+        "missing field `",
+        "invalid type:",
+    ]
+    .iter()
+    .any(|words| text.contains(words));
+    unreadable && (crate::agent::mentions_field(text, "input") || text.contains("responseinput"))
+}
+
+fn is_call(item: &Value) -> bool {
+    item.get("type").and_then(|t| t.as_str()) == Some("function_call")
+}
+
+/// Whether a Responses body sends a tool call back without an `id`.
+pub fn sends_calls_without_ids(body: &Value) -> bool {
+    body.get("input")
+        .and_then(|i| i.as_array())
+        .is_some_and(|items| items.iter().any(|i| is_call(i) && i.get("id").is_none()))
+}
+
+/// Gives each tool call sent back the `id` a server's Responses API may
+/// want on it (SGLang's router; OpenAI's takes calls without one, so only
+/// a server found to want it gets it): its `call_id`. That's the id such a
+/// server gives its own calls, and what pairs a call with its result when it
+/// turns the items into a chat for the model.
+pub fn add_call_ids(body: &mut Value) {
+    for item in body
+        .get_mut("input")
+        .and_then(|i| i.as_array_mut())
+        .into_iter()
+        .flatten()
+    {
+        if is_call(item) && item.get("id").is_none() {
+            item["id"] = item.get("call_id").cloned().unwrap_or(json!(""));
+        }
+    }
 }
 
 /*
@@ -1266,6 +1353,56 @@ mod tests {
         ));
     }
 
+    /// A server whose Responses API wants an `id` on each tool call sent
+    /// back gets the call's own `call_id`, as it gives its own calls; the
+    /// other items stay as they are.
+    #[test]
+    fn tool_calls_go_back_with_their_call_ids_as_ids() {
+        let chat = json!({ "model": "m", "messages": [
+            { "role": "user", "content": "Rename alpha" },
+            { "role": "assistant", "content": "", "tool_calls": [
+                { "id": "call_1", "type": "function", "function": { "name": "read", "arguments": "{}" } },
+                { "id": "call_2", "type": "function", "function": { "name": "outline", "arguments": "{}" } },
+            ] },
+            { "role": "tool", "tool_call_id": "call_1", "content": "a" },
+            { "role": "tool", "tool_call_id": "call_2", "content": "b" },
+        ] });
+        let mut body = request_body(&chat, false, true);
+        assert!(sends_calls_without_ids(&body));
+        let before = body["input"].clone();
+        add_call_ids(&mut body);
+        assert!(!sends_calls_without_ids(&body));
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(
+            input[1],
+            json!({ "type": "function_call", "id": "call_1", "call_id": "call_1", "name": "read", "arguments": "{}" })
+        );
+        assert_eq!(input[2]["id"], "call_2");
+        for (k, item) in input.iter().enumerate() {
+            if item["type"] != "function_call" {
+                assert_eq!(*item, before[k], "{k}");
+            }
+        }
+        // A step's first request has none to give.
+        let first = request_body(
+            &json!({ "model": "m", "messages": [{ "role": "user", "content": "hi" }] }),
+            false,
+            true,
+        );
+        assert!(!sends_calls_without_ids(&first));
+
+        let headers = reqwest::header::HeaderMap::new();
+        let unreadable = r#"{"error":{"message":"Invalid JSON data: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888"}}"#;
+        let refusal = super::super::classify_status(400, &headers, unreadable);
+        assert!(cant_read_input(&refusal));
+        let other = super::super::classify_status(
+            400,
+            &headers,
+            r#"{"error":{"message":"Unrecognized request argument supplied: reasoning"}}"#,
+        );
+        assert!(!cant_read_input(&other));
+    }
+
     #[test]
     fn recognizes_refusals_that_point_to_the_other_route() {
         let headers = reqwest::header::HeaderMap::new();
@@ -1314,6 +1451,28 @@ mod tests {
         assert!(!wrong_route(&classify(400, field), chat));
         assert!(!wrong_route(&classify(400, field), Api::Responses));
         assert!(!wrong_route(&classify(401, openai), chat));
+        // A server whose Responses API can't read the input (SGLang's
+        // router, with a tool call in it): chat completions takes it.
+        let unreadable = r#"{"error":{"message":"Invalid JSON data: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"invalid_request_error","code":"json_parse_error"}}"#;
+        assert!(wrong_route(&classify(400, unreadable), Api::Responses));
+        assert!(wrong_route(&classify(422, unreadable), Api::Responses));
+        assert!(!wrong_route(&classify(400, unreadable), chat));
+        let item = "Failed to deserialize the JSON body into the target type: input[2]: missing field `id` at line 1 column 512";
+        assert!(wrong_route(&classify(422, item), Api::Responses));
+        // Another field it can't read, or OpenAI's own words: not the route.
+        let effort = "Failed to deserialize the JSON body into the target type: reasoning.effort: unknown variant `xhigh`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 90";
+        assert!(!wrong_route(&classify(422, effort), Api::Responses));
+        let openai_input = r#"{"error":{"message":"Invalid type for 'input[2].content': expected one of an array of objects or string, but got an object instead.","type":"invalid_request_error","param":"input[2].content"}}"#;
+        assert!(!wrong_route(&classify(400, openai_input), Api::Responses));
+        // A gateway that had started its stream reports it there, with the
+        // upstream's 400: the request is at fault, not the provider.
+        let gateway = r#"{"type":"error","error":{"message":"BadRequestError: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"BadRequestError","code":400}}"#;
+        let in_stream = classify_body_error(&serde_json::from_str(gateway).unwrap()).unwrap();
+        assert_eq!(in_stream.kind, ErrorKind::BadRequest);
+        assert!(wrong_route(&in_stream, Api::Responses));
+        let upstream = r#"{"type":"error","error":{"message":"Upstream timed out","code":408}}"#;
+        let in_stream = classify_body_error(&serde_json::from_str(upstream).unwrap()).unwrap();
+        assert!(!wrong_route(&in_stream, Api::Responses));
     }
 
     #[test]

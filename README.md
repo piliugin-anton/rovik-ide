@@ -943,7 +943,11 @@ effort, never returns the model's reasoning, drops PDFs and caches nothing
 A chat with a model on an OpenAI-compatible provider goes to the
 provider's `/responses` (OpenAI's Responses API) first, and moves to its
 `/chat/completions` when the provider says the model is there
-(`src-tauri/crates/rovik-core/src/chat_request/responses.rs`). Nothing is
+(`src-tauri/crates/rovik-core/src/chat_request/responses.rs`). A Responses
+API that can't read the tool calls sent back without an `id` on each, which
+OpenAI's doesn't need (SGLang's router reads a run's first request but not
+the next ones), gets them with ids, and the model stays there; one that
+can't read the request even then moves to `/chat/completions`. Nothing is
 stored with the provider (`store: false`): the whole history goes with
 every request, so the model's own output goes back with it:
 
