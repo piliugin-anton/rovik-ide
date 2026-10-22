@@ -242,7 +242,10 @@ fn apply_reasoning_level(
 /// request there once.
 /// When that works, the model is remembered on it, and an `ApiRoute` event
 /// tells the frontend to save it if it differs from `saved_route` (none
-/// saved: the Responses API).
+/// saved: the Responses API). A Responses API that can't read the tool
+/// calls sent back without ids (`responses::cant_read_input`) gets the
+/// request again with ids on them first; when that works, the model's
+/// calls go back with ids while the app runs, and it stays on the route.
 ///
 /// Also returns what was learned, when reasoning fields were sent at all.
 #[allow(clippy::too_many_arguments)]
@@ -301,6 +304,11 @@ pub async fn run_with_reasoning(
     // gate remains the fallback for every provider.
     let forced_tool = body.get("tool_choice").filter(|v| v.is_object()).cloned();
     let mut force_fell_back = false;
+    // Tool calls sent back with ids, for a Responses API that can't read
+    // them without (`responses::add_call_ids`): known for the model, or
+    // found by this request.
+    let mut call_ids = responses::needs_call_ids(url, model);
+    let mut found_call_ids = false;
     // The effort's level as this provider takes it (`effort_value`), and
     // those it refused this time.
     let mut level = effort.map(|e| effort_value::remembered(url, model, e.level()));
@@ -324,10 +332,11 @@ pub async fn run_with_reasoning(
         let (target, attempt_body) = match (api, responses_url.as_deref()) {
             (Api::Responses, Some(responses_url)) => {
                 let phases = responses::uses_phases(&responses::phase_key(responses_url, model));
-                (
-                    responses_url,
-                    responses::request_body(&attempt_body, phases, echo),
-                )
+                let mut responses_body = responses::request_body(&attempt_body, phases, echo);
+                if call_ids {
+                    responses::add_call_ids(&mut responses_body);
+                }
+                (responses_url, responses_body)
             }
             _ => {
                 // Commentary goes back on the Responses API only.
@@ -347,7 +356,31 @@ pub async fn run_with_reasoning(
         };
         let result = crate::chat_request::run(&spec, cancel, emit).await;
         match &result {
-            Err(e) if !moved && responses_url.is_some() && responses::wrong_route(e, api) => {
+            // A Responses API that can't read the tool calls sent back
+            // without ids (SGLang's router): they go again with ids, and the
+            // model stays on the route.
+            Err(e)
+                if api == Api::Responses
+                    && !call_ids
+                    && responses::cant_read_input(e)
+                    && responses::sends_calls_without_ids(&attempt_body) =>
+            {
+                eprintln!("chat: {url} can't read {model}'s tool calls without ids; sending ids");
+                call_ids = true;
+                found_call_ids = true;
+                continue;
+            }
+            // With the ids it still refuses the request: its Responses API
+            // isn't one to use, chat completions may be.
+            Err(e)
+                if !moved
+                    && responses_url.is_some()
+                    && (responses::wrong_route(e, api)
+                        || (found_call_ids
+                            && api == Api::Responses
+                            && e.kind == crate::chat_request::ErrorKind::BadRequest
+                            && !e.partial)) =>
+            {
                 eprintln!(
                     "chat: {model} refused on {}; trying {}",
                     api.as_str(),
@@ -450,6 +483,10 @@ pub async fn run_with_reasoning(
             _ => break result,
         }
     };
+    if found_call_ids && api == Api::Responses && result.is_ok() {
+        eprintln!("chat: {model}'s tool calls go back with ids from now on");
+        responses::remember_call_ids(url, model);
+    }
     if result.is_ok() && responses_url.is_some() {
         if moved {
             eprintln!(
@@ -2603,7 +2640,14 @@ mod reasoning_tests {
         Rejected(&'static str),
         /// With 200, and this error as the stream's only event.
         InStream(&'static str),
+        /// SGLang's router: served when every tool call sent back has an
+        /// `id`, else refused as it refuses (`CANT_READ_INPUT`).
+        WantsCallIds,
     }
+
+    /// SGLang's router, refusing a request whose `input` its types don't
+    /// take.
+    const CANT_READ_INPUT: &str = r#"{"error":{"message":"Invalid JSON data: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"invalid_request_error","code":"json_parse_error"}}"#;
 
     /// OpenAI's refusals: a model served on the Responses API only, and a
     /// server without it.
@@ -2616,7 +2660,7 @@ mod reasoning_tests {
         chat: Route,
         responses: Route,
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!(
             "http://{}/v1/chat/completions",
@@ -2626,17 +2670,20 @@ mod reasoning_tests {
         let log = seen.clone();
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
-                let mut buf = vec![0u8; 65536];
-                let n = socket.read(&mut buf).await.unwrap_or(0);
-                let raw = String::from_utf8_lossy(&buf[..n]).to_string();
-                let path = raw.split_whitespace().nth(1).unwrap_or("").to_string();
+                let (path, body) = request_of(&mut socket).await;
                 log.lock().unwrap().push(path.clone());
                 let on_responses = path.ends_with("/responses");
                 let sse = |events: &[&str]| {
                     let sse: String = events.iter().map(|e| format!("data: {e}\n\n")).collect();
                     format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{sse}")
                 };
-                let route = if on_responses { responses } else { chat };
+                let route = match if on_responses { responses } else { chat } {
+                    Route::WantsCallIds if responses::sends_calls_without_ids(&body) => {
+                        Route::Rejected(CANT_READ_INPUT)
+                    }
+                    Route::WantsCallIds => Route::Served,
+                    route => route,
+                };
                 let reply = match route {
                     Route::Served if on_responses => sse(&[
                         r#"{"type":"response.created","response":{"status":"in_progress"}}"#,
@@ -2650,6 +2697,7 @@ mod reasoning_tests {
                     Route::InStream(error) => sse(&[error]),
                     Route::Refused(msg) => format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len()),
                     Route::Rejected(msg) => format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len()),
+                    Route::WantsCallIds => unreachable!("answered as served or refused"),
                 };
                 let _ = socket.write_all(reply.as_bytes()).await;
                 let _ = socket.shutdown().await;
@@ -2664,8 +2712,31 @@ mod reasoning_tests {
         url: &str,
         saved: Option<Api>,
     ) -> (Result<(), crate::chat_request::ChatError>, Vec<String>) {
+        send_routed_body(
+            url,
+            saved,
+            serde_json::json!({ "model": "m", "messages": [] }),
+        )
+        .await
+    }
+
+    /// A step's request: the user's message, the model's tool call and its
+    /// result.
+    fn after_a_call() -> serde_json::Value {
+        serde_json::json!({ "model": "m", "messages": [
+            { "role": "user", "content": "Rename alpha" },
+            { "role": "assistant", "content": "", "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"src/lib.rs\"}" } }] },
+            { "role": "tool", "tool_call_id": "call_1", "content": "pub fn alpha() {}" },
+        ] })
+    }
+
+    /// `send_routed` with this body.
+    async fn send_routed_body(
+        url: &str,
+        saved: Option<Api>,
+        body: serde_json::Value,
+    ) -> (Result<(), crate::chat_request::ChatError>, Vec<String>) {
         let client = Client::new();
-        let body = serde_json::json!({ "model": "m", "messages": [] });
         let (tx, mut rx) = tokio::sync::watch::channel(false);
         std::mem::forget(tx);
         let mut routes = Vec::new();
@@ -2761,16 +2832,42 @@ mod reasoning_tests {
         assert_eq!(seen.lock().unwrap().len(), 3);
     }
 
-    /// SGLang's router: its Responses API wants an `id` on every
-    /// `function_call` item, so it can't read a request with the run's tool
-    /// calls in it. The request goes to chat completions, refused as a 400
-    /// or in the stream a gateway had started, and the model stays there.
+    /// SGLang's router: its Responses API wants an `id` on every tool call
+    /// sent back, which OpenAI's doesn't. The step after a call is refused,
+    /// and goes again with ids; the model stays on the Responses API, and
+    /// its calls go back with ids from then on.
+    #[tokio::test]
+    async fn a_responses_api_that_wants_call_ids_gets_them_and_stays() {
+        let (url, seen) = routed_provider(Route::Served, Route::WantsCallIds).await;
+        let (result, routes) = send_routed_body(&url, None, after_a_call()).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(routes.is_empty(), "still on the Responses API");
+        assert_eq!(*seen.lock().unwrap(), ["/v1/responses", "/v1/responses"]);
+        assert!(responses::needs_call_ids(&url, "m"));
+        // Known now: the next step's ids go at once.
+        let (result, _) = send_routed_body(&url, None, after_a_call()).await;
+        assert!(result.is_ok());
+        assert_eq!(seen.lock().unwrap().len(), 3);
+    }
+
+    /// One that can't read the input with the ids either: chat completions,
+    /// where the model stays. A request without calls goes there at once,
+    /// refused as a 400 or in the stream a gateway had started.
     #[tokio::test]
     async fn a_responses_api_that_cant_read_the_input_moves_to_chat_completions() {
-        let rejected = r#"{"error":{"message":"Invalid JSON data: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"invalid_request_error","code":"json_parse_error"}}"#;
+        let (url, seen) = routed_provider(Route::Served, Route::Rejected(CANT_READ_INPUT)).await;
+        let (result, routes) = send_routed_body(&url, None, after_a_call()).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(routes, ["chat_completions"]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["/v1/responses", "/v1/responses", "/v1/chat/completions"]
+        );
+        assert!(!responses::needs_call_ids(&url, "m"));
+
         let in_stream = r#"{"type":"error","error":{"message":"BadRequestError: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"BadRequestError","code":400}}"#;
-        for responses in [Route::Rejected(rejected), Route::InStream(in_stream)] {
-            let (url, seen) = routed_provider(Route::Served, responses).await;
+        for refusal in [Route::Rejected(CANT_READ_INPUT), Route::InStream(in_stream)] {
+            let (url, seen) = routed_provider(Route::Served, refusal).await;
             let (result, routes) = send_routed(&url, None).await;
             assert!(result.is_ok(), "{result:?}");
             assert_eq!(routes, ["chat_completions"]);
@@ -2846,6 +2943,11 @@ mod reasoning_tests {
     /// One HTTP request off `socket`: its JSON body, read whole (by its
     /// Content-Length).
     async fn request_body_of(socket: &mut tokio::net::TcpStream) -> serde_json::Value {
+        request_of(socket).await.1
+    }
+
+    /// A request's path and JSON body, read whole.
+    async fn request_of(socket: &mut tokio::net::TcpStream) -> (String, serde_json::Value) {
         use tokio::io::AsyncReadExt;
         let mut raw = Vec::new();
         let mut buf = [0u8; 8192];
@@ -2872,9 +2974,12 @@ mod reasoning_tests {
             }
         }
         let text = String::from_utf8_lossy(&raw).to_string();
-        text.split_once("\r\n\r\n")
+        let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+        let body = text
+            .split_once("\r\n\r\n")
             .and_then(|(_, body)| serde_json::from_str(body).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (path, body)
     }
 
     /// A Responses API whose model `plain` refuses the request for its
