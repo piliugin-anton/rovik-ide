@@ -34,7 +34,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   continue on Enter, and Ctrl+B / Ctrl+I make text bold or italic.
 - IntelliSense for JavaScript/TypeScript that understands the whole
   project, not only open files. Ctrl+click jumps to a definition in another
-  file. Rust gets help from rust-analyzer when it's installed.
+  file. Files the agent, git or another program creates or changes are
+  picked up as they change, without reopening anything. Rust gets help from
+  rust-analyzer when it's installed.
 - A file tree that stays fast on very large projects and refreshes when
   files change on disk.
 - Project-wide text search powered by ripgrep's engine.
@@ -71,6 +73,13 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
     checks the result.
   - **Plan** only looks around, asks you questions and writes a plan. When
     you approve it, Agent mode carries it out.
+- **Steer it while it works.** In Agent mode, a message you send while the
+  agent works is read at its next step, as part of the same request: "use
+  the existing HTTP client", "the tests are in `tests/unit`". Nothing it's
+  doing is cut short. Until it's read, the message waits at the end of the
+  chat, saying what it waits for (an approval, subagents, the checks), and
+  ✕ takes it back into the input. A message the agent stopped before
+  reading comes back into the input. See [Steering](#steering).
 - **You stay in control.** You choose which commands the agent may run and
   which actions need your approval. Proposed file edits show as a diff in
   the editor, and you can accept or reject each change separately. You can
@@ -119,6 +128,8 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   set in Settings → Autopilot.
 - The agent follows your project's own instructions in `AGENTS.md`,
   `CLAUDE.md` and similar files.
+- The agent can search the web and read pages, in a headless Chrome for
+  Testing that Rovik downloads into its data folder when it first starts.
 - Attach images, PDFs and text files to a message: paste them (Ctrl+V, or
   Paste in the message box's right-click menu) or pick them with the
   paperclip button. Only formats models can read are taken (see
@@ -133,9 +144,35 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
 
 ## Installing and running
 
-There are no prebuilt downloads yet, so you build the app from source.
+### Downloads
 
-### Linux
+Download the latest release from [rovik-ide.dev](https://rovik-ide.dev) or
+the [GitHub releases](https://github.com/piliugin-anton/rovik-ide/releases):
+
+| System  | Packages                                                                                |
+| ------- | --------------------------------------------------------------------------------------- |
+| Linux   | AppImage (any distribution), `.deb` (Debian, Ubuntu), `.rpm` (Fedora, openSUSE), 64-bit |
+| macOS   | `.dmg` for Apple silicon and for Intel                                                  |
+| Windows | Installer (`.exe`) or MSI package (`.msi`)                                              |
+
+Opening it for the first time:
+
+- **macOS:** the app isn't notarized yet. If macOS says it's damaged or
+  can't be opened, move it to Applications and run
+  `xattr -dr com.apple.quarantine "/Applications/Rovik IDE.app"`.
+- **Windows:** SmartScreen may warn that the publisher is unknown: choose
+  **More info**, then **Run anyway**.
+- **Linux:** make the AppImage executable, then run it:
+  `chmod +x Rovik.IDE_*.AppImage`.
+
+Once installed, Rovik [updates itself](#updates).
+
+### Building from source
+
+You need [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22
+(or 20.19 and newer), plus your system's build tools, as below.
+
+#### Linux
 
 Run these from the project folder:
 
@@ -151,11 +188,11 @@ old, and runs `npm install`. You can run it again safely.
 
 Built packages end up in `src-tauri/target/release/bundle/`.
 
-### macOS
+#### macOS
 
 1. Install the Xcode Command Line Tools: `xcode-select --install`
-2. Install [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 18
-   or newer.
+2. Install [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 22
+   (or 20.19 and newer).
 3. From the project folder:
 
    ```bash
@@ -164,14 +201,14 @@ Built packages end up in `src-tauri/target/release/bundle/`.
    npm run tauri build    # build an installable package
    ```
 
-### Windows
+#### Windows
 
 1. Install
    [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
    with the **Desktop development with C++** workload.
 2. Install [Rust](https://rustup.rs) with the default
    `x86_64-pc-windows-msvc` toolchain (MinGW isn't supported).
-3. Install [Node.js](https://nodejs.org) 18 or newer.
+3. Install [Node.js](https://nodejs.org) 22 (or 20.19 and newer).
 4. From the project folder, run the same `npm` commands as on macOS.
 
 WebView2 is already part of Windows 10 and 11.
@@ -228,8 +265,9 @@ is brought to the app's version by itself.
    default the agent may only run a short list of safe commands (`ls`,
    `cat`, `cargo clippy`, …), and it edits files without asking. Turn
    approvals on here if you want to review its edits and commands first.
-4. **Chat:** open the AI Chat tab, pick a model and a mode (Agent or Plan),
-   and describe what you want.
+4. **Chat:** open the AI Chat tab, pick a model and a mode (Agent, Plan or
+   Autopilot), and describe what you want. In Agent mode you can keep
+   sending it messages while it works.
 5. **Check the result:** files the chat changed are listed above the
    message box. Open one to compare it with the project version, then
    **Land** the changes or **Discard** them.
@@ -248,7 +286,9 @@ computer right now. The pages:
 | Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                         |
 | Project checks         | The type-check / lint / test / build commands of the open project, as detected (each off until you tick it) or fixed  |
 | Heavy commands         | How many builds and tests run at once on this computer, so it stays responsive                                        |
-| Virtual files          | The driver that isolates chats and lets the agent manage its own context: status, installation, troubleshooting       |
+| Virtual files          | Linux and macOS: the driver that isolates chats and lets the agent manage its own context, and its troubleshooting    |
+| WSL                    | Windows: the WSL distribution the agent's commands run in, sandboxed (Rovik's Linux side on this computer)            |
+| Network                | How Rovik connects to model providers, download servers and cloud hosts: connection timeouts and the proxy            |
 | Cloud hosts            | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))                                                       |
 | Updates                | Rovik's version, the looks for a new one every 30 minutes, and installing it (see [Updates](#updates))                |
 
@@ -409,15 +449,19 @@ stops it, answers its approvals and shows its progress.
 
 ### Commands
 
-| Command                                       | What it does                                                            |
-| --------------------------------------------- | ----------------------------------------------------------------------- |
-| `npm run tauri dev`                           | Run the app with hot reload (same as `./dev.sh`)                        |
-| `npm run tauri build`                         | Build a release package (same as `./build.sh`)                          |
-| `npm test`                                    | Frontend unit tests (`src/**/*.test.ts`)                                |
-| `cd src-tauri && cargo test --lib`            | Backend tests                                                           |
-| `cd src-tauri && cargo test vfs -- --ignored` | Mounts a real virtual volume (Linux) and runs shell tools and Git on it |
-| `npm run format`                              | Format with Prettier (`format:check` to verify)                         |
-| `scripts/build-agentd.sh`                     | Static builds of the daemon for Linux servers (x86_64 and aarch64)      |
+| Command                                       | What it does                                                                        |
+| --------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `npm run tauri dev`                           | Run the app with hot reload (same as `./dev.sh`)                                    |
+| `npm run tauri build`                         | Build a release package (same as `./build.sh`)                                      |
+| `npm test`                                    | Frontend unit tests (`src/**/*.test.ts`)                                            |
+| `npm run typecheck`                           | TypeScript type check of the app, its tests and its build config                    |
+| `npm run test:scripts`, `npm run test:eval`   | Tests of the release scripts and of the evaluation harness                          |
+| `cd src-tauri && cargo test --workspace`      | Backend tests, every crate (as CI runs them)                                        |
+| `cd src-tauri && cargo test vfs -- --ignored` | Mounts a real virtual volume (Linux) and runs shell tools and Git on it             |
+| `npm run format`                              | Format with Prettier (`format:check` to verify)                                     |
+| `scripts/build-agentd.sh`                     | Static builds of the daemon for Linux servers (x86_64 and aarch64)                  |
+| `node scripts/e2e/run.mjs`                    | End-to-end runs of a built app ([scripts/e2e](scripts/e2e/README.md))               |
+| `node scripts/eval/eval.mjs`                  | The agent's evaluation on a fixed task set ([scripts/eval](scripts/eval/README.md)) |
 
 `scripts/build-agentd.sh` needs zig and cargo-zigbuild:
 `pip install cargo-zigbuild` brings both. Each build is a single file that
@@ -554,14 +598,18 @@ src-tauri/               backend (Rust), a Cargo workspace
   src/                   the app
     lib.rs               app setup: plugins and command registration
     commands/            the commands of the agent and its chats, over the core
-    filesystem.rs        directory listing and the file watcher
-    git.rs, git_sync.rs  Git panel: status, commit, pull, push
+    filesystem/          directory listing and the file watcher
+    git/, git_sync.rs    Git panel: status, branches, history, pull, push
     terminal.rs          the terminal panel
     lsp/                 language servers, bridged to the editor
+    instances.rs         several windows: which window has which project
+    shared_state.rs      the state the windows share (tabs, settings, …)
+    updates.rs           the app's own updates
   crates/rovik-core/src/ the agent and what it uses, without Tauri
     core.rs              what the agent needs from its host (`Core`)
     agent_run/           the AI agent: model turns, tool calls, approvals,
-                         AI reviewer, verification checks
+                         AI reviewer, verification checks, subagents,
+                         Autopilot, steering
     chat_request.rs      sending requests to model providers
     anthropic/           Anthropic's API, spoken natively (Messages API)
     chat_db/             chat storage (SQLite)
@@ -575,10 +623,22 @@ src-tauri/               backend (Rust), a Cargo workspace
     outline/, repo_map/  tree-sitter outlines and the repo map
     project_profile.rs   detects the stack, checks and agent instruction files
     browser_tools.rs     web search / browsing for the agent
+    pinned_browser.rs    the Chrome for Testing build the browser tools use
+  crates/rovik-protocol/ what the app and the cloud daemon send each other,
+                         and how releases are signed
+  crates/rovik-client/   the app's side of that: connecting to hosts over SSH,
+                         deploying the daemon, WSL
+  crates/rovik-agentd/   the daemon: the agent on a cloud host or in WSL
   crates/rovik-headless/ the agent without a window, for evaluations
+  crates/eoka/           headless Chrome automation (for the browser tools)
 
-docs/design/             design documents (chat isolation)
+docs/                    team servers (cloud-hosts.md), the WSL checklist,
+                         the backend review
+docs/design/             design documents: chat isolation, subagents,
+                         Autopilot, cloud hosts, steering, Evolve
 scripts/test.mjs         frontend test runner
+scripts/e2e/             end-to-end runs of a built app
+scripts/eval/            the agent's evaluation (tasks, grading)
 website/                 the site at rovik-ide.dev, and the icon's drawing
                          (website/README.md)
 ```
@@ -690,6 +750,38 @@ those that fail there too are set apart: a check that fails only as it did
 before is `preexisting` in its record and doesn't hold the change back.
 React Native apps, whose bundler never type-checks, often have such
 failures.
+
+### Steering
+
+In Agent mode, Enter (or the Send arrow beside Stop) sends what's typed to
+the running agent instead of waiting for it to finish
+(`agent_run/steer.rs`, `src/lib/steering.ts`; design in
+[`docs/design/steering-plan.md`](docs/design/steering-plan.md)). Plan
+mode and Autopilot tasks take no messages while they work: the text stays
+in the input.
+
+- A message waits in the run's queue (up to 10 at once) and is read once
+  every call of the agent's current reply has its result, before its next
+  request to the model. No reply or command is cut short.
+- It's read as the user's words, after a short note telling the agent it
+  belongs to the same request, and stored where it was read, marked
+  `meta.steer`. It doesn't start a new request: the focus note, the
+  reviewers and the subagents' briefs see it as part of the one under way.
+- An approval waiting is answered first: after Allow, the reply's other
+  calls run, then the message is read; after Deny, it's read at once.
+  Subagents the agent started report back first.
+- When the agent says it's done, a message waiting is read instead of
+  starting the end-of-run checks, and the checks run again at its next end.
+  Nothing lands before the agent has read it.
+- A message the run didn't read (Stop, an error) goes back into the input,
+  with a notice. One sent just as the run ended is sent as a new message
+  once it has. A crash puts queued messages back into the input too;
+  nothing is sent on its own after a restart.
+- From the third steering message in one request, a line under the input
+  suggests a fresh start with one message that says it all.
+- It works the same for a chat on a cloud host. The run log has a `steer`
+  line for each step of a message's life, and the headless runner can send
+  scripted messages (`--steer "TEXT@N"`).
 
 ### Chat isolation
 
