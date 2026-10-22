@@ -1,6 +1,8 @@
 import { createEffect, on, onCleanup, onMount } from 'solid-js';
 import * as monaco from 'monaco-editor';
 import { languageForAlias } from '../lib/language';
+import { editorSettings } from '../lib/editorSettings';
+import { applyTheme } from '../lib/monacoThemes';
 
 /** The Monaco language a code fence names (lib/languageMap.ts). */
 export function resolveLanguage(lang: string | undefined): string {
@@ -48,7 +50,6 @@ export default function CodeBlock(props: { code: string; language?: string }) {
       renderLineHighlight: 'none',
       fontSize: 13,
       padding: { top: 8, bottom: 8 },
-      theme: 'vs-dark',
       wordWrap: 'off',
       contextmenu: false,
       overviewRulerLanes: 0,
@@ -56,6 +57,14 @@ export default function CodeBlock(props: { code: string; language?: string }) {
       scrollbar: { alwaysConsumeMouseWheel: false },
       hover: { enabled: 'off' },
     });
+
+    // The app's chosen theme, as the editor uses it: create-time `theme` and
+    // setTheme are global, so this block follows the settings instead of
+    // resetting them (it used to force vs-dark). No semanticHighlighting
+    // option here either: that's global and the file editor owns it
+    // (Editor.tsx); the provider leaves these `inmemory://` models alone
+    // (intellisense/semanticTokens.ts), so a snippet stays TextMate-coloured.
+    void applyTheme(editorSettings().theme);
 
     // Covers layout thrash from panel resizes / splitter drags, on top of
     // the automaticLayout option above (which only reacts to its own div).

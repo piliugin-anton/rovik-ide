@@ -1,0 +1,198 @@
+{
+  "base": "vs-dark",
+  "inherit": true,
+  "rules": [
+    {
+      "foreground": "DCDCAA",
+      "token": "entity.name.function"
+    },
+    {
+      "foreground": "DCDCAA",
+      "token": "support.function"
+    },
+    {
+      "foreground": "DCDCAA",
+      "token": "support.constant.handlebars"
+    },
+    {
+      "foreground": "DCDCAA",
+      "token": "entity.name.operator.custom-literal"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "support.class"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "support.type"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "entity.name.type"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "entity.name.namespace"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "entity.name.class"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "entity.other.attribute"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "entity.name.scope-resolution"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "support.constant.math"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "support.constant.dom"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "support.constant.json"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "entity.other.inherited-class"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "meta.type.cast.expr"
+    },
+    {
+      "foreground": "4EC9B0",
+      "token": "meta.type.new.expr"
+    },
+    {
+      "foreground": "C586C0",
+      "token": "keyword.control"
+    },
+    {
+      "foreground": "C586C0",
+      "token": "keyword.operator.delete"
+    },
+    {
+      "foreground": "C586C0",
+      "token": "keyword.other.using"
+    },
+    {
+      "foreground": "C586C0",
+      "token": "keyword.other.operator"
+    },
+    {
+      "foreground": "C586C0",
+      "token": "entity.name.operator"
+    },
+    {
+      "foreground": "9CDCFE",
+      "token": "variable"
+    },
+    {
+      "foreground": "9CDCFE",
+      "token": "meta.definition.variable.name"
+    },
+    {
+      "foreground": "9CDCFE",
+      "token": "support.variable"
+    },
+    {
+      "foreground": "9CDCFE",
+      "token": "entity.name.variable"
+    },
+    {
+      "foreground": "9CDCFE",
+      "token": "constant.other.placeholder"
+    },
+    {
+      "foreground": "9CDCFE",
+      "token": "meta.object-literal.key"
+    },
+    {
+      "foreground": "4FC1FF",
+      "token": "variable.other.constant"
+    },
+    {
+      "foreground": "4FC1FF",
+      "token": "variable.other.enummember"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "support.constant.property-value"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "support.constant.font-name"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "support.constant.media-type"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "support.constant.media"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "constant.other.color.rgb-value"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "support.constant.color"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "punctuation.definition.group.regexp"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "punctuation.definition.group.assertion.regexp"
+    },
+    {
+      "foreground": "CE9178",
+      "token": "support.other.parenthesis.regexp"
+    },
+    {
+      "foreground": "569CD6",
+      "token": "constant.character"
+    },
+    {
+      "foreground": "569CD6",
+      "token": "constant.other.option"
+    },
+    {
+      "foreground": "D7BA7D",
+      "token": "constant.character.escape"
+    },
+    {
+      "foreground": "D7BA7D",
+      "token": "keyword.operator.quantifier.regexp"
+    },
+    {
+      "foreground": "C8C8C8",
+      "token": "entity.name.label"
+    },
+    {
+      "foreground": "D16969",
+      "token": "constant.character.character-class.regexp"
+    },
+    {
+      "foreground": "D16969",
+      "token": "constant.other.character-class.set.regexp"
+    },
+    {
+      "foreground": "D16969",
+      "token": "constant.other.character-class.regexp"
+    }
+  ],
+  "colors": {
+    "editor.background": "#1F1F1F",
+    "editor.foreground": "#CCCCCC"
+  }
+}

@@ -24,6 +24,7 @@ import {
   ensureProjectIntelliSense,
   isIntelliSenseReady,
   modelUriFor,
+  refreshSemanticTokens,
   setActiveTypesFile,
 } from '../lib/intellisense';
 import { replaceKeepingUndo, touchModel } from '../lib/models';
@@ -39,7 +40,7 @@ import { editorSettings } from '../lib/editorSettings';
 import type { EditorConfigProps } from '../lib/editorconfig';
 import { applyIndentation, loadEditorConfig, prepareForSave } from '../lib/editorFormatting';
 import { registerFileFormatter } from '../lib/fileFormatters';
-import { applyTheme } from '../lib/monacoThemes';
+import { applyTheme, hasSemanticRules } from '../lib/monacoThemes';
 import { renderEditReview, renderReviewUnavailable, reviewMatchesModel } from './editorReview';
 import MarkdownPreview from './MarkdownPreview';
 import { headingLine } from '../lib/markdownPreview';
@@ -159,10 +160,12 @@ export default function Editor(props: EditorProps) {
     // Community themes are defineTheme'd lazily (lib/monacoThemes.ts):
     // create with a safe theme, then apply the real one once defined.
     const initialTheme = editorSettings().theme;
-    void applyTheme(initialTheme);
+    // The theme's rules decide which semantic tokens may be painted
+    // (intellisense/semanticTokens.ts), so colour again once it's applied.
+    void applyTheme(initialTheme).then(() => refreshSemanticTokens());
     editor = monaco.editor.create(containerRef, {
       model,
-      theme: initialTheme === 'hc-black' ? 'hc-black' : 'vs-dark',
+      theme: 'vs-dark',
       automaticLayout: true,
       fontSize: editorSettings().fontSize,
       wordWrap: editorSettings().wordWrap,
@@ -170,6 +173,11 @@ export default function Editor(props: EditorProps) {
         enabled: editorSettings().minimap,
       },
       renderWhitespace: editorSettings().renderWhitespace,
+      // Semantic colouring follows the theme (monacoThemes.ts
+      // hasSemanticRules): a global editor option, so this editor owns it
+      // and nothing else may write it (a `false` elsewhere would switch
+      // this one's colouring off).
+      'semanticHighlighting.enabled': hasSemanticRules(initialTheme),
       readOnly: props.readOnly?.() ?? false,
       readOnlyMessage: { value: props.readOnlyMessage ?? 'This preview is read-only.' },
     });
@@ -206,12 +214,17 @@ export default function Editor(props: EditorProps) {
     createEffect(() => {
       const s = editorSettings();
       if (!editor || disposed) return;
-      void applyTheme(s.theme);
+      // The theme's rule set is what the semantic token provider filters
+      // against: colour again once the new theme is applied.
+      void applyTheme(s.theme).then(() => refreshSemanticTokens());
       editor.updateOptions({
         fontSize: s.fontSize,
         wordWrap: s.wordWrap,
         minimap: { enabled: s.minimap },
         renderWhitespace: s.renderWhitespace,
+        // Every theme offered has derived semantic rules; an id that isn't
+        // one (a stale value, before load() replaces it) keeps it off.
+        'semanticHighlighting.enabled': hasSemanticRules(s.theme),
       });
     });
 

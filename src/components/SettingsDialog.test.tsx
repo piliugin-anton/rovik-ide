@@ -165,7 +165,7 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
     ['Editor', 'AI chats', 'This project · demo', 'This computer']
   );
   assert.deepEqual(items(root), [
-    { label: 'Editor', state: 'Dark · 14 px · spaces (2)', warning: false },
+    { label: 'Editor', state: 'Dark Modern · 14 px · spaces (2)', warning: false },
     { label: 'Model providers', state: '1 provider, 2 models enabled', warning: false },
     {
       label: 'Permissions & approval',

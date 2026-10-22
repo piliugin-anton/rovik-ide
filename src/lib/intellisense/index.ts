@@ -34,12 +34,17 @@ import { initLanguageDefaults, primaryDefaults } from './defaults';
 import { installIntelliSenseDevtools } from './devtools';
 import { registerDefinitionOpener } from './opener';
 import { IntelliSenseProject } from './project';
+import { registerSemanticTokens } from './semanticTokens';
 
 export { modelUriFor } from './uris';
 export { isProjectSource } from './paths';
+export { refreshSemanticTokens } from './semanticTokens';
 import { SOURCE_FILE } from './paths';
 
 initLanguageDefaults();
+// Semantic colouring for TS/JS (semanticTokens.ts): the legend and the
+// document provider; which themes turn it on is the editor's call.
+registerSemanticTokens();
 
 let current: IntelliSenseProject | null = null;
 /** The file shown in the editor, kept across projects. */

@@ -10,19 +10,11 @@
 // an editable inline editor.
 import { createEffect, createSignal, on, Show } from 'solid-js';
 import * as monaco from 'monaco-editor';
+import { editorSettings } from '../lib/editorSettings';
+import { applyTheme } from '../lib/monacoThemes';
 import { resolveLanguage } from './CodeBlock';
 
 const COLORIZE_LINES = 400;
-
-// colorize() uses the current theme's token classes (mtk1, mtk2, ...);
-// set the theme once so they exist before any editor has been created.
-let themeReady = false;
-function ensureTheme() {
-  if (!themeReady) {
-    monaco.editor.setTheme('vs-dark');
-    themeReady = true;
-  }
-}
 
 export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -33,7 +25,10 @@ export function escapeHtml(text: string): string {
  * colorize() ends every line with "<br/>", which is what it's split on.
  */
 export async function colorizeLines(lines: string[], language?: string): Promise<string[]> {
-  ensureTheme();
+  // colorize() bakes in the *current* theme's token classes (mtk1, mtk2,...),
+  // and community themes are defineTheme'd lazily: each call waits for the
+  // app's theme rather than assuming one.
+  await applyTheme(editorSettings().theme);
   const html = await monaco.editor.colorize(lines.join('\n'), resolveLanguage(language), {
     tabSize: 4,
   });
@@ -62,20 +57,20 @@ export default function StaticCodeBlock(props: {
     return props.code.split('\n').slice(0, COLORIZE_LINES).join('\n');
   };
 
-  // Colorize when the code is complete (or more of it is revealed).
+  // Colorize when the code is complete (or more of it is revealed), and
+  // again when the theme changes: the colours are the theme's token classes.
   let run = 0;
   createEffect(
     on(
-      [() => props.streaming, visibleCode, () => props.language],
+      [() => props.streaming, visibleCode, () => props.language, () => editorSettings().theme],
       ([streaming, code, language]) => {
         const current = ++run;
         if (streaming) {
           setHtml(null);
           return;
         }
-        ensureTheme();
-        monaco.editor
-          .colorize(code, resolveLanguage(language), { tabSize: 4 })
+        void applyTheme(editorSettings().theme)
+          .then(() => monaco.editor.colorize(code, resolveLanguage(language), { tabSize: 4 }))
           .then((result) => {
             if (current === run) setHtml(result);
           })

@@ -11,6 +11,7 @@ import type {
 } from 'monaco-editor/language/typescript/ts.worker.js';
 import { LINKS_LIB, PROJECT_LIB } from './paths';
 import { ProjectTypeScriptWorker } from './projectWorker';
+import { semanticTokenName } from './semanticTokens';
 
 // Keys as the app builds them (uris.ts): the folder encoded like a model's
 // URI (a space in the project path), the package part raw.
@@ -387,5 +388,74 @@ describe('ProjectTypeScriptWorker', () => {
     await w.getQuickInfoAtPosition(APP, 13);
     assert.equal(w.getLanguageService().getProgram(), current);
     assert.ok(current?.getSourceFile(APP));
+  });
+
+  it('semantic classifications for a file in the program, and outside it', async () => {
+    const text = [
+      'export const LIMIT = 1;',
+      'export function add(a: number) {',
+      '  return a + LIMIT;',
+      '}',
+    ].join('\n');
+    const span = { start: 0, length: text.length };
+    const w = worker([model(APP, text)], { ...OPTIONS, types: [] });
+    const result = await w.getEncodedSemanticClassifications(APP, span);
+    assert.equal(result.endOfLineState, 0);
+    assert.equal(result.spans.length % 3, 0, 'triplets of start, length, encoding');
+    assert.ok(result.spans.length > 0, 'a file in the program is classified');
+    // Each triplet: an absolute offset, a length, and TypeScript's
+    // `((typeIndex + 1) << 8) | modifierBits`.
+    const tripletAt = (offset: number) => {
+      for (let i = 0; i < result.spans.length; i += 3) {
+        if (result.spans[i] === offset) return result.spans.slice(i, i + 3);
+      }
+      return undefined;
+    };
+    const readonly = tripletAt(text.indexOf('LIMIT'));
+    assert.ok(readonly, 'the module-scope const is classified');
+    assert.equal(readonly[1], 'LIMIT'.length);
+    assert.equal((readonly[2] >> 8) - 1, 7, 'a variable');
+    // Criterion 3: the name a theme matches is `variable.readonly`, so readonly
+    // comes before declaration in the legend.
+    assert.ok(
+      semanticTokenName(readonly[2]).startsWith('variable.readonly'),
+      `readonly first: ${semanticTokenName(readonly[2])}`
+    );
+    const fn = tripletAt(text.indexOf('add'));
+    assert.ok(fn, 'the function declaration is classified');
+    assert.equal((fn[2] >> 8) - 1, 10, 'a function');
+    assert.ok(semanticTokenName(fn[2]).startsWith('function'));
+    for (let i = 0; i < result.spans.length; i += 3) {
+      const typeIndex = (result.spans[i + 2] >> 8) - 1;
+      assert.ok(typeIndex >= 0 && typeIndex < 12, `type index in the legend: ${typeIndex}`);
+      assert.ok(result.spans[i + 1] > 0, 'no empty spans');
+    }
+    // A file the active config leaves out: an empty answer, no throw.
+    const config = {
+      path: '/home/u/my proj/tsconfig.json',
+      include: ['/home/u/my proj/src/**/*'],
+      files: [],
+      exclude: [],
+    };
+    const outside = `${ROOT}/apps/other/b.ts`;
+    const project = { [PROJECT_LIB]: { content: JSON.stringify(config), version: 1 } };
+    const scoped = worker(
+      [model(APP, text), model(outside, text)],
+      { ...OPTIONS, types: [] },
+      project
+    );
+    assert.deepEqual(await scoped.getEncodedSemanticClassifications(outside, span), {
+      spans: [],
+      endOfLineState: 0,
+    });
+    assert.ok(
+      (await scoped.getEncodedSemanticClassifications(APP, span)).spans.length > 0,
+      'the file the config holds keeps its spans'
+    );
+    assert.deepEqual(
+      await scoped.getEncodedSemanticClassifications(`${ROOT}/src/missing.ts`, span),
+      { spans: [], endOfLineState: 0 },
+      'a file the worker never saw'
+    );
   });
 });

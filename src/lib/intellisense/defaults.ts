@@ -3,6 +3,7 @@
 // Monaco's TypeScript and JavaScript language defaults, configured as one:
 // both languages share the project's libs, options and validation state.
 import * as monaco from 'monaco-editor';
+import { refreshSemanticTokens } from './semanticTokens';
 
 const LANGUAGE_DEFAULTS = [
   monaco.typescript.typescriptDefaults,
@@ -48,6 +49,9 @@ export function applyCompilerOptions(options: monaco.typescript.CompilerOptions)
   if (next === appliedOptions) return false;
   appliedOptions = next;
   forEachDefaults((defaults) => defaults.setCompilerOptions(options));
+  // A new program classifies identifiers differently: what the semantic
+  // tokens provider cached was made from the old one (semanticTokens.ts).
+  refreshSemanticTokens();
   return true;
 }
 
