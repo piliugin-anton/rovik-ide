@@ -455,7 +455,20 @@ impl Remote {
         if self.core.agents.is_running(dialog_id) {
             self.moving(dialog_id, "pausing", None);
             let pause = agent_run::agent_pause(&self.core, dialog_id.into(), host.into());
-            paused = pause.await.map_err(|e| before(internal(e)))?;
+            // "Cancel move" is heard while the run makes its way to its
+            // safe point: the pause asked of it is taken back.
+            let cancelled = async {
+                while self.not_cancelled(dialog_id).is_ok() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            };
+            paused = tokio::select! {
+                pause = pause => pause.map_err(|e| before(internal(e)))?,
+                () = cancelled => {
+                    agent_run::agent_unpause_move(&self.core, dialog_id);
+                    return Err(before(Fail::new(FailCode::BadRequest, CANCELLED)));
+                }
+            };
         }
         self.step(dialog_id, moves::PAUSED).await.map_err(before)?;
         self.not_cancelled(dialog_id).map_err(before)?;

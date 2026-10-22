@@ -77,7 +77,7 @@ use crate::chat_db::store::{self, NewMessage};
 use crate::core::Core;
 use events::{AgentEvent, ApprovalRequest, QuestionsRequest};
 use plan::QuestionsOutcome;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
@@ -147,6 +147,15 @@ impl PauseSignal {
         }
         *asked = Some(request);
     }
+
+    /// Takes back a move's pause (the move was cancelled before the run
+    /// saw it). A drain's stays.
+    fn clear_move(&self) {
+        let mut asked = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if asked.as_ref().is_some_and(|a| a.kind == MOVE) {
+            *asked = None;
+        }
+    }
 }
 
 /// The pause kinds a run can be asked for (`PauseInfo::kind`).
@@ -184,6 +193,20 @@ struct RunControl {
     budget_cut: Option<String>,
     /// The chat held for this process while the run goes (chat_hold.rs).
     _hold: crate::chat_hold::Hold,
+    /// A lead's run's task, once spawned (`start_run`): a move cuts a run
+    /// that only waits for the user (`cut_waiting`).
+    abort: Option<tokio::task::AbortHandle>,
+    /// The calls a `Resume` of the run asks about again (cut by a crash):
+    /// a move cuts the run while it waits on those alone.
+    resumed: HashSet<String>,
+}
+
+/// What `AgentState::cut_waiting` took from a run it cut: the approvals and
+/// questions it waited on. Kept until the run has ended, then dropped: a
+/// reply dropped before would reach a run still being polled as a "no".
+pub struct CutWaits {
+    _approvals: Vec<Waiting<ApprovalDecision, ApprovalRequest>>,
+    _questions: Vec<Waiting<QuestionsOutcome, QuestionsRequest>>,
 }
 
 /// A reasoning effort picked while a run goes on.
@@ -612,6 +635,8 @@ impl AgentState {
                 spent_before: budget::Spent::default(),
                 budget_cut: None,
                 _hold: hold,
+                abort: None,
+                resumed: HashSet::new(),
             },
         );
         Some(Controls {
@@ -890,6 +915,108 @@ impl AgentState {
 
     fn draining(&self) -> bool {
         self.lock().draining
+    }
+
+    /// The chat's run's task, once spawned: what `cut_waiting` aborts.
+    fn set_abort(&self, dialog_id: &str, run_id: &str, abort: tokio::task::AbortHandle) {
+        if let Some(run) = self
+            .lock()
+            .runs
+            .get_mut(dialog_id)
+            .filter(|r| r.run_id == run_id)
+        {
+            run.abort = Some(abort);
+        }
+    }
+
+    /// The calls the chat's run resumes (`StartKind::Resume`): cut by a
+    /// crash, they ask the user again.
+    pub(super) fn note_resumed(&self, dialog_id: &str, calls: &[crate::chat_db::store::ToolCall]) {
+        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
+            run.resumed.extend(calls.iter().map(|c| c.id.clone()));
+        }
+    }
+
+    /// Cuts the chat's run where it only waits for the user to approve
+    /// calls it resumes after a crash: a lead's of an ordinary chat (no
+    /// Autopilot task, no subagents or candidates at work), as the crash
+    /// cut it. The calls are left without results, which a `Resume` asks
+    /// about again (5.4) where the chat moves. A move's pause would
+    /// otherwise wait for a decision about a call the move is about to
+    /// take elsewhere (the chat is read-only meanwhile); one the run asked
+    /// as it went is still answered here (M03). What it waited on is
+    /// settled in the chat; the replies are kept until the run has ended
+    /// (`CutWaits`). None when it isn't such a run.
+    pub fn cut_waiting(&self, core: &Core, dialog_id: &str) -> Option<CutWaits> {
+        let (approvals, questions) = {
+            let mut inner = self.lock();
+            let run = inner.runs.get(dialog_id)?;
+            if run.parent.is_some() || run.autopilot.is_some() || run.abort.is_none() {
+                return None;
+            }
+            if inner.driving.contains_key(dialog_id) {
+                return None;
+            }
+            // Only the run itself: nothing of its family is at work.
+            let others = inner.runs.iter().any(|(chat, r)| {
+                chat != dialog_id
+                    && (r.parent.as_deref() == Some(dialog_id)
+                        || inner.candidates.get(chat).is_some_and(|c| c.main == dialog_id))
+            });
+            if others {
+                return None;
+            }
+            let own = |key: &WaitKey| key.0 == dialog_id;
+            let resumed = &run.resumed;
+            let mut waits = inner.approvals.keys().filter(|k| own(k)).peekable();
+            if waits.peek().is_none()
+                || !waits.all(|k| resumed.contains(&k.1))
+                || inner.questions.keys().any(own)
+            {
+                return None;
+            }
+            if let Some(abort) = inner.runs.get(dialog_id).and_then(|r| r.abort.as_ref()) {
+                abort.abort();
+            }
+            let keys: Vec<WaitKey> = inner.approvals.keys().filter(|k| own(k)).cloned().collect();
+            let approvals: Vec<_> = keys
+                .into_iter()
+                .filter_map(|k| inner.approvals.remove(&k).map(|w| (k, w)))
+                .collect();
+            let keys: Vec<WaitKey> = inner.questions.keys().filter(|k| own(k)).cloned().collect();
+            let questions: Vec<_> = keys
+                .into_iter()
+                .filter_map(|k| inner.questions.remove(&k).map(|w| (k, w)))
+                .collect();
+            (approvals, questions)
+        };
+        let mut cut = CutWaits {
+            _approvals: Vec::new(),
+            _questions: Vec::new(),
+        };
+        for ((dialog_id, tool_call_id), w) in approvals {
+            core.emit(AgentEvent::ApprovalSettled {
+                dialog_id,
+                tool_call_id,
+            });
+            cut._approvals.push(w);
+        }
+        for ((dialog_id, tool_call_id), w) in questions {
+            core.emit(AgentEvent::QuestionsSettled {
+                dialog_id,
+                tool_call_id,
+            });
+            cut._questions.push(w);
+        }
+        Some(cut)
+    }
+
+    /// Takes back a move's pause asked of the chat's run (the move was
+    /// cancelled before the run saw it).
+    pub fn unpause_move(&self, dialog_id: &str) {
+        if let Some(run) = self.lock().runs.get(dialog_id) {
+            run.pause.clear_move();
+        }
     }
 
     /// Stops the chat's run: its current request, its next steps, and
@@ -1415,8 +1542,18 @@ pub(super) async fn start_run(
         // The run as a task of its own: should it panic, the chat is still
         // released and told, instead of reading "already working" until
         // the app restarts.
-        let outcome = match crate::rt::spawn(async move { run.go(entry).await }).await {
+        let task = crate::rt::spawn(async move { run.go(entry).await });
+        core.agents.set_abort(&dialog_id, &id, task.abort_handle());
+        let outcome = match task.await {
             Ok(outcome) => outcome,
+            // Cut where it only waited for the user (`cut_waiting`), as a
+            // crash cuts it: its calls wait for a `Resume`.
+            Err(e) if e.is_cancelled() => {
+                let left = steering.close_and_take();
+                hand_back_steering(&core, &dialog_id, left, "interrupted");
+                crate::overlay::chats::set_running(&dialog_id, false);
+                "interrupted".to_string()
+            }
             Err(e) => {
                 eprintln!("agent: run {id} in chat {dialog_id} ended abnormally: {e}");
                 // What the user sent it that it didn't read goes back.
@@ -1501,7 +1638,12 @@ pub async fn agent_pause(core: &Core, dialog_id: String, host: String) -> Result
             }
             return Ok(false);
         }
-        ended(core, &dialog_id).await;
+        // A run that only waits for the user never reaches a safe point
+        // while the chat moves (it's read-only meanwhile): it's cut, and
+        // its calls wait for a `Resume` where the chat goes.
+        if ended_or_cut(core, &dialog_id).await {
+            return Ok(false);
+        }
         if last_paused_for(core, &dialog_id, MOVE).await? {
             return Ok(true);
         }
@@ -1561,6 +1703,25 @@ async fn ended(core: &Core, dialog_id: &str) {
     while core.agents.is_running(dialog_id) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+}
+
+/// `ended`, for a move's pause: a run that comes to wait only for the user
+/// meanwhile is cut (`AgentState::cut_waiting`). True: it was cut.
+async fn ended_or_cut(core: &Core, dialog_id: &str) -> bool {
+    let mut cut = None;
+    while core.agents.is_running(dialog_id) {
+        if cut.is_none() {
+            cut = core.agents.cut_waiting(core, dialog_id);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    cut.is_some()
+}
+
+/// Takes back a move's pause asked of the chat's run: the move was
+/// cancelled while it waited for the run's safe point.
+pub fn agent_unpause_move(core: &Core, dialog_id: &str) {
+    core.agents.unpause_move(dialog_id);
 }
 
 /// Whether the chat's last stored message is a pause of `kind`.

@@ -1524,6 +1524,10 @@ impl Run {
             }
             Entry::Resume { calls, since } => {
                 self.resumed_since = Some(since);
+                // A move cuts the run while it waits on these alone.
+                if self.sub().is_none() {
+                    self.core.agents.note_resumed(&self.dialog_id, &calls);
+                }
                 // Each asks the user again: they weren't there to decide.
                 self.execute_tool_calls(&calls, Some(RESUME_NOTE)).await?;
                 if self.stopped() {
