@@ -759,6 +759,16 @@ const FINDING_A: &str = "## Findings\n\n1. [high] a.txt:1 — The greeting is wr
 const FINDING_B: &str = "## Findings\n\n1. [medium] b.txt:1 — The farewell is missing\n   - Scenario: b.txt is empty.\n   - Fix: add one.\n   - Confidence: plausible";
 const NO_FINDINGS: &str = "## Findings\n\nNone.";
 
+/// The agent's answer to the change review's finding 1 (`answer_review`):
+/// findings block in every mode, and free-text replies aren't answers.
+fn answered(id: &'static str, status: &str, note: &str) -> Reply {
+    Reply::Call {
+        id,
+        name: "answer_review",
+        args: json!({ "responses": [{ "finding": 1, "status": status, "note": note }] }),
+    }
+}
+
 fn reviewer_on(extra: Value) -> subagent::SubagentConfig {
     let mut reviewer = json!({ "enabled": true });
     if let (Some(r), Some(e)) = (reviewer.as_object_mut(), extra.as_object()) {
@@ -809,17 +819,19 @@ fn record_order(messages: &[MessageRow]) -> Vec<String> {
 #[tokio::test]
 async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
     let h = harness(&[("a.txt", "old\n")]).await;
+    let resolved = "## Earlier findings\n\n- Earlier 1: resolved — a.txt says hello\n\n## Findings\n\nNone.";
     let (url, seen) = model_routed(
         vec![(
             REVIEW,
-            vec![Reply::Text(FINDING_A), Reply::Text(NO_FINDINGS)],
+            vec![Reply::Text(FINDING_A), Reply::Text(resolved)],
         )],
         vec![
             write_call("w1", "a.txt", "helo\n"),
             Reply::Text("Done."),
             // The findings came back: fix and answer.
             write_call("w2", "a.txt", "hello\n"),
-            Reply::Text("1: fixed, it says hello now."),
+            answered("a1", "fixed", "it says hello now."),
+            Reply::Text("Fixed it."),
         ],
     )
     .await;
@@ -875,10 +887,10 @@ async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
         "nothing from the lead's conversation"
     );
     assert!(!briefs[0].contains("earlier review"));
-    // Round 2: the earlier findings and the lead's answer.
+    // Round 2, a follow-up: the earlier findings and the lead's answer.
     assert!(briefs[1].contains("## The earlier review"));
     assert!(briefs[1].contains("The greeting is wrong"));
-    assert!(briefs[1].contains("1: fixed, it says hello now."));
+    assert!(briefs[1].contains("The agent's answer: fixed — it says hello now."), "{}", briefs[1]);
     assert!(briefs[1].contains("+hello"));
     let tools = tool_names(&requests_with(&seen, REVIEW)[0]);
     assert!(tools.contains(&"read".to_string()) && tools.contains(&"callers".to_string()));
@@ -895,17 +907,27 @@ async fn findings_go_to_the_agent_then_a_second_review_then_the_checks() {
 }
 
 #[tokio::test]
-async fn a_third_review_in_a_row_never_happens() {
+async fn every_finding_is_followed_up_before_the_checks() {
     let h = harness(&[("a.txt", "old\n"), ("b.txt", "")]).await;
     let (url, _) = model_routed(
-        vec![(REVIEW, vec![Reply::Text(FINDING_A), Reply::Text(FINDING_B)])],
+        vec![(
+            REVIEW,
+            vec![
+                Reply::Text(FINDING_A),
+                // A medium, plausible finding counts too: it's held.
+                Reply::Text(FINDING_B),
+                Reply::Text(NO_FINDINGS),
+            ],
+        )],
         vec![
             write_call("w1", "a.txt", "helo\n"),
             Reply::Text("Done."),
             write_call("w2", "a.txt", "hello\n"),
-            Reply::Text("1: fixed."),
+            answered("a1", "fixed", "spelled hello"),
+            Reply::Text("Fixed."),
             write_call("w3", "b.txt", "bye\n"),
-            Reply::Text("1: added."),
+            answered("a2", "fixed", "added a farewell"),
+            Reply::Text("Added."),
         ],
     )
     .await;
@@ -919,9 +941,53 @@ async fn a_third_review_in_a_row_never_happens() {
             "note",
             "review:findings",
             "note",
+            "review:clean",
             "verification:unverified"
         ]
     );
+}
+
+/// Agent mode: a low finding the agent never resolves, still open after
+/// the run's last review, keeps the change from being accepted: the run
+/// ends `review-open`, before the checks.
+#[tokio::test]
+async fn a_low_finding_left_open_blocks_the_change_in_agent_mode() {
+    let low = "## Findings\n\n1. [low] a.txt:1 — The greeting has a trailing space\n   - Scenario: a.txt ends with a space.\n   - Fix: trim it.\n   - Confidence: plausible";
+    let not_resolved = "## Earlier findings\n\n- Earlier 1: not resolved — the space is still there\n\n## Findings\n\nNone.";
+    let h = harness(&[("a.txt", "old\n")]).await;
+    let (url, _) = model_routed(
+        vec![(
+            REVIEW,
+            vec![
+                Reply::Text(low),
+                Reply::Text(not_resolved),
+                Reply::Text(not_resolved),
+            ],
+        )],
+        vec![
+            write_call("w1", "a.txt", "hello \n"),
+            Reply::Text("Done."),
+            answered("a1", "not-a-problem", "the space is harmless"),
+            Reply::Text("Answered."),
+            answered("a2", "not-a-problem", "still harmless"),
+            Reply::Text("Answered again."),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    h.start(h.with_subagents(&url, "Greet", checks_on(), reviewer_on(json!({}))))
+        .await;
+    assert_eq!(h.run_end().await, "review-open");
+    let messages = h.messages().await;
+    let order = record_order(&messages);
+    assert!(
+        !order.iter().any(|r| r.starts_with("verification")),
+        "never checked: {order:?}"
+    );
+    let last = reviews(&messages).pop().unwrap();
+    assert_eq!(last["blocked"], true, "{last}");
+    assert_eq!(last["open"], 1, "{last}");
+    assert_eq!(last["findings"][0]["severity"], "low", "{last}");
 }
 
 #[tokio::test]
@@ -933,7 +999,8 @@ async fn a_repeated_finding_without_new_evidence_is_dropped() {
             write_call("w1", "a.txt", "helo\n"),
             Reply::Text("Done."),
             write_call("w2", "a.txt", "helo there\n"),
-            Reply::Text("1: not a bug, because helo is the brand name."),
+            answered("a1", "not-a-problem", "helo is the brand name"),
+            Reply::Text("Answered."),
         ],
     )
     .await;
@@ -1101,7 +1168,8 @@ async fn no_run_gets_more_than_three_reviews() {
             write_call("w1", "a.txt", "helo\n"),
             Reply::Text("Done."),
             write_call("w2", "a.txt", "hello\n"),
-            Reply::Text("1: fixed."),
+            answered("a1", "fixed", "spelled hello"),
+            Reply::Text("Fixed."),
             write_call("w3", "a.txt", "hello 3\n"),
             Reply::Text("Done."),
             write_call("w4", "a.txt", "hello 4\n"),
@@ -2474,11 +2542,12 @@ async fn the_open_findings_section_is_in_the_saved_plan() {
     );
 }
 
-/// B13: a follow-up review's new findings below high about steps the
-/// revision didn't change are shown in its record but hold nothing: the
-/// plan is saved clean.
+/// A follow-up review's new findings count wherever they are, whatever
+/// their severity: one about a step the revision didn't change is still
+/// open, and (Agent mode, the run's last plan review) saved at the end of
+/// the plan for the user.
 #[tokio::test]
-async fn a_follow_up_holds_nothing_new_where_the_revision_changed_nothing() {
+async fn a_follow_up_holds_new_findings_even_where_the_revision_changed_nothing() {
     let h = plan_project().await;
     let (url, _) = model_routed(
         vec![(
@@ -2499,15 +2568,16 @@ async fn a_follow_up_holds_nothing_new_where_the_revision_changed_nothing() {
     let second = result_of(&messages, "p2");
     assert!(
         second.content.starts_with("Saved the plan to")
-            && !second.content.contains("still reported"),
+            && second.content.contains("still reported 1 finding"),
         "{}",
         second.content
     );
     let review = &second.meta.as_ref().unwrap()["review"];
-    assert_eq!(review["status"], "clean", "{review}");
-    assert_eq!(review["notHeld"][0]["step"], 1, "{review}");
-    assert!(review.get("open").is_none(), "{review}");
-    // No verdict on it, even when asked: settled, and not checked.
+    assert_eq!(review["status"], "findings", "{review}");
+    assert!(review.get("notHeld").is_none(), "{review}");
+    assert_eq!(review["open"], 1, "{review}");
+    assert_eq!(review["findings"][0]["step"], 1, "{review}");
+    // No verdict on the earlier one, even when asked: settled, and not checked.
     assert_eq!(
         (
             &review["earlier"][0]["resolved"],
@@ -2517,11 +2587,7 @@ async fn a_follow_up_holds_nothing_new_where_the_revision_changed_nothing() {
         "{review}"
     );
     let files = h.plan_files();
-    assert!(
-        !files[0].contains("## Open review findings"),
-        "{}",
-        files[0]
-    );
+    assert!(files[0].contains("## Open review findings"), "{}", files[0]);
 }
 
 /// B13: a follow-up review whose report gives an earlier finding no
@@ -6507,15 +6573,22 @@ async fn the_fix_after_a_review_after_green_is_protected() {
         if breaks {
             // The findings' fix breaks the check: rolled back; then it stops.
             lead.push(write_call("w3", "a.txt", "fixed the greeting\n"));
-            lead.push(Reply::Text("1: fixed."));
+            lead.push(answered("a1", "fixed", "fixed the greeting"));
+            lead.push(Reply::Text("Fixed."));
             lead.push(Reply::Text("I'll leave it."));
         } else {
-            lead.push(Reply::Text("1: not a problem, the spelling is intended."));
+            lead.push(answered("a1", "not-a-problem", "the spelling is intended"));
+            lead.push(Reply::Text("Answered."));
         }
         let (url, _) = model_routed(
             vec![(
                 REVIEW,
-                vec![Reply::Text(NO_FINDINGS), Reply::Text(FINDING_A)],
+                // Its follow-up finds the answer right.
+                vec![
+                    Reply::Text(NO_FINDINGS),
+                    Reply::Text(FINDING_A),
+                    Reply::Text(NO_FINDINGS),
+                ],
             )],
             lead,
         )
@@ -6568,7 +6641,11 @@ async fn a_bash_only_fix_after_green_reruns_the_checks() {
     let (url, _) = model_routed(
         vec![(
             REVIEW,
-            vec![Reply::Text(NO_FINDINGS), Reply::Text(FINDING_A)],
+            vec![
+                Reply::Text(NO_FINDINGS),
+                Reply::Text(FINDING_A),
+                Reply::Text(NO_FINDINGS),
+            ],
         )],
         vec![
             write_call("w1", "a.txt", "nope\n"),
@@ -6582,7 +6659,8 @@ async fn a_bash_only_fix_after_green_reruns_the_checks() {
                 name: "bash",
                 args: json!({ "command": "printf 'ok broken\\n' > a.txt" }),
             },
-            Reply::Text("1: fixed."),
+            answered("a1", "fixed", "changed the greeting"),
+            Reply::Text("Fixed."),
             Reply::Text("I'll leave it."),
         ],
     )
@@ -6615,6 +6693,9 @@ async fn a_bash_only_fix_after_green_reruns_the_checks() {
     assert_ne!(end, "verified");
 }
 
+/// R08 with the strict review: each green after a fix is reviewed, the
+/// findings followed up; a finding the run's last review raises can't be
+/// resolved any more, so the change isn't accepted: `review-open`.
 #[tokio::test]
 async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
     if std::process::Command::new("npm")
@@ -6653,9 +6734,11 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
             write_call("w2", "a.txt", "ok\n"),
             Reply::Text("Fixed."),
             write_call("w3", "a.txt", "ok hello\n"),
-            Reply::Text("1: fixed."),
+            answered("a1", "fixed", "spelled hello"),
+            Reply::Text("Fixed."),
             write_call("w4", "a.txt", "ok hello, Ann\n"),
-            Reply::Text("1: fixed."),
+            answered("a2", "fixed", "added the name"),
+            Reply::Text("Fixed."),
         ],
     )
     .await;
@@ -6666,7 +6749,7 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
     };
     h.start(h.with_subagents(&url, "Greet", permissions, reviewer_on(json!({}))))
         .await;
-    assert_eq!(h.run_end().await, "verified");
+    assert_eq!(h.run_end().await, "review-open");
     let messages = h.messages().await;
     assert_eq!(
         record_order(&messages),
@@ -6676,10 +6759,8 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
             "verification:passed",
             "review:findings",
             "note",
-            "verification:passed",
+            // The follow-up comes before the checks run again.
             "review:findings",
-            "note",
-            "verification:passed",
         ]
     );
     let records: Vec<Value> = messages
@@ -6687,21 +6768,13 @@ async fn green_after_a_fix_is_reviewed_until_the_review_budget_is_used_up() {
         .filter_map(|m| m.meta.as_ref()?.get("verification").cloned())
         .collect();
     assert_eq!(records[1]["reviewAfterGreen"]["status"], "findings");
-    // The third review was the run's last: the fourth green isn't reviewed,
-    // and its record says why.
-    let last = records.last().unwrap();
-    assert_eq!(last["reviewAfterGreen"]["status"], "skipped", "{last}");
-    assert!(last["reviewAfterGreen"]["reason"]
-        .as_str()
-        .unwrap()
-        .contains("used up"));
-    // The extra round after the last review went past the usual three.
-    assert_eq!(last["round"], 4);
-    assert_eq!(last["maxRounds"], 4);
-    assert!(reviews(&messages)
-        .iter()
-        .skip(1)
-        .all(|r| r["afterGreen"] == true));
+    let all = reviews(&messages);
+    // The review after green; its follow-up runs as the agent finishes.
+    assert_eq!(all[1]["afterGreen"], true, "{:#}", all[1]);
+    // The third review, the run's last, found a new problem: it blocks.
+    let last = all.last().unwrap();
+    assert_eq!(last["blocked"], true, "{last}");
+    assert_eq!(last["findings"][0]["title"], "The greeting has no name", "{last}");
 }
 
 /// Round 2 (§4.2): the third round is the first green; its review's fix

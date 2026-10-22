@@ -4,22 +4,21 @@
 //! the checklist and the diff, never the agent's conversation: independence
 //! is the point (Cognition's review agent, PROMPTS.md's manual reviewer).
 //!
-//! Its findings follow a strict format (`parse_findings`). High and medium
-//! ones go back to the agent, which fixes each or says why it isn't a
-//! problem; low ones are only shown. A second round sees the first round's
-//! findings and the agent's answers, and a finding it repeats without new
+//! Its findings follow a strict format (`parse_findings`). Every finding,
+//! whatever its severity or confidence, goes back to the agent, which fixes
+//! it or says why it isn't a problem. A finding it repeats without new
 //! evidence is dropped. At most MAX_CHANGE_REVIEWS_PER_RUN reviews in a run,
 //! and MAX_REVIEWS_IN_ROW before the checks run. A reviewer that fails, or
 //! whose report can't be read even after its repair turn, is recorded as
-//! skipped, never as "no findings", and the run goes on to the checks.
+//! skipped, never as "no findings".
 //!
-//! The review is advice: the verification gate stays the judge (D13).
-//!
-//! In Autopilot it blocks (S06, autopilot-plan D10): the agent answers each
-//! finding with `answer_review` (its replies aren't read), and the next
-//! review is a follow-up that gives a verdict on each earlier finding, as a
-//! follow-up plan review does (B13). A high finding still open after the
-//! run's last review ends the run `review-open`.
+//! The review blocks, in Autopilot and in Agent mode alike (S06,
+//! autopilot-plan D10): the agent answers each finding with `answer_review`
+//! (its replies aren't read), and the next review is a follow-up that gives
+//! a verdict on each earlier finding, as a follow-up plan review does (B13).
+//! A finding still open after the run's last review, of any severity, ends
+//! the run `review-open`: the change isn't accepted until every finding is
+//! resolved.
 
 use super::diff::{self, Hunk};
 use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
@@ -36,8 +35,6 @@ use std::time::{Duration, Instant};
 pub const MAX_CHANGE_REVIEWS_PER_RUN: u32 = 3;
 /// Reviews with no check run between them.
 pub const MAX_REVIEWS_IN_ROW: u32 = 2;
-/// The agent's answers to earlier findings, in a later brief, at most.
-const MAX_ANSWER_CHARS: usize = 4_000;
 const MAX_PLAN_CHARS: usize = 8_000;
 
 const REVIEWER_PROMPT: &str = r###"You are a code reviewer: a read-only helper of a coding agent. The agent changed the user's project. You see the user's request, the plan if there was one, and the change as a diff, but not the agent's conversation, on purpose: review the change with fresh eyes.
@@ -122,11 +119,6 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// High and medium findings go to the agent; low ones are only shown.
-    pub fn serious(&self) -> bool {
-        self.severity != "low"
-    }
-
     /// "Step 3 — its title", or the one of them it has.
     pub fn headline(&self) -> String {
         match (self.location.is_empty(), self.title.is_empty()) {
@@ -570,23 +562,7 @@ pub(super) fn describe(f: &Finding, n: usize) -> String {
     out
 }
 
-/// The note that sends high and medium findings to the agent.
-pub fn findings_note(findings: &[Finding], round: u32) -> String {
-    let list = findings
-        .iter()
-        .enumerate()
-        .map(|(i, f)| describe(f, i + 1))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!(
-        "{IDE_NOTE}A reviewer read your change with fresh eyes (review {round} of at most {MAX_CHANGE_REVIEWS_PER_RUN}): it saw the request, the plan and the diff, not this conversation. \
-         Its findings are another model's opinion: check each against the code before you act on it.\n\n{list}\n\n\
-         For each finding, fix it, or say in your reply why it isn't a problem (\"1: not a bug, because …\"). \
-         Then finish: the project's checks run after that."
-    )
-}
-
-/// How a change review's note counts its rounds: Autopilot's, or a
+/// How a change review's note counts its rounds: for a count, or a
 /// Thorough task's, by progress (T07), with its reviews in a row so far
 /// that left no fewer findings open than an earlier one.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -595,24 +571,16 @@ pub enum Rounds {
     ByProgress { stalled: u32 },
 }
 
-/// The note that sends findings to the agent, in Autopilot (S06): answered
-/// with `answer_review`, then checked by a follow-up review. `last`: the
-/// run's last review, which no review follows.
-pub fn findings_note_for(findings: &[Finding], round: u32, autopilot: bool, last: bool) -> String {
-    findings_note_in(findings, round, autopilot, last, Rounds::Count)
+/// The note that sends findings to the agent (S06): answered with
+/// `answer_review`, then checked by a follow-up review. Every finding
+/// counts, whatever its severity. `last`: the run's last review, which no
+/// review follows.
+pub fn findings_note(findings: &[Finding], round: u32, last: bool) -> String {
+    findings_note_in(findings, round, last, Rounds::Count)
 }
 
-/// `findings_note_for`, its rounds counted as `rounds` says.
-pub fn findings_note_in(
-    findings: &[Finding],
-    round: u32,
-    autopilot: bool,
-    last: bool,
-    rounds: Rounds,
-) -> String {
-    if !autopilot {
-        return findings_note(findings, round);
-    }
+/// `findings_note`, its rounds counted as `rounds` says.
+pub fn findings_note_in(findings: &[Finding], round: u32, last: bool, rounds: Rounds) -> String {
     let list = findings
         .iter()
         .enumerate()
@@ -621,17 +589,18 @@ pub fn findings_note_in(
         .join("\n\n");
     let ends = match rounds {
         Rounds::Count => format!(
-            "a high finding still open after review {MAX_CHANGE_REVIEWS_PER_RUN} ends the task."
+            "a finding still open after review {MAX_CHANGE_REVIEWS_PER_RUN}, whatever its severity, ends the run with the change not accepted."
         ),
-        Rounds::ByProgress { stalled: 0 } => "the reviews go on while each leaves fewer high and medium findings open than any before: two in a row that don't end them, and a high finding still open then ends the task.".to_string(),
-        Rounds::ByProgress { .. } => "this review left no fewer findings open than an earlier one: if the next doesn't either, the reviews end, and a high finding still open then ends the task.".to_string(),
+        Rounds::ByProgress { stalled: 0 } => "the reviews go on while each leaves fewer findings open than any before: two in a row that don't end them, and a finding still open then, whatever its severity, ends the run with the change not accepted.".to_string(),
+        Rounds::ByProgress { .. } => "this review left no fewer findings open than an earlier one: if the next doesn't either, the reviews end, and a finding still open then, whatever its severity, ends the run with the change not accepted.".to_string(),
     };
     let next = if last {
-        "This was the run's last review: fix what needs fixing, then finish, and the project's checks run."
+        "This was the run's last review: fix every finding, then finish, and the project's checks run."
             .to_string()
     } else {
         format!(
-            "Answer each finding with the answer_review tool, by its number: \"fixed\" once you've fixed it (say what you changed), \
+            "Every finding must be resolved, low ones too: the change isn't accepted while one is open. \
+             Answer each finding with the answer_review tool, by its number: \"fixed\" once you've fixed it (say what you changed), \
              or \"not-a-problem\" (say why, from the code). Your replies aren't read as answers. Then finish: a follow-up review \
              checks the answers and the fixes before the project's checks run, and {ends}"
         )
@@ -647,7 +616,7 @@ pub fn findings_note_in(
     )
 }
 
-/// S06: Autopilot's tool for answering the change review's findings.
+/// S06: the tool for answering the change review's findings.
 pub fn answer_review_schema() -> Value {
     json!({
         "type": "function",
@@ -939,21 +908,6 @@ impl Run {
         out
     }
 
-    /// The agent's replies since the findings were sent to it.
-    async fn answers_since(&self, note_id: &str) -> String {
-        let recent = self.recent().await.unwrap_or_default();
-        let Some(at) = recent.iter().position(|m| m.id == note_id) else {
-            return String::new();
-        };
-        let text = recent[at + 1..]
-            .iter()
-            .filter(|m| m.role == "assistant" && !m.content.trim().is_empty())
-            .map(|m| m.content.trim().to_string())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        crate::chat_db::store::char_prefix(&text, MAX_ANSWER_CHARS).to_string()
-    }
-
     /// Updates the review record (`meta.review`).
     async fn review_record(&self, id: &str, review: Value) -> Result<(), String> {
         self.update_meta(id, json!({ "review": review })).await
@@ -970,14 +924,14 @@ impl Run {
         self.review_change_as(false).await
     }
 
-    /// `after_green`: R08's review once the checks pass after a repair;
-    /// only its high findings go to the agent.
+    /// `after_green`: R08's review once the checks pass after a repair.
     ///
-    /// S06 (4.6, D10): in Autopilot the findings sent wait for their
-    /// answers (`answer_review`), and the next review is a follow-up
-    /// whatever changed, giving a verdict on each (B13's rules). A high
-    /// finding still open after the run's last review sets
-    /// `review_blocked`: the run ends `review-open`.
+    /// S06 (4.6, D10), in Autopilot and in Agent mode alike: the findings
+    /// sent wait for their answers (`answer_review`), and the next review
+    /// is a follow-up whatever changed, giving a verdict on each (B13's
+    /// rules). Every finding counts, whatever its severity: one still open
+    /// after the run's last review sets `review_blocked`, and the run ends
+    /// `review-open`.
     pub(super) async fn review_change_as(&mut self, after_green: bool) -> Result<bool, String> {
         if self.sub().is_some() || self.plan_mode || self.stopped() || self.profile.no_tools {
             return Ok(false);
@@ -986,8 +940,10 @@ impl Run {
         if config.kind(Kind::Reviewer).is_none() || self.root.is_none() {
             return Ok(false);
         }
-        let blocking = self.in_autopilot();
-        let follow_up = blocking && !self.review_held.is_empty();
+        // The review blocks in every mode: the change isn't accepted while
+        // a finding is open.
+        let blocking = true;
+        let follow_up = !self.review_held.is_empty();
         // T07: a Thorough task's reviews go on by progress, to a backstop.
         let thorough = self.thorough();
         let cap = self.change_review_cap();
@@ -1062,16 +1018,11 @@ impl Run {
             .filter(|c| !c.carried)
             .map(|c| c.items)
             .unwrap_or_default();
-        // Autopilot reads no free-text answers: a review after its
-        // follow-ups found everything settled says so instead.
-        let answers = match (blocking, self.review_note_id.clone()) {
-            (true, _) => {
-                "Each of them was settled: a follow-up review found it fixed, or not a problem."
-                    .to_string()
-            }
-            (false, Some(id)) => self.answers_since(&id).await,
-            (false, None) => String::new(),
-        };
+        // No free-text answers are read: a review after its follow-ups
+        // found everything settled says so instead.
+        let answers =
+            "Each of them was settled: a follow-up review found it fixed, or not a problem."
+                .to_string();
         let request = self.latest_user_request().await;
         let earlier = self.review_findings.clone();
         let held = self.review_held.clone();
@@ -1116,7 +1067,6 @@ impl Run {
                                 responses: &responses,
                                 verdicts: &plan_review::parse_verdicts(&r.text),
                                 unchanged_and_silent: !changed_since && responses.is_empty(),
-                                changed: &[],
                             },
                             found,
                         );
@@ -1132,17 +1082,9 @@ impl Run {
                         }
                         kept
                     };
-                    serious = kept
-                        .iter()
-                        .filter(|f| {
-                            if after_green {
-                                f.severity == "high"
-                            } else {
-                                f.serious()
-                            }
-                        })
-                        .cloned()
-                        .collect();
+                    // Every finding counts, whatever its severity or
+                    // confidence: none is only shown.
+                    serious = kept.clone();
                     review["status"] = json!(if kept.is_empty() { "clean" } else { "findings" });
                     review["findings"] = json!(kept);
                     if r.status == SubStatus::Partial {
@@ -1171,31 +1113,25 @@ impl Run {
             self.review_answer_nudges = 0;
         }
         // D10: a review that couldn't report found none of the findings it
-        // was to check resolved: they're open still. The last review's high
-        // ones block; an earlier review's are asked about again, as the
-        // plan review's are (S02), never let through unchecked.
+        // was to check resolved: they're open still. The last review's
+        // block; an earlier review's are asked about again, as the plan
+        // review's are (S02), never let through unchecked.
         let unchecked: Vec<Finding> = match blocking && !reported {
-            true => (self.review_held.iter())
-                .filter(|f| f.severity == "high")
-                .cloned()
-                .collect(),
+            true => self.review_held.clone(),
             false => Vec::new(),
         };
-        let high_open = serious.iter().filter(|f| f.severity == "high").count() + unchecked.len();
-        if blocking && last && high_open > 0 && !self.stopped() {
+        let open = serious.len() + unchecked.len();
+        if blocking && last && open > 0 && !self.stopped() {
             if !unchecked.is_empty() {
                 review["findings"] = json!(unchecked);
             }
             review["blocked"] = json!(true);
-            review["open"] = json!(high_open);
+            review["open"] = json!(open);
             self.review_blocked = true;
         }
         let asked_again = blocking && !reported && !last && !self.review_held.is_empty();
         if asked_again {
-            serious = (self.review_held.iter())
-                .filter(|f| !after_green || f.severity == "high")
-                .cloned()
-                .collect();
+            serious = self.review_held.clone();
             review["findings"] = json!(serious);
         }
         self.review_record(&record_id, review.clone()).await?;
@@ -1223,11 +1159,6 @@ impl Run {
         if serious.is_empty() || self.stopped() || self.review_blocked {
             return Ok(false);
         }
-        if blocking && last {
-            // Below high at the last review: shown to the agent, and no
-            // review follows; the checks decide.
-            self.review_held.clear();
-        }
         let rounds = match thorough {
             true => Rounds::ByProgress {
                 stalled: self.change_review_progress.stalled(),
@@ -1236,7 +1167,7 @@ impl Run {
         };
         let mut note = new_message(
             "user",
-            &findings_note_in(&serious, round, blocking, last, rounds),
+            &findings_note_in(&serious, round, last, rounds),
         );
         note.meta = Some(json!({ "harness": "review" }));
         self.review_note_id = Some(note.id.clone());
@@ -1378,7 +1309,6 @@ mod tests {
         assert_eq!(f[0].line, Some(42));
         assert_eq!(f[0].title, "Off by one in the loop");
         assert_eq!(f[0].confidence, "confirmed");
-        assert!(f[0].serious() && !f[1].serious());
         assert_eq!(f[1].path.as_deref(), Some("src/b.ts"));
         assert_eq!(f[1].line, None);
         assert_eq!(f[1].scenario, "none at run time,\njust noise.");
@@ -1612,15 +1542,16 @@ mod tests {
     #[test]
     fn the_findings_note_for_the_agent() {
         let f = parse_findings(GOOD).unwrap();
-        let note = findings_note(&f[..1], 1);
+        let note = findings_note(&f[..1], 1, false);
         assert!(note.starts_with(IDE_NOTE));
         assert!(note.contains("review 1 of at most 3"));
         assert!(note.contains("1. [high] src/a.ts:42 — Off by one in the loop\n   - Scenario:"));
-        assert!(note.contains("not a bug, because"));
+        assert!(note.contains("answer_review"));
+        assert!(note.contains("low ones too"), "{note}");
     }
 
     /// Round 2 (§4.2): the severity is read without case and stored in
-    /// lower case, so `serious()` and the after-green "high" filter see it.
+    /// lower case.
     #[test]
     fn severity_in_caps() {
         let text = "## Findings\n\
@@ -1630,7 +1561,6 @@ mod tests {
         let f = parse_findings(text).unwrap();
         let severities: Vec<&str> = f.iter().map(|x| x.severity.as_str()).collect();
         assert_eq!(severities, ["high", "medium", "low"]);
-        assert!(f[0].serious() && f[1].serious() && !f[2].serious());
     }
 
     /// Round 2 (§4.2): line 0 is kept as written; a line number past `u32`
@@ -1718,7 +1648,7 @@ mod tests {
         assert_eq!(found[0], found[1]);
         let (kept, dropped) = drop_repeats(found.clone(), &[]);
         assert_eq!((kept.len(), dropped.len()), (2, 0));
-        let note = findings_note(&kept, 1);
+        let note = findings_note(&kept, 1, false);
         assert!(
             note.contains("1. [high] src/a.ts:42 — Off by one"),
             "{note}"

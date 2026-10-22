@@ -98,16 +98,16 @@ export interface ReviewMeta {
   open?: number;
   /** A follow-up review: each earlier finding, the agent's answer and the verdict. */
   earlier?: EarlierCheck[];
-  /** change, Autopilot (S06): it blocks: its findings are answered and followed up. */
+  /** change (S06): it blocks: its findings are answered and followed up. */
   blocking?: boolean;
   /**
-   * The last review left a high finding open: an Autopilot plan isn't
-   * saved (S02), an Autopilot change goes no further (S06).
+   * The last review left a finding open: an Autopilot plan isn't saved
+   * (S02), a change goes no further (S06).
    */
   blocked?: boolean;
-  /** plan, a follow-up review: new findings below high about steps the revision didn't change; shown, not held. */
+  /** plan, older records: new findings below high about steps the revision didn't change; shown, not held. */
   notHeld?: ReviewFinding[];
-  /** change: R08's review once the checks pass after a repair: only high findings go back. */
+  /** change: R08's review once the checks pass after a repair. */
   afterGreen?: boolean;
   usage?: import('./subagents').SubagentUsage;
 }
@@ -129,20 +129,16 @@ export function reviewHeadline(meta: ReviewMeta, interrupted: boolean): string {
       return 'The reviewer found nothing to fix.';
     case 'findings': {
       const all = meta.findings ?? [];
-      // P5.5: after green, only high findings go back to the agent.
-      const serious = all.filter((f) =>
-        meta.afterGreen ? f.severity === 'high' : f.severity !== 'low'
-      ).length;
+      // Every finding goes back to the agent, whatever its severity.
+      const serious = all.length;
       const count = plural(all.length, 'finding');
       if (meta.blocked) {
-        const high = meta.open ?? all.filter((f) => f.severity === 'high').length;
-        return `The reviewer still finds ${plural(high, 'high problem')} after the run’s last review: the change goes no further, and the task ends here.`;
+        const open = meta.open ?? all.length;
+        return `The reviewer still finds ${plural(open, 'problem')} after the run’s last review: the change goes no further, and the run ends here.`;
       }
-      if (meta.blocking && serious)
+      if (serious)
         return `The reviewer found ${count}: ${serious} sent to the agent to fix or answer, and a follow-up review checks them.`;
-      return serious
-        ? `The reviewer found ${count}: ${serious} sent to the agent to fix or answer.`
-        : `The reviewer found ${count}, none serious enough to send to the agent.`;
+      return 'The reviewer found nothing to fix.';
     }
     case 'skipped':
       return `Review skipped: ${meta.reason ?? 'the reviewer couldn’t run'}. The checks decide.`;

@@ -259,8 +259,11 @@ waiting stays for `go` to hand back (3.4).
 At P4 a run goes on with a message after every end but these, which hand
 back what's waiting (3.4): `stopped`, `verify-stopped`, `error`,
 `repetition`, `verify-needs-approval` (the checks' state is already put aside
-for "Run checks"), and the Autopilot-only ends (`budget`, `review-open`,
-`unmet`). So it goes on after `done`, `verified`, `unverified` (no checks set
+for "Run checks"), the Autopilot-only ends (`budget`, `unmet`), and
+`review-open`, which every mode can reach now that the change review blocks
+in Agent mode too: a finding still open after the last review keeps the
+change from being accepted, and a message read there would carry the run
+past the block, so what's waiting is handed back. So it goes on after `done`, `verified`, `unverified` (no checks set
 up), `verify-unverified`, `verify-unchecked`, `verify-flagged`,
 `verify-unresolved`, `verify-gave-up` and `unfinished-checklist`.
 

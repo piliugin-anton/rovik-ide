@@ -250,13 +250,11 @@ pub(super) fn review_record(
         };
         return base.with_summary(why);
     };
-    // S02, S06: blocked at the last round, with a high finding open: the
+    // S02, S06: blocked at the last round, with a finding open: the
     // plan isn't saved, or the change goes no further.
     if review["blocked"] == true {
         let round = review["round"].as_u64().unwrap_or(1) as u32;
-        let high = review["findings"]
-            .as_array()
-            .map_or(0, |f| f.iter().filter(|f| f["severity"] == "high").count());
+        let open = review["findings"].as_array().map_or(0, Vec::len);
         let outcome = match wanted {
             "plan" => "plan-blocked",
             _ => "review-open",
@@ -266,8 +264,8 @@ pub(super) fn review_record(
             reference: Some(row.id.clone()),
             outcome: Some(outcome.into()),
             ..base.with_summary(format!(
-                "Blocked after {round} reviews: {high} high finding{} open",
-                plural(high)
+                "Blocked after {round} reviews: {open} finding{} open",
+                plural(open)
             ))
         };
     }

@@ -1271,7 +1271,7 @@ async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
     assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
     assert_eq!(
         records[1].summary.as_deref(),
-        Some("Blocked after 3 reviews: 1 high finding open")
+        Some("Blocked after 3 reviews: 1 finding open")
     );
 }
 
@@ -1328,7 +1328,7 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
     assert_eq!(review.round, 1);
     assert_eq!(
         review.summary.as_deref(),
-        Some("Blocked after 3 reviews: 1 high finding open")
+        Some("Blocked after 3 reviews: 1 finding open")
     );
     assert_eq!(
         records[0].summary.as_deref(),
@@ -4104,7 +4104,7 @@ async fn a_last_review_that_cant_report_leaves_its_high_finding_open() {
     );
     assert_eq!(
         review.summary.as_deref(),
-        Some("Blocked after 3 reviews: 1 high finding open")
+        Some("Blocked after 3 reviews: 1 finding open")
     );
     assert_eq!(
         records.last().unwrap().outcome.as_deref(),
@@ -4225,13 +4225,13 @@ async fn a_high_finding_the_follow_ups_dont_settle_ends_the_task_review_open() {
     assert_eq!(review.outcome.as_deref(), Some("review-open"));
     assert_eq!(
         review.summary.as_deref(),
-        Some("Blocked after 3 reviews: 1 high finding open")
+        Some("Blocked after 3 reviews: 1 finding open")
     );
     let deliver = &records[6];
     assert_eq!(deliver.outcome.as_deref(), Some("review-open"));
     assert_eq!(
         deliver.summary.as_deref(),
-        Some("A high finding is still open after the change's last review; the changes are in the project as they are")
+        Some("A finding is still open after the change's last review; the changes are in the project as they are")
     );
     // Its checks never counted: none ran.
     let messages = h.messages().await;
@@ -5989,7 +5989,7 @@ async fn thorough_plan_reviews_go_on_by_progress_and_end_after_two_without() {
     // Past Balanced's three reviews.
     assert_eq!(
         review.summary.as_deref(),
-        Some("Blocked after 4 reviews: 1 high finding open")
+        Some("Blocked after 4 reviews: 1 finding open")
     );
     let messages = h.messages().await;
     let result = |id: &str| result_of(&messages, id).content.clone();
@@ -6004,7 +6004,7 @@ async fn thorough_plan_reviews_go_on_by_progress_and_end_after_two_without() {
         "{}",
         result("p3")
     );
-    assert!(result("p4").contains("after 4 reviews the reviewer still finds a high problem"));
+    assert!(result("p4").contains("after 4 reviews the reviewer still finds problems"));
     let reviews: Vec<&Value> = messages
         .iter()
         .filter_map(|m| m.meta.as_ref()?.get("review"))
@@ -6125,7 +6125,7 @@ async fn thorough_change_reviews_end_after_two_rounds_without_progress() {
     );
     assert_eq!(
         review.summary.as_deref(),
-        Some("Blocked after 4 reviews: 1 high finding open")
+        Some("Blocked after 4 reviews: 1 finding open")
     );
     let messages = h.messages().await;
     let notes: Vec<&str> = messages

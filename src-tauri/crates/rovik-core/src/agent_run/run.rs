@@ -305,15 +305,15 @@ pub struct Run {
     /// latest (its answers follow it).
     pub(super) review_findings: Vec<super::change_review::Finding>,
     pub(super) review_note_id: Option<String>,
-    /// S06, Autopilot's blocking review: the findings the last review sent,
+    /// S06, the blocking review (every mode): the findings the last review sent,
     /// numbered as the agent got them, which the next review follows up;
     /// the agent's answers to them (`answer_review`), and the times it was
     /// asked for missing ones.
     pub(super) review_held: Vec<super::change_review::Finding>,
     pub(super) review_answers: Vec<super::plan_review::Response>,
     pub(super) review_answer_nudges: u32,
-    /// A high finding still open after the run's last review: the run ends
-    /// `review-open`.
+    /// A finding, of any severity, still open after the run's last review:
+    /// the run ends `review-open`.
     pub(super) review_blocked: bool,
     /// S07: the test writer ran for a change that had no test (once).
     pub(super) tests_after_change: bool,
@@ -482,8 +482,12 @@ pub(super) struct TurnOutput {
 /// Whether a run goes on with a message waiting where it would end with
 /// this outcome (3.3). The ends that can't hand it back instead: a stop,
 /// an error, a reply that kept repeating itself, checks waiting for the
-/// user's go (their state is put aside for "Run checks"), a pause, and
-/// Autopilot's own ends.
+/// user's go (their state is put aside for "Run checks"), a pause, the
+/// task's budget and acceptance (`budget`, `unmet`, Autopilot's own), and
+/// `review-open`, in every mode: a finding still open after the run's last
+/// change review keeps the change from being accepted, and a message read
+/// there would carry the run past that block to the checks. What waits is
+/// handed back to the user instead.
 pub(super) fn steer_goes_on(outcome: &str) -> bool {
     !matches!(
         outcome,
@@ -1639,7 +1643,9 @@ impl Run {
                 if self.review_change().await? {
                     continue;
                 }
-                // S06: a high finding still open after the last review.
+                // S06: a finding still open after the last review, in any
+                // mode. A message sent meanwhile isn't read here: it's
+                // handed back (`steer_goes_on`), never a way past the block.
                 if self.review_blocked {
                     return Ok("review-open".into());
                 }
@@ -1976,10 +1982,17 @@ impl Run {
         );
         if self.autopilot {
             super::autopilot::without_questions(&mut tools);
-            // S06: the answers to the change review's findings.
-            if !self.plan_mode && self.sub().is_none() && self.root.is_some() && !context_only {
-                tools.push(super::change_review::answer_review_schema());
-            }
+        }
+        // S06: the answers to the change review's findings: always in
+        // Autopilot; in Agent mode while a review's findings wait for them.
+        if (self.autopilot || !self.review_held.is_empty())
+            && !self.profile.no_tools
+            && !self.plan_mode
+            && self.sub().is_none()
+            && self.root.is_some()
+            && !context_only
+        {
+            tools.push(super::change_review::answer_review_schema());
         }
         // A subagent gets its kind's tools only; a lead with subagents on,
         // the `task` tool (not on a turn restricted to context tools).

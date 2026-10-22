@@ -1191,7 +1191,7 @@ impl Run {
             self.take_checkpoint();
             return Ok("continue".into());
         }
-        // S06: that review left a high finding open, and it was the last.
+        // S06: that review left a finding open, and it was the last.
         if self.review_blocked {
             self.checkpoint = None;
             return Ok("review-open".into());
@@ -1363,7 +1363,7 @@ impl Run {
     }
 
     /// R08: the change reviewer, once the checks pass after a fix round,
-    /// within the run's review budget. True: high findings went to the
+    /// within the run's review budget. True: findings went to the
     /// agent, and one more fix and check round is allowed.
     async fn review_after_green(&mut self, record_id: &str, meta: &Value) -> Result<bool, String> {
         let config = self.config().subagents;
