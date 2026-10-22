@@ -88,7 +88,7 @@ install_rust() {
 # --- 3. Node deps -------------------------------------------------------------
 
 install_node_deps() {
-  command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node 18+ (https://nodejs.org) and re-run."
+  command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node 22, or 20.19+ (https://nodejs.org), and re-run."
   command -v npm >/dev/null 2>&1 || die "npm not found alongside node — check your Node install."
   log "Node $(node --version), npm $(npm --version)."
 
