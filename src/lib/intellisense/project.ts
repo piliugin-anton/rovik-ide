@@ -39,6 +39,7 @@ import {
   SOURCE_FILE,
 } from './paths';
 import { QuietRunner } from './quietRunner';
+import { refreshSemanticTokens } from './semanticTokens';
 import { SourceChangeQueue, type SourceChangeSink } from './sourceChanges';
 import { ActiveConfig } from './activeConfig';
 import { dependencyUriFor, modelUriFor } from './uris';
@@ -212,6 +213,9 @@ export class IntelliSenseProject {
         this.ready = true;
         clearTypeScriptMarkers();
         setSemanticValidationEnabled(true);
+        // Files open while the libs were loading were classified against an
+        // empty program (globals, imported symbols): classify them again.
+        refreshSemanticTokens();
         // Imports typed while the project loaded.
         if (this.editedModels.size > 0) this.importsLookup.trigger();
         // Files changed meanwhile, on top of what it loaded.

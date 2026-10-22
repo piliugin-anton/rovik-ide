@@ -52,6 +52,7 @@ import {
   ts,
   TypeScriptWorker,
   type CreateData,
+  type EncodedClassifications,
   type ExtraLib,
   type MirrorModel,
   type WorkerContext,
@@ -202,6 +203,30 @@ export class ProjectTypeScriptWorker extends TypeScriptWorker {
       }
     }
     return { files: files.length, duplicates, imports };
+  }
+
+  /**
+   * TypeScript's semantic classifications for a file, as it encodes them
+   * (format `'2028'`, semanticTokens.ts): triplets of `[start, length,
+   * encoded]` with `encoded = ((typeIndex + 1) << 8) | modifierBits`.
+   *
+   * `TokenType`: class, enum, interface, namespace, typeParameter, type,
+   * parameter, variable, enumMember, property, function, member.
+   * `TokenModifier` bits: declaration, static, async, readonly,
+   * defaultLibrary, local.
+   *
+   * Ours rather than one of Monaco's features (the FEATURES map below wraps
+   * TypeScriptWorker.prototype methods, and does its own guard): a file
+   * outside the program answers empty — which is also what keeps chat code
+   * blocks (not in the program) uncoloured, should the main thread ask.
+   */
+  async getEncodedSemanticClassifications(
+    fileName: string,
+    span: { start: number; length: number }
+  ): Promise<EncodedClassifications> {
+    const key = libKeyOf(fileName);
+    if (isDefaultLibName(key) || !this.inProgram(key)) return { spans: [], endOfLineState: 0 };
+    return this.getLanguageService().getEncodedSemanticClassifications(key, span, '2028');
   }
 
   private links(): ReadonlyMap<string, string> {

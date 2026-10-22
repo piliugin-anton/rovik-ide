@@ -12,7 +12,7 @@ import {
   updateEditorSettings,
   type EditorThemeId,
 } from '../lib/editorSettings';
-import { BUILTIN_DARK_THEMES, COMMUNITY_DARK_THEMES, preloadTheme } from '../lib/monacoThemes';
+import { COMMUNITY_DARK_THEMES, preloadTheme } from '../lib/monacoThemes';
 import { Segmented } from './SettingsControls';
 
 export default function EditorSettings() {
@@ -42,16 +42,9 @@ export default function EditorSettings() {
                 updateEditorSettings({ theme: e.currentTarget.value as EditorThemeId })
               }
             >
-              <optgroup label="Built in">
-                <For each={BUILTIN_DARK_THEMES}>
-                  {(t) => <option value={t.id}>{t.label}</option>}
-                </For>
-              </optgroup>
-              <optgroup label="Community (dark)">
-                <For each={COMMUNITY_DARK_THEMES}>
-                  {(t) => <option value={t.id}>{t.label}</option>}
-                </For>
-              </optgroup>
+              <For each={COMMUNITY_DARK_THEMES}>
+                {(t) => <option value={t.id}>{t.label}</option>}
+              </For>
             </select>
             <p class="setting-explain">
               {themeLabel()} — {themeHint()}

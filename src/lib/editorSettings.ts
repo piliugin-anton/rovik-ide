@@ -8,7 +8,7 @@
 // in components/Editor.tsx follows them live.
 
 import { createSignal } from 'solid-js';
-import { BUILTIN_DARK_THEMES, COMMUNITY_DARK_THEMES, isDarkThemeId } from './monacoThemes';
+import { COMMUNITY_DARK_THEMES, DEFAULT_THEME_ID, isDarkThemeId } from './monacoThemes';
 import { sharedMap } from './sharedState';
 
 export type EditorThemeId = string;
@@ -19,17 +19,14 @@ export interface EditorThemeOption {
   hint: string;
 }
 
-/** Dark themes only: Monaco's built-in dark themes plus the vendored
- *  community dark themes (see lib/monacoThemes.ts). To drop a theme,
- *  delete its row there — an unknown saved id falls back to vs-dark. */
-export const EDITOR_THEMES: EditorThemeOption[] = [
-  ...BUILTIN_DARK_THEMES.map((t) => ({ ...t })),
-  ...COMMUNITY_DARK_THEMES.map((t) => ({
-    id: t.id,
-    label: t.label,
-    hint: 'Community theme',
-  })),
-];
+/** The themes offered (see lib/monacoThemes.ts): only ones that colour
+ *  every semantic token. To drop a theme, delete its row there — an
+ *  unknown saved id falls back to Dark Modern. */
+export const EDITOR_THEMES: EditorThemeOption[] = COMMUNITY_DARK_THEMES.map((t) => ({
+  id: t.id,
+  label: t.label,
+  hint: t.id === DEFAULT_THEME_ID ? 'VS Code’s default dark theme' : 'Community theme',
+}));
 
 export interface EditorSettings {
   theme: EditorThemeId;
@@ -55,7 +52,9 @@ export interface EditorSettings {
 const STORAGE_KEY = 'rovik.editorSettings.v1';
 
 const DEFAULTS: EditorSettings = {
-  theme: 'vs-dark',
+  // VS Code's default dark theme. A saved id that's no longer offered (the
+  // built-ins, the themes that didn't colour every token) becomes this one.
+  theme: DEFAULT_THEME_ID,
   fontSize: 14,
   tabSize: 2,
   insertSpaces: true,

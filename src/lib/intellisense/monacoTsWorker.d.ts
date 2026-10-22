@@ -31,12 +31,27 @@ declare module 'monaco-editor/language/typescript/ts.worker.js' {
     getSourceFile(fileName: string): object | undefined;
   }
 
+  /**
+   * Semantic classifications as TypeScript encodes them (format `'2028'`):
+   * triplets of `[start, length, encoded]` over the requested span, where
+   * `encoded` is `((typeIndex + 1) << 8) | modifierBits`.
+   */
+  export interface EncodedClassifications {
+    spans: number[];
+    endOfLineState: number;
+  }
+
   /** TypeScript's language service (the parts used here). */
   export interface LanguageService {
     /** The program, brought up to date with the files first. */
     getProgram(): Program | undefined;
     /** The program as it is. */
     getCurrentProgram(): Program | undefined;
+    getEncodedSemanticClassifications(
+      fileName: string,
+      span: { start: number; length: number },
+      format?: string
+    ): EncodedClassifications;
   }
 
   export class TypeScriptWorker {
