@@ -1251,3 +1251,32 @@ mod credential_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+mod identity_tests {
+    use super::*;
+
+    /// A repository's own identity is the one its commits get, whatever the
+    /// global config says (the local level outranks every other).
+    #[test]
+    fn a_commit_takes_the_repositorys_own_identity() {
+        let dir = std::env::temp_dir().join(format!("git-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut local = repo
+            .config()
+            .unwrap()
+            .open_level(git2::ConfigLevel::Local)
+            .unwrap();
+        local.set_str("user.name", "Local").unwrap();
+        local.set_str("user.email", "local@example.com").unwrap();
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git_commit_blocking(dir.to_string_lossy().into_owned(), "first".into()).unwrap();
+        let head = head_commit(&repo).unwrap();
+        for who in [head.author(), head.committer()] {
+            assert_eq!(who.name().unwrap(), "Local");
+            assert_eq!(who.email().unwrap(), "local@example.com");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

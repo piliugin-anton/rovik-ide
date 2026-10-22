@@ -402,7 +402,10 @@ export default function MessageList(props: {
       pendingCorrection = 0;
       if (innerRef) innerRef.style.transform = '';
     }
-    if (scrollRef) scrollRef.scrollTop = scrollRef.scrollHeight;
+    if (scrollRef) {
+      scrollRef.scrollTop = scrollRef.scrollHeight;
+      lastScrollTop = scrollRef.scrollTop;
+    }
   }
 
   /** Runs a window change and keeps the first visible message where it was. */
@@ -452,6 +455,18 @@ export default function MessageList(props: {
   let lastScrollTop = 0;
   let lastUserInput = 0;
   let draggingScrollbar = false;
+  /*
+   * Wheel gestures, to tell a gesture's tail from new input. A touchpad
+   * flick goes on sending wheel events after the fingers lift (kinetic
+   * scrolling, with nothing in the event to say so), so a flick up followed
+   * by a click on "Scroll to latest" scrolled straight back up and ended
+   * following: the button needed a second click.
+   */
+  const WHEEL_GESTURE_GAP_MS = 150;
+  let wheelGestureFrom = 0;
+  let lastWheelAt = 0;
+  /** When the view last jumped to the newest message. */
+  let jumpedAt = 0;
 
   const markUserInput = () => {
     lastUserInput = performance.now();
@@ -514,18 +529,27 @@ export default function MessageList(props: {
     settleTimer = window.setTimeout(() => {
       if (scrollingNow()) return scheduleSettle();
       requestAnimationFrame(() => {
-        const el = scrollRef;
-        if (!el || pendingCorrection === 0) return;
         if (scrollingNow()) return scheduleSettle();
-        const shift = pendingCorrection;
-        pendingCorrection = 0;
-        if (innerRef) innerRef.style.transform = '';
-        el.scrollTop += shift;
-        lastScrollTop = el.scrollTop;
+        foldCorrection();
       });
     }, SETTLE_MS);
   }
-  onCleanup(() => window.clearTimeout(settleTimer));
+
+  /** The correction held as a transform becomes a scroll position change. */
+  function foldCorrection() {
+    const el = scrollRef;
+    if (!el || pendingCorrection === 0) return;
+    window.clearTimeout(settleTimer);
+    const shift = pendingCorrection;
+    pendingCorrection = 0;
+    if (innerRef) innerRef.style.transform = '';
+    el.scrollTop += shift;
+    lastScrollTop = el.scrollTop;
+  }
+  onCleanup(() => {
+    window.clearTimeout(settleTimer);
+    settleGen += 1; // a jump's settling at the end stops with the list
+  });
 
   /*
    * -----------------------------------------------------------------------
@@ -791,15 +815,37 @@ export default function MessageList(props: {
     // Frozen while older messages load: the capture-phase blocker already
     // swallowed this input; don't let it change follow state or direction.
     if (topLock) return;
+    const now = performance.now();
+    if (now - lastWheelAt > WHEEL_GESTURE_GAP_MS) wheelGestureFrom = now;
+    lastWheelAt = now;
+    // The tail of a gesture made before the jump: not new input.
+    if (wheelGestureFrom < jumpedAt) {
+      e.preventDefault();
+      return;
+    }
     markUserInput();
-    // Starts an animated scroll whose first scroll event comes a frame later.
-    markScrollActivity();
+    const el = scrollRef;
+    // Pushing against an edge scrolls nothing, so there's no animation to
+    // leave alone: a correction still held as a transform becomes a scroll
+    // position now. Held on, it kept the top of the list out of reach (the
+    // first message hidden above the top edge) for as long as the user kept
+    // trying to scroll up to it, since every wheel event put the settle off.
+    const atTop = !!el && el.scrollTop <= 0;
+    const atEnd = !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+    if (pendingCorrection !== 0 && ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atEnd))) {
+      foldCorrection();
+    } else {
+      // Starts an animated scroll whose first scroll event comes a frame later.
+      markScrollActivity();
+    }
     userHeadingToEnd = false;
     if (e.deltaY !== 0) userDirection = e.deltaY > 0 ? 'down' : 'up';
     // Upward intent ends following at once, even if a scroll-to-bottom is
     // queued for this frame (it checks stick() before scrolling).
-    const el = scrollRef;
-    if (e.deltaY < 0 && el && el.scrollHeight > el.clientHeight) setStick(false);
+    if (e.deltaY < 0 && el && el.scrollHeight > el.clientHeight) {
+      settleGen += 1; // and ends a jump's settling at the end
+      setStick(false);
+    }
   }
 
   function handlePointerDown(e: PointerEvent) {
@@ -881,9 +927,46 @@ export default function MessageList(props: {
     // back to the anchor it was holding.
     if (topLock) unlockTopScroll();
     if (props.chat?.hasNewer) await props.onReloadLatest();
+    // The wheel input that scrolled up before the click must not count any
+    // more: its scroll animation is still running, and its next upward step
+    // read as the user leaving the bottom, so following ended again at once
+    // (the view reached the end, but the button stayed and nothing followed).
+    lastUserInput = 0;
+    userDirection = null;
+    userHeadingToEnd = false;
+    jumpedAt = performance.now();
     setWin(initialWindow(messages().length));
     setStick(true);
-    requestAnimationFrame(scrollToBottom);
+    scrollToBottom();
+    void settleAtBottom();
+  }
+
+  let settleGen = 0;
+  /**
+   * Keeps a jump at the very end while the last messages settle at their
+   * real height: rendered as they come into view (content-visibility), code
+   * colorizing, the bars under the list (checklist, changes) opening or
+   * resizing. Each moves the end after the jump was made, and the view was
+   * left short of the newest message. Ends at the user's first scroll input.
+   */
+  async function settleAtBottom(maxMs = 1000, quietMs = 200) {
+    const gen = ++settleGen;
+    const start = performance.now();
+    let lastChange = start;
+    let lastHeight = -1;
+    let lastClient = -1;
+    while (performance.now() - start < maxMs) {
+      await nextFrame();
+      const el = scrollRef;
+      if (!el || gen !== settleGen || topLock || lastUserInput > start || draggingScrollbar) return;
+      if (el.scrollHeight !== lastHeight || el.clientHeight !== lastClient) {
+        lastHeight = el.scrollHeight;
+        lastClient = el.clientHeight;
+        lastChange = performance.now();
+      } else if (performance.now() - lastChange >= quietMs) break;
+      if (!stick()) setStick(true);
+      if (!held && el.scrollHeight - el.scrollTop - el.clientHeight > 0.5) scrollToBottom();
+    }
   }
 
   props.controller?.({ followLatest: () => void jumpToLatest() });
@@ -909,8 +992,10 @@ export default function MessageList(props: {
       ([dialogId, length, firstId]) => {
         if (dialogId !== prevDialog) {
           prevDialog = dialogId;
-          // A history load from the previous chat must not hold the new one.
+          // A history load from the previous chat must not hold the new one,
+          // nor a jump made in it keep pinning this one to its end.
           if (topLock) unlockTopScroll();
+          settleGen += 1;
           const place = dialogId ? readingPlaces.get(dialogId) : undefined;
           if (dialogId) readingPlaces.delete(dialogId);
           const at = place ? messages().findIndex((m) => m.id === place.id) : -1;
