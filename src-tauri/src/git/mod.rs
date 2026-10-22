@@ -64,7 +64,10 @@ pub(crate) fn head_commit(repo: &Repository) -> Result<git2::Commit<'_>, String>
     repo.head().and_then(|h| h.peel_to_commit()).err_text()
 }
 
-/// Who commits: what a commit, a stash or a merge needs.
+/// Who commits: what a commit, a stash or a merge needs. libgit2 reads
+/// `user.name` and `user.email` each from the highest-priority config level
+/// that sets it, so the repository's own `.git/config` comes before the
+/// global (and XDG, system) config, key by key.
 pub(crate) fn signature(repo: &Repository) -> Result<git2::Signature<'static>, String> {
     repo.signature()
         .map_err(|e| format!("No Git identity configured (user.name / user.email): {e}"))
