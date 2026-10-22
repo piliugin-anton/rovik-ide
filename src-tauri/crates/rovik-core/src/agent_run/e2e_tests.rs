@@ -1420,6 +1420,50 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
 
+/// 6.8: a run resumed after a crash that waits only for its user to
+/// approve the calls the crash cut never reaches a safe point while its
+/// chat moves, read-only: the move cuts it, as the crash did, and the call
+/// waits for a `Resume` where the chat goes.
+#[tokio::test]
+async fn a_move_cuts_a_resumed_run_that_waits_for_its_approval() {
+    let h = harness(&[]).await;
+    let id = h.dialog_id.clone();
+    let stored = vec![
+        run::new_message("user", "List files"),
+        store::NewMessage {
+            tool_calls: Some(vec![store::ToolCall {
+                id: "l1".into(),
+                name: "list_dir".into(),
+                arguments: "{}".into(),
+                extra_content: None,
+            }]),
+            ..run::new_message("assistant", "")
+        },
+    ];
+    h.core
+        .db
+        .write(move |c| store::append_messages(c, &id, &stored))
+        .await
+        .unwrap();
+    let (url, seen) = model(vec![Reply::Text("Nothing there.")]).await;
+    h.start(h.request(&url, StartKind::Resume, quiet_permissions()))
+        .await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    // Cut at once: no waiting for the pause to be seen (`pause_for_move`).
+    let (core, chat) = (h.core.clone(), h.dialog_id.clone());
+    let pausing = agent_pause(&core, chat, "build-server");
+    let paused = within("the cut", pausing).await;
+    assert!(!paused, "it didn't pause: it was cut");
+    assert_eq!(h.run_end().await, "interrupted");
+    assert!(!h.core.agents.is_running(&h.dialog_id));
+    assert_eq!(h.events_of("approvalSettled").len(), 1, "the approval goes from the chat");
+    // The call still has no result: a `Resume` asks about it again.
+    assert!(waits_for_results(&h.core, &h.dialog_id).await.unwrap());
+    assert_eq!(roles(&h.messages().await), ["user", "assistant"]);
+    assert!(seen.lock().unwrap().is_empty(), "no request");
+}
+
 /// 6.8: a pause for a move asked while the chat's Autopilot driver is
 /// between two of its task's stages waits for the driver's turn, and
 /// pauses the run that turn started: none goes on after the pause, and a

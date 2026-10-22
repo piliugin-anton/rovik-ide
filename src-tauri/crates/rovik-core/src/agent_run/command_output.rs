@@ -893,6 +893,30 @@ pub fn environment_failure(exit_code: Option<i32>, output: &str) -> Option<Strin
     (exit_code == Some(127)).then(|| "exit code 127: a program it runs wasn't found".to_string())
 }
 
+/// The program a shell didn't find, by its own line (`sh: 1: cargo: not
+/// found`, `bash: cargo: command not found`, `zsh: command not found:
+/// cargo`), with exit code 127. None for anything else.
+pub fn program_not_found(exit_code: Option<i32>, output: &str) -> Option<String> {
+    static NAMED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:command not found:\s*(?P<a>[\w.+-]+)\s*$|(?P<b>[\w.+-]+): (?:command )?not found\s*$)")
+            .unwrap()
+    });
+    if exit_code != Some(127) {
+        return None;
+    }
+    clean_output(output).lines().find_map(|line| {
+        let line = line.trim();
+        if !SHELL_NOT_FOUND.is_match(line) {
+            return None;
+        }
+        let c = NAMED.captures(line)?;
+        let m = c.name("a").or(c.name("b"))?;
+        // A path (`./test`, `/opt/x/cargo`) isn't a program the PATH finds.
+        let path = line[..m.start()].ends_with(['/', '\\']);
+        (!path).then(|| m.as_str().to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1368,6 +1392,25 @@ mod tests {
 
     /// V03 (D12): what a failed check says when its environment failed,
     /// from each tool's own words.
+    #[test]
+    fn the_program_a_shell_didnt_find_is_named() {
+        let cases: &[(Option<i32>, &str, Option<&str>)] = &[
+            (Some(127), "sh: 1: cargo: not found\n", Some("cargo")),
+            (Some(127), "/bin/bash: line 1: cargo: command not found", Some("cargo")),
+            (Some(127), "bash: rustc: command not found", Some("rustc")),
+            (Some(127), "zsh: command not found: cargo", Some("cargo")),
+            // Not the shell's: another exit code, or no such line.
+            (Some(1), "bash: cargo: command not found", None),
+            (Some(127), "", None),
+            (Some(101), "test user: not found ... FAILED", None),
+            (Some(127), "sh: 1: ./test: not found", None),
+            (Some(127), "bash: /opt/x/cargo: No such file or directory\nbash: /opt/x/cargo: command not found", None),
+        ];
+        for (code, output, program) in cases {
+            assert_eq!(program_not_found(*code, output).as_deref(), *program, "{output}");
+        }
+    }
+
     #[test]
     fn an_environment_failure_is_told_from_the_codes() {
         let cases: &[(Option<i32>, &str, &str)] = &[

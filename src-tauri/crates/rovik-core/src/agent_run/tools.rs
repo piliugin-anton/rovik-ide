@@ -1090,7 +1090,11 @@ async fn run(
                 Some(queued),
             )
             .await?;
-            format_command_output(command, &out)
+            let mut content = format_command_output(command, &out);
+            if let Some(note) = missing_program_note(core.agents.on_server(), &out).await {
+                content.push_str(&note);
+            }
+            content
         }
         "list_dir" => {
             let path = text(args, "path").map(str::to_string);
@@ -1233,6 +1237,33 @@ async fn run(
             content
         };
     Ok(ToolResult::text(content))
+}
+
+/// A note for a command whose shell didn't find a program. It may have been
+/// installed since the process started (a server's setup script runs after
+/// its daemon did): the login shell's PATH is read again, and if it's there
+/// now, the model is told to run the command again. On a server, one that
+/// still isn't there is the server's to install: the model is told to say
+/// so rather than install toolchains itself.
+async fn missing_program_note(on_server: bool, out: &CommandOutput) -> Option<String> {
+    let program =
+        super::command_output::program_not_found(out.exit_code, &out.text())?;
+    // On the PATH already: the shell ran with another (the command's own),
+    // and reading the login shell's again changes nothing.
+    if crate::process::on_path(&program) {
+        return None;
+    }
+    let _ = crate::rt::spawn_blocking(crate::process::refresh_login_path).await;
+    if crate::process::on_path(&program) {
+        return Some(format!(
+            "\n(`{program}` is installed: it wasn't on the PATH the command got, which has just been read again from the login shell. Run the command again.)"
+        ));
+    }
+    on_server.then(|| {
+        format!(
+            "\n(`{program}` isn't installed on this server. Tell the user: the host's setup script, in Settings → Cloud hosts, installs what the project needs (e.g. Rust with `curl https://sh.rustup.rs -sSf | sh -s -- -y`), then Run setup.)"
+        )
+    })
 }
 
 /// The text the model sees for a finished command.
