@@ -9055,7 +9055,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg);
 }
 
-.autopilot-budget {
+.autopilot-budget,
+.autopilot-plan-fix {
   margin-left: 92px;
 }
 

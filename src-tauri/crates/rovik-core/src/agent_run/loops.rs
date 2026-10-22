@@ -20,15 +20,66 @@ pub const STALLED: u32 = 2;
 pub const MAX_ROUNDS: u32 = 10;
 
 /// A loop's progress so far.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Progress {
     /// The least any round left open.
     best: Option<usize>,
     /// Rounds in a row since a round last left less open than that.
     stalled: u32,
+    /// Rounds in a row without progress that end the loop.
+    stall: u32,
+    /// The most rounds the loop has.
+    cap: u32,
+}
+
+/// Thorough's: STALLED rounds without progress, MAX_ROUNDS at most. Not
+/// derived: a derived one would be 0/0 and end every loop after a round.
+impl Default for Progress {
+    fn default() -> Self {
+        Progress {
+            best: None,
+            stalled: 0,
+            stall: STALLED,
+            cap: MAX_ROUNDS,
+        }
+    }
 }
 
 impl Progress {
+    /// A loop ended by `stall` rounds in a row without progress, or after
+    /// `cap` rounds (Balanced Autopilot's plan-fix limits).
+    pub fn with(stall: u32, cap: u32) -> Progress {
+        Progress {
+            stall: stall.max(1),
+            cap: cap.max(1),
+            ..Progress::default()
+        }
+    }
+
+    /// A loop's progress as saved (`best`, `stalled`), with its limits.
+    pub fn restored(stall: u32, cap: u32, best: Option<usize>, stalled: u32) -> Progress {
+        Progress {
+            best,
+            stalled,
+            ..Progress::with(stall, cap)
+        }
+    }
+
+    /// The least any round left open, if a round ran.
+    pub fn best(&self) -> Option<usize> {
+        self.best
+    }
+
+    /// The rounds without progress that end the loop.
+    pub fn stall(&self) -> u32 {
+        self.stall
+    }
+
+    /// The most rounds the loop has.
+    pub fn cap(&self) -> u32 {
+        self.cap
+    }
+
     /// Round `round` left `open` open: whether another round may follow.
     /// None open ends the loop: there's nothing left to go round for.
     pub fn another_round(&mut self, open: usize, round: u32) -> bool {
@@ -39,7 +90,7 @@ impl Progress {
                 self.stalled = 0;
             }
         }
-        open > 0 && self.stalled < STALLED && round < MAX_ROUNDS
+        open > 0 && self.stalled < self.stall && round < self.cap
     }
 
     /// Rounds in a row without progress, as the last `another_round` left
@@ -99,6 +150,29 @@ mod tests {
         assert!(p.another_round(1, 2));
         assert!(p.another_round(2, 3), "worse than its best");
         assert!(!p.another_round(1, 4), "as good as its best, not better");
+    }
+
+    #[test]
+    fn custom_limits_and_a_restored_state() {
+        let mut p = Progress::with(1, 3);
+        assert!(p.another_round(5, 1));
+        assert!(!p.another_round(5, 2), "one round without progress ends it");
+        let mut p = Progress::with(3, 3);
+        assert!(p.another_round(5, 1));
+        assert!(p.another_round(4, 2));
+        assert!(!p.another_round(3, 3), "the cap");
+        let mut p = Progress::restored(2, 8, Some(4), 1);
+        assert_eq!((p.best(), p.stalled(), p.stall(), p.cap()), (Some(4), 1, 2, 8));
+        assert!(!p.another_round(4, 5), "a second round without progress");
+        let mut p = Progress::restored(2, 8, Some(4), 1);
+        assert!(p.another_round(3, 5));
+        assert_eq!(p.stalled(), 0);
+    }
+
+    #[test]
+    fn the_default_is_thoroughs() {
+        let p = Progress::default();
+        assert_eq!((p.best(), p.stalled(), p.stall(), p.cap()), (None, 0, STALLED, MAX_ROUNDS));
     }
 
     #[test]

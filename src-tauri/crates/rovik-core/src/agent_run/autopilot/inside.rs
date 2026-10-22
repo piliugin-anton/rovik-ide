@@ -224,6 +224,18 @@ pub(super) fn checks_record(
     }
 }
 
+/// A plan stage's stop reason (`review["stop"]`), as the strip says it.
+pub(super) fn stop_reason(stop: &str) -> &'static str {
+    match stop {
+        "plan-time" => "time limit",
+        "plan-budget" => "budget share",
+        "rounds" => "review limit",
+        "stalled" => "no progress",
+        "reviewer-unavailable" => "reviewer unavailable",
+        _ => "limit",
+    }
+}
+
 /// A review's record, from the last review of its kind among `rows`: the
 /// plan's (`stage` planReview) or the change's.
 pub(super) fn review_record(
@@ -259,13 +271,22 @@ pub(super) fn review_record(
             "plan" => "plan-blocked",
             _ => "review-open",
         };
+        // Balanced Autopilot's plan: which limit ended its reviews.
+        let why = match review["stop"].as_str() {
+            Some(stop) => format!(" ({})", stop_reason(stop)),
+            None => String::new(),
+        };
+        let left = match open {
+            0 => ": no review left".to_string(),
+            n => format!(": {n} finding{} open", plural(n)),
+        };
         return StageRecord {
             status: Status::Failed,
             reference: Some(row.id.clone()),
             outcome: Some(outcome.into()),
             ..base.with_summary(format!(
-                "Blocked after {round} reviews: {open} finding{} open",
-                plural(open)
+                "Blocked after {round} review{}{why}{left}",
+                plural(round as usize)
             ))
         };
     }

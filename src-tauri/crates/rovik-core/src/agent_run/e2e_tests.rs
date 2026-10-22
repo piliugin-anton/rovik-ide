@@ -2564,6 +2564,83 @@ async fn a_revised_plan_replaces_the_chats_plan_file() {
         .starts_with("# Second"));
 }
 
+/// Step 7: a revision sent as `edits` applies to the last plan, in order;
+/// a missing or ambiguous match, edits without a draft and neither
+/// argument are sent back, with the class "plan"; each result keeps the
+/// plan as checked (or the draft) in `meta.plan`.
+#[tokio::test]
+async fn a_revision_sent_as_edits_applies_to_the_last_plan() {
+    let h = harness(&[("src/a.rs", ""), ("src/b.rs", "")]).await;
+    let plan = "# First\n\n## Steps\n1. A\n   - Files: `src/a.rs`\n   - Add `fn a()` that returns 1.\n\
+                2. B\n   - Files: `src/b.rs`\n   - Add `fn b()` that calls `a()`.\n\n## Validation\n- `cargo test`";
+    let (url, _) = model(vec![
+        Reply::Call { id: "p0", name: "submit_plan", args: json!({}) },
+        Reply::Call {
+            id: "p1",
+            name: "submit_plan",
+            args: json!({ "edits": [{ "old_text": "First", "new_text": "Second" }] }),
+        },
+        Reply::Call { id: "p2", name: "submit_plan", args: json!({ "plan": plan }) },
+        Reply::Call {
+            id: "p3",
+            name: "submit_plan",
+            args: json!({ "edits": [
+                { "old_text": "# First", "new_text": "# Second" },
+                { "old_text": "nowhere", "new_text": "x" }
+            ] }),
+        },
+        Reply::Call {
+            id: "p4",
+            name: "submit_plan",
+            args: json!({ "edits": [{ "old_text": "Add `fn", "new_text": "Write `fn" }] }),
+        },
+        Reply::Call {
+            id: "p5",
+            name: "submit_plan",
+            args: json!({ "edits": [
+                { "old_text": "# First", "new_text": "# Second" },
+                { "old_text": "returns 1", "new_text": "returns 2" }
+            ] }),
+        },
+        Reply::Text("Revised."),
+    ])
+    .await;
+    h.start(h.request(&url, plan_send("Make a plan"), quiet_permissions()))
+        .await;
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    let text = |id: &str| result_of(&messages, id).content.clone();
+    let meta_plan = |id: &str| {
+        result_of(&messages, id)
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("plan"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    assert!(text("p0").contains("Neither `plan` nor `edits` was given"), "{}", text("p0"));
+    assert!(text("p1").contains("There's no earlier plan to edit"), "{}", text("p1"));
+    assert!(text("p2").starts_with("Saved the plan"), "{}", text("p2"));
+    assert_eq!(meta_plan("p2").as_deref(), Some(plan));
+    // Nothing applied: the draft stays as it was.
+    assert!(text("p3").starts_with("Error: the plan wasn't saved. Edit 2:"), "{}", text("p3"));
+    assert_eq!(meta_plan("p3").as_deref(), Some(plan));
+    assert!(text("p4").starts_with("Error: the plan wasn't saved. Edit 1:"), "{}", text("p4"));
+    assert!(text("p5").starts_with("Saved the plan"), "{}", text("p5"));
+    let saved = meta_plan("p5").unwrap();
+    assert!(saved.starts_with("# Second") && saved.contains("returns 2"), "{saved}");
+    for id in ["p0", "p1", "p3", "p4"] {
+        assert_eq!(crate::agent_run::tools::error_class(&text(id)), Some("plan"), "{id}");
+    }
+    let plans: Vec<_> = std::fs::read_dir(h.project.join(".rovik/plans"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(plans.len(), 1);
+    let file = std::fs::read_to_string(plans[0].path()).unwrap();
+    assert!(file.starts_with("# Second") && file.contains("returns 2"), "{file}");
+}
+
 #[tokio::test]
 async fn unfinished_checklist_steps_are_pointed_out_twice_then_left_open() {
     let h = harness(&[]).await;

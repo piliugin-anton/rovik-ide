@@ -309,11 +309,23 @@ fn submit_plan_schema() -> Value {
         "type": "function",
         "function": {
             "name": "submit_plan",
-            "description": "Save the plan, when the user asked for a change or a plan (a question is answered in the reply, without one). Pass the complete plan as Markdown in the format your instructions give: a \"# \" title and summary, \"## Steps\" with a \"Files:\" line per step, \"## Decisions\", \"## Validation\", \"## Risks\". It is checked and saved to the project, where the user edits and implements it; a revision passes the complete revised plan. The plan goes here, not in your reply. When a review held the plan back, pass `responses` too: an answer to each of its findings.",
+            "description": "Save the plan, when the user asked for a change or a plan (a question is answered in the reply, without one). Pass the complete plan as Markdown in the format your instructions give: a \"# \" title and summary, \"## Steps\" with a \"Files:\" line per step, \"## Decisions\", \"## Validation\", \"## Risks\". It is checked and saved to the project, where the user edits and implements it; after a review, send `edits` (exact text replacements in your last plan) instead of the whole plan. The plan goes here, not in your reply. When a review held the plan back, pass `responses` too: an answer to each of its findings.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "plan": { "type": "string", "description": "The complete plan in Markdown; rejected, with what to fix, when it doesn't follow the format." },
+                    "edits": {
+                        "type": "array",
+                        "description": "Instead of `plan`, after a review: exact text replacements in the last plan you submitted, applied in order. Each old_text must match that plan exactly once.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_text": { "type": "string", "description": "The exact text to replace, found once in the plan." },
+                                "new_text": { "type": "string", "description": "What replaces it." }
+                            },
+                            "required": ["old_text", "new_text"]
+                        }
+                    },
                     "responses": {
                         "type": "array",
                         "description": "After a review held the plan back: one answer for each of its findings, by the finding's number.",
@@ -328,7 +340,7 @@ fn submit_plan_schema() -> Value {
                         }
                     }
                 },
-                "required": ["plan"]
+                "required": []
             }
         }
     })
@@ -523,6 +535,17 @@ const ERROR_CLASSES: &[(&str, &[&str])] = &[
     ),
     ("interrupted", &["interrupted: the app closed"]),
     ("not run", &["error: not run"]),
+    // submit_plan's: its problems follow, in any words (an `edits` miss
+    // included, so it goes before edit_file's classes).
+    (
+        "plan",
+        &[
+            "the plan wasn't saved",
+            "the plan couldn't be saved",
+            "the plan can't be saved",
+            "the plan is blocked",
+        ],
+    ),
     // edit_file.rs: an edit whose text isn't in the file once.
     ("old_text not found", &["old_text was not found"]),
     ("old_text not unique", &["old_text matches"]),
@@ -593,16 +616,6 @@ const ERROR_CLASSES: &[(&str, &[&str])] = &[
             "this turn offers only",
             "can't be used on your context folder",
             "nobody answers questions",
-        ],
-    ),
-    // submit_plan's: its problems follow, in any words.
-    (
-        "plan",
-        &[
-            "the plan wasn't saved",
-            "the plan couldn't be saved",
-            "the plan can't be saved",
-            "the plan is blocked",
         ],
     ),
     ("subagent", &["subagent", "worker"]),
@@ -1541,6 +1554,22 @@ pub fn result_meta(name: &str, result: &str) -> Option<Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Step 7: `edits` items need both keys, nothing is required, and
+    /// `responses` keeps its shape.
+    #[test]
+    fn submit_plan_takes_a_plan_or_edits() {
+        let s = submit_plan_schema();
+        let p = &s["function"]["parameters"];
+        assert_eq!(p["required"], json!([]));
+        assert_eq!(p["properties"]["edits"]["items"]["required"], json!(["old_text", "new_text"]));
+        assert_eq!(
+            p["properties"]["responses"]["items"]["required"],
+            json!(["finding", "action", "note"])
+        );
+        let d = s["function"]["description"].as_str().unwrap();
+        assert!(d.contains("send `edits`") && !d.contains("a revision passes the complete revised plan"));
+    }
 
     #[test]
     fn whole_writes_report_lines_added_and_removed() {

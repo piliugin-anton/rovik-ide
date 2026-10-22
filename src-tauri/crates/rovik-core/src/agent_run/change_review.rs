@@ -25,7 +25,7 @@ use super::run::{chat_plan_file, new_message, Run, IDE_NOTE};
 use super::subagent::{self, Budget, Format, Kind, KindSpec, Skip, SubStatus, SubagentSettings};
 use super::{log, plan, plan_review, tools};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -96,7 +96,7 @@ pub static REVIEWER: KindSpec = KindSpec {
  */
 
 /// One finding, as the reviewer reported it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Finding {
     /// high, medium or low.
@@ -111,11 +111,16 @@ pub struct Finding {
     /// confirmed or plausible.
     pub confidence: String,
     /// A plan review's finding: the step it's about (B08).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<u32>,
     /// What's new, for a finding an earlier round already made.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_evidence: Option<String>,
+    /// Its "- Evidence:" line: a `path:line` or a symbol, and what breaks
+    /// there (a plan review's new finding about a step the revision didn't
+    /// change needs it in Balanced Autopilot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 
 impl Finding {
@@ -283,7 +288,7 @@ fn confidence_of(written: &str) -> Option<String> {
 // left out (the earlier findings in a later round's brief were shown
 // without it, and a reviewer copies what it sees).
 static FIELD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^\s*(?:[-*]\s*)?\**\s*(scenario|fix|suggested fix|confidence|new evidence)\s*\**\s*:\s*\**\s*(.*)$")
+    Regex::new(r"(?i)^\s*(?:[-*]\s*)?\**\s*(scenario|fix|suggested fix|confidence|new evidence|evidence)\s*\**\s*:\s*\**\s*(.*)$")
         .unwrap()
 });
 static STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^steps?\s+(\d+)").unwrap());
@@ -483,6 +488,7 @@ pub fn parse_findings(text: &str) -> Result<Vec<Finding>, String> {
             confidence,
             step,
             new_evidence: field("new evidence"),
+            evidence: field("evidence"),
         });
     }
     Ok(out)
@@ -1067,6 +1073,7 @@ impl Run {
                                 responses: &responses,
                                 verdicts: &plan_review::parse_verdicts(&r.text),
                                 unchanged_and_silent: !changed_since && responses.is_empty(),
+                                changed: &[],
                             },
                             found,
                         );

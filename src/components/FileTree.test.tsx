@@ -20,10 +20,16 @@ function tree() {
     () => (
       <FileTree
         // A size for the virtualized list to show its rows in (happy-dom
-        // lays nothing out).
+        // lays nothing out; virtual-core 3.19 reads client*, older offset*).
         forwardRef={(el) => {
-          Object.defineProperty(el, 'offsetHeight', { value: 400 });
-          Object.defineProperty(el, 'offsetWidth', { value: 300 });
+          for (const [k, v] of [
+            ['offsetHeight', 400],
+            ['offsetWidth', 300],
+            ['clientHeight', 400],
+            ['clientWidth', 300],
+          ] as const) {
+            Object.defineProperty(el, k, { value: v });
+          }
         }}
         rows={() => [row]}
         expanded={() => new Set()}

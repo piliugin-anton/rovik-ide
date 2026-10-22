@@ -212,6 +212,8 @@ export interface ReviewCheck {
 export interface ToolMeta {
   /** Tool results: counts for the block header. */
   count?: number;
+  /** submit_plan results: the plan as checked (full, or after `edits`). */
+  plan?: string;
   /** list_dir results: the folder listed, relative to the project ("" for its root). */
   dir?: string;
   /** Whole-file writes: lines added and removed (against the file before). */

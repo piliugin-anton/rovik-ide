@@ -23,15 +23,17 @@ git2.workspace = true
 # Each move's id (6.8).
 uuid.workspace = true
 # Secrets in the OS keychain, or in a file encrypted under a passphrase
-# where no keychain answers (H01).
-keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# where no keychain answers (H01). keyring 4's default `v1` feature: the
+# macOS Keychain, the Windows Credential Manager, and the Secret Service
+# (zbus, pure Rust, with its crypto in Rust) elsewhere.
+keyring = "4.2.0"
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
 getrandom = "0.4"
 zeroize = "1.9"
 base64 = "0.23.1"
 # The tunnel to a host's daemon, and the commands that set it up (H02).
-russh = "0.63.3"
+russh = "0.64.1"
 # The deployed build's hash, checked on the server (H05).
 # This app's release of the daemon, downloaded for a deploy (B02), and
 # builds gzipped on their way to a server.

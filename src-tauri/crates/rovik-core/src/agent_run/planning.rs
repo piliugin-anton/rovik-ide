@@ -340,7 +340,7 @@ impl Run {
                     let note = format!(
                         "{IDE_NOTE}{n} planners planned this task, each on their own, and a judge that checked their plans against the code {how}. {SUBMITTED_FOR_YOU}"
                     );
-                    return self.submit_for_review(&plan, note).await;
+                    return self.submit_for_review(&plan, note, None, "thoroughPlan").await;
                 }
                 Judgment::Failed { why, row, record } => judge_failed = Some((why, row, record)),
             }
@@ -388,7 +388,7 @@ impl Run {
                 "{IDE_NOTE}{n} planners planned this task, each on their own. The IDE took planner {letter}'s plan (the first whose plan passes the plan's checks). {SUBMITTED_FOR_YOU}"
             ),
         };
-        self.submit_for_review(&plan, note).await
+        self.submit_for_review(&plan, note, None, "thoroughPlan").await
     }
 
     /// T02: the judge weighs the plans `given`, in a record of its own
@@ -778,11 +778,16 @@ impl Run {
         &mut self,
         plan_text: &str,
         note: String,
+        responses: Option<Value>,
+        harness: &str,
     ) -> Result<(), String> {
         let mut intro = new_message("user", &note);
-        intro.meta = Some(json!({ "harness": "thoroughPlan" }));
+        intro.meta = Some(json!({ "harness": harness }));
         let mut args = Map::new();
         args.insert("plan".into(), Value::String(plan_text.to_string()));
+        if let Some(responses) = responses {
+            args.insert("responses".into(), responses);
+        }
         let call = ToolCall {
             id: format!(
                 "call_plan_{}",
@@ -794,7 +799,7 @@ impl Run {
         };
         let mut submitted = new_message("assistant", "");
         submitted.tool_calls = Some(vec![call.clone()]);
-        submitted.meta = Some(json!({ "harness": "thoroughPlan" }));
+        submitted.meta = Some(json!({ "harness": harness }));
         self.append(vec![intro, submitted]).await?;
         self.submit_plan(&call, &args).await
     }

@@ -3,7 +3,7 @@
 //! here fails `covers`, so a new request can't go untested.
 
 use crate::agent::*;
-use crate::autopilot::{AutopilotConfig, Budget, Effort, DEFAULT_AUTOPILOT_DENYLIST};
+use crate::autopilot::{AutopilotConfig, Budget, Effort, PlanFix, DEFAULT_AUTOPILOT_DENYLIST};
 use crate::chat::{ChatModel, MessagePatch, ToolCall};
 use crate::clm::{ClmStatus, RevisionRow};
 use crate::diff::Hunk;
@@ -218,6 +218,7 @@ fn config() -> AgentConfig {
             },
             prepare: false,
             denied_commands: vec!["git push".into()],
+            plan_fix: PlanFix::default(),
         },
         network: None,
     }
@@ -1431,6 +1432,7 @@ fn autopilot_settings_round_trip_and_default_when_missing() {
             "budget": { "maxHours": 1.5, "maxCost": null },
             "prepare": false,
             "deniedCommands": ["git push"],
+            "planFix": { "maxRounds": 8, "stallRounds": 2, "maxMinutes": 30.0, "budgetShare": 0.4, "maxRetries": 2 },
         })
     );
     for effort in [Effort::Balanced, Effort::Thorough] {

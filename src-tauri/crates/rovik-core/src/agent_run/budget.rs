@@ -104,6 +104,17 @@ pub fn over(budget: &Budget, spent: &Spent) -> Option<String> {
     None
 }
 
+/// The part of a task's `budget` its plan stage may spend (Balanced
+/// Autopilot's plan-fix limits): `fraction` of its cost and tokens, and
+/// `max_minutes` of time.
+pub fn share(budget: &Budget, fraction: f64, max_minutes: f64) -> Budget {
+    Budget {
+        max_hours: Some(max_minutes / 60.0),
+        max_cost: budget.max_cost.map(|c| c * fraction),
+        max_tokens: budget.max_tokens.map(|t| (t as f64 * fraction).round() as u64),
+    }
+}
+
 /// "330", "45,200", "2.15 million".
 pub fn tokens_text(tokens: u64) -> String {
     if tokens >= 1_000_000 {
@@ -252,6 +263,25 @@ impl Totals {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_plan_share_scales_cost_and_tokens_and_sets_its_minutes() {
+        let task = Budget {
+            max_hours: Some(2.0),
+            max_cost: Some(5.0),
+            max_tokens: Some(1_000_000),
+        };
+        let plan = share(&task, 0.4, 30.0);
+        assert_eq!(plan.max_hours, Some(0.5));
+        assert!((plan.max_cost.unwrap() - 2.0).abs() < 1e-9);
+        assert_eq!(plan.max_tokens, Some(400_000));
+        let none = share(&Budget::default(), 0.4, 30.0);
+        assert_eq!((none.max_cost, none.max_tokens), (None, None));
+        let spent = Spent { ms: 31 * 60_000, ..Spent::default() };
+        assert!(over(&plan, &spent).is_some(), "past its minutes");
+        let cheap = Spent { ms: 60_000, cost: 2.5, ..Spent::default() };
+        assert!(over(&plan, &cheap).unwrap().contains("cost"));
+    }
 
     #[test]
     fn a_reply_adds_its_cost_or_counts_as_uncosted() {

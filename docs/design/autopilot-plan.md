@@ -227,6 +227,11 @@ task…". The strip of 3.3 appears when a task starts.
 - **Prepare dependencies before the first check** (checkbox, on).
 - **Commands Autopilot may never run** (the denylist, one per line, with
   the defaults shown).
+- **Plan fixing** (Balanced only): how long the plan stage keeps fixing
+  its plan before it blocks. Max reviews (default 8, 1–20), reviews in a
+  row without progress (2, 1–5), minutes (30, 1–240), share of the task's
+  budget (40%, 10–90%), automatic retries after a failed run (2, 0–5).
+  Totals for the stage, across automatic retries.
 
 In "Kinds", the rows Autopilot uses carry a tag **Used by Autopilot**, and
 the new rows appear: **Planner**, **Judge**, **Acceptance checker**,
@@ -260,11 +265,13 @@ pub struct AutopilotConfig {
     pub budget: Budget,                 // max_hours: Option<f64>, max_cost: Option<f64>
     pub prepare: bool,                  // D19, default true
     pub denied_commands: Vec<String>,   // the denylist, with DEFAULT_AUTOPILOT_DENYLIST
+    pub plan_fix: PlanFix,              // max_rounds 8, stall_rounds 2, max_minutes 30, budget_share 0.4, max_retries 2
 }
 ```
 
 `ApprovalPolicy` gains `Autonomous`; `HostSettings` gains
-`autonomy: AutonomySettings { effort: Option<Effort>, budget: Option<Budget>, delivery: Delivery, notify_url: Option<String> }`,
+`autonomy: AutonomySettings { effort: Option<Effort>, budget: Option<Budget>, delivery: Delivery, notify_url: Option<String>, plan_fix: Option<PlanFixOverride> }`
+(each `PlanFixOverride` field an `Option`, None: as on this computer),
 and `Host` in `src/lib/hosts.ts` the same. `Delivery` is
 `KeepOnHost` or `PushBranch { deploy_key: PathBuf, open_pr: bool }`; the
 remote's URL comes from the project's `origin` on the client, with the
@@ -487,7 +494,7 @@ out last.
 | ID  | Task                                                                                                                                                                                                                                                                                                                        | Needs    | Done when                                                                                                                                                                                                            |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | S01 | Criteria (D8): `PLAN_MODE_INSTRUCTIONS`' Autopilot addition; `plan_problems` requires "## Criteria" in Autopilot; `plan::criteria(text)` parses the numbered statements, "Out of scope" and "Assumptions"; the plan reviewer's prompt checks them                                                                           | A04      | Parser tests; e2e: a plan without criteria goes back; the reviewer's brief has them                                                                                                                                  |
-| S02 | Plan review in Autopilot (4.2): the Balanced cap of 3; `plan-blocked` at the cap with a high finding open; the task's report carries the findings                                                                                                                                                                           | S01      | e2e: a high finding the planner never fixes ends the task `plan-blocked` after 3 rounds, with a report and no implement run                                                                                          |
+| S02 | Plan review in Autopilot (4.2): the Balanced plan-fix limits (`plan_fix`); `plan-blocked` at the cap with a high finding open; the task's report carries the findings                                                                                                                                                       | S01      | e2e: a high finding the planner never fixes ends the task `plan-blocked` after 3 rounds, with a report and no implement run                                                                                          |
 | S03 | Prepare (4.3): `agent_run/prepare.rs`, lockfile detection, the install as heavy work, the record and `@checks/prepare`; the `prepare` setting                                                                                                                                                                               | A03      | Unit tests on detection; e2e with a fixture whose `node_modules` is missing: the install runs once and the checks pass                                                                                               |
 | S04 | Tests first (4.4): the test writer as an IDE-started subagent after the plan review, `red_check` forced; its files in the stage record and in the implement run's request                                                                                                                                                   | S02      | e2e: the test writer runs before the implement run; the implement run's request names its files; a blocked test writer is recorded and the pipeline goes on                                                          |
 | S05 | Per-step light checks: `light_check_for` after each sequential worker in `after_worker`, failures to the next step as a note                                                                                                                                                                                                | A04      | e2e: a worker's step that breaks a file's syntax gets the diagnostics into the lead's next note                                                                                                                      |
@@ -1185,9 +1192,11 @@ T05 depends most on the environment it meets.
 
 ### S02: the plan review's cap
 
-- **Three reviews** a task's plan run (`AUTOPILOT_PLAN_REVIEW_ROUNDS`), in
-  Balanced and, until T07 brings "two rounds without progress", in
-  Thorough; elsewhere two, as before. The holds say so ("review 2 of at
+- **The plan-fix limits** (`AutopilotConfig::plan_fix`) in Balanced: at
+  most `max_rounds` reviews, `stall_rounds` in a row without less open
+  (findings weighed high 3, medium 2, low 1), `max_minutes` and
+  `budget_share` of the task's budget, across automatic retries. Thorough
+  keeps "two rounds without progress"; elsewhere two, as before. The holds say so ("review 2 of at
   most 3", and before the last: "a high finding it still finds ends the
   task").
 - **Blocked**: the last review with a high finding open holds the plan

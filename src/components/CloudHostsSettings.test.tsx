@@ -840,6 +840,20 @@ test('works on its own: each change is saved, the deploy key only once it’s in
   change(field(block(), 'or used (million tokens)')!, '');
   await flush();
   assert.equal(kept().autonomy!.budget, undefined);
+  // Plan fixing: each field sent inside planFix; emptied, it disappears.
+  change(field(block(), 'Max reviews')!, '5');
+  await flush();
+  assert.deepEqual(sent('hosts_set_autonomy').at(-1)!.autonomy.planFix, { maxRounds: 5 });
+  change(field(block(), 'Share of the budget (%)')!, '30');
+  await flush();
+  assert.deepEqual(kept().autonomy!.planFix, { maxRounds: 5, budgetShare: 0.3 });
+  change(field(block(), 'Max reviews')!, '');
+  await flush();
+  assert.deepEqual(kept().autonomy!.planFix, { budgetShare: 0.3 });
+  change(field(block(), 'Share of the budget (%)')!, '');
+  await flush();
+  assert.equal(kept().autonomy!.planFix, undefined);
+  assert.equal(JSON.stringify(sent('hosts_set_autonomy').at(-1)).includes('planFix'), false);
   // The notify URL: kept trimmed; one the app refuses says why, and isn't kept.
   change(field(block(), 'Call this URL')!, ' https://ntfy.sh/rovik-abc ');
   await flush();

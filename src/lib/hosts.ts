@@ -7,6 +7,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { plural } from './textUtils';
+import type { AutopilotPlanFix } from './autopilotSettings';
 
 export type AuthKind = 'key' | 'agent' | 'password' | 'keyboard-interactive' | 'system-ssh';
 
@@ -33,6 +34,8 @@ export interface AutonomySettings {
   delivery: Delivery;
   /** Called when a task ends or is blocked; may carry a token. */
   notifyUrl?: string;
+  /** Balanced's plan-stage limits, field by field; a field unset: as on this computer. */
+  planFix?: Partial<AutopilotPlanFix>;
 }
 
 export const DEFAULT_AUTONOMY: AutonomySettings = { delivery: { kind: 'keepOnHost' } };

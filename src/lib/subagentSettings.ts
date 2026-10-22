@@ -71,7 +71,7 @@ export const SUBAGENT_KINDS: {
     id: 'planReviewer',
     label: 'Plan reviewer',
     hint: 'Checks a plan against the code before it’s saved. Read-only.',
-    when: 'Runs in Plan mode when the agent submits a plan, at most twice a run; small revisions aren’t reviewed.',
+    when: 'Runs in Plan mode when the agent submits a plan, at most twice a run; small revisions aren’t reviewed. In Autopilot, reviews continue within the “Plan fixing” limits, and it also settles a finding the plan’s author keeps disputing.',
     toolCalls: 25,
     minutes: 4,
   },

@@ -56,6 +56,104 @@ pub struct AutonomySettings {
     /// Called when a task ends or is blocked (D18).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify_url: Option<String>,
+    /// The plan-fixing limits this host's tasks follow, field by field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_fix: Option<PlanFixOverride>,
+}
+
+/// How long Balanced Autopilot's plan stage keeps fixing its plan before it
+/// blocks: reviews in all, reviews in a row without progress, minutes, the
+/// share of the task's budget, and automatic retries after a failed run.
+/// Totals for the stage, across automatic retries.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlanFix {
+    pub max_rounds: u32,
+    pub stall_rounds: u32,
+    pub max_minutes: f64,
+    pub budget_share: f64,
+    pub max_retries: u32,
+}
+
+impl Default for PlanFix {
+    fn default() -> Self {
+        PlanFix {
+            max_rounds: 8,
+            stall_rounds: 2,
+            max_minutes: 30.0,
+            budget_share: 0.4,
+            max_retries: 2,
+        }
+    }
+}
+
+/// The ranges `PlanFix::bounded` keeps each value in.
+pub const PLAN_FIX_ROUNDS: (u32, u32) = (1, 20);
+pub const PLAN_FIX_STALL: (u32, u32) = (1, 5);
+pub const PLAN_FIX_MINUTES: (f64, f64) = (1.0, 240.0);
+pub const PLAN_FIX_SHARE: (f64, f64) = (0.1, 0.9);
+pub const PLAN_FIX_RETRIES: (u32, u32) = (0, 5);
+
+fn clamp_f(v: f64, (lo, hi): (f64, f64), fallback: f64) -> f64 {
+    if v.is_finite() {
+        v.clamp(lo, hi)
+    } else {
+        fallback
+    }
+}
+
+impl PlanFix {
+    /// The values within their ranges.
+    pub fn bounded(self) -> PlanFix {
+        let d = PlanFix::default();
+        PlanFix {
+            max_rounds: self.max_rounds.clamp(PLAN_FIX_ROUNDS.0, PLAN_FIX_ROUNDS.1),
+            stall_rounds: self.stall_rounds.clamp(PLAN_FIX_STALL.0, PLAN_FIX_STALL.1),
+            max_minutes: clamp_f(self.max_minutes, PLAN_FIX_MINUTES, d.max_minutes),
+            budget_share: clamp_f(self.budget_share, PLAN_FIX_SHARE, d.budget_share),
+            max_retries: self.max_retries.clamp(PLAN_FIX_RETRIES.0, PLAN_FIX_RETRIES.1),
+        }
+    }
+}
+
+/// A host's plan-fixing limits: None is "as on this computer".
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlanFixOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stall_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_minutes: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_share: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+}
+
+impl PlanFixOverride {
+    /// Each value set, within `PlanFix::bounded`'s ranges; a value that
+    /// isn't a number is dropped.
+    pub fn bounded(self) -> PlanFixOverride {
+        let f = |v: Option<f64>, r: (f64, f64)| v.filter(|v| v.is_finite()).map(|v| v.clamp(r.0, r.1));
+        PlanFixOverride {
+            max_rounds: self.max_rounds.map(|v| v.clamp(PLAN_FIX_ROUNDS.0, PLAN_FIX_ROUNDS.1)),
+            stall_rounds: self.stall_rounds.map(|v| v.clamp(PLAN_FIX_STALL.0, PLAN_FIX_STALL.1)),
+            max_minutes: f(self.max_minutes, PLAN_FIX_MINUTES),
+            budget_share: f(self.budget_share, PLAN_FIX_SHARE),
+            max_retries: self.max_retries.map(|v| v.clamp(PLAN_FIX_RETRIES.0, PLAN_FIX_RETRIES.1)),
+        }
+    }
+
+    /// `kept` with each value this override sets.
+    pub fn apply(&self, kept: &mut PlanFix) {
+        kept.max_rounds = self.max_rounds.unwrap_or(kept.max_rounds);
+        kept.stall_rounds = self.stall_rounds.unwrap_or(kept.stall_rounds);
+        kept.max_minutes = self.max_minutes.unwrap_or(kept.max_minutes);
+        kept.budget_share = self.budget_share.unwrap_or(kept.budget_share);
+        kept.max_retries = self.max_retries.unwrap_or(kept.max_retries);
+    }
 }
 
 /// Where a "Works on its own" host's results go (D15).
@@ -235,6 +333,7 @@ impl std::fmt::Debug for AutonomySettings {
             .field("budget", &self.budget)
             .field("delivery", &self.delivery)
             .field("notify_url", &LoggedUrl(&self.notify_url))
+            .field("plan_fix", &self.plan_fix)
             .finish()
     }
 }
@@ -288,6 +387,10 @@ impl AutonomySettings {
             budget.max_tokens = budget.max_tokens.filter(|t| *t > 0);
         }
         self.budget = self.budget.filter(|b| *b != Budget::default());
+        self.plan_fix = self
+            .plan_fix
+            .map(PlanFixOverride::bounded)
+            .filter(|p| *p != PlanFixOverride::default());
         Ok(self)
     }
 }
@@ -321,6 +424,8 @@ pub struct AutopilotConfig {
     /// (D19).
     pub prepare: bool,
     pub denied_commands: Vec<String>,
+    /// Balanced Autopilot's plan-stage limits.
+    pub plan_fix: PlanFix,
 }
 
 impl Default for AutopilotConfig {
@@ -333,6 +438,7 @@ impl Default for AutopilotConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            plan_fix: PlanFix::default(),
         }
     }
 }
@@ -358,6 +464,7 @@ mod autonomy_tests {
                 open_pr: true,
             },
             notify_url: Some("https://ntfy.sh/rovik-abc".into()),
+            plan_fix: None,
         };
         let json = serde_json::to_value(&push).unwrap();
         assert_eq!(
@@ -552,5 +659,65 @@ mod autonomy_tests {
                 max_tokens: None,
             })
         );
+    }
+
+    #[test]
+    fn plan_fix_round_trips_defaults_when_missing_and_is_bounded() {
+        let d = PlanFix::default();
+        assert_eq!(
+            (d.max_rounds, d.stall_rounds, d.max_minutes, d.budget_share, d.max_retries),
+            (8, 2, 30.0, 0.4, 2)
+        );
+        let json = serde_json::to_value(d).unwrap();
+        assert_eq!(
+            json,
+            json!({ "maxRounds": 8, "stallRounds": 2, "maxMinutes": 30.0, "budgetShare": 0.4, "maxRetries": 2 })
+        );
+        assert_eq!(serde_json::from_value::<PlanFix>(json).unwrap(), d);
+        let partial: PlanFix = serde_json::from_value(json!({ "maxRounds": 5 })).unwrap();
+        assert_eq!(partial, PlanFix { max_rounds: 5, ..d });
+        let old: AutopilotConfig = serde_json::from_value(json!({ "effort": "balanced" })).unwrap();
+        assert_eq!(old.plan_fix, d);
+        let wild = PlanFix {
+            max_rounds: 0,
+            stall_rounds: 9,
+            max_minutes: f64::NAN,
+            budget_share: 2.0,
+            max_retries: 50,
+        }
+        .bounded();
+        assert_eq!(
+            wild,
+            PlanFix { max_rounds: 1, stall_rounds: 5, max_minutes: 30.0, budget_share: 0.9, max_retries: 5 }
+        );
+        assert_eq!(PlanFix { max_minutes: 0.0, budget_share: 0.0, ..d }.bounded().max_minutes, 1.0);
+        assert_eq!(d.bounded(), d);
+    }
+
+    #[test]
+    fn a_hosts_plan_fix_is_kept_field_by_field_and_bounded() {
+        let host = AutonomySettings {
+            plan_fix: Some(PlanFixOverride {
+                max_rounds: Some(50),
+                budget_share: Some(0.05),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&host).unwrap();
+        assert_eq!(json["planFix"], json!({ "maxRounds": 50, "budgetShare": 0.05 }));
+        assert_eq!(serde_json::from_value::<AutonomySettings>(json).unwrap(), host);
+        let kept = host.checked().unwrap().plan_fix.unwrap();
+        assert_eq!(kept.max_rounds, Some(20));
+        assert_eq!(kept.budget_share, Some(0.1));
+        assert_eq!(kept.stall_rounds, None);
+        let empty = AutonomySettings {
+            plan_fix: Some(PlanFixOverride::default()),
+            ..Default::default()
+        };
+        assert_eq!(empty.checked().unwrap().plan_fix, None);
+        let mut mine = PlanFix::default();
+        PlanFixOverride { max_rounds: Some(5), ..Default::default() }.apply(&mut mine);
+        assert_eq!(mine, PlanFix { max_rounds: 5, ..PlanFix::default() });
     }
 }

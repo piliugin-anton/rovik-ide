@@ -15,6 +15,7 @@ import {
   type DeliveryTest,
   type Host,
 } from '../lib/hosts';
+import { planFixValue, type AutopilotPlanFix } from '../lib/autopilotSettings';
 import { NumberField } from './SettingsControls';
 
 type PushBranch = Extract<Delivery, { kind: 'pushBranch' }>;
@@ -89,6 +90,15 @@ export default function HostAutonomy(props: {
     const empty = budget.maxHours === null && budget.maxCost === null && !maxTokens;
     void save({ budget: empty ? undefined : budget });
   }
+  /** A plan-fix field left empty: as in this computer's settings. */
+  function setPlanFix(field: keyof AutopilotPlanFix, value: number | undefined) {
+    const kept = planFixValue(field, value);
+    const next: Partial<AutopilotPlanFix> = { ...block().planFix };
+    if (kept === undefined) delete next[field];
+    else next[field] = kept;
+    void save({ planFix: Object.keys(next).length ? next : undefined });
+  }
+
   // The token limit shows in millions; it's kept in tokens.
   const tokensMillions = () => {
     const tokens = block().budget?.maxTokens;
@@ -252,6 +262,67 @@ export default function HostAutonomy(props: {
         />
       </div>
       <p class="settings-hint host-autonomy-note">Empty: as in Settings → Autopilot.</p>
+
+      <div class="autopilot-subtitle">Plan fixing</div>
+      <div class="setting-fields host-autonomy-plan-fix">
+        <NumberField
+          label="Max reviews"
+          value={block().planFix?.maxRounds}
+          placeholder="as set"
+          min={1}
+          max={20}
+          step={1}
+          disabled={saving()}
+          onChange={(v) => setPlanFix('maxRounds', v)}
+        />
+        <NumberField
+          label="Reviews without progress"
+          value={block().planFix?.stallRounds}
+          placeholder="as set"
+          min={1}
+          max={5}
+          step={1}
+          disabled={saving()}
+          onChange={(v) => setPlanFix('stallRounds', v)}
+        />
+        <NumberField
+          label="Minutes"
+          value={block().planFix?.maxMinutes}
+          placeholder="as set"
+          min={1}
+          max={240}
+          step={1}
+          disabled={saving()}
+          onChange={(v) => setPlanFix('maxMinutes', v)}
+        />
+        <NumberField
+          label="Share of the budget (%)"
+          value={
+            block().planFix?.budgetShare === undefined
+              ? undefined
+              : Math.round(block().planFix!.budgetShare! * 100)
+          }
+          placeholder="as set"
+          min={10}
+          max={90}
+          step={5}
+          disabled={saving()}
+          onChange={(v) => setPlanFix('budgetShare', v === undefined ? undefined : v / 100)}
+        />
+        <NumberField
+          label="Automatic retries"
+          value={block().planFix?.maxRetries}
+          placeholder="as set"
+          min={0}
+          max={5}
+          step={1}
+          disabled={saving()}
+          onChange={(v) => setPlanFix('maxRetries', v)}
+        />
+      </div>
+      <p class="settings-hint host-autonomy-note">
+        Balanced only. Empty: as in Settings → Autopilot.
+      </p>
 
       <div class="autopilot-subtitle">Notify</div>
       <label class="host-autonomy-field">

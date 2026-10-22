@@ -216,7 +216,7 @@ export function describeGroup(
   argsList: Args[],
   active: boolean,
   /** Each call's stored result facts, where it has finished. */
-  results: ({ dir?: string } | undefined)[] = []
+  results: ({ dir?: string; plan?: string } | undefined)[] = []
 ): GroupLabel {
   const verb = (running: string, done: string) => (active ? running : done);
   switch (name) {
@@ -307,9 +307,12 @@ export function describeGroup(
     case 'submit_plan':
       return label(
         verb('Saving the plan', 'Saved the plan'),
-        argsList.map((a) => {
-          const title = planTitle(str(a.plan))?.trim();
-          return title ? { text: short(title, 60), title } : undefined;
+        argsList.map((a, i) => {
+          const title = planTitle(str(a.plan) ?? results[i]?.plan)?.trim();
+          const edits = !str(a.plan) && Array.isArray(a.edits) ? a.edits.length : 0;
+          const note = edits ? ` (${edits} edit${edits === 1 ? '' : 's'})` : '';
+          if (!title) return note ? { text: note.trim() } : undefined;
+          return { text: short(title, 60) + note, title: title + note };
         })
       );
     case 'ask_user':

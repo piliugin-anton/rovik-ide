@@ -912,8 +912,10 @@ async fn a_resume_as_a_stage_ends_starts_nothing_more() {
 async fn a_plan_run_without_a_plan_fails_the_task() {
     let h = harness(&[]).await;
     let (url, _) = model(vec![Reply::Text("I looked, and wrote nothing down.")]).await;
-    h.start(h.request(&url, autopilot_send("Do something"), quiet_permissions()))
-        .await;
+    let mut request = h.request(&url, autopilot_send("Do something"), quiet_permissions());
+    // Step 9's automatic retries are off here: one run, then the delivery.
+    request.config.as_mut().unwrap().autopilot.plan_fix.max_retries = 0;
+    h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(
         names(&records),
@@ -926,6 +928,41 @@ async fn a_plan_run_without_a_plan_fails_the_task() {
     assert_eq!(records[0].summary.as_deref(), Some("No plan was saved"));
     assert_eq!(records[1].outcome.as_deref(), Some("plan-failed"));
     assert_eq!(records[1].summary.as_deref(), Some("Nothing to deliver"));
+}
+
+/// Step 9: a Balanced plan stage that saved no plan starts again on its
+/// own, with a `planRetry` note each time and no Deliver record before,
+/// exactly `max_retries` times; then the task delivers.
+#[tokio::test]
+async fn a_failed_plan_stage_retries_on_its_own_within_its_limit() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![
+        Reply::Text("I looked, and wrote nothing down."),
+        Reply::Text("Still nothing."),
+        Reply::Text("Nothing again."),
+    ])
+    .await;
+    h.start(h.request(&url, autopilot_send("Do something"), quiet_permissions()))
+        .await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Failed),
+            (Stage::Plan, Status::Failed),
+            (Stage::Plan, Status::Failed),
+            (Stage::Deliver, Status::Failed)
+        ]
+    );
+    assert_eq!(records.iter().map(|r| r.round).take(3).collect::<Vec<_>>(), [1, 2, 3]);
+    let messages = h.messages().await;
+    let retries = messages
+        .iter()
+        .filter(|m| {
+            m.meta.as_ref().and_then(|x| x.get("harness")) == Some(&json!(super::plan_review::PLAN_RETRY))
+        })
+        .count();
+    assert_eq!(retries, 2);
 }
 
 /// A03: a user message after an unfinished task takes over: the old task
@@ -1257,7 +1294,9 @@ async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
         ],
     )
     .await;
-    h.start(task_request(&h, &url)).await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(
         names(&records),
@@ -1271,7 +1310,7 @@ async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
     assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
     assert_eq!(
         records[1].summary.as_deref(),
-        Some("Blocked after 3 reviews: 1 finding open")
+        Some("Blocked after 3 reviews (review limit): 1 finding open")
     );
 }
 
@@ -1295,10 +1334,11 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
         args: json!({ "plan": TASK_PLAN, "responses": answer }),
     };
     let (url, _) = model_routed(
-        vec![(
-            PLAN_REVIEW,
-            vec![Reply::Text(high), Reply::Text(again), Reply::Text(again)],
-        )],
+        vec![
+            (PLAN_REVIEW, vec![Reply::Text(high), Reply::Text(again), Reply::Text(again)]),
+            // Step 8: disputed twice, the arbiter rules it valid.
+            ("You are settling one disputed review finding", vec![Reply::Text(high)]),
+        ],
         vec![
             Reply::Call {
                 id: "p1",
@@ -1312,7 +1352,9 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
         ],
     )
     .await;
-    h.start(task_request(&h, &url)).await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(
         names(&records),
@@ -1328,7 +1370,7 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
     assert_eq!(review.round, 1);
     assert_eq!(
         review.summary.as_deref(),
-        Some("Blocked after 3 reviews: 1 finding open")
+        Some("Blocked after 3 reviews (review limit): 1 finding open")
     );
     assert_eq!(
         records[0].summary.as_deref(),
@@ -1354,6 +1396,13 @@ async fn a_high_finding_never_fixed_blocks_the_plan_after_three_reviews() {
         result_of(&messages, "p4").content,
         super::plan_review::BLOCKED_AGAIN
     );
+    // Step 8: the arbiter's ruling is in the last review's record.
+    let ruled = result_of(&messages, "p3")
+        .meta
+        .as_ref()
+        .and_then(|m| m.pointer("/review/rulings/0/ruling"))
+        .cloned();
+    assert_eq!(ruled, Some(json!("valid")));
     // Never saved, never implemented.
     assert!(!messages
         .iter()
@@ -4409,7 +4458,9 @@ async fn a_change_without_tests_gets_the_test_writer_once_its_checks_pass() {
         lead,
     )
     .await;
-    h.start(task_request(&h, &url)).await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(records[4].outcome.as_deref(), Some("verified"));
@@ -4489,7 +4540,9 @@ async fn an_unsatisfied_criterion_gets_one_more_round_and_a_second_check() {
         script,
     )
     .await;
-    h.start(task_request(&h, &url)).await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 3;
+    h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
     let mut expected = BALANCED_OK.to_vec();
     expected[7] = (Stage::Acceptance, Status::Done);
