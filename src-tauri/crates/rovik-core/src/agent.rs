@@ -2599,6 +2599,8 @@ mod reasoning_tests {
         Served,
         /// With a 404 and this body.
         Refused(&'static str),
+        /// With a 400 and this body.
+        Rejected(&'static str),
         /// With 200, and this error as the stream's only event.
         InStream(&'static str),
     }
@@ -2647,6 +2649,7 @@ mod reasoning_tests {
                     ]),
                     Route::InStream(error) => sse(&[error]),
                     Route::Refused(msg) => format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len()),
+                    Route::Rejected(msg) => format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}", msg.len()),
                 };
                 let _ = socket.write_all(reply.as_bytes()).await;
                 let _ = socket.shutdown().await;
@@ -2756,6 +2759,32 @@ mod reasoning_tests {
         let (result, _) = send_routed(&url, Some(Api::ChatCompletions)).await;
         assert!(result.is_ok());
         assert_eq!(seen.lock().unwrap().len(), 3);
+    }
+
+    /// SGLang's router: its Responses API wants an `id` on every
+    /// `function_call` item, so it can't read a request with the run's tool
+    /// calls in it. The request goes to chat completions, refused as a 400
+    /// or in the stream a gateway had started, and the model stays there.
+    #[tokio::test]
+    async fn a_responses_api_that_cant_read_the_input_moves_to_chat_completions() {
+        let rejected = r#"{"error":{"message":"Invalid JSON data: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"invalid_request_error","code":"json_parse_error"}}"#;
+        let in_stream = r#"{"type":"error","error":{"message":"BadRequestError: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"BadRequestError","code":400}}"#;
+        for responses in [Route::Rejected(rejected), Route::InStream(in_stream)] {
+            let (url, seen) = routed_provider(Route::Served, responses).await;
+            let (result, routes) = send_routed(&url, None).await;
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(routes, ["chat_completions"]);
+            let (result, _) = send_routed(&url, None).await;
+            assert!(result.is_ok());
+            assert_eq!(
+                *seen.lock().unwrap(),
+                [
+                    "/v1/responses",
+                    "/v1/chat/completions",
+                    "/v1/chat/completions"
+                ]
+            );
+        }
     }
 
     #[tokio::test]

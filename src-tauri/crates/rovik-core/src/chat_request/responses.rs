@@ -8,10 +8,10 @@
 //! Which route: a model starts on the route it was last found to work on
 //! (remembered here, and saved with the model in the settings), else on
 //! `/responses`. A refusal that suggests the other route (`wrong_route`; a
-//! provider without the Responses API, or without the model on it) sends
-//! the same request there once (`agent::run_with_reasoning`); when that
-//! works, the model is remembered on it and the frontend is told, so it's
-//! saved (`ChatStreamEvent::ApiRoute`).
+//! provider without the Responses API, without the model on it, or whose
+//! Responses API can't read the request) sends the same request there once
+//! (`agent::run_with_reasoning`); when that works, the model is remembered
+//! on it and the frontend is told, so it's saved (`ChatStreamEvent::ApiRoute`).
 
 use super::{classify_body_error, ChatError, ErrorKind, ReplyParser};
 use crate::agent::ChatStreamEvent;
@@ -130,7 +130,9 @@ pub fn responses_url(chat_url: &str) -> Option<String> {
 ///   which every OpenAI-compatible provider has, is worth the one try;
 /// - "ModelProtocolUnsupported" / "Model does not support this protocol.",
 ///   which doesn't say which API the model wants: the other one, either way
-///   (`super::looks_like_unsupported_protocol`).
+///   (`super::looks_like_unsupported_protocol`);
+/// - on `/responses`, a server that can't read the request's `input`
+///   (`input_unreadable`).
 ///
 /// A rejected field, an auth failure, a model missing from
 /// `/chat/completions`: not the route.
@@ -188,7 +190,31 @@ pub fn wrong_route(error: &ChatError, sent_to: Api) -> bool {
                 .and_then(|v| super::error_message_from(&v))
                 .is_none());
     let protocol = super::looks_like_unsupported_protocol(&text);
-    named || invalid_url || no_route || protocol
+    let unreadable = sent_to == Api::Responses && input_unreadable(&text);
+    named || invalid_url || no_route || protocol || unreadable
+}
+
+/// A Responses API whose own types don't take the request's `input`, the
+/// items `request_body` sends, as serde words it (a Rust server's: OpenAI
+/// words its refusals otherwise). SGLang's router wants an `id` on every
+/// `function_call` item, which OpenAI doesn't, so a run's first request
+/// works there and the next, with the run's tool calls in it, doesn't:
+/// "Failed to deserialize the JSON body into the target type: input: data
+/// did not match any variant of untagged enum ResponseInput". Chat
+/// completions takes the same history. `text` is lowercase.
+pub(super) fn input_unreadable(text: &str) -> bool {
+    // Serde's own phrasing: OpenAI's "Invalid type for 'input[2]…'" is
+    // a refusal of what was sent, not of how.
+    let unreadable = [
+        "deserialize",
+        "did not match any variant",
+        "unknown variant `",
+        "missing field `",
+        "invalid type:",
+    ]
+    .iter()
+    .any(|words| text.contains(words));
+    unreadable && (crate::agent::mentions_field(text, "input") || text.contains("responseinput"))
 }
 
 /*
@@ -1314,6 +1340,28 @@ mod tests {
         assert!(!wrong_route(&classify(400, field), chat));
         assert!(!wrong_route(&classify(400, field), Api::Responses));
         assert!(!wrong_route(&classify(401, openai), chat));
+        // A server whose Responses API can't read the input (SGLang's
+        // router, with a tool call in it): chat completions takes it.
+        let unreadable = r#"{"error":{"message":"Invalid JSON data: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"invalid_request_error","code":"json_parse_error"}}"#;
+        assert!(wrong_route(&classify(400, unreadable), Api::Responses));
+        assert!(wrong_route(&classify(422, unreadable), Api::Responses));
+        assert!(!wrong_route(&classify(400, unreadable), chat));
+        let item = "Failed to deserialize the JSON body into the target type: input[2]: missing field `id` at line 1 column 512";
+        assert!(wrong_route(&classify(422, item), Api::Responses));
+        // Another field it can't read, or OpenAI's own words: not the route.
+        let effort = "Failed to deserialize the JSON body into the target type: reasoning.effort: unknown variant `xhigh`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 90";
+        assert!(!wrong_route(&classify(422, effort), Api::Responses));
+        let openai_input = r#"{"error":{"message":"Invalid type for 'input[2].content': expected one of an array of objects or string, but got an object instead.","type":"invalid_request_error","param":"input[2].content"}}"#;
+        assert!(!wrong_route(&classify(400, openai_input), Api::Responses));
+        // A gateway that had started its stream reports it there, with the
+        // upstream's 400: the request is at fault, not the provider.
+        let gateway = r#"{"type":"error","error":{"message":"BadRequestError: Failed to deserialize the JSON body into the target type: input: data did not match any variant of untagged enum ResponseInput at line 1 column 1888","type":"BadRequestError","code":400}}"#;
+        let in_stream = classify_body_error(&serde_json::from_str(gateway).unwrap()).unwrap();
+        assert_eq!(in_stream.kind, ErrorKind::BadRequest);
+        assert!(wrong_route(&in_stream, Api::Responses));
+        let upstream = r#"{"type":"error","error":{"message":"Upstream timed out","code":408}}"#;
+        let in_stream = classify_body_error(&serde_json::from_str(upstream).unwrap()).unwrap();
+        assert!(!wrong_route(&in_stream, Api::Responses));
     }
 
     #[test]

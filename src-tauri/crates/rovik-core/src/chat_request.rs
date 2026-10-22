@@ -446,8 +446,11 @@ pub fn classify_body_error(value: &serde_json::Value) -> Option<ChatError> {
         })
         .map(|c| c as u16);
     let message = error_message_from(value).unwrap_or_else(|| error.to_string());
-    // In a 200 response or a stream: the request, not the provider, is at fault.
-    if looks_like_unsupported_protocol(&value.to_string()) {
+    // In a 200 response or a stream: the request, not the provider, is at
+    // fault. So is it when the server couldn't read the request's input,
+    // which a gateway reports in the stream it had started.
+    let text = value.to_string();
+    if looks_like_unsupported_protocol(&text) || responses::input_unreadable(&text.to_lowercase()) {
         return Some(
             ChatError::new(
                 ErrorKind::BadRequest,
