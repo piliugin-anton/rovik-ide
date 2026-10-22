@@ -1625,7 +1625,7 @@ async function race(flags) {
     canAfford: (runs) =>
       budgetAllows({ ...knownSpend(spent), cap: r.capUsd, firstEstimate, pending: runs - 1 }).ok,
     runBlock: async (c, block) => {
-      const { results } = await inParallel(block, jobsOf(flags), (id, slot) =>
+      const results = await raceBlock(c, block, flags, (id, slot) =>
         runOne(byId.get(id), 1, join(dir, c.name), {
           settings: files[c.name],
           policy,
@@ -1634,12 +1634,28 @@ async function race(flags) {
         })
       );
       spent.push(...results);
-      for (const x of results)
-        console.log(`[race] ${c.name} ${x.task}: ${x.success ? 'PASS' : 'fail'}${tamperNote(x)}`);
       return results;
     },
   });
   writeRace(dir, record, { fake: false });
+}
+
+/**
+ * One candidate's runs on a block of a race, `--jobs` at once
+ * (`runTask(id, slot)` makes each), each one's line printed when it ends.
+ */
+async function raceBlock(candidate, block, flags, runTask) {
+  const { results } = await inParallel(block, jobsOf(flags), async (id, slot) => {
+    const r = await runTask(id, slot);
+    const cost = typeof r.costUsd === 'number' ? `$${r.costUsd.toFixed(4)}` : 'cost unknown';
+    console.log(
+      `[race] ${candidate.name} ${r.task}: ${r.success ? 'PASS' : 'fail'}, ${cost}` +
+        tamperNote(r) +
+        (r.reused ? ' [kept from before]' : '')
+    );
+    return r;
+  });
+  return results;
 }
 
 /** A race's record into its folder, and on the console. */
@@ -1679,22 +1695,20 @@ async function dryRunRace(flags) {
     candidates,
     tasks: shuffled([...byId.keys()], Number(flags.seed ?? 1)),
     clusterOf,
-    runBlock: async (c, block) =>
-      (
-        await inParallel(block, jobsOf(flags), async (id, slot) => {
-          const task = byId.get(id);
-          const model = await fakeModel(
-            c.model === 'oracle' ? ['oracle', referencePatch(task)] : ['idle']
-          );
-          const settings = join(dir, c.name, `settings-${id}.json`);
-          writeJson(settings, { ...fakeSettings(model.url), price: c.price });
-          try {
-            return await runOne(task, 1, join(dir, c.name), { settings, policy, ...bins, slot });
-          } finally {
-            model.stop();
-          }
-        })
-      ).results,
+    runBlock: (c, block) =>
+      raceBlock(c, block, flags, async (id, slot) => {
+        const task = byId.get(id);
+        const model = await fakeModel(
+          c.model === 'oracle' ? ['oracle', referencePatch(task)] : ['idle']
+        );
+        const settings = join(dir, c.name, `settings-${id}.json`);
+        writeJson(settings, { ...fakeSettings(model.url), price: c.price });
+        try {
+          return await runOne(task, 1, join(dir, c.name), { settings, policy, ...bins, slot });
+        } finally {
+          model.stop();
+        }
+      }),
   });
   writeRace(dir, record, { fake: true });
   const ok =

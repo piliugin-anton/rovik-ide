@@ -144,6 +144,7 @@ canary in its transcript or its change, and the monitor must grade it
 | pilot                    | 5 tasks × 1 (`budget.json`)        | $5                    |
 | baseline                 | 30 tasks × 3 repetitions = 90      | $75                   |
 | each kind (G02), 4 kinds | 30 tasks × 3 repetitions = 90 each | $75 each, $300 in all |
+| a race (R01)             | each candidate: the tasks × 1      | $300 in all           |
 
 Every run is limited to 1.5 million tokens (the runner's `--max-tokens`: the
 main agent's and its subagents' requests, as the provider reports them; the run
@@ -416,6 +417,61 @@ The pick needs checks to pick by: the baseline's settings have the app's
 default, the checks run when a run ends. The dry run's attempts both make
 the reference change, without checks: it tests the pipeline, not the pick
 (`arms.test.mjs` does).
+
+## A race between settings (R01)
+
+R01 in [docs/design/evolve-plan.md](../../docs/design/evolve-plan.md) (its
+5.2 F and D11), Evolve's first stage: settings race the current ones, and
+no model writes anything. A candidate is a patch of what a race may vary
+(`race.mjs` `RACEABLE`): the lead's model and its price (`profile`,
+`price`), its reasoning effort (`options.reasoning_effort`), the context
+mode (`contextMode`) and the subagents (`config.subagents`). A patch that
+sets anything else is refused, naming what it may not set.
+
+```sh
+node scripts/eval/eval.mjs race --settings my-settings.json --candidates candidates.json [--jobs 3]
+node scripts/eval/eval.mjs dry-run-race [--jobs 3]   # the pipeline, with scripted models
+```
+
+```json
+[
+  { "name": "effort-low", "settings": { "options": { "reasoning_effort": "low" } } },
+  { "name": "no-subagents", "settings": { "config": { "subagents": { "enabled": false } } } }
+]
+```
+
+- The current settings (`--settings`) run as `current`: what the others
+  are measured against, never dropped. Every candidate runs the same
+  tasks, once each, in an order drawn from `--seed` (1), a block of 5 at a
+  time (`--block`).
+- After each block, a candidate is dropped when a sign test on the tasks it
+  and the leader (the highest success, the cheaper of equals) differ on
+  shows it worse, Holm-corrected across the candidates (α 0.05), and not
+  before 10 tasks. The race stops when the tasks run out, when the next
+  block could pass its cap (`budget.json` `race`, $300), or when only the
+  current settings are left.
+- Then D11 decides, for each candidate still in, against the current
+  settings on the same tasks: **better** when the paired 95% interval (a
+  bootstrap over modules) is above zero and the gain at least the smallest
+  change the tasks can show (P07); **cheaper and not worse** when the
+  interval stays above −5 points (`--margin 5`, stated before the race)
+  and it costs less a run. Neither at more than twice the current cost a
+  run. The better one with the most success is chosen, else the cheapest
+  of the cheaper and not worse; else the current settings stay.
+- Each candidate's runs are a campaign in the race's folder
+  (`eval-results/race/<name>/`, `--out`), its `settings.json` and identity
+  (P03) beside them, so a race resumes: the same order, the finished runs
+  kept. Its record is `race.md` and `race.json` there: each block's leader
+  and who was dropped (with p), each candidate's success and cost, and the
+  decision.
+- What a race picks goes into the defaults only by hand, in a pull request
+  that cites its `race.md` (R03).
+
+`dry-run-race` races three scripted settings on the Go and Python tasks:
+the current (a model that makes the reference change), one that changes
+nothing, and the current at half the price. The second must be dropped
+and the third chosen ("The race works."): it checks the blocks, the
+drops, the cost and the decision, not any real model.
 
 ## Autopilot at each effort (the Autopilot plan's G03)
 
