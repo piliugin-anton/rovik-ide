@@ -241,9 +241,10 @@ Today the Balanced Autopilot plan stage blocks after 3 plan reviews (`AUTOPILOT_
      - the outage: the wait, a Stop during it, and the block at each limit.
 
 10. **Logging**
-   - Files: `src-tauri/crates/rovik-core/src/agent_run/plan_review.rs`, `src-tauri/crates/rovik-core/src/agent_run/execute.rs`
-   - The `planReview` log event adds `weight`, `stalled`, `dropped` (no evidence), `reopened`, `disputes`, `ruling` and `stop`.
-   - Add a `planSubmit` event with `formatRejections`, `fixes` (normalize), `edits` and `fromReply`. The eval in Validation reads these from the log.
+
+- Files: `src-tauri/crates/rovik-core/src/agent_run/plan_review.rs`, `src-tauri/crates/rovik-core/src/agent_run/execute.rs`
+- The `planReview` log event adds `weight`, `stalled`, `dropped` (no evidence), `reopened`, `disputes`, `ruling` and `stop`.
+- Add a `planSubmit` event with `formatRejections`, `fixes` (normalize), `edits` and `fromReply`. The eval in Validation reads these from the log.
 
 ## Decisions
 
@@ -254,7 +255,7 @@ Today the Balanced Autopilot plan stage blocks after 3 plan reviews (`AUTOPILOT_
   - Thorough's `Progress` keeps its values through a hand-written `Default`.
 - **No Plan fixer** (user). Handing a stalled plan to another model risks what the research warns about: a handoff loses what the author learned, and names drift. One author writes the plan throughout. So there's no new subagent kind, no escalation setting, and no change to `needed_kinds` or the Subagents page's kinds.
 - **The arbiter is the plan reviewer, not a writer.** The research supports clean-context critics that only read. A fresh plan reviewer run, told to rule on one finding only, needs no new kind, format or model row. It runs inside `plan_review`, as the review does, so message order doesn't change. Only a readable ruling settles a finding, so an outage never settles one by default.
-- **Every finding must be resolved** (user). The ledger, the evidence rule and the arbiter decide *what counts as a finding* and *when it's settled*; they never let an open finding through. The final block stays as it is (user). In Balanced Autopilot a plan is never saved unreviewed: running out of reviews, time or budget blocks it.
+- **Every finding must be resolved** (user). The ledger, the evidence rule and the arbiter decide _what counts as a finding_ and _when it's settled_; they never let an open finding through. The final block stays as it is (user). In Balanced Autopilot a plan is never saved unreviewed: running out of reviews, time or budget blocks it.
 - **Limits are settings** (user), with the defaults the user accepted: 8 rounds, 2 without progress, 30 minutes, 40% budget share.
   - Automatic retries (default 2; 0 turns them off) are a setting too, since the user wants fixing "limited by max time/budget/tries in settings".
   - A host overrides them field by field, as it does the budget.

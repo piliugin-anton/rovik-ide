@@ -185,7 +185,9 @@ describe('describeGroup', () => {
     const plan = describeGroup('submit_plan', [{ plan: '# Add caching\n\nSteps' }], true);
     assert.deepEqual([plan.verb, plan.items[0].text], ['Saving the plan', 'Add caching']);
     // Step 7: an edits-only submit reads its plan from the result's meta.
-    const edits = (n: number) => ({ edits: Array.from({ length: n }, () => ({ old_text: 'a', new_text: 'b' })) });
+    const edits = (n: number) => ({
+      edits: Array.from({ length: n }, () => ({ old_text: 'a', new_text: 'b' })),
+    });
     const edited = describeGroup('submit_plan', [edits(2), edits(1)], false, [
       { plan: '# Add caching\n\nSteps' },
       { plan: '# Add caching\n\nSteps' },
