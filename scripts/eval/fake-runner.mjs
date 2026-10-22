@@ -36,6 +36,8 @@ writeFileSync(
   out,
   JSON.stringify({
     outcome: 'done',
+    // As the real runner's report names it (the notebook tells a scripted run by it).
+    model: settings.profile.model,
     ms: 1,
     usage: { totalTokens: claimed, peakLeadContext: 0 },
     costUsd: claimed / 1e6,

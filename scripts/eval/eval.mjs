@@ -11,6 +11,7 @@
 //   node scripts/eval/eval.mjs power [DIR] [--repeats 3,6] [--target 5]   (evolve-plan P07)
 //   node scripts/eval/eval.mjs race --settings FILE --candidates FILE      (evolve-plan R01)
 //   node scripts/eval/eval.mjs dry-run-race [--jobs N]
+//   node scripts/eval/eval.mjs notebook [DIR...] [--against NAME] [--chats [DIR]] [--since DATE]   (N01)
 //   node scripts/eval/eval.mjs variants --settings FILE [--kinds a,b | --variants a,b]   (G02)
 //   node scripts/eval/eval.mjs compare [--out FILE]                     (G02, G03)
 //   node scripts/eval/eval.mjs compare A B [--out FILE]                 (autopilot-plan G03)
@@ -36,7 +37,7 @@ import {
   copyFileSync,
 } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   AUTOPILOT_VARIANTS,
@@ -85,6 +86,18 @@ import { ATTEMPT_ARMS, attemptsResult } from './arms.mjs';
 import { ledgerTotals, usageGap } from './usage.mjs';
 import { monitorRun } from './monitor.mjs';
 import { candidateSettings, raceMarkdown, runRace, shuffled } from './race.mjs';
+import {
+  appDataDir,
+  campaignRuns,
+  chatNotes,
+  chatRuns,
+  findCampaigns,
+  linkedKeys,
+  notebook,
+  notebookMarkdown,
+  readChatLog,
+  transcriptMarkdown,
+} from './notebook.mjs';
 
 const EVAL = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(EVAL, '../..');
@@ -1757,6 +1770,103 @@ function power(flags) {
   console.log(lines.join('\n'));
 }
 
+// ---------------------------------------------------------------- notebook
+
+/** A run's files a transcript links to, by the label it gives them. */
+const RUN_FILES = [
+  ['the change', 'changes.diff'],
+  ["the checks' log", 'checks.log'],
+  ['the grade', 'grade.json'],
+  ['the report', 'report.json'],
+  ["the runner's log", 'runner.log'],
+];
+
+/** A campaign's name in the notebook: its path in eval-results, or from the folder it was found in. */
+function campaignName(root, dir) {
+  const inResults = dir.startsWith(RESULTS + sep);
+  const path = inResults ? relative(RESULTS, dir) : join(basename(root), relative(root, dir));
+  return path.split(sep).filter(Boolean).join('/');
+}
+
+/**
+ * N01 (evolve-plan): the notebook, for people (notebook.mjs). The
+ * campaigns in each DIR (all of eval-results by default) and, with
+ * `--chats`, the app's own agent log (in its data folder, or `--chats
+ * DIR`), from `--since DATE` on; each folder's campaigns against its
+ * `current` or `baseline`, or all against `--against NAME`. Written to
+ * `--out` (eval-results/notebook): notebook.md, notebook.json, and the
+ * transcripts of the runs it links to.
+ */
+function notebookCommand(flags) {
+  const out = resolve(typeof flags.out === 'string' ? flags.out : join(RESULTS, 'notebook'));
+  const roots = flags._.slice(1).map((d) => resolve(d));
+  const seen = new Set();
+  const campaigns = (roots.length ? roots : [RESULTS]).flatMap((root) => {
+    if (!existsSync(root)) throw new Error(`no results in ${root}`);
+    return findCampaigns(root, { skip: [out] })
+      .filter((dir) => !seen.has(dir) && seen.add(dir))
+      .map((dir) => {
+        const name = campaignName(root, dir);
+        const group = name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '';
+        return { name, group, runs: campaignRuns(dir, name) };
+      });
+  });
+  let chats = null;
+  if (flags.since && !flags.chats)
+    throw new Error('--since is for --chats: the chats from then on');
+  if (flags.chats) {
+    const dir = flags.chats === true ? appDataDir() : resolve(flags.chats);
+    const since = typeof flags.since === 'string' ? flags.since : null;
+    let lines;
+    try {
+      lines = readChatLog(dir);
+    } catch (e) {
+      // `--chats` takes the word after it as its folder: a campaign's, given in the wrong place.
+      const hint =
+        flags.chats === true
+          ? ''
+          : "; for the app's own log, give --chats after the campaigns' folders";
+      throw new Error(`--chats: ${e.message}${hint}`);
+    }
+    chats = chatNotes(chatRuns(lines, { since }), { source: dir, since });
+  }
+  if (!campaigns.length && !chats)
+    throw new Error(`no campaigns in ${(roots.length ? roots : [RESULTS]).join(', ')}`);
+  const against = typeof flags.against === 'string' ? flags.against : null;
+  const data = notebook(campaigns, { chats, against });
+
+  // The transcripts it links to, readable, each linking to its run's files.
+  const transcripts = join(out, 'transcripts');
+  if (existsSync(transcripts) && !existsSync(join(out, 'notebook.json')))
+    throw new Error(`${out} has a transcripts folder that isn't a notebook's: give another --out`);
+  rmSync(transcripts, { recursive: true, force: true });
+  const byKey = new Map(campaigns.flatMap((c) => c.runs).map((r) => [r.key, r]));
+  let written = 0;
+  for (const key of linkedKeys(data)) {
+    const run = byKey.get(key);
+    const file = join(out, run.link);
+    const files = Object.fromEntries(
+      RUN_FILES.filter(([, f]) => existsSync(join(run.dir, f))).map(([label, f]) => [
+        label,
+        relative(dirname(file), join(run.dir, f)),
+      ])
+    );
+    const reportFile = join(run.dir, 'report.json');
+    const report = existsSync(reportFile) ? readJson(reportFile) : null;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, transcriptMarkdown(run, report, files) + '\n');
+    written++;
+  }
+  writeJson(join(out, 'notebook.json'), data);
+  writeFileSync(join(out, 'notebook.md'), notebookMarkdown(data) + '\n');
+  const o = data.overall;
+  console.log(
+    `${o.agentRuns} runs in ${campaigns.length} campaigns, ${o.passed} of ${o.runs} passed` +
+      (chats ? `; ${chats.runs} runs of ordinary chats` : '') +
+      `.\nWritten: ${join(out, 'notebook.md')}, with ${written} transcripts.`
+  );
+}
+
 // -------------------------------------------------------------------- main
 
 const flags = parseFlags(process.argv.slice(2));
@@ -1771,6 +1881,7 @@ const commands = {
   power,
   race,
   'dry-run-race': dryRunRace,
+  notebook: notebookCommand,
   'apply-defaults': applyDefaultsCommand,
   'dry-run-variants': dryRunVariants,
 };
@@ -1783,6 +1894,7 @@ if (!command) {
       'variants --settings FILE [--kinds a,b | --variants a,b] | compare [A B] [--out FILE] | apply-defaults | ' +
       'power [DIR] [--repeats 3,6] [--target 5] | ' +
       'race --settings FILE --candidates FILE [--tasks a,b] [--seed N] [--jobs N] | dry-run-race | ' +
+      'notebook [DIR...] [--out DIR] [--against NAME] [--chats [DIR]] [--since DATE] | ' +
       'dry-run-variants [--variants a,b]'
   );
   process.exit(2);

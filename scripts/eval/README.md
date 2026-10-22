@@ -473,6 +473,70 @@ nothing, and the current at half the price. The second must be dropped
 and the third chosen ("The race works."): it checks the blocks, the
 drops, the cost and the decision, not any real model.
 
+## The notebook, for people (N01)
+
+N01 in [docs/design/evolve-plan.md](../../docs/design/evolve-plan.md) (its
+5.7 C and D18): what the runs got wrong, for a person to read after a
+campaign or once a month, each run it names linked to a transcript. Fixes
+go in as ordinary pull requests; the notebook changes nothing it reads.
+
+```sh
+node scripts/eval/eval.mjs notebook                     # every campaign in eval-results
+node scripts/eval/eval.mjs notebook eval-results/race   # a race's candidates
+node scripts/eval/eval.mjs notebook eval-results/baseline eval-results/kind-scout --against baseline
+node scripts/eval/eval.mjs notebook --chats [--since 2026-09-01]   # ordinary chats too
+```
+
+- A campaign is a folder of `<task>/<repetition>/result.json`, found up to
+  three folders down in those given (eval-results by default): a race's
+  candidates and a dry run's modes are a campaign each. A run is one agent
+  run: an attempt of the same-money arm counts in the failures by itself,
+  and the arm's pass rate is its repetitions' (the attempt its checks
+  picked).
+- **The commonest failures**: failed tool calls by class
+  (`tools::error_class`; those a Stop, a closed app or a budget cut short
+  left out, as the runner leaves them out) and by tool; edit misses; how
+  commands ended; the project's checks' rounds, how each ended and its
+  verdict against the round before (progress, no progress, or a
+  regression: a failure in what passed before); the runs' outcomes; and the
+  tasks no campaign passed.
+- **Regressions**: the tasks a campaign passes less often than the
+  `current` or `baseline` in its folder (or, with `--against NAME`, every
+  campaign against that one), the clearest first, with its failed runs and
+  one of the reference's passes to read side by side; then the tasks it
+  passes more often. Two campaigns that ran on one runner, settings and
+  policy (P03's identity) differ by chance only: the notebook says so and
+  doesn't compare them.
+- **Where the checks and the hidden tests disagree**: runs whose own checks
+  passed a change the hidden tests fail (the checks are too weak, or were
+  fooled), or failed one they pass.
+- **Marked for reading** (P09's weak signals) and **Tampered** (P02, P08,
+  P09), each with why.
+- **Per campaign**, each task with something to read: its pass rate,
+  failure classes, edit misses, its checks' rounds and verdicts, the hidden
+  tests that failed (and how many didn't run: a build that broke), and its
+  failed runs.
+- **Ordinary chats**, with `--chats`, if you opt in: the app's own agent log
+  (`agent-log.jsonl`, and `agent-log.1.jsonl` rotated out), from `--since`
+  on, in the app's data folder, or in the folder given as `--chats DIR`
+  (after the campaigns' folders, which `--chats` would take for its own):
+  - Linux: `~/.local/share/rovik-ide` (or under `$XDG_DATA_HOME`)
+  - macOS: `~/Library/Application Support/rovik-ide`
+  - Windows: `%APPDATA%\rovik-ide`
+
+  The log holds what each run did (its tools and their error classes, the
+  checks' rounds, how it ended), not what was said: the notebook gives the
+  same counts, and the runs to look at (those that didn't end done or
+  waiting on an approval, or whose checks went backwards), by time, chat and
+  model. Their transcripts stay in the app.
+
+It writes `notebook.md`, `notebook.json` (the same data, for tools) and
+`transcripts/` to `eval-results/notebook/` (`--out`): each run it links to,
+readable, with what the hidden tests and its checks said, its cost, links
+to its change, its checks' log, grade, report and runner's log, then its
+conversation (its subagents' after its lead's, long tool results cut in the
+middle).
+
 ## Autopilot at each effort (the Autopilot plan's G03)
 
 Beside the kinds, `variants` runs Autopilot at each effort, each a campaign
