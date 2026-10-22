@@ -4616,6 +4616,7 @@ name = "rovik-agentd"
 version = "0.1.28"
 dependencies = [
  "axum",
+ "flate2",
  "futures-util",
  "git2",
  "http-body-util",
@@ -4633,6 +4634,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "tokio",
  "tokio-tungstenite",
  "toml 1.1.8+spec-1.1.0",

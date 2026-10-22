@@ -11,6 +11,7 @@ use crate::events::Events;
 use crate::gc;
 use crate::home::{self, Home};
 use crate::host;
+use crate::installer;
 use crate::limits::{AdminFile, Caps, ADMIN_FILE};
 use crate::logfile;
 use crate::packs::Projects;
@@ -134,6 +135,24 @@ async fn run(
     core.agents
         .set_markers_resolver(Arc::new(move |chat| results::marked_left(&marks, chat)));
     core.agents.set_on_server();
+    // A cloud host's shared toolchains: where the versions are, the caches
+    // this daemon may write, and how a chat has a missing one installed.
+    // Before any run, whose commands get their environment (6).
+    if let Some(shared) = shared_toolchains(
+        &limits.admin,
+        Path::new(installer::TOOLCHAINS),
+        Path::new(installer::CACHES),
+    ) {
+        log::info!(
+            "shared toolchains in {}, caches: {}",
+            shared.root.display(),
+            match &shared.caches {
+                Some(caches) => caches.display().to_string(),
+                None => "this user's own".into(),
+            }
+        );
+        rovik_core::toolchains::set(shared);
+    }
     // A delivered task's result goes to its branch when its computer asked
     // (D15, H04).
     core.agents
@@ -228,7 +247,91 @@ async fn run(
     served.map_err(|e| e.to_string())
 }
 
-/// Mounts the virtual files at `at` when FUSE works here; else why not.
+/// The shared toolchains this daemon's chats use (rovik_core::toolchains,
+/// docs/cloud-hosts.md): the versions under `root`, the caches at
+/// `caches` when its settings share them and it may write them, and the
+/// root command that installs what's missing when its settings allow that.
+/// None where they aren't Rovik's: the user's own computer.
+fn shared_toolchains(
+    admin: &AdminFile,
+    root: &Path,
+    caches: &Path,
+) -> Option<rovik_core::toolchains::Shared> {
+    if !root.is_dir() {
+        return None;
+    }
+    // A daemon outside the `rovik` group, such as one on a host without
+    // systemd, can't write them: it keeps the user's own caches.
+    let writable = |dir: &Path| can_write(dir);
+    let caches = (admin.toolchains.shared_caches
+        && writable(&caches.join("npm"))
+        && writable(&caches.join("crates")))
+    .then(|| caches.to_path_buf());
+    let installer = admin
+        .toolchains
+        .user_install
+        .then(|| Arc::new(root_installer(installer::INSTALLED)) as Arc<rovik_core::toolchains::Installer>);
+    Some(rovik_core::toolchains::Shared {
+        root: root.to_path_buf(),
+        caches,
+        installer,
+    })
+}
+
+/// Whether this process may write into `dir` (`W_OK`, and it's a folder).
+fn can_write(dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+            return false;
+        };
+        dir.is_dir() && unsafe { libc::access(path.as_ptr(), libc::W_OK) } == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        false
+    }
+}
+
+/// A chat's missing version installed as root, through the sudo rule every
+/// user has: `rovik-agentd user toolchain …`, given the words the
+/// toolchain's kind, version, components and targets make, and nothing a
+/// chat wrote.
+fn root_installer(binary: &'static str) -> impl Fn(rovik_core::toolchains::Want) -> Result<(), String> + Send + Sync {
+    move |want| {
+        let mut command = rovik_core::process::command("sudo");
+        command
+            .arg("-n")
+            .arg(binary)
+            .arg("user")
+            .arg("toolchain")
+            .args(want.words());
+        let out = command
+            .output()
+            .map_err(|e| format!("sudo {binary} user toolchain: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let lines: Vec<&str> = said
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let tail = &lines[lines.len().saturating_sub(6)..];
+        Err(match tail.is_empty() {
+            true => format!("sudo {binary} user toolchain exited with {}", out.status),
+            false => tail.join("\n"),
+        })
+    }
+}
+
 async fn mount_virtual_files(core: &Core, at: PathBuf) -> Option<String> {
     let status = rt::spawn_blocking(rovik_core::vfs::driver::status)
         .await
@@ -377,7 +480,74 @@ fn drained(outcome: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::makes_no_result;
+    use super::{makes_no_result, shared_toolchains};
+    use crate::limits::AdminFile;
+
+    /// A daemon outside the `rovik` group, as on a host without systemd,
+    /// can't write the shared caches: it shares the versions and the root
+    /// command, and keeps the user's own caches.
+    #[test]
+    fn the_shared_caches_are_used_only_where_this_daemon_may_write_them() {
+        let dir = rovik_core::testing::temp_dir();
+        let toolchains = dir.0.join("toolchains");
+        std::fs::create_dir_all(&toolchains).unwrap();
+        let caches = dir.0.join("caches");
+        let admin = AdminFile::default();
+        // Not there yet: the daemon keeps its own.
+        assert_eq!(
+            shared_toolchains(&admin, &toolchains, &caches)
+                .unwrap()
+                .caches,
+            None
+        );
+        // Made, and this account writes them.
+        for folder in ["npm", "crates"] {
+            std::fs::create_dir_all(caches.join(folder)).unwrap();
+        }
+        let shared = shared_toolchains(&admin, &toolchains, &caches).unwrap();
+        assert_eq!(shared.caches, Some(caches.clone()));
+        assert!(shared.installer.is_some(), "chats may install one");
+
+        // Turned off in agentd.toml: the same folders, not shared.
+        let mut off = admin.clone();
+        off.toolchains.shared_caches = false;
+        assert_eq!(
+            shared_toolchains(&off, &toolchains, &caches)
+                .unwrap()
+                .caches,
+            None
+        );
+        off.toolchains.user_install = false;
+        assert!(shared_toolchains(&off, &toolchains, &caches)
+            .unwrap()
+            .installer
+            .is_none());
+
+        // No shared versions on this host at all: nothing to set.
+        assert!(shared_toolchains(&admin, &dir.0.join("elsewhere"), &caches).is_none());
+
+        // A daemon that can't write them (another user's folder) keeps the
+        // user's own caches, and still shares the versions.
+        let theirs = dir.0.join("theirs");
+        for folder in ["npm", "crates"] {
+            std::fs::create_dir_all(theirs.join(folder)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Root writes anything, and the test runners that are root
+            // skip this part.
+            for folder in ["npm", "crates"] {
+                std::fs::set_permissions(
+                    theirs.join(folder),
+                    std::fs::Permissions::from_mode(0o500),
+                )
+                .unwrap();
+            }
+            let shared = shared_toolchains(&admin, &toolchains, &theirs).unwrap();
+            assert_eq!(shared.caches, None);
+        }
+    }
 
     /// S03: the IDE's own stages of an Autopilot task bring no result; the
     /// runs that change the project do, as every other run does.

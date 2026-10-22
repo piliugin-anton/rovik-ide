@@ -477,6 +477,12 @@ fn run_blocking(
     for (key, value) in queued.map(|q| q.env.as_slice()).unwrap_or_default() {
         cmd.env(key, value);
     }
+    // A cloud host's toolchains, where the daemon shares them (toolchains):
+    // the versions' folders in front of the PATH, and rustup's home. Set
+    // here, so a command gets them whether or not it runs confined.
+    for (key, value) in crate::toolchains::env_for(root) {
+        cmd.env(key, value);
+    }
     // Its own process group, so a timeout can take down everything the
     // shell started (a `node server.js`), not just the shell.
     #[cfg(unix)]
@@ -881,5 +887,65 @@ mod tests {
         )
         .unwrap();
         assert!(out.timed_out);
+    }
+
+    /// A cloud host's toolchains are in the environment of every command,
+    /// confined or not; on a computer nothing changes.
+    #[test]
+    fn a_cloud_hosts_toolchains_are_in_every_commands_environment() {
+        let dir = crate::testing::temp_dir();
+        let project = &dir.0;
+        let _lock = crate::toolchains::test_lock();
+        // Nothing set: the command's own PATH, as before.
+        crate::toolchains::unset();
+        let plain = run_blocking(
+            project.to_str().unwrap(),
+            "echo \"$RUSTUP_HOME|$RUSTUP_AUTO_INSTALL\"",
+            Duration::from_secs(10),
+            &|| false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(plain.exit_code, Some(0));
+        // Whatever this machine's own are: not the shared ones.
+        let (home, auto) = plain.stdout.trim().split_once('|').unwrap();
+        assert!(!home.contains("toolchains"), "nothing shared: {home:?}");
+        assert_ne!(auto, "0", "nothing shared: {auto:?}");
+
+        let root = dir.0.join("toolchains");
+        std::fs::create_dir_all(root.join("rust/cargo/bin")).unwrap();
+        std::fs::write(root.join("rust/cargo/bin/cargo"), "").unwrap();
+        crate::toolchains::set(crate::toolchains::Shared {
+            root: root.clone(),
+            caches: None,
+            installer: None,
+        });
+        let shown = "echo \"$RUSTUP_HOME|$RUSTUP_AUTO_INSTALL|${PATH%%:*}\"";
+        // Without a policy (a machine with no sandbox) and confined, as a
+        // chat's command runs on a server.
+        for confine in [None, crate::overlay::confine::hiding_if_available(project)] {
+            let mut queued = Queued::of(crate::workload::JobKind::Terminal, None);
+            queued.confine = confine;
+            let out = run_blocking(
+                project.to_str().unwrap(),
+                shown,
+                Duration::from_secs(10),
+                &|| false,
+                Some(&queued),
+            )
+            .unwrap();
+            assert_eq!(out.exit_code, Some(0), "{:?}", out.stderr);
+            let said = out.stdout.trim();
+            assert_eq!(
+                said,
+                format!(
+                    "{}|0|{}",
+                    root.join("rust/rustup").display(),
+                    root.join("rust/cargo/bin").display()
+                ),
+                "{said}"
+            );
+        }
+        crate::toolchains::unset();
     }
 }

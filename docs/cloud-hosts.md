@@ -19,8 +19,11 @@ Rovik is installed once per server, by root:
 | `/etc/systemd/system/rovik.slice`                         | The caps on all of Rovik together.                       |
 | `/etc/sudoers.d/rovik`                                    | Lets users run the commands described below.             |
 | `/opt/rovik/browser/<version>/`                           | The browser tools' browser (below), owned by root.       |
+| `/opt/rovik/toolchains/rust/`, `/opt/rovik/toolchains/node/` | The Rust and Node versions every user's chats run (below), owned by root. |
+| `/var/cache/rovik/npm`, `/var/cache/rovik/crates`         | The package caches the daemons share, owned by root and the `rovik` group. |
 | The distro's `bubblewrap` package                         | Confines the chats' commands (see What can read what).   |
 | The `rovik-admin` group                                   | The administrators.                                      |
+| The `rovik` group                                         | Every daemon, which writes the shared caches (below).    |
 
 Each user's daemon keeps its files in `~/.rovik` and works in
 `~/.local/share/rovik`. Both folders are the user's own, with mode 0700,
@@ -69,10 +72,15 @@ sudo /opt/rovik/bin/rovik-agentd user start     # enable and start it
 sudo /opt/rovik/bin/rovik-agentd user stop      # stop and disable it
 sudo /opt/rovik/bin/rovik-agentd user restart
 sudo /opt/rovik/bin/rovik-agentd user status
+sudo /opt/rovik/bin/rovik-agentd user toolchain rust 1.82
+sudo /opt/rovik/bin/rovik-agentd user toolchain node 20
 ```
 
 The app runs `user start` when it deploys to a server that already has
 Rovik. Each daemon starts at boot, so nobody needs to stay logged in.
+`user toolchain` installs a Rust or Node version for the whole server
+([Shared toolchains and caches](#shared-toolchains-and-caches)); a chat
+runs it by itself when its project needs one.
 
 When a daemon stops, for an upgrade, a reboot or `user restart`, it lets
 the commands its runs are in end and pauses each run there, for up to
@@ -94,12 +102,20 @@ sudo /opt/rovik/bin/rovik-agentd admin add USER
 sudo /opt/rovik/bin/rovik-agentd admin remove USER
 sudo /opt/rovik/bin/rovik-agentd admin browser                   # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin bubblewrap                # install it if it's missing
+sudo /opt/rovik/bin/rovik-agentd admin toolchain list            # the versions installed
+sudo /opt/rovik/bin/rovik-agentd admin toolchain add rust 1.82   # for everyone
+sudo /opt/rovik/bin/rovik-agentd admin toolchain add node 20
+sudo /opt/rovik/bin/rovik-agentd admin toolchain remove node 20
+sudo /opt/rovik/bin/rovik-agentd admin toolchain prune 90        # what nobody used for 90 days
+sudo /opt/rovik/bin/rovik-agentd admin toolchains user-install off
+sudo /opt/rovik/bin/rovik-agentd admin toolchains shared-caches off
+sudo /opt/rovik/bin/rovik-agentd admin toolchains setup          # the group and folders again
 sudo /opt/rovik/bin/rovik-agentd admin upgrade FILE
 sudo /opt/rovik/bin/rovik-agentd admin uninstall
 ```
 
-These change the limits, the version, the browser and the list of
-administrators, and nothing else. Being Rovik's administrator gives no access to other users'
+These change the limits, the version, the browser, the toolchains and the
+list of administrators, and nothing else. Being Rovik's administrator gives no access to other users'
 files or chats.
 
 ## Limits
@@ -130,6 +146,75 @@ on the server.
 
 New limits apply to each daemon the next time it starts.
 
+## Shared toolchains and caches
+
+Each Rust and Node version is installed once per server, as root, in
+`/opt/rovik/toolchains`, where every user can read and run it and change
+nothing. `node_modules` and `target/` stay in each chat's own working
+copy. A chat whose project names a version the server lacks has it
+installed, through the same sudo rule as `user start`, so nobody has to
+ask an administrator:
+
+```sh
+sudo /opt/rovik/bin/rovik-agentd user toolchain rust 1.82
+sudo /opt/rovik/bin/rovik-agentd user toolchain node 20
+```
+
+What a project asks for comes from its `rust-toolchain.toml` or
+`rust-toolchain` (the `channel`, with any `components` and `targets` it
+names), and from its `.nvmrc`, `.node-version` or `engines.node`. Without
+them, Rust is `stable` and Node the latest LTS. Rovik installs it before
+the installs that prepare the project, and again when a command fails
+because its program isn't found. The versions install while the chat
+waits: a Rust version is about 1 GB on disk and takes a few minutes.
+
+Root checks every word first. A version is `stable`, `beta`, `nightly`,
+`nightly-YYYY-MM-DD`, `1.N` or `1.N.P` for Rust, and `lts`, a major
+version or `X.Y.Z` for Node; anything else is refused, so a chat can't
+pass text of its own to root. Rust comes from `static.rust-lang.org` and
+Node from `nodejs.org`, checked against the SHA-256 the servers publish
+(`rustup-init.sha256`, `SHASUMS256.txt`), and a Node version's folder only
+takes its name once all of it is unpacked. One install runs at a time.
+
+An administrator can turn it off, and name what a chat may install:
+
+```toml
+[toolchains]
+user_install = false          # only `admin toolchain add` installs
+shared_caches = false         # each daemon keeps its own package caches
+allowed_rust = ["1.82", "nightly"]   # empty: any version Rovik takes
+```
+
+`admin toolchain add` works whether or not chats may install versions.
+`admin toolchain list` says what's there and when each was last used, and
+`admin toolchain prune DAYS` removes what no chat used in that time.
+
+The package caches are shared too, in `/var/cache/rovik`, which the
+`rovik` group writes (every daemon runs in it). That is only done where
+the result is checked:
+
+- **npm.** Only `npm ci` with a lockfile uses the shared cache, because
+  npm checks every package it takes for you against the lockfile's
+  `integrity`. An install whose project or user `.npmrc` holds a registry
+  token keeps the user's own cache, so a private package never lands in
+  the shared one.
+- **cargo.** Cargo doesn't check what is already in its cache, so Rovik
+  does: a crate from the shared store is copied into a user's cargo cache
+  only when its SHA-256 is the checksum in that project's `Cargo.lock`,
+  and after a `cargo fetch` the user's checked crates go into the store.
+  A file another user left there that doesn't match is skipped, never
+  used.
+
+The daemons find the caches because their unit names the `rovik` group
+(`SupplementaryGroups=rovik`). Without systemd, a daemon isn't in the
+group: it keeps the user's own caches, and everything else above works
+the same.
+
+`install`, `admin bubblewrap` and each upgrade put the `rovik` group, the
+folders and the unit in place, when they aren't there yet:
+`admin toolchains setup` does it alone. `rovik-agentd doctor` says which
+versions are installed and how the two settings stand.
+
 When a command goes over its daemon's memory cap, the kernel kills that
 command, and the daemon and its other runs carry on (`OOMPolicy=continue`).
 The daemon is the last process the kernel picks when memory runs out
@@ -144,8 +229,10 @@ nothing of one user's work lands in a shared `/tmp`.
 
 `rovik-agentd doctor`, run by a user, says what their account and the
 server lack for their daemon, then the versions, the free space where
-Rovik's folders are, the install and its limits, the heavy commands
-their daemon runs at once, and what its folders and logs take. The app's
+Rovik's folders are, the install and its limits, the shared Rust and
+Node versions (and whether chats may install one and the caches are
+shared), the heavy commands their daemon runs at once, and what its
+folders and logs take. The app's
 connection test reads the same once Rovik is deployed. The daemon's log,
 `~/.rovik/logs/agentd.log`, is rotated at 5 MB, with 3 older files kept.
 
@@ -170,8 +257,10 @@ freed.
 ## What can read what
 
 - The agent's commands run as the user, in a bubblewrap sandbox: the
-  system is read-only to them but for the worktree, `/tmp` and the
-  toolchains' caches under the home folder; the credential stores
+  system is read-only to them but for the worktree, `/tmp`, the
+  toolchains' caches under the home folder and the shared caches of
+  [Shared toolchains and caches](#shared-toolchains-and-caches); the
+  credential stores
   (`~/.rovik` with the API keys, `~/.ssh`, `~/.aws`, `~/.gnupg`, the cloud
   CLIs' folders) are empty to them; they see no other process and hold no
   capability, so they can't undo any of that. The installer adds
@@ -182,6 +271,12 @@ freed.
   with the same folders, but seeing the other processes; with neither,
   they're refused. `rovik-agentd doctor` and the app's connection test
   report which. `admin bubblewrap` adds both again. A command that names `~/.rovik` still needs the user's approval.
+- The shared caches are one folder per server: the `rovik` group reads
+  and writes them, so every daemon's user can read what another's chat
+  downloaded. Nothing private goes in them: npm's only for `npm ci` with a
+  lockfile and no registry token, and crates only when they match a
+  project's `Cargo.lock`. The toolchains themselves are root's, readable
+  by all and writable by none but root.
 - Worktrees and API keys sit in the user's 0700 folders. Other users can't
   read them, but root can. The app tells users: "Your API keys are stored in
   your account on this server, so chats there run while this computer is
@@ -283,7 +378,9 @@ asks a copy in memory its version, as you rather than as root, and the
 copy under `/opt/rovik/bin` is root's alone until it has passed. Each
 build is named for the version it says it is. Before the daemons start again, the new build installs
 the browser it pins and bubblewrap, whichever is missing, and the browser's
-other versions go. An upgrade
+other versions go. It also puts the `rovik` group, the shared caches and
+the unit that names the group in place, so the daemons that restart run
+in it. An upgrade
 from the app does the same for a server whose installed build is older
 than that.
 
@@ -296,8 +393,10 @@ administrators to ask.
 
 ## Removing Rovik
 
-`admin uninstall` stops every daemon and removes everything listed above.
-The libraries the browser needed stay installed.
+`admin uninstall` stops every daemon and removes everything listed above,
+`/var/cache/rovik` with the shared caches among them, and the `rovik` and
+`rovik-admin` groups. `/opt/rovik/toolchains` goes with `/opt/rovik`. The
+libraries the browser needed stay installed.
 Each user's `~/.rovik` and `~/.local/share/rovik` stay, because their
 chats are there. A user who no longer wants Rovik runs `user stop` and
 deletes those two folders. The app does this with "Remove Rovik from this

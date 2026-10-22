@@ -306,9 +306,7 @@ fn admin_commands_are_for_administrators() {
         "{}",
         said(&unsigned)
     );
-    let path = server.file("/etc/rovik/agentd.toml");
-    let settings = std::fs::read_to_string(&path).unwrap() + "allow_unsigned = true\n";
-    std::fs::write(&path, settings).unwrap();
+    allow_unsigned(&server);
     let upgraded = server.run(&["admin", "upgrade", &newer], Some(NOBODY));
     assert!(upgraded.status.success(), "{}", said(&upgraded));
     assert!(said(&upgraded).contains("would run: systemctl try-restart rovik-agentd@*.service"));
@@ -389,9 +387,7 @@ fn an_upgrade_reads_the_build_as_its_administrator() {
         return;
     }
     let server = Server::installed();
-    let path = server.file("/etc/rovik/agentd.toml");
-    let settings = std::fs::read_to_string(&path).unwrap() + "allow_unsigned = true\n";
-    std::fs::write(&path, settings).unwrap();
+    allow_unsigned(&server);
     let private = server.dir.0.join("private");
     script(&private, "9.9.9");
     std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -491,9 +487,7 @@ fn the_pinned_browser_comes_with_rovik_and_its_upgrades() {
         said(&again)
     );
 
-    let path = server.file("/etc/rovik/agentd.toml");
-    let settings = std::fs::read_to_string(&path).unwrap() + "allow_unsigned = true\n";
-    std::fs::write(&path, settings).unwrap();
+    allow_unsigned(&server);
     let newer = server.dir.0.join("newer");
     script(&newer, "9.9.9");
     let newer = newer.to_string_lossy().into_owned();
@@ -507,4 +501,294 @@ fn the_pinned_browser_comes_with_rovik_and_its_upgrades() {
         matches!((browser, bubblewrap, restart), (Some(b), Some(w), Some(r)) if b < r && w < r),
         "{out}"
     );
+}
+
+/// `agentd.toml` with unsigned builds allowed, for a test's own build. A
+/// top-level key goes before `[toolchains]`, the file's only table.
+fn allow_unsigned(server: &Server) {
+    let path = server.file("/etc/rovik/agentd.toml");
+    let settings = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("allow_unsigned = true\n{settings}")).unwrap();
+}
+
+/// mode of a file or folder the install made.
+fn mode(path: &Path) -> u32 {
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+/// The shared toolchains and caches: `install` makes the `rovik` group
+/// first (systemd won't start a unit naming a group that isn't there),
+/// then the folders, then the unit that runs each daemon in the group.
+#[test]
+fn install_puts_the_shared_toolchains_and_caches_in_place() {
+    let server = Server::new();
+    let build = server.build.to_string_lossy().into_owned();
+    let done = server.run(&["install", "--admin", "nobody", "--binary", &build], None);
+    let out = said(&done);
+    assert!(done.status.success(), "{out}");
+
+    let admin_group = out.find("would run: groupadd --system rovik-admin");
+    let shared_group = out.find("would run: groupadd --system rovik\n");
+    let reload = out.find("would run: systemctl daemon-reload");
+    assert!(
+        matches!((admin_group, shared_group, reload), (Some(a), Some(s), Some(r)) if a < s && s < r),
+        "{out}"
+    );
+    let toolchains = server.file("/opt/rovik/toolchains");
+    assert_eq!(mode(&toolchains), 0o755, "the versions' root");
+    for cache in ["/var/cache/rovik/npm", "/var/cache/rovik/crates"] {
+        let path = server.file(cache);
+        assert!(path.is_dir(), "{cache}");
+        assert_eq!(mode(&path), 0o2770, "{cache}");
+        assert!(
+            out.contains(&format!("would run: chown root:rovik {cache}")),
+            "{out}"
+        );
+    }
+    let unit = server.text("/etc/systemd/system/rovik-agentd@.service");
+    assert!(unit.contains("\nSupplementaryGroups=rovik\n"), "{unit}");
+
+    // Nothing there once it's all in place: a second install makes no
+    // folder (a dry run can't ask getent whether the group is there, so it
+    // says it would make it again).
+    let again = said(&server.run(&["install", "--admin", "nobody", "--binary", &build], None));
+    assert!(!again.contains("chown root:rovik"), "{again}");
+}
+
+/// `admin bubblewrap` puts the shared parts in place too, which is how a
+/// server installed before them gets both on an upgrade: the old build's
+/// upgrade runs the new build's `admin bubblewrap` before the daemons
+/// restart.
+#[test]
+fn an_upgrade_brings_the_shared_parts_with_bubblewrap() {
+    let server = Server::installed();
+    // As an install before them left it: no group, no folders, a unit
+    // naming neither.
+    std::fs::remove_dir_all(server.file("/opt/rovik/toolchains")).unwrap();
+    std::fs::remove_dir_all(server.file("/var/cache/rovik")).unwrap();
+    let unit = "/etc/systemd/system/rovik-agentd@.service";
+    std::fs::write(server.file(unit), "Description=an old unit\n").unwrap();
+
+    let (_, uid) = someone_else();
+    let refused = server.run(&["admin", "bubblewrap"], Some(uid));
+    assert_eq!(refused.status.code(), Some(1), "{}", said(&refused));
+    assert!(!server.file("/var/cache/rovik").exists(), "not for others");
+
+    let done = server.run(&["admin", "bubblewrap"], Some(NOBODY));
+    let out = said(&done);
+    assert!(done.status.success(), "{out}");
+    assert!(
+        out.contains("would run: groupadd --system rovik\n"),
+        "{out}"
+    );
+    assert!(server.file("/var/cache/rovik/npm").is_dir(), "{out}");
+    let written = server.text(unit);
+    assert!(written.contains("SupplementaryGroups=rovik"), "{written}");
+    assert!(
+        out.contains("would run: systemctl daemon-reload"),
+        "{out}"
+    );
+}
+
+/// `user toolchain`: a chat's project names a version, and root installs
+/// it once for the whole server, through the sudo rule every user has.
+/// The words root gets are checked: only a version of the shape its kind
+/// has.
+#[test]
+fn a_user_installs_a_toolchain_as_root() {
+    let server = Server::installed();
+    let rust = said(&server.run(
+        &["user", "toolchain", "rust", "1.82", "-c", "rustfmt"],
+        Some(NOBODY),
+    ));
+    assert!(
+        rust.contains("would download https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init")
+            || rust.contains("aarch64-unknown-linux-gnu/rustup-init"),
+        "{rust}"
+    );
+    assert!(
+        rust.contains(
+            "RUSTUP_HOME=/opt/rovik/toolchains/rust/rustup \
+             CARGO_HOME=/opt/rovik/toolchains/rust/cargo"
+        ),
+        "{rust}"
+    );
+    assert!(
+        rust.contains("--no-modify-path -y --profile minimal --default-toolchain stable"),
+        "{rust}"
+    );
+    assert!(
+        rust.contains("rustup toolchain install 1.82 --profile minimal -c rustfmt"),
+        "{rust}"
+    );
+
+    // A host without systemd installs one too: the daemon's own is the
+    // app's business, not the toolchain's.
+    std::fs::remove_dir_all(server.file("/run/systemd")).unwrap();
+    let again = server.run(&["user", "toolchain", "node", "20"], Some(NOBODY));
+    let out = said(&again);
+    assert!(again.status.success(), "{out}");
+    assert!(
+        out.contains("would download https://nodejs.org/dist/v20.11.0/node-v20.11.0-linux-")
+            && out.contains("/SHASUMS256.txt)"),
+        "{out}"
+    );
+    // A version isn't any text at all.
+    for bad in ["1.82; rm -rf /", "../x", "", "1.82.0.1"] {
+        let refused = server.run(&["user", "toolchain", "rust", bad], Some(NOBODY));
+        assert_eq!(refused.status.code(), Some(1), "{bad}");
+        assert!(
+            said(&refused).contains("isn't a rust version Rovik installs"),
+            "{bad}: {}",
+            said(&refused)
+        );
+    }
+    let unknown = server.run(&["user", "toolchain", "python", "3"], Some(NOBODY));
+    assert!(said(&unknown).contains("say rust or node"), "{}", said(&unknown));
+}
+
+/// An administrator can turn a chat's installs off, and name the Rust
+/// versions one may install; their own `admin toolchain add` works either
+/// way.
+#[test]
+fn a_chat_installs_a_toolchain_only_where_administrators_allow_it() {
+    let server = Server::installed();
+    let path = server.file("/etc/rovik/agentd.toml");
+    let settings = std::fs::read_to_string(&path).unwrap();
+    assert!(settings.contains("\n[toolchains]\n"), "{settings}");
+
+    // Rust 1.83 isn't one of the versions the administrators allowed.
+    let limited = settings.replace(
+        "shared_caches = true\n",
+        "shared_caches = true\nallowed_rust = [\"1.82\"]\n",
+    );
+    std::fs::write(&path, limited).unwrap();
+    let refused = server.run(&["user", "toolchain", "rust", "1.83"], Some(NOBODY));
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        said(&refused).contains("allow Rust 1.82 only"),
+        "{}",
+        said(&refused)
+    );
+    let allowed = server.run(&["user", "toolchain", "rust", "1.82"], Some(NOBODY));
+    assert!(allowed.status.success(), "{}", said(&allowed));
+
+    // Off altogether: the message names what an administrator runs.
+    let off = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("user_install = true", "user_install = false");
+    std::fs::write(&path, off).unwrap();
+    let refused = server.run(&["user", "toolchain", "rust", "1.82"], Some(NOBODY));
+    assert_eq!(refused.status.code(), Some(1));
+    let message = said(&refused);
+    assert!(
+        message.contains("turned off installing toolchains"),
+        "{message}"
+    );
+    assert!(
+        message.contains("admin toolchain add rust 1.82"),
+        "the admin command: {message}"
+    );
+    // An administrator's own add still works.
+    let added = server.run(&["admin", "toolchain", "add", "rust", "1.82"], Some(NOBODY));
+    assert!(added.status.success(), "{}", said(&added));
+}
+
+/// `admin toolchain list|add|remove|prune`, for Rovik's administrators
+/// only.
+#[test]
+fn administrators_manage_the_shared_toolchains() {
+    let server = Server::installed();
+    let (_, uid) = someone_else();
+    let commands: [&[&str]; 6] = [
+        &["admin", "toolchain", "list"],
+        &["admin", "toolchain", "add", "node", "20"],
+        &["admin", "toolchain", "remove", "node", "20"],
+        &["admin", "toolchain", "prune", "30"],
+        &["admin", "toolchains", "user-install", "off"],
+        &["admin", "toolchains", "setup"],
+    ];
+    for args in commands {
+        let refused = server.run(args, Some(uid));
+        assert_eq!(refused.status.code(), Some(1), "{args:?}");
+        assert!(
+            said(&refused).contains("Only Rovik's administrators"),
+            "{args:?}: {}",
+            said(&refused)
+        );
+    }
+
+    let added = server.run(&["admin", "toolchain", "add", "node", "20"], Some(NOBODY));
+    let out = said(&added);
+    assert!(added.status.success(), "{out}");
+    assert!(
+        out.contains("would download https://nodejs.org/dist/v20.11.0/"),
+        "{out}"
+    );
+    // A real install leaves the folder: this is what the file says.
+    let version = server.file("/opt/rovik/toolchains/node/20.11.0");
+    std::fs::create_dir_all(version.join("bin")).unwrap();
+    std::fs::write(version.join("bin/node"), "").unwrap();
+    let listed = said(&server.run(&["admin", "toolchain", "list"], Some(NOBODY)));
+    assert!(listed.contains("node: 20.11.0"), "{listed}");
+    assert!(listed.contains("rust: none"), "{listed}");
+
+    // `node 20` names the newest 20.x.y there.
+    let removed = server.run(&["admin", "toolchain", "remove", "node", "20"], Some(NOBODY));
+    assert!(removed.status.success(), "{}", said(&removed));
+    assert!(said(&removed).contains("Node 20.11.0 is gone"), "{}", said(&removed));
+    assert!(!version.exists());
+    let listed = said(&server.run(&["admin", "toolchain", "list"], Some(NOBODY)));
+    assert!(!listed.contains("20.11.0"), "{listed}");
+
+    // What nothing used for the days it's given goes; what a chat used
+    // stays.
+    for (name, days_ago) in [("20.11.0", 30), ("22.0.0", 0)] {
+        let dir = server.file(&format!("/opt/rovik/toolchains/node/{name}"));
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/node"), "").unwrap();
+        let used = server.file(&format!("/opt/rovik/toolchains/node/{name}.used"));
+        std::fs::write(&used, "0\n").unwrap();
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days_ago * 86400);
+        std::fs::File::options()
+            .write(true)
+            .open(&used)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+    let pruned = server.run(&["admin", "toolchain", "prune", "7"], Some(NOBODY));
+    assert!(pruned.status.success(), "{}", said(&pruned));
+    assert!(said(&pruned).contains("1 toolchain(s) gone"), "{}", said(&pruned));
+    assert!(!server.file("/opt/rovik/toolchains/node/20.11.0").exists());
+    assert!(server.file("/opt/rovik/toolchains/node/22.0.0").is_dir());
+
+    // The settings, written to `agentd.toml` as the daemons read them.
+    let off = server.run(&["admin", "toolchains", "user-install", "off"], Some(NOBODY));
+    assert!(off.status.success(), "{}", said(&off));
+    let settings = server.text("/etc/rovik/agentd.toml");
+    assert!(settings.contains("user_install = false\n"), "{settings}");
+    let on = server.run(&["admin", "toolchains", "shared-caches", "off"], Some(NOBODY));
+    assert!(on.status.success(), "{}", said(&on));
+    let settings = server.text("/etc/rovik/agentd.toml");
+    assert!(settings.contains("shared_caches = false\n"), "{settings}");
+    let wrong = server.run(&["admin", "toolchains", "caches", "off"], Some(NOBODY));
+    assert_eq!(wrong.status.code(), Some(1));
+    let message = said(&wrong);
+    assert!(message.contains("admin takes:"), "{message}");
+}
+
+/// `admin uninstall` takes the shared caches too, and both groups.
+#[test]
+fn uninstall_takes_the_shared_caches_and_both_groups() {
+    let server = Server::installed();
+    assert!(server.file("/var/cache/rovik/npm").is_dir());
+    assert!(server.file("/opt/rovik/toolchains").is_dir());
+    let gone = server.run(&["admin", "uninstall"], Some(NOBODY));
+    let out = said(&gone);
+    assert!(gone.status.success(), "{out}");
+    assert!(!server.file("/var/cache/rovik").exists(), "{out}");
+    assert!(!server.file("/opt/rovik/toolchains").exists(), "{out}");
+    assert!(out.contains("would run: groupdel rovik-admin"), "{out}");
+    assert!(out.contains("would run: groupdel rovik\n"), "{out}");
 }

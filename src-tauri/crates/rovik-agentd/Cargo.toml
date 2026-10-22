@@ -26,6 +26,10 @@ git2.workspace = true
 reqwest.workspace = true
 # `status`: the chat database, read while the daemon runs (H08).
 rusqlite.workspace = true
+# A Node version's tarball (installer/toolchains.rs): the official .tar.gz,
+# unpacked with these rather than with the system's tar and xz.
+flate2 = "1"
+tar = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

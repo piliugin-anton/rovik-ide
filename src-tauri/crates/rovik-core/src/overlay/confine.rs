@@ -190,7 +190,9 @@ pub fn secret_dirs() -> Vec<PathBuf> {
 enum Make {
     /// Always: the folders every tool writes to (XDG's).
     Always,
-    /// When this program is installed, so homes without it get no folder.
+    /// When this program is installed, so homes without it get no folder;
+    /// or when a cloud host's shared toolchain runs it
+    /// ([`crate::toolchains`]: cargo keeps `~/.cargo` even there).
     With(&'static str),
     /// Never: the installer makes it, or the system has it.
     Never,
@@ -224,7 +226,9 @@ const TOOL_DIRS: &[(&str, Make)] = &[
 ];
 
 /// Makes the folders of [`TOOL_DIRS`] under `home` that should be there
-/// and aren't, `installed` saying whether a program is. Not the home itself.
+/// and aren't, `installed` saying whether a program is. A cloud host's
+/// shared Rust runs cargo without cargo being on this account's PATH, and
+/// cargo keeps `~/.cargo` either way ([`crate::toolchains`]).
 fn make_missing(home: &Path, installed: impl Fn(&str) -> bool) {
     if !home.is_dir() {
         return;
@@ -233,7 +237,9 @@ fn make_missing(home: &Path, installed: impl Fn(&str) -> bool) {
         let dir = home.join(rel);
         let wanted = match make {
             Make::Always => true,
-            Make::With(program) => installed(program),
+            Make::With(program) => {
+                installed(program) || (*program == "cargo" && crate::toolchains::shared_rust())
+            }
             Make::Never => false,
         };
         if wanted && !dir.exists() {
@@ -243,9 +249,10 @@ fn make_missing(home: &Path, installed: impl Fn(&str) -> bool) {
 }
 
 /// Where a command run in `root` may write: `root` itself, the temporary
-/// folders, and the toolchains' caches and user installs under the home
-/// folder (what a build or a test run writes besides the project), made
-/// first where a tool would make them ([`Make`]). Only those that exist.
+/// folders, the toolchains' caches and user installs under the home folder
+/// (what a build or a test run writes besides the project), made first
+/// where a tool would make them ([`Make`]), and a cloud host's shared
+/// caches ([`crate::toolchains::writable`]). Only those that exist.
 /// Everything else is read-only to it.
 pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![root.to_path_buf(), std::env::temp_dir()];
@@ -261,6 +268,9 @@ pub fn writable_dirs(root: &Path) -> Vec<PathBuf> {
         }
         dirs.extend(TOOL_DIRS.iter().map(|(rel, _)| home.join(rel)));
     }
+    // A cloud host's: the npm cache and the crates the daemons share,
+    // which the `rovik` group writes ([`crate::toolchains`]).
+    dirs.extend(crate::toolchains::writable());
     // macOS: the user's cache folder beside `TMPDIR` (/var/folders/…/C),
     // where the developer tools keep theirs.
     if cfg!(target_os = "macos") {

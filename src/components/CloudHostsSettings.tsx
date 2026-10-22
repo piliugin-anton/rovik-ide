@@ -442,13 +442,14 @@ function HostForm(props: {
           rows="4"
           value={draft().setupScript ?? ''}
           onInput={(e) => patch({ setupScript: e.currentTarget.value || undefined })}
-          placeholder="e.g. curl https://sh.rustup.rs -sSf | sh -s -- -y"
+          placeholder="e.g. sudo apt-get install -y ffmpeg&#10;(Rust and Node install on their own)"
           spellcheck={false}
         />
       </label>
       <p class="settings-hint">
         Runs on the server as you, in your home folder, after Rovik is deployed and whenever you
-        ask: install what your projects’ checks need there (cargo, npm, pytest…).
+        ask: install what your projects’ checks or the agent need there (ffmpeg, a database…).
+        Rust and Node versions a project names install on their own, once for the whole server.
       </p>
       <Show when={error()}>
         <div class="provider-test-status error">{error()}</div>
