@@ -76,8 +76,8 @@ pub(super) const PARTIAL: &[&str] = &["unmet", "budget", "verify-flagged"];
 pub(super) fn failure_summary(outcome: &str) -> String {
     match outcome {
         "plan-failed" => "No plan was saved".into(),
-        "plan-blocked" => "A high finding is still open after the plan's last review".into(),
-        "review-open" => "A high finding is still open after the change's last review".into(),
+        "plan-blocked" => "A finding is still open after the plan's last review".into(),
+        "review-open" => "A finding is still open after the change's last review".into(),
         "unmet" => "A criterion is still unmet after the last acceptance check".into(),
         "stopped" => "Stopped".into(),
         "unfinished-checklist" => "The checklist isn't finished".into(),

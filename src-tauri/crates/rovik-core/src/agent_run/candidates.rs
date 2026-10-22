@@ -1327,8 +1327,8 @@ pub async fn winner(
 }
 
 /// What a candidate's chat says of its checks and its review: the checks
-/// its last round passed and whether all did, and the high and medium
-/// findings its last change review left open, with its record's line.
+/// its last round passed and whether all did, and the findings (of any
+/// severity) its last change review left open, with its record's line.
 async fn checked(core: &Core, chat: &str) -> Result<(usize, bool, usize, String), String> {
     let rows = |key: &'static str| {
         let id = chat.to_string();
@@ -1357,10 +1357,8 @@ async fn checked(core: &Core, chat: &str) -> Result<(usize, bool, usize, String)
     let (open, line) = match review {
         Some(review) => {
             let findings = review["findings"].as_array().cloned().unwrap_or_default();
-            let serious: Vec<&Value> = findings
-                .iter()
-                .filter(|f| matches!(f["severity"].as_str(), Some("high" | "medium")))
-                .collect();
+            // Every finding left open counts, whatever its severity.
+            let open = findings.len();
             let line = match (review["status"].as_str(), findings.len()) {
                 (Some("clean"), _) | (_, 0) => "Clean".to_string(),
                 (_, n) => {
@@ -1377,7 +1375,7 @@ async fn checked(core: &Core, chat: &str) -> Result<(usize, bool, usize, String)
                     format!("{n} finding{}: {}", autopilot::plural(n), titles.join("; "))
                 }
             };
-            (serious.len(), line)
+            (open, line)
         }
         None => (0, "Not reviewed".to_string()),
     };

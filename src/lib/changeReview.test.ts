@@ -43,11 +43,11 @@ test('the review record’s headline', () => {
       { ...base, status: 'findings', findings: [finding('high'), finding('low')] },
       false
     ),
-    'The reviewer found 2 findings: 1 sent to the agent to fix or answer.'
+    'The reviewer found 2 findings: 2 sent to the agent to fix or answer, and a follow-up review checks them.'
   );
   assert.equal(
     reviewHeadline({ ...base, status: 'findings', findings: [finding('low')] }, false),
-    'The reviewer found 1 finding, none serious enough to send to the agent.'
+    'The reviewer found 1 finding: 1 sent to the agent to fix or answer, and a follow-up review checks them.'
   );
   assert.equal(
     reviewHeadline(
@@ -185,7 +185,7 @@ test('a plan saved past the review budget says so', () => {
   assert.equal(reviewDetails(meta), 'No review: all 2 used');
 });
 
-test('after green, only high findings are sent to the agent', () => {
+test('every finding is sent to the agent, whatever its severity, after green too', () => {
   const meta: ReviewMeta = {
     kind: 'change',
     status: 'findings',
@@ -196,23 +196,12 @@ test('after green, only high findings are sent to the agent', () => {
   };
   assert.equal(
     reviewHeadline(meta, false),
-    'The reviewer found 3 findings: 1 sent to the agent to fix or answer.'
+    'The reviewer found 3 findings: 3 sent to the agent to fix or answer, and a follow-up review checks them.'
   );
-  assert.match(reviewHeadline({ ...meta, afterGreen: false }, false), /: 2 sent to the agent/);
-});
-
-test('after_green_headline_counts_high_only', () => {
-  const meta: ReviewMeta = {
-    kind: 'change',
-    status: 'findings',
-    round: 1,
-    maxRounds: 3,
-    afterGreen: true,
-    findings: [finding('medium'), finding('low')],
-  };
-  assert.equal(
-    reviewHeadline(meta, false),
-    'The reviewer found 2 findings, none serious enough to send to the agent.'
+  assert.match(reviewHeadline({ ...meta, afterGreen: false }, false), /: 3 sent to the agent/);
+  assert.match(
+    reviewHeadline({ ...meta, findings: [finding('low')] }, false),
+    /^The reviewer found 1 finding: 1 sent to the agent/
   );
 });
 
@@ -220,14 +209,14 @@ test('Autopilot’s blocking change review: sent and followed up, settled, block
   const found = { ...base, status: 'findings' as const, blocking: true };
   assert.equal(
     reviewHeadline({ ...found, findings: [finding('high'), finding('low')] }, false),
-    'The reviewer found 2 findings: 1 sent to the agent to fix or answer, and a follow-up review checks them.'
+    'The reviewer found 2 findings: 2 sent to the agent to fix or answer, and a follow-up review checks them.'
   );
   assert.equal(
     reviewHeadline(
       { ...found, round: 3, blocked: true, open: 1, findings: [finding('high')] },
       false
     ),
-    'The reviewer still finds 1 high problem after the run’s last review: the change goes no further, and the task ends here.'
+    'The reviewer still finds 1 problem after the run’s last review: the change goes no further, and the run ends here.'
   );
   const settled = {
     finding: 1,

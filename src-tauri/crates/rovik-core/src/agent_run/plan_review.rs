@@ -34,8 +34,8 @@ use std::time::{Duration, Instant};
 
 /// Plan reviews in one run; past them, a plan is saved as it is.
 pub const MAX_PLAN_REVIEW_ROUNDS: u32 = 2;
-/// An Autopilot task's plan reviews (4.2): at the last, a high finding
-/// still open blocks the plan, which isn't implemented (S02).
+/// An Autopilot task's plan reviews (4.2): at the last, a finding still
+/// open, of any severity, blocks the plan, which isn't implemented (S02).
 pub const AUTOPILOT_PLAN_REVIEW_ROUNDS: u32 = 3;
 /// B12: after a hold, a submit that leaves a held finding unanswered goes
 /// back, without a review, at most this many times; then it's reviewed
@@ -229,11 +229,11 @@ pub fn brief(p: &BriefParts) -> String {
 /// The `submit_plan` result when findings keep the plan from being saved:
 /// with how to check, fix and answer them, and what the next review is
 /// (B11). `max`: the run's reviews; `autopilot`: an Autopilot task's,
-/// whose last review blocks the plan on a high finding (S02).
+/// whose last review blocks the plan on any open finding (S02).
 pub fn findings_result(findings: &[Finding], round: u32, max: u32, autopilot: bool) -> String {
     let left = max.saturating_sub(round);
     let next = if left <= 1 && autopilot {
-        "Your next submit gets the last review: a high finding it still finds ends the task, and the plan isn't implemented.".to_string()
+        "Your next submit gets the last review: a finding it still finds, whatever its severity, ends the task, and the plan isn't implemented.".to_string()
     } else if left <= 1 {
         "Your next submit gets this run's last review: what it still finds is saved at the end of the plan for the user, not sent back to you.".to_string()
     } else {
@@ -244,12 +244,12 @@ pub fn findings_result(findings: &[Finding], round: u32, max: u32, autopilot: bo
 
 /// T07: `findings_result` in a Thorough task, whose reviews go on by
 /// progress: `stalled`, the reviews in a row so far that left no fewer
-/// high and medium findings open than an earlier one.
+/// findings open than an earlier one.
 pub fn findings_result_by_progress(findings: &[Finding], round: u32, stalled: u32) -> String {
     let next = if stalled > 0 {
-        "This review left no fewer findings open than an earlier one: if your next submit's review doesn't either, the reviews end, and a high finding still open then ends the task."
+        "This review left no fewer findings open than an earlier one: if your next submit's review doesn't either, the reviews end, and a finding still open then, whatever its severity, ends the task."
     } else {
-        "Reviews go on while each leaves fewer high and medium findings open than any before; two in a row that don't end them, and a high finding still open then ends the task."
+        "Reviews go on while each leaves fewer findings open than any before; two in a row that don't end them, and a finding still open then, whatever its severity, ends the task."
     };
     findings_result_with(
         findings,
@@ -280,8 +280,8 @@ fn findings_result_with(findings: &[Finding], which: &str, next: &str) -> String
 }
 
 /// S02: the `submit_plan` result when an Autopilot task's last plan review
-/// still finds a high problem: the plan isn't saved, the task ends.
-/// `rounds`: the reviews it had.
+/// still finds a problem, of any severity: the plan isn't saved, the task
+/// ends. `rounds`: the reviews it had.
 pub fn blocked_result(findings: &[Finding], rounds: u32) -> String {
     let list = findings
         .iter()
@@ -290,14 +290,14 @@ pub fn blocked_result(findings: &[Finding], rounds: u32) -> String {
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
-        "The plan wasn't saved, and won't be: after {rounds} reviews the reviewer still finds a high problem in it. \
-         An Autopilot task doesn't implement a plan with a high finding open, so the task ends here, and its report lists \
+        "The plan wasn't saved, and won't be: after {rounds} reviews the reviewer still finds problems in it. \
+         An Autopilot task doesn't implement a plan with a finding open, whatever its severity, so the task ends here, and its report lists \
          the findings for the user:\n\n{list}\n\nDon't submit the plan again: reply in a sentence that the plan is blocked, and why."
     )
 }
 
 /// S02: what `submit_plan` answers once the plan is blocked.
-pub const BLOCKED_AGAIN: &str = "Error: the plan is blocked: its last review still found a high problem, and an Autopilot task doesn't implement such a plan. Don't submit it again: reply in a sentence that the plan is blocked, and why.";
+pub const BLOCKED_AGAIN: &str = "Error: the plan is blocked: its last review still found a problem, and an Autopilot task doesn't implement a plan with a finding open. Don't submit it again: reply in a sentence that the plan is blocked, and why.";
 
 /// The plan as saved after the last round: what's still open at its end.
 pub fn with_open_findings(plan: &str, open: &[Finding]) -> String {
@@ -942,11 +942,13 @@ pub fn revision_changes(held: &str, plan: &str) -> String {
     )
 }
 
+#[cfg(test)]
 static STEP_RANGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\d+)(?:\s*[-–]\s*(\d+))?").unwrap());
 
 /// The steps a finding is about: "Step 3", "Steps 2 and 4", "Steps 2–4";
 /// none for the plan as a whole, or a path.
+#[cfg(test)]
 fn steps_of(f: &Finding) -> Vec<usize> {
     if !f.location.trim().to_lowercase().starts_with("step") {
         return f.step.map(|s| vec![s as usize]).unwrap_or_default();
@@ -974,19 +976,14 @@ pub struct Facts<'a> {
     pub verdicts: &'a [Verdict],
     /// The plan came back as it was held, with nothing said.
     pub unchanged_and_silent: bool,
-    /// The revision's new and changed steps (`changed_steps`).
-    pub changed: &'a [usize],
 }
 
 /// What a follow-up review leaves open.
 #[derive(Debug, Default)]
 pub struct FollowUp {
     /// Open after the review: the earlier findings it didn't find resolved
-    /// (its reason as their new evidence), then the new findings that count.
+    /// (its reason as their new evidence), then every new finding.
     pub open: Vec<Finding>,
-    /// New findings below high about steps the revision didn't change:
-    /// shown, never held.
-    pub not_held: Vec<Finding>,
     /// New findings repeating an earlier one without new evidence (B04).
     pub dropped: Vec<Finding>,
     /// Each earlier finding with the agent's answer and the verdict, for
@@ -1001,9 +998,8 @@ const NOT_CHECKED_REASON: &str = "the reviewer gave no verdict on it; taken as s
 /// An earlier finding stays open when the review says it isn't resolved
 /// or repeats it with new evidence, and when the plan came back unchanged
 /// with nothing said; one the review gives no verdict on is settled (B04),
-/// and recorded as not checked. A new finding counts when it's high, about
-/// the whole plan, or about a step the revision changed: below high, what
-/// the revision didn't touch isn't reopened.
+/// and recorded as not checked. Every new finding counts, whatever its
+/// severity and wherever it is: each must be resolved.
 pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
     let (kept, dropped) = drop_repeats(found, facts.earlier);
     // The repeats drop_repeats keeps have new evidence: they speak for the
@@ -1062,15 +1058,7 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
         }));
     }
     for f in new {
-        let steps = steps_of(&f);
-        if f.severity == "high"
-            || steps.is_empty()
-            || steps.iter().any(|s| facts.changed.contains(s))
-        {
-            out.open.push(f);
-        } else {
-            out.not_held.push(f);
-        }
+        out.open.push(f);
     }
     out
 }
@@ -1310,7 +1298,6 @@ impl Run {
                         responses,
                         verdicts: &parse_verdicts(&text),
                         unchanged_and_silent: unchanged && silent,
-                        changed: &changed_steps(&held, plan),
                     },
                     found,
                 );
@@ -1320,15 +1307,13 @@ impl Run {
                     .filter(|e| e["resolved"] == false)
                     .count();
                 review["earlier"] = json!(follow.earlier);
-                if !follow.not_held.is_empty() {
-                    review["notHeld"] = json!(follow.not_held);
-                }
                 if !follow.dropped.is_empty() {
                     review["dropped"] = json!(follow.dropped);
                 }
                 follow.open
             };
-            serious = shown.iter().filter(|f| f.serious()).cloned().collect();
+            // Every finding counts, whatever its severity or confidence.
+            serious = shown.clone();
             review["status"] = json!(if shown.is_empty() {
                 "clean"
             } else {
@@ -1351,12 +1336,11 @@ impl Run {
         );
         // D10, S02: in Autopilot, a follow-up that couldn't report found
         // none of the findings it was to check resolved: they're open still,
-        // and no plan is saved past a high one.
-        let unchecked = self.in_autopilot()
-            && review["status"] == "skipped"
-            && earlier.iter().any(|f| f.severity == "high");
+        // and no plan is saved past one of them.
+        let unchecked =
+            self.in_autopilot() && review["status"] == "skipped" && !earlier.is_empty();
         if unchecked {
-            serious = earlier.iter().filter(|f| f.serious()).cloned().collect();
+            serious = earlier.clone();
             review["findings"] = json!(serious);
         }
         let status = review["status"].as_str().unwrap_or("").to_string();
@@ -1387,9 +1371,10 @@ impl Run {
                 findings_result(&serious, round, max, self.in_autopilot())
             };
             Decision::Hold { result }
-        } else if self.in_autopilot() && serious.iter().any(|f| f.severity == "high") {
-            // S02 (4.2): an Autopilot task's last review with a high finding
-            // open blocks the plan: it isn't saved for implementation.
+        } else if self.in_autopilot() {
+            // S02 (4.2): an Autopilot task's last review with a finding
+            // open, of any severity, blocks the plan: it isn't saved for
+            // implementation.
             review["open"] = json!(serious.len());
             review["blocked"] = json!(true);
             self.plan_blocked = true;
@@ -1439,7 +1424,6 @@ mod tests {
         assert_eq!(f[0].location, "Step 2");
         assert_eq!(f[0].title, "`list_users` is called from `src/cli.rs` too");
         assert_eq!((f[1].step, f[1].location.as_str()), (None, "Plan"));
-        assert!(f[0].serious() && !f[1].serious());
         assert!(subagent::format_problem(&PLAN_REVIEWER, STEP_FINDINGS).is_none());
         // The same step and title again is a repeat; a new step isn't.
         let again = parse_findings(&STEP_FINDINGS.replace("Step 2", "step 2")).unwrap();
@@ -1585,7 +1569,7 @@ mod tests {
         assert!(autopilot.contains("review 2 of at most 3"), "{autopilot}");
         assert!(
             autopilot.ends_with(
-                "a high finding it still finds ends the task, and the plan isn't implemented."
+                "a finding it still finds, whatever its severity, ends the task, and the plan isn't implemented."
             ),
             "{autopilot}"
         );
@@ -1939,7 +1923,6 @@ mod tests {
                 responses: &responses,
                 verdicts: &verdicts,
                 unchanged_and_silent: false,
-                changed: &[5],
             },
             found,
         );
@@ -1951,6 +1934,7 @@ mod tests {
                 "Wrong order",
                 "Changed step",
                 "A nit in it",
+                "Untouched step",
                 "Untouched but high",
                 "The whole plan",
                 "Spans a changed step",
@@ -1964,7 +1948,6 @@ mod tests {
             follow.open[1].new_evidence.as_deref(),
             Some("step 4 still runs before step 3.")
         );
-        assert_eq!(titles(&follow.not_held), ["Untouched step"]);
         assert_eq!(
             titles(&follow.dropped),
             ["`list_users` is also called from the CLI"]
@@ -2001,7 +1984,6 @@ mod tests {
                 responses: &[],
                 verdicts: &[],
                 unchanged_and_silent: false,
-                changed: &[],
             },
             Vec::new(),
         );
@@ -2018,7 +2000,6 @@ mod tests {
                 responses: &[],
                 verdicts: &parse_verdicts("All earlier findings are resolved."),
                 unchanged_and_silent: false,
-                changed: &[],
             },
             Vec::new(),
         );
@@ -2036,7 +2017,6 @@ mod tests {
                 responses: &[],
                 verdicts: &parse_verdicts("Earlier 1: resolved — looks fine."),
                 unchanged_and_silent: true,
-                changed: &[],
             },
             vec![finding("medium", "Step 1", "Something new")],
         );
@@ -2044,13 +2024,13 @@ mod tests {
             titles(&stuck.open),
             [
                 "`list_users` is also called from the CLI",
-                "No index on `email`"
+                "No index on `email`",
+                "Something new"
             ]
         );
         assert_eq!(stuck.open[0].new_evidence, None);
         assert_eq!(stuck.earlier[0]["reason"], UNCHANGED_REASON);
         assert_eq!(stuck.earlier[0]["checked"], false);
-        assert_eq!(titles(&stuck.not_held), ["Something new"]);
     }
 
     #[test]
