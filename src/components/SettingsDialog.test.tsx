@@ -180,7 +180,8 @@ test('settings menu: the pages in groups, each with what it’s for and its stat
     { label: 'Subagents', state: 'Off: the agent works alone', warning: false },
     {
       label: 'Autopilot',
-      state: 'Balanced · a task stops after 2 h or once it cost 5 · 10 commands never run',
+      state:
+        'Balanced · a task stops after 2 h or once it cost 5 · plan: up to 8 reviews, 30 min · 10 commands never run',
       warning: false,
     },
     { label: 'Project checks', state: 'Not run: checking is off in Agent runs', warning: true },

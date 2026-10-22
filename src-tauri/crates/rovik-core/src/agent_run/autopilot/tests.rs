@@ -593,9 +593,39 @@ fn a_reviews_record_is_its_last_review_of_its_kind() {
         "p1",
         json!({ "review": { "kind": "plan", "status": "skipped", "round": 1, "reason": "its model failed" } }),
     )];
-    let r = review_record(plan, &skipped, &config);
+    let r = review_record(plan.clone(), &skipped, &config);
     assert_eq!(r.status, Status::Skipped);
     assert_eq!(r.summary.as_deref(), Some("Skipped: its model failed"));
+
+    // Balanced Autopilot's plan: the limit that ended its reviews.
+    for (stop, words) in [
+        ("plan-time", "time limit"),
+        ("plan-budget", "budget share"),
+        ("rounds", "review limit"),
+        ("stalled", "no progress"),
+        ("reviewer-unavailable", "reviewer unavailable"),
+    ] {
+        let blocked = vec![row(
+            "p9",
+            json!({ "review": { "kind": "plan", "status": "findings", "blocked": true, "stop": stop, "round": 5, "findings": [{ "severity": "high" }, { "severity": "low" }] } }),
+        )];
+        let r = review_record(plan.clone(), &blocked, &config);
+        assert_eq!(r.status, Status::Failed);
+        assert_eq!(r.outcome.as_deref(), Some("plan-blocked"));
+        assert_eq!(
+            r.summary.as_deref(),
+            Some(format!("Blocked after 5 reviews ({words}): 2 findings open").as_str())
+        );
+    }
+    let none_open = vec![row(
+        "p9",
+        json!({ "review": { "kind": "plan", "status": "blocked", "blocked": true, "stop": "rounds", "round": 1, "findings": [] } }),
+    )];
+    let r = review_record(plan, &none_open, &config);
+    assert_eq!(
+        r.summary.as_deref(),
+        Some("Blocked after 1 review (review limit): no review left")
+    );
 }
 
 #[test]
@@ -790,4 +820,46 @@ fn an_unattended_runs_permissions_wait_for_nobody() {
     };
     let once = run_config(config, Effort::Thorough);
     assert_eq!(run_config(once.clone(), Effort::Thorough), once);
+}
+
+/// Step 9: only Balanced retries on its own, and only these outcomes.
+#[test]
+fn only_balanced_retries_a_failed_plan_on_its_own() {
+    use super::outcome::auto_retries;
+    for o in ["error", "repetition", "plan-failed"] {
+        assert!(auto_retries(o, Effort::Balanced), "{o}");
+        assert!(!auto_retries(o, Effort::Thorough), "{o}");
+    }
+    for o in ["stopped", "budget", "plan-blocked", "unfinished-checklist"] {
+        assert!(!auto_retries(o, Effort::Balanced), "{o}");
+    }
+    // A person's Retry is unchanged.
+    assert!(reopens("error") && reopens("repetition"));
+}
+
+/// Step 9: the retry decision: the count, the share, a saved state at
+/// the limit or blocked.
+#[test]
+fn a_plan_retry_is_due_only_within_its_limits() {
+    use super::driver::plan_retry_due;
+    let fix = |max_retries| rovik_protocol::autopilot::PlanFix {
+        max_retries,
+        ..Default::default()
+    };
+    let due = |retries, f: &rovik_protocol::autopilot::PlanFix, over, state: Option<&Value>| {
+        plan_retry_due("error", Effort::Balanced, retries, f, over, state)
+    };
+    assert!(!due(0, &fix(0), false, None), "0 never retries");
+    assert!(due(0, &fix(2), false, None));
+    assert!(due(1, &fix(2), false, None));
+    assert!(!due(2, &fix(2), false, None), "exactly two");
+    assert!(!due(0, &fix(2), true, None), "the share is spent");
+    let f = fix(2);
+    let at_limit = json!({ "round": f.max_rounds, "blocked": false });
+    assert!(!due(0, &f, false, Some(&at_limit)));
+    let below = json!({ "round": f.max_rounds - 1, "blocked": false });
+    assert!(due(0, &f, false, Some(&below)));
+    assert!(!due(0, &f, false, Some(&json!({ "round": 1, "blocked": true }))));
+    assert!(!plan_retry_due("stopped", Effort::Balanced, 0, &f, false, None));
+    assert!(!plan_retry_due("error", Effort::Thorough, 0, &f, false, None));
 }

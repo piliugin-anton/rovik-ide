@@ -8,6 +8,7 @@ import {
   changedBudget,
   DEFAULT_AUTOPILOT_DENYLIST,
   DEFAULT_BUDGETS,
+  DEFAULT_PLAN_FIX,
   DEFAULT_AUTOPILOT_SETTINGS,
   denylistEntry,
   denylistOf,
@@ -38,11 +39,13 @@ test('autopilot settings: the backend gets the effort (AgentConfig.autopilot)', 
     effort: 'thorough',
     budget: { maxHours: 6, maxCost: null },
     prepare: true,
+    planFix: DEFAULT_PLAN_FIX,
   });
   assert.deepEqual(autopilotConfig(DEFAULT_AUTOPILOT_SETTINGS), {
     effort: 'balanced',
     budget: { maxHours: 2, maxCost: 5 },
     prepare: true,
+    planFix: DEFAULT_PLAN_FIX,
   });
 });
 

@@ -990,6 +990,7 @@ async fn a_host_that_works_on_its_own_gets_its_block() {
             open_pr: true,
         },
         notify_url: Some("https://ntfy.sh/rovik-topic".into()),
+        plan_fix: None,
     };
     let remote = Remote::new(app.core.clone());
     remote.set_policy(HOST, ApprovalPolicy::Autonomous);
@@ -1496,4 +1497,41 @@ async fn a_steer_goes_to_the_chats_host_with_its_paths_from_the_project() {
         r,
         Request::AgentUnsteer { message_id, .. } if message_id == "s1"
     )));
+}
+
+/// A host's plan-fix limits replace the computer's field by field.
+#[test]
+fn a_hosts_plan_fix_changes_only_the_fields_it_sets() {
+    use rovik_protocol::autopilot::{PlanFix, PlanFixOverride};
+    let mut config = AgentConfig::default();
+    config.autopilot.plan_fix = PlanFix {
+        max_rounds: 10,
+        stall_rounds: 3,
+        max_minutes: 45.0,
+        budget_share: 0.5,
+        max_retries: 1,
+    };
+    let autonomy: AutonomySettings =
+        serde_json::from_value(serde_json::json!({ "planFix": { "maxRounds": 5 } })).unwrap();
+    assert_eq!(
+        autonomy.plan_fix,
+        Some(PlanFixOverride {
+            max_rounds: Some(5),
+            ..Default::default()
+        })
+    );
+    let mut waiting = config.clone();
+    ApprovalPolicy::WaitForMe.apply(&autonomy, &mut waiting);
+    assert_eq!(waiting.autopilot.plan_fix.max_rounds, 10, "only a host that works on its own");
+    ApprovalPolicy::Autonomous.apply(&autonomy, &mut config);
+    assert_eq!(
+        config.autopilot.plan_fix,
+        PlanFix {
+            max_rounds: 5,
+            stall_rounds: 3,
+            max_minutes: 45.0,
+            budget_share: 0.5,
+            max_retries: 1,
+        }
+    );
 }

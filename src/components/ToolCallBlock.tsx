@@ -255,11 +255,13 @@ function describe(name: string, args: Args, status: CallStatus, meta?: ToolMeta)
     }
 
     case 'submit_plan': {
-      const plan = str(args.plan);
+      const plan = str(args.plan) ?? meta?.plan;
       const title = planTitle(plan);
+      const edits = !str(args.plan) && Array.isArray(args.edits) ? args.edits.length : 0;
+      const info = title ?? (plan ? plural(countLines(plan), 'line') : undefined);
       return {
         title: active ? 'Saving the plan' : 'Saved the plan',
-        meta: title ?? (plan ? plural(countLines(plan), 'line') : undefined),
+        meta: edits ? [info, `(${plural(edits, 'edit')})`].filter(Boolean).join(' ') : info,
       };
     }
 
@@ -1067,7 +1069,12 @@ export default function ToolCallBlock(props: ToolCallBlockProps) {
                 onOpenInEditor={openFile}
               />
             </Show>
-            <Show when={props.toolCall.name === 'submit_plan' && str(args().plan)}>
+            <Show
+              when={
+                props.toolCall.name === 'submit_plan' &&
+                (str(args().plan) ?? props.result?.meta?.plan)
+              }
+            >
               {(plan) => <StaticCodeBlock code={plan()} language="markdown" />}
             </Show>
             <Show when={props.toolCall.name === 'todo'}>

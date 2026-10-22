@@ -8,6 +8,9 @@ import { render } from 'solid-js/web';
 import { createSignal } from 'solid-js';
 import AutopilotSettings from './AutopilotSettings';
 import {
+  autopilotConfig,
+  DEFAULT_PLAN_FIX,
+  normalizeAutopilotSettings,
   DEFAULT_AUTOPILOT_DENYLIST,
   DEFAULT_AUTOPILOT_SETTINGS,
   type AutopilotSettings as Settings,
@@ -54,6 +57,7 @@ test('autopilot settings: what the page is, and where the rest is set', () => {
   assert.deepEqual(titles, [
     'Effort',
     'Budget per task',
+    'Plan fixing',
     'Before the first check',
     'Commands it never runs',
     'What else a task follows',
@@ -160,6 +164,47 @@ test('autopilot settings: a task’s budget, its effort’s defaults until set (
   tokens().value = '';
   tokens().dispatchEvent(new Event('change', { bubbles: true }));
   assert.equal(settings().budget, undefined);
+});
+
+test('autopilot settings: the plan stage’s limits, the defaults until set, sent in planFix', () => {
+  const { root, settings } = page();
+  const field = (label: string) =>
+    [...root.querySelectorAll('.autopilot-plan-fix label.setting-number-field')]
+      .find((l) => l.textContent?.startsWith(label))!
+      .querySelector('input') as HTMLInputElement;
+  const set = (label: string, value: string) => {
+    field(label).value = value;
+    field(label).dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  assert.equal(field('Max reviews').value, '8');
+  assert.equal(field('Reviews without progress').value, '2');
+  assert.equal(field('Minutes').value, '30');
+  assert.equal(field('Share of the budget (%)').value, '40');
+  assert.equal(field('Automatic retries').value, '2');
+  assert.deepEqual(autopilotConfig(settings()).planFix, DEFAULT_PLAN_FIX);
+  set('Max reviews', '5');
+  set('Share of the budget (%)', '25');
+  assert.deepEqual(settings().planFix, { ...DEFAULT_PLAN_FIX, maxRounds: 5, budgetShare: 0.25 });
+  assert.deepEqual(autopilotConfig(settings()).planFix, settings().planFix);
+  // Back to the defaults: kept as nothing.
+  set('Max reviews', '8');
+  set('Share of the budget (%)', '40');
+  assert.equal(settings().planFix, undefined);
+});
+
+test('autopilot settings: saved plan-fix limits are kept within their ranges', () => {
+  const kept = normalizeAutopilotSettings({
+    effort: 'balanced',
+    planFix: { maxRounds: 50, stallRounds: 0, maxMinutes: 'x', budgetShare: 2, maxRetries: 2.6 },
+  });
+  assert.deepEqual(kept.planFix, {
+    maxRounds: 20,
+    stallRounds: 1,
+    maxMinutes: 30,
+    budgetShare: 0.9,
+    maxRetries: 3,
+  });
+  assert.equal(normalizeAutopilotSettings({ effort: 'balanced' }).planFix, undefined);
 });
 
 test('autopilot settings: Prepare before the first check, on until turned off (S03)', () => {

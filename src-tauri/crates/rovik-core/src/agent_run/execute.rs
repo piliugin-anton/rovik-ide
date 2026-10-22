@@ -1766,8 +1766,62 @@ impl Run {
         // Findings are the reviewer's: a "## Findings" section the agent
         // wrote (or the IDE's open findings from an earlier save) is left
         // out before the plan is checked, reviewed and saved.
-        let (plan_text, findings_dropped) =
-            plan::without_findings(args.get("plan").and_then(|p| p.as_str()).unwrap_or(""));
+        let recent = self.recent().await?;
+        // Step 7: the plan as sent, or the last plan with `edits` applied.
+        let edits = args.get("edits").and_then(Value::as_array);
+        let given = match (args.get("plan").and_then(|p| p.as_str()), edits) {
+            (Some(plan), _) => plan.to_string(),
+            (None, None) => {
+                let content = "Error: the plan wasn't saved. Neither `plan` nor `edits` was given: send the complete plan.";
+                return self
+                    .add_tool_result(&tc.id, content.into(), None, Vec::new())
+                    .await;
+            }
+            (None, Some(edits)) => {
+                if self.plan_draft.is_none() {
+                    let file = match self.in_autopilot() {
+                        true => super::autopilot::task_plan_file(&self.core, &self.dialog_id).await?,
+                        false => chat_plan_file(&recent),
+                    };
+                    self.plan_draft = file.and_then(|f| std::fs::read_to_string(f).ok());
+                }
+                let Some(draft) = self.plan_draft.clone() else {
+                    let content = "Error: the plan wasn't saved. There's no earlier plan to edit: send the complete plan.";
+                    return self
+                        .add_tool_result(&tc.id, content.into(), None, Vec::new())
+                        .await;
+                };
+                match apply_plan_edits(&draft, edits) {
+                    Ok(plan) => plan,
+                    Err(e) => {
+                        return self
+                            .add_tool_result(
+                                &tc.id,
+                                format!("Error: the plan wasn't saved. {e}"),
+                                Some(json!({ "plan": draft })),
+                                Vec::new(),
+                            )
+                            .await;
+                    }
+                }
+            }
+        };
+        let (plan_text, findings_dropped) = plan::without_findings(&given);
+        let request = recent
+            .iter()
+            .rev()
+            .find(|m| plan::is_request(m))
+            .map(|m| m.content.clone());
+        // Balanced Autopilot: the IDE fixes the plan's mechanical format
+        // problems itself (never a reviewer's finding).
+        let (plan_text, fixes) = match self.balanced_autopilot() {
+            true => plan::normalize(
+                &plan_text,
+                self.root.as_deref().map(std::path::Path::new),
+                request.as_deref(),
+            ),
+            false => (plan_text, Vec::new()),
+        };
         let plan_text = plan_text.as_str();
         // B12: the agent's answers to the findings that held the plan back.
         let responses = super::plan_review::parse_responses(args.get("responses"));
@@ -1778,16 +1832,56 @@ impl Run {
             self.root.as_deref().map(std::path::Path::new),
             self.in_autopilot(),
         );
+        let format_problems = !problems.is_empty();
         // B12: a held finding left unanswered sends the plan back with the
         // checker's problems, before a review is spent on it.
-        problems.extend(self.unanswered(&responses));
+        let unanswered = self.unanswered(&responses);
+        let answers_only = problems.is_empty() && unanswered.is_some();
+        problems.extend(unanswered);
+        // Step 10: what a submit did before the checks' verdict.
+        if self.balanced_autopilot() {
+            let from_reply = recent.iter().rev().take(3).any(|m| {
+                m.meta.as_ref().and_then(|v| v.get("harness")).and_then(Value::as_str)
+                    == Some("planFromReply")
+            });
+            log::write(
+                &self.core,
+                json!({
+                    "event": "planSubmit",
+                    "dialogId": self.dialog_id,
+                    "formatRejections": self.plan_format_rejections + u32::from(format_problems && !answers_only),
+                    "fixes": fixes.len(),
+                    "edits": edits.map_or(0, Vec::len),
+                    "fromReply": from_reply,
+                    "problems": problems.len(),
+                }),
+            );
+        }
         if !problems.is_empty() {
-            let content = format!(
+            let mut content = format!(
                 "Error: the plan wasn't saved. Fix this and call submit_plan again with the complete plan:\n- {}",
                 problems.join("\n- ")
             );
+            if !fixes.is_empty() {
+                content.push_str(&format!("\n\nThe IDE fixed: {}.", fixes.join("; ")));
+            }
+            // Balanced Autopilot: after repeated format rejections, the
+            // plan's frame to fill in. They never use a review round.
+            if self.balanced_autopilot() && format_problems && !answers_only {
+                self.plan_format_rejections += 1;
+                if self.plan_format_rejections >= 2 {
+                    content.push_str(&format!(
+                        "\n\nThe plan was sent back {} times for its form. Here is its frame, with TODO where you must write; fill it in with your content and send the complete plan:\n\n{}",
+                        self.plan_format_rejections,
+                        plan::skeleton(plan_text)
+                    ));
+                }
+            }
+            // The plan sent back is the last one submitted: what `edits`
+            // apply to next.
+            self.plan_draft = Some(plan_text.to_string());
             return self
-                .add_tool_result(&tc.id, content, None, Vec::new())
+                .add_tool_result(&tc.id, content, Some(json!({ "plan": plan_text })), Vec::new())
                 .await;
         }
         // Plans are the project's, not a chat's change.
@@ -1801,13 +1895,7 @@ impl Run {
                 )
                 .await;
         };
-        let recent = self.recent().await?;
-        let request = recent
-            .iter()
-            .rev()
-            .find(|m| plan::is_request(m))
-            .map(|m| m.content.clone())
-            .unwrap_or_else(|| "plan".into());
+        let request = request.unwrap_or_else(|| "plan".into());
         let existing = chat_plan_file(&recent);
         // The plan a revision is small against: in Autopilot the task's own
         // saved plan (S02), never an earlier task's, which a short first
@@ -1821,13 +1909,15 @@ impl Run {
             .review_plan(&tc.id, plan_text, revised.as_deref(), &responses)
             .await?;
         let record = review.record;
+        let checked = plan_text.to_string();
+        let ide_fixed = (!fixes.is_empty()).then(|| format!(" The IDE fixed: {}.", fixes.join("; ")));
         let (plan_text, note) = match review.decision {
             super::plan_review::Decision::Hold { result } => {
                 return self
                     .add_tool_result(
                         &tc.id,
-                        format!("Error: {result}"),
-                        Some(json!({ "review": record })),
+                        format!("Error: {result}{}", ide_fixed.unwrap_or_default()),
+                        Some(json!({ "review": record, "plan": checked })),
                         Vec::new(),
                     )
                     .await;
@@ -1850,6 +1940,9 @@ impl Run {
                     content.push(' ');
                     content.push_str(&note);
                 }
+                if let Some(fixed) = &ide_fixed {
+                    content.push_str(fixed);
+                }
                 if findings_dropped {
                     content.push_str(
                         " Its findings section was left out: findings are the reviewer's, and open ones are added to the saved plan by the IDE.",
@@ -1866,7 +1959,7 @@ impl Run {
                         deleted: false,
                     });
                 }
-                let mut meta = json!({ "planFile": path });
+                let mut meta = json!({ "planFile": path, "plan": checked });
                 if let Some(record) = record {
                     meta["review"] = record;
                 }
@@ -1884,6 +1977,23 @@ impl Run {
             }
         }
     }
+}
+
+/// Step 7: `edits` (`{old_text, new_text}` items) applied in order to the
+/// last plan, with `edit_file`'s matching rules; an edit that doesn't
+/// match exactly once fails them all.
+pub(super) fn apply_plan_edits(draft: &str, edits: &[Value]) -> Result<String, String> {
+    let mut plan = draft.to_string();
+    for (i, edit) in edits.iter().enumerate() {
+        let text = |k: &str| edit.get(k).and_then(Value::as_str);
+        let (Some(old), Some(new)) = (text("old_text"), text("new_text")) else {
+            return Err(format!("Edit {}: it needs both `old_text` and `new_text`.", i + 1));
+        };
+        plan = crate::edit_file::apply_edit(&plan, old, new, None, None)
+            .map_err(|e| format!("Edit {}: {e}", i + 1))?
+            .0;
+    }
+    Ok(plan)
 }
 
 /// A command's arguments with its timeout cut to the time `left` of a

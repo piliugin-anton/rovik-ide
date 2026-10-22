@@ -38,6 +38,8 @@ const STILL_WAITING: Duration = Duration::from_millis(400);
 /// Mid-reply silence before "Still generating" shows.
 #[cfg(not(test))]
 const REPLY_IDLE: Duration = Duration::from_millis(2_500);
+/// Balanced Autopilot: plans written in a reply the IDE submits per run.
+const MAX_REPLY_SUBMITS: u32 = 2;
 #[cfg(test)]
 const REPLY_IDLE: Duration = Duration::from_millis(300);
 /// After Stop, how long the request gets to end before it's dropped.
@@ -250,6 +252,9 @@ pub struct Run {
     pub(super) plan_context: String,
     /// A plan written in a reply instead of submitted was pointed out once.
     pub(super) plan_nudged: bool,
+    /// Balanced Autopilot: plans written in a reply that the IDE submitted
+    /// for the model this run (at most `MAX_REPLY_SUBMITS`).
+    pub(super) reply_submits: u32,
     /// Replies stopped for repeating themselves.
     pub(super) repetition_stops: u32,
     pub(super) started_at: Instant,
@@ -353,6 +358,17 @@ pub struct Run {
     /// Submits sent back since the hold for leaving a held finding
     /// unanswered (B12, at most `MAX_ANSWER_NUDGES`).
     pub(super) plan_answer_nudges: u32,
+    /// Balanced Autopilot: the plan's finding list, kept across reviews and
+    /// automatic retries, resolved entries included (plan_review.rs).
+    pub(super) plan_ledger: Vec<super::plan_review::LedgerEntry>,
+    /// Balanced Autopilot: the titles the last review reported without the
+    /// evidence they needed, for the next review's brief.
+    pub(super) plan_dropped: Vec<String>,
+    /// Balanced Autopilot: submits the checker sent back for format
+    /// problems alone (plan.rs `skeleton` after two).
+    pub(super) plan_format_rejections: u32,
+    /// The last plan submitted, held or saved: what `edits` apply to.
+    pub(super) plan_draft: Option<String>,
     /// Plan steps step workers finished in this run (worker.rs, D03).
     pub(super) worker_steps: Vec<super::worker::DoneStep>,
     /// Files the test writer wrote, those the lead changed after it, and
@@ -565,6 +581,17 @@ impl Run {
     /// on it to answer anything (D6).
     pub(super) fn in_autopilot(&self) -> bool {
         self.core.agents.autopilot_of(&self.dialog_id).is_some()
+    }
+
+    /// The run is a Balanced Autopilot task's lead: its plan stage follows
+    /// the plan-fix limits (`AutopilotConfig::plan_fix`).
+    pub(super) fn balanced_autopilot(&self) -> bool {
+        self.in_autopilot() && !self.thorough() && self.sub().is_none()
+    }
+
+    /// Balanced Autopilot's plan-fix limits, within their ranges.
+    pub(super) fn plan_fix(&self) -> rovik_protocol::autopilot::PlanFix {
+        self.config().autopilot.plan_fix.bounded()
     }
 
     /// Why the run's Autopilot task is past its budget, if it is (U04): the
@@ -1078,7 +1105,7 @@ impl Run {
                 .as_ref()
                 .is_some_and(|s| s.stage == super::autopilot::Stage::Implement && !s.candidates);
 
-        let run = Run {
+        let mut run = Run {
             plan_mode,
             autopilot,
             stage,
@@ -1115,6 +1142,14 @@ impl Run {
                 Role::Lead,
             )
         };
+        // Balanced Autopilot's plan reviews go on by the plan-fix limits.
+        if run.balanced_autopilot() {
+            let fix = run.plan_fix();
+            run.plan_review_progress = super::loops::Progress::with(fix.stall_rounds, fix.max_rounds);
+            if let Err(e) = run.restore_plan_state().await {
+                eprintln!("agent: chat {}: the plan's state wasn't restored: {e}", run.dialog_id);
+            }
+        }
         Ok(Some((run, entry)))
     }
 
@@ -1193,6 +1228,7 @@ impl Run {
             words_only: false,
             plan_context: String::new(),
             plan_nudged: false,
+            reply_submits: 0,
             repetition_stops: 0,
             started_at: Instant::now(),
             stop: controls.stop,
@@ -1241,6 +1277,10 @@ impl Run {
             plan_held: None,
             plan_review_call: None,
             plan_answer_nudges: 0,
+            plan_ledger: Vec::new(),
+            plan_dropped: Vec::new(),
+            plan_format_rejections: 0,
+            plan_draft: None,
             worker_steps: Vec::new(),
             test_writer_files: Vec::new(),
             tests_changed: Vec::new(),
@@ -2404,7 +2444,36 @@ impl Run {
             self.update_meta(message_id, meta).await?;
             return Ok(false);
         }
-        if !plan::looks_like_plan(text) || self.plan_nudged {
+        if !plan::looks_like_plan(text) {
+            return Ok(false);
+        }
+        // Step 9, Balanced Autopilot: a plan written in the reply is
+        // submitted for it, with "fixed" answers while findings are held;
+        // the model answers the result on its next turn. At most twice a
+        // run, and not past the plan's share; then the one nudge below.
+        if self.balanced_autopilot()
+            && !self.plan_blocked
+            && self.reply_submits < MAX_REPLY_SUBMITS
+            && self.over_plan_share().await.is_none()
+        {
+            self.reply_submits += 1;
+            let open = super::plan_review::open_numbers(&self.plan_ledger);
+            let responses = (!self.plan_findings.is_empty() && !open.is_empty()).then(|| {
+                json!(open
+                    .iter()
+                    .map(|n| json!({ "finding": n, "action": "fixed", "note": "revised in the reply" }))
+                    .collect::<Vec<_>>())
+            });
+            let (plan_text, _) = plan::without_findings(text);
+            let note = format!(
+                "{IDE_NOTE}You wrote the plan in your reply, so the IDE submitted it for you with submit_plan. Next time, \
+                 submit it with the tool."
+            );
+            self.submit_for_review(&plan_text, note, responses, "planFromReply")
+                .await?;
+            return Ok(true);
+        }
+        if self.plan_nudged {
             return Ok(false);
         }
         self.plan_nudged = true;

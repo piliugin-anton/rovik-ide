@@ -145,6 +145,9 @@ impl ApprovalPolicy {
                 kept.max_cost = budget.max_cost.or(kept.max_cost);
                 kept.max_tokens = budget.max_tokens.or(kept.max_tokens);
             }
+            if let Some(plan_fix) = &autonomy.plan_fix {
+                plan_fix.apply(&mut autopilot.plan_fix);
+            }
         }
         if self == ApprovalPolicy::WaitForMe || config.approval_profiles.is_empty() {
             return;

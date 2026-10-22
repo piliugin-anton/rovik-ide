@@ -16,10 +16,14 @@ import {
   budgetOf,
   changedBudget,
   DEFAULT_BUDGETS,
+  DEFAULT_PLAN_FIX,
   denylistEntry,
   denylistOf,
+  planFixOf,
+  planFixValue,
   THOROUGH_KINDS,
   type AutopilotBudget,
+  type AutopilotPlanFix,
   type AutopilotSettings as Settings,
 } from '../lib/autopilotSettings';
 import { kindNames, SUBAGENT_KINDS, type SubagentKindId } from '../lib/subagentSettings';
@@ -59,6 +63,18 @@ export default function AutopilotSettings(props: AutopilotSettingsProps) {
     const tokens = budget().maxTokens;
     return tokens ? tokens / 1_000_000 : undefined;
   };
+
+  // The plan stage's limits: the defaults until one is changed. An emptied
+  // field goes back to its default.
+  const planFix = () => planFixOf(s());
+  function setPlanFix(key: keyof AutopilotPlanFix, v: number | undefined) {
+    const value = planFixValue(key, v) ?? DEFAULT_PLAN_FIX[key];
+    const next = { ...planFix(), [key]: value };
+    const same = (Object.keys(DEFAULT_PLAN_FIX) as (keyof AutopilotPlanFix)[]).every(
+      (k) => next[k] === DEFAULT_PLAN_FIX[k]
+    );
+    patch({ planFix: same ? undefined : next });
+  }
 
   /** The kinds Autopilot turns on for its chats, Thorough's marked. */
   const usedKinds = () =>
@@ -155,6 +171,63 @@ export default function AutopilotSettings(props: AutopilotSettingsProps) {
           report a request used, which most do even when they report no cost. A limit the provider
           reports nothing for can’t be kept; the time limit always is. Past any of them, the task
           stops and delivers what it has.
+        </p>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Plan fixing</div>
+        <div class="setting-fields autopilot-plan-fix">
+          <NumberField
+            label="Max reviews"
+            value={planFix().maxRounds}
+            placeholder="default"
+            min={1}
+            max={20}
+            step={1}
+            onChange={(v) => setPlanFix('maxRounds', v)}
+          />
+          <NumberField
+            label="Reviews without progress"
+            value={planFix().stallRounds}
+            placeholder="default"
+            min={1}
+            max={5}
+            step={1}
+            onChange={(v) => setPlanFix('stallRounds', v)}
+          />
+          <NumberField
+            label="Minutes"
+            value={planFix().maxMinutes}
+            placeholder="default"
+            min={1}
+            max={240}
+            step={1}
+            onChange={(v) => setPlanFix('maxMinutes', v)}
+          />
+          <NumberField
+            label="Share of the budget (%)"
+            value={Math.round(planFix().budgetShare * 100)}
+            placeholder="default"
+            min={10}
+            max={90}
+            step={5}
+            onChange={(v) => setPlanFix('budgetShare', v === undefined ? undefined : v / 100)}
+          />
+          <NumberField
+            label="Automatic retries"
+            value={planFix().maxRetries}
+            placeholder="default"
+            min={0}
+            max={5}
+            step={1}
+            onChange={(v) => setPlanFix('maxRetries', v)}
+          />
+        </div>
+        <p class="settings-hint command-list-note">
+          Balanced only. Every review finding must be resolved before the plan is saved; reviews
+          continue while each leaves less open, within these limits for the whole plan stage. Past
+          any of them, the plan is blocked and the task reports its open findings. A run that fails
+          while planning starts again on its own, up to the automatic retries.
         </p>
       </section>
 

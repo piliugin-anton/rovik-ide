@@ -2836,7 +2836,10 @@ async fn an_unanswered_hold_goes_back_without_a_review() {
             "{id}: {}",
             r.content
         );
-        assert!(r.meta.is_none(), "{id}: no review record");
+        assert!(
+            r.meta.as_ref().is_none_or(|m| m.get("review").is_none()),
+            "{id}: no review record"
+        );
     }
     assert_eq!(
         requests_with(&seen, PLAN_REVIEW).len(),
@@ -10416,8 +10419,12 @@ async fn budget_used_record_shape() {
             shown(".rovik/plans/2026-10-06-add-users.md")
         )
     );
+    let mut third_meta = third.meta.clone().unwrap();
+    // Step 7: the plan as checked is kept with the result.
+    assert!(third_meta["plan"].as_str().is_some_and(|p| p.starts_with("# Users")));
+    third_meta.as_object_mut().unwrap().remove("plan");
     assert_eq!(
-        third.meta.as_ref().unwrap(),
+        &third_meta,
         &json!({
             "planFile": file,
             "review": {
@@ -10668,7 +10675,10 @@ async fn hold_then_silent_revision_drops_a_repeat() {
     );
     for id in ["p2", "p3"] {
         assert!(
-            result_of(&messages, id).meta.is_none(),
+            result_of(&messages, id)
+                .meta
+                .as_ref()
+                .is_none_or(|m| m.get("review").is_none()),
             "{id}: not reviewed"
         );
     }

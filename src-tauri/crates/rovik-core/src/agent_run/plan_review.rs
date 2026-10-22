@@ -11,7 +11,8 @@
 //! `responses` (B12). The review after a hold is a follow-up (B13): it gets
 //! the earlier findings with the agent's answers and what the revision
 //! changed, says of each earlier finding whether it's resolved, and adds
-//! only new findings that are high or about what the revision changed. At
+//! new findings wherever they are (with evidence when about a step the
+//! revision didn't change). At
 //! most MAX_PLAN_REVIEW_ROUNDS reviews a run; after the last, the plan is
 //! saved and what's still open is added at its end for the user. A
 //! reviewer that fails is recorded as skipped and the plan is saved with a
@@ -27,16 +28,13 @@ use super::subagent::{self, Budget, Format, Kind, KindSpec, SubagentSettings};
 use super::{diff, log, plan};
 use crate::chat_db::store::{char_prefix, MessageRow};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 /// Plan reviews in one run; past them, a plan is saved as it is.
 pub const MAX_PLAN_REVIEW_ROUNDS: u32 = 2;
-/// An Autopilot task's plan reviews (4.2): at the last, a finding still
-/// open, of any severity, blocks the plan, which isn't implemented (S02).
-pub const AUTOPILOT_PLAN_REVIEW_ROUNDS: u32 = 3;
 /// B12: after a hold, a submit that leaves a held finding unanswered goes
 /// back, without a review, at most this many times; then it's reviewed
 /// with the answers it has.
@@ -63,7 +61,7 @@ const PLAN_REVIEWER_PROMPT: &str = r###"You are a plan reviewer: a read-only hel
 - A weak Validation section: new behaviour with no test to add or update, or no way to check it.
 - For steps marked with the same "Group:", which are built side by side: a shared registration point (a command list in lib.rs, commands.ts, a mod.rs, routes, a config file) that several of them would have to edit, and a missing contract step before the group that settles shared types or interfaces.
 
-Wording, formatting and naming are not findings, and neither is a different design you'd prefer when the plan's works.
+Wording, formatting, style and naming are never findings, at any severity, and neither is a different design you'd prefer when the plan's works.
 
 ## Rules
 
@@ -80,7 +78,7 @@ Reply with exactly this, most severe first, and nothing else (don't repeat the p
 
 1. [high] Step 3 — One-line title
    - Scenario: what goes wrong when the plan is built as written.
-   - Fix: the change to the plan you suggest.
+   - Fix: the replacement text for the plan (a step's line, a Files entry, a criterion), not advice.
    - Confidence: confirmed or plausible.
 
 Use "Step N" for the step a finding is about, or "Plan" for the plan as a whole. Severity: high (the plan can't work or misses part of the request), medium (it would need rework), low (minor). With nothing to report, reply "## Findings" and then "None.".
@@ -92,7 +90,7 @@ A follow-up review (the brief has "## The earlier review") starts with one more 
 - Earlier 1: resolved — how the revised plan settles it, or why the agent's answer holds.
 - Earlier 2: not resolved — what is still wrong, and what in the code shows it.
 
-Then "## Findings", with only new findings: high ones anywhere in the plan, and others only about what the revision changed."###;
+Then "## Findings", with only new findings. Every new finding counts, wherever it is in the plan. A new finding about a step the revision didn't change adds a line "- Evidence:" with a `path:line` or a symbol name, and what breaks there; without it, it's dropped."###;
 
 pub static PLAN_REVIEWER: KindSpec = KindSpec {
     label: "Plan reviewer",
@@ -141,6 +139,20 @@ const CRITERIA_REVIEW: &str = "## The criteria\n\n\
      - an assumption under **Assumptions** that the request or the code contradicts.\n\
      Report them as findings about \"Plan\".";
 
+/// An Autopilot task's first plan review: complete, so later reviews
+/// have little new to find.
+const FIRST_REVIEW_CHECKLIST: &str = "## A complete first review
+
+\
+     This is the plan's first review. Report everything now: later reviews look at what changed. Check each of these, for every step:\n\
+     - callers: every caller and dependent of what a step changes is updated;\n\
+     - names exist: each function, type, field, setting and file the plan names exists under that name;\n\
+     - order: no step needs something a later step makes;\n\
+     - scope: nothing beyond the request, nothing of it left out;\n\
+     - validation: new behaviour has a test to add or update;\n\
+     - criteria: as above.\n\
+     When one step has a problem, list every step with the same problem.";
+
 /// B13: what a follow-up review is told of the hold before it.
 pub struct Earlier<'a> {
     /// The findings that held the plan back, numbered as the agent got them.
@@ -151,6 +163,12 @@ pub struct Earlier<'a> {
     pub replies: &'a str,
     /// What the revision changed (`revision_changes`): empty when nothing.
     pub changes: &'a str,
+    /// Balanced Autopilot: each finding's number in the finding list
+    /// ("F3"), in order; empty elsewhere.
+    pub numbers: &'a [usize],
+    /// Balanced Autopilot: the titles the last review reported without the
+    /// evidence they needed, which were dropped.
+    pub dropped: &'a [String],
 }
 
 /// B08: the reviewer's brief. The harness writes it; nothing from the
@@ -175,6 +193,10 @@ pub fn brief(p: &BriefParts) -> String {
     if p.autopilot {
         out.push_str("\n\n");
         out.push_str(CRITERIA_REVIEW);
+        if p.earlier.is_none() {
+            out.push_str("\n\n");
+            out.push_str(FIRST_REVIEW_CHECKLIST);
+        }
     }
     if let Some(e) = &p.earlier {
         let list = e
@@ -187,13 +209,29 @@ pub fn brief(p: &BriefParts) -> String {
                     .iter()
                     .find(|r| r.finding == i + 1)
                     .map_or_else(|| "none".to_string(), Response::describe);
-                format!("{}\n   - The agent's answer: {answer}", describe(f, i + 1))
+                let mut shown = describe(f, i + 1);
+                if let Some(n) = e.numbers.get(i) {
+                    let end = shown.find('\n').unwrap_or(shown.len());
+                    shown.insert_str(end, &format!(" (F{n})"));
+                }
+                format!("{shown}\n   - The agent's answer: {answer}")
             })
             .collect::<Vec<_>>()
             .join("\n\n");
         out.push_str(&format!(
             "\n\n## The earlier review\n\nThis is a follow-up review. An earlier review held the plan back with these findings (Earlier 1, Earlier 2, …), and the agent revised it. Under each finding is the agent's answer.\n\n{list}"
         ));
+        if !e.dropped.is_empty() {
+            let titles = e
+                .dropped
+                .iter()
+                .map(|t| format!("- {t}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&format!(
+                "\n\nThe last review also reported these about steps the revision didn't change, without evidence; they were dropped for lack of evidence. Report one again only with evidence:\n\n{titles}"
+            ));
+        }
         if e.responses.is_empty() && !e.replies.trim().is_empty() {
             out.push_str(&format!(
                 "\n\nThe agent sent no answers with the plan. What it wrote since the hold:\n\n{}",
@@ -216,7 +254,9 @@ pub fn brief(p: &BriefParts) -> String {
             "\n\n## This review\n\n\
              First check each earlier finding against the revised plan and the code. \
              A finding the agent answered as not a problem is resolved unless the code shows the answer is wrong; then say what shows it. \
-             Then look for new findings: high ones anywhere in the plan, and others only about what the revision changed. \
+             Then look for new findings: every new finding counts, wherever it is in the plan. \
+             A new finding about a step the revision didn't change adds a line \"- Evidence:\" with a `path:line` or a symbol name, and what breaks there; without it, it's dropped. \
+             Style, naming and a design you'd prefer are never findings, and each finding's Fix is the replacement text for the plan, not advice. \
              An earlier finding isn't a new one: don't report it again under \"## Findings\".\n\n\
              Start your report with your verdict on each earlier finding, one line each: \"resolved\" or \"not resolved\", then why.\n\n\
              ## Earlier findings\n\n{lines}\n\n\
@@ -226,12 +266,55 @@ pub fn brief(p: &BriefParts) -> String {
     out
 }
 
+/// What open findings weigh, for Balanced Autopilot's progress: a high 3,
+/// a medium 2, a low (or anything else) 1. Fixing two highs while a low
+/// appears is progress.
+pub fn weight(findings: &[Finding]) -> usize {
+    findings
+        .iter()
+        .map(|f| match f.severity.to_ascii_lowercase().as_str() {
+            "high" => 3,
+            "medium" => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
 /// The `submit_plan` result when findings keep the plan from being saved:
 /// with how to check, fix and answer them, and what the next review is
 /// (B11). `max`: the run's reviews; `autopilot`: an Autopilot task's,
-/// whose last review blocks the plan on any open finding (S02).
-pub fn findings_result(findings: &[Finding], round: u32, max: u32, autopilot: bool) -> String {
+/// whose last review blocks the plan on any open finding (S02). `limits`:
+/// in Balanced Autopilot, the reviews' progress and the plan stage's
+/// minutes left, which the text states the rule with.
+pub fn findings_result(
+    findings: &[Finding],
+    round: u32,
+    max: u32,
+    autopilot: bool,
+    limits: Option<(&super::loops::Progress, f64)>,
+) -> String {
     let left = max.saturating_sub(round);
+    if let Some((progress, minutes)) = limits {
+        let minutes = minutes.max(0.0).round() as u64;
+        let stall = if progress.stalled() > 0 {
+            let more = progress.stall().saturating_sub(progress.stalled()).max(1);
+            format!(
+                " This review left no less open than an earlier one: {} more without progress {} the reviews.",
+                more,
+                if more == 1 { "ends" } else { "end" }
+            )
+        } else {
+            String::new()
+        };
+        let next = format!(
+            "Reviews continue while each leaves less open (a high finding weighs 3, a medium 2, a low 1): \
+             at most {left} more review{}, about {minutes} minute{} left.{stall} \
+             When they end, a finding still open, whatever its severity, ends the task, and the plan isn't implemented.",
+            if left == 1 { "" } else { "s" },
+            if minutes == 1 { "" } else { "s" },
+        );
+        return findings_result_with(findings, &format!("review {round} of at most {max}"), &next);
+    }
     let next = if left <= 1 && autopilot {
         "Your next submit gets the last review: a finding it still finds, whatever its severity, ends the task, and the plan isn't implemented.".to_string()
     } else if left <= 1 {
@@ -256,6 +339,53 @@ pub fn findings_result_by_progress(findings: &[Finding], round: u32, stalled: u3
         &format!("review {round}; the reviews go on while they find fewer problems"),
         next,
     )
+}
+
+/// Balanced Autopilot's `findings_result`: the open entries by their
+/// numbers ("F3"), answered by them, with `edits` suggested for the
+/// revision.
+pub fn ledger_result(
+    entries: &[&LedgerEntry],
+    round: u32,
+    max: u32,
+    progress: &super::loops::Progress,
+    minutes: f64,
+) -> String {
+    let findings: Vec<Finding> = entries.iter().map(|e| e.finding.clone()).collect();
+    let numbered = findings_result(&findings, round, max, true, Some((progress, minutes)));
+    let list = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let shown = describe(&e.finding, i + 1);
+            let first = shown.find('\n').unwrap_or(shown.len());
+            let head = &shown[..first];
+            let lead = format!("{}. ", i + 1);
+            format!("F{}. {}{}", e.number, head.strip_prefix(&lead).unwrap_or(head), &shown[first..])
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let old_list = findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| describe(f, i + 1))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let example = entries.first().map_or(1, |e| e.number);
+    numbered
+        .replacen(&old_list, &list, 1)
+        .replacen(
+            "Then call submit_plan again with the complete plan and `responses`, one answer for each finding by its number: \
+             {\"finding\": 1, \"action\": \"fixed\", \"note\": \"what you changed\"} or \
+             {\"finding\": 2, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}.",
+            &format!(
+                "Then call submit_plan again with `edits` (exact text replacements in your last plan: \
+                 [{{\"old_text\": \"…\", \"new_text\": \"…\"}}]) or the complete plan, and `responses`, one answer for each finding by its F-number: \
+                 {{\"finding\": {example}, \"action\": \"fixed\", \"note\": \"what you changed\"}} or \
+                 {{\"finding\": {example}, \"action\": \"not_a_problem\", \"note\": \"why, from the code\"}}."
+            ),
+            1,
+        )
 }
 
 fn findings_result_with(findings: &[Finding], which: &str, next: &str) -> String {
@@ -294,6 +424,46 @@ pub fn blocked_result(findings: &[Finding], rounds: u32) -> String {
          An Autopilot task doesn't implement a plan with a finding open, whatever its severity, so the task ends here, and its report lists \
          the findings for the user:\n\n{list}\n\nDon't submit the plan again: reply in a sentence that the plan is blocked, and why."
     )
+}
+
+/// Balanced Autopilot: the `submit_plan` result when the plan stage's
+/// limits end it before a review, with no finding open: the plan isn't
+/// saved unreviewed. `stop`: the limit (`review["stop"]`).
+pub fn unreviewed_blocked_result(stop: &str, rounds: u32) -> String {
+    format!(
+        "The plan wasn't saved, and won't be: the plan stage reached its {} after {rounds} review{}, and an Autopilot task doesn't implement a plan no review passed. \
+         The task ends here. Don't submit the plan again: reply in a sentence that the plan is blocked, and why.",
+        stop_words(stop),
+        if rounds == 1 { "" } else { "s" },
+    )
+}
+
+/// Step 9: the first wait for a plan reviewer after every model failed
+/// (Balanced Autopilot); each next one doubles.
+#[cfg(not(test))]
+const OUTAGE_WAIT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const OUTAGE_WAIT: Duration = Duration::from_millis(30);
+
+/// Step 9: how long to wait before the reviewer's `attempt`-th retry
+/// (from 0), within `left` of the plan's time; None: no time is left.
+pub fn reviewer_wait(attempt: u32, left: Duration) -> Option<Duration> {
+    if left.is_zero() {
+        return None;
+    }
+    Some((OUTAGE_WAIT * (1u32 << attempt.min(6))).min(left))
+}
+
+/// A plan-stage stop reason (`review["stop"]`) in words.
+pub fn stop_words(stop: &str) -> &'static str {
+    match stop {
+        "plan-time" => "time limit",
+        "plan-budget" => "share of the budget",
+        "rounds" => "review limit",
+        "stalled" => "limit of reviews without progress",
+        "reviewer-unavailable" => "limit while no plan reviewer could run",
+        _ => "limit",
+    }
 }
 
 /// S02: what `submit_plan` answers once the plan is blocked.
@@ -573,9 +743,17 @@ pub fn parse_responses(value: Option<&Value>) -> Vec<Response> {
 /// answer the hold takes (a "not a problem" one says why), for the
 /// checker's list; None when each has one.
 pub fn unanswered_problem(held: usize, responses: &[Response]) -> Option<String> {
-    let missing: Vec<String> = (1..=held)
-        .filter(|n| !responses.iter().any(|r| r.finding == *n && r.usable()))
-        .map(|n| n.to_string())
+    let numbers: Vec<usize> = (1..=held).collect();
+    unanswered_of(&numbers, "", responses)
+}
+
+/// `unanswered_problem` for findings by their numbers (Balanced
+/// Autopilot's finding list: `numbers` the open ones, named "F3").
+pub fn unanswered_of(numbers: &[usize], prefix: &str, responses: &[Response]) -> Option<String> {
+    let missing: Vec<String> = numbers
+        .iter()
+        .filter(|n| !responses.iter().any(|r| r.finding == **n && r.usable()))
+        .map(|n| format!("{prefix}{n}"))
         .collect();
     if missing.is_empty() {
         return None;
@@ -942,13 +1120,11 @@ pub fn revision_changes(held: &str, plan: &str) -> String {
     )
 }
 
-#[cfg(test)]
 static STEP_RANGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\d+)(?:\s*[-–]\s*(\d+))?").unwrap());
 
 /// The steps a finding is about: "Step 3", "Steps 2 and 4", "Steps 2–4";
 /// none for the plan as a whole, or a path.
-#[cfg(test)]
 fn steps_of(f: &Finding) -> Vec<usize> {
     if !f.location.trim().to_lowercase().starts_with("step") {
         return f.step.map(|s| vec![s as usize]).unwrap_or_default();
@@ -976,6 +1152,10 @@ pub struct Facts<'a> {
     pub verdicts: &'a [Verdict],
     /// The plan came back as it was held, with nothing said.
     pub unchanged_and_silent: bool,
+    /// Balanced Autopilot: the steps the revision changed (`changed_steps`).
+    /// A new finding about another step is held apart (`unproven`) until
+    /// its evidence is checked. Empty: no such rule.
+    pub changed: &'a [usize],
 }
 
 /// What a follow-up review leaves open.
@@ -989,6 +1169,11 @@ pub struct FollowUp {
     /// Each earlier finding with the agent's answer and the verdict, for
     /// the record.
     pub earlier: Vec<Value>,
+    /// How many of `open`, at its start, are earlier findings.
+    pub kept: usize,
+    /// New findings about steps the revision didn't change (`changed`),
+    /// held only once their evidence checks out.
+    pub unproven: Vec<Finding>,
 }
 
 const UNCHANGED_REASON: &str = "the plan was sent again unchanged, with no answer";
@@ -1024,19 +1209,21 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
             .find(|v| v.finding == n)
             .or_else(|| facts.verdicts.iter().find(|v| v.finding == 0));
         // Resolved, why, and whether the review said it.
-        let (resolved, reason, said) = if let Some((_, evidence)) =
+        let (resolved, reason, said, repeated) = if let Some((_, evidence)) =
             reopened.iter().find(|(k, _)| *k == n)
         {
-            (false, evidence.clone(), true)
+            (false, evidence.clone(), true, true)
         } else if facts.unchanged_and_silent {
             match verdict {
-                Some(v) if !v.resolved && !v.reason.is_empty() => (false, v.reason.clone(), true),
-                _ => (false, UNCHANGED_REASON.to_string(), false),
+                Some(v) if !v.resolved && !v.reason.is_empty() => {
+                    (false, v.reason.clone(), true, false)
+                }
+                _ => (false, UNCHANGED_REASON.to_string(), false, false),
             }
         } else if let Some(v) = verdict {
-            (v.resolved, v.reason.clone(), true)
+            (v.resolved, v.reason.clone(), true, false)
         } else {
-            (true, NOT_CHECKED_REASON.to_string(), false)
+            (true, NOT_CHECKED_REASON.to_string(), false, false)
         };
         if !resolved {
             let mut f = e.clone();
@@ -1055,12 +1242,380 @@ pub fn follow_up(facts: &Facts, found: Vec<Finding>) -> FollowUp {
             // The reviewer's word, not the IDE's default.
             "checked": said,
             "reason": reason,
+            // Repeated as a finding with new evidence (not a bare "not
+            // resolved"): no dispute.
+            "newEvidence": repeated,
         }));
     }
+    out.kept = out.open.len();
     for f in new {
-        out.open.push(f);
+        let steps = steps_of(&f);
+        let elsewhere = !facts.changed.is_empty()
+            && !steps.is_empty()
+            && !steps.iter().any(|s| facts.changed.contains(s));
+        if elsewhere {
+            out.unproven.push(f);
+        } else {
+            out.open.push(f);
+        }
     }
     out
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Balanced Autopilot's finding list
+ * ---------------------------------------------------------------------------
+ */
+
+/// Where a finding in the list stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Status {
+    Open,
+    /// The agent answered it fixed; the reviewer hasn't agreed yet.
+    Fixed,
+    /// The agent answered it isn't a problem; the reviewer hasn't agreed.
+    Disputed,
+    Resolved,
+    /// A revision undid its fix.
+    Reopened,
+}
+
+/// A finding in Balanced Autopilot's list, kept across reviews and
+/// automatic retries: its number ("F3") stays, resolved ones are kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerEntry {
+    pub number: usize,
+    pub finding: Finding,
+    pub status: Status,
+    /// Reviews in which the agent said "not a problem" and the reviewer
+    /// still "not resolved", with no new evidence (Step 8's arbiter).
+    #[serde(default)]
+    pub disputes: u32,
+    /// An arbiter ruled on it: it's never ruled again.
+    #[serde(default)]
+    pub ruled: bool,
+}
+
+impl LedgerEntry {
+    pub fn is_open(&self) -> bool {
+        self.status != Status::Resolved
+    }
+}
+
+/// The open entries' numbers, in order.
+pub fn open_numbers(ledger: &[LedgerEntry]) -> Vec<usize> {
+    ledger.iter().filter(|e| e.is_open()).map(|e| e.number).collect()
+}
+
+/// The open entries' findings, in order: what holds the plan.
+pub fn open_findings(ledger: &[LedgerEntry]) -> Vec<Finding> {
+    ledger
+        .iter()
+        .filter(|e| e.is_open())
+        .map(|e| e.finding.clone())
+        .collect()
+}
+
+/// Answers by F-number as answers by position in `numbers` (the open
+/// entries, as the reviewer's brief lists them "Earlier 1, 2…"). An answer
+/// to a number not open is left out.
+pub fn by_position(responses: &[Response], numbers: &[usize]) -> Vec<Response> {
+    responses
+        .iter()
+        .filter_map(|r| {
+            let at = numbers.iter().position(|n| *n == r.finding)?;
+            Some(Response {
+                finding: at + 1,
+                ..r.clone()
+            })
+        })
+        .collect()
+}
+
+/// A review's verdicts in the list. `numbers`: the entries it checked, in
+/// the brief's order; `resolved`: its verdict on each; `kept`: those still
+/// open, in order, as `follow_up` left them; `responses`: the agent's
+/// answers by position; `new`: the new findings it holds. A new finding
+/// matching a resolved entry reopens it: the numbers reopened.
+pub fn update_ledger(
+    ledger: &mut Vec<LedgerEntry>,
+    numbers: &[usize],
+    resolved: &[bool],
+    kept: Vec<Finding>,
+    responses: &[Response],
+    new: Vec<Finding>,
+) -> Vec<usize> {
+    let mut kept = kept.into_iter();
+    for (i, n) in numbers.iter().enumerate() {
+        let Some(e) = ledger.iter_mut().find(|e| e.number == *n) else {
+            continue;
+        };
+        if resolved.get(i).copied().unwrap_or(false) {
+            e.status = Status::Resolved;
+            continue;
+        }
+        if let Some(f) = kept.next() {
+            e.finding = f;
+        }
+        e.status = match responses.iter().find(|r| r.finding == i + 1).map(|r| r.action) {
+            Some(Action::NotAProblem) => Status::Disputed,
+            Some(Action::Fixed) => Status::Fixed,
+            None if e.status == Status::Reopened => Status::Reopened,
+            None => Status::Open,
+        };
+    }
+    let mut reopened = Vec::new();
+    for mut f in new {
+        let undone = ledger
+            .iter_mut()
+            .find(|e| e.status == Status::Resolved && same_finding(&f, &e.finding));
+        match undone {
+            Some(e) => {
+                f.new_evidence = Some(format!(
+                    "Reopened: your revision undid the fix for F{}",
+                    e.number
+                ));
+                e.finding = f;
+                e.status = Status::Reopened;
+                reopened.push(e.number);
+            }
+            None => {
+                let number = ledger.iter().map(|e| e.number).max().unwrap_or(0) + 1;
+                ledger.push(LedgerEntry {
+                    number,
+                    finding: f,
+                    status: Status::Open,
+                    disputes: 0,
+                    ruled: false,
+                });
+            }
+        }
+    }
+    reopened
+}
+
+/// Whether `f` matches a resolved entry: a regression, held without
+/// evidence.
+pub fn undoes_a_fix(ledger: &[LedgerEntry], f: &Finding) -> bool {
+    ledger
+        .iter()
+        .any(|e| e.status == Status::Resolved && same_finding(f, &e.finding))
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The arbiter (Balanced Autopilot, Step 8)
+ * ---------------------------------------------------------------------------
+ */
+
+/// Disputes after which an arbiter rules on a finding.
+pub const ARBITER_DISPUTES: u32 = 2;
+
+/// After a follow-up review: each entry the agent answered "not a
+/// problem" and the reviewer still found not resolved, without repeating
+/// it with new evidence, gets a dispute. `records`: `follow_up`'s
+/// `earlier`, in the order of `numbers`; `responses` by position. The
+/// entries now due an arbiter (at `ARBITER_DISPUTES`, never ruled).
+pub fn count_disputes(
+    ledger: &mut [LedgerEntry],
+    numbers: &[usize],
+    records: &[Value],
+    responses: &[Response],
+) -> Vec<usize> {
+    for (i, n) in numbers.iter().enumerate() {
+        let Some(r) = records.get(i) else { continue };
+        let disputed = responses
+            .iter()
+            .any(|a| a.finding == i + 1 && a.action == Action::NotAProblem);
+        let insisted = r["resolved"] == false && r["checked"] == true && r["newEvidence"] != true;
+        if disputed && insisted {
+            if let Some(e) = ledger.iter_mut().find(|e| e.number == *n) {
+                e.disputes += 1;
+            }
+        }
+    }
+    ledger
+        .iter()
+        .filter(|e| e.is_open() && !e.ruled && e.disputes >= ARBITER_DISPUTES)
+        .map(|e| e.number)
+        .collect()
+}
+
+/// The arbiter's brief: the plan, the one disputed finding and both
+/// sides' arguments. It overrides the plan reviewer's general
+/// instructions: one ruling on this finding, nothing else.
+pub fn arbiter_brief(
+    request: &str,
+    plan: &str,
+    entry: &LedgerEntry,
+    author_notes: &[String],
+    reviewer_reasons: &[String],
+) -> String {
+    let f = &entry.finding;
+    let list = |items: &[String]| {
+        if items.is_empty() {
+            "- (none recorded)".to_string()
+        } else {
+            items
+                .iter()
+                .map(|s| format!("- {}", char_prefix(s.trim(), MAX_NOTE_CHARS)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    };
+    format!(
+        "You are settling one disputed review finding, not reviewing the plan. These instructions replace your general \
+         ones for this reply.\n\n\
+         The plan's author and its reviewer disagree on finding F{n}. Check the code yourself (read, search_code, \
+         callers, outline) and decide whether the finding holds against the plan as it is now.\n\n\
+         Reply with exactly one of these, and nothing about any other part of the plan, however real:\n\
+         - \"## Findings\" and then \"None.\" if the finding doesn't hold;\n\
+         - \"## Findings\" and then this one finding, as `1. [severity] Step N — title` with `- Scenario:`, `- Fix:` \
+         and `- Confidence:` lines, if it does.\n\n\
+         ## The request\n\n{request}\n\n\
+         ## The finding (F{n})\n\n[{sev}] {loc} — {title}\n- Scenario: {scenario}\n- Fix: {fix}{evidence}\n\n\
+         ## The author says it isn't a problem\n\n{author}\n\n\
+         ## The reviewer says it isn't resolved\n\n{reviewer}\n\n\
+         ## The plan\n\n{plan}\n",
+        n = entry.number,
+        request = request.trim(),
+        sev = f.severity,
+        loc = if f.location.is_empty() { "Plan" } else { &f.location },
+        title = f.title,
+        scenario = f.scenario,
+        fix = f.fix,
+        evidence = f
+            .evidence
+            .as_deref()
+            .map(|e| format!("\n- Evidence: {e}"))
+            .unwrap_or_default(),
+        author = list(author_notes),
+        reviewer = list(reviewer_reasons),
+        plan = plan.trim(),
+    )
+}
+
+/// What an arbiter decided.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ruling {
+    /// "None.": the finding doesn't hold.
+    NotAProblem,
+    /// Its one finding matches the disputed one: it holds.
+    Valid(Box<Finding>),
+    /// Anything else, or a failed or skipped run: nothing is settled.
+    Unreadable(String),
+}
+
+/// The ruling in an arbiter's report (`None`: it couldn't run).
+pub fn ruling_of(report: Option<&str>, entry: &LedgerEntry) -> Ruling {
+    let Some(text) = report else {
+        return Ruling::Unreadable("the arbiter couldn't run".into());
+    };
+    match parse_findings(text) {
+        Err(e) => Ruling::Unreadable(format!("its reply couldn't be read: {e}")),
+        Ok(found) if found.is_empty() => Ruling::NotAProblem,
+        Ok(mut found) if found.len() == 1 => {
+            let f = found.remove(0);
+            let same_step = f.step.is_some() && f.step == entry.finding.step;
+            if same_finding(&f, &entry.finding) || same_step {
+                Ruling::Valid(Box::new(f))
+            } else {
+                Ruling::Unreadable("its finding isn't the disputed one".into())
+            }
+        }
+        Ok(found) => Ruling::Unreadable(format!(
+            "it reported {} findings, not a ruling on one",
+            found.len()
+        )),
+    }
+}
+
+/// A ruling applied to its entry; its record for `review["rulings"]`.
+pub fn apply_ruling(entry: &mut LedgerEntry, ruling: &Ruling) -> Value {
+    let (word, reason) = match ruling {
+        Ruling::NotAProblem => {
+            entry.ruled = true;
+            entry.status = Status::Resolved;
+            ("not a problem", String::new())
+        }
+        Ruling::Valid(_) => {
+            entry.ruled = true;
+            entry.status = Status::Open;
+            entry.finding.new_evidence = Some("Ruled valid by an arbiter: fix it".into());
+            ("valid", String::new())
+        }
+        Ruling::Unreadable(why) => ("unreadable", why.clone()),
+    };
+    json!({ "finding": entry.number, "ruling": word, "reason": reason })
+}
+
+static LEDGER_LABEL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s*\(F\d+\)\s*$").unwrap());
+
+/// A title without the "(F3)" a reviewer copied from its brief.
+pub fn without_label(title: &str) -> String {
+    LEDGER_LABEL.replace(title, "").into_owned()
+}
+
+static CITED_PATH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9_./@-]*[A-Za-z0-9_-]\.[A-Za-z0-9]+(?::\d+(?:[-:]\d+)?)?").unwrap());
+static CITED_SYMBOL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"`([A-Za-z_][A-Za-z0-9_:.]*)(?:\(\))?`").unwrap());
+
+/// Why a finding's "- Evidence:" line doesn't check out, if it doesn't:
+/// it cites a `path:line` that exists under `root`, or a symbol the
+/// project's search finds, and says in a few words what breaks.
+pub async fn evidence_problem(root: Option<&str>, f: &Finding) -> Option<String> {
+    let Some(evidence) = f.evidence.as_deref().map(str::trim).filter(|e| !e.is_empty()) else {
+        return Some("it has no \"- Evidence:\" line".into());
+    };
+    let root = root?;
+    // What's left once the citations are out: what breaks.
+    let rest = CITED_SYMBOL.replace_all(evidence, " ");
+    let rest = CITED_PATH.replace_all(&rest, " ");
+    let says = rest.split_whitespace().filter(|w| w.chars().any(char::is_alphabetic)).count();
+    if says < 3 {
+        return Some("its evidence doesn't say what breaks".into());
+    }
+    let mut cited = false;
+    for m in CITED_PATH.find_iter(evidence) {
+        let path = m.as_str().split(':').next().unwrap_or("");
+        let path = path.trim_start_matches("./");
+        if path.is_empty() || path.starts_with('/') || path.contains("..") {
+            continue;
+        }
+        cited = true;
+        if std::path::Path::new(root).join(path).exists() {
+            return None;
+        }
+    }
+    for c in CITED_SYMBOL.captures_iter(evidence) {
+        let symbol = c[1].rsplit("::").next().unwrap_or(&c[1]).rsplit('.').next().unwrap_or("").to_string();
+        if symbol.len() < 3 {
+            continue;
+        }
+        cited = true;
+        let found = crate::agent_tools::tool_search_code(
+            root.to_string(),
+            symbol,
+            None,
+            Some(1),
+            Some(false),
+            Some(true),
+            None,
+        )
+        .await;
+        if found.is_ok_and(|r| r.match_count > 0) {
+            return None;
+        }
+    }
+    Some(match cited {
+        true => "the path or symbol its evidence cites isn't in the project".into(),
+        false => "its evidence cites no `path:line` or symbol".into(),
+    })
 }
 
 /*
@@ -1085,26 +1640,122 @@ pub struct Outcome {
 }
 
 impl Run {
-    /// The plan reviews a run has: Autopilot's three (S02), or two; a
-    /// Thorough task's go on by progress (T07), to a backstop.
+    /// The plan reviews a run has: Balanced Autopilot's plan-fix limit, a
+    /// total for the stage across automatic retries; a Thorough task's go
+    /// on by progress (T07), to a backstop; else two.
     pub(super) fn plan_review_rounds(&self) -> u32 {
         if self.thorough() {
             super::loops::MAX_ROUNDS
-        } else if self.in_autopilot() {
-            AUTOPILOT_PLAN_REVIEW_ROUNDS
+        } else if self.balanced_autopilot() {
+            self.plan_review_progress.cap()
         } else {
             MAX_PLAN_REVIEW_ROUNDS
         }
     }
 
-    /// Whether review `round`, which left `open` high and medium findings,
-    /// may be followed by another: before the last of `max`, or in a
-    /// Thorough task while the reviews make progress (T07).
-    fn another_plan_review(&mut self, round: u32, max: u32, open: usize) -> bool {
+    /// Whether review `round`, which left `open` open, may be followed by
+    /// another: before the last of `max`; in a Thorough task while the
+    /// reviews leave fewer open (T07); in Balanced Autopilot while they
+    /// leave less weight open, within the plan-fix limits.
+    fn another_plan_review(&mut self, round: u32, max: u32, open: &[Finding]) -> bool {
         if self.thorough() {
-            self.plan_review_progress.another_round(open, round)
+            self.plan_review_progress.another_round(open.len(), round)
+        } else if self.balanced_autopilot() {
+            self.plan_review_progress.another_round(weight(open), round)
         } else {
             round < max
+        }
+    }
+
+    /// What this task's plan stage spent so far: its Plan records', this
+    /// run's included through its record's `spending`. None outside an
+    /// Autopilot stage.
+    pub(super) async fn plan_spent(&self) -> Option<super::budget::Spent> {
+        let stage = self.stage.as_ref()?;
+        let all = super::autopilot::load(&self.core, &self.dialog_id).await.ok()?;
+        let plan = all.iter().map(|r| &r.record).filter(|r| {
+            r.task == stage.task && r.name == super::autopilot::Stage::Plan
+        });
+        Some(super::autopilot::total_spent(plan))
+    }
+
+    /// Balanced Autopilot: why the plan stage is past its share of the
+    /// task's budget, if it is: `("plan-time", why)` past its minutes,
+    /// `("plan-budget", why)` past its share of the cost or tokens.
+    pub(super) async fn over_plan_share(&self) -> Option<(&'static str, String)> {
+        let spent = self.plan_spent().await?;
+        let fix = self.plan_fix();
+        let share = super::budget::share(&self.config().autopilot.budget, fix.budget_share, fix.max_minutes);
+        let time = super::autopilot::Budget {
+            max_hours: share.max_hours,
+            ..Default::default()
+        };
+        if let Some(why) = super::budget::over(&time, &spent) {
+            return Some(("plan-time", why));
+        }
+        let rest = super::autopilot::Budget {
+            max_hours: None,
+            ..share
+        };
+        super::budget::over(&rest, &spent).map(|why| ("plan-budget", why))
+    }
+
+    /// Balanced Autopilot: the plan stage's minutes left.
+    async fn plan_minutes_left(&self) -> f64 {
+        let spent = self.plan_spent().await.map_or(0, |s| s.ms);
+        self.plan_fix().max_minutes - spent as f64 / 60_000.0
+    }
+
+    /// Step 9, Balanced Autopilot: every plan reviewer model failed. Waits
+    /// before another try (`reviewer_wait`), watching for a Stop and the
+    /// plan's limits; `waited`: what this review waited so far. The stop
+    /// reason when it can't wait any more: the plan is then blocked.
+    async fn wait_for_reviewer(&mut self, attempt: u32, waited: &mut Duration) -> Option<&'static str> {
+        if self.stopped() {
+            return Some("reviewer-unavailable");
+        }
+        if let Some((stop, _)) = self.over_plan_share().await {
+            return Some(stop);
+        }
+        let minutes = self.plan_minutes_left().await;
+        let left = Duration::from_secs_f64((minutes * 60.0).max(0.0)).saturating_sub(*waited);
+        let wait = reviewer_wait(attempt, left)?;
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
+            if self.stopped() {
+                return Some("reviewer-unavailable");
+            }
+            let step = until.saturating_duration_since(Instant::now()).min(Duration::from_millis(250));
+            tokio::time::sleep(step).await;
+        }
+        *waited += wait;
+        None
+    }
+
+    /// Balanced Autopilot: the plan blocked before a review, by a limit
+    /// (`stop`): never saved unreviewed. Its record is kept as a review's,
+    /// so the block is restored and never retried.
+    fn blocked_before_review(&mut self, stop: &str) -> Outcome {
+        let rounds = self.plan_reviews;
+        let open = self.plan_findings.clone();
+        self.plan_blocked = true;
+        let result = if open.is_empty() {
+            unreviewed_blocked_result(stop, rounds)
+        } else {
+            blocked_result(&open, rounds)
+        };
+        Outcome {
+            decision: Decision::Hold { result },
+            record: Some(json!({
+                "kind": "plan",
+                "status": "blocked",
+                "blocked": true,
+                "stop": stop,
+                "round": rounds,
+                "maxRounds": self.plan_review_rounds(),
+                "open": open.len(),
+                "findings": open,
+            })),
         }
     }
 
@@ -1128,7 +1779,11 @@ impl Run {
         {
             return None;
         }
-        let problem = unanswered_problem(self.plan_findings.len(), responses)?;
+        let problem = if self.balanced_autopilot() {
+            unanswered_of(&open_numbers(&self.plan_ledger), "F", responses)?
+        } else {
+            unanswered_problem(self.plan_findings.len(), responses)?
+        };
         self.plan_answer_nudges += 1;
         Some(problem)
     }
@@ -1144,11 +1799,23 @@ impl Run {
         saved: Option<&str>,
         responses: &[Response],
     ) -> Result<Outcome, String> {
-        let outcome = self.plan_review(call_id, plan, saved, responses).await?;
+        let mut outcome = self.plan_review(call_id, plan, saved, responses).await?;
         if matches!(outcome.decision, Decision::Save { .. }) {
+            for e in &mut self.plan_ledger {
+                e.status = Status::Resolved;
+            }
             self.plan_findings.clear();
             self.plan_held = None;
             self.plan_review_call = None;
+        }
+        // The last plan submitted, held or saved: what `edits` apply to.
+        self.plan_draft = Some(plan.to_string());
+        // Balanced Autopilot: every review's record, held, saved or
+        // blocked, keeps the plan stage's state for an automatic retry.
+        if self.balanced_autopilot() {
+            if let Some(record) = &mut outcome.record {
+                self.keep_plan_state(record, plan);
+            }
         }
         Ok(outcome)
     }
@@ -1170,8 +1837,47 @@ impl Run {
         if !self.plan_reviewer_on() {
             return Ok(save(None));
         }
-        // P4.6: a save past the budget says so, in the result and its record.
         let max = self.plan_review_rounds();
+        // Balanced Autopilot: past a limit, the plan is blocked, never saved
+        // unreviewed (a restored count can already be at the limit). A plan
+        // already passed and saved, with nothing open, takes a small
+        // revision as it does below the limit: saved, no review; a larger
+        // one is sent back at a limit, and the reviewed plan stays (no
+        // block: the task goes on with it).
+        if self.balanced_autopilot() {
+            let before = match self.plan_findings.is_empty() {
+                true => saved.and_then(|p| std::fs::read_to_string(p).ok()),
+                false => None,
+            };
+            if before
+                .as_deref()
+                .is_some_and(|b| changed_lines(b, plan) < MIN_REVISION_LINES)
+            {
+                return Ok(save(None));
+            }
+            let limit = match self.over_plan_share().await {
+                Some((stop, _)) => Some(stop),
+                None if self.plan_reviews >= max => Some("rounds"),
+                None => None,
+            };
+            if let Some(stop) = limit {
+                if before.is_some() {
+                    return Ok(Outcome {
+                        decision: Decision::Hold {
+                            result: format!(
+                                "the plan wasn't saved: the plan stage reached its {}, so this revision can't be reviewed. \
+                                 The reviewed plan stays saved and is the one implemented. Don't submit it again: reply in a \
+                                 sentence or two.",
+                                stop_words(stop)
+                            ),
+                        },
+                        record: None,
+                    });
+                }
+                return Ok(self.blocked_before_review(stop));
+            }
+        }
+        // P4.6: a save past the budget says so, in the result and its record.
         if self.plan_reviews >= max {
             let reason = format!("this run's {max} plan reviews are used");
             return Ok(Outcome {
@@ -1199,6 +1905,19 @@ impl Run {
         let request = self.latest_user_request().await;
         let answers = answers_in(&recent);
         let earlier = self.plan_findings.clone();
+        // Balanced Autopilot: the finding list's numbers, and the answers
+        // (by F-number) by the brief's positions.
+        let ledger_on = self.balanced_autopilot();
+        let numbers = match ledger_on {
+            true => open_numbers(&self.plan_ledger),
+            false => Vec::new(),
+        };
+        let positional = match ledger_on {
+            true => by_position(responses, &numbers),
+            false => responses.to_vec(),
+        };
+        let responses = positional.as_slice();
+        let dropped_before = std::mem::take(&mut self.plan_dropped);
         let held = self.plan_held.clone().unwrap_or_default();
         // B12: the answers come with the submit; what the agent wrote since
         // the hold stands in for them only when it sent none.
@@ -1224,6 +1943,8 @@ impl Run {
                 responses,
                 replies: &replies,
                 changes: &changes,
+                numbers: &numbers,
+                dropped: &dropped_before,
             }),
             autopilot: self.in_autopilot(),
         });
@@ -1236,15 +1957,30 @@ impl Run {
             earlier.clone()
         };
         let started = Instant::now();
-        let outcome = self
-            .run_ide_subagent_on(
-                Kind::PlanReviewer,
-                call_id,
-                "Review the plan",
-                message,
-                owed,
-            )
-            .await;
+        // Step 9, Balanced Autopilot: a review every model failed is tried
+        // again after a wait, and at a limit the plan is blocked, never
+        // saved unreviewed.
+        let (mut attempt, mut waited) = (0u32, Duration::ZERO);
+        let outcome = loop {
+            let outcome = self
+                .run_ide_subagent_on(
+                    Kind::PlanReviewer,
+                    call_id,
+                    "Review the plan",
+                    message.clone(),
+                    owed.clone(),
+                )
+                .await;
+            let all_failed = matches!(&outcome, Ok((_, Some(r))) if r.status == subagent::SubStatus::Failed);
+            if !(all_failed && self.balanced_autopilot()) {
+                break outcome;
+            }
+            if let Some(stop) = self.wait_for_reviewer(attempt, &mut waited).await {
+                self.plan_reviews -= 1;
+                return Ok(self.blocked_before_review(stop));
+            }
+            attempt += 1;
+        };
         let mut review = json!({
             "kind": "plan",
             "round": round,
@@ -1287,8 +2023,36 @@ impl Run {
         };
         let mut serious: Vec<Finding> = Vec::new();
         let mut still_open = 0;
-        if let Some((found, text)) = report {
-            let shown = if earlier.is_empty() {
+        let changed = match ledger_on && !earlier.is_empty() {
+            true => changed_steps(&held, plan),
+            false => Vec::new(),
+        };
+        if let Some((mut found, text)) = report {
+            // A "(F3)" copied from the brief isn't part of a title.
+            for f in &mut found {
+                f.title = without_label(&f.title);
+            }
+            let shown = if ledger_on {
+                let facts = Facts {
+                    earlier: &earlier,
+                    responses,
+                    verdicts: &parse_verdicts(&text),
+                    unchanged_and_silent: unchanged && silent,
+                    changed: &changed,
+                };
+                let follow = follow_up(&facts, found);
+                still_open = follow
+                    .earlier
+                    .iter()
+                    .filter(|e| e["resolved"] == false)
+                    .count();
+                self.ledger_review(&mut review, &numbers, responses, follow)
+                    .await;
+                // Step 8: a finding disputed twice gets an arbiter's ruling.
+                self.arbitrate(call_id, &request, plan, &mut review, &numbers, responses)
+                    .await;
+                open_findings(&self.plan_ledger)
+            } else if earlier.is_empty() {
                 found
             } else {
                 // B13: a follow-up review.
@@ -1298,6 +2062,7 @@ impl Run {
                         responses,
                         verdicts: &parse_verdicts(&text),
                         unchanged_and_silent: unchanged && silent,
+                        changed: &[],
                     },
                     found,
                 );
@@ -1332,6 +2097,13 @@ impl Run {
                 "serious": serious.len(),
                 "earlierOpen": still_open,
                 "ms": review["ms"],
+                "weight": weight(&serious),
+                "stalled": self.plan_review_progress.stalled(),
+                "dropped": review["dropped"].as_array().map_or(0, Vec::len),
+                "reopened": review["reopened"].as_array().map_or(0, Vec::len),
+                "disputes": self.plan_ledger.iter().map(|e| e.disputes).sum::<u32>(),
+                "ruling": review.pointer("/rulings/0/ruling").cloned().unwrap_or(Value::Null),
+                "stop": review["stop"],
             }),
         );
         // D10, S02: in Autopilot, a follow-up that couldn't report found
@@ -1357,7 +2129,7 @@ impl Run {
                 plan: plan.to_string(),
                 note: None,
             }
-        } else if self.another_plan_review(round, max, serious.len()) {
+        } else if self.another_plan_review(round, max, &serious) {
             // B13: what's still open is what the next review checks, by the
             // numbers the agent answers to.
             self.plan_review_call = Some(call_id.to_string());
@@ -1365,18 +2137,49 @@ impl Run {
             self.plan_held = Some(plan.to_string());
             self.plan_answer_nudges = 0;
             review["held"] = json!(true);
-            let result = if self.thorough() {
-                findings_result_by_progress(&serious, round, self.plan_review_progress.stalled())
-            } else {
-                findings_result(&serious, round, max, self.in_autopilot())
+            // Balanced Autopilot: past the plan's share, the hold is the
+            // final block.
+            let over = match self.balanced_autopilot() {
+                true => self.over_plan_share().await,
+                false => None,
             };
-            Decision::Hold { result }
+            if let Some((stop, _)) = over {
+                review["held"] = json!(false);
+                review["open"] = json!(serious.len());
+                review["blocked"] = json!(true);
+                review["stop"] = json!(stop);
+                self.plan_blocked = true;
+                Decision::Hold {
+                    result: blocked_result(&serious, round),
+                }
+            } else {
+                let result = if self.thorough() {
+                    findings_result_by_progress(&serious, round, self.plan_review_progress.stalled())
+                } else if self.balanced_autopilot() {
+                    let minutes = self.plan_minutes_left().await;
+                    let open: Vec<&LedgerEntry> =
+                        self.plan_ledger.iter().filter(|e| e.is_open()).collect();
+                    ledger_result(&open, round, max, &self.plan_review_progress, minutes)
+                } else {
+                    findings_result(&serious, round, max, self.in_autopilot(), None)
+                };
+                Decision::Hold { result }
+            }
         } else if self.in_autopilot() {
             // S02 (4.2): an Autopilot task's last review with a finding
             // open, of any severity, blocks the plan: it isn't saved for
             // implementation.
             review["open"] = json!(serious.len());
             review["blocked"] = json!(true);
+            if self.balanced_autopilot() {
+                let p = &self.plan_review_progress;
+                let stop = if round >= p.cap() || p.stalled() < p.stall() {
+                    "rounds"
+                } else {
+                    "stalled"
+                };
+                review["stop"] = json!(stop);
+            }
             self.plan_blocked = true;
             Decision::Hold {
                 result: blocked_result(&serious, round),
@@ -1400,7 +2203,225 @@ impl Run {
             record: Some(review),
         })
     }
+
+    /// Balanced Autopilot: a review's record keeps the finding list and the
+    /// plan stage's state, which an automatic retry restores. `held`: the
+    /// plan as it stands, the draft a retry goes on from.
+    pub(super) fn keep_plan_state(&self, review: &mut Value, plan: &str) {
+        review["ledger"] = json!(self.plan_ledger);
+        review["planState"] = json!({
+            "round": self.plan_reviews,
+            "best": self.plan_review_progress.best(),
+            "stalled": self.plan_review_progress.stalled(),
+            "held": plan,
+            "blocked": self.plan_blocked,
+            "formatRejections": self.plan_format_rejections,
+        });
+    }
+
+    /// Balanced Autopilot: a review's findings (`follow`) against the
+    /// finding list. Earlier entries settle by the reviewer's verdicts
+    /// (B13); a new finding about a step the revision didn't change is held
+    /// only when its evidence checks out, or when it undoes a fix (a
+    /// regression); else it's dropped, and the next brief says so. What's
+    /// open after.
+    async fn ledger_review(
+        &mut self,
+        review: &mut Value,
+        numbers: &[usize],
+        responses: &[Response],
+        follow: FollowUp,
+    ) -> Vec<Finding> {
+        if !numbers.is_empty() {
+            review["earlier"] = json!(follow.earlier);
+        }
+        let mut dropped: Vec<Value> = follow
+            .dropped
+            .iter()
+            .map(|f| json!({ "finding": f, "reason": "it repeats an earlier finding without new evidence" }))
+            .collect();
+        let resolved: Vec<bool> = follow
+            .earlier
+            .iter()
+            .map(|e| e["resolved"] == true)
+            .collect();
+        let mut kept = follow.open;
+        let mut new = kept.split_off(follow.kept);
+        let root = self.root.clone();
+        for f in follow.unproven {
+            if undoes_a_fix(&self.plan_ledger, &f) {
+                new.push(f);
+                continue;
+            }
+            match evidence_problem(root.as_deref(), &f).await {
+                None => new.push(f),
+                Some(reason) => {
+                    self.plan_dropped.push(f.headline());
+                    dropped.push(json!({ "finding": f, "reason": reason }));
+                }
+            }
+        }
+        if !dropped.is_empty() {
+            review["dropped"] = json!(dropped);
+        }
+        let reopened =
+            update_ledger(&mut self.plan_ledger, numbers, &resolved, kept, responses, new);
+        if !reopened.is_empty() {
+            review["reopened"] = json!(reopened);
+        }
+        open_findings(&self.plan_ledger)
+    }
+
+    /// Step 8, Balanced Autopilot: after a follow-up review, disputes are
+    /// counted, and the first entry due one gets an arbiter, a fresh plan
+    /// reviewer run told to rule on that finding only (at most one per
+    /// review). Only a readable ruling settles it; the ruling goes in
+    /// `review["rulings"]`.
+    async fn arbitrate(
+        &mut self,
+        call_id: &str,
+        request: &str,
+        plan: &str,
+        review: &mut Value,
+        numbers: &[usize],
+        responses: &[Response],
+    ) {
+        let records: Vec<Value> = review["earlier"].as_array().cloned().unwrap_or_default();
+        let due = count_disputes(&mut self.plan_ledger, numbers, &records, responses);
+        let Some(&number) = due.first() else {
+            return;
+        };
+        if self.stopped() {
+            return;
+        }
+        let Some(entry) = self.plan_ledger.iter().find(|e| e.number == number).cloned() else {
+            return;
+        };
+        let at = numbers.iter().position(|n| *n == number);
+        let author: Vec<String> = at
+            .and_then(|i| responses.iter().find(|r| r.finding == i + 1))
+            .map(|r| r.note.clone())
+            .into_iter()
+            .collect();
+        let reviewer: Vec<String> = at
+            .and_then(|i| records.get(i))
+            .and_then(|r| r["reason"].as_str())
+            .map(str::to_string)
+            .into_iter()
+            .collect();
+        let message = arbiter_brief(request, plan, &entry, &author, &reviewer);
+        let outcome = self
+            .run_ide_subagent_on(
+                Kind::PlanReviewer,
+                call_id,
+                "Settle a disputed finding",
+                message,
+                Vec::new(),
+            )
+            .await;
+        let mut record = json!({});
+        let text = match subagent::outcome_of(&mut record, outcome) {
+            subagent::SubOutcome::Report(r) => Some(r.text),
+            _ => None,
+        };
+        let ruling = ruling_of(text.as_deref(), &entry);
+        let Some(e) = self.plan_ledger.iter_mut().find(|e| e.number == number) else {
+            return;
+        };
+        let ruled = apply_ruling(e, &ruling);
+        let mut rulings = review["rulings"].as_array().cloned().unwrap_or_default();
+        rulings.push(ruled);
+        review["rulings"] = json!(rulings);
+    }
+
+    /// Balanced Autopilot, at a plan run's start: the plan stage's state as
+    /// the task's latest review record kept it. An automatic retry (a
+    /// `planRetry` note since the stage's previous run) restores all of it;
+    /// a person's Retry or Continue only the finding list and the held plan
+    /// (as the draft), with a fresh review count and no block, as a Retry
+    /// does.
+    pub(super) async fn restore_plan_state(&mut self) -> Result<(), String> {
+        let Some(stage) = self.stage.clone() else {
+            return Ok(());
+        };
+        if stage.stage != super::autopilot::Stage::Plan {
+            return Ok(());
+        }
+        let all = super::autopilot::load(&self.core, &self.dialog_id).await?;
+        let plans: Vec<&super::autopilot::Recorded> = all
+            .iter()
+            .filter(|r| {
+                r.record.task == stage.task && r.record.name == super::autopilot::Stage::Plan
+            })
+            .collect();
+        let Some(current) = plans.iter().find(|r| r.id == stage.record) else {
+            return Ok(());
+        };
+        let upto = current.seq;
+        let Some(previous) = plans.iter().filter(|r| r.seq < upto).map(|r| r.seq).max() else {
+            return Ok(()); // the stage's first run
+        };
+        let from = plans.first().map_or(previous, |r| r.seq);
+        let id = self.dialog_id.clone();
+        let rows = self
+            .core
+            .db
+            .read(move |c| crate::chat_db::store::messages_with_meta(c, &id, "review", Some(from)))
+            .await?;
+        let Some(review) = rows
+            .iter()
+            .rev()
+            .filter(|m| m.seq < upto)
+            .filter_map(|m| m.meta.as_ref()?.get("review"))
+            .find(|r| r["kind"] == "plan" && r.get("planState").is_some())
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let id = self.dialog_id.clone();
+        let notes = self
+            .core
+            .db
+            .read(move |c| {
+                crate::chat_db::store::messages_with_meta(c, &id, "harness", Some(previous))
+            })
+            .await?;
+        let automatic = notes.iter().any(|m| {
+            m.seq < upto
+                && m.meta
+                    .as_ref()
+                    .and_then(|v| v.get("harness"))
+                    .and_then(Value::as_str)
+                    == Some(PLAN_RETRY)
+        });
+        self.plan_ledger = serde_json::from_value(review["ledger"].clone()).unwrap_or_default();
+        let state = &review["planState"];
+        let held = state["held"].as_str().map(str::to_string);
+        self.plan_findings = open_findings(&self.plan_ledger);
+        if !self.plan_findings.is_empty() {
+            self.plan_held = held.clone();
+        }
+        self.plan_draft = held;
+        if automatic {
+            let fix = self.plan_fix();
+            let n = |k: &str| state[k].as_u64().unwrap_or(0) as u32;
+            self.plan_reviews = n("round");
+            self.plan_review_progress = super::loops::Progress::restored(
+                fix.stall_rounds,
+                fix.max_rounds,
+                state["best"].as_u64().map(|b| b as usize),
+                n("stalled"),
+            );
+            self.plan_blocked = state["blocked"] == true;
+            self.plan_format_rejections = n("formatRejections");
+        }
+        Ok(())
+    }
 }
+
+/// The `meta.harness` of the note an automatic retry of the plan stage
+/// starts with (autopilot/driver.rs `retry_plan`).
+pub const PLAN_RETRY: &str = "planRetry";
 
 #[cfg(test)]
 mod tests {
@@ -1469,6 +2490,16 @@ mod tests {
             .unwrap();
         assert!(at > autopilot.find("## The plan").unwrap());
         assert!(autopilot.contains("a part of the request no criterion covers"));
+        // Autopilot's first review is told to be complete; Plan mode's isn't.
+        assert!(autopilot.contains("## A complete first review"));
+        assert!(autopilot.contains("list every step with the same problem"));
+        assert!(!text.contains("## A complete first review"));
+        // Every mode: what a finding is, and its Fix as replacement text.
+        assert!(PLAN_REVIEWER_PROMPT.contains("never findings, at any severity"));
+        assert!(PLAN_REVIEWER_PROMPT.contains("Fix: the replacement text for the plan"));
+        assert!(PLAN_REVIEWER_PROMPT.contains("Every new finding counts, wherever it is"));
+        assert!(PLAN_REVIEWER_PROMPT.contains("\"- Evidence:\""));
+        assert!(!PLAN_REVIEWER_PROMPT.contains("high ones anywhere"));
         let f = parse_findings(STEP_FINDINGS).unwrap();
         let responses = parse_responses(Some(&json!([{
             "finding": 1,
@@ -1484,6 +2515,8 @@ mod tests {
                 responses: &responses,
                 replies: "Not shown: the answers came with the plan.",
                 changes: "@@ line 3 @@\n-1. x\n+1. y",
+                numbers: &[],
+                dropped: &[],
             }),
             autopilot: false,
         });
@@ -1516,6 +2549,10 @@ mod tests {
             "{later}"
         );
         assert!(parse_verdicts(&later).is_empty(), "{later}");
+        assert!(later.contains("every new finding counts, wherever it is in the plan"));
+        assert!(later.contains("\"- Evidence:\" with a `path:line` or a symbol name"));
+        assert!(!later.contains("high ones anywhere"));
+        assert!(!later.contains("## A complete first review"), "a follow-up");
         assert!(!later.contains("answers to the agent's questions"));
         // No answers with the plan: its replies stand in. Nothing changed: said so.
         let silent = brief(&BriefParts {
@@ -1527,6 +2564,8 @@ mod tests {
                 responses: &[],
                 replies: "1: not a problem, the CLI is gone.",
                 changes: "",
+                numbers: &[],
+                dropped: &[],
             }),
             autopilot: false,
         });
@@ -1543,7 +2582,7 @@ mod tests {
     #[test]
     fn the_hold_asks_for_checked_fixes_and_answers() {
         let f = parse_findings(STEP_FINDINGS).unwrap();
-        let result = findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false);
+        let result = findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false, None);
         assert!(result.starts_with("The plan wasn't saved yet"), "{result}");
         assert!(result.contains("1. [high] Step 2 — `list_users` is called"));
         assert!(result.contains("look for the same kind of problem in the other steps"));
@@ -1565,7 +2604,7 @@ mod tests {
         );
         assert!(findings_result_by_progress(&f, 4, 1)
             .contains("if your next submit's review doesn't either"));
-        let autopilot = findings_result(&f, 2, AUTOPILOT_PLAN_REVIEW_ROUNDS, true);
+        let autopilot = findings_result(&f, 2, 3, true, None);
         assert!(autopilot.contains("review 2 of at most 3"), "{autopilot}");
         assert!(
             autopilot.ends_with(
@@ -1573,7 +2612,19 @@ mod tests {
             ),
             "{autopilot}"
         );
-        assert!(findings_result(&f, 1, 3, true).ends_with("2 more reviews are left in this run."));
+        assert!(findings_result(&f, 1, 3, true, None).ends_with("2 more reviews are left in this run."));
+        // Balanced Autopilot: the real rule, with the reviews and minutes left.
+        let mut p = crate::agent_run::loops::Progress::with(2, 8);
+        assert!(p.another_round(weight(&f), 2));
+        let balanced = findings_result(&f, 2, 8, true, Some((&p, 21.4)));
+        assert!(balanced.contains("(review 2 of at most 8)"), "{balanced}");
+        assert!(balanced.contains("Reviews continue while each leaves less open"), "{balanced}");
+        assert!(balanced.contains("at most 6 more reviews, about 21 minutes left."), "{balanced}");
+        assert!(!balanced.contains("no less open"), "{balanced}");
+        assert!(p.another_round(weight(&f), 3));
+        let stalled = findings_result(&f, 3, 8, true, Some((&p, 1.0)));
+        assert!(stalled.contains("1 more without progress ends the reviews."), "{stalled}");
+        assert!(stalled.contains("about 1 minute left"), "{stalled}");
         let blocked = blocked_result(&f, 3);
         assert!(blocked.starts_with("The plan wasn't saved, and won't be: after 3 reviews"));
         assert!(blocked.contains("1. [high] Step 2"));
@@ -1878,6 +2929,228 @@ mod tests {
         assert!(revision_changes(held, &held.replace('\n', "\r\n")).is_empty());
     }
 
+    #[test]
+    fn findings_weigh_by_severity_and_an_unreviewed_block_names_its_limit() {
+        let two_highs = [finding("high", "Step 1", "a"), finding("high", "Step 2", "b")];
+        assert_eq!(weight(&two_highs), 6);
+        let after = [finding("low", "Step 3", "c")];
+        assert_eq!(weight(&after), 1);
+        let mut p = crate::agent_run::loops::Progress::with(2, 8);
+        assert!(p.another_round(weight(&two_highs), 1));
+        assert!(p.another_round(weight(&after), 2), "two highs fixed, a low new: progress");
+        assert_eq!(p.stalled(), 0);
+        assert_eq!(weight(&[finding("medium", "Plan", "m")]), 2);
+        let text = unreviewed_blocked_result("plan-time", 4);
+        assert!(text.contains("reached its time limit after 4 reviews"), "{text}");
+        assert!(text.contains("Don't submit the plan again"), "{text}");
+        assert!(!text.contains("1."), "no findings listed: {text}");
+        assert!(unreviewed_blocked_result("rounds", 1).contains("review limit after 1 review,"));
+    }
+
+    #[test]
+    fn a_finding_reads_its_evidence_line() {
+        let text = "## Findings\n\n1. [high] Step 4 — `load_all` is gone\n   \
+            - Scenario: the build fails.\n   \
+            - Fix: \"4. Call `load_rows` instead.\"\n   \
+            - Evidence: `src/db.rs:12` — `load_all` was removed, so step 4's call doesn't compile.\n   \
+            - Confidence: confirmed";
+        let f = parse_findings(text).unwrap();
+        assert_eq!(
+            f[0].evidence.as_deref(),
+            Some("`src/db.rs:12` — `load_all` was removed, so step 4's call doesn't compile.")
+        );
+        assert_eq!(f[0].new_evidence, None, "\"Evidence\" isn't \"New evidence\"");
+        assert_eq!(parse_findings(STEP_FINDINGS).unwrap()[0].evidence, None);
+        // Kept and read back with the finding list.
+        let back: Finding = serde_json::from_value(json!(f[0])).unwrap();
+        assert_eq!(back, f[0]);
+    }
+
+    #[test]
+    fn the_finding_list_keeps_numbers_across_holds() {
+        let mut ledger = Vec::new();
+        // Hold 1: two new findings, F1 and F2.
+        update_ledger(
+            &mut ledger,
+            &[],
+            &[],
+            Vec::new(),
+            &[],
+            vec![finding("high", "Step 1", "a"), finding("medium", "Step 2", "b")],
+        );
+        assert_eq!(open_numbers(&ledger), [1, 2]);
+        // Hold 2: F1 resolved, F2 still open (answered not a problem), F3 new.
+        let answers = by_position(
+            &[Response {
+                finding: 2,
+                action: Action::NotAProblem,
+                note: "the code shows otherwise".into(),
+            }],
+            &[1, 2],
+        );
+        assert_eq!(answers[0].finding, 2, "F2 is the brief's second");
+        update_ledger(
+            &mut ledger,
+            &[1, 2],
+            &[true, false],
+            vec![finding("medium", "Step 2", "b")],
+            &answers,
+            vec![finding("low", "Step 3", "c")],
+        );
+        assert_eq!(open_numbers(&ledger), [2, 3]);
+        assert_eq!(ledger[0].status, Status::Resolved);
+        assert_eq!(ledger[1].status, Status::Disputed);
+        // Hold 3: F2 and F3 still open, one more new: F4, not a reused number.
+        update_ledger(
+            &mut ledger,
+            &[2, 3],
+            &[false, false],
+            vec![finding("medium", "Step 2", "b"), finding("low", "Step 3", "c")],
+            &[],
+            vec![finding("high", "Step 5", "d")],
+        );
+        assert_eq!(open_numbers(&ledger), [2, 3, 4]);
+        assert_eq!(ledger.len(), 4, "resolved entries are kept");
+        let titles: Vec<String> = open_findings(&ledger).iter().map(|f| f.title.clone()).collect();
+        assert_eq!(titles, ["b", "c", "d"]);
+        // The hold names them by number, and asks for answers by them.
+        let open: Vec<&LedgerEntry> = ledger.iter().filter(|e| e.is_open()).collect();
+        let p = crate::agent_run::loops::Progress::with(2, 8);
+        let result = ledger_result(&open, 3, 8, &p, 12.0);
+        assert!(result.contains("F2. [medium] Step 2 — b"), "{result}");
+        assert!(result.contains("F4. [high] Step 5 — d"), "{result}");
+        assert!(result.contains("send `edits`") || result.contains("with `edits`"), "{result}");
+        assert!(result.contains("{\"finding\": 2, \"action\": \"fixed\""), "{result}");
+    }
+
+    #[test]
+    fn answers_are_owed_by_their_f_numbers() {
+        let fixed = |n| Response {
+            finding: n,
+            action: Action::Fixed,
+            note: String::new(),
+        };
+        assert_eq!(unanswered_of(&[2, 5], "F", &[fixed(2), fixed(5)]), None);
+        let missing = unanswered_of(&[2, 5], "F", &[fixed(1), fixed(2)]).unwrap();
+        assert!(missing.contains("Finding F5 has no answer yet"), "{missing}");
+        // By position, as before, outside the list.
+        assert!(unanswered_problem(2, &[fixed(1)]).unwrap().contains("Finding 2 has"));
+    }
+
+    #[test]
+    fn a_revision_that_undoes_a_fix_reopens_it() {
+        let mut ledger = Vec::new();
+        update_ledger(&mut ledger, &[], &[], Vec::new(), &[], vec![finding("high", "Step 2", "x")]);
+        update_ledger(&mut ledger, &[1], &[true], Vec::new(), &[], Vec::new());
+        assert!(open_numbers(&ledger).is_empty());
+        let again = finding("high", "Step 2", "x");
+        assert!(undoes_a_fix(&ledger, &again));
+        let reopened = update_ledger(&mut ledger, &[], &[], Vec::new(), &[], vec![again]);
+        assert_eq!(reopened, [1]);
+        assert_eq!(ledger.len(), 1, "the same entry, not a new one");
+        assert_eq!(ledger[0].status, Status::Reopened);
+        assert_eq!(
+            ledger[0].finding.new_evidence.as_deref(),
+            Some("Reopened: your revision undid the fix for F1")
+        );
+        assert_eq!(without_label("x (F1)"), "x");
+    }
+
+    #[test]
+    fn a_new_finding_elsewhere_waits_for_its_evidence() {
+        let earlier = [finding("high", "Step 1", "a")];
+        let found = vec![finding("high", "Step 1", "near"), finding("low", "Step 4", "far")];
+        let follow = follow_up(
+            &Facts {
+                earlier: &earlier,
+                responses: &[],
+                verdicts: &[],
+                unchanged_and_silent: false,
+                changed: &[1],
+            },
+            found.clone(),
+        );
+        assert_eq!(follow.kept, 0, "the earlier one taken as settled");
+        let open: Vec<&str> = follow.open.iter().map(|f| f.title.as_str()).collect();
+        assert_eq!(open, ["near"], "about a step the revision changed");
+        assert_eq!(follow.unproven.len(), 1);
+        assert_eq!(follow.unproven[0].title, "far");
+        // With no `changed` (Plan mode, the change review): as before.
+        let follow = follow_up(
+            &Facts {
+                earlier: &earlier,
+                responses: &[],
+                verdicts: &[],
+                unchanged_and_silent: false,
+                changed: &[],
+            },
+            found,
+        );
+        assert_eq!(follow.open.len(), 2);
+        assert!(follow.unproven.is_empty());
+    }
+
+    #[tokio::test]
+    async fn evidence_checks_out_only_with_a_real_citation_and_what_breaks() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.to_string_lossy().into_owned();
+        std::fs::create_dir_all(dir.0.join("src")).unwrap();
+        std::fs::write(dir.0.join("src/db.rs"), "pub fn load_rows() {}\n").unwrap();
+        let with = |evidence: Option<&str>| Finding {
+            evidence: evidence.map(str::to_string),
+            ..finding("high", "Step 4", "t")
+        };
+        let check = |f: Finding| {
+            let root = root.clone();
+            async move { evidence_problem(Some(&root), &f).await }
+        };
+        assert!(check(with(None)).await.unwrap().contains("no \"- Evidence:\""));
+        assert_eq!(
+            check(with(Some("src/db.rs:1 — step 4 calls a function that isn't there"))).await,
+            None
+        );
+        assert_eq!(
+            check(with(Some("`load_rows` takes no argument, but step 4 passes one"))).await,
+            None
+        );
+        assert!(check(with(Some("src/gone.rs:3 — the call breaks the build there")))
+            .await
+            .unwrap()
+            .contains("isn't in the project"));
+        assert!(check(with(Some("src/db.rs:1"))).await.unwrap().contains("what breaks"));
+        assert!(check(with(Some("it would break things in many places")))
+            .await
+            .unwrap()
+            .contains("cites no"));
+    }
+
+    #[test]
+    fn the_follow_up_brief_numbers_its_findings_and_lists_the_dropped() {
+        let f = parse_findings(STEP_FINDINGS).unwrap();
+        let text = brief(&BriefParts {
+            request: "r",
+            answers: &[],
+            plan: "p",
+            earlier: Some(Earlier {
+                findings: &f,
+                responses: &[],
+                replies: "",
+                changes: "",
+                numbers: &[3, 5],
+                dropped: &["Step 6 — a guess".to_string()],
+            }),
+            autopilot: true,
+        });
+        assert!(
+            text.contains("1. [high] Step 2 — `list_users` is called from `src/cli.rs` too (F3)\n"),
+            "{text}"
+        );
+        assert!(text.contains("2. [low] Plan — The Validation section names no test (F5)\n"));
+        assert!(text.contains("dropped for lack of evidence"), "{text}");
+        assert!(text.contains("- Step 6 — a guess"), "{text}");
+        assert!(text.contains("- Earlier 1: …\n- Earlier 2: …"), "positions stay: {text}");
+    }
+
     fn finding(severity: &str, location: &str, title: &str) -> Finding {
         parse_findings(&format!(
             "## Findings\n\n1. [{severity}] {location} — {title}\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: confirmed"
@@ -1923,6 +3196,7 @@ mod tests {
                 responses: &responses,
                 verdicts: &verdicts,
                 unchanged_and_silent: false,
+                changed: &[],
             },
             found,
         );
@@ -1984,6 +3258,7 @@ mod tests {
                 responses: &[],
                 verdicts: &[],
                 unchanged_and_silent: false,
+                changed: &[],
             },
             Vec::new(),
         );
@@ -2000,6 +3275,7 @@ mod tests {
                 responses: &[],
                 verdicts: &parse_verdicts("All earlier findings are resolved."),
                 unchanged_and_silent: false,
+                changed: &[],
             },
             Vec::new(),
         );
@@ -2017,6 +3293,7 @@ mod tests {
                 responses: &[],
                 verdicts: &parse_verdicts("Earlier 1: resolved — looks fine."),
                 unchanged_and_silent: true,
+                changed: &[],
             },
             vec![finding("medium", "Step 1", "Something new")],
         );
@@ -2074,7 +3351,7 @@ mod tests {
         let rewritten = plan.replace("line", "row");
         assert_eq!(changed_lines(&plan, &rewritten), 20);
         assert!(
-            findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false).contains("review 1 of at most 2")
+            findings_result(&f, 1, MAX_PLAN_REVIEW_ROUNDS, false, None).contains("review 1 of at most 2")
         );
     }
 
@@ -2088,5 +3365,112 @@ mod tests {
         assert!(saved.contains("## Open review findings\r\n"), "{saved:?}");
         let lf = "# P\n\n## Steps\n1. x\n2. y\n";
         assert_eq!(changed_lines(&lf.replace('\n', "\r\n"), lf), 0);
+    }
+
+    /// Step 9: the reviewer's waits double and never pass the time left.
+    #[test]
+    fn reviewer_waits_double_within_the_time_left() {
+        let long = Duration::from_secs(3600);
+        assert_eq!(reviewer_wait(0, long), Some(OUTAGE_WAIT));
+        assert_eq!(reviewer_wait(1, long), Some(OUTAGE_WAIT * 2));
+        assert_eq!(reviewer_wait(2, long), Some(OUTAGE_WAIT * 4));
+        let short = OUTAGE_WAIT / 2;
+        assert_eq!(reviewer_wait(3, short), Some(short));
+        assert_eq!(reviewer_wait(0, Duration::ZERO), None);
+    }
+
+    fn entry(number: usize, f: Finding) -> LedgerEntry {
+        LedgerEntry { number, finding: f, status: Status::Disputed, disputes: 0, ruled: false }
+    }
+
+    fn answer(finding: usize, action: Action) -> Response {
+        Response { finding, action, note: "the code already does it".into() }
+    }
+
+    /// Step 8: only "not a problem" against a bare "not resolved" counts,
+    /// and the arbiter is due at two, never for a ruled entry.
+    #[test]
+    fn disputes_count_only_an_insisting_reviewer_against_not_a_problem() {
+        let mut ledger = vec![
+            entry(1, finding("high", "Step 2", "A")),
+            entry(2, finding("medium", "Step 3", "B")),
+            entry(3, finding("low", "Step 4", "C")),
+        ];
+        let insisted = json!({ "resolved": false, "checked": true, "newEvidence": false });
+        let evidence = json!({ "resolved": false, "checked": true, "newEvidence": true });
+        let records = vec![insisted.clone(), evidence, insisted.clone()];
+        let responses = vec![
+            answer(1, Action::NotAProblem),
+            answer(2, Action::NotAProblem),
+            answer(3, Action::Fixed),
+        ];
+        assert!(count_disputes(&mut ledger, &[1, 2, 3], &records, &responses).is_empty());
+        assert_eq!(ledger.iter().map(|e| e.disputes).collect::<Vec<_>>(), [1, 0, 0]);
+        assert_eq!(count_disputes(&mut ledger, &[1, 2, 3], &records, &responses), vec![1]);
+        ledger[0].ruled = true;
+        assert!(count_disputes(&mut ledger, &[1, 2, 3], &records, &responses).is_empty());
+        // A resolved verdict is no dispute.
+        let mut fresh = vec![entry(1, finding("high", "Step 2", "A"))];
+        let ok = vec![json!({ "resolved": true, "checked": true })];
+        count_disputes(&mut fresh, &[1], &ok, &responses[..1]);
+        assert_eq!(fresh[0].disputes, 0);
+    }
+
+    /// Step 8: the brief has the finding, both sides and the plan, and
+    /// asks for one ruling only.
+    #[test]
+    fn the_arbiter_brief_asks_for_one_ruling() {
+        let e = entry(4, finding("high", "Step 2", "`list_users` is also called from the CLI"));
+        let b = arbiter_brief(
+            "Add paging",
+            "# P\n\n## Steps\n1. a\n2. b",
+            &e,
+            &["The CLI calls `list_all`, not `list_users`".into()],
+            &["`cli.rs:12` calls list_users".into()],
+        );
+        for part in [
+            "replace your general",
+            "finding F4",
+            "\"None.\"",
+            "nothing about any other part of the plan",
+            "`list_users` is also called from the CLI",
+            "- The CLI calls `list_all`",
+            "- `cli.rs:12` calls list_users",
+            "## The plan\n\n# P",
+            "Add paging",
+        ] {
+            assert!(b.contains(part), "{part}\n{b}");
+        }
+    }
+
+    /// Step 8: None resolves; the matching finding keeps it open, ruled;
+    /// another finding, a parse error or a skip leave it unruled.
+    #[test]
+    fn rulings_settle_only_when_readable() {
+        let base = entry(2, finding("high", "Step 2", "Missing CLI caller"));
+        let mut e = base.clone();
+        let r = ruling_of(Some("## Findings\n\nNone."), &e);
+        assert_eq!(r, Ruling::NotAProblem);
+        let rec = apply_ruling(&mut e, &r);
+        assert!(e.ruled && e.status == Status::Resolved);
+        assert_eq!(rec["ruling"], "not a problem");
+
+        let mut e = base.clone();
+        let text = "## Findings\n\n1. [high] Step 2 — Missing CLI caller\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: confirmed";
+        let r = ruling_of(Some(text), &e);
+        assert!(matches!(r, Ruling::Valid(_)));
+        apply_ruling(&mut e, &r);
+        assert!(e.ruled && e.is_open());
+        assert!(e.finding.new_evidence.as_deref().unwrap().contains("Ruled valid"));
+
+        let other = "## Findings\n\n1. [low] Step 5 — Something else\n   - Scenario: s.\n   - Fix: f.\n   - Confidence: plausible";
+        for report in [Some(other), Some("I think it's fine"), None] {
+            let mut e = base.clone();
+            let r = ruling_of(report, &e);
+            assert!(matches!(r, Ruling::Unreadable(_)), "{report:?}: {r:?}");
+            let rec = apply_ruling(&mut e, &r);
+            assert!(!e.ruled && e.is_open());
+            assert_eq!(rec["ruling"], "unreadable");
+        }
     }
 }

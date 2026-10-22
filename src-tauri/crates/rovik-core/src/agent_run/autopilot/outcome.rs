@@ -52,6 +52,15 @@ pub(super) fn reopens(outcome: &str) -> bool {
     RUN_FAILURES.iter().any(|(_, task)| *task == outcome)
 }
 
+/// Step 9: whether a plan stage that ended with `outcome` is started
+/// again on its own (within the plan-fix limits): an error, a repetition
+/// or a plan that failed, in Balanced only. A person's Retry is
+/// `reopens`'s, unchanged.
+pub(super) fn auto_retries(outcome: &str, effort: rovik_protocol::autopilot::Effort) -> bool {
+    effort == rovik_protocol::autopilot::Effort::Balanced
+        && matches!(outcome, "error" | "repetition" | "plan-failed")
+}
+
 /// Whether a task that failed with `outcome` ends where it is, without
 /// delivering it: the user stopped it, and is there to say what happens
 /// next.

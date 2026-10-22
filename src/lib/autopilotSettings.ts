@@ -23,6 +23,51 @@ export interface AutopilotBudget {
   maxTokens?: number | null;
 }
 
+/**
+ * How long Balanced Autopilot's plan stage keeps fixing its plan before it
+ * blocks (rovik-protocol `PlanFix`). `budgetShare` is a fraction (0.4);
+ * the pages show it as a percentage.
+ */
+export interface AutopilotPlanFix {
+  maxRounds: number;
+  stallRounds: number;
+  maxMinutes: number;
+  budgetShare: number;
+  maxRetries: number;
+}
+
+export const DEFAULT_PLAN_FIX: AutopilotPlanFix = {
+  maxRounds: 8,
+  stallRounds: 2,
+  maxMinutes: 30,
+  budgetShare: 0.4,
+  maxRetries: 2,
+};
+
+/** Each value's range, as `PlanFix::bounded` keeps it. */
+export const PLAN_FIX_RANGES: Record<keyof AutopilotPlanFix, [number, number]> = {
+  maxRounds: [1, 20],
+  stallRounds: [1, 5],
+  maxMinutes: [1, 240],
+  budgetShare: [0.1, 0.9],
+  maxRetries: [0, 5],
+};
+
+const PLAN_FIX_WHOLE: (keyof AutopilotPlanFix)[] = ['maxRounds', 'stallRounds', 'maxRetries'];
+
+/** A plan-fix value within its range, or undefined when it isn't a number. */
+export function planFixValue(key: keyof AutopilotPlanFix, v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+  const [lo, hi] = PLAN_FIX_RANGES[key];
+  const n = PLAN_FIX_WHOLE.includes(key) ? Math.round(v) : v;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+/** The plan-fix limits the settings give: theirs, or the defaults. */
+export function planFixOf(settings: AutopilotSettings): AutopilotPlanFix {
+  return settings.planFix ?? DEFAULT_PLAN_FIX;
+}
+
 export interface AutopilotSettings {
   effort: AutopilotEffort;
   /** The commands its runs never run (U01); unset: the defaults. */
@@ -31,6 +76,8 @@ export interface AutopilotSettings {
   budget?: AutopilotBudget;
   /** false: no Prepare stage, and no install after an environment failure (S03); unset: on. */
   prepare?: false;
+  /** Balanced's plan-stage limits; unset: the defaults. */
+  planFix?: AutopilotPlanFix;
 }
 
 /**
@@ -170,11 +217,22 @@ export function normalizeAutopilotSettings(raw: unknown): AutopilotSettings {
         ...(tokens ? { maxTokens: Math.round(tokens) } : {}),
       }
     : null;
+  const p =
+    r.planFix && typeof r.planFix === 'object' ? (r.planFix as Record<string, unknown>) : null;
+  const planFix = p
+    ? (Object.fromEntries(
+        (Object.keys(DEFAULT_PLAN_FIX) as (keyof AutopilotPlanFix)[]).map((k) => [
+          k,
+          planFixValue(k, p[k]) ?? DEFAULT_PLAN_FIX[k],
+        ])
+      ) as unknown as AutopilotPlanFix)
+    : null;
   return {
     effort: effort ?? DEFAULT_AUTOPILOT_SETTINGS.effort,
     ...(denied ? { deniedCommands: denied } : {}),
     ...(budget ? { budget } : {}),
     ...(r.prepare === false ? { prepare: false as const } : {}),
+    ...(planFix ? { planFix } : {}),
   };
 }
 
@@ -187,6 +245,7 @@ export interface AutopilotConfig {
   deniedCommands?: string[];
   budget: AutopilotBudget;
   prepare: boolean;
+  planFix: AutopilotPlanFix;
 }
 
 export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
@@ -195,6 +254,7 @@ export function autopilotConfig(settings: AutopilotSettings): AutopilotConfig {
     ...(settings.deniedCommands ? { deniedCommands: settings.deniedCommands } : {}),
     budget: budgetOf(settings),
     prepare: settings.prepare !== false,
+    planFix: planFixOf(settings),
   };
 }
 
@@ -213,5 +273,7 @@ export function autopilotSummary(settings: AutopilotSettings): string {
   if (budget.maxCost) stops.push(`once it cost ${budget.maxCost}`);
   if (budget.maxTokens) stops.push(`once it used ${formatTokenLimit(budget.maxTokens)} tokens`);
   const stop = stops.length ? `a task stops ${stops.join(' or ')}` : 'no limit on a task';
-  return `${effort} · ${stop} · ${plural(denylistOf(settings).length, 'command')} never run`;
+  const fix = planFixOf(settings);
+  const plan = `plan: up to ${plural(fix.maxRounds, 'review')}, ${fix.maxMinutes} min`;
+  return `${effort} · ${stop} · ${plan} · ${plural(denylistOf(settings).length, 'command')} never run`;
 }

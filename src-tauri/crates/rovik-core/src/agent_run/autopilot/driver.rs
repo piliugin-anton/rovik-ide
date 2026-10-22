@@ -269,6 +269,11 @@ pub(in crate::agent_run) fn after_run(
             if crashes(&dialog_id, Crash::AfterEnd) {
                 return Ok(());
             }
+            // Step 9: a failed plan stage in Balanced starts again on its
+            // own, within the plan-fix limits, before anything is delivered.
+            if retry_plan(&core, &dialog_id, &run, &settings).await? {
+                return Ok(());
+            }
             advance(&core, &dialog_id, &run.task, &settings).await
         }
         .await;
@@ -685,6 +690,111 @@ pub(in crate::agent_run) fn not_started_why(
         Ok(None) => Some("It didn't start".into()),
         Err(e) => Some(format!("It couldn't start: {e}")),
     }
+}
+
+/// Step 9: whether a failed plan stage starts again on its own. `outcome`
+/// and `effort`: the ended record's; `retries`: the `planRetry` notes since
+/// the task's message; `over_share`: the plan's share of the budget is
+/// spent; `state`: the stage's latest saved `planState`.
+pub(super) fn plan_retry_due(
+    outcome: &str,
+    effort: Effort,
+    retries: u32,
+    fix: &rovik_protocol::autopilot::PlanFix,
+    over_share: bool,
+    state: Option<&Value>,
+) -> bool {
+    let at_limit = state.is_some_and(|s| {
+        s["blocked"] == true || s["round"].as_u64().unwrap_or(0) >= u64::from(fix.max_rounds)
+    });
+    super::outcome::auto_retries(outcome, effort)
+        && retries < fix.max_retries
+        && !over_share
+        && !at_limit
+}
+
+/// Step 9, after a plan stage's run ended Failed in Balanced: when it
+/// qualifies (`plan_retry_due`), a `planRetry` note, a new round and its
+/// run, under the driver's turn. True: it started again, and the task
+/// doesn't advance.
+async fn retry_plan(
+    core: &Core,
+    dialog_id: &str,
+    run: &StageRun,
+    settings: &Settings,
+) -> Result<bool, String> {
+    if run.stage != Stage::Plan {
+        return Ok(false);
+    }
+    let all = load(core, dialog_id).await?;
+    let Some(ended) = all.iter().find(|r| r.id == run.record) else {
+        return Ok(false);
+    };
+    let record = &ended.record;
+    if record.status != Status::Failed {
+        return Ok(false);
+    }
+    let outcome = record.outcome.clone().unwrap_or_default();
+    let plans: Vec<&Recorded> = all
+        .iter()
+        .filter(|r| r.record.task == record.task && r.record.name == Stage::Plan)
+        .collect();
+    let since = plans.iter().map(|r| r.seq).min().unwrap_or(ended.seq) - 1;
+    let id = dialog_id.to_string();
+    let notes = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, "harness", Some(since)))
+        .await?;
+    let retries = notes
+        .iter()
+        .filter(|m| {
+            m.meta.as_ref().and_then(|v| v.get("harness")).and_then(Value::as_str)
+                == Some(crate::agent_run::plan_review::PLAN_RETRY)
+        })
+        .count() as u32;
+    let id = dialog_id.to_string();
+    let reviews = core
+        .db
+        .read(move |c| store::messages_with_meta(c, &id, "review", Some(since)))
+        .await?;
+    let state = reviews
+        .iter()
+        .rev()
+        .filter_map(|m| m.meta.as_ref()?.get("review"))
+        .find(|r| r["kind"] == "plan" && r.get("planState").is_some())
+        .map(|r| r["planState"].clone());
+    let config = core.agents.config_for(dialog_id).autopilot;
+    let fix = config.plan_fix.bounded();
+    let spent = total_spent(plans.iter().map(|r| &r.record));
+    let share = budget::share(&config.budget, fix.budget_share, fix.max_minutes);
+    let over_share = budget::over(&share, &spent).is_some();
+    if !plan_retry_due(&outcome, record.effort, retries, &fix, over_share, state.as_ref()) {
+        return Ok(false);
+    }
+    let why = failure_summary(&outcome).to_lowercase();
+    let mut note = crate::agent_run::run::new_message(
+        "user",
+        &format!(
+            "{}The plan stage starts again after it ended: {why}. Continue from your draft and the open findings.",
+            crate::agent_run::run::IDE_NOTE
+        ),
+    );
+    note.meta = Some(json!({ "harness": crate::agent_run::plan_review::PLAN_RETRY }));
+    super::rows::append(core, dialog_id, note).await?;
+    let next = StageRecord::running(&record.task, Stage::Plan, record.round + 1, record.effort);
+    let id = add_stage(core, dialog_id, &next).await?;
+    let started =
+        crate::agent_run::start_run(core, settings.request(dialog_id, StartKind::Retry)).await;
+    if let Some(why) = not_started_why(started) {
+        end_stage(core, dialog_id, &id, |r| {
+            r.status = Status::Failed;
+            r.outcome = Some(outcome.clone());
+            r.summary = Some(why);
+        })
+        .await?;
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Starts a stage the IDE does itself (`Stage::is_ide_work`): its record,
