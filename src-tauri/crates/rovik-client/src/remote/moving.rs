@@ -211,6 +211,18 @@ impl Remote {
                     "failed"
                 };
                 self.moving(dialog_id, step, Some(fail.message.clone()));
+                // The run cut to move (it waited only for the user) has its
+                // calls unanswered: it picks up here again, as it would have
+                // there, since the app resumes a chat only once.
+                if let Some(mut start) = start {
+                    if let Ok(true) = agent_run::waits_for_results(&self.core, dialog_id).await {
+                        start.start = StartKind::Resume;
+                        start.dialog_id = dialog_id.to_string();
+                        if let Err(again) = self.start(start).await {
+                            log::warn!("{dialog_id} stayed, but its run didn't pick up here: {again}");
+                        }
+                    }
+                }
                 return Err(fail);
             }
         };
