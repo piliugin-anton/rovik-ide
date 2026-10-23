@@ -590,6 +590,39 @@ fn an_upgrade_brings_the_shared_parts_with_bubblewrap() {
     );
 }
 
+/// A settings change rewrites the unit, which names the `rovik` group: the
+/// group is made first, for a server upgraded from a build that never made
+/// it (systemd won't start a unit naming a group that isn't there).
+#[test]
+fn a_settings_change_makes_the_group_its_unit_names() {
+    let server = Server::installed();
+    let unit = "/etc/systemd/system/rovik-agentd@.service";
+    std::fs::write(server.file(unit), "Description=an old unit\n").unwrap();
+    let done = server.run(&["admin", "limits", "max_slots=2"], Some(NOBODY));
+    let out = said(&done);
+    assert!(done.status.success(), "{out}");
+    assert!(out.contains("would run: groupadd --system rovik\n"), "{out}");
+    assert!(server.text(unit).contains("SupplementaryGroups=rovik"));
+}
+
+/// An upgrade puts the shared parts in place with the new build's own
+/// command, so the old build never writes its unit back over the new one.
+#[test]
+fn an_upgrade_sets_up_the_shared_parts_with_the_new_build() {
+    let server = Server::installed();
+    let newer = server.dir.0.join("newer");
+    script(&newer, "9.9.9");
+    let newer = newer.to_string_lossy().into_owned();
+    allow_unsigned(&server);
+    let upgraded = server.run(&["admin", "upgrade", &newer], Some(NOBODY));
+    let out = said(&upgraded);
+    assert!(upgraded.status.success(), "{out}");
+    assert!(
+        out.contains("would run: /opt/rovik/bin/rovik-agentd admin toolchains setup"),
+        "{out}"
+    );
+}
+
 /// `user toolchain`: a chat's project names a version, and root installs
 /// it once for the whole server, through the sudo rule every user has.
 /// The words root gets are checked: only a version of the shape its kind

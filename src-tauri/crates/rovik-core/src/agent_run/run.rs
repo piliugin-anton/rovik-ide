@@ -367,6 +367,10 @@ pub struct Run {
     /// Balanced Autopilot: submits the checker sent back for format
     /// problems alone (plan.rs `skeleton` after two).
     pub(super) plan_format_rejections: u32,
+    /// A person's Retry or Continue of the plan stage: the `seq` of the
+    /// Plan record it started. The stage's time and budget share count
+    /// from there, so the Retry gets a review (plan_review.rs `plan_spent`).
+    pub(super) plan_spent_from: Option<i64>,
     /// The last plan submitted, held or saved: what `edits` apply to.
     pub(super) plan_draft: Option<String>,
     /// Plan steps step workers finished in this run (worker.rs, D03).
@@ -1280,6 +1284,7 @@ impl Run {
             plan_ledger: Vec::new(),
             plan_dropped: Vec::new(),
             plan_format_rejections: 0,
+            plan_spent_from: None,
             plan_draft: None,
             worker_steps: Vec::new(),
             test_writer_files: Vec::new(),
@@ -1524,10 +1529,6 @@ impl Run {
             }
             Entry::Resume { calls, since } => {
                 self.resumed_since = Some(since);
-                // A move cuts the run while it waits on these alone.
-                if self.sub().is_none() {
-                    self.core.agents.note_resumed(&self.dialog_id, &calls);
-                }
                 // Each asks the user again: they weren't there to decide.
                 self.execute_tool_calls(&calls, Some(RESUME_NOTE)).await?;
                 if self.stopped() {
