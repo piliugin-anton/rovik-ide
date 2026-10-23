@@ -25,7 +25,9 @@
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// A toolchain: Rust, through one shared rustup, or Node, from the
 /// official tarballs.
@@ -110,10 +112,24 @@ pub struct Shared {
 /// What the daemon set, if it did: nothing on the user's own computer.
 static SHARED: Mutex<Option<Arc<Shared>>> = Mutex::new(None);
 
+/// The installs the root command refused lately, by their words
+/// ([`Want::words`]): when, and what it said. [`ensure`] answers with that
+/// for [`RETRY_AFTER`] instead of running `sudo` again on every failing
+/// command, and still picks up an administrator's fix after it.
+static REFUSED: Mutex<Option<HashMap<String, (Instant, String)>>> = Mutex::new(None);
+
+/// How long a refused install is answered from [`REFUSED`].
+const RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
+
+fn refused() -> std::sync::MutexGuard<'static, Option<HashMap<String, (Instant, String)>>> {
+    REFUSED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// What this process shares, for a daemon's start (serve.rs). Once set,
 /// every command's environment and every install goes through it.
 pub fn set(shared: Shared) {
     *SHARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(shared));
+    *refused() = None;
 }
 
 /// Forgets what [`set`] set: a test's, and what a daemon's settings change
@@ -121,6 +137,7 @@ pub fn set(shared: Shared) {
 #[doc(hidden)]
 pub fn unset() {
     *SHARED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *refused() = None;
 }
 
 /// Tests that `set` the process's one `Shared` hold this, so they don't
@@ -471,12 +488,33 @@ pub async fn ensure(root: &Path) -> Vec<(Want, Result<(), String>)> {
         if installed_in(&shared.root, &want) {
             continue;
         }
+        let key = want.words().join(" ");
+        let remembered = refused()
+            .as_ref()
+            .and_then(|all| all.get(&key))
+            .filter(|(at, _)| at.elapsed() < RETRY_AFTER)
+            .map(|(_, why)| why.clone());
+        if let Some(why) = remembered {
+            done.push((want, Err(why)));
+            continue;
+        }
         let asked = want.clone();
         let installer = installer.clone();
         let outcome = crate::rt::spawn_blocking(move || installer(asked))
             .await
             .map_err(|e| e.to_string())
             .and_then(|outcome| outcome);
+        let mut memo = refused();
+        let all = memo.get_or_insert_with(HashMap::new);
+        match &outcome {
+            Ok(()) => {
+                all.remove(&key);
+            }
+            Err(why) => {
+                all.insert(key, (Instant::now(), why.clone()));
+            }
+        }
+        drop(memo);
         done.push((want, outcome));
     }
     done
@@ -1069,6 +1107,55 @@ mod tests {
             std::fs::metadata(&published).unwrap().len(),
             good.len() as u64
         );
+    }
+
+    /// A refused install is answered from memory, without the root
+    /// command, until the host's settings change; a success clears it.
+    #[test]
+    fn a_refused_install_isnt_run_again_every_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let _guard = Guard::new();
+        let dir = crate::testing::temp_dir();
+        let (root, _) = host(&dir.0);
+        write(&dir.0, "Cargo.toml", "[package]\n");
+        write(&dir.0, "rust-toolchain", "1.82\n");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refusing = |calls: Arc<AtomicUsize>| -> Arc<Installer> {
+            Arc::new(move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("not allowed".into())
+            })
+        };
+        let host_with = |installer: Arc<Installer>| Shared {
+            root: root.clone(),
+            caches: None,
+            installer: Some(installer),
+        };
+        let ensure_now = || crate::rt::block_on(ensure(&dir.0));
+        set(host_with(refusing(calls.clone())));
+        let first = ensure_now();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].1, Err("not allowed".to_string()));
+        let second = ensure_now();
+        assert_eq!(second[0].1, Err("not allowed".to_string()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "answered from memory");
+
+        // The settings again (a daemon's restart): it's tried again.
+        unset();
+        set(host_with(refusing(calls.clone())));
+        ensure_now();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // A new installer (the settings changed) that works is called.
+        let worked = Arc::new(AtomicUsize::new(0));
+        let counted = worked.clone();
+        set(host_with(Arc::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })));
+        assert_eq!(ensure_now()[0].1, Ok(()));
+        assert_eq!(worked.load(Ordering::SeqCst), 1);
+        assert!(refused().as_ref().is_none_or(|all| all.is_empty()));
     }
 
     /// `set` and cargo's folder are the process's, so each test that
