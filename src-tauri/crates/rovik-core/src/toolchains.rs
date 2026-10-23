@@ -357,22 +357,79 @@ pub fn installed(want: &Want) -> bool {
 /// `installed` under `root`.
 pub fn installed_in(root: &Path, want: &Want) -> bool {
     match want.kind {
-        Kind::Rust => rust_installed(root, &want.version),
+        Kind::Rust => {
+            rust_installed(root, &want.version) && {
+                let (components, targets) =
+                    rust_missing(root, &want.version, &want.components, &want.targets);
+                components.is_empty() && targets.is_empty()
+            }
+        }
         Kind::Node => node_installed(root, &want.version).is_some(),
     }
+}
+
+/// The host triple rustup names a toolchain's folder with.
+fn host_triple() -> Option<&'static str> {
+    match std::env::consts::ARCH {
+        "x86_64" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64" => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+/// The folder rustup installs `version` in under `root`:
+/// `rust/rustup/toolchains/<version>-<host triple>`.
+fn rust_dir(root: &Path, version: &str) -> Option<PathBuf> {
+    let triple = host_triple()?;
+    Some(root.join(format!("rust/rustup/toolchains/{version}-{triple}")))
 }
 
 /// Whether rustup has `<version>-<host triple>` under its toolchains:
 /// exactly that one, since `nightly` isn't `nightly-2024-09-05`, which a
 /// prefix would take for it.
 fn rust_installed(root: &Path, version: &str) -> bool {
-    let triple = match std::env::consts::ARCH {
-        "x86_64" => "x86_64-unknown-linux-gnu",
-        "aarch64" => "aarch64-unknown-linux-gnu",
-        _ => return false,
+    rust_dir(root, version).is_some_and(|dir| dir.is_dir())
+}
+
+/// Of the components and targets a project names, those the installed
+/// Rust `version` under `root` lacks: rustup lists a toolchain's components
+/// in `lib/rustlib/components` (`clippy-x86_64-unknown-linux-gnu`, or
+/// `clippy-preview-…` in older ones) and keeps each target's library in
+/// `lib/rustlib/<target>`. All of them when the version isn't there.
+pub fn rust_missing(
+    root: &Path,
+    version: &str,
+    components: &[String],
+    targets: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let Some(dir) = rust_dir(root, version).filter(|dir| dir.is_dir()) else {
+        return (components.to_vec(), targets.to_vec());
     };
-    root.join(format!("rust/rustup/toolchains/{version}-{triple}"))
-        .is_dir()
+    let rustlib = dir.join("lib/rustlib");
+    let listed = std::fs::read_to_string(rustlib.join("components")).unwrap_or_default();
+    let triple = host_triple().unwrap_or_default();
+    // `rust-src`, `clippy-<triple>`, `clippy-preview-<triple>`: exactly,
+    // so `rust` isn't taken for `rust-src`.
+    let has_component = |name: &str| {
+        let forms = [
+            name.to_string(),
+            format!("{name}-preview"),
+            format!("{name}-{triple}"),
+            format!("{name}-preview-{triple}"),
+        ];
+        listed.lines().map(str::trim).any(|line| forms.iter().any(|form| form == line))
+    };
+    let components = components
+        .iter()
+        .filter(|c| !has_component(c))
+        .cloned()
+        .collect();
+    let targets = targets
+        .iter()
+        .filter(|t| !rustlib.join(t).is_dir())
+        .cloned()
+        .collect();
+    (components, targets)
 }
 
 /// The version `want`'s own word names, among those installed: `20` is the
@@ -854,6 +911,48 @@ mod tests {
 
     fn write(dir: &Path, name: &str, text: &str) {
         std::fs::write(dir.join(name), text).unwrap();
+    }
+
+    /// A Rust version that's there without a component or target the
+    /// project names isn't installed for it: the root command adds them.
+    #[test]
+    fn a_rust_version_lacking_a_component_or_target_isnt_installed_for_it() {
+        let Some(triple) = host_triple() else {
+            return;
+        };
+        let dir = crate::testing::temp_dir();
+        let rustlib = dir
+            .0
+            .join(format!("rust/rustup/toolchains/1.82-{triple}/lib/rustlib"));
+        std::fs::create_dir_all(rustlib.join(triple)).unwrap();
+        std::fs::write(
+            rustlib.join("components"),
+            format!("cargo-{triple}\nrustc-{triple}\nrust-std-{triple}\nclippy-preview-{triple}\nrust-src\n"),
+        )
+        .unwrap();
+        let want = |components: &[&str], targets: &[&str]| Want {
+            kind: Kind::Rust,
+            version: "1.82".into(),
+            components: components.iter().map(|c| c.to_string()).collect(),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+        };
+        let strings = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(installed_in(&dir.0, &want(&[], &[])));
+        assert!(installed_in(&dir.0, &want(&["clippy", "rust-src"], &[triple])));
+        // `rust` isn't `rust-src`, `rustfmt` isn't there, nor is wasm.
+        let (components, targets) = rust_missing(
+            &dir.0,
+            "1.82",
+            &strings(&["rust", "rustfmt", "clippy"]),
+            &strings(&["wasm32-unknown-unknown", triple]),
+        );
+        assert_eq!(components, ["rust", "rustfmt"]);
+        assert_eq!(targets, ["wasm32-unknown-unknown"]);
+        assert!(!installed_in(&dir.0, &want(&["rustfmt"], &[])));
+        assert!(!installed_in(&dir.0, &want(&[], &["wasm32-unknown-unknown"])));
+        // Another version: all of it.
+        let (components, _) = rust_missing(&dir.0, "1.83", &strings(&["clippy"]), &[]);
+        assert_eq!(components, ["clippy"]);
     }
 
     #[test]

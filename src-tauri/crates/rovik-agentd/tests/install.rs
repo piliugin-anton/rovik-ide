@@ -627,6 +627,47 @@ fn an_upgrade_sets_up_the_shared_parts_with_the_new_build() {
 /// it once for the whole server, through the sudo rule every user has.
 /// The words root gets are checked: only a version of the shape its kind
 /// has.
+/// A Rust version that's there already, without a component or target the
+/// project names: only those are added, the version left as it is.
+#[test]
+fn an_installed_rust_gets_the_components_and_targets_it_lacks() {
+    let server = Server::installed();
+    let triple = match std::env::consts::ARCH {
+        "x86_64" => "x86_64-unknown-linux-gnu",
+        "aarch64" => "aarch64-unknown-linux-gnu",
+        _ => return,
+    };
+    let rustlib = server.file(&format!(
+        "/opt/rovik/toolchains/rust/rustup/toolchains/1.82-{triple}/lib/rustlib"
+    ));
+    std::fs::create_dir_all(rustlib.join(triple)).unwrap();
+    std::fs::write(
+        rustlib.join("components"),
+        format!("cargo-{triple}\nrustc-{triple}\nrustfmt-preview-{triple}\n"),
+    )
+    .unwrap();
+    let rust = |words: &[&str]| {
+        let mut args = vec!["user", "toolchain", "rust", "1.82"];
+        args.extend_from_slice(words);
+        said(&server.run(&args, Some(NOBODY)))
+    };
+    let out = rust(&["-c", "rustfmt", "-c", "clippy", "-t", "wasm32-unknown-unknown", "-t", triple]);
+    assert!(!out.contains("toolchain install"), "the version stays: {out}");
+    assert!(
+        out.contains("rustup component add --toolchain 1.82 clippy\n"),
+        "only what's missing: {out}"
+    );
+    assert!(
+        out.contains("rustup target add --toolchain 1.82 wasm32-unknown-unknown\n"),
+        "{out}"
+    );
+    assert!(out.contains("is installed, now with clippy, wasm32-unknown-unknown"), "{out}");
+    // All there: nothing runs.
+    let out = rust(&["-c", "rustfmt", "-t", triple]);
+    assert!(!out.contains("would run"), "{out}");
+    assert!(out.contains("Rust 1.82 is installed."), "{out}");
+}
+
 #[test]
 fn a_user_installs_a_toolchain_as_root() {
     let server = Server::installed();

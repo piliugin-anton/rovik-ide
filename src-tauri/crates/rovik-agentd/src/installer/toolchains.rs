@@ -224,8 +224,30 @@ pub(super) fn ensure(
     folder(sys, TOOLCHAINS, 0o755, None)?;
     let _lock = lock(sys)?;
     if installed(sys, kind, &version) {
+        // The version is there; a component or target the project names
+        // may not be: those are added, the version left as it is.
+        let (components, targets) = match kind {
+            Kind::Rust => rovik_core::toolchains::rust_missing(
+                &sys.path(TOOLCHAINS),
+                &version,
+                components,
+                targets,
+            ),
+            Kind::Node => (Vec::new(), Vec::new()),
+        };
+        if !components.is_empty() || !targets.is_empty() {
+            add_rust_parts(sys, &version, &components, &targets)?;
+        }
         touch(sys, kind, &version)?;
-        println!("{} {version} is installed.", kind.title());
+        let added: Vec<String> = components.iter().chain(&targets).cloned().collect();
+        match added.is_empty() {
+            true => println!("{} {version} is installed.", kind.title()),
+            false => println!(
+                "{} {version} is installed, now with {}.",
+                kind.title(),
+                added.join(", ")
+            ),
+        }
         return Ok(());
     }
     match kind {
@@ -382,6 +404,29 @@ fn install_rust(
         args.push(target);
     }
     sys.run_with(&homes, &rustup, &args).map(|_| ())
+}
+
+/// Components and targets added to an installed Rust `version`, through
+/// the shared rustup.
+fn add_rust_parts(
+    sys: &System,
+    version: &str,
+    components: &[String],
+    targets: &[String],
+) -> Result<(), String> {
+    let homes = [("RUSTUP_HOME", rustup_home()), ("CARGO_HOME", cargo_home())];
+    let rustup = format!("{}/bin/rustup", cargo_home());
+    if !components.is_empty() {
+        let mut args = vec!["component", "add", "--toolchain", version];
+        args.extend(components.iter().map(String::as_str));
+        sys.run_with(&homes, &rustup, &args)?;
+    }
+    if !targets.is_empty() {
+        let mut args = vec!["target", "add", "--toolchain", version];
+        args.extend(targets.iter().map(String::as_str));
+        sys.run_with(&homes, &rustup, &args)?;
+    }
+    Ok(())
 }
 
 /// The architecture rustup's downloads are named for.
