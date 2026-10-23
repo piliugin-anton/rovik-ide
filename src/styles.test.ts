@@ -493,3 +493,54 @@ test('criterion 5: the collapsed button is unchanged', () => {
     'the expanded button is still fully opaque'
   );
 });
+
+// --- The editor pane never scrolls: long lines scroll inside Monaco --------
+// Plan criteria 1-2 (2026-10-23-long-lines-may-make-editor-to-show): Monaco
+// measures its host (`.editor`, the element handed to `monaco.editor.create`)
+// with `clientWidth`/`clientHeight`, which count CSS padding, and sizes its
+// own node to the measured numbers. CSS padding on the host therefore makes
+// the editor box overflow the pane, so the pane scrolls (a horizontal
+// scrollbar appears and Monaco's own vertical scrollbar is pushed out of the
+// visible area). The host carries no padding and never scrolls; the 8px
+// vertical breathing room is Monaco's own `padding` option (as in
+// `components/CodeBlock.tsx`), which shifts content inside the editor and
+// cannot make it overflow.
+
+test('criterion 1: the .editor host never scrolls and carries no padding', () => {
+  const bodies = bodiesOf('.editor');
+  assert.ok(bodies.length > 0, '.editor has a rule');
+  const decls = declarationsOf(bodies);
+  // The pane is not a scroll box: scrolling happens inside Monaco.
+  assert.ok(
+    decls.some((d) => d.prop === 'overflow' && d.value === 'hidden'),
+    '.editor declares overflow: hidden'
+  );
+  // No CSS padding on the Monaco host: clientWidth counts padding, so any
+  // padding would size Monaco larger than the pane and scroll it.
+  assert.deepEqual(
+    decls.filter((d) => d.prop === 'padding' || d.prop.startsWith('padding-')),
+    [],
+    '.editor declares no padding'
+  );
+  // No scrolling overflow may come back on any axis.
+  for (const d of decls) {
+    if (d.prop === 'overflow' || d.prop === 'overflow-x' || d.prop === 'overflow-y') {
+      assert.ok(!/\b(auto|scroll)\b/.test(d.value), `.editor never uses ${d.prop}: ${d.value}`);
+    }
+  }
+});
+
+test('criterion 2: Editor.tsx gives the vertical breathing room to Monaco itself', () => {
+  const source = readFileSync('src/components/Editor.tsx', 'utf8');
+  const at = source.indexOf('monaco.editor.create(');
+  assert.ok(at !== -1, 'Editor hands .editor to monaco.editor.create');
+  // From the create call on: the 8px above the first and below the last line
+  // stay without the pane scrolling, because Monaco's padding option shifts
+  // content inside the editor.
+  const created = source.slice(at);
+  assert.match(
+    created,
+    /padding\s*:\s*\{\s*top\s*:\s*8\s*,\s*bottom\s*:\s*8\s*\}/,
+    'monaco.editor.create passes padding: { top: 8, bottom: 8 }'
+  );
+});

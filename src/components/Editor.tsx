@@ -167,6 +167,11 @@ export default function Editor(props: EditorProps) {
       model,
       theme: 'vs-dark',
       automaticLayout: true,
+      // The host carries no CSS padding: Monaco measures it with
+      // clientWidth, which counts padding, so CSS padding there would
+      // overflow the pane and hide the editor's own scrollbars. This option
+      // shifts the content inside the editor instead (styles.css .editor).
+      padding: { top: 8, bottom: 8 },
       fontSize: editorSettings().fontSize,
       wordWrap: editorSettings().wordWrap,
       minimap: {
