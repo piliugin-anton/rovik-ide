@@ -54,6 +54,15 @@ impl Kind {
             Kind::Node => "Node",
         }
     }
+
+    /// The toolchain `program` comes with: `cargo` is Rust's, `npm` Node's.
+    pub fn of_program(program: &str) -> Option<Kind> {
+        match program {
+            "cargo" | "rustc" | "rustup" => Some(Kind::Rust),
+            "node" | "npm" | "npx" => Some(Kind::Node),
+            _ => None,
+        }
+    }
 }
 
 /// A version a project asks for: what the root command installs, and what
@@ -348,22 +357,79 @@ pub fn installed(want: &Want) -> bool {
 /// `installed` under `root`.
 pub fn installed_in(root: &Path, want: &Want) -> bool {
     match want.kind {
-        Kind::Rust => rust_installed(root, &want.version),
+        Kind::Rust => {
+            rust_installed(root, &want.version) && {
+                let (components, targets) =
+                    rust_missing(root, &want.version, &want.components, &want.targets);
+                components.is_empty() && targets.is_empty()
+            }
+        }
         Kind::Node => node_installed(root, &want.version).is_some(),
     }
+}
+
+/// The host triple rustup names a toolchain's folder with.
+fn host_triple() -> Option<&'static str> {
+    match std::env::consts::ARCH {
+        "x86_64" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64" => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+/// The folder rustup installs `version` in under `root`:
+/// `rust/rustup/toolchains/<version>-<host triple>`.
+fn rust_dir(root: &Path, version: &str) -> Option<PathBuf> {
+    let triple = host_triple()?;
+    Some(root.join(format!("rust/rustup/toolchains/{version}-{triple}")))
 }
 
 /// Whether rustup has `<version>-<host triple>` under its toolchains:
 /// exactly that one, since `nightly` isn't `nightly-2024-09-05`, which a
 /// prefix would take for it.
 fn rust_installed(root: &Path, version: &str) -> bool {
-    let triple = match std::env::consts::ARCH {
-        "x86_64" => "x86_64-unknown-linux-gnu",
-        "aarch64" => "aarch64-unknown-linux-gnu",
-        _ => return false,
+    rust_dir(root, version).is_some_and(|dir| dir.is_dir())
+}
+
+/// Of the components and targets a project names, those the installed
+/// Rust `version` under `root` lacks: rustup lists a toolchain's components
+/// in `lib/rustlib/components` (`clippy-x86_64-unknown-linux-gnu`, or
+/// `clippy-preview-…` in older ones) and keeps each target's library in
+/// `lib/rustlib/<target>`. All of them when the version isn't there.
+pub fn rust_missing(
+    root: &Path,
+    version: &str,
+    components: &[String],
+    targets: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let Some(dir) = rust_dir(root, version).filter(|dir| dir.is_dir()) else {
+        return (components.to_vec(), targets.to_vec());
     };
-    root.join(format!("rust/rustup/toolchains/{version}-{triple}"))
-        .is_dir()
+    let rustlib = dir.join("lib/rustlib");
+    let listed = std::fs::read_to_string(rustlib.join("components")).unwrap_or_default();
+    let triple = host_triple().unwrap_or_default();
+    // `rust-src`, `clippy-<triple>`, `clippy-preview-<triple>`: exactly,
+    // so `rust` isn't taken for `rust-src`.
+    let has_component = |name: &str| {
+        let forms = [
+            name.to_string(),
+            format!("{name}-preview"),
+            format!("{name}-{triple}"),
+            format!("{name}-preview-{triple}"),
+        ];
+        listed.lines().map(str::trim).any(|line| forms.iter().any(|form| form == line))
+    };
+    let components = components
+        .iter()
+        .filter(|c| !has_component(c))
+        .cloned()
+        .collect();
+    let targets = targets
+        .iter()
+        .filter(|t| !rustlib.join(t).is_dir())
+        .cloned()
+        .collect();
+    (components, targets)
 }
 
 /// The version `want`'s own word names, among those installed: `20` is the
@@ -447,10 +513,7 @@ pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
 /// whose missing version a host installs, rather than one its setup script
 /// does.
 pub fn toolchain_program(program: &str) -> bool {
-    matches!(
-        program,
-        "cargo" | "rustc" | "rustup" | "node" | "npm" | "npx"
-    )
+    Kind::of_program(program).is_some()
 }
 
 /// Whether `program` is in the environment [`env_for`] gives a command run
@@ -716,7 +779,7 @@ pub fn seed_crates(root: &Path) -> usize {
     let mut copied = 0;
     for (name, version, checksum) in locked_crates(root) {
         let from = crate_file(&caches, &name, &version);
-        let Ok(bytes) = std::fs::read(&from) else {
+        let Some(bytes) = read_store_file(&from) else {
             continue;
         };
         if sha256_hex(&bytes) != checksum.to_ascii_lowercase() {
@@ -740,6 +803,34 @@ pub fn seed_crates(root: &Path) -> usize {
         }
     }
     copied
+}
+
+/// The largest `.crate` file read from the shared store: crates.io takes
+/// none over 10 MiB.
+const MAX_CRATE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A file of the shared store, which any `rovik` group member writes: read
+/// only when it's a regular file of a crate's size. Opened without waiting
+/// (a FIFO planted there would hang the read) and without following a
+/// link, then checked on the open file, so nothing swapped in meanwhile is
+/// read either.
+fn read_store_file(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_CRATE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_CRATE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_CRATE_BYTES).then_some(bytes)
 }
 
 /// This user's checked crates into the shared store, for the others on the
@@ -848,6 +939,48 @@ mod tests {
 
     fn write(dir: &Path, name: &str, text: &str) {
         std::fs::write(dir.join(name), text).unwrap();
+    }
+
+    /// A Rust version that's there without a component or target the
+    /// project names isn't installed for it: the root command adds them.
+    #[test]
+    fn a_rust_version_lacking_a_component_or_target_isnt_installed_for_it() {
+        let Some(triple) = host_triple() else {
+            return;
+        };
+        let dir = crate::testing::temp_dir();
+        let rustlib = dir
+            .0
+            .join(format!("rust/rustup/toolchains/1.82-{triple}/lib/rustlib"));
+        std::fs::create_dir_all(rustlib.join(triple)).unwrap();
+        std::fs::write(
+            rustlib.join("components"),
+            format!("cargo-{triple}\nrustc-{triple}\nrust-std-{triple}\nclippy-preview-{triple}\nrust-src\n"),
+        )
+        .unwrap();
+        let want = |components: &[&str], targets: &[&str]| Want {
+            kind: Kind::Rust,
+            version: "1.82".into(),
+            components: components.iter().map(|c| c.to_string()).collect(),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+        };
+        let strings = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(installed_in(&dir.0, &want(&[], &[])));
+        assert!(installed_in(&dir.0, &want(&["clippy", "rust-src"], &[triple])));
+        // `rust` isn't `rust-src`, `rustfmt` isn't there, nor is wasm.
+        let (components, targets) = rust_missing(
+            &dir.0,
+            "1.82",
+            &strings(&["rust", "rustfmt", "clippy"]),
+            &strings(&["wasm32-unknown-unknown", triple]),
+        );
+        assert_eq!(components, ["rust", "rustfmt"]);
+        assert_eq!(targets, ["wasm32-unknown-unknown"]);
+        assert!(!installed_in(&dir.0, &want(&["rustfmt"], &[])));
+        assert!(!installed_in(&dir.0, &want(&[], &["wasm32-unknown-unknown"])));
+        // Another version: all of it.
+        let (components, _) = rust_missing(&dir.0, "1.83", &strings(&["clippy"]), &[]);
+        assert_eq!(components, ["clippy"]);
     }
 
     #[test]
@@ -1027,6 +1160,31 @@ mod tests {
             locked_crates(&dir.0),
             [("serde_json".to_string(), "1.0.0-rc.1+build.5".to_string(), sum)]
         );
+    }
+
+    /// What another group member left in the store that isn't a crate's
+    /// file, a FIFO above all, is passed over at once, never waited on.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_or_link_in_the_store_is_passed_over() {
+        let dir = crate::testing::temp_dir();
+        let fifo = dir.0.join("serde-1.0.0.crate");
+        let path = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: a FIFO made in the test's own folder.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o666) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let at = fifo.clone();
+        std::thread::spawn(move || tx.send(read_store_file(&at)).unwrap());
+        let read = rx.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(read, Ok(None), "a FIFO isn't waited on");
+
+        let real = dir.0.join("real.crate");
+        std::fs::write(&real, b"a crate").unwrap();
+        assert_eq!(read_store_file(&real).as_deref(), Some(&b"a crate"[..]));
+        let link = dir.0.join("rand-0.8.0.crate");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(read_store_file(&link), None, "a link isn't followed");
+        assert_eq!(read_store_file(&dir.0), None, "nor a folder read");
     }
 
     /// Nothing changes on a computer the daemon didn't set anything on.

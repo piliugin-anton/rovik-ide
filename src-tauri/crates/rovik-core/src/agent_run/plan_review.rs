@@ -479,6 +479,41 @@ pub(super) fn plan_records<'a>(
         .map(|r| &r.record)
 }
 
+/// Step 9: whether a plan review gave nothing to go by, so that Balanced
+/// Autopilot tries it again after a wait: every model failed, or its
+/// report couldn't be read. One that couldn't start isn't tried again: the
+/// run's subagents are off after their models kept failing, which another
+/// try doesn't change (the review is skipped, and the plan blocked). One
+/// that said it was blocked, or that wrote no finding at all, is an answer.
+pub(super) fn reviewer_unusable(outcome: &Result<(String, Option<subagent::SubResult>), String>) -> bool {
+    use subagent::SubStatus;
+    match outcome {
+        Err(_) => false,
+        Ok((_, None)) => false,
+        Ok((_, Some(r))) => match r.status {
+            SubStatus::Failed => true,
+            SubStatus::Unformatted => !findingless(&r.text),
+            SubStatus::Done | SubStatus::Partial => parse_findings(&r.text).is_err(),
+            _ => false,
+        },
+    }
+}
+
+/// `wait_for_reviewer`'s answer when the run was stopped: no limit was
+/// reached, so the plan is held, not blocked.
+const STOPPED_WAITING: &str = "stopped";
+
+/// What `submit_plan` answers when the run was stopped during the plan's
+/// review in Autopilot: held, with what's open, for a Continue.
+pub fn stopped_held_result(open: usize) -> String {
+    let open = match open {
+        0 => "its review not done".to_string(),
+        1 => "1 review finding open".to_string(),
+        n => format!("{n} review findings open"),
+    };
+    format!("Stopped: the plan wasn't saved. It's held, with {open}, until the task goes on.")
+}
+
 /// A plan-stage stop reason (`review["stop"]`) in words.
 pub fn stop_words(stop: &str) -> &'static str {
     match stop {
@@ -1735,7 +1770,7 @@ impl Run {
     /// reason when it can't wait any more: the plan is then blocked.
     async fn wait_for_reviewer(&mut self, attempt: u32, waited: &mut Duration) -> Option<&'static str> {
         if self.stopped() {
-            return Some("reviewer-unavailable");
+            return Some(STOPPED_WAITING);
         }
         if let Some((stop, _)) = self.over_plan_share().await {
             return Some(stop);
@@ -1749,7 +1784,7 @@ impl Run {
         let until = Instant::now() + wait;
         while Instant::now() < until {
             if self.stopped() {
-                return Some("reviewer-unavailable");
+                return Some(STOPPED_WAITING);
             }
             let step = until.saturating_duration_since(Instant::now()).min(Duration::from_millis(250));
             tokio::time::sleep(step).await;
@@ -1983,9 +2018,10 @@ impl Run {
             earlier.clone()
         };
         let started = Instant::now();
-        // Step 9, Balanced Autopilot: a review every model failed is tried
-        // again after a wait, and at a limit the plan is blocked, never
-        // saved unreviewed.
+        // Step 9, Balanced Autopilot: a review that gave nothing to go by
+        // (every model failed, its report couldn't be read) is tried again
+        // after a wait, and at a limit the plan is blocked, never saved
+        // unreviewed.
         let (mut attempt, mut waited) = (0u32, Duration::ZERO);
         let outcome = loop {
             let outcome = self
@@ -1997,13 +2033,17 @@ impl Run {
                     owed.clone(),
                 )
                 .await;
-            let all_failed = matches!(&outcome, Ok((_, Some(r))) if r.status == subagent::SubStatus::Failed);
-            if !(all_failed && self.balanced_autopilot()) {
+            if !(reviewer_unusable(&outcome) && self.balanced_autopilot()) {
                 break outcome;
             }
-            if let Some(stop) = self.wait_for_reviewer(attempt, &mut waited).await {
-                self.plan_reviews -= 1;
-                return Ok(self.blocked_before_review(stop));
+            match self.wait_for_reviewer(attempt, &mut waited).await {
+                // Stopped meanwhile: no block, the plan is held below.
+                Some(STOPPED_WAITING) => break outcome,
+                Some(stop) => {
+                    self.plan_reviews -= 1;
+                    return Ok(self.blocked_before_review(stop));
+                }
+                None => {}
             }
             attempt += 1;
         };
@@ -2142,7 +2182,52 @@ impl Run {
             review["findings"] = json!(serious);
         }
         let status = review["status"].as_str().unwrap_or("").to_string();
-        let decision = if status == "skipped" && !unchecked {
+        // Stopped with the plan's findings open, or before its review said
+        // anything: what the review found stays open.
+        let open = match serious.is_empty() {
+            true => self.plan_findings.clone(),
+            false => serious.clone(),
+        };
+        let stopped = self.stopped() || status == "stopped";
+        let decision = if stopped && self.in_autopilot() && (!open.is_empty() || status != "clean") {
+            // An Autopilot task never saves a plan a review didn't pass:
+            // it's held with what's open, not blocked, for a Continue to go
+            // on with.
+            self.plan_review_call = Some(call_id.to_string());
+            self.plan_findings = open.clone();
+            self.plan_held = Some(plan.to_string());
+            self.plan_answer_nudges = 0;
+            review["held"] = json!(true);
+            review["open"] = json!(open.len());
+            Decision::Hold {
+                result: stopped_held_result(open.len()),
+            }
+        } else if stopped && !serious.is_empty() {
+            // Elsewhere the plan is the user's: saved, its findings at its
+            // end, as after a last round.
+            review["open"] = json!(serious.len());
+            Decision::Save {
+                plan: with_open_findings(plan, &serious),
+                note: Some(format!(
+                    "Stopped with {} review finding{} open: {} at the end of the plan, under \"{}\".",
+                    serious.len(),
+                    if serious.len() == 1 { "" } else { "s" },
+                    if serious.len() == 1 { "it's" } else { "they're" },
+                    OPEN_FINDINGS_HEADING.trim_start_matches("## ")
+                )),
+            }
+        } else if status == "skipped" && !unchecked && self.balanced_autopilot() {
+            // A plan no review passed is never saved in Balanced Autopilot:
+            // a reviewer that couldn't review (it said it was blocked, or
+            // it never ran) blocks it, as an outage at its limit does.
+            review["open"] = json!(0);
+            review["blocked"] = json!(true);
+            review["stop"] = json!("reviewer-unavailable");
+            self.plan_blocked = true;
+            Decision::Hold {
+                result: unreviewed_blocked_result("reviewer-unavailable", round),
+            }
+        } else if status == "skipped" && !unchecked {
             Decision::Save {
                 plan: plan.to_string(),
                 note: Some(format!(
@@ -2150,7 +2235,7 @@ impl Run {
                     review["reason"].as_str().unwrap_or("it couldn't run")
                 )),
             }
-        } else if serious.is_empty() || self.stopped() {
+        } else if serious.is_empty() {
             Decision::Save {
                 plan: plan.to_string(),
                 note: None,

@@ -1343,7 +1343,7 @@ async fn toolchain_note(root: &str, program: &str) -> Option<String> {
             "\n(`{program}` is installed for this project now. Run the command again.)"
         ));
     }
-    if let Some((want, why)) = done.iter().find(|(_, outcome)| outcome.is_err()) {
+    if let Some((want, why)) = refusal_for(&done, program) {
         let why = why.as_ref().err().map(String::as_str).unwrap_or_default();
         return Some(format!(
             "\n(`{program}` isn't installed on this server, and {} couldn't be installed: {why}\n\
@@ -1377,6 +1377,17 @@ async fn toolchain_note(root: &str, program: &str) -> Option<String> {
             INSTALLED = "/opt/rovik/bin/rovik-agentd",
         ),
     })
+}
+
+/// Of `done`'s installs, the refusal of the toolchain `program` comes
+/// with: a project with both may have had both refused.
+fn refusal_for<'a>(
+    done: &'a [(crate::toolchains::Want, Result<(), String>)],
+    program: &str,
+) -> Option<&'a (crate::toolchains::Want, Result<(), String>)> {
+    let kind = crate::toolchains::Kind::of_program(program)?;
+    done.iter()
+        .find(|(want, outcome)| outcome.is_err() && want.kind == kind)
 }
 
 /// The text the model sees for a finished command.
@@ -2697,5 +2708,34 @@ a.rs (3 matches)
         let note = missing_program_note(true, &root, &rustup).await.unwrap();
         assert!(note.contains("Rust 1.82 is installed for this project now"), "{note}");
         crate::toolchains::unset();
+    }
+
+    /// A project that needs both Rust and Node, both refused: the note for
+    /// a missing program names its own toolchain's refusal.
+    #[test]
+    fn a_refusal_note_names_the_missing_programs_own_toolchain() {
+        use crate::toolchains::{Kind, Want};
+        let want = |kind, version: &str| Want {
+            kind,
+            version: version.into(),
+            components: Vec::new(),
+            targets: Vec::new(),
+        };
+        let done = vec![
+            (want(Kind::Rust, "1.82"), Err("Rust 1.82 isn't allowed".to_string())),
+            (want(Kind::Node, "20"), Err("Node 20 isn't allowed".to_string())),
+        ];
+        for (program, kind) in [("npm", Kind::Node), ("npx", Kind::Node), ("node", Kind::Node), ("cargo", Kind::Rust), ("rustc", Kind::Rust)] {
+            let (refused, _) = refusal_for(&done, program).unwrap();
+            assert_eq!(refused.kind, kind, "{program}");
+        }
+        // Rust installed, Node refused: `cargo` has no refusal of its own.
+        let done = vec![
+            (want(Kind::Rust, "1.82"), Ok(())),
+            (want(Kind::Node, "20"), Err("no".to_string())),
+        ];
+        assert!(refusal_for(&done, "cargo").is_none());
+        assert_eq!(refusal_for(&done, "npm").unwrap().0.version, "20");
+        assert!(refusal_for(&done, "make").is_none());
     }
 }

@@ -745,21 +745,67 @@ fn install_command(install: &Install, dir: &Path) -> (String, Vec<(String, Strin
     )
 }
 
-/// Whether `dir`'s or this user's `.npmrc` names a registry token: then the
-/// install keeps its own cache, since what it downloads is private.
+/// Whether npm, installing in `dir`, may authenticate to a registry: then
+/// the install keeps its own cache, since what it downloads may be private.
+/// Any credential counts (a token, a user and password, a client
+/// certificate), in the project's `.npmrc`, the user's, the ones npm's
+/// settings name instead (`npm_config_userconfig`, `npm_config_globalconfig`),
+/// or npm's settings in the environment (`npm_config_//host/:_authToken`).
 fn npm_credentials(dir: &Path) -> bool {
-    let user = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npmrc"));
-    [Some(dir.join(".npmrc")), user]
-        .into_iter()
-        .flatten()
-        .any(|path| {
-            std::fs::read_to_string(path).is_ok_and(|text| {
-                text.lines().any(|line| {
-                    let line = line.split(['#', ';']).next().unwrap_or_default().trim();
-                    line.contains("_authToken") || line.starts_with("_auth")
-                })
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    npm_credentials_with(dir, &env)
+}
+
+/// `npm_credentials`, with this environment.
+fn npm_credentials_with(dir: &Path, env: &[(String, String)]) -> bool {
+    let setting = |name: &str| {
+        env.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| PathBuf::from(value))
+    };
+    let home = env
+        .iter()
+        .find(|(key, _)| key == "HOME")
+        .map(|(_, home)| PathBuf::from(home).join(".npmrc"));
+    let files = [
+        Some(dir.join(".npmrc")),
+        home,
+        setting("npm_config_userconfig"),
+        setting("npm_config_globalconfig"),
+    ];
+    let in_files = files.into_iter().flatten().any(|path| {
+        std::fs::read_to_string(path).is_ok_and(|text| {
+            text.lines().any(|line| {
+                let line = line.trim();
+                if line.starts_with('#') || line.starts_with(';') {
+                    return false;
+                }
+                line.split_once('=').is_some_and(|(key, _)| npm_credential_key(key))
             })
         })
+    });
+    let in_env = env.iter().any(|(key, value)| {
+        let lower = key.to_ascii_lowercase();
+        lower
+            .strip_prefix("npm_config_")
+            .is_some_and(|setting| !value.is_empty() && npm_credential_key(setting))
+    });
+    in_files || in_env
+}
+
+/// Whether an npm setting's name (`_authToken`, `//host/:_password`, …) is
+/// a registry credential.
+fn npm_credential_key(key: &str) -> bool {
+    let key = key.trim();
+    // `//registry.example.com/:_authToken`: the part after the scope.
+    let name = match key.starts_with("//") {
+        true => key.rsplit(':').next().unwrap_or(key),
+        false => key,
+    };
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "_authtoken" | "_auth" | "_password" | "username" | "password" | "certfile" | "keyfile" | "cert" | "key"
+    )
 }
 
 #[cfg(test)]
@@ -1206,8 +1252,53 @@ mod tests {
         write(&dir.0, ".npmrc", "legacy-peer-deps=true\n");
         assert!(!install_command(&ci, &dir.0).1.is_empty());
 
+        // Any other credential npm sends: a user and password, a client
+        // certificate, with or without a registry's scope.
+        for npmrc in [
+            "//npm.example.com/:username=me\n//npm.example.com/:_password=c2VjcmV0\n",
+            "//npm.example.com/:certfile=/home/me/client.crt\n",
+            "_auth=bWU6c2VjcmV0\n",
+            "  //npm.example.com/:keyfile = /home/me/client.key\n",
+        ] {
+            write(&dir.0, ".npmrc", npmrc);
+            assert!(install_command(&ci, &dir.0).1.is_empty(), "{npmrc}");
+        }
+        // Commented out: not one.
+        write(&dir.0, ".npmrc", "# //npm.example.com/:_authToken=x\n; _auth=y\n");
+        assert!(!install_command(&ci, &dir.0).1.is_empty());
+
         // Not `npm ci`: its own cache.
         let unlocked = install("npm install --no-package-lock --no-audit --no-fund");
         assert_eq!(install_command(&unlocked, &dir.0).0, unlocked.command);
+    }
+
+    /// npm's settings in the environment, and the `.npmrc` files they name,
+    /// count too; a setting that isn't a credential doesn't.
+    #[test]
+    fn npm_credentials_in_the_environment_count() {
+        let dir = crate::testing::temp_dir();
+        let env = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        assert!(!npm_credentials_with(&dir.0, &[]));
+        assert!(npm_credentials_with(&dir.0, &env(&[("npm_config__auth", "bWU6eA==")])));
+        assert!(npm_credentials_with(
+            &dir.0,
+            &env(&[("NPM_CONFIG_//npm.example.com/:_authToken", "t")])
+        ));
+        assert!(!npm_credentials_with(&dir.0, &env(&[("npm_config_registry", "https://npm.example.com/")])));
+        assert!(!npm_credentials_with(&dir.0, &env(&[("npm_config__authToken", "")])));
+        // The user's `.npmrc` where npm's settings put it.
+        let elsewhere = dir.0.join("elsewhere.npmrc");
+        std::fs::write(&elsewhere, "//npm.example.com/:_authToken=t\n").unwrap();
+        let path = elsewhere.to_string_lossy().into_owned();
+        assert!(npm_credentials_with(&dir.0, &env(&[("NPM_CONFIG_USERCONFIG", &path)])));
+        assert!(npm_credentials_with(&dir.0, &env(&[("npm_config_globalconfig", &path)])));
+        // `HOME`'s `.npmrc`.
+        std::fs::write(dir.0.join(".npmrc"), "").unwrap();
+        let home = crate::testing::temp_dir();
+        std::fs::write(home.0.join(".npmrc"), "username=me\npassword=x\n").unwrap();
+        let home_path = home.0.to_string_lossy().into_owned();
+        assert!(npm_credentials_with(&dir.0, &env(&[("HOME", &home_path)])));
     }
 }

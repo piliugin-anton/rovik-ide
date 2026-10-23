@@ -1314,6 +1314,167 @@ async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
     );
 }
 
+/// Step 9: a first plan review whose report can't be read (out of format
+/// twice, though it reads as a finding) isn't a pass: it's tried again,
+/// never saved unreviewed, and the review that reads decides.
+#[tokio::test]
+async fn an_unreadable_plan_review_is_tried_again_not_skipped() {
+    let h = task_project().await;
+    // Finding-shaped, with no "## Findings" heading: it can't be read.
+    let garbled = "Problems:\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`";
+    let high = "## Findings\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`\n   \
+        - Scenario: the test still fails after the change.\n   \
+        - Fix: read `check.js` and change the file it reads.\n   \
+        - Confidence: confirmed";
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(garbled), Reply::Text(garbled), Reply::Text(high)],
+        )],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            Reply::Text("The plan is blocked."),
+        ],
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 1;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ],
+        "{records:#?}"
+    );
+    assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
+    assert_eq!(
+        records[1].summary.as_deref(),
+        Some("Blocked after 1 review (review limit): 1 finding open")
+    );
+    let messages = h.messages().await;
+    assert!(
+        !result_of(&messages, "p1").content.contains("Review skipped"),
+        "{}",
+        result_of(&messages, "p1").content
+    );
+}
+
+/// A plan review that never runs: every reviewer model fails, tried again
+/// after a wait, until the run's subagents are off for good. No review
+/// passed the plan: it's blocked, never saved unreviewed.
+#[tokio::test]
+async fn a_plan_review_that_never_runs_blocks_the_plan() {
+    let h = task_project().await;
+    let failed = Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}");
+    let (url, _) = model_routed(
+        vec![(PLAN_REVIEW, vec![failed])],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            Reply::Text("The plan is blocked."),
+        ],
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ],
+        "{records:#?}"
+    );
+    assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
+    let messages = h.messages().await;
+    let result = &result_of(&messages, "p1").content;
+    assert!(result.contains("The plan wasn't saved, and won't be"), "{result}");
+    assert!(result.contains("no plan reviewer could run"), "{result}");
+}
+
+/// A Stop while the plan's second review runs, its high finding open: the
+/// plan isn't saved, and the finding isn't settled. It's held, not
+/// blocked, for a Continue to go on with.
+#[tokio::test]
+async fn a_stop_during_a_plan_review_holds_the_plan_with_its_findings_open() {
+    let h = task_project().await;
+    let high = "## Findings\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`\n   \
+        - Scenario: the test still fails after the change.\n   \
+        - Fix: read `check.js` and change the file it reads.\n   \
+        - Confidence: confirmed";
+    let answer = json!([{ "finding": 1, "action": "fixed", "note": "check.js reads ok.txt now" }]);
+    let (url, seen) = model_routed(
+        vec![(PLAN_REVIEW, vec![Reply::Text(high), Reply::Hang(None)])],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            Reply::Call {
+                id: "p2",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN, "responses": answer }),
+            },
+        ],
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let reviews = || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["messages"].to_string().contains(PLAN_REVIEW))
+            .count()
+    };
+    for _ in 0..800 {
+        if reviews() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(reviews() >= 2, "the second review runs");
+    assert!(agent_stop(&h.core, h.dialog_id.clone()).await);
+    for _ in 0..400 {
+        if !h.core.agents.is_running(&h.dialog_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!h.core.agents.is_running(&h.dialog_id));
+
+    let messages = h.messages().await;
+    let review = messages
+        .iter()
+        .rev()
+        .filter_map(|m| m.meta.as_ref()?.get("review"))
+        .find(|r| r["kind"] == "plan")
+        .cloned()
+        .expect("the second review's record");
+    assert_eq!(review["held"], true, "{review:#}");
+    assert_ne!(review["blocked"], true, "a Stop isn't a block: {review:#}");
+    let ledger = review["ledger"].as_array().expect("its finding list");
+    assert!(
+        ledger.iter().any(|e| e["status"] != "resolved"),
+        "the finding stays open: {review:#}"
+    );
+    assert_eq!(review["planState"]["held"], TASK_PLAN);
+    let result = &result_of(&messages, "p2").content;
+    assert!(result.contains("Stopped: the plan wasn't saved"), "{result}");
+}
+
 /// S02 (4.2): the plan review's high finding the planner never fixes: an
 /// Autopilot task's three reviews, then the plan is blocked: never saved,
 /// never implemented, the task ending `plan-blocked`. A submit after that

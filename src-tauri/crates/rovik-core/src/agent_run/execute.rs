@@ -1791,7 +1791,7 @@ impl Run {
                         .add_tool_result(&tc.id, content.into(), None, Vec::new())
                         .await;
                 };
-                match apply_plan_edits(&draft, edits) {
+                match edit_last_plan(&draft, self.plan_sent.as_deref(), edits) {
                     Ok(plan) => plan,
                     Err(e) => {
                         return self
@@ -1806,6 +1806,7 @@ impl Run {
                 }
             }
         };
+        self.plan_sent = Some(given.clone());
         let (plan_text, findings_dropped) = plan::without_findings(&given);
         let request = recent
             .iter()
@@ -1996,6 +1997,21 @@ pub(super) fn apply_plan_edits(draft: &str, edits: &[Value]) -> Result<String, S
     Ok(plan)
 }
 
+/// `edits` applied to the last plan (`draft`, as the IDE fixed its form),
+/// or, when one of them doesn't match it, to that plan as the agent sent
+/// it (`sent`): an `old_text` copied from its own submission names a path
+/// the IDE corrected. The draft's error when neither matches.
+pub(super) fn edit_last_plan(draft: &str, sent: Option<&str>, edits: &[Value]) -> Result<String, String> {
+    let e = match apply_plan_edits(draft, edits) {
+        Ok(plan) => return Ok(plan),
+        Err(e) => e,
+    };
+    match sent.filter(|sent| *sent != draft) {
+        Some(sent) => apply_plan_edits(sent, edits).map_err(|_| e),
+        None => Err(e),
+    }
+}
+
 /// A command's arguments with its timeout cut to the time `left` of a
 /// subagent's budget (at least a second); None when it's within it, or for
 /// the lead, which has no time budget.
@@ -2017,6 +2033,32 @@ fn clamp_timeout(args_json: &str, left: Option<std::time::Duration>) -> Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Step 7: an edit copied from the agent's own submission matches the
+    /// plan as it sent it when the IDE's fixed draft no longer has its
+    /// text; one that matches the draft goes there; one that matches
+    /// neither fails with the draft's error.
+    #[test]
+    fn plan_edits_match_the_plan_as_sent_when_the_draft_was_fixed() {
+        let sent = "## Steps\n\n1. Change users\n   Files: `../../src/api/users.rs`\n";
+        let draft = "# Fix users\n\n## Steps\n\n1. Change users\n   Files: `src/api/users.rs`\n";
+        let edit = |old: &str, new: &str| vec![json!({ "old_text": old, "new_text": new })];
+
+        let from_sent = edit("Files: `../../src/api/users.rs`", "Files: `../../src/api/users.rs`, `src/db.rs`");
+        let edited = edit_last_plan(draft, Some(sent), &from_sent).unwrap();
+        assert!(edited.contains("`../../src/api/users.rs`, `src/db.rs`"), "{edited}");
+
+        let from_draft = edit("# Fix users", "# Fix the users page");
+        let edited = edit_last_plan(draft, Some(sent), &from_draft).unwrap();
+        assert!(edited.starts_with("# Fix the users page\n"), "{edited}");
+        assert!(edited.contains("`src/api/users.rs`"), "the draft's fix stays");
+
+        let neither = edit("Files: `nowhere.rs`", "x");
+        let err = edit_last_plan(draft, Some(sent), &neither).unwrap_err();
+        assert_eq!(err, apply_plan_edits(draft, &neither).unwrap_err());
+        // Nothing sent apart from the draft: its error alone.
+        assert!(edit_last_plan(draft, None, &from_sent).is_err());
+    }
 
     /// Round 2 (section 4.2): a subagent's command timeout is cut to the
     /// time it has left (at least a second, and later ones no longer than
