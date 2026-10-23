@@ -322,11 +322,16 @@ mod tests {
         assert!(script.starts_with("#!/bin/sh\n# pre-commit: Before a commit."));
         assert!(script.ends_with("\nexit 0\n") && !script.contains('\r'));
 
+        // git's own example, which a new repository gets where libgit2
+        // finds git's templates (not on every machine).
+        let folder = dir.join(".git/hooks");
+        fs::write(folder.join("pre-push.sample"), "#!/bin/sh\n").unwrap();
+        let _ = fs::remove_file(folder.join("post-checkout.sample"));
+
         let hooks = git_hooks_blocking(&p(&dir)).unwrap();
         assert_eq!(hooks.source, "hooksPath");
         assert_eq!(hooks.shown_dir, ".git/hooks");
         assert_eq!(state(&hooks, "pre-commit"), ("active", Some(file.as_str())));
-        // git's own examples, which a new repository gets.
         assert_eq!(state(&hooks, "pre-push"), ("sample", None));
         assert_eq!(state(&hooks, "post-checkout"), ("missing", None));
         assert_eq!(hooks.hooks.len(), HOOKS.len());
