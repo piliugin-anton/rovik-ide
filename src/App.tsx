@@ -37,7 +37,7 @@ import {
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
-import type { FileWatchPayload, LastProjectOpenFile, OpenFile, TreeRow } from './types';
+import type { FileWatchPayload, GitStashFilePreview, LastProjectOpenFile, OpenFile, TreeRow } from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext, CursorInfo } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
@@ -875,7 +875,15 @@ export default function App() {
   async function saveActiveFile(overwrite = false) {
     const file = activeFile();
     // Read-only preview tabs (e.g. stashed content) are never saved.
-    if (!file || file.readOnly || (!file.dirty && !file.deleted)) return;
+    if (!file || file.readOnly || (!file.dirty && !file.deleted)) {
+      console.warn('[saveActiveFile] no-op', file && {
+        path: file.path,
+        dirty: file.dirty,
+        readOnly: file.readOnly,
+        deleted: file.deleted,
+      });
+      return;
+    }
     try {
       // Checked against what the tab loaded, so a save can't erase a change
       // made on disk meanwhile (an agent chat, a command). A deleted file
@@ -1064,9 +1072,9 @@ export default function App() {
   async function openFromStash(abs: string, file: string, index: number, message?: string) {
     const root = rootPath();
     if (!root) return;
-    let preview: import('./types').GitStashFilePreview;
+    let preview: GitStashFilePreview;
     try {
-      preview = await invoke<import('./types').GitStashFilePreview>('git_stash_file_preview', {
+      preview = await invoke<GitStashFilePreview>('git_stash_file_preview', {
         path: root,
         index,
         file,

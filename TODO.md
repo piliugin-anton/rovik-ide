@@ -3,3 +3,4 @@
    - Chat stores this status and after plan implemented changes checker or other agent(s) should use a plan. If it was not a plan implementation, than regular checker is checking a changes
 2. When running an npm run format after discarding changes in git files appears again
 3. Add git hooks
+4. Editor should newer show horizontal scroll
