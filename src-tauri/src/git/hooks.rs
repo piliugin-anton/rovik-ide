@@ -5,6 +5,8 @@
 //! fails stops it, as it stops git, and what the hook printed is the error
 //! the panel shows. A hook that runs after (post-commit, post-checkout, …)
 //! can't undo anything: its failure is only logged, as git ignores it.
+//! As git's `--no-verify`, the panel can skip the hooks that check
+//! ([`CHECKS`]) for one commit or push; the others still run.
 //!
 //! Where they are: `core.hooksPath` when it's set (husky, lefthook and the
 //! like set it; a relative path is from the working folder), else `hooks/`
@@ -23,14 +25,19 @@
 
 use git2::Repository;
 use rovik_core::agent_run::command_output::{cap_output, clean_output};
-use std::io::{Read, Write};
+use std::io::{PipeReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The most of a hook's output kept while it runs: the end, where errors are.
 const MAX_OUTPUT: usize = 1024 * 1024;
+
+/// The hooks git's `--no-verify` skips: the ones that check what's
+/// committed or pushed. prepare-commit-msg and the hooks that come after
+/// still run, as with git.
+pub(crate) const CHECKS: [&str; 4] = ["pre-commit", "commit-msg", "pre-merge-commit", "pre-push"];
 
 /// A repository's hooks.
 pub(crate) struct Hooks {
@@ -38,6 +45,8 @@ pub(crate) struct Hooks {
     dir: PathBuf,
     /// Where they run: the working folder (the git folder, when bare).
     cwd: PathBuf,
+    /// git's `--no-verify`: the [`CHECKS`] don't run.
+    no_verify: bool,
 }
 
 impl Hooks {
@@ -54,11 +63,24 @@ impl Hooks {
             Some(p) => p,
             None => repo.commondir().join("hooks"),
         };
-        Hooks { dir, cwd }
+        Hooks {
+            dir,
+            cwd,
+            no_verify: false,
+        }
+    }
+
+    /// As git's `--no-verify` when `skip`: the [`CHECKS`] don't run.
+    pub fn no_verify(mut self, skip: bool) -> Hooks {
+        self.no_verify = skip;
+        self
     }
 
     /// The program of hook `name`, when there's one that runs.
     fn find(&self, name: &str) -> Option<PathBuf> {
+        if self.no_verify && CHECKS.contains(&name) {
+            return None;
+        }
         let path = self.dir.join(name);
         if path.is_file() {
             if is_executable(&path) {
@@ -85,11 +107,11 @@ impl Hooks {
         let Some(program) = self.find(name) else {
             return Ok(());
         };
-        let child = self
+        let (child, out) = self
             .spawn(&program, args, input.is_some())
             .map_err(|e| format!("the {name} hook couldn't start: {e}"))?;
         let (status, output) =
-            collect(child, input).map_err(|e| format!("the {name} hook: {e}"))?;
+            collect(child, out, input).map_err(|e| format!("the {name} hook: {e}"))?;
         if status.success() {
             return Ok(());
         }
@@ -150,8 +172,16 @@ impl Hooks {
         Ok(cleaned)
     }
 
-    /// The command for `program` with `args`, as it runs in the working folder.
-    fn command(&self, program: impl AsRef<std::ffi::OsStr>, piped_input: bool) -> Command {
+    /// The command for `program`, as it runs in the working folder, and the
+    /// pipe its output and errors both go to: one pipe, so they're read in
+    /// the order the hook printed them, as a terminal shows them. Dropping
+    /// the command closes this side's end of it.
+    fn command(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        piped_input: bool,
+    ) -> Result<(Command, PipeReader), String> {
+        let (out, writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let mut cmd = rovik_core::process::command(program);
         cmd.current_dir(&self.cwd)
             // What git tells a hook when no editor is coming.
@@ -161,28 +191,32 @@ impl Hooks {
             } else {
                 Stdio::null()
             })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(writer.try_clone().map_err(|e| e.to_string())?)
+            .stderr(writer);
         rovik_core::process::no_window(&mut cmd);
         // No terminal to wait on: a hook asking on /dev/tty fails at once
         // rather than waiting for an answer no one can give.
         rovik_core::process::own_session(&mut cmd);
-        cmd
+        Ok((cmd, out))
     }
 
     #[cfg(unix)]
-    fn spawn(&self, program: &Path, args: &[&str], piped_input: bool) -> Result<Child, String> {
+    fn spawn(
+        &self,
+        program: &Path,
+        args: &[&str],
+        piped_input: bool,
+    ) -> Result<(Child, PipeReader), String> {
         let mut tries = 0;
         loop {
-            match self.command(program, piped_input).args(args).spawn() {
+            let (mut cmd, out) = self.command(program, piped_input)?;
+            match cmd.args(args).spawn() {
+                Ok(child) => return Ok((child, out)),
                 // A script with no `#!` line: git runs it with sh.
                 Err(e) if e.raw_os_error() == Some(libc::ENOEXEC) => {
-                    return self
-                        .command("/bin/sh", piped_input)
-                        .arg(program)
-                        .args(args)
-                        .spawn()
-                        .map_err(|e| e.to_string())
+                    let (mut cmd, out) = self.command("/bin/sh", piped_input)?;
+                    let child = cmd.arg(program).args(args).spawn();
+                    return Ok((child.map_err(|e| e.to_string())?, out));
                 }
                 // Just written, and still open in a process another thread
                 // was starting: it's free a moment later.
@@ -190,28 +224,31 @@ impl Hooks {
                     tries += 1;
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                other => return other.map_err(|e| e.to_string()),
+                Err(e) => return Err(e.to_string()),
             }
         }
     }
 
     #[cfg(windows)]
-    fn spawn(&self, program: &Path, args: &[&str], piped_input: bool) -> Result<Child, String> {
+    fn spawn(
+        &self,
+        program: &Path,
+        args: &[&str],
+        piped_input: bool,
+    ) -> Result<(Child, PipeReader), String> {
         let is_exe = program
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
         if is_exe {
-            return self
-                .command(program, piped_input)
-                .args(args)
-                .spawn()
-                .map_err(|e| e.to_string());
+            let (mut cmd, out) = self.command(program, piped_input)?;
+            let child = cmd.args(args).spawn().map_err(|e| e.to_string())?;
+            return Ok((child, out));
         }
         let git = git_for_windows().ok_or(
             "it's a script, and running one takes the sh of Git for Windows \
              (https://git-scm.com/download/win), which wasn't found",
         )?;
-        let mut cmd = self.command(&git.sh, piped_input);
+        let (mut cmd, out) = self.command(&git.sh, piped_input)?;
         // sh's exec reads the `#!` line, as Git for Windows does for its hooks.
         cmd.arg("-c")
             .arg(r#"exec "$0" "$@""#)
@@ -226,7 +263,8 @@ impl Hooks {
         if let Ok(path) = std::env::join_paths(dirs) {
             cmd.env("PATH", path);
         }
-        cmd.spawn().map_err(|e| e.to_string())
+        let child = cmd.spawn().map_err(|e| e.to_string())?;
+        Ok((child, out))
     }
 }
 
@@ -245,36 +283,25 @@ fn failure_text(name: &str, status: ExitStatus, output: &str) -> String {
     }
 }
 
-/// Waits for the hook, its output and errors read together as it prints
-/// them, and `input` written to it.
-fn collect(mut child: Child, input: Option<&[u8]>) -> Result<(ExitStatus, String), String> {
+/// Waits for the hook, with `input` written to it, and what it printed on
+/// `out`.
+fn collect(
+    mut child: Child,
+    mut out: PipeReader,
+    input: Option<&[u8]>,
+) -> Result<(ExitStatus, String), String> {
     let output = Arc::new(Mutex::new(Vec::<u8>::new()));
     let (done, finished) = mpsc::channel::<()>();
-    let pipes: Vec<Box<dyn Read + Send>> = [
-        child
-            .stdout
-            .take()
-            .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn Read + Send>),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let readers = pipes.len();
-    for mut pipe in pipes {
+    {
         let output = output.clone();
-        let done = done.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
-            while let Ok(n @ 1..) = pipe.read(&mut buf) {
-                let mut out = output.lock().unwrap_or_else(|e| e.into_inner());
-                out.extend_from_slice(&buf[..n]);
-                if out.len() > MAX_OUTPUT {
-                    let extra = out.len() - MAX_OUTPUT;
-                    out.drain(..extra);
+            while let Ok(n @ 1..) = out.read(&mut buf) {
+                let mut kept = output.lock().unwrap_or_else(|e| e.into_inner());
+                kept.extend_from_slice(&buf[..n]);
+                if kept.len() > MAX_OUTPUT {
+                    let extra = kept.len() - MAX_OUTPUT;
+                    kept.drain(..extra);
                 }
             }
             let _ = done.send(());
@@ -287,13 +314,7 @@ fn collect(mut child: Child, input: Option<&[u8]>) -> Result<(ExitStatus, String
     let status = child.wait().map_err(|e| e.to_string())?;
     // Something the hook left running in the background can hold its
     // output open for ever: what it printed so far will do.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    for _ in 0..readers {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if finished.recv_timeout(left).is_err() {
-            break;
-        }
-    }
+    let _ = finished.recv_timeout(Duration::from_secs(2));
     let bytes = output.lock().unwrap_or_else(|e| e.into_inner()).clone();
     Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
 }

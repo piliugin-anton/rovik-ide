@@ -748,6 +748,14 @@ stages is committed, and the message is what the message hooks leave in
 `.git/COMMIT_EDITMSG`. Hooks that run after can't stop anything; their
 failure is only logged, as git ignores it.
 
+When a hook that checks stops a commit, a push or a merge's commit, the
+error has a button to try once more without it: **Commit without hooks**,
+**Push without hooks** or **Commit merge without hooks**, as git's
+`--no-verify`. That skips pre-commit, commit-msg, pre-merge-commit and
+pre-push for that one try. prepare-commit-msg and the hooks that come
+after still run, as with git, and a push after such a commit still runs
+pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
+
 Hooks are found as git finds them: in `core.hooksPath` when it's set (a
 relative path is from the working folder), else in `.git/hooks`. So
 husky, lefthook, pre-commit and simple-git-hooks work as they are. Each

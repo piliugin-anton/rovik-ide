@@ -767,6 +767,20 @@ mod hooks {
     }
 
     #[test]
+    fn a_merge_its_hook_refused_can_be_committed_without_the_checks() {
+        let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+        hook(&repo, &dir, "pre-merge-commit", "exit 1");
+        hook(&repo, &dir, "pre-commit", "exit 1");
+        hook(&repo, &dir, "post-commit", "echo post-commit >> .git/ran");
+        assert!(integrate_upstream(&repo, Some(PullStrategy::Merge), false).is_err());
+        assert!(git_operation_continue_blocking(p(&dir), None).is_err());
+        let out = git_operation_continue_blocking_with(p(&dir), None, true).unwrap();
+        assert_eq!(out.result, "merged");
+        assert_eq!(noted(&dir, "ran"), "post-commit\n");
+        assert_eq!(head_commit(&repo).unwrap().parent_count(), 2);
+    }
+
+    #[test]
     fn pre_rebase_can_refuse_a_rebase() {
         let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
         let ours = head_commit(&repo).unwrap().id();

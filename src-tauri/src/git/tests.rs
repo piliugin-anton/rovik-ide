@@ -1500,6 +1500,42 @@ mod hook_tests {
     }
 
     #[test]
+    fn no_verify_skips_the_checks_and_runs_the_other_hooks() {
+        let (dir, repo) = repo("no-verify-commit");
+        hook(&dir, "pre-commit", "exit 1");
+        hook(&dir, "commit-msg", "exit 1");
+        hook(&dir, "prepare-commit-msg", "echo prepare >> .git/ran");
+        hook(&dir, "post-commit", "echo post >> .git/ran");
+        assert!(git_commit_blocking(p(&dir), "wip".into()).is_err());
+        git_commit_blocking_with(p(&dir), "wip".into(), true).unwrap();
+        assert_eq!(head_message(&repo), "wip\n");
+        assert_eq!(
+            fs::read_to_string(dir.join(".git/ran")).unwrap(),
+            "prepare\npost\n",
+            "the refused try stopped at pre-commit, before the message hooks"
+        );
+    }
+
+    #[test]
+    fn no_verify_pushes_past_a_failing_pre_push() {
+        let (dir, repo) = repo("no-verify-push");
+        let remote = temp_dir("no-verify-push-origin");
+        Repository::init_bare(&remote).unwrap();
+        repo.remote("origin", &p(&remote)).unwrap();
+        hook(&dir, "pre-push", "exit 1");
+        assert!(git_push_blocking(p(&dir)).is_err());
+        assert_eq!(
+            git_push_blocking_with(p(&dir), true).unwrap().result,
+            "pushed"
+        );
+        let remote_tip = Repository::open_bare(&remote)
+            .unwrap()
+            .refname_to_id("refs/heads/main")
+            .unwrap();
+        assert_eq!(remote_tip, head_commit(&repo).unwrap().id());
+    }
+
+    #[test]
     fn post_checkout_runs_after_a_switch() {
         let (dir, repo) = repo("post-checkout");
         git_commit_blocking(p(&dir), "two".into()).unwrap();

@@ -28,6 +28,7 @@ import {
   GitPushOutcome,
 } from '../types';
 import { confirmDialog } from './ConfirmDialog';
+import { SKIP_HINTS, skippableHook } from '../lib/gitHooks';
 import { ConflictResolver } from './ConflictResolver';
 import { PullStrategyDialog, type PullStrategyPick } from './PullStrategyDialog';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
@@ -405,6 +406,20 @@ export function GitPanel(props: GitPanelProps) {
   const [status, setStatus] = createSignal<GitStatus | null>(null);
   const [errorMsg, setErrorMsg] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
+  /** A git hook stopped the action `error` says: the button that tries it
+   *  once more without the hooks that check (git's --no-verify). Shown only
+   *  with that error. */
+  const [skipOffer, setSkipOffer] = createSignal<{
+    error: string;
+    label: string;
+    hint: string;
+    run: () => Promise<void>;
+  } | null>(null);
+  /** Offers `run` as `label` when `e` is a check hook that stopped the action. */
+  const offerSkip = (e: unknown, label: string, hint: string, run: () => Promise<void>) => {
+    const error = e instanceof Error ? e.message : String(e);
+    if (skippableHook(error)) setSkipOffer({ error, label, hint, run });
+  };
 
   // Kept by project while the panel is away (another sidebar tab shown).
   const [commitMessage, setCommitMessageSignal] = createSignal(
@@ -451,6 +466,7 @@ export function GitPanel(props: GitPanelProps) {
   const withBusy = async <T,>(fn: () => Promise<T>) => {
     setBusy(true);
     setErrorMsg(null);
+    setSkipOffer(null);
     try {
       await fn();
     } catch (e) {
@@ -633,6 +649,9 @@ export function GitPanel(props: GitPanelProps) {
       // A merge a git hook refused stays in progress, to continue or abort.
       await refreshStatus();
       props.onFilesChangedOnDisk?.();
+      offerSkip(e, 'Commit merge without hooks', SKIP_HINTS.merge, () =>
+        withBusy(() => continueOperation(undefined, true))
+      );
       throw e;
     }
     await refreshStatus();
@@ -655,10 +674,29 @@ export function GitPanel(props: GitPanelProps) {
       ? `rebasing your commits onto them (${cfg.source})`
       : `merging them into your branch (${cfg.source})`;
 
+  /** One push. A pre-push hook that stops it offers to push without it. */
+  const pushOnce = async (noVerify: boolean) => {
+    try {
+      return await invoke<GitPushOutcome>('git_push', { path: props.projectPath, noVerify });
+    } catch (e) {
+      offerSkip(e, 'Push without hooks', SKIP_HINTS.push, () =>
+        withBusy(async () => {
+          try {
+            await push(true);
+          } finally {
+            await refreshStatus();
+            refreshHistoryIfOpen();
+          }
+        })
+      );
+      throw e;
+    }
+  };
+
   /** Pushes; a push the remote turns down (it has new commits) offers to
    *  pull them in first, the way git config says, then push again. */
-  const push = async () => {
-    const out = await invoke<GitPushOutcome>('git_push', { path: props.projectPath });
+  const push = async (noVerify = false) => {
+    const out = await pushOnce(noVerify);
     if (out.result === 'pushed') {
       setPendingPush(false);
       return;
@@ -689,7 +727,7 @@ export function GitPanel(props: GitPanelProps) {
       return;
     }
     setPendingPush(false);
-    const again = await invoke<GitPushOutcome>('git_push', { path: props.projectPath });
+    const again = await pushOnce(noVerify);
     if (again.result === 'rejected') {
       throw new Error('The remote moved again while pulling. Push once more.');
     }
@@ -699,6 +737,7 @@ export function GitPanel(props: GitPanelProps) {
   const busyOrThrow = async (fn: () => Promise<void>) => {
     setBusy(true);
     setErrorMsg(null);
+    setSkipOffer(null);
     try {
       await fn();
     } finally {
@@ -706,12 +745,21 @@ export function GitPanel(props: GitPanelProps) {
     }
   };
 
-  const continueOperation = (message?: string) =>
+  const continueOperation = (message?: string, noVerify = false) =>
     busyOrThrow(async () => {
-      const out = await invoke<GitPullOutcome>('git_operation_continue', {
-        path: props.projectPath,
-        message,
-      });
+      let out: GitPullOutcome;
+      try {
+        out = await invoke<GitPullOutcome>('git_operation_continue', {
+          path: props.projectPath,
+          message,
+          noVerify,
+        });
+      } catch (e) {
+        offerSkip(e, 'Commit merge without hooks', SKIP_HINTS.merge, () =>
+          withBusy(() => continueOperation(message, true))
+        );
+        throw e;
+      }
       await refreshStatus();
       props.onFilesChangedOnDisk?.();
       refreshHistoryIfOpen();
@@ -749,7 +797,9 @@ export function GitPanel(props: GitPanelProps) {
     if (ok) await withBusy(abortOperation);
   };
 
-  const commitAndMaybePush = () =>
+  /** `noVerify`: the commit without the hooks that check (a retry after
+   *  one stopped it); a push that follows still runs pre-push. */
+  const commitAndMaybePush = (noVerify = false) =>
     withBusy(async () => {
       const st = status();
       if (!st) return;
@@ -771,10 +821,11 @@ export function GitPanel(props: GitPanelProps) {
       }
 
       try {
-        await invoke('git_commit', { path: props.projectPath, message: msg });
+        await invoke('git_commit', { path: props.projectPath, message: msg, noVerify });
       } catch (e) {
         // A git hook that stopped the commit may have changed files first.
         await refreshStatus();
+        offerSkip(e, 'Commit without hooks', SKIP_HINTS.commit, () => commitAndMaybePush(true));
         throw e;
       } finally {
         // A pre-commit hook may rewrite files (a formatter's fixes).
@@ -2472,7 +2523,22 @@ export function GitPanel(props: GitPanelProps) {
         <Show when={errorMsg()}>
           <div class="git-inline-error">
             <IconAlert />
-            <span>{errorMsg()}</span>
+            <div class="git-inline-error-body">
+              <span class="git-inline-error-text">{errorMsg()}</span>
+              <Show when={skipOffer()?.error === errorMsg() ? skipOffer() : null}>
+                {(offer) => (
+                  <button
+                    type="button"
+                    class="git-skip-hooks"
+                    disabled={busy()}
+                    title={offer().hint}
+                    onClick={() => void offer().run()}
+                  >
+                    {offer().label}
+                  </button>
+                )}
+              </Show>
+            </div>
           </div>
         </Show>
 
@@ -2667,7 +2733,7 @@ export function GitPanel(props: GitPanelProps) {
           <button
             class="git-commit-button primary icon-button"
             disabled={!canCommit()}
-            onClick={commitAndMaybePush}
+            onClick={() => commitAndMaybePush()}
             title={
               commitButtonAction() === 'publish' && status() ? publishHint(status()!) : undefined
             }

@@ -11,10 +11,24 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 #[tauri::command]
-pub async fn git_commit(path: String, message: String) -> Result<(), String> {
+pub async fn git_commit(
+    path: String,
+    message: String,
+    no_verify: Option<bool>,
+) -> Result<(), String> {
     // A pre-commit hook may rewrite files (a formatter's fixes).
     let repo = path.clone();
-    rewriting(&path, move || git_commit_blocking(repo, message)).await
+    let no_verify = no_verify.unwrap_or(false);
+    rewriting(&path, move || {
+        git_commit_blocking_with(repo, message, no_verify)
+    })
+    .await
+}
+
+/// With the hooks, as the tests run it.
+#[cfg(test)]
+pub fn git_commit_blocking(path: String, message: String) -> Result<(), String> {
+    git_commit_blocking_with(path, message, false)
 }
 
 /// Commits every change, as `git add -A && git commit` would, with the
@@ -22,8 +36,13 @@ pub async fn git_commit(path: String, message: String) -> Result<(), String> {
 /// can stop it (or change what's staged, the message), post-commit comes
 /// after. Not in the middle of a merge or a rebase (that's
 /// `git_operation_continue`'s), and not with conflicts: staged, their
-/// markers would be committed as text.
-pub fn git_commit_blocking(path: String, message: String) -> Result<(), String> {
+/// markers would be committed as text. `no_verify`: as git's
+/// `--no-verify`, without pre-commit and commit-msg.
+pub fn git_commit_blocking_with(
+    path: String,
+    message: String,
+    no_verify: bool,
+) -> Result<(), String> {
     let repo = open_repo(&path)?;
     crate::git_sync::nothing_in_progress(&repo)?;
     let mut index = repo.index().err_text()?;
@@ -31,7 +50,7 @@ pub fn git_commit_blocking(path: String, message: String) -> Result<(), String> 
         return Err("Resolve the conflicts first.".to_string());
     }
     stage_all(&mut index)?;
-    let hooks = Hooks::of(&repo);
+    let hooks = Hooks::of(&repo).no_verify(no_verify);
     if hooks.has("pre-commit") {
         hooks.run("pre-commit", &[], None).map_err(not_committed)?;
         // What it staged (or unstaged) is what's committed.

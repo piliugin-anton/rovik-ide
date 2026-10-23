@@ -247,11 +247,19 @@ fn is_behind_remote(reason: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn git_push(path: String) -> Result<PushOutcome, String> {
-    blocking(move || git_push_blocking(path)).await
+pub async fn git_push(path: String, no_verify: Option<bool>) -> Result<PushOutcome, String> {
+    blocking(move || git_push_blocking_with(path, no_verify.unwrap_or(false))).await
 }
 
+/// With the hooks, as the tests run it.
+#[cfg(test)]
 pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
+    git_push_blocking_with(path, false)
+}
+
+/// Pushes the current branch. `no_verify`: as git's `--no-verify`, without
+/// the pre-push hook.
+pub fn git_push_blocking_with(path: String, no_verify: bool) -> Result<PushOutcome, String> {
     let repo = open_repo(&path)?;
     let head = repo.head().err_text()?;
 
@@ -270,7 +278,7 @@ pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
     let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
     // The server turns a ref down through this callback, not as an error.
     let refused = std::cell::RefCell::new(None::<String>);
-    let hooks = Hooks::of(&repo);
+    let hooks = Hooks::of(&repo).no_verify(no_verify);
     let url = match (remote.pushurl(), remote.url()) {
         (Ok(Some(url)), _) | (_, Ok(url)) if !url.is_empty() => url.to_string(),
         _ => remote_name.clone(),
