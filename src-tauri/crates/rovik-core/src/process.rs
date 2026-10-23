@@ -143,6 +143,36 @@ pub fn no_window(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
+/// Starts the command as the leader of a process group of its own, so that
+/// [`kill_group`] ends what it started too (a shell's pipeline, a harness's
+/// tools). No-op off Unix.
+pub fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd
+}
+
+/// Ends a process started with [`own_group`] and everything it started:
+/// SIGTERM to its group, or SIGKILL when `force`. Off Unix, the process
+/// alone is killed.
+pub fn kill_group(pid: Option<u32>, child: &mut tokio::process::Child, force: bool) {
+    #[cfg(unix)]
+    if let Some(pid) = pid.and_then(|id| libc::pid_t::try_from(id).ok()) {
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // SAFETY: a signal to a process group; no memory is involved.
+        unsafe { libc::kill(-pid, signal) };
+        if !force {
+            return;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+    let _ = child.start_kill();
+}
+
 /// Starts the command with an ordinary OOM score (0), whatever its
 /// parent's. On a team server the daemon runs at -500, so the kernel picks
 /// it last when memory runs out, and the commands it starts go back to 0,

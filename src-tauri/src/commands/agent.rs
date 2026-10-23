@@ -13,7 +13,9 @@ use rovik_core::agent_run::{
 };
 use rovik_core::chat_request::ChatRequests;
 use rovik_core::Core;
-use rovik_protocol::connectors::{ConnectorAuth, ConnectorProbe, ProbeRequestArgs};
+use rovik_protocol::connectors::{
+    ConnectorAuth, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
+};
 use rovik_protocol::Request;
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -286,6 +288,22 @@ pub async fn connector_auth_status(
                 .await,
         ),
         None => call(&core, Request::ConnectorAuthStatus(args)).await,
+    }
+}
+
+/// A connector's "Set up" step (install, sign in, sign out), here or on
+/// `host`: started, followed, given the user's line, or stopped
+/// (`SetupOp`). A step on a host runs as the user's own daemon there.
+#[tauri::command]
+pub async fn connector_setup(
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    op: SetupOp,
+    host: Option<String>,
+) -> Result<SetupJob, String> {
+    match host.filter(|h| !h.is_empty()) {
+        Some(host) => answer(remote.host_call(&host, Request::ConnectorSetup(op)).await),
+        None => call(&core, Request::ConnectorSetup(op)).await,
     }
 }
 

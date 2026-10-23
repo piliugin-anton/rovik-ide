@@ -321,6 +321,15 @@ The connector rows show what the last check found, and **Check sign-in**
 asks again. The check trusts a token Claude Code has; one that expired or
 was revoked shows as the chat's error at its first message.
 
+**Set up** (on a connector's page, or on its row when it can't run) does
+the rest where its chats run, this computer or a cloud host: it tests the
+connector; installs the program if it's missing, once you agree, with
+Anthropic's own installer for your user (`claude` in `~/.local/bin`, no
+admin rights); and signs it in if it isn't (`claude auth login`), showing
+what each step prints. Here the browser opens to sign in; for a host,
+Rovik opens the sign-in page in your browser and you paste the code it
+shows. **Sign out** signs the program out.
+
 A chat on a connector's model hands the harness the task: Rovik's system
 prompt, the model, the effort and the message, in the project folder. The
 system prompt goes in a file (`--system-prompt-file`, or
@@ -352,8 +361,10 @@ images or PDFs from the chat.
 On a cloud host, the host needs its own installation: an administrator
 runs `sudo /opt/rovik/bin/rovik-agentd admin claude-code` once, which
 installs Anthropic's package for every user (see
-[docs/cloud-hosts.md](docs/cloud-hosts.md)). Each user's chats sign in
-with the token or key of the connector's settings.
+[docs/cloud-hosts.md](docs/cloud-hosts.md)), or each user runs **Set up**
+with the host chosen, which installs it for them alone. Each user's chats
+sign in with the token or key of the connector's settings, or the login
+Set up made for them there.
 
 When the agent runs commands from the IDE, they get the same `PATH` as your
 login shell, so tools like `npm`, `cargo` and Homebrew packages are found

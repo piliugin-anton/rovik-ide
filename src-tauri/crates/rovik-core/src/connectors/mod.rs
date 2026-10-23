@@ -18,12 +18,14 @@
 //! cleared folder), the turn starts a new one with a recap of the chat.
 //!
 //! Every connector implements [`Connector`]: a probe for "Test & refresh
-//! models" and a turn. A new harness (Codex, say) is one more module here
-//! and one more `ConnectorKind`.
+//! models", its sign-in check, a turn, and what its "Set up" steps run
+//! (setup.rs runs them, the same for every connector). A new harness
+//! (Codex, say) is one more module here and one more `ConnectorKind`.
 
 mod claude_code;
 pub mod mcp;
 pub mod sessions;
+mod setup;
 
 use crate::agent::{ChatParams, ChatStreamEvent, ReasoningEffort};
 use crate::chat_db::store::MessageRow;
@@ -32,10 +34,11 @@ use crate::chat_request::ChatError;
 use futures_util::future::BoxFuture;
 pub use rovik_protocol::connectors::{
     is_connector, kind_of, ConnectorAuth, ConnectorKind, ConnectorModel, ConnectorProbe,
-    ProbeRequest, ProbeRequestArgs,
+    ProbeRequest, ProbeRequestArgs, SetupAction, SetupJob, SetupOp,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+pub use setup::{setup, SetupCommand};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -158,6 +161,20 @@ pub trait Connector: Send + Sync {
         cancel: &'a mut watch::Receiver<bool>,
         on_event: &'a mut (dyn FnMut(ChatStreamEvent) + Send),
     ) -> BoxFuture<'a, Result<(), String>>;
+
+    /// What a "Set up" step runs for the connector `args` names: its
+    /// installer, its sign-in. setup.rs runs it, shows its output, opens
+    /// the page it prints and gives it the code the user types. None when
+    /// the connector has no such step (the user installs or signs in as its
+    /// own docs say); `Err` when it can't run now (no program to sign in).
+    fn setup_command(
+        &self,
+        action: SetupAction,
+        args: &ProbeRequestArgs,
+    ) -> Result<Option<SetupCommand>, String> {
+        let _ = (action, args);
+        Ok(None)
+    }
 }
 
 /// The connector of a kind.

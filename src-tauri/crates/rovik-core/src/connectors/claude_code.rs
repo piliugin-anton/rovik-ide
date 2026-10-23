@@ -28,7 +28,7 @@ use super::mcp::{McpCall, McpReply, McpServer, SERVER_NAME, TOOL_PREFIX};
 use super::{
     harness_error, trimmed_text, trimmed_value, usage_value, Answers, Connector, ConnectorAuth,
     ConnectorKind, ConnectorModel, ConnectorProbe, HarnessStep, ProbeRequest, ProbeRequestArgs,
-    Turn,
+    SetupAction, SetupCommand, Turn,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -67,6 +67,15 @@ const MCP_TOOL_TIMEOUT_MS: &str = "86400000";
 const ROVIK_TOOLS_NOTE: &str = "## Your tools\n\nYour tools are Rovik IDE's, served to you over MCP: each one appears as `mcp__rovik__<name>`, and this prompt names it without the prefix (`read` is `mcp__rovik__read`). Rovik runs each call in the project: its permissions apply, a call may wait for the user's approval, and one that isn't allowed comes back saying so.";
 /// The MCP server's instructions, for the model.
 const MCP_INSTRUCTIONS: &str = "Rovik IDE's tools for the open project: reading, searching and editing its files, running commands, and the agent's checklist. Rovik runs every call under its own permissions.";
+
+/// Anthropic's native installer (code.claude.com/docs/en/setup): `claude`
+/// in the user's `~/.local/bin` (found there, `well_known_places`), with
+/// no admin rights, keeping itself up to date.
+const INSTALL: &str = if cfg!(windows) {
+    "irm https://claude.ai/install.ps1 | iex"
+} else {
+    "curl -fsSL https://claude.ai/install.sh | bash"
+};
 
 /// The connector.
 pub struct ClaudeCode;
@@ -1109,28 +1118,9 @@ fn command(program: &str, cwd: Option<&Path>, env: &[(String, String)]) -> std::
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // Its own process group: a Stop ends what it started too.
-        cmd.process_group(0);
-    }
+    // Its own process group: a Stop ends what it started too.
+    crate::process::own_group(&mut cmd);
     cmd
-}
-
-/// Ends a process group: the program and everything it started.
-fn kill_group(pid: Option<u32>, child: &mut tokio::process::Child, force: bool) {
-    #[cfg(unix)]
-    if let Some(pid) = pid.and_then(|id| libc::pid_t::try_from(id).ok()) {
-        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
-        unsafe { libc::kill(-pid, signal) };
-        if !force {
-            return;
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = pid;
-    let _ = child.start_kill();
 }
 
 /// The tail of stderr, for an error's details.
@@ -1248,7 +1238,7 @@ impl Process {
     }
 
     fn kill(&mut self, force: bool) {
-        kill_group(self.pid, &mut self.child, force);
+        crate::process::kill_group(self.pid, &mut self.child, force);
     }
 
     /// How it ended: its exit code (none when killed) and its stderr's end.
@@ -1260,7 +1250,7 @@ impl Process {
             _ => None,
         };
         // Anything of the group still running, and its hold on stderr.
-        kill_group(self.pid, &mut self.child, true);
+        crate::process::kill_group(self.pid, &mut self.child, true);
         let stderr = match self.stderr.take() {
             Some(task) => tokio::time::timeout(STOP_GRACE, task)
                 .await
@@ -1924,6 +1914,29 @@ impl Connector for ClaudeCode {
         })
     }
 
+    /// The native installer; `claude auth login` and `logout` with a run's
+    /// settings folder, a Console login for an API-key connector. The
+    /// login opens the browser where it runs, and prints the page to open
+    /// elsewhere (a cloud host's), whose code it reads from its input.
+    fn setup_command(
+        &self,
+        action: SetupAction,
+        args: &ProbeRequestArgs,
+    ) -> Result<Option<SetupCommand>, String> {
+        let settings = Settings::from_value(&args.settings);
+        let auth = |verb: &str| -> Result<SetupCommand, String> {
+            let program = resolve_program(&settings.program)?;
+            Ok(SetupCommand::program(program, &["auth", verb])
+                .with_env(env_for(&settings, &args.api_key)))
+        };
+        Ok(Some(match action {
+            SetupAction::Install => SetupCommand::shell(INSTALL),
+            SetupAction::Login if settings.auth == Auth::ApiKey => auth("login")?.arg("--console"),
+            SetupAction::Login => auth("login")?,
+            SetupAction::Logout => auth("logout")?,
+        }))
+    }
+
     fn run<'a>(
         &'a self,
         turn: Turn,
@@ -2187,6 +2200,45 @@ mod tests {
             !joined.contains("--session-id") && !joined.contains("--permission-mode"),
             "{joined}"
         );
+    }
+
+    #[test]
+    fn set_up_installs_natively_and_signs_in_with_the_runs_settings() {
+        let args = |settings: Value| ProbeRequestArgs {
+            kind: ConnectorKind::ClaudeCode,
+            settings,
+            api_key: String::new(),
+            request: false,
+        };
+        let step = |action, settings| ClaudeCode.setup_command(action, &args(settings));
+
+        let install = step(SetupAction::Install, json!({})).unwrap().unwrap();
+        assert_eq!(install.shown, INSTALL);
+        assert!(INSTALL.contains("https://claude.ai/install."), "{INSTALL}");
+
+        // Signing in needs the program; a path that isn't one says so.
+        let missing = json!({ "program": "/nowhere/claude" });
+        let err = step(SetupAction::Login, missing).unwrap_err();
+        assert!(err.contains("no such program"), "{err}");
+
+        let dir = crate::testing::temp_dir();
+        let program = dir.0.join("claude");
+        std::fs::write(&program, "").unwrap();
+        let settings = json!({
+            "program": program.to_string_lossy(),
+            "auth": "apiKey",
+            "configDir": "/tmp/claude-work",
+        });
+        let login = step(SetupAction::Login, settings.clone()).unwrap().unwrap();
+        assert_eq!(login.args, ["auth", "login", "--console"]);
+        assert!(login
+            .env
+            .contains(&("CLAUDE_CONFIG_DIR".into(), "/tmp/claude-work".into())));
+        let logout = step(SetupAction::Logout, settings).unwrap().unwrap();
+        assert_eq!(logout.args, ["auth", "logout"]);
+        let plain = json!({ "program": program.to_string_lossy() });
+        let login = step(SetupAction::Login, plain).unwrap().unwrap();
+        assert_eq!(login.args, ["auth", "login"]);
     }
 
     #[test]
@@ -2821,6 +2873,49 @@ fi
     /// over MCP, then answer from the result Rovik gives. Costs a request
     /// or two on the account `claude` is signed in to.
     ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored
+    /// The real `claude auth login` as "Set up" runs it, in an empty
+    /// settings folder: it prints the sign-in page and waits for a code,
+    /// until stopped. Nothing is signed in.
+    ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored
+    #[tokio::test]
+    #[ignore = "runs the real claude: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
+    async fn real_claude_sign_in_prints_its_page_and_stops() {
+        if std::env::var("ROVIK_REAL_CLAUDE").is_err() {
+            return;
+        }
+        let dir = crate::testing::temp_dir();
+        let args = ProbeRequestArgs {
+            kind: ConnectorKind::ClaudeCode,
+            settings: json!({ "configDir": dir.0.to_string_lossy() }),
+            api_key: String::new(),
+            request: false,
+        };
+        let poll =
+            |id: &str| crate::connectors::setup(crate::connectors::SetupOp::Poll { id: id.into() });
+        let start = crate::connectors::SetupOp::Start {
+            args,
+            action: SetupAction::Login,
+        };
+        let job = crate::connectors::setup(start).await.unwrap();
+        assert!(job.command.ends_with("auth login"), "{}", job.command);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut job = job;
+        while job.url.is_none() && !job.done && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            job = poll(&job.id).await.unwrap();
+        }
+        let url = job.url.clone().unwrap_or_default();
+        assert!(url.contains("/oauth/authorize"), "{}", job.output);
+        assert!(!job.done, "{:?}", job.error);
+        let cancel = crate::connectors::SetupOp::Cancel { id: job.id.clone() };
+        crate::connectors::setup(cancel).await.unwrap();
+        while !job.done && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            job = poll(&job.id).await.unwrap();
+        }
+        assert_eq!(job.error.as_deref(), Some("Stopped."));
+    }
+
     #[tokio::test]
     #[ignore = "runs the real claude: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
     async fn real_claude_runs_rovik_tools() {

@@ -226,6 +226,34 @@ export interface ConnectorProbe {
   auth?: ConnectorAuth | null;
 }
 
+/** What the core's connector calls are asked with (`ProbeRequestArgs`). */
+export interface ConnectorArgs {
+  kind: ConnectorKind;
+  settings: Record<string, unknown>;
+  apiKey: string;
+  request: boolean;
+}
+
+/** The connector `p` as the core's calls take it; throws for a provider. */
+export function connectorArgs(p: Provider, request = false): ConnectorArgs {
+  const kind = kindOfProvider(p);
+  if (!kind) throw new Error('Not a connector.');
+  return { kind, settings: p.settings ?? {}, apiKey: p.apiKey, request };
+}
+
+/**
+ * Calls one of the core's connector commands on the connector `p`, here or
+ * on `host` (a cloud host's id): `connector_probe`, `connector_auth_status`.
+ */
+export async function connectorCall<T>(
+  command: string,
+  p: Provider,
+  host?: string | null,
+  request = false
+): Promise<T> {
+  return invoke<T>(command, { args: connectorArgs(p, request), host: host ?? null });
+}
+
 /**
  * Tests the connector on this computer, or on `host` (a cloud host's id),
  * and lists its models; with `request`, makes one small request too, to
@@ -236,12 +264,7 @@ export function probeConnector(
   request: boolean,
   host?: string | null
 ): Promise<ConnectorProbe> {
-  const kind = kindOfProvider(p);
-  if (!kind) return Promise.reject(new Error('Not a connector.'));
-  return invoke<ConnectorProbe>('connector_probe', {
-    args: { kind, settings: p.settings ?? {}, apiKey: p.apiKey, request },
-    host: host ?? null,
-  });
+  return connectorCall<ConnectorProbe>('connector_probe', p, host, request);
 }
 
 /** A probe's models as `mergeRemoteModels` takes them. */
@@ -325,12 +348,7 @@ export function cantRun(state: AuthState | undefined): boolean {
 
 /** Asks the program whether it's signed in, here or on `host`. */
 export function connectorAuthStatus(p: Provider, host?: string | null): Promise<ConnectorAuth> {
-  const kind = kindOfProvider(p);
-  if (!kind) return Promise.reject(new Error('Not a connector.'));
-  return invoke<ConnectorAuth>('connector_auth_status', {
-    args: { kind, settings: p.settings ?? {}, apiKey: p.apiKey, request: false },
-    host: host ?? null,
-  });
+  return connectorCall<ConnectorAuth>('connector_auth_status', p, host);
 }
 
 /** An answer, or a failure to get one, as a state. */
@@ -340,8 +358,18 @@ export function authStateOf(result: { auth: ConnectorAuth } | { error: unknown }
       ? { state: 'signedIn', auth: result.auth }
       : { state: 'signedOut', auth: result.auth };
   }
-  const message = String(result.error).replace(/^Error: /, '');
-  return { state: 'unknown', message, missing: /isn't installed|no such program/i.test(message) };
+  const message = errorText(result.error);
+  return { state: 'unknown', message, missing: isMissingProgram(message) };
+}
+
+/** An error as the user reads it. */
+export function errorText(error: unknown): string {
+  return String(error).replace(/^Error: /, '');
+}
+
+/** Whether a connector's error says its program isn't there to run. */
+export function isMissingProgram(message: string): boolean {
+  return /isn't installed|no such program/i.test(message);
 }
 
 /** Checks one connector on this computer, and keeps what it found. */

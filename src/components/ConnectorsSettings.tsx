@@ -14,6 +14,7 @@ import {
   authLine,
   authStateOf,
   AUTH_KINDS,
+  cantRun,
   checkConnectorAuth,
   connectorAuthState,
   setConnectorAuthState,
@@ -28,10 +29,12 @@ import {
   probeConnector,
   probeModels,
   probeSummary,
+  errorText,
   type ClaudeCodeSettings,
   type ConnectorProbe,
 } from '../lib/connectors';
 import { confirmDialog } from './ConfirmDialog';
+import ConnectorSetup from './ConnectorSetup';
 import ProviderModelsTable, { CONNECTOR_COLUMNS } from './ProviderModelsTable';
 import { SettingRow } from './SettingsControls';
 import { listHosts } from '../lib/hosts';
@@ -69,6 +72,8 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
   const [testHost, setTestHost] = createSignal('');
   const [formError, setFormError] = createSignal<string | null>(null);
   const [adding, setAdding] = createSignal(false);
+  // The list's "Set up": the form opens and sets the connector up at once.
+  const [setUpOnOpen, setSetUpOnOpen] = createSignal(false);
   // The cloud hosts, for "Test on": a connector is a program on the
   // computer the chat runs on, so a host has its own installation.
   const [hostsList] = createResource(() => listHosts().catch(() => null));
@@ -88,7 +93,8 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     setTest({ kind: 'idle' });
   };
 
-  function openDraft(p: Provider) {
+  function openDraft(p: Provider, setUp = false) {
+    setSetUpOnOpen(setUp);
     setDraft({ ...p, models: p.models.map((m) => ({ ...m })) });
     setTest({ kind: 'idle' });
     setFormError(null);
@@ -106,16 +112,19 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     openDraft(newConnector(kind));
   }
 
-  async function runTest() {
+  /**
+   * Tests the connector being edited where it's tested, shows what it found
+   * and keeps its models; throws what failed. "Set up" tests with it too.
+   */
+  async function testNow(): Promise<ConnectorProbe> {
     const d = draft();
-    if (!d) return;
+    if (!d) throw new Error('No connector is open.');
     const run = ++testRun;
     setTest({ kind: 'testing' });
     try {
       const probe = await probeConnector(d, withRequest(), testHost() || null);
-      if (run !== testRun) return;
       const current = draft();
-      if (!current) return;
+      if (run !== testRun || !current) return probe;
       // Existing choices are kept; only the very first fetch enables everything.
       const firstFetch = current.models.length === 0;
       const { models, added } = mergeRemoteModels(current.models, probeModels(probe));
@@ -125,11 +134,18 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
       if (probe.auth && !testHost())
         setConnectorAuthState(current.id, authStateOf({ auth: probe.auth }));
       setTest({ kind: 'ok', probe, added, first: firstFetch });
+      return probe;
     } catch (err) {
-      if (run !== testRun) return;
-      setTest({ kind: 'error', message: String(err) });
+      if (run === testRun) setTest({ kind: 'error', message: errorText(err) });
+      throw err;
     }
   }
+
+  const runTest = () => testNow().catch(() => {});
+  const testWhere = () =>
+    testHost()
+      ? `on ${hosts().find((h) => h.id === testHost())?.name ?? 'the host'}`
+      : 'on this computer';
 
   const okState = () => {
     const t = test();
@@ -255,6 +271,15 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                   >
                     Check sign-in
                   </button>
+                  <Show when={cantRun(connectorAuthState(c.id))}>
+                    <button
+                      class="primary"
+                      onClick={() => openDraft(c, true)}
+                      title="Installs it if it's missing and signs it in, on this computer"
+                    >
+                      Set up
+                    </button>
+                  </Show>
                   <button onClick={() => openDraft(c)}>Edit</button>
                   <button class="danger" onClick={() => void remove(c)}>
                     Remove
@@ -308,8 +333,9 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
               spellcheck={false}
             />
             <span class="setting-explain">
-              `claude` as the shell finds it, or the path to it. Install it with{' '}
-              <code>{CONNECTOR_CATALOG[0].install}</code>, or a package manager on a server.
+              `claude` as the shell finds it, or the path to it. Set up below installs it if it’s
+              missing; or install it with <code>{CONNECTOR_CATALOG[0].install}</code>, or a package
+              manager on a server.
             </span>
           </label>
 
@@ -573,6 +599,15 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
               </div>
             )}
           </Show>
+          <ConnectorSetup
+            connector={d()}
+            title={connectorTitle(kindOfProvider(d()) ?? 'claude-code')}
+            host={testHost() || null}
+            where={testWhere()}
+            probe={testNow}
+            signedIn={okState()?.probe.auth?.loggedIn === true}
+            autoStart={setUpOnOpen()}
+          />
 
           <ProviderModelsTable
             providerName={d().name}

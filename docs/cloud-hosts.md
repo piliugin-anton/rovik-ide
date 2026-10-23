@@ -377,14 +377,22 @@ PATH, as `claude` installed by hand would be found too (the native
 installer puts it in `~/.local/bin`, for that user alone). The package
 doesn't update itself: run the command again for the newest version.
 Where the server has another package manager, install Claude Code by hand
-or name the program's path in the connector's settings.
+or name the program's path in the connector's settings. A user can also
+install it for themselves alone: **Set up** in Settings → Connectors, with
+the host chosen, runs Anthropic's installer as that user, which puts
+`claude` in their `~/.local/bin` (it needs `curl` and `bash` on the
+server).
 
 Each user signs in as their own. The token or key of the connector's
 settings travels with the chat's model and reaches the program as
 `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`; the daemon keeps it as
 it keeps providers' keys ([What can read what](#what-can-read-what)). A
 connector set to the computer's login uses the login in that user's
-`~/.claude` on the server, made by running `claude` there once. Claude
+`~/.claude` on the server, made by running `claude` there once, or by
+**Set up**: it runs `claude auth login` as that user on the server, opens
+the sign-in page in the browser of the user's own computer, and passes
+the code that page shows back to the program. The login is that user's
+alone. Claude
 Code's own conversation for a chat (its session) is kept by the program
 in that user's home; Rovik remembers which session each chat continues.
 

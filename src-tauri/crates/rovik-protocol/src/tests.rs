@@ -531,6 +531,16 @@ fn every_request_round_trips() {
                 api_key: "tok".into(),
                 request: false,
             }),
+            Request::ConnectorSetup(crate::connectors::SetupOp::Start {
+                args: crate::connectors::ProbeRequestArgs {
+                    kind: crate::connectors::ConnectorKind::ClaudeCode,
+                    settings: serde_json::json!({}),
+                    api_key: String::new(),
+                    request: false,
+                },
+                action: crate::connectors::SetupAction::Install,
+            }),
+            Request::ConnectorSetup(crate::connectors::SetupOp::Cancel { id: "j".into() }),
             Request::ChatRename {
                 dialog_id: "d".into(),
                 title: "New title".into(),
@@ -889,6 +899,15 @@ fn every_response_round_trips() {
                 method: Some("claude.ai".into()),
                 config_dir: Some("/home/ann/.claude".into()),
                 detail: None,
+            }),
+            Response::ConnectorSetup(crate::connectors::SetupJob {
+                id: "j".into(),
+                action: crate::connectors::SetupAction::Login,
+                command: "claude auth login".into(),
+                output: "Paste code here if prompted >".into(),
+                url: Some("https://claude.com/cai/oauth/authorize?code=true".into()),
+                done: false,
+                error: None,
             }),
             Response::Tasks(vec![
                 crate::autopilot::ChatTask {

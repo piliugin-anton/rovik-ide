@@ -10093,6 +10093,59 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
 }
 
+/* A connector's "Set up" (ConnectorSetup.tsx) */
+.connector-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.connector-setup-stage {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.connector-setup-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.connector-setup-code {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.connector-setup-code input {
+  flex: 1 1 160px;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+.connector-setup-output summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-dim);
+  overflow-wrap: anywhere;
+}
+
+.connector-setup-output pre {
+  max-height: 180px;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
 /* A connector's models have fewer columns than a provider's. */
 .connector-models .provider-models-list {
   grid-template-columns: minmax(max-content, 1fr) 136px 68px 60px 22px;
