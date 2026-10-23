@@ -515,8 +515,26 @@ pub fn is_cache(dir: &Path) -> bool {
     writable().iter().any(|cache| cache == dir)
 }
 
+/// Whether a `Cargo.lock` entry is safe to make a file name of
+/// (`{name}-{version}.crate`): a name in crates.io's characters, a version
+/// starting with a digit in semver's (no `/`, no `..`), and a SHA-256.
+/// The lockfile is the project's, which the agent writes; the files are
+/// copied outside its sandbox.
+fn crate_id_ok(name: &str, version: &str, checksum: &str) -> bool {
+    let name_ok = !name.is_empty()
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let version_ok = version.starts_with(|c: char| c.is_ascii_digit())
+        && !version.contains("..")
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'+' || b == b'-');
+    let checksum_ok = checksum.len() == 64 && checksum.bytes().all(|b| b.is_ascii_hexdigit());
+    name_ok && version_ok && checksum_ok
+}
+
 /// The crates `root`'s `Cargo.lock` names, from crates.io, with the
-/// checksums it pins: `(name, version, checksum)`.
+/// checksums it pins: `(name, version, checksum)`. An entry that isn't
+/// safe to make a file name of ([`crate_id_ok`]) is left out.
 fn locked_crates(root: &Path) -> Vec<(String, String, String)> {
     let Ok(lock) = std::fs::read_to_string(root.join("Cargo.lock")) else {
         return Vec::new();
@@ -529,7 +547,11 @@ fn locked_crates(root: &Path) -> Vec<(String, String, String)> {
                      checksum: &mut Option<String>| {
         if let (Some(name), Some(version), Some(checksum)) = (name.take(), version.take(), checksum.take()) {
             if source.take().is_some_and(|s| s.contains("crates.io")) {
-                crates.push((name, version, checksum));
+                if crate_id_ok(&name, &version, &checksum) {
+                    crates.push((name, version, checksum));
+                } else {
+                    ::log::warn!("toolchains: Cargo.lock entry {name:?} {version:?} isn't a crate's name: skipped");
+                }
             }
         }
         source.take();
@@ -936,6 +958,37 @@ mod tests {
             .filter(|name| name.starts_with('.') && *name != planted)
             .collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// A lockfile entry that would make a path out of the store, or one
+    /// that isn't a crate's name, version or SHA-256, is never read.
+    #[test]
+    fn a_lockfile_entry_that_isnt_a_crate_is_skipped() {
+        let dir = crate::testing::temp_dir();
+        let sum = "a".repeat(64);
+        let entry = |name: &str, version: &str, checksum: &str| {
+            format!(
+                "[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n\
+                 source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\
+                 checksum = \"{checksum}\"\n\n"
+            )
+        };
+        let lock = [
+            entry("../../x", "1.0.0", &sum),
+            entry("a/b", "1.0.0", &sum),
+            entry("x", "1.0/../x", &sum),
+            entry("x", "..1", &sum),
+            entry("x", "-1", &sum),
+            entry("x", "1.0.0", &"a".repeat(63)),
+            entry("x", "1.0.0", &"g".repeat(64)),
+            entry("serde_json", "1.0.0-rc.1+build.5", &sum),
+        ]
+        .concat();
+        write(&dir.0, "Cargo.lock", &lock);
+        assert_eq!(
+            locked_crates(&dir.0),
+            [("serde_json".to_string(), "1.0.0-rc.1+build.5".to_string(), sum)]
+        );
     }
 
     /// Nothing changes on a computer the daemon didn't set anything on.
