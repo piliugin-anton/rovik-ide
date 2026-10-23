@@ -10,10 +10,12 @@
 // lists, switches, creates and deletes branches, `changes` commits, reverts
 // and discards, `stash` shelves and shows, and `history` is the log and its
 // search. Every command runs its work on a worker thread (util::blocking).
+// libgit2 runs no git hooks: `hooks` runs the repository's, where git would.
 
 mod branches;
 mod changes;
 mod history;
+pub(crate) mod hooks;
 mod remote;
 mod stash;
 

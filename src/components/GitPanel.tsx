@@ -611,21 +611,29 @@ export function GitPanel(props: GitPanelProps) {
 
   /** Pulls; asks how when the config doesn't say. 'conflicts' opens the resolver. */
   const runPull = async (pick?: PullStrategyPick): Promise<'done' | 'conflicts' | 'cancelled'> => {
-    let out = await invoke<GitPullOutcome>('git_pull', {
-      path: props.projectPath,
-      strategy: pick?.strategy,
-      remember: pick?.remember ?? false,
-    });
-    if (out.result === 'needs-strategy') {
-      const asked = await askStrategy(
-        'Your branch and its upstream have diverged, and git config (pull.rebase) doesn’t say how to combine them.'
-      );
-      if (!asked) return 'cancelled';
+    let out: GitPullOutcome;
+    try {
       out = await invoke<GitPullOutcome>('git_pull', {
         path: props.projectPath,
-        strategy: asked.strategy,
-        remember: asked.remember,
+        strategy: pick?.strategy,
+        remember: pick?.remember ?? false,
       });
+      if (out.result === 'needs-strategy') {
+        const asked = await askStrategy(
+          'Your branch and its upstream have diverged, and git config (pull.rebase) doesn’t say how to combine them.'
+        );
+        if (!asked) return 'cancelled';
+        out = await invoke<GitPullOutcome>('git_pull', {
+          path: props.projectPath,
+          strategy: asked.strategy,
+          remember: asked.remember,
+        });
+      }
+    } catch (e) {
+      // A merge a git hook refused stays in progress, to continue or abort.
+      await refreshStatus();
+      props.onFilesChangedOnDisk?.();
+      throw e;
     }
     await refreshStatus();
     props.onFilesChangedOnDisk?.();
@@ -762,7 +770,16 @@ export function GitPanel(props: GitPanelProps) {
         return;
       }
 
-      await invoke('git_commit', { path: props.projectPath, message: msg });
+      try {
+        await invoke('git_commit', { path: props.projectPath, message: msg });
+      } catch (e) {
+        // A git hook that stopped the commit may have changed files first.
+        await refreshStatus();
+        throw e;
+      } finally {
+        // A pre-commit hook may rewrite files (a formatter's fixes).
+        props.onFilesChangedOnDisk?.();
+      }
       setCommitMessage('');
 
       const updated = await refreshStatus();

@@ -681,3 +681,125 @@ fn a_rebase_is_refused_where_it_cant_be_done() {
     let busy = git_rebase_blocking(p(&dir), "up".into(), false, false).unwrap_err();
     assert!(busy.contains("A merge is in progress"), "{busy}");
 }
+
+/// The hooks a pull, a merge and a rebase run, as git runs them.
+#[cfg(unix)]
+mod hooks {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Hook `name` in `dir`'s repository, a shell script running `body`.
+    fn hook(repo: &Repository, dir: &Path, name: &str, body: &str) {
+        // Whatever the machine's global config says.
+        repo.config()
+            .unwrap()
+            .set_str("core.hooksPath", ".git/hooks")
+            .unwrap();
+        let file = dir.join(".git/hooks").join(name);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn noted(dir: &Path, file: &str) -> String {
+        fs::read_to_string(dir.join(".git").join(file)).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_pull_that_fast_forwards_runs_post_merge() {
+        let (dir, repo) = diverged("one\ntwo\nthree\n", "one\ntwo\nthree\nfour\n");
+        // main back at the start: the pull just moves it up.
+        let start = repo.revparse_single("main~1").unwrap().id();
+        repo.reference("refs/heads/main", start, true, "test")
+            .unwrap();
+        checkout(&repo, "main");
+        hook(
+            &repo,
+            &dir,
+            "post-merge",
+            "echo \"$@\" > .git/post-merge-args",
+        );
+        let out = integrate_upstream(&repo, None, false).unwrap();
+        assert_eq!(out.result, "fast-forward");
+        assert_eq!(noted(&dir, "post-merge-args"), "0\n");
+    }
+
+    #[test]
+    fn a_pull_that_merges_runs_the_merge_hooks() {
+        let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+        hook(&repo, &dir, "pre-merge-commit", "echo pre >> .git/ran");
+        hook(&repo, &dir, "prepare-commit-msg", "echo \"$2\" >> .git/ran");
+        hook(&repo, &dir, "post-merge", "echo post >> .git/ran");
+        hook(&repo, &dir, "pre-commit", "echo pre-commit >> .git/ran");
+        let out = integrate_upstream(&repo, Some(PullStrategy::Merge), false).unwrap();
+        assert_eq!(out.result, "merged");
+        assert_eq!(noted(&dir, "ran"), "pre\nmerge\npost\n");
+        assert_eq!(head_commit(&repo).unwrap().parent_count(), 2);
+    }
+
+    #[test]
+    fn a_merge_its_hook_refuses_stays_in_progress_to_continue() {
+        let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+        let ours = head_commit(&repo).unwrap().id();
+        hook(
+            &repo,
+            &dir,
+            "pre-merge-commit",
+            "echo 'not yet' >&2; exit 1",
+        );
+        let err = integrate_upstream(&repo, Some(PullStrategy::Merge), false).unwrap_err();
+        assert!(
+            err.starts_with(
+                "Not committed: the pre-merge-commit hook failed (exit code 1):\nnot yet\n"
+            ),
+            "{err}"
+        );
+        assert_eq!(repo.state(), RepositoryState::Merge);
+        assert_eq!(head_commit(&repo).unwrap().id(), ours);
+
+        // Continuing is a commit, with the commit hooks.
+        hook(&repo, &dir, "pre-commit", "echo pre-commit >> .git/ran");
+        hook(&repo, &dir, "post-commit", "echo post-commit >> .git/ran");
+        let out = git_operation_continue_blocking(p(&dir), None).unwrap();
+        assert_eq!(out.result, "merged");
+        assert_eq!(noted(&dir, "ran"), "pre-commit\npost-commit\n");
+        assert_eq!(repo.state(), RepositoryState::Clean);
+    }
+
+    #[test]
+    fn pre_rebase_can_refuse_a_rebase() {
+        let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+        let ours = head_commit(&repo).unwrap().id();
+        hook(
+            &repo,
+            &dir,
+            "pre-rebase",
+            "echo \"no rebasing onto $1\"; exit 1",
+        );
+        let err = integrate_upstream(&repo, Some(PullStrategy::Rebase), false).unwrap_err();
+        assert_eq!(
+            err,
+            "Not rebased: the pre-rebase hook failed (exit code 1):\nno rebasing onto up"
+        );
+        assert_eq!(repo.state(), RepositoryState::Clean);
+        assert_eq!(head_commit(&repo).unwrap().id(), ours);
+    }
+
+    #[test]
+    fn post_rewrite_gets_each_rewritten_commit() {
+        let (dir, repo) = diverged("one\ntwo\nthree\nours\n", "zero\none\ntwo\nthree\n");
+        let ours = head_commit(&repo).unwrap().id();
+        hook(
+            &repo,
+            &dir,
+            "post-rewrite",
+            "echo \"$1\" > .git/rewrite-args; cat > .git/rewritten-list",
+        );
+        let out = integrate_upstream(&repo, Some(PullStrategy::Rebase), false).unwrap();
+        assert_eq!(out.result, "rebased");
+        let new = head_commit(&repo).unwrap().id();
+        assert_ne!(new, ours);
+        assert_eq!(noted(&dir, "rewrite-args"), "rebase\n");
+        assert_eq!(noted(&dir, "rewritten-list"), format!("{ours} {new}\n"));
+    }
+}

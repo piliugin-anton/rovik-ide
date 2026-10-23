@@ -4798,13 +4798,18 @@ body.is-resizing * {
 
 .git-inline-error {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 6px 8px;
   color: var(--error);
   background: color-mix(in srgb, var(--error) 12%, transparent);
   border-bottom: 1px solid var(--border);
   font-size: 11px;
+  /* A git hook's output: its lines as it printed them, scrolled when long. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
 .git-inline-error svg {

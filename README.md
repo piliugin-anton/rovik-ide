@@ -59,7 +59,9 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   rebase onto any local or remote branch, found by searching. Merge
   conflicts are resolved in a side-by-side conflict resolver: the
   conflicts git wrote in the file, each settled with one side, both,
-  lines ticked from either side, or an edit by hand.
+  lines ticked from either side, or an edit by hand. The repository's
+  [Git hooks](#git-hooks) run as they do with git: a failing pre-commit
+  or pre-push stops the commit or push and shows what it printed.
 
 **AI agent**
 
@@ -599,7 +601,7 @@ src-tauri/               backend (Rust), a Cargo workspace
     lib.rs               app setup: plugins and command registration
     commands/            the commands of the agent and its chats, over the core
     filesystem/          directory listing and the file watcher
-    git/, git_sync.rs    Git panel: status, branches, history, pull, push
+    git/, git_sync.rs    Git panel: status, branches, history, pull, push, hooks
     terminal.rs          the terminal panel
     lsp/                 language servers, bridged to the editor
     instances.rs         several windows: which window has which project
@@ -722,6 +724,45 @@ What one process must not do to another's work is guarded the same way:
 - A lock is unlocked as it's let go, not only closed: a program another
   thread starts at that moment shares the open file until its exec, which
   kept a lock let go held meanwhile.
+
+### Git hooks
+
+The Git panel works through libgit2, which runs no hooks, so the panel
+runs them itself (`src-tauri/src/git/hooks.rs`), where git would and with
+git's arguments and input:
+
+| In the Git panel               | Hooks that run                                               |
+| ------------------------------ | ------------------------------------------------------------ |
+| Commit                         | pre-commit, prepare-commit-msg, commit-msg, post-commit      |
+| Push                           | pre-push                                                     |
+| Switching branch               | post-checkout                                                |
+| Pull that fast-forwards        | post-merge                                                   |
+| Pull that merges               | pre-merge-commit, prepare-commit-msg, commit-msg, post-merge |
+| Continuing a merge (conflicts) | pre-commit, prepare-commit-msg, commit-msg, post-commit      |
+| Pull that rebases, or Rebase…  | pre-rebase, post-rewrite                                     |
+
+A hook that runs before (pre-…, prepare-commit-msg, commit-msg) and fails
+stops the action, and the panel shows what the hook printed. A merge it
+stops stays in progress, to continue or abort. What a pre-commit hook
+stages is committed, and the message is what the message hooks leave in
+`.git/COMMIT_EDITMSG`. Hooks that run after can't stop anything; their
+failure is only logged, as git ignores it.
+
+Hooks are found as git finds them: in `core.hooksPath` when it's set (a
+relative path is from the working folder), else in `.git/hooks`. So
+husky, lefthook, pre-commit and simple-git-hooks work as they are. Each
+runs in the working folder, with the PATH of the user's login shell (for
+`npx`, `node`, …), and without a terminal, so a hook can't wait on input.
+
+- **macOS, Linux:** the hook file must be executable (`chmod +x
+.git/hooks/pre-commit`), as git requires. One that isn't is skipped, as
+  git skips it. A script without a `#!` line runs with `/bin/sh`.
+- **Windows:** a hook script runs with the `sh` of
+  [Git for Windows](https://git-scm.com/download/win), which reads its
+  `#!` line (`#!/bin/sh`, `#!/usr/bin/env node`, …) as git does, with Git
+  for Windows' tools (grep, sed, …) on the PATH. A `<hook>.exe` runs as it
+  is. Without Git for Windows a script hook can't run: the action stops
+  and says so, rather than going on as if the hook had passed.
 
 ### Project checks
 

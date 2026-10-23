@@ -1,6 +1,7 @@
 //! The remotes: which one a branch fetches from and pushes to, the
 //! credentials that get there, and the fetch and the push themselves.
 
+use super::hooks::Hooks;
 use super::{open_repo, ErrText};
 use crate::util::blocking;
 use git2::{
@@ -269,6 +270,12 @@ pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
     let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
     // The server turns a ref down through this callback, not as an error.
     let refused = std::cell::RefCell::new(None::<String>);
+    let hooks = Hooks::of(&repo);
+    let url = match (remote.pushurl(), remote.url()) {
+        (Ok(Some(url)), _) | (_, Ok(url)) if !url.is_empty() => url.to_string(),
+        _ => remote_name.clone(),
+    };
+    let hook_failed = std::cell::RefCell::new(None::<String>);
     let mut callbacks = make_callbacks();
     callbacks.push_update_reference(|_, status| {
         if let Some(reason) = status {
@@ -276,11 +283,39 @@ pub fn git_push_blocking(path: String) -> Result<PushOutcome, String> {
         }
         Ok(())
     });
+    if hooks.has("pre-push") {
+        // Where git runs it: the remote's refs known, nothing sent yet. Its
+        // input is a line per ref, as git writes it: `<local ref> <local
+        // id> <remote ref> <remote id>`, zeros for a ref the remote hasn't.
+        callbacks.push_negotiation(|updates| {
+            let input: String = updates
+                .iter()
+                .map(|u| {
+                    format!(
+                        "{} {} {} {}\n",
+                        u.src_refname().unwrap_or_default(),
+                        u.dst(),
+                        u.dst_refname().unwrap_or_default(),
+                        u.src()
+                    )
+                })
+                .collect();
+            hooks
+                .run("pre-push", &[&remote_name, &url], Some(input.as_bytes()))
+                .map_err(|e| {
+                    *hook_failed.borrow_mut() = Some(e);
+                    git2::Error::from_str("the pre-push hook failed")
+                })
+        });
+    }
     let mut push_opts = PushOptions::new();
     push_opts.remote_callbacks(callbacks);
 
     let pushed = remote.push(&[&refspec], Some(&mut push_opts));
     drop(push_opts);
+    if let Some(e) = hook_failed.into_inner() {
+        return Err(format!("Not pushed: {e}"));
+    }
     match pushed {
         Err(e) if e.code() == git2::ErrorCode::NotFastForward || is_behind_remote(e.message()) => {
             return Ok(PushOutcome::rejected(e.message().to_string()));
