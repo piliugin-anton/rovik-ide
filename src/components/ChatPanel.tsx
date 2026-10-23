@@ -4363,7 +4363,10 @@ export default function ChatPanel(props: ChatProps) {
       {/* What this request's subagents used, as their providers reported it. */}
       <Show when={usageLabel(runUsage(messages()))}>
         {(label) => (
-          <div class="subagent-run-usage" title="Tokens used for the latest request by subagents and connectors">
+          <div
+            class="subagent-run-usage"
+            title="Tokens used for the latest request by subagents and connectors"
+          >
             Subagents: {label()}
           </div>
         )}
