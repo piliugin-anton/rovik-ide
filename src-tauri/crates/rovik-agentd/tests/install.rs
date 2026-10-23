@@ -590,10 +590,84 @@ fn an_upgrade_brings_the_shared_parts_with_bubblewrap() {
     );
 }
 
+/// A settings change rewrites the unit, which names the `rovik` group: the
+/// group is made first, for a server upgraded from a build that never made
+/// it (systemd won't start a unit naming a group that isn't there).
+#[test]
+fn a_settings_change_makes_the_group_its_unit_names() {
+    let server = Server::installed();
+    let unit = "/etc/systemd/system/rovik-agentd@.service";
+    std::fs::write(server.file(unit), "Description=an old unit\n").unwrap();
+    let done = server.run(&["admin", "limits", "max_slots=2"], Some(NOBODY));
+    let out = said(&done);
+    assert!(done.status.success(), "{out}");
+    assert!(out.contains("would run: groupadd --system rovik\n"), "{out}");
+    assert!(server.text(unit).contains("SupplementaryGroups=rovik"));
+}
+
+/// An upgrade puts the shared parts in place with the new build's own
+/// command, so the old build never writes its unit back over the new one.
+#[test]
+fn an_upgrade_sets_up_the_shared_parts_with_the_new_build() {
+    let server = Server::installed();
+    let newer = server.dir.0.join("newer");
+    script(&newer, "9.9.9");
+    let newer = newer.to_string_lossy().into_owned();
+    allow_unsigned(&server);
+    let upgraded = server.run(&["admin", "upgrade", &newer], Some(NOBODY));
+    let out = said(&upgraded);
+    assert!(upgraded.status.success(), "{out}");
+    assert!(
+        out.contains("would run: /opt/rovik/bin/rovik-agentd admin toolchains setup"),
+        "{out}"
+    );
+}
+
 /// `user toolchain`: a chat's project names a version, and root installs
 /// it once for the whole server, through the sudo rule every user has.
 /// The words root gets are checked: only a version of the shape its kind
 /// has.
+/// A Rust version that's there already, without a component or target the
+/// project names: only those are added, the version left as it is.
+#[test]
+fn an_installed_rust_gets_the_components_and_targets_it_lacks() {
+    let server = Server::installed();
+    let triple = match std::env::consts::ARCH {
+        "x86_64" => "x86_64-unknown-linux-gnu",
+        "aarch64" => "aarch64-unknown-linux-gnu",
+        _ => return,
+    };
+    let rustlib = server.file(&format!(
+        "/opt/rovik/toolchains/rust/rustup/toolchains/1.82-{triple}/lib/rustlib"
+    ));
+    std::fs::create_dir_all(rustlib.join(triple)).unwrap();
+    std::fs::write(
+        rustlib.join("components"),
+        format!("cargo-{triple}\nrustc-{triple}\nrustfmt-preview-{triple}\n"),
+    )
+    .unwrap();
+    let rust = |words: &[&str]| {
+        let mut args = vec!["user", "toolchain", "rust", "1.82"];
+        args.extend_from_slice(words);
+        said(&server.run(&args, Some(NOBODY)))
+    };
+    let out = rust(&["-c", "rustfmt", "-c", "clippy", "-t", "wasm32-unknown-unknown", "-t", triple]);
+    assert!(!out.contains("toolchain install"), "the version stays: {out}");
+    assert!(
+        out.contains("rustup component add --toolchain 1.82 clippy\n"),
+        "only what's missing: {out}"
+    );
+    assert!(
+        out.contains("rustup target add --toolchain 1.82 wasm32-unknown-unknown\n"),
+        "{out}"
+    );
+    assert!(out.contains("is installed, now with clippy, wasm32-unknown-unknown"), "{out}");
+    // All there: nothing runs.
+    let out = rust(&["-c", "rustfmt", "-t", triple]);
+    assert!(!out.contains("would run"), "{out}");
+    assert!(out.contains("Rust 1.82 is installed."), "{out}");
+}
+
 #[test]
 fn a_user_installs_a_toolchain_as_root() {
     let server = Server::installed();

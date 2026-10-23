@@ -77,7 +77,7 @@ use crate::chat_db::store::{self, NewMessage};
 use crate::core::Core;
 use events::{AgentEvent, ApprovalRequest, QuestionsRequest};
 use plan::QuestionsOutcome;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
@@ -196,9 +196,6 @@ struct RunControl {
     /// A lead's run's task, once spawned (`start_run`): a move cuts a run
     /// that only waits for the user (`cut_waiting`).
     abort: Option<tokio::task::AbortHandle>,
-    /// The calls a `Resume` of the run asks about again (cut by a crash):
-    /// a move cuts the run while it waits on those alone.
-    resumed: HashSet<String>,
 }
 
 /// What `AgentState::cut_waiting` took from a run it cut: the approvals and
@@ -636,7 +633,6 @@ impl AgentState {
                 budget_cut: None,
                 _hold: hold,
                 abort: None,
-                resumed: HashSet::new(),
             },
         );
         Some(Controls {
@@ -929,24 +925,18 @@ impl AgentState {
         }
     }
 
-    /// The calls the chat's run resumes (`StartKind::Resume`): cut by a
-    /// crash, they ask the user again.
-    pub(super) fn note_resumed(&self, dialog_id: &str, calls: &[crate::chat_db::store::ToolCall]) {
-        if let Some(run) = self.lock().runs.get_mut(dialog_id) {
-            run.resumed.extend(calls.iter().map(|c| c.id.clone()));
-        }
-    }
-
-    /// Cuts the chat's run where it only waits for the user to approve
-    /// calls it resumes after a crash: a lead's of an ordinary chat (no
-    /// Autopilot task, no subagents or candidates at work), as the crash
-    /// cut it. The calls are left without results, which a `Resume` asks
-    /// about again (5.4) where the chat moves. A move's pause would
-    /// otherwise wait for a decision about a call the move is about to
-    /// take elsewhere (the chat is read-only meanwhile); one the run asked
-    /// as it went is still answered here (M03). What it waited on is
-    /// settled in the chat; the replies are kept until the run has ended
-    /// (`CutWaits`). None when it isn't such a run.
+    /// Cuts the chat's run where it only waits for the user to approve a
+    /// call: a lead's of an ordinary chat (no Autopilot task, no subagents
+    /// or candidates at work, no question asked, no message of the user's
+    /// waiting for it), as a crash would cut it.
+    /// Nothing of it runs meanwhile: a call that needs an approval runs
+    /// alone, before it starts (execute.rs `runs_in_parallel`), and the
+    /// approval is the only wait the run registers. The calls are left
+    /// without results, which a `Resume` asks about again (5.4) where the
+    /// chat moves. A move's pause would otherwise wait, without end, for a
+    /// decision about a call the move is about to take elsewhere. What it
+    /// waited on is settled in the chat; the replies are kept until the run
+    /// has ended (`CutWaits`). None when it isn't such a run.
     pub fn cut_waiting(&self, core: &Core, dialog_id: &str) -> Option<CutWaits> {
         let (approvals, questions) = {
             let mut inner = self.lock();
@@ -966,13 +956,14 @@ impl AgentState {
             if others {
                 return None;
             }
+            // A message the user sent it meanwhile goes along with a pause,
+            // stored first, and would only be handed back by a cut: the
+            // move waits for the answer then, as it always did.
+            if !run.steer.waiting().is_empty() {
+                return None;
+            }
             let own = |key: &WaitKey| key.0 == dialog_id;
-            let resumed = &run.resumed;
-            let mut waits = inner.approvals.keys().filter(|k| own(k)).peekable();
-            if waits.peek().is_none()
-                || !waits.all(|k| resumed.contains(&k.1))
-                || inner.questions.keys().any(own)
-            {
+            if !inner.approvals.keys().any(own) || inner.questions.keys().any(own) {
                 return None;
             }
             if let Some(abort) = inner.runs.get(dialog_id).and_then(|r| r.abort.as_ref()) {

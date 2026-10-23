@@ -454,6 +454,66 @@ pub fn reviewer_wait(attempt: u32, left: Duration) -> Option<Duration> {
     Some((OUTAGE_WAIT * (1u32 << attempt.min(6))).min(left))
 }
 
+/// Step 9: the time left to wait for a plan reviewer, from the plan's
+/// `minutes_left` of its `max_minutes`. Those minutes already count the
+/// waits so far (a run's time is kept after each try), so `waited` only
+/// caps it, for a plan with no record to count them.
+pub fn reviewer_time_left(minutes_left: f64, max_minutes: f64, waited: Duration) -> Duration {
+    let minutes = |m: f64| Duration::from_secs_f64((m * 60.0).max(0.0));
+    minutes(minutes_left).min(minutes(max_minutes).saturating_sub(waited))
+}
+
+/// The task's Plan stage records that count toward its time and budget
+/// share: all of them, or those from `from` (a person's Retry) on.
+pub(super) fn plan_records<'a>(
+    all: &'a [super::autopilot::Recorded],
+    task: &'a str,
+    from: Option<i64>,
+) -> impl Iterator<Item = &'a super::autopilot::StageRecord> {
+    all.iter()
+        .filter(move |r| {
+            r.record.task == task
+                && r.record.name == super::autopilot::Stage::Plan
+                && from.is_none_or(|from| r.seq >= from)
+        })
+        .map(|r| &r.record)
+}
+
+/// Step 9: whether a plan review gave nothing to go by, so that Balanced
+/// Autopilot tries it again after a wait: every model failed, or its
+/// report couldn't be read. One that couldn't start isn't tried again: the
+/// run's subagents are off after their models kept failing, which another
+/// try doesn't change (the review is skipped, and the plan blocked). One
+/// that said it was blocked, or that wrote no finding at all, is an answer.
+pub(super) fn reviewer_unusable(outcome: &Result<(String, Option<subagent::SubResult>), String>) -> bool {
+    use subagent::SubStatus;
+    match outcome {
+        Err(_) => false,
+        Ok((_, None)) => false,
+        Ok((_, Some(r))) => match r.status {
+            SubStatus::Failed => true,
+            SubStatus::Unformatted => !findingless(&r.text),
+            SubStatus::Done | SubStatus::Partial => parse_findings(&r.text).is_err(),
+            _ => false,
+        },
+    }
+}
+
+/// `wait_for_reviewer`'s answer when the run was stopped: no limit was
+/// reached, so the plan is held, not blocked.
+const STOPPED_WAITING: &str = "stopped";
+
+/// What `submit_plan` answers when the run was stopped during the plan's
+/// review in Autopilot: held, with what's open, for a Continue.
+pub fn stopped_held_result(open: usize) -> String {
+    let open = match open {
+        0 => "its review not done".to_string(),
+        1 => "1 review finding open".to_string(),
+        n => format!("{n} review findings open"),
+    };
+    format!("Stopped: the plan wasn't saved. It's held, with {open}, until the task goes on.")
+}
+
 /// A plan-stage stop reason (`review["stop"]`) in words.
 pub fn stop_words(stop: &str) -> &'static str {
     match stop {
@@ -1673,9 +1733,7 @@ impl Run {
     pub(super) async fn plan_spent(&self) -> Option<super::budget::Spent> {
         let stage = self.stage.as_ref()?;
         let all = super::autopilot::load(&self.core, &self.dialog_id).await.ok()?;
-        let plan = all.iter().map(|r| &r.record).filter(|r| {
-            r.task == stage.task && r.name == super::autopilot::Stage::Plan
-        });
+        let plan = plan_records(&all, &stage.task, self.plan_spent_from);
         Some(super::autopilot::total_spent(plan))
     }
 
@@ -1712,18 +1770,21 @@ impl Run {
     /// reason when it can't wait any more: the plan is then blocked.
     async fn wait_for_reviewer(&mut self, attempt: u32, waited: &mut Duration) -> Option<&'static str> {
         if self.stopped() {
-            return Some("reviewer-unavailable");
+            return Some(STOPPED_WAITING);
         }
         if let Some((stop, _)) = self.over_plan_share().await {
             return Some(stop);
         }
         let minutes = self.plan_minutes_left().await;
-        let left = Duration::from_secs_f64((minutes * 60.0).max(0.0)).saturating_sub(*waited);
-        let wait = reviewer_wait(attempt, left)?;
+        let left = reviewer_time_left(minutes, self.plan_fix().max_minutes, *waited);
+        // No time left to wait: blocked, never tried again at once.
+        let Some(wait) = reviewer_wait(attempt, left) else {
+            return Some("reviewer-unavailable");
+        };
         let until = Instant::now() + wait;
         while Instant::now() < until {
             if self.stopped() {
-                return Some("reviewer-unavailable");
+                return Some(STOPPED_WAITING);
             }
             let step = until.saturating_duration_since(Instant::now()).min(Duration::from_millis(250));
             tokio::time::sleep(step).await;
@@ -1957,9 +2018,10 @@ impl Run {
             earlier.clone()
         };
         let started = Instant::now();
-        // Step 9, Balanced Autopilot: a review every model failed is tried
-        // again after a wait, and at a limit the plan is blocked, never
-        // saved unreviewed.
+        // Step 9, Balanced Autopilot: a review that gave nothing to go by
+        // (every model failed, its report couldn't be read) is tried again
+        // after a wait, and at a limit the plan is blocked, never saved
+        // unreviewed.
         let (mut attempt, mut waited) = (0u32, Duration::ZERO);
         let outcome = loop {
             let outcome = self
@@ -1971,13 +2033,17 @@ impl Run {
                     owed.clone(),
                 )
                 .await;
-            let all_failed = matches!(&outcome, Ok((_, Some(r))) if r.status == subagent::SubStatus::Failed);
-            if !(all_failed && self.balanced_autopilot()) {
+            if !(reviewer_unusable(&outcome) && self.balanced_autopilot()) {
                 break outcome;
             }
-            if let Some(stop) = self.wait_for_reviewer(attempt, &mut waited).await {
-                self.plan_reviews -= 1;
-                return Ok(self.blocked_before_review(stop));
+            match self.wait_for_reviewer(attempt, &mut waited).await {
+                // Stopped meanwhile: no block, the plan is held below.
+                Some(STOPPED_WAITING) => break outcome,
+                Some(stop) => {
+                    self.plan_reviews -= 1;
+                    return Ok(self.blocked_before_review(stop));
+                }
+                None => {}
             }
             attempt += 1;
         };
@@ -2116,7 +2182,52 @@ impl Run {
             review["findings"] = json!(serious);
         }
         let status = review["status"].as_str().unwrap_or("").to_string();
-        let decision = if status == "skipped" && !unchecked {
+        // Stopped with the plan's findings open, or before its review said
+        // anything: what the review found stays open.
+        let open = match serious.is_empty() {
+            true => self.plan_findings.clone(),
+            false => serious.clone(),
+        };
+        let stopped = self.stopped() || status == "stopped";
+        let decision = if stopped && self.in_autopilot() && (!open.is_empty() || status != "clean") {
+            // An Autopilot task never saves a plan a review didn't pass:
+            // it's held with what's open, not blocked, for a Continue to go
+            // on with.
+            self.plan_review_call = Some(call_id.to_string());
+            self.plan_findings = open.clone();
+            self.plan_held = Some(plan.to_string());
+            self.plan_answer_nudges = 0;
+            review["held"] = json!(true);
+            review["open"] = json!(open.len());
+            Decision::Hold {
+                result: stopped_held_result(open.len()),
+            }
+        } else if stopped && !serious.is_empty() {
+            // Elsewhere the plan is the user's: saved, its findings at its
+            // end, as after a last round.
+            review["open"] = json!(serious.len());
+            Decision::Save {
+                plan: with_open_findings(plan, &serious),
+                note: Some(format!(
+                    "Stopped with {} review finding{} open: {} at the end of the plan, under \"{}\".",
+                    serious.len(),
+                    if serious.len() == 1 { "" } else { "s" },
+                    if serious.len() == 1 { "it's" } else { "they're" },
+                    OPEN_FINDINGS_HEADING.trim_start_matches("## ")
+                )),
+            }
+        } else if status == "skipped" && !unchecked && self.balanced_autopilot() {
+            // A plan no review passed is never saved in Balanced Autopilot:
+            // a reviewer that couldn't review (it said it was blocked, or
+            // it never ran) blocks it, as an outage at its limit does.
+            review["open"] = json!(0);
+            review["blocked"] = json!(true);
+            review["stop"] = json!("reviewer-unavailable");
+            self.plan_blocked = true;
+            Decision::Hold {
+                result: unreviewed_blocked_result("reviewer-unavailable", round),
+            }
+        } else if status == "skipped" && !unchecked {
             Decision::Save {
                 plan: plan.to_string(),
                 note: Some(format!(
@@ -2124,7 +2235,7 @@ impl Run {
                     review["reason"].as_str().unwrap_or("it couldn't run")
                 )),
             }
-        } else if serious.is_empty() || self.stopped() {
+        } else if serious.is_empty() {
             Decision::Save {
                 plan: plan.to_string(),
                 note: None,
@@ -2363,22 +2474,6 @@ impl Run {
         };
         let from = plans.first().map_or(previous, |r| r.seq);
         let id = self.dialog_id.clone();
-        let rows = self
-            .core
-            .db
-            .read(move |c| crate::chat_db::store::messages_with_meta(c, &id, "review", Some(from)))
-            .await?;
-        let Some(review) = rows
-            .iter()
-            .rev()
-            .filter(|m| m.seq < upto)
-            .filter_map(|m| m.meta.as_ref()?.get("review"))
-            .find(|r| r["kind"] == "plan" && r.get("planState").is_some())
-            .cloned()
-        else {
-            return Ok(());
-        };
-        let id = self.dialog_id.clone();
         let notes = self
             .core
             .db
@@ -2394,6 +2489,27 @@ impl Run {
                     .and_then(Value::as_str)
                     == Some(PLAN_RETRY)
         });
+        // A person's Retry starts the plan's time and budget share again;
+        // an automatic one goes on counting them.
+        if !automatic {
+            self.plan_spent_from = Some(upto);
+        }
+        let id = self.dialog_id.clone();
+        let rows = self
+            .core
+            .db
+            .read(move |c| crate::chat_db::store::messages_with_meta(c, &id, "review", Some(from)))
+            .await?;
+        let Some(review) = rows
+            .iter()
+            .rev()
+            .filter(|m| m.seq < upto)
+            .filter_map(|m| m.meta.as_ref()?.get("review"))
+            .find(|r| r["kind"] == "plan" && r.get("planState").is_some())
+            .cloned()
+        else {
+            return Ok(());
+        };
         self.plan_ledger = serde_json::from_value(review["ledger"].clone()).unwrap_or_default();
         let state = &review["planState"];
         let held = state["held"].as_str().map(str::to_string);
@@ -3377,6 +3493,46 @@ mod tests {
         let short = OUTAGE_WAIT / 2;
         assert_eq!(reviewer_wait(3, short), Some(short));
         assert_eq!(reviewer_wait(0, Duration::ZERO), None);
+    }
+
+    /// A person's Retry counts the plan's time from its own record on;
+    /// otherwise every Plan record of the task counts, and no other.
+    #[test]
+    fn a_persons_retry_counts_the_plans_time_from_its_record() {
+        use super::super::autopilot::{Effort, Recorded, Stage, StageRecord};
+        let rec = |seq: i64, task: &str, name: Stage| Recorded {
+            id: format!("r{seq}"),
+            seq,
+            record: StageRecord::running(task, name, 1, Effort::Balanced),
+        };
+        let all = [
+            rec(1, "t", Stage::Plan),
+            rec(2, "t", Stage::PlanReview),
+            rec(3, "other", Stage::Plan),
+            rec(5, "t", Stage::Plan),
+            rec(7, "t", Stage::Plan),
+        ];
+        let seqs = |from| {
+            plan_records(&all, "t", from)
+                .map(|r| all.iter().find(|a| std::ptr::eq(&a.record, r)).unwrap().seq)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(seqs(None), [1, 5, 7]);
+        assert_eq!(seqs(Some(5)), [5, 7]);
+    }
+
+    /// The waits so far are in the plan's minutes already: not taken off
+    /// twice. Without a record of them, `waited` still ends the waits.
+    #[test]
+    fn the_reviewers_time_left_counts_each_wait_once() {
+        let min = Duration::from_secs(60);
+        // 20 of 30 minutes spent, 10 of them waiting: 10 left, not 0.
+        assert_eq!(reviewer_time_left(10.0, 30.0, min * 10), min * 10);
+        // No record counted them: 30 minutes waited is all of it.
+        assert_eq!(reviewer_time_left(30.0, 30.0, min * 30), Duration::ZERO);
+        assert_eq!(reviewer_time_left(30.0, 30.0, min * 25), min * 5);
+        // Past the limit: nothing left, never a negative wait.
+        assert_eq!(reviewer_time_left(-2.0, 30.0, Duration::ZERO), Duration::ZERO);
     }
 
     fn entry(number: usize, f: Finding) -> LedgerEntry {

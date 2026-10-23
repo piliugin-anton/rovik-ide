@@ -9,7 +9,9 @@
 mod common;
 
 use common::app::{landed, App, HOST};
-use common::project::{ended, message, start, unattended, writes, Setup, CHAT, PROJECT};
+use common::project::{
+    ended, message, start, tool_results, unattended, writes, Setup, CHAT, PROJECT,
+};
 use common::{messages_in, until};
 use rovik_client::shadow::Shadow;
 use rovik_client::CloudEvent;
@@ -85,6 +87,22 @@ fn asks() -> Permissions {
     }
 }
 
+/// A command that takes a while and needs no approval: a run at work, not
+/// waiting for the user, which a move lets reach its safe point.
+fn slow(id: &'static str) -> Reply {
+    Reply::Call {
+        id,
+        name: "bash",
+        args: json!({ "command": "sleep 2" }),
+    }
+}
+
+/// Waits until the model was asked `n` times: the reply that came from
+/// the last one is the run's now.
+async fn requested(seen: &Mutex<Vec<Value>>, n: usize) {
+    until(&format!("{n} requests"), || (seen.lock().unwrap().len() >= n).then_some(())).await;
+}
+
 fn ls(id: &'static str) -> Reply {
     Reply::Call {
         id,
@@ -118,10 +136,25 @@ async fn moved_there(app: &App) {
     assert_eq!(where_is(app).await, Location::Host(HOST.into()));
 }
 
-/// A run on the daemon that wrote `notes.txt`, waiting for the approval
-/// of its next command (`c2`), and a model that goes on with `then` once
-/// the chat is back.
+/// A run on the daemon that wrote `notes.txt` and runs its next command
+/// (`c2`, a slow one), and a model that goes on with `then` once the chat
+/// is back.
 async fn writing_there(
+    app: &App,
+    setup: &Setup,
+    then: Vec<Reply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let mut replies = vec![writes("c1", "notes.txt", "from the server\n"), slow("c2")];
+    replies.extend(then);
+    let (url, seen) = model(replies).await;
+    app.remote.start(start(setup, &url, unattended())).await.unwrap();
+    requested(&seen, 2).await;
+    (url, seen)
+}
+
+/// A run on the daemon that wrote `notes.txt`, waiting for the approval
+/// of its next command (`c2`), and a model that goes on with `then`.
+async fn asking_there(
     app: &App,
     setup: &Setup,
     then: Vec<Reply>,
@@ -252,37 +285,17 @@ async fn owner_there(setup: &Setup) -> Option<Ownership> {
 }
 
 /// 6.8: a run going pauses for the move once its tool call has its result,
-/// what it waits on can still be answered, nothing else starts meanwhile
-/// (K25), and it goes on on the daemon, whose rows the mirror then has.
+/// nothing else starts meanwhile (K25), and it goes on on the daemon,
+/// whose rows the mirror then has.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_going_moves_with_the_chat_and_goes_on_there() {
     let mut setup = Setup::new().await;
     let app = App::local(&mut setup).await;
     app.connect(&setup).await;
     let steps = moves_of(&app);
-    let (url, seen) = model(vec![
-        Reply::Call {
-            id: "c1",
-            name: "bash",
-            args: json!({ "command": "ls" }),
-        },
-        Reply::Text("Carried on there."),
-    ])
-    .await;
-    let asks = Permissions {
-        command_approval: ApprovalRule {
-            required: true,
-            by: Approver::User,
-        },
-        ..unattended()
-    };
-    app.remote.start(start(&setup, &url, asks)).await.unwrap();
-    until("the approval asked here", || {
-        events(&app)
-            .into_iter()
-            .find(|e| e["type"] == "approvalRequested")
-    })
-    .await;
+    let (url, seen) = model(vec![slow("c1"), Reply::Text("Carried on there.")]).await;
+    app.remote.start(start(&setup, &url, unattended())).await.unwrap();
+    requested(&seen, 1).await;
 
     let (remote, template) = (app.remote.clone(), start(&setup, &url, unattended()));
     let moving = tokio::spawn(async move { remote.move_chat(CHAT, HOST, Some(template)).await });
@@ -302,14 +315,6 @@ async fn a_run_going_moves_with_the_chat_and_goes_on_there() {
     let mut again = start(&setup, &url, unattended());
     again.start = StartKind::ContinueRun;
     assert!(app.remote.start(again).await.is_err());
-    // What the run waits on is still answered.
-    let approve = Request::AgentResolveApproval {
-        dialog_id: CHAT.into(),
-        tool_call_id: "c1".into(),
-        decision: ApprovalDecision::Allow,
-    };
-    let answered = app.remote.route(CHAT, approve).await;
-    assert_eq!(answered, Ok(Response::Bool(true)));
     moving.await.unwrap().unwrap();
 
     assert_eq!(where_is(&app).await, Location::Host(HOST.into()));
@@ -500,9 +505,6 @@ async fn a_chat_moved_back_waits_with_its_changes_and_its_run_goes_on_here() {
         title: "Renamed".into(),
     };
     assert!(app.remote.route(CHAT, rename.clone()).await.is_err());
-    // What the run waits on is still answered there.
-    let answered = app.remote.route(CHAT, approve("c2")).await;
-    assert_eq!(answered, Ok(Response::Bool(true)));
     moving.await.unwrap().unwrap();
 
     assert_eq!(where_is(&app).await, Location::Here);
@@ -578,7 +580,6 @@ async fn a_chat_moved_back_without_isolation_lands_its_changes_first() {
             .then_some(())
     })
     .await;
-    app.remote.route(CHAT, approve("c2")).await.unwrap();
     moving.await.unwrap().unwrap();
 
     assert!(steps(&moves).contains(&"back landing".to_string()));
@@ -826,4 +827,436 @@ async fn a_chat_deleted_while_its_host_is_away_goes_there_when_it_is_back() {
     assert!(its_move(&app).await.is_none(), "the tombstone was told");
     assert_eq!(owner_there(&setup).await, None);
     assert!(setup.daemon.rows(CHAT).is_empty());
+}
+
+/*
+ * A move's run, picked up where the chat ends: a run cut for the move (it
+ * waited only for the user) resumes, and one that paused for it goes on,
+ * whether the chat moved or stayed.
+ */
+
+/// The chat as a crash left it: the user's message, and a reply whose
+/// `ls` (`c1`) has no result yet.
+async fn cut_by_a_crash(app: &App) {
+    let assistant = NewMessage {
+        tool_calls: Some(vec![store::ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: json!({ "command": "ls" }).to_string(),
+            extra_content: None,
+        }]),
+        ..row("a1", "assistant", "")
+    };
+    let rows = vec![row("u1", "user", "List files"), assistant];
+    let written = app.test.core.db.write(move |c| store::append_messages(c, CHAT, &rows));
+    written.await.unwrap();
+}
+
+/// A run resumed after a crash, waiting only for the user to approve the
+/// call the crash cut (`c1`): a move cuts it.
+async fn resumed_waiting(app: &App, setup: &Setup, replies: Vec<Reply>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    cut_by_a_crash(app).await;
+    let (url, seen) = model(replies).await;
+    let mut resume = start(setup, &url, asks());
+    resume.start = StartKind::Resume;
+    app.remote.start(resume).await.unwrap();
+    asked(app, "c1").await;
+    (url, seen)
+}
+
+/// The steps the app reports (a move back's as "back <step>"), and
+/// "Cancel move" asked as soon as the move reports `at`, as a person would
+/// click it.
+fn cancelling_at(app: &App, at: &'static str) -> Steps {
+    let steps: Steps = Arc::default();
+    let seen = Arc::clone(&steps);
+    let remote = Arc::downgrade(&app.remote);
+    app.remote.on_cloud(Arc::new(move |event| {
+        let (step, message) = match event {
+            CloudEvent::Moving { step, message, .. } => (step, message),
+            CloudEvent::MovingBack { step, message, .. } => (format!("back {step}"), message),
+            _ => return,
+        };
+        if step == at {
+            if let Some(remote) = remote.upgrade() {
+                tokio::spawn(async move { remote.cancel_move(CHAT).await.unwrap() });
+            }
+        }
+        seen.lock().unwrap().push((step, message));
+    }));
+    steps
+}
+
+/// A move that fails once it pushes the chat's files: a file where the
+/// project's shadow, which the push comes from, would be.
+fn shadow_broken(setup: &Setup) {
+    let _ = std::fs::remove_dir_all(&setup.shadow);
+    std::fs::create_dir_all(setup.shadow.parent().unwrap()).unwrap();
+    std::fs::write(&setup.shadow, "not a repository").unwrap();
+}
+
+/// Waits until the app was asked to approve `c1` again: an interrupted
+/// call, resumed, is always confirmed by the user. Then approves it,
+/// wherever the chat is.
+async fn approved_again(app: &App) {
+    approved_again_for(app, "c1").await;
+}
+
+/// `approved_again`, for call `id`.
+async fn approved_again_for(app: &App, id: &str) {
+    until(&format!("{id}'s approval asked again"), || {
+        let asked = events(app)
+            .into_iter()
+            .filter(|e| e["type"] == "approvalRequested" && e["request"]["toolCallId"] == id)
+            .count();
+        (asked >= 2).then_some(())
+    })
+    .await;
+    assert_eq!(app.remote.route(CHAT, approve(id)).await, Ok(Response::Bool(true)));
+}
+
+/// The chat's rows here: role and content.
+async fn rows_here(app: &App) -> Vec<(String, String)> {
+    let read = app.test.core.db.read(|c| store::get_messages(c, CHAT, None, 200));
+    let page = read.await.unwrap();
+    page.messages
+        .into_iter()
+        .map(|m| (m.role, m.content))
+        .collect()
+}
+
+/// Waits until the chat's last row here says `content` and its run ended.
+async fn replied_here(app: &App, content: &str) {
+    for _ in 0..1200 {
+        let rows = rows_here(app).await;
+        let last = rows.last().map(|(_, c)| c.as_str());
+        if last == Some(content) && !app.test.core.agents.is_running(CHAT) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("never replied {content:?} here: {:?}", rows_here(app).await);
+}
+
+/// 6.8: the cut run resumes where the chat went: its call, asked about
+/// again, runs there once approved, and so does the request after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_cut_for_a_move_resumes_on_the_host() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let reported = moves_of(&app);
+    let (url, seen) = resumed_waiting(&app, &setup, vec![Reply::Text("Listed there.")]).await;
+
+    let template = start(&setup, &url, unattended());
+    app.remote.move_chat(CHAT, HOST, Some(template)).await.unwrap();
+    assert_eq!(where_is(&app).await, Location::Host(HOST.into()));
+    assert!(!app.test.core.agents.is_running(CHAT), "cut here");
+    approved_again(&app).await;
+    until("the reply there", || {
+        let rows = setup.daemon.rows(CHAT);
+        rows.last()
+            .is_some_and(|r| r.content == "Listed there.")
+            .then_some(())
+    })
+    .await;
+    ended(&setup.client).await;
+    assert_eq!(tool_results(&setup).len(), 1, "c1 ran there");
+    assert_eq!(seen.lock().unwrap().len(), 1, "no request here");
+    assert_eq!(
+        steps(&reported),
+        ["pausing", "pushing", "uploading", "importing", "moved"]
+    );
+}
+
+/// The cut run's move cancelled: the chat stays, and its run resumes
+/// here, as it would have there. Nothing else resumes it: the app resumed
+/// it once already.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_cut_for_a_cancelled_move_resumes_here() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let reported = cancelling_at(&app, "pushing");
+    let (url, seen) = resumed_waiting(&app, &setup, vec![Reply::Text("Listed here.")]).await;
+
+    let template = start(&setup, &url, unattended());
+    let moved = app.remote.move_chat(CHAT, HOST, Some(template)).await;
+    let fail = moved.unwrap_err();
+    assert!(fail.message.contains("cancelled"), "{fail}");
+    assert_eq!(where_is(&app).await, Location::Here);
+    assert!(steps(&reported).contains(&"cancelled".to_string()), "{:?}", steps(&reported));
+
+    approved_again(&app).await;
+    replied_here(&app, "Listed here.").await;
+    let rows = rows_here(&app).await;
+    assert_eq!(
+        rows.iter().filter(|(role, _)| role == "tool").count(),
+        1,
+        "c1 ran here: {rows:?}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(setup.daemon.rows(CHAT).is_empty(), "nothing there");
+}
+
+/// The cut run's move failed: the chat stays, and its run resumes here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_cut_for_a_failed_move_resumes_here() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let reported = moves_of(&app);
+    let (url, seen) = resumed_waiting(&app, &setup, vec![Reply::Text("Listed here.")]).await;
+    shadow_broken(&setup);
+
+    let template = start(&setup, &url, unattended());
+    let moved = app.remote.move_chat(CHAT, HOST, Some(template)).await;
+    assert!(moved.is_err());
+    assert_eq!(where_is(&app).await, Location::Here);
+    assert_eq!(steps(&reported).last().map(String::as_str), Some("failed"));
+
+    approved_again(&app).await;
+    replied_here(&app, "Listed here.").await;
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(setup.daemon.rows(CHAT).is_empty(), "nothing there");
+}
+
+/// A run that paused for the move at its safe point, the move then
+/// failing: it goes on here, rather than stop at a pause that says the
+/// chat moved.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_paused_for_a_failed_move_goes_on_here() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let reported = moves_of(&app);
+    let (url, seen) = model(vec![slow("c1"), Reply::Text("Went on here.")]).await;
+    app.remote.start(start(&setup, &url, unattended())).await.unwrap();
+    requested(&seen, 1).await;
+    shadow_broken(&setup);
+
+    let (remote, template) = (app.remote.clone(), start(&setup, &url, unattended()));
+    let moving = tokio::spawn(async move { remote.move_chat(CHAT, HOST, Some(template)).await });
+    until("the move waiting for the run", || {
+        steps(&reported).contains(&"pausing".to_string()).then_some(())
+    })
+    .await;
+    // Its command done, the run reaches its safe point: it pauses.
+    assert!(moving.await.unwrap().is_err());
+    assert_eq!(where_is(&app).await, Location::Here);
+
+    replied_here(&app, "Went on here.").await;
+    assert_eq!(seen.lock().unwrap().len(), 2, "both requests here");
+    assert!(setup.daemon.rows(CHAT).is_empty(), "nothing there");
+}
+
+/// "Cancel move" while the run makes its way to its safe point: the pause
+/// is taken back, and the run, still at work, goes on by itself. Nothing
+/// else starts in the chat meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_whose_moves_pause_is_taken_back_goes_on_alone() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let reported = moves_of(&app);
+    let (url, seen) = model(vec![slow("c1"), Reply::Text("Done here.")]).await;
+    app.remote.start(start(&setup, &url, unattended())).await.unwrap();
+    requested(&seen, 1).await;
+
+    let (remote, template) = (app.remote.clone(), start(&setup, &url, unattended()));
+    let moving = tokio::spawn(async move { remote.move_chat(CHAT, HOST, Some(template)).await });
+    until("the move waiting for the run", || {
+        steps(&reported).contains(&"pausing".to_string()).then_some(())
+    })
+    .await;
+    app.remote.cancel_move(CHAT).await.unwrap();
+    let fail = moving.await.unwrap().unwrap_err();
+    assert!(fail.message.contains("cancelled"), "{fail}");
+    assert_eq!(where_is(&app).await, Location::Here);
+    assert!(app.test.core.agents.is_running(CHAT), "the run goes on");
+    let started = |app: &App| {
+        events(app)
+            .into_iter()
+            .filter(|e| e["type"] == "runStarted")
+            .count()
+    };
+    let before = started(&app);
+
+    replied_here(&app, "Done here.").await;
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    assert_eq!(started(&app), before, "no other run started");
+    let rows = rows_here(&app).await;
+    assert!(
+        !rows.iter().any(|(_, c)| c.contains("Moved")),
+        "no pause for a move here: {rows:?}"
+    );
+}
+
+/// A cut run's move cancelled with no start to pick it up with (the app
+/// gave none): nothing starts, and its call still waits for a `Resume`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cut_run_with_no_start_waits_after_a_cancelled_move() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let _steps = cancelling_at(&app, "pushing");
+    let (_, seen) = resumed_waiting(&app, &setup, Vec::new()).await;
+
+    assert!(app.remote.move_chat(CHAT, HOST, None).await.is_err());
+    assert_eq!(where_is(&app).await, Location::Here);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!app.test.core.agents.is_running(CHAT));
+    let waits = rovik_core::agent_run::waits_for_results(&app.test.core, CHAT).await;
+    assert!(waits.unwrap(), "c1 still has no result");
+    let roles: Vec<String> = rows_here(&app).await.into_iter().map(|(r, _)| r).collect();
+    assert_eq!(roles, ["user", "assistant"]);
+    assert!(seen.lock().unwrap().is_empty(), "no request");
+}
+
+/*
+ * A run waiting for its user to approve a call: a move doesn't wait for the
+ * answer. The run is cut, and asks again wherever the chat ends.
+ */
+
+/// The chat moves at once, its approval unanswered: the run picks up on
+/// the host, asking about the call again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_waiting_for_its_approval_moves_at_once() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let reported = moves_of(&app);
+    let (url, seen) = model(vec![ls("c1"), Reply::Text("Listed there.")]).await;
+    app.remote.start(start(&setup, &url, asks())).await.unwrap();
+    asked(&app, "c1").await;
+
+    let template = start(&setup, &url, unattended());
+    within_a_while(app.remote.move_chat(CHAT, HOST, Some(template))).await.unwrap();
+    assert_eq!(where_is(&app).await, Location::Host(HOST.into()));
+    assert_eq!(steps(&reported).last().map(String::as_str), Some("moved"));
+    approved_again(&app).await;
+    until("the reply there", || {
+        let rows = setup.daemon.rows(CHAT);
+        rows.last()
+            .is_some_and(|r| r.content == "Listed there.")
+            .then_some(())
+    })
+    .await;
+    ended(&setup.client).await;
+    assert_eq!(tool_results(&setup).len(), 1, "c1 ran there");
+    assert_eq!(seen.lock().unwrap().len(), 2, "one request here, one there");
+}
+
+/// Its move cancelled: the run picks up here, asking again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_waiting_for_its_approval_asks_again_after_a_cancelled_move() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    let _reported = cancelling_at(&app, "pushing");
+    let (url, seen) = model(vec![ls("c1"), Reply::Text("Listed here.")]).await;
+    app.remote.start(start(&setup, &url, asks())).await.unwrap();
+    asked(&app, "c1").await;
+
+    let template = start(&setup, &url, unattended());
+    let moved = within_a_while(app.remote.move_chat(CHAT, HOST, Some(template))).await;
+    assert!(moved.unwrap_err().message.contains("cancelled"));
+    assert_eq!(where_is(&app).await, Location::Here);
+    approved_again(&app).await;
+    replied_here(&app, "Listed here.").await;
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    assert!(setup.daemon.rows(CHAT).is_empty(), "nothing there");
+}
+
+/// The same moving back: the host's run waiting for its approval is cut
+/// there, and picks up here, asking again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_run_waiting_for_its_approval_moves_back_at_once() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let (url, seen) = asking_there(&app, &setup, vec![Reply::Text("Done here.")]).await;
+
+    let mut template = start(&setup, &url, asks());
+    template.isolate = Some(false);
+    within_a_while(app.remote.move_back(CHAT, Some(template))).await.unwrap();
+    assert_eq!(where_is(&app).await, Location::Here);
+    approved_again_for(&app, "c2").await;
+    replied_here(&app, "Done here.").await;
+    assert_eq!(seen.lock().unwrap().len(), 3, "two requests there, one here");
+    let rows = rows_here(&app).await;
+    assert_eq!(
+        rows.iter().filter(|(role, _)| role == "tool").count(),
+        2,
+        "c1 there, c2 here: {rows:?}"
+    );
+}
+
+/// A move back cancelled once the host's run was cut: the chat stays there,
+/// and its run picks up there, asking again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_run_cut_for_a_cancelled_move_back_picks_up_there() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let reported = cancelling_at(&app, "back fetching");
+    let (url, seen) = asking_there(&app, &setup, vec![Reply::Text("Done there.")]).await;
+
+    let template = start(&setup, &url, unattended());
+    let moved = within_a_while(app.remote.move_back(CHAT, Some(template))).await;
+    assert!(moved.unwrap_err().message.contains("cancelled"));
+    assert!(steps(&reported).contains(&"back cancelled".to_string()), "{:?}", steps(&reported));
+    assert_eq!(where_is(&app).await, Location::Host(HOST.into()));
+    approved_again_for(&app, "c2").await;
+    until("the reply there", || {
+        let rows = setup.daemon.rows(CHAT);
+        rows.last()
+            .is_some_and(|r| r.content == "Done there.")
+            .then_some(())
+    })
+    .await;
+    ended(&setup.client).await;
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+/// A move back cancelled once the host's run paused for it: the run goes
+/// on there, rather than stop at a pause that says the chat came back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_run_paused_for_a_cancelled_move_back_goes_on_there() {
+    let mut setup = Setup::new().await;
+    let app = App::local(&mut setup).await;
+    app.connect(&setup).await;
+    moved_there(&app).await;
+    let reported = cancelling_at(&app, "back fetching");
+    let (url, seen) = writing_there(&app, &setup, vec![Reply::Text("Went on there.")]).await;
+
+    let template = start(&setup, &url, unattended());
+    let moved = app.remote.move_back(CHAT, Some(template)).await;
+    assert!(moved.unwrap_err().message.contains("cancelled"));
+    assert!(steps(&reported).contains(&"back cancelled".to_string()), "{:?}", steps(&reported));
+    assert_eq!(where_is(&app).await, Location::Host(HOST.into()));
+    until("the reply there", || {
+        let rows = setup.daemon.rows(CHAT);
+        rows.last()
+            .is_some_and(|r| r.content == "Went on there.")
+            .then_some(())
+    })
+    .await;
+    ended(&setup.client).await;
+    let rows = setup.daemon.rows(CHAT);
+    assert!(
+        rows.iter().any(|r| r.meta["paused"]["kind"] == "move"),
+        "it paused for the move back: {rows:?}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+/// What `future` gives within 20 s: a move that waits for an answer nobody
+/// gives would hang the test.
+async fn within_a_while<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(20), future)
+        .await
+        .expect("the move waited: it never ended")
 }

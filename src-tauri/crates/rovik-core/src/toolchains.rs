@@ -13,8 +13,9 @@
 //!   `.nvmrc`, `.node-version` or `engines.node`.
 //! - [`env_for`] is the environment every command the agent runs gets
 //!   (command_tool.rs): the toolchains' `bin` folders in front of the
-//!   PATH, one shared `RUSTUP_HOME`, and `RUSTUP_AUTO_INSTALL=0`, since
-//!   rustup can't write into the shared folder.
+//!   PATH and, once the shared Rust is installed, one shared
+//!   `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`, since rustup can't write
+//!   into the shared folder.
 //! - [`ensure`] has the versions a project asks for and the host lacks
 //!   installed, through the root command (`rovik-agentd user toolchain …`).
 //! - [`seed_crates`] and [`publish_crates`] move crates between the
@@ -24,7 +25,9 @@
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// A toolchain: Rust, through one shared rustup, or Node, from the
 /// official tarballs.
@@ -49,6 +52,15 @@ impl Kind {
         match self {
             Kind::Rust => "Rust",
             Kind::Node => "Node",
+        }
+    }
+
+    /// The toolchain `program` comes with: `cargo` is Rust's, `npm` Node's.
+    pub fn of_program(program: &str) -> Option<Kind> {
+        match program {
+            "cargo" | "rustc" | "rustup" => Some(Kind::Rust),
+            "node" | "npm" | "npx" => Some(Kind::Node),
+            _ => None,
         }
     }
 }
@@ -109,10 +121,24 @@ pub struct Shared {
 /// What the daemon set, if it did: nothing on the user's own computer.
 static SHARED: Mutex<Option<Arc<Shared>>> = Mutex::new(None);
 
+/// The installs the root command refused lately, by their words
+/// ([`Want::words`]): when, and what it said. [`ensure`] answers with that
+/// for [`RETRY_AFTER`] instead of running `sudo` again on every failing
+/// command, and still picks up an administrator's fix after it.
+static REFUSED: Mutex<Option<HashMap<String, (Instant, String)>>> = Mutex::new(None);
+
+/// How long a refused install is answered from [`REFUSED`].
+const RETRY_AFTER: Duration = Duration::from_secs(15 * 60);
+
+fn refused() -> std::sync::MutexGuard<'static, Option<HashMap<String, (Instant, String)>>> {
+    REFUSED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// What this process shares, for a daemon's start (serve.rs). Once set,
 /// every command's environment and every install goes through it.
 pub fn set(shared: Shared) {
     *SHARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(shared));
+    *refused() = None;
 }
 
 /// Forgets what [`set`] set: a test's, and what a daemon's settings change
@@ -120,6 +146,7 @@ pub fn set(shared: Shared) {
 #[doc(hidden)]
 pub fn unset() {
     *SHARED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *refused() = None;
 }
 
 /// Tests that `set` the process's one `Shared` hold this, so they don't
@@ -330,22 +357,79 @@ pub fn installed(want: &Want) -> bool {
 /// `installed` under `root`.
 pub fn installed_in(root: &Path, want: &Want) -> bool {
     match want.kind {
-        Kind::Rust => rust_installed(root, &want.version),
+        Kind::Rust => {
+            rust_installed(root, &want.version) && {
+                let (components, targets) =
+                    rust_missing(root, &want.version, &want.components, &want.targets);
+                components.is_empty() && targets.is_empty()
+            }
+        }
         Kind::Node => node_installed(root, &want.version).is_some(),
     }
+}
+
+/// The host triple rustup names a toolchain's folder with.
+fn host_triple() -> Option<&'static str> {
+    match std::env::consts::ARCH {
+        "x86_64" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64" => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+/// The folder rustup installs `version` in under `root`:
+/// `rust/rustup/toolchains/<version>-<host triple>`.
+fn rust_dir(root: &Path, version: &str) -> Option<PathBuf> {
+    let triple = host_triple()?;
+    Some(root.join(format!("rust/rustup/toolchains/{version}-{triple}")))
 }
 
 /// Whether rustup has `<version>-<host triple>` under its toolchains:
 /// exactly that one, since `nightly` isn't `nightly-2024-09-05`, which a
 /// prefix would take for it.
 fn rust_installed(root: &Path, version: &str) -> bool {
-    let triple = match std::env::consts::ARCH {
-        "x86_64" => "x86_64-unknown-linux-gnu",
-        "aarch64" => "aarch64-unknown-linux-gnu",
-        _ => return false,
+    rust_dir(root, version).is_some_and(|dir| dir.is_dir())
+}
+
+/// Of the components and targets a project names, those the installed
+/// Rust `version` under `root` lacks: rustup lists a toolchain's components
+/// in `lib/rustlib/components` (`clippy-x86_64-unknown-linux-gnu`, or
+/// `clippy-preview-…` in older ones) and keeps each target's library in
+/// `lib/rustlib/<target>`. All of them when the version isn't there.
+pub fn rust_missing(
+    root: &Path,
+    version: &str,
+    components: &[String],
+    targets: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let Some(dir) = rust_dir(root, version).filter(|dir| dir.is_dir()) else {
+        return (components.to_vec(), targets.to_vec());
     };
-    root.join(format!("rust/rustup/toolchains/{version}-{triple}"))
-        .is_dir()
+    let rustlib = dir.join("lib/rustlib");
+    let listed = std::fs::read_to_string(rustlib.join("components")).unwrap_or_default();
+    let triple = host_triple().unwrap_or_default();
+    // `rust-src`, `clippy-<triple>`, `clippy-preview-<triple>`: exactly,
+    // so `rust` isn't taken for `rust-src`.
+    let has_component = |name: &str| {
+        let forms = [
+            name.to_string(),
+            format!("{name}-preview"),
+            format!("{name}-{triple}"),
+            format!("{name}-preview-{triple}"),
+        ];
+        listed.lines().map(str::trim).any(|line| forms.iter().any(|form| form == line))
+    };
+    let components = components
+        .iter()
+        .filter(|c| !has_component(c))
+        .cloned()
+        .collect();
+    let targets = targets
+        .iter()
+        .filter(|t| !rustlib.join(t).is_dir())
+        .cloned()
+        .collect();
+    (components, targets)
 }
 
 /// The version `want`'s own word names, among those installed: `20` is the
@@ -388,9 +472,9 @@ fn version_order(one: &str, other: &str) -> std::cmp::Ordering {
 
 /// What a command run in `project` gets: `PATH`, with the shared Rust's
 /// `bin` and the project's Node `bin` in front of the one the app's
-/// programs have; `RUSTUP_HOME`, the one shared and read-only; and
-/// `RUSTUP_AUTO_INSTALL=0`, so rustup never tries to install into it.
-/// `CARGO_HOME` isn't set: cargo keeps `~/.cargo`, each user's own. Empty
+/// programs have; and, once the shared Rust is installed, `RUSTUP_HOME`,
+/// the one shared and read-only, and `RUSTUP_AUTO_INSTALL=0`, so rustup
+/// never tries to install into it. `CARGO_HOME` isn't set: cargo keeps `~/.cargo`, each user's own. Empty
 /// when nothing is shared.
 pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
     let Some(shared) = shared() else {
@@ -401,7 +485,11 @@ pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
     }
     let mut dirs: Vec<PathBuf> = Vec::new();
     let cargo_bin = shared.root.join("rust/cargo/bin");
-    if cargo_bin.is_dir() {
+    // The shared rustup's settings only with its programs: a host with no
+    // shared Rust yet (the root folder is made empty at install) leaves the
+    // user's own rustup, if any, as it is.
+    let shared_rust = cargo_bin.is_dir();
+    if shared_rust {
         dirs.push(cargo_bin);
     }
     let node = wanted(project)
@@ -414,8 +502,10 @@ pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
     let path = crate::process::child_var("PATH").unwrap_or_default();
     dirs.extend(std::env::split_paths(&path));
     let mut vars: Vec<(&'static str, OsString)> = vec![("PATH", std::env::join_paths(dirs).unwrap_or(path))];
-    vars.push(("RUSTUP_HOME", shared.root.join("rust/rustup").into_os_string()));
-    vars.push(("RUSTUP_AUTO_INSTALL", OsString::from("0")));
+    if shared_rust {
+        vars.push(("RUSTUP_HOME", shared.root.join("rust/rustup").into_os_string()));
+        vars.push(("RUSTUP_AUTO_INSTALL", OsString::from("0")));
+    }
     vars
 }
 
@@ -423,10 +513,7 @@ pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
 /// whose missing version a host installs, rather than one its setup script
 /// does.
 pub fn toolchain_program(program: &str) -> bool {
-    matches!(
-        program,
-        "cargo" | "rustc" | "rustup" | "node" | "npm" | "npx"
-    )
+    Kind::of_program(program).is_some()
 }
 
 /// Whether `program` is in the environment [`env_for`] gives a command run
@@ -464,12 +551,33 @@ pub async fn ensure(root: &Path) -> Vec<(Want, Result<(), String>)> {
         if installed_in(&shared.root, &want) {
             continue;
         }
+        let key = want.words().join(" ");
+        let remembered = refused()
+            .as_ref()
+            .and_then(|all| all.get(&key))
+            .filter(|(at, _)| at.elapsed() < RETRY_AFTER)
+            .map(|(_, why)| why.clone());
+        if let Some(why) = remembered {
+            done.push((want, Err(why)));
+            continue;
+        }
         let asked = want.clone();
         let installer = installer.clone();
         let outcome = crate::rt::spawn_blocking(move || installer(asked))
             .await
             .map_err(|e| e.to_string())
             .and_then(|outcome| outcome);
+        let mut memo = refused();
+        let all = memo.get_or_insert_with(HashMap::new);
+        match &outcome {
+            Ok(()) => {
+                all.remove(&key);
+            }
+            Err(why) => {
+                all.insert(key, (Instant::now(), why.clone()));
+            }
+        }
+        drop(memo);
         done.push((want, outcome));
     }
     done
@@ -508,8 +616,26 @@ pub fn is_cache(dir: &Path) -> bool {
     writable().iter().any(|cache| cache == dir)
 }
 
+/// Whether a `Cargo.lock` entry is safe to make a file name of
+/// (`{name}-{version}.crate`): a name in crates.io's characters, a version
+/// starting with a digit in semver's (no `/`, no `..`), and a SHA-256.
+/// The lockfile is the project's, which the agent writes; the files are
+/// copied outside its sandbox.
+fn crate_id_ok(name: &str, version: &str, checksum: &str) -> bool {
+    let name_ok = !name.is_empty()
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let version_ok = version.starts_with(|c: char| c.is_ascii_digit())
+        && !version.contains("..")
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'+' || b == b'-');
+    let checksum_ok = checksum.len() == 64 && checksum.bytes().all(|b| b.is_ascii_hexdigit());
+    name_ok && version_ok && checksum_ok
+}
+
 /// The crates `root`'s `Cargo.lock` names, from crates.io, with the
-/// checksums it pins: `(name, version, checksum)`.
+/// checksums it pins: `(name, version, checksum)`. An entry that isn't
+/// safe to make a file name of ([`crate_id_ok`]) is left out.
 fn locked_crates(root: &Path) -> Vec<(String, String, String)> {
     let Ok(lock) = std::fs::read_to_string(root.join("Cargo.lock")) else {
         return Vec::new();
@@ -522,7 +648,11 @@ fn locked_crates(root: &Path) -> Vec<(String, String, String)> {
                      checksum: &mut Option<String>| {
         if let (Some(name), Some(version), Some(checksum)) = (name.take(), version.take(), checksum.take()) {
             if source.take().is_some_and(|s| s.contains("crates.io")) {
-                crates.push((name, version, checksum));
+                if crate_id_ok(&name, &version, &checksum) {
+                    crates.push((name, version, checksum));
+                } else {
+                    ::log::warn!("toolchains: Cargo.lock entry {name:?} {version:?} isn't a crate's name: skipped");
+                }
             }
         }
         source.take();
@@ -649,7 +779,7 @@ pub fn seed_crates(root: &Path) -> usize {
     let mut copied = 0;
     for (name, version, checksum) in locked_crates(root) {
         let from = crate_file(&caches, &name, &version);
-        let Ok(bytes) = std::fs::read(&from) else {
+        let Some(bytes) = read_store_file(&from) else {
             continue;
         };
         if sha256_hex(&bytes) != checksum.to_ascii_lowercase() {
@@ -673,6 +803,34 @@ pub fn seed_crates(root: &Path) -> usize {
         }
     }
     copied
+}
+
+/// The largest `.crate` file read from the shared store: crates.io takes
+/// none over 10 MiB.
+const MAX_CRATE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A file of the shared store, which any `rovik` group member writes: read
+/// only when it's a regular file of a crate's size. Opened without waiting
+/// (a FIFO planted there would hang the read) and without following a
+/// link, then checked on the open file, so nothing swapped in meanwhile is
+/// read either.
+fn read_store_file(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_CRATE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_CRATE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_CRATE_BYTES).then_some(bytes)
 }
 
 /// This user's checked crates into the shared store, for the others on the
@@ -709,27 +867,45 @@ pub fn publish_crates(root: &Path) {
 
 /// `bytes` in `to`, which is the file only once it's whole: a temporary
 /// file beside it, then a rename.
+///
+/// The shared store is a folder every `rovik` group member writes, without
+/// the sticky bit, so the temporary file is made new (never opened if
+/// something is there, a planted symlink included) under a random name,
+/// and its mode is set on the open file, never through its path.
 fn write_atomically(to: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     use std::io::Write;
     let Some(dir) = to.parent() else {
         return Err(format!("{} has no folder", to.display()));
     };
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let temp = dir.join(format!(
-        ".{}.{}",
-        to.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
+    let name = to.file_name().unwrap_or_default().to_string_lossy();
+    let (temp, mut file) = (|| {
+        let mut tries = 0;
+        loop {
+            let temp = dir.join(format!(".{name}.{:016x}", rand::random::<u64>()));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            match options.open(&temp) {
+                Ok(file) => return Ok((temp, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 8 => tries += 1,
+                Err(e) => return Err(format!("{}: {e}", temp.display())),
+            }
+        }
+    })()?;
     let written = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&temp)?;
         file.write_all(bytes)?;
-        drop(file);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))?;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
         }
         let _ = mode;
+        drop(file);
         std::fs::rename(&temp, to)
     })();
     written.map_err(|e| {
@@ -763,6 +939,48 @@ mod tests {
 
     fn write(dir: &Path, name: &str, text: &str) {
         std::fs::write(dir.join(name), text).unwrap();
+    }
+
+    /// A Rust version that's there without a component or target the
+    /// project names isn't installed for it: the root command adds them.
+    #[test]
+    fn a_rust_version_lacking_a_component_or_target_isnt_installed_for_it() {
+        let Some(triple) = host_triple() else {
+            return;
+        };
+        let dir = crate::testing::temp_dir();
+        let rustlib = dir
+            .0
+            .join(format!("rust/rustup/toolchains/1.82-{triple}/lib/rustlib"));
+        std::fs::create_dir_all(rustlib.join(triple)).unwrap();
+        std::fs::write(
+            rustlib.join("components"),
+            format!("cargo-{triple}\nrustc-{triple}\nrust-std-{triple}\nclippy-preview-{triple}\nrust-src\n"),
+        )
+        .unwrap();
+        let want = |components: &[&str], targets: &[&str]| Want {
+            kind: Kind::Rust,
+            version: "1.82".into(),
+            components: components.iter().map(|c| c.to_string()).collect(),
+            targets: targets.iter().map(|t| t.to_string()).collect(),
+        };
+        let strings = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(installed_in(&dir.0, &want(&[], &[])));
+        assert!(installed_in(&dir.0, &want(&["clippy", "rust-src"], &[triple])));
+        // `rust` isn't `rust-src`, `rustfmt` isn't there, nor is wasm.
+        let (components, targets) = rust_missing(
+            &dir.0,
+            "1.82",
+            &strings(&["rust", "rustfmt", "clippy"]),
+            &strings(&["wasm32-unknown-unknown", triple]),
+        );
+        assert_eq!(components, ["rust", "rustfmt"]);
+        assert_eq!(targets, ["wasm32-unknown-unknown"]);
+        assert!(!installed_in(&dir.0, &want(&["rustfmt"], &[])));
+        assert!(!installed_in(&dir.0, &want(&[], &["wasm32-unknown-unknown"])));
+        // Another version: all of it.
+        let (components, _) = rust_missing(&dir.0, "1.83", &strings(&["clippy"]), &[]);
+        assert_eq!(components, ["clippy"]);
     }
 
     #[test]
@@ -855,6 +1073,120 @@ mod tests {
         assert!(!env.contains_key("CARGO_HOME"));
     }
 
+    /// A host whose shared folder has no Rust yet (made empty at install)
+    /// leaves the user's own rustup as it is: no `RUSTUP_HOME` pointing
+    /// at a folder that isn't there.
+    #[cfg(unix)]
+    #[test]
+    fn without_the_shared_rust_rustups_settings_are_the_users() {
+        let _guard = Guard::new();
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.join("toolchains");
+        std::fs::create_dir_all(&root).unwrap();
+        set(Shared {
+            root: root.clone(),
+            caches: None,
+            installer: None,
+        });
+        let env: std::collections::HashMap<_, _> = env_for(&dir.0).into_iter().collect();
+        assert!(!env.contains_key("RUSTUP_HOME"), "{env:?}");
+        assert!(!env.contains_key("RUSTUP_AUTO_INSTALL"), "{env:?}");
+        assert!(env.contains_key("PATH"));
+    }
+
+    /// The shared store is written by every group member: a symlink one of
+    /// them left where a crate goes, or beside it, is never written
+    /// through, and nothing temporary is left behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_crate_is_never_written_through_a_planted_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::testing::temp_dir();
+        let store = dir.0.join("crates");
+        std::fs::create_dir_all(&store).unwrap();
+        let victim = dir.0.join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let to = store.join("serde-1.0.0.crate");
+        std::os::unix::fs::symlink(&victim, &to).unwrap();
+        // The old, predictable temporary name, too.
+        let old_temp = store.join(format!(".serde-1.0.0.crate.{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &old_temp).unwrap();
+
+        write_atomically(&to, b"a crate", 0o660).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the victim's mode is its own");
+        let meta = std::fs::symlink_metadata(&to).unwrap();
+        assert!(meta.file_type().is_file(), "the crate is a file, not the link");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o660);
+        assert_eq!(std::fs::read(&to).unwrap(), b"a crate");
+        let planted = old_temp.file_name().unwrap().to_string_lossy().into_owned();
+        let left: Vec<_> = std::fs::read_dir(&store)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with('.') && *name != planted)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// A lockfile entry that would make a path out of the store, or one
+    /// that isn't a crate's name, version or SHA-256, is never read.
+    #[test]
+    fn a_lockfile_entry_that_isnt_a_crate_is_skipped() {
+        let dir = crate::testing::temp_dir();
+        let sum = "a".repeat(64);
+        let entry = |name: &str, version: &str, checksum: &str| {
+            format!(
+                "[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n\
+                 source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\
+                 checksum = \"{checksum}\"\n\n"
+            )
+        };
+        let lock = [
+            entry("../../x", "1.0.0", &sum),
+            entry("a/b", "1.0.0", &sum),
+            entry("x", "1.0/../x", &sum),
+            entry("x", "..1", &sum),
+            entry("x", "-1", &sum),
+            entry("x", "1.0.0", &"a".repeat(63)),
+            entry("x", "1.0.0", &"g".repeat(64)),
+            entry("serde_json", "1.0.0-rc.1+build.5", &sum),
+        ]
+        .concat();
+        write(&dir.0, "Cargo.lock", &lock);
+        assert_eq!(
+            locked_crates(&dir.0),
+            [("serde_json".to_string(), "1.0.0-rc.1+build.5".to_string(), sum)]
+        );
+    }
+
+    /// What another group member left in the store that isn't a crate's
+    /// file, a FIFO above all, is passed over at once, never waited on.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_or_link_in_the_store_is_passed_over() {
+        let dir = crate::testing::temp_dir();
+        let fifo = dir.0.join("serde-1.0.0.crate");
+        let path = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: a FIFO made in the test's own folder.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o666) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let at = fifo.clone();
+        std::thread::spawn(move || tx.send(read_store_file(&at)).unwrap());
+        let read = rx.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(read, Ok(None), "a FIFO isn't waited on");
+
+        let real = dir.0.join("real.crate");
+        std::fs::write(&real, b"a crate").unwrap();
+        assert_eq!(read_store_file(&real).as_deref(), Some(&b"a crate"[..]));
+        let link = dir.0.join("rand-0.8.0.crate");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(read_store_file(&link), None, "a link isn't followed");
+        assert_eq!(read_store_file(&dir.0), None, "nor a folder read");
+    }
+
     /// Nothing changes on a computer the daemon didn't set anything on.
     #[test]
     fn nothing_is_set_without_a_host() {
@@ -933,6 +1265,55 @@ mod tests {
             std::fs::metadata(&published).unwrap().len(),
             good.len() as u64
         );
+    }
+
+    /// A refused install is answered from memory, without the root
+    /// command, until the host's settings change; a success clears it.
+    #[test]
+    fn a_refused_install_isnt_run_again_every_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let _guard = Guard::new();
+        let dir = crate::testing::temp_dir();
+        let (root, _) = host(&dir.0);
+        write(&dir.0, "Cargo.toml", "[package]\n");
+        write(&dir.0, "rust-toolchain", "1.82\n");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refusing = |calls: Arc<AtomicUsize>| -> Arc<Installer> {
+            Arc::new(move |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("not allowed".into())
+            })
+        };
+        let host_with = |installer: Arc<Installer>| Shared {
+            root: root.clone(),
+            caches: None,
+            installer: Some(installer),
+        };
+        let ensure_now = || crate::rt::block_on(ensure(&dir.0));
+        set(host_with(refusing(calls.clone())));
+        let first = ensure_now();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].1, Err("not allowed".to_string()));
+        let second = ensure_now();
+        assert_eq!(second[0].1, Err("not allowed".to_string()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "answered from memory");
+
+        // The settings again (a daemon's restart): it's tried again.
+        unset();
+        set(host_with(refusing(calls.clone())));
+        ensure_now();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // A new installer (the settings changed) that works is called.
+        let worked = Arc::new(AtomicUsize::new(0));
+        let counted = worked.clone();
+        set(host_with(Arc::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })));
+        assert_eq!(ensure_now()[0].1, Ok(()));
+        assert_eq!(worked.load(Ordering::SeqCst), 1);
+        assert!(refused().as_ref().is_none_or(|all| all.is_empty()));
     }
 
     /// `set` and cargo's folder are the process's, so each test that

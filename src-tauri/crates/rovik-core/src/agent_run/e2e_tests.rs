@@ -1354,6 +1354,27 @@ async fn a_paused_run_continues_where_it_stopped() {
     );
 }
 
+/// A command that runs until the test lets it end: it writes `started` in
+/// the project, then waits for `go` there.
+fn until_go() -> &'static str {
+    if cfg!(windows) {
+        r#"echo ran> started && %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "while (!(Test-Path go)) { Start-Sleep -Milliseconds 50 }""#
+    } else {
+        "echo ran > started; while [ ! -e go ]; do sleep 0.05; done"
+    }
+}
+
+/// Waits until the `until_go` command runs in `root`.
+async fn command_started(root: &std::path::Path) {
+    for _ in 0..400 {
+        if root.join("started").exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the command never started");
+}
+
 /// 6.8: a move pauses the run at its next safe point, once the tool call
 /// going on has its result, without asking the model for anything (K29);
 /// where the chat went, `ContinueRun` counts on from there.
@@ -1364,7 +1385,7 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
         Reply::Call {
             id: "r1",
             name: "bash",
-            args: json!({ "command": list("") }),
+            args: json!({ "command": until_go() }),
         },
         Reply::Call {
             id: "r2",
@@ -1374,33 +1395,28 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
         Reply::Text("All done."),
     ])
     .await;
-    // Allowed, so that it waits for its approval (Windows' `dir` isn't
-    // among the default commands).
     let permissions = Permissions {
         tool_call_checkpoint: Some(2),
-        allowed_commands: vec![list("")],
-        ..ask_approval("commands")
+        allow_any_command: true,
+        ..quiet_permissions()
     };
     h.start(h.request(&url, Harness::send("Run it"), permissions.clone()))
         .await;
-    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
-        .await;
+    command_started(&h.project).await;
     let pausing = h.pause_for_move("build-server").await;
-    // What the run waits on can still be answered (6.8).
-    let core = h.core.clone();
-    let chat = h.dialog_id.clone();
-    let approved = agent_resolve_approval(&core, chat, "r1".into(), ApprovalDecision::Allow);
-    assert!(approved.await);
+    // At work, not waiting for the user: it isn't cut, it finishes the
+    // command first.
+    std::fs::write(h.project.join("go"), "").unwrap();
     let paused = within("the pause", pausing).await.unwrap();
     assert!(paused, "it paused for the move");
     assert_eq!(h.run_end().await, "paused-move");
+    let core = h.core.clone();
     assert!(!core.agents.is_running(&h.dialog_id));
 
     let messages = h.messages().await;
     assert_eq!(roles(&messages), ["user", "assistant", "tool", "assistant"]);
-    // The command ran, and its output is the call's result.
-    let listed = &result_of(&messages, "r1").content;
-    assert!(listed.contains("a.txt"), "{listed}");
+    // The command ran to its end: its result is the call's.
+    assert!(!result_of(&messages, "r1").content.starts_with("Error"));
     assert_eq!(
         messages[3].meta.as_ref().unwrap()["paused"],
         json!({ "kind": "move", "toolCalls": 1, "host": "build-server" })
@@ -1417,6 +1433,54 @@ async fn a_move_pauses_the_run_once_its_tool_call_has_its_result() {
         messages.last().unwrap().meta.as_ref().unwrap()["paused"],
         json!({ "kind": "checkpoint", "toolCalls": 2 })
     );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+/// 6.8: a run waiting for its user to approve a call never reaches a safe
+/// point by itself: a move cuts it at once, as a crash would, rather than
+/// wait for an answer. Its call waits for a `Resume` where the chat goes,
+/// which asks about it again.
+#[tokio::test]
+async fn a_move_cuts_a_run_that_waits_for_its_approval() {
+    let h = harness(&[("a.txt", "x")]).await;
+    let (url, seen) = model(vec![
+        Reply::Call {
+            id: "r1",
+            name: "bash",
+            args: json!({ "command": list("") }),
+        },
+        Reply::Text("Listed."),
+    ])
+    .await;
+    let permissions = Permissions {
+        allowed_commands: vec![list("")],
+        ..ask_approval("commands")
+    };
+    h.start(h.request(&url, Harness::send("List"), permissions.clone()))
+        .await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let (core, chat) = (h.core.clone(), h.dialog_id.clone());
+    let paused = within("the cut", agent_pause(&core, chat, "build-server")).await;
+    assert!(!paused, "it didn't pause: it was cut");
+    assert_eq!(h.run_end().await, "interrupted");
+    assert!(!core.agents.is_running(&h.dialog_id));
+    assert_eq!(h.events_of("approvalSettled").len(), 1, "the approval goes from the chat");
+    assert!(waits_for_results(&core, &h.dialog_id).await.unwrap());
+    assert_eq!(roles(&h.messages().await), ["user", "assistant"]);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // Where the chat went: asked again, then run, then the next request.
+    h.events.lock().unwrap().clear();
+    h.start(h.request(&url, StartKind::Resume, permissions)).await;
+    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
+        .await;
+    let chat = h.dialog_id.clone();
+    assert!(agent_resolve_approval(&core, chat, "r1".into(), ApprovalDecision::Allow).await);
+    assert_eq!(h.run_end().await, "done");
+    let messages = h.messages().await;
+    assert_eq!(roles(&messages), ["user", "assistant", "tool", "assistant"]);
+    assert!(result_of(&messages, "r1").content.contains("a.txt"));
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
 
@@ -1475,14 +1539,14 @@ async fn a_move_pause_waits_out_the_drivers_turn_and_pauses_the_run_it_started()
         Reply::Call {
             id: "r1",
             name: "bash",
-            args: json!({ "command": list("") }),
+            args: json!({ "command": until_go() }),
         },
         Reply::Text("All done."),
     ])
     .await;
     let permissions = Permissions {
-        allowed_commands: vec![list("")],
-        ..ask_approval("commands")
+        allow_any_command: true,
+        ..quiet_permissions()
     };
     // The driver between two stages: its turn taken, at work.
     let turn = super::autopilot::drive_lock(&h.dialog_id).await;
@@ -1494,8 +1558,7 @@ async fn a_move_pause_waits_out_the_drivers_turn_and_pauses_the_run_it_started()
     // In its turn, the driver starts the next stage's run, then is done.
     let request = h.request(&url, Harness::send("The next stage"), permissions);
     super::start_run(&h.core, request).await.unwrap();
-    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
-        .await;
+    command_started(&h.project).await;
     drop(at_work);
     drop(turn);
     let asked = || h.core.agents.pause_asked(&h.dialog_id).is_some();
@@ -1506,9 +1569,7 @@ async fn a_move_pause_waits_out_the_drivers_turn_and_pauses_the_run_it_started()
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(asked(), "the pause reached the run the turn started");
-    let (core, chat) = (h.core.clone(), h.dialog_id.clone());
-    let approved = agent_resolve_approval(&core, chat, "r1".into(), ApprovalDecision::Allow);
-    assert!(approved.await);
+    std::fs::write(h.project.join("go"), "").unwrap();
     let paused = within("the pause", pausing).await.unwrap();
     assert!(paused, "it paused for the move");
     assert_eq!(h.run_end().await, "paused-move");
@@ -1522,24 +1583,24 @@ async fn stop_still_ends_a_run_pausing_for_a_move() {
     let (url, seen) = model(vec![Reply::Call {
         id: "r1",
         name: "bash",
-        args: json!({ "command": "ls" }),
+        args: json!({ "command": until_go() }),
     }])
     .await;
-    h.start(h.request(&url, Harness::send("List"), ask_approval("commands")))
+    let unattended = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    h.start(h.request(&url, Harness::send("Run it"), unattended))
         .await;
-    h.wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
-        .await;
+    command_started(&h.project).await;
     let pausing = h.pause_for_move("build-server").await;
     let core = h.core.clone();
     assert!(agent_stop(&core, h.dialog_id.clone()).await);
     assert_eq!(h.run_end().await, "stopped");
+    std::fs::write(h.project.join("go"), "").unwrap();
     let paused = within("the run's end", pausing).await.unwrap();
     assert!(!paused, "it stopped, not paused");
     let messages = h.messages().await;
-    assert_eq!(
-        result_of(&messages, "r1").content,
-        "Error: stopped by the user before this ran."
-    );
     let paused = messages
         .iter()
         .filter(|m| m.meta.as_ref().is_some_and(|m| m.get("paused").is_some()));

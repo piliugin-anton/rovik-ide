@@ -281,6 +281,46 @@ pub(super) fn installs_line(
 
 /// The toolchains this round installed, or couldn't, as the start of
 /// `installs_line`'s sentence: empty when the project asked for none.
+/// The toolchain outcomes for a record's metadata: each version, with
+/// the root command's error when it wasn't installed.
+fn toolchains_meta(toolchains: &[(Want, Result<(), String>)]) -> Vec<Value> {
+    toolchains
+        .iter()
+        .map(|(want, outcome)| json!({ "toolchain": want.describe(), "error": outcome.as_ref().err() }))
+        .collect()
+}
+
+/// An environment round's outcome: true ("repaired") when an install ran
+/// or a toolchain was installed, so the checks run again at once.
+fn environment_outcome(done: &[InstallResult], toolchains: &[(Want, Result<(), String>)]) -> bool {
+    !done.is_empty() || toolchains.iter().any(|(_, outcome)| outcome.is_ok())
+}
+
+/// What the agent is told when an environment round repaired nothing.
+/// A version the host couldn't install is the server's to add, never the
+/// agent's.
+fn environment_note(failure: &str, toolchains: &[(Want, Result<(), String>)]) -> String {
+    let refused: Vec<String> = toolchains
+        .iter()
+        .filter(|(_, outcome)| outcome.is_err())
+        .map(|(want, _)| want.describe())
+        .collect();
+    if refused.is_empty() {
+        return format!(
+            "This attempt isn't counted: the checks failed on the environment, not on your change (`{failure}`), \
+             and the IDE found nothing to install for it. If the project says how to install what's missing (its \
+             manifest, lockfile or README), install it; otherwise work around it. Then finish: the checks run again."
+        );
+    }
+    format!(
+        "{}This attempt isn't counted: the checks failed on the environment, not on your change (`{failure}`). \
+         The version the project needs ({}) couldn't be installed on this server, and an administrator can add it. \
+         Don't install a toolchain yourself: tell the user, then finish: the checks run again.",
+        toolchains_line(toolchains),
+        refused.join(", ")
+    )
+}
+
 fn toolchains_line(toolchains: &[(Want, Result<(), String>)]) -> String {
     if toolchains.is_empty() {
         return String::new();
@@ -502,36 +542,47 @@ impl Run {
         failure: String,
         command: String,
     ) -> Result<String, String> {
-        let installs = if self.config().autopilot.prepare {
+        let prepare = self.config().autopilot.prepare;
+        let installs = if prepare {
             needed(Path::new(root))
         } else {
             Vec::new()
         };
         let mut done: Vec<InstallResult> = installs.iter().map(InstallResult::pending).collect();
-        let meta = |done: &[InstallResult]| {
+        let meta = |done: &[InstallResult], toolchains: &[(Want, Result<(), String>)]| {
             verify::with(
                 verify::record("failed", round, results, changed, None),
                 json!({
-                    "environment": { "failure": failure, "command": command, "installs": done },
+                    "environment": {
+                        "failure": failure,
+                        "command": command,
+                        "installs": done,
+                        "toolchains": toolchains_meta(toolchains),
+                    },
                     "counted": false,
                 }),
             )
         };
-        self.update_meta(record_id, meta(&done)).await?;
+        self.update_meta(record_id, meta(&done, &[])).await?;
         // A version the project needs that the host lacks installs first;
         // the round's record says how the installs went, and this one is
-        // counted again if they don't fix it.
-        let _toolchains = find_programs(root, &installs).await;
+        // counted again if they don't fix it. Prepare off: nothing is
+        // installed, the host's toolchains included.
+        let toolchains = match prepare {
+            true => find_programs(root, &installs).await,
+            false => Vec::new(),
+        };
+        self.update_meta(record_id, meta(&done, &toolchains)).await?;
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
                 done[i].status = "skipped";
                 continue;
             }
             done[i].status = "running";
-            self.update_meta(record_id, meta(&done)).await?;
+            self.update_meta(record_id, meta(&done, &toolchains)).await?;
             // Its own names: the Prepare stage's output stays as it was.
             done[i] = self.install(root, install, i, "prepare-again").await;
-            self.update_meta(record_id, meta(&done)).await?;
+            self.update_meta(record_id, meta(&done, &toolchains)).await?;
         }
         log::write(
             &self.core,
@@ -554,16 +605,12 @@ impl Run {
         if self.stopped() {
             return Ok("verify-stopped".into());
         }
-        if !done.is_empty() {
+        if environment_outcome(&done, &toolchains) {
             // The same code: the checks run again on it now.
             self.writes_since_verify = true;
             return Ok("repaired".into());
         }
-        let note = format!(
-            "This attempt isn't counted: the checks failed on the environment, not on your change (`{failure}`), \
-             and the IDE found nothing to install for it. If the project says how to install what's missing (its \
-             manifest, lockfile or README), install it; otherwise work around it. Then finish: the checks run again."
-        );
+        let note = environment_note(&failure, &toolchains);
         let report = verify::failure_report(results, changed, round, None, &[note]);
         self.add_harness(report, "verification").await?;
         self.last_verify_failed = true;
@@ -698,21 +745,67 @@ fn install_command(install: &Install, dir: &Path) -> (String, Vec<(String, Strin
     )
 }
 
-/// Whether `dir`'s or this user's `.npmrc` names a registry token: then the
-/// install keeps its own cache, since what it downloads is private.
+/// Whether npm, installing in `dir`, may authenticate to a registry: then
+/// the install keeps its own cache, since what it downloads may be private.
+/// Any credential counts (a token, a user and password, a client
+/// certificate), in the project's `.npmrc`, the user's, the ones npm's
+/// settings name instead (`npm_config_userconfig`, `npm_config_globalconfig`),
+/// or npm's settings in the environment (`npm_config_//host/:_authToken`).
 fn npm_credentials(dir: &Path) -> bool {
-    let user = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npmrc"));
-    [Some(dir.join(".npmrc")), user]
-        .into_iter()
-        .flatten()
-        .any(|path| {
-            std::fs::read_to_string(path).is_ok_and(|text| {
-                text.lines().any(|line| {
-                    let line = line.split(['#', ';']).next().unwrap_or_default().trim();
-                    line.contains("_authToken") || line.starts_with("_auth")
-                })
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    npm_credentials_with(dir, &env)
+}
+
+/// `npm_credentials`, with this environment.
+fn npm_credentials_with(dir: &Path, env: &[(String, String)]) -> bool {
+    let setting = |name: &str| {
+        env.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| PathBuf::from(value))
+    };
+    let home = env
+        .iter()
+        .find(|(key, _)| key == "HOME")
+        .map(|(_, home)| PathBuf::from(home).join(".npmrc"));
+    let files = [
+        Some(dir.join(".npmrc")),
+        home,
+        setting("npm_config_userconfig"),
+        setting("npm_config_globalconfig"),
+    ];
+    let in_files = files.into_iter().flatten().any(|path| {
+        std::fs::read_to_string(path).is_ok_and(|text| {
+            text.lines().any(|line| {
+                let line = line.trim();
+                if line.starts_with('#') || line.starts_with(';') {
+                    return false;
+                }
+                line.split_once('=').is_some_and(|(key, _)| npm_credential_key(key))
             })
         })
+    });
+    let in_env = env.iter().any(|(key, value)| {
+        let lower = key.to_ascii_lowercase();
+        lower
+            .strip_prefix("npm_config_")
+            .is_some_and(|setting| !value.is_empty() && npm_credential_key(setting))
+    });
+    in_files || in_env
+}
+
+/// Whether an npm setting's name (`_authToken`, `//host/:_password`, …) is
+/// a registry credential.
+fn npm_credential_key(key: &str) -> bool {
+    let key = key.trim();
+    // `//registry.example.com/:_authToken`: the part after the scope.
+    let name = match key.starts_with("//") {
+        true => key.rsplit(':').next().unwrap_or(key),
+        false => key,
+    };
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "_authtoken" | "_auth" | "_password" | "username" | "password" | "certfile" | "keyfile" | "cert" | "key"
+    )
 }
 
 #[cfg(test)]
@@ -1058,6 +1151,46 @@ mod tests {
         );
     }
 
+    /// An environment round repairs when an install ran or a toolchain was
+    /// installed; a refusal alone doesn't, and the agent is told it's the
+    /// server's to add.
+    #[test]
+    fn an_environment_round_counts_a_new_toolchain_and_names_a_refused_one() {
+        use crate::toolchains::{Kind, Want};
+        let rust = Want {
+            kind: Kind::Rust,
+            version: "1.82".into(),
+            components: Vec::new(),
+            targets: Vec::new(),
+        };
+        let installed = [(rust.clone(), Ok(()))];
+        let refused = [(rust, Err("not allowed".to_string()))];
+        let npm = InstallResult::pending(&Install {
+            folder: String::new(),
+            command: "npm ci".into(),
+        });
+        assert!(environment_outcome(&[], &installed));
+        assert!(!environment_outcome(&[], &refused));
+        assert!(!environment_outcome(&[], &[]));
+        assert!(environment_outcome(std::slice::from_ref(&npm), &refused));
+
+        let note = environment_note("cargo: not found", &refused);
+        assert!(note.starts_with("Toolchains: Rust 1.82 couldn't be installed (not allowed). "), "{note}");
+        assert!(note.contains("The version the project needs (Rust 1.82)"), "{note}");
+        let plain = environment_note("cargo: not found", &[]);
+        assert!(plain.contains("the IDE found nothing to install for it"), "{plain}");
+        assert_eq!(plain, environment_note("cargo: not found", &installed));
+
+        assert_eq!(
+            toolchains_meta(&refused),
+            [json!({ "toolchain": "Rust 1.82", "error": "not allowed" })]
+        );
+        assert_eq!(
+            toolchains_meta(&installed),
+            [json!({ "toolchain": "Rust 1.82", "error": null })]
+        );
+    }
+
     /// `set`, for a test that uses one; other tests that set one wait.
     struct Host(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
@@ -1119,8 +1252,53 @@ mod tests {
         write(&dir.0, ".npmrc", "legacy-peer-deps=true\n");
         assert!(!install_command(&ci, &dir.0).1.is_empty());
 
+        // Any other credential npm sends: a user and password, a client
+        // certificate, with or without a registry's scope.
+        for npmrc in [
+            "//npm.example.com/:username=me\n//npm.example.com/:_password=c2VjcmV0\n",
+            "//npm.example.com/:certfile=/home/me/client.crt\n",
+            "_auth=bWU6c2VjcmV0\n",
+            "  //npm.example.com/:keyfile = /home/me/client.key\n",
+        ] {
+            write(&dir.0, ".npmrc", npmrc);
+            assert!(install_command(&ci, &dir.0).1.is_empty(), "{npmrc}");
+        }
+        // Commented out: not one.
+        write(&dir.0, ".npmrc", "# //npm.example.com/:_authToken=x\n; _auth=y\n");
+        assert!(!install_command(&ci, &dir.0).1.is_empty());
+
         // Not `npm ci`: its own cache.
         let unlocked = install("npm install --no-package-lock --no-audit --no-fund");
         assert_eq!(install_command(&unlocked, &dir.0).0, unlocked.command);
+    }
+
+    /// npm's settings in the environment, and the `.npmrc` files they name,
+    /// count too; a setting that isn't a credential doesn't.
+    #[test]
+    fn npm_credentials_in_the_environment_count() {
+        let dir = crate::testing::temp_dir();
+        let env = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        assert!(!npm_credentials_with(&dir.0, &[]));
+        assert!(npm_credentials_with(&dir.0, &env(&[("npm_config__auth", "bWU6eA==")])));
+        assert!(npm_credentials_with(
+            &dir.0,
+            &env(&[("NPM_CONFIG_//npm.example.com/:_authToken", "t")])
+        ));
+        assert!(!npm_credentials_with(&dir.0, &env(&[("npm_config_registry", "https://npm.example.com/")])));
+        assert!(!npm_credentials_with(&dir.0, &env(&[("npm_config__authToken", "")])));
+        // The user's `.npmrc` where npm's settings put it.
+        let elsewhere = dir.0.join("elsewhere.npmrc");
+        std::fs::write(&elsewhere, "//npm.example.com/:_authToken=t\n").unwrap();
+        let path = elsewhere.to_string_lossy().into_owned();
+        assert!(npm_credentials_with(&dir.0, &env(&[("NPM_CONFIG_USERCONFIG", &path)])));
+        assert!(npm_credentials_with(&dir.0, &env(&[("npm_config_globalconfig", &path)])));
+        // `HOME`'s `.npmrc`.
+        std::fs::write(dir.0.join(".npmrc"), "").unwrap();
+        let home = crate::testing::temp_dir();
+        std::fs::write(home.0.join(".npmrc"), "username=me\npassword=x\n").unwrap();
+        let home_path = home.0.to_string_lossy().into_owned();
+        assert!(npm_credentials_with(&dir.0, &env(&[("HOME", &home_path)])));
     }
 }
