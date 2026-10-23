@@ -454,6 +454,15 @@ pub fn reviewer_wait(attempt: u32, left: Duration) -> Option<Duration> {
     Some((OUTAGE_WAIT * (1u32 << attempt.min(6))).min(left))
 }
 
+/// Step 9: the time left to wait for a plan reviewer, from the plan's
+/// `minutes_left` of its `max_minutes`. Those minutes already count the
+/// waits so far (a run's time is kept after each try), so `waited` only
+/// caps it, for a plan with no record to count them.
+pub fn reviewer_time_left(minutes_left: f64, max_minutes: f64, waited: Duration) -> Duration {
+    let minutes = |m: f64| Duration::from_secs_f64((m * 60.0).max(0.0));
+    minutes(minutes_left).min(minutes(max_minutes).saturating_sub(waited))
+}
+
 /// A plan-stage stop reason (`review["stop"]`) in words.
 pub fn stop_words(stop: &str) -> &'static str {
     match stop {
@@ -1718,8 +1727,11 @@ impl Run {
             return Some(stop);
         }
         let minutes = self.plan_minutes_left().await;
-        let left = Duration::from_secs_f64((minutes * 60.0).max(0.0)).saturating_sub(*waited);
-        let wait = reviewer_wait(attempt, left)?;
+        let left = reviewer_time_left(minutes, self.plan_fix().max_minutes, *waited);
+        // No time left to wait: blocked, never tried again at once.
+        let Some(wait) = reviewer_wait(attempt, left) else {
+            return Some("reviewer-unavailable");
+        };
         let until = Instant::now() + wait;
         while Instant::now() < until {
             if self.stopped() {
@@ -3377,6 +3389,20 @@ mod tests {
         let short = OUTAGE_WAIT / 2;
         assert_eq!(reviewer_wait(3, short), Some(short));
         assert_eq!(reviewer_wait(0, Duration::ZERO), None);
+    }
+
+    /// The waits so far are in the plan's minutes already: not taken off
+    /// twice. Without a record of them, `waited` still ends the waits.
+    #[test]
+    fn the_reviewers_time_left_counts_each_wait_once() {
+        let min = Duration::from_secs(60);
+        // 20 of 30 minutes spent, 10 of them waiting: 10 left, not 0.
+        assert_eq!(reviewer_time_left(10.0, 30.0, min * 10), min * 10);
+        // No record counted them: 30 minutes waited is all of it.
+        assert_eq!(reviewer_time_left(30.0, 30.0, min * 30), Duration::ZERO);
+        assert_eq!(reviewer_time_left(30.0, 30.0, min * 25), min * 5);
+        // Past the limit: nothing left, never a negative wait.
+        assert_eq!(reviewer_time_left(-2.0, 30.0, Duration::ZERO), Duration::ZERO);
     }
 
     fn entry(number: usize, f: Finding) -> LedgerEntry {

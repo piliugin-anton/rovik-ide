@@ -13,8 +13,9 @@
 //!   `.nvmrc`, `.node-version` or `engines.node`.
 //! - [`env_for`] is the environment every command the agent runs gets
 //!   (command_tool.rs): the toolchains' `bin` folders in front of the
-//!   PATH, one shared `RUSTUP_HOME`, and `RUSTUP_AUTO_INSTALL=0`, since
-//!   rustup can't write into the shared folder.
+//!   PATH and, once the shared Rust is installed, one shared
+//!   `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`, since rustup can't write
+//!   into the shared folder.
 //! - [`ensure`] has the versions a project asks for and the host lacks
 //!   installed, through the root command (`rovik-agentd user toolchain …`).
 //! - [`seed_crates`] and [`publish_crates`] move crates between the
@@ -388,9 +389,9 @@ fn version_order(one: &str, other: &str) -> std::cmp::Ordering {
 
 /// What a command run in `project` gets: `PATH`, with the shared Rust's
 /// `bin` and the project's Node `bin` in front of the one the app's
-/// programs have; `RUSTUP_HOME`, the one shared and read-only; and
-/// `RUSTUP_AUTO_INSTALL=0`, so rustup never tries to install into it.
-/// `CARGO_HOME` isn't set: cargo keeps `~/.cargo`, each user's own. Empty
+/// programs have; and, once the shared Rust is installed, `RUSTUP_HOME`,
+/// the one shared and read-only, and `RUSTUP_AUTO_INSTALL=0`, so rustup
+/// never tries to install into it. `CARGO_HOME` isn't set: cargo keeps `~/.cargo`, each user's own. Empty
 /// when nothing is shared.
 pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
     let Some(shared) = shared() else {
@@ -401,7 +402,11 @@ pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
     }
     let mut dirs: Vec<PathBuf> = Vec::new();
     let cargo_bin = shared.root.join("rust/cargo/bin");
-    if cargo_bin.is_dir() {
+    // The shared rustup's settings only with its programs: a host with no
+    // shared Rust yet (the root folder is made empty at install) leaves the
+    // user's own rustup, if any, as it is.
+    let shared_rust = cargo_bin.is_dir();
+    if shared_rust {
         dirs.push(cargo_bin);
     }
     let node = wanted(project)
@@ -414,8 +419,10 @@ pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
     let path = crate::process::child_var("PATH").unwrap_or_default();
     dirs.extend(std::env::split_paths(&path));
     let mut vars: Vec<(&'static str, OsString)> = vec![("PATH", std::env::join_paths(dirs).unwrap_or(path))];
-    vars.push(("RUSTUP_HOME", shared.root.join("rust/rustup").into_os_string()));
-    vars.push(("RUSTUP_AUTO_INSTALL", OsString::from("0")));
+    if shared_rust {
+        vars.push(("RUSTUP_HOME", shared.root.join("rust/rustup").into_os_string()));
+        vars.push(("RUSTUP_AUTO_INSTALL", OsString::from("0")));
+    }
     vars
 }
 
@@ -709,27 +716,45 @@ pub fn publish_crates(root: &Path) {
 
 /// `bytes` in `to`, which is the file only once it's whole: a temporary
 /// file beside it, then a rename.
+///
+/// The shared store is a folder every `rovik` group member writes, without
+/// the sticky bit, so the temporary file is made new (never opened if
+/// something is there, a planted symlink included) under a random name,
+/// and its mode is set on the open file, never through its path.
 fn write_atomically(to: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     use std::io::Write;
     let Some(dir) = to.parent() else {
         return Err(format!("{} has no folder", to.display()));
     };
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let temp = dir.join(format!(
-        ".{}.{}",
-        to.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
+    let name = to.file_name().unwrap_or_default().to_string_lossy();
+    let (temp, mut file) = (|| {
+        let mut tries = 0;
+        loop {
+            let temp = dir.join(format!(".{name}.{:016x}", rand::random::<u64>()));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            match options.open(&temp) {
+                Ok(file) => return Ok((temp, file)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 8 => tries += 1,
+                Err(e) => return Err(format!("{}: {e}", temp.display())),
+            }
+        }
+    })()?;
     let written = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&temp)?;
         file.write_all(bytes)?;
-        drop(file);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))?;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
         }
         let _ = mode;
+        drop(file);
         std::fs::rename(&temp, to)
     })();
     written.map_err(|e| {
@@ -853,6 +878,64 @@ mod tests {
         );
         assert_eq!(env["RUSTUP_AUTO_INSTALL"], "0");
         assert!(!env.contains_key("CARGO_HOME"));
+    }
+
+    /// A host whose shared folder has no Rust yet (made empty at install)
+    /// leaves the user's own rustup as it is: no `RUSTUP_HOME` pointing
+    /// at a folder that isn't there.
+    #[cfg(unix)]
+    #[test]
+    fn without_the_shared_rust_rustups_settings_are_the_users() {
+        let _guard = Guard::new();
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.join("toolchains");
+        std::fs::create_dir_all(&root).unwrap();
+        set(Shared {
+            root: root.clone(),
+            caches: None,
+            installer: None,
+        });
+        let env: std::collections::HashMap<_, _> = env_for(&dir.0).into_iter().collect();
+        assert!(!env.contains_key("RUSTUP_HOME"), "{env:?}");
+        assert!(!env.contains_key("RUSTUP_AUTO_INSTALL"), "{env:?}");
+        assert!(env.contains_key("PATH"));
+    }
+
+    /// The shared store is written by every group member: a symlink one of
+    /// them left where a crate goes, or beside it, is never written
+    /// through, and nothing temporary is left behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_crate_is_never_written_through_a_planted_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::testing::temp_dir();
+        let store = dir.0.join("crates");
+        std::fs::create_dir_all(&store).unwrap();
+        let victim = dir.0.join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let to = store.join("serde-1.0.0.crate");
+        std::os::unix::fs::symlink(&victim, &to).unwrap();
+        // The old, predictable temporary name, too.
+        let old_temp = store.join(format!(".serde-1.0.0.crate.{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &old_temp).unwrap();
+
+        write_atomically(&to, b"a crate", 0o660).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the victim's mode is its own");
+        let meta = std::fs::symlink_metadata(&to).unwrap();
+        assert!(meta.file_type().is_file(), "the crate is a file, not the link");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o660);
+        assert_eq!(std::fs::read(&to).unwrap(), b"a crate");
+        let planted = old_temp.file_name().unwrap().to_string_lossy().into_owned();
+        let left: Vec<_> = std::fs::read_dir(&store)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with('.') && *name != planted)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     /// Nothing changes on a computer the daemon didn't set anything on.
