@@ -25,7 +25,7 @@ use super::run::Run;
 use super::verify::{self, CheckResult, FAILURE_OUTPUT_CHARS};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// An install a package needs: its lockfile's, or npm's of its package.json.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,7 @@ pub struct Install {
 }
 
 use crate::project_profile::NOT_PACKAGES;
+use crate::toolchains::Want;
 
 /// Node's lockfiles, any of which says how its packages install.
 const NODE_LOCKFILES: &[&str] = &[
@@ -187,7 +188,13 @@ fn below_a_workspace(root: &Path) -> bool {
 /// shell's PATH as it started. That PATH is read again then
 /// (`process::refresh_login_path`), for these installs and the commands
 /// after them: the checks, the agent's. Logs what it found.
-async fn find_programs(installs: &[Install]) {
+///
+/// Before that, a cloud host's shared Rust and Node versions the packages
+/// ask for and the host lacks are installed, through the root command
+/// (toolchains): what the installs below run. Each with its outcome, for
+/// the line that says how the installs went.
+async fn find_programs(root: &str, installs: &[Install]) -> Vec<(Want, Result<(), String>)> {
+    let toolchains = crate::toolchains::ensure(Path::new(root)).await;
     let mut missing: Vec<String> = Vec::new();
     for install in installs {
         let Some(program) = install.command.split_whitespace().next() else {
@@ -198,7 +205,7 @@ async fn find_programs(installs: &[Install]) {
         }
     }
     if missing.is_empty() {
-        return;
+        return toolchains;
     }
     let read = crate::rt::spawn_blocking(crate::process::refresh_login_path)
         .await
@@ -214,21 +221,27 @@ async fn find_programs(installs: &[Install]) {
     ::log::info!(
         "prepare: {missing:?} not on the PATH; the login shell's PATH {path}; found now: {found:?}"
     );
+    toolchains
 }
 
 /// How installs went, in a line: what was installed, or which failed, and
 /// the programs they need that weren't found where the chat runs.
 /// `on_server`: a daemon's run, where a program that isn't there is the
 /// server's to install, which its host's setup script does.
-pub(super) fn installs_line(done: &[InstallResult], on_server: bool) -> String {
+pub(super) fn installs_line(
+    done: &[InstallResult],
+    on_server: bool,
+    toolchains: &[(Want, Result<(), String>)],
+) -> String {
     let named = |d: &InstallResult| match d.folder.as_str() {
         "" => format!("`{}`", d.command),
         folder => format!("`{}` in {folder}", d.command),
     };
+    let toolchains = toolchains_line(toolchains);
     let failed: Vec<&InstallResult> = done.iter().filter(|d| d.status == "failed").collect();
     if failed.is_empty() {
         return format!(
-            "Installed: {}",
+            "{toolchains}Installed: {}",
             done.iter().map(named).collect::<Vec<_>>().join(", ")
         );
     }
@@ -255,7 +268,7 @@ pub(super) fn installs_line(done: &[InstallResult], on_server: bool) -> String {
         ),
     };
     format!(
-        "{} of {} installs failed ({}): {why}",
+        "{toolchains}{} of {} installs failed ({}): {why}",
         failed.len(),
         done.len(),
         failed
@@ -264,6 +277,31 @@ pub(super) fn installs_line(done: &[InstallResult], on_server: bool) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+/// The toolchains this round installed, or couldn't, as the start of
+/// `installs_line`'s sentence: empty when the project asked for none.
+fn toolchains_line(toolchains: &[(Want, Result<(), String>)]) -> String {
+    if toolchains.is_empty() {
+        return String::new();
+    }
+    let said: Vec<String> = toolchains
+        .iter()
+        .map(|(want, outcome)| match outcome {
+            Ok(()) => format!("installed {}", want.describe()),
+            // The root command's message: one line, in a sentence.
+            Err(why) => format!(
+                "{} couldn't be installed ({})",
+                want.describe(),
+                why.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        })
+        .collect();
+    format!("Toolchains: {}. ", said.join(", "))
 }
 
 /// The program a failed install runs that its shell didn't find: `npm`
@@ -348,7 +386,7 @@ impl Run {
         row.meta = Some(meta("running", &done));
         let record_id = row.id.clone();
         self.append(vec![row]).await?;
-        find_programs(&installs).await;
+        let toolchains = find_programs(&root, &installs).await;
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
                 done[i].status = "skipped";
@@ -389,7 +427,7 @@ impl Run {
         // Done all the same (the checks say what's missing), but not a
         // success to show: the failed installs are counted in the record.
         let failures = failed.len() as u32;
-        let summary = installs_line(&done, self.core.agents.on_server());
+        let summary = installs_line(&done, self.core.agents.on_server(), &toolchains);
         self.end_own_stage_with(|r| {
             r.status = Status::Done;
             r.summary = Some(summary);
@@ -416,7 +454,7 @@ impl Run {
         if installs.is_empty() {
             return None;
         }
-        find_programs(&installs).await;
+        let toolchains = find_programs(root, &installs).await;
         let mut done: Vec<InstallResult> = installs.iter().map(InstallResult::pending).collect();
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
@@ -440,7 +478,11 @@ impl Run {
                 })).collect::<Vec<_>>(),
             }),
         );
-        Some(installs_line(&done, self.core.agents.on_server()))
+        Some(installs_line(
+            &done,
+            self.core.agents.on_server(),
+            &toolchains,
+        ))
     }
 
     /// V03 (D12): the round's checks failed on their environment
@@ -476,7 +518,10 @@ impl Run {
             )
         };
         self.update_meta(record_id, meta(&done)).await?;
-        find_programs(&installs).await;
+        // A version the project needs that the host lacks installs first;
+        // the round's record says how the installs went, and this one is
+        // counted again if they don't fix it.
+        let _toolchains = find_programs(root, &installs).await;
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
                 done[i].status = "skipped";
@@ -540,7 +585,10 @@ impl Run {
     }
 
     /// `install`, in `chat`'s name: its copy's environment and confinement,
-    /// its saved output; this run's Stop stops it.
+    /// its saved output; this run's Stop stops it. A cloud host's shared
+    /// caches are used where they're safe: npm's for `npm ci` with a
+    /// lockfile, and the crates' for `cargo fetch`, seeded from the store
+    /// before it and added to it after it succeeds (`toolchains`).
     async fn install_in(
         &self,
         chat: &str,
@@ -553,10 +601,25 @@ impl Run {
         let dir = Path::new(root).join(&install.folder);
         let stop = self.stop.clone();
         let overlay = crate::overlay::chats::get(chat);
-        let queued = crate::command_tool::Queued::check(chat, overlay.as_deref());
+        let mut queued = crate::command_tool::Queued::check(chat, overlay.as_deref());
+        let (command, env) = install_command(install, &dir);
+        queued.env.extend(env);
+        // `cargo fetch`: the crates the last chat on this host left in the
+        // shared store, each checked against this project's lockfile.
+        let cargo_fetch = install.command.starts_with("cargo fetch");
+        let shared_crates = cargo_fetch && crate::toolchains::crate_cache().is_some();
+        if shared_crates {
+            let seeded = dir.clone();
+            let copied = crate::rt::spawn_blocking(move || crate::toolchains::seed_crates(&seeded))
+                .await
+                .unwrap_or_default();
+            if copied > 0 {
+                ::log::info!("prepare: {copied} crate(s) from the shared store in {dir:?}");
+            }
+        }
         let outcome = crate::command_tool::run_command(
             dir.to_string_lossy().into_owned(),
-            install.command.clone(),
+            command,
             Some(verify::check_timeout_ms(&self.dialog_id)),
             move || stop.is_set(),
             Some(queued),
@@ -577,6 +640,14 @@ impl Run {
                 );
                 let passed = out.exit_code == Some(0) && !out.timed_out;
                 r.status = if passed { "passed" } else { "failed" };
+                if passed && shared_crates {
+                    // What this chat fetched, for the next user's chat here.
+                    let published = dir.clone();
+                    let _ = crate::rt::spawn_blocking(move || {
+                        crate::toolchains::publish_crates(&published)
+                    })
+                    .await;
+                }
                 if !passed {
                     let focused = focus_failures(&combined, FAILURE_OUTPUT_CHARS);
                     r.output = Some(if focused.is_empty() {
@@ -601,6 +672,47 @@ impl Run {
         }
         r
     }
+}
+
+/// The command an install runs in `dir`, and the environment it gets.
+/// `npm ci` with a lockfile uses the shared npm cache, where this daemon
+/// has one and neither the project's nor the user's `.npmrc` carries
+/// registry credentials: npm checks every package against the lockfile's
+/// `integrity`, so a package another user put there is still the one this
+/// project asked for, and a private package never lands in it. The folder
+/// keeps `umask 0007`, so what's written is the `rovik` group's to read.
+fn install_command(install: &Install, dir: &Path) -> (String, Vec<(String, String)>) {
+    let Some(cache) = crate::toolchains::npm_cache() else {
+        return (install.command.clone(), Vec::new());
+    };
+    let locked = install.command.starts_with("npm ci") && dir.join("package-lock.json").is_file();
+    if !locked || npm_credentials(dir) {
+        return (install.command.clone(), Vec::new());
+    }
+    (
+        format!("umask 0007 && {}", install.command),
+        vec![(
+            "npm_config_cache".to_string(),
+            cache.to_string_lossy().into_owned(),
+        )],
+    )
+}
+
+/// Whether `dir`'s or this user's `.npmrc` names a registry token: then the
+/// install keeps its own cache, since what it downloads is private.
+fn npm_credentials(dir: &Path) -> bool {
+    let user = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npmrc"));
+    [Some(dir.join(".npmrc")), user]
+        .into_iter()
+        .flatten()
+        .any(|path| {
+            std::fs::read_to_string(path).is_ok_and(|text| {
+                text.lines().any(|line| {
+                    let line = line.split(['#', ';']).next().unwrap_or_default().trim();
+                    line.contains("_authToken") || line.starts_with("_auth")
+                })
+            })
+        })
 }
 
 #[cfg(test)]
@@ -854,7 +966,7 @@ mod tests {
             "sh: 1: npm: not found",
         );
         assert_eq!(
-            installs_line(std::slice::from_ref(&npm), false),
+            installs_line(std::slice::from_ref(&npm), false, &[]),
             "1 of 1 installs failed (`npm ci --no-audit --no-fund`): npm wasn't found where the chat runs"
         );
         let cargo = ran("cargo fetch", "api", 127, "bash: cargo: command not found");
@@ -866,7 +978,7 @@ mod tests {
         );
         let uv = ran("uv sync", "py", 0, "");
         assert_eq!(
-            installs_line(&[npm.clone(), cargo.clone(), web, uv.clone()], false),
+            installs_line(&[npm.clone(), cargo.clone(), web, uv.clone()], false, &[]),
             "3 of 4 installs failed (`npm ci --no-audit --no-fund`, `cargo fetch` in api, \
              `npm install --no-package-lock --no-audit --no-fund` in web): \
              npm and cargo weren't found where the chat runs"
@@ -880,22 +992,135 @@ mod tests {
         let other = ran("npm ci --no-audit --no-fund", "", 1, "npm ERR! code E404");
         for failed in [script, other] {
             assert_eq!(
-                installs_line(&[failed], false),
+                installs_line(&[failed], false, &[]),
                 "1 of 1 installs failed (`npm ci --no-audit --no-fund`): the checks will say what's missing"
             );
         }
-        assert_eq!(installs_line(&[uv], false), "Installed: `uv sync` in py");
+        assert_eq!(installs_line(&[uv], false, &[]), "Installed: `uv sync` in py");
         // On a server, what isn't there is its setup script's to install.
         assert_eq!(
-            installs_line(std::slice::from_ref(&npm), true),
+            installs_line(std::slice::from_ref(&npm), true, &[]),
             "1 of 1 installs failed (`npm ci --no-audit --no-fund`): npm wasn't found on the server \
              (its setup script, in Settings → Cloud hosts, can install it)"
         );
         assert_eq!(
-            installs_line(&[npm, cargo], true),
+            installs_line(&[npm, cargo], true, &[]),
             "2 of 2 installs failed (`npm ci --no-audit --no-fund`, `cargo fetch` in api): npm and \
              cargo weren't found on the server (its setup script, in Settings → Cloud hosts, can \
              install them)"
         );
+    }
+
+    /// What a cloud host installed for the project comes first in the line:
+    /// the versions it was missing, or the root command's refusal.
+    #[test]
+    fn the_toolchains_a_project_needed_come_first() {
+        use crate::toolchains::{Kind, Want};
+        let rust = Want {
+            kind: Kind::Rust,
+            version: "1.82".into(),
+            components: Vec::new(),
+            targets: Vec::new(),
+        };
+        let node = Want {
+            kind: Kind::Node,
+            version: "20".into(),
+            components: Vec::new(),
+            targets: Vec::new(),
+        };
+        let npm = InstallResult::pending(&Install {
+            folder: String::new(),
+            command: "npm ci --no-audit --no-fund".into(),
+        });
+        let line = installs_line(
+            std::slice::from_ref(&npm),
+            false,
+            &[
+                (rust, Ok(())),
+                (
+                    node,
+                    Err("sudo: a password is required\nIt isn't installed".into()),
+                ),
+            ],
+        );
+        assert_eq!(
+            line,
+            "Toolchains: installed Rust 1.82, Node 20 couldn't be installed (sudo: a password is \
+             required; It isn't installed). Installed: `npm ci --no-audit --no-fund`"
+        );
+        // Nothing asked for: the line is the installs' alone.
+        assert_eq!(
+            installs_line(&[InstallResult::pending(&Install {
+                folder: String::new(),
+                command: "uv sync".into(),
+            })], false, &[]),
+            "Installed: `uv sync`"
+        );
+    }
+
+    /// `set`, for a test that uses one; other tests that set one wait.
+    struct Host(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Host {
+        fn new() -> Host {
+            let lock = crate::toolchains::test_lock();
+            crate::toolchains::unset();
+            let dir = crate::testing::temp_dir();
+            let caches = dir.0.join("caches");
+            for folder in ["npm", "crates"] {
+                std::fs::create_dir_all(caches.join(folder)).unwrap();
+            }
+            crate::toolchains::set(crate::toolchains::Shared {
+                root: dir.0.join("toolchains"),
+                caches: Some(caches),
+                installer: None,
+            });
+            // The folder outlives the guard, which only forgets the host.
+            std::mem::forget(dir);
+            Host(lock)
+        }
+    }
+
+    impl Drop for Host {
+        fn drop(&mut self) {
+            crate::toolchains::unset();
+        }
+    }
+
+    /// `npm ci` with a lockfile writes its packages into the shared cache;
+    /// an install whose registry credentials are in an `.npmrc`, and one
+    /// that isn't `npm ci`, keep the user's own.
+    #[test]
+    fn npm_ci_with_a_lockfile_uses_the_shared_cache() {
+        let _host = Host::new();
+        let dir = crate::testing::temp_dir();
+        let install = |command: &str| Install {
+            folder: String::new(),
+            command: command.into(),
+        };
+        let ci = install("npm ci --no-audit --no-fund");
+        // No lockfile: npm's cache of its own.
+        let (command, env) = install_command(&ci, &dir.0);
+        assert_eq!(command, ci.command);
+        assert!(env.is_empty());
+
+        write(&dir.0, "package-lock.json", "{}");
+        let (command, env) = install_command(&ci, &dir.0);
+        assert_eq!(command, "umask 0007 && npm ci --no-audit --no-fund");
+        let cache = crate::toolchains::npm_cache().unwrap();
+        assert_eq!(env, [("npm_config_cache".to_string(), cache.to_string_lossy().into_owned())]);
+
+        // With a registry token in the project's or the user's `.npmrc`:
+        // what it downloads may be private, so never the shared cache.
+        write(&dir.0, ".npmrc", "//registry.npmjs.org/:_authToken=secret\n");
+        let (command, env) = install_command(&ci, &dir.0);
+        assert_eq!(command, ci.command);
+        assert!(env.is_empty());
+        write(&dir.0, ".npmrc", "legacy-peer-deps=true\n");
+        assert!(!install_command(&ci, &dir.0).1.is_empty());
+
+        // Not `npm ci`: its own cache.
+        let unlocked = install("npm install --no-package-lock --no-audit --no-fund");
+        assert_eq!(install_command(&unlocked, &dir.0).0, unlocked.command);
     }
 }

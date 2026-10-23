@@ -471,6 +471,11 @@ async fn a_chats_image_and_pdf_reach_the_model_after_its_move() {
 /// own that has them, and land when it ends.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_chat_moved_back_waits_with_its_changes_and_its_run_goes_on_here() {
+    // Without FUSE the chat's view can't be mounted, so its changes land
+    // first instead of waiting (the test below without isolation).
+    if !rovik_core::vfs::mount_works() {
+        return;
+    }
     let mut setup = Setup::new().await;
     let app = App::local(&mut setup).await;
     app.connect(&setup).await;

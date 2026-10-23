@@ -76,7 +76,7 @@ impl Mount {
 /// where. The virtual-files volume and chats' overlays both mount this way.
 /// Tests: whether a FUSE mount works here (the driver, the device and the
 /// right to mount), tried once. Tests that need one are skipped without it.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn mount_works() -> bool {
     static WORKS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *WORKS.get_or_init(|| {

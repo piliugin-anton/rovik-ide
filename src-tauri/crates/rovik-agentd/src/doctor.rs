@@ -65,6 +65,8 @@ pub struct Server {
     pub bwrap: Option<PathBuf>,
     /// The kernel's Landlock confines commands where bubblewrap isn't.
     pub landlock: bool,
+    /// The shared Rust and Node versions (installer/toolchains.rs).
+    pub toolchains: PathBuf,
     pub git: Option<String>,
     /// A folder's file system: its free and total bytes.
     pub disk: fn(&Path) -> Option<(u64, u64)>,
@@ -94,6 +96,7 @@ impl Server {
             chrome: rovik_core::browser_tools::chrome_path(),
             bwrap: crate::installer::find_on_path("bwrap"),
             landlock: rovik_core::overlay::confine::landlock_works(),
+            toolchains: PathBuf::from(crate::installer::TOOLCHAINS),
             git: git_version(),
             disk: free_space,
         })
@@ -190,6 +193,7 @@ pub fn gather(server: &Server) -> Doctor {
             (None, AdminFile::default())
         }
     };
+    findings.toolchains(&admin, install.is_some(), &server.toolchains);
     let other_daemons =
         host::other_daemons(&server.cgroups, &server.proc, server.uid, &server.user);
     let slots = admin.slots(user_slots, other_daemons);
@@ -359,6 +363,49 @@ impl Findings {
     fn push(&mut self, level: Level, text: String) {
         self.0.push(Finding { level, text });
     }
+
+    /// The shared Rust and Node versions every user's chats run, and
+    /// whether a chat may install one and the daemons share the caches
+    /// (installer/toolchains.rs). `installed`: Rovik is installed for
+    /// everyone here, so the folders should be there.
+    fn toolchains(&mut self, admin: &AdminFile, installed: bool, root: &Path) {
+        let (rust, node) = crate::installer::toolchains::installed_here(root);
+        let mut found = Vec::new();
+        if !rust.is_empty() {
+            found.push(format!("Rust {}", rust.join(", ")));
+        }
+        if !node.is_empty() {
+            found.push(format!("Node {}", node.join(", ")));
+        }
+        let found = match found.is_empty() {
+            true => "none installed yet".to_string(),
+            false => format!("installed: {}", found.join(", ")),
+        };
+        let switches = format!(
+            "chats {} install a version, the package caches are {}",
+            match admin.toolchains.user_install {
+                true => "may",
+                false => "may not",
+            },
+            match admin.toolchains.shared_caches {
+                true => "shared",
+                false => "each user's own",
+            },
+        );
+        let text = format!(
+            "shared toolchains in {}: {found}; {switches}",
+            root.display()
+        );
+        match (installed, root.is_dir()) {
+            // Installed for everyone before they existed: they wait for
+            // an administrator, since the upgrade runs in the old build.
+            (true, false) => self.warning(format!(
+                "{text}. To set them up: sudo {} admin toolchains setup",
+                crate::installer::INSTALLED
+            )),
+            _ => self.ok(text),
+        }
+    }
 }
 
 /// Whether a daemon at `socket` answers `/health`.
@@ -435,6 +482,23 @@ mod tests {
             ),
         )
         .unwrap();
+        // The shared Rust and Node versions, with their `.used` files.
+        let toolchains = dir.0.join("toolchains");
+        for path in [
+            toolchains.join(format!(
+                "rust/rustup/toolchains/1.82.0-{}-unknown-linux-gnu",
+                std::env::consts::ARCH
+            )),
+            toolchains.join("node/20.11.0"),
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        for path in [
+            toolchains.join("rust/1.82.0.used"),
+            toolchains.join("node/20.11.0.used"),
+        ] {
+            fs::write(path, "").unwrap();
+        }
         let admin_file = dir.0.join("agentd.toml");
         let mut admin = AdminFile::sized_for("alice", 8 << 30);
         admin.admins.push("bob".into());
@@ -465,6 +529,7 @@ mod tests {
             chrome: None,
             bwrap: Some("/usr/bin/bwrap".into()),
             landlock: true,
+            toolchains: dir.0.join("toolchains"),
             git: Some("2.43.0".into()),
             disk: |_| Some((12 << 30, 40 << 30)),
         };
@@ -483,6 +548,7 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
   warning  no Chrome or Chromium: the browser tools won't work
   ok       unprivileged user namespaces are allowed
   ok       bubblewrap: /usr/bin/bwrap sandboxes the agent's commands
+  ok       shared toolchains in /home/ann/toolchains: installed: Rust 1.82.0, Node 20.11.0; chats may install a version, the package caches are shared
   git      2.43.0
   storage  projects 3.0 MB, working copies 1.0 MB, chats and attachments 20 KB, temporary files 0 B
   logs     2.0 KB, rotated at 5 MB with 3 kept

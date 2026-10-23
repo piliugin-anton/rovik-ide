@@ -43,14 +43,25 @@ usage: rovik-agentd <command>
       out (a WSL distribution on a developer's computer).
   user start|stop|restart|status [--root DIR]
       Through sudo: your own daemon.
+  user toolchain rust|node VERSION [-c COMPONENT] [-t TARGET] [--root DIR]
+      Through sudo: the Rust or Node version a project needs, installed
+      once for everyone on the server (rust: stable, beta, nightly,
+      nightly-YYYY-MM-DD, 1.N or 1.N.P; node: lts, a major version or
+      X.Y.Z). An administrator can turn this off in agentd.toml.
   admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
-         bubblewrap | upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
+         bubblewrap | toolchain list | toolchain add KIND VERSION |
+         toolchain remove KIND VERSION | toolchain prune DAYS |
+         toolchains user-install|shared-caches on|off | toolchains setup |
+         upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
       Through sudo, for Rovik's administrators: the limits on each user's
       daemon (none takes one away), the administrators, the browser for
       the browser tools (the Chrome for Testing Rovik pins, which install
       and upgrade put in place too), bubblewrap, which confines the chats'
       commands (install and upgrade put it in place too, from the distro's
-      package), an upgrade for everyone (a release's
+      package), the shared Rust and Node versions and the package caches
+      the daemons share (toolchain add works whether or not users may
+      install them; prune takes the versions no chat used for DAYS),
+      an upgrade for everyone (a release's
       build, signed in FILE.sig, or a build of one's own where agentd.toml
       allows unsigned ones; an older build only with --allow-downgrade), or
       Rovik's removal from the server.
@@ -191,6 +202,13 @@ fn parse_system(command: &str, rest: &[String]) -> Result<Command, String> {
             "--binary" if command == "install" => binary = Some(PathBuf::from(value()?)),
             "--no-browser" if command == "install" => browser = false,
             "--allow-downgrade" if command == "admin" => allow_downgrade = true,
+            // `user toolchain rust 1.82 -c rustfmt`: rustup's flags, with
+            // the words the installer checks them among.
+            "-c" | "-t" if matches!(command, "user" | "admin") => {
+                let name = value()?;
+                words.push(arg.clone());
+                words.push(name);
+            }
             "--help" | "-h" => return Ok(Command::Help),
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown argument {flag} for {command}"))

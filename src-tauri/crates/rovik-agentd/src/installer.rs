@@ -33,10 +33,14 @@ use rovik_protocol::release;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use toolchains::Kind;
 
 mod browser;
 mod bubblewrap;
 mod packages;
+/// `user toolchain <kind> <version>` and `admin toolchain …`: the shared
+/// Rust and Node versions, and the caches their packages download into.
+pub(crate) mod toolchains;
 
 pub const BIN_DIR: &str = "/opt/rovik/bin";
 /// The installed binary, a link to the current version.
@@ -47,6 +51,14 @@ pub const SLICE: &str = "/etc/systemd/system/rovik.slice";
 pub const SUDOERS: &str = "/etc/sudoers.d/rovik";
 /// Who may run the admin commands through sudo.
 pub const ADMIN_GROUP: &str = "rovik-admin";
+/// The Rust and Node versions every user's chats run, one copy of each,
+/// owned by root and read-only to them (installer/toolchains.rs).
+pub const TOOLCHAINS: &str = "/opt/rovik/toolchains";
+/// The package caches the daemons share: npm's, and the crates each has
+/// checked against its `Cargo.lock`.
+pub const CACHES: &str = "/var/cache/rovik";
+/// The group the daemons' users share, which may write those caches.
+pub const SHARE_GROUP: &str = "rovik";
 /// Where systemd keeps the instances that start at boot.
 const WANTS: &str = "/etc/systemd/system/multi-user.target.wants";
 
@@ -59,6 +71,10 @@ Description=Rovik agent daemon for %i
 
 [Service]
 User=%i
+# The shared caches the daemons write (/var/cache/rovik, installer/
+# toolchains.rs). The group is made before the unit is written: systemd
+# won't start a unit naming one that isn't there.
+SupplementaryGroups=rovik
 ExecStart={INSTALLED} serve
 Slice=rovik.slice
 PrivateTmp=yes
@@ -164,15 +180,33 @@ impl System {
 
     /// Runs a command that changes the system; under another root, says it.
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
-        let shown = std::iter::once(program)
-            .chain(args.iter().copied())
+        self.run_with(&[], program, args)
+    }
+
+    /// `run`, with `env` set on the command (rustup's homes,
+    /// installer/toolchains.rs); under another root, says it with them.
+    fn run_with(
+        &self,
+        env: &[(&str, &str)],
+        program: &str,
+        args: &[&str],
+    ) -> Result<String, String> {
+        let shown = env
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .chain(std::iter::once(program.to_string()))
+            .chain(args.iter().map(|a| a.to_string()))
             .collect::<Vec<_>>()
             .join(" ");
         if !self.live() {
             println!("would run: {shown}");
             return Ok(String::new());
         }
-        let out = Command::new(program)
+        let mut command = Command::new(program);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let out = command
             .args(args)
             .output()
             .map_err(|e| format!("{shown}: {e}"))?;
@@ -292,6 +326,13 @@ pub fn install(
     write_settings(sys, &file)?;
     admin_group(sys, &file.admins)?;
     write_sudoers(sys)?;
+    // The shared toolchains and caches, and the unit that puts each
+    // daemon in their group: before the daemon starts, which systemd
+    // refuses to do with a group that isn't there.
+    match toolchains::setup(sys) {
+        Ok(()) => {}
+        Err(why) => println!("{}", toolchains::not_set_up(&why)),
+    }
     if sys.systemd() {
         sys.run("systemctl", &["daemon-reload"])?;
         sys.run("systemctl", &["enable", "--now", &instance(&account.name)])?;
@@ -313,17 +354,28 @@ pub fn install(
     Ok(())
 }
 
-/// `user ACTION`: the caller's own daemon.
+/// `user ACTION`: the caller's own daemon, and the toolchains their chats
+/// ask for.
 pub fn user(sys: &System, args: &[String]) -> Result<(), String> {
     let caller = caller(sys)?;
-    let [action] = args else {
-        return Err("user takes one of start, stop, restart or status".into());
+    // A toolchain installs on a host without systemd too, so it comes
+    // before the check for one.
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    if let ["toolchain", kind, version, rest @ ..] = words.as_slice() {
+        return user_toolchain(sys, Kind::parse(kind)?, kind, version, rest);
+    }
+    let [action] = words.as_slice() else {
+        return Err(
+            "user takes one of start, stop, restart or status, or toolchain KIND VERSION \
+             [-c COMPONENT] [-t TARGET]"
+                .into(),
+        );
     };
     if !sys.systemd() {
         return Err("There's no systemd here: the app starts your daemon when it connects.".into());
     }
     let unit = instance(&caller.name);
-    let done = match action.as_str() {
+    let done = match *action {
         "start" => sys.run("systemctl", &["enable", "--now", &unit]),
         "stop" => sys.run("systemctl", &["disable", "--now", &unit]),
         "restart" => sys.run("systemctl", &["restart", &unit]),
@@ -341,6 +393,41 @@ pub fn user(sys: &System, args: &[String]) -> Result<(), String> {
         }
     };
     done.map(|_| ())
+}
+
+/// `user toolchain KIND VERSION [-c COMPONENT] [-t TARGET]`, through sudo:
+/// the version a chat's project needs, installed as root, once for the
+/// whole server. The words are checked here, before root sees them
+/// (`toolchains::parse_version`), and the settings say whether a user may
+/// ask at all.
+fn user_toolchain(
+    sys: &System,
+    kind: Kind,
+    named: &str,
+    version: &str,
+    rest: &[&str],
+) -> Result<(), String> {
+    let file = AdminFile::read(&sys.path(ADMIN_FILE))?.unwrap_or_default();
+    let (components, targets) = toolchains::flags(rest)?;
+    if !file.toolchains.user_install {
+        return Err(format!(
+            "An administrator turned off installing toolchains from a chat here. To have \
+             {named} {version} installed, ask one of them to run: sudo {INSTALLED} admin \
+             toolchain add {named} {version}"
+        ));
+    }
+    let allowed = &file.toolchains.allowed_rust;
+    if !allowed.is_empty()
+        && kind == Kind::Rust
+        && !allowed.iter().any(|v| v == version.trim())
+    {
+        return Err(format!(
+            "This server's administrators allow Rust {} only. To have another version, ask \
+             one of them to run: sudo {INSTALLED} admin toolchain add {named} {version}",
+            allowed.join(", ")
+        ));
+    }
+    toolchains::ensure(sys, kind, version, &components, &targets)
 }
 
 /// `admin ...`: the limits, the administrators, upgrades and removal.
@@ -396,14 +483,65 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
             leave_group(sys, user)
         }
         ["browser"] => browser::ensure(sys),
-        ["bubblewrap"] => bubblewrap::ensure(sys),
+        // The shared toolchains and caches go in whether bubblewrap's
+        // package does or not: a server installed before this has no
+        // `rovik` group and no folder for them yet, and the daemons that
+        // restart after an upgrade must find both.
+        ["bubblewrap"] => both(bubblewrap::ensure(sys), toolchains::setup(sys)),
+        ["toolchain", "list"] => toolchains::list(sys),
+        ["toolchain", "add", kind, version, rest @ ..] => {
+            let (components, targets) = toolchains::flags(rest)?;
+            toolchains::ensure(sys, Kind::parse(kind)?, version, &components, &targets)
+        }
+        ["toolchain", "remove", kind, version] => {
+            toolchains::remove(sys, Kind::parse(kind)?, version)
+        }
+        ["toolchain", "prune", days] => {
+            let days = days
+                .parse::<u64>()
+                .map_err(|_| format!("prune takes a number of days, not {days}"))?;
+            toolchains::prune(sys, days)
+        }
+        ["toolchains", setting @ ("user-install" | "shared-caches"), "on" | "off"] => {
+            let on = args[2] == "on";
+            match *setting {
+                "user-install" => file.toolchains.user_install = on,
+                _ => file.toolchains.shared_caches = on,
+            }
+            write_settings(sys, &file)?;
+            println!(
+                "{} is {}: {}.",
+                setting,
+                args[2],
+                match on {
+                    true => "a daemon reads it when it next starts",
+                    false => "it applies to daemons that start from now on",
+                }
+            );
+            Ok(())
+        }
+        ["toolchains", "setup"] => toolchains::setup(sys),
         ["upgrade", from] => upgrade(sys, &file, Path::new(from), &caller, allow_downgrade),
         ["uninstall"] => uninstall(sys),
         _ => Err(
             "admin takes: limits [name=value ...], add USER, remove USER, browser, \
-             bubblewrap, upgrade FILE [--allow-downgrade], uninstall"
+             bubblewrap, toolchain list | add KIND VERSION | remove KIND VERSION | prune DAYS, \
+             toolchains user-install|shared-caches on|off, toolchains setup, upgrade FILE \
+             [--allow-downgrade], uninstall"
                 .into(),
         ),
+    }
+}
+
+/// The `admin bubblewrap` arm's two outcomes as one: the shared parts go in
+/// whether or not bubblewrap's package does, since a server installed
+/// before them has neither, and both failures are worth saying.
+fn both(bubbles: Result<(), String>, shared: Result<(), String>) -> Result<(), String> {
+    match (bubbles, shared) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(why)) => Err(toolchains::not_set_up(&why)),
+        (Err(why), Ok(())) => Err(why),
+        (Err(one), Err(two)) => Err(format!("{one}\n{}", toolchains::not_set_up(&two))),
     }
 }
 
@@ -470,6 +608,12 @@ fn upgrade(
     match sys.run(INSTALLED, &["admin", "bubblewrap"]) {
         Ok(said) => print!("{said}"),
         Err(why) => println!("{}", bubblewrap::not_installed(&why)),
+    }
+    // The shared toolchains, caches and unit, for the upgrades after the
+    // one that first ships them (the arm above does it for the daemons
+    // that restart now).
+    if let Err(why) = toolchains::setup(sys) {
+        println!("{}", toolchains::not_set_up(&why));
     }
     if sys.systemd() {
         sys.run("systemctl", &["try-restart", "rovik-agentd@*.service"])?;
@@ -568,6 +712,7 @@ fn uninstall(sys: &System) -> Result<(), String> {
         "/etc/systemd/system/rovik-agentd@.service.d",
         "/etc/rovik",
         "/opt/rovik",
+        CACHES,
     ] {
         sys.remove(dir)?;
     }
@@ -575,7 +720,9 @@ fn uninstall(sys: &System) -> Result<(), String> {
         sys.run("systemctl", &["daemon-reload"])?;
     }
     if let Some(tool) = sys.which(&["groupdel", "delgroup"]) {
-        let _ = sys.run(tool, &[ADMIN_GROUP]);
+        for group in [ADMIN_GROUP, SHARE_GROUP] {
+            let _ = sys.run(tool, &[group]);
+        }
     }
     println!(
         "Rovik is gone from this server. Each user's ~/.rovik and ~/.local/share/rovik \
@@ -981,6 +1128,22 @@ fn total_memory() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An upgrade runs `admin bubblewrap`, which puts the shared parts in
+    /// place whether or not bubblewrap's own package can be installed: a
+    /// server installed before them gets both on the upgrade that ships
+    /// them, and a failure of either is said.
+    #[test]
+    fn the_shared_parts_go_in_whether_bubblewrap_can_or_not() {
+        assert_eq!(both(Ok(()), Ok(())), Ok(()));
+        let bubbles = both(Err("there's no apt-get here".into()), Ok(())).unwrap_err();
+        assert!(bubbles.contains("no apt-get"), "{bubbles}");
+        let shared = both(Ok(()), Err("There's no groupadd".into())).unwrap_err();
+        assert!(shared.contains("admin toolchains setup"), "{shared}");
+        assert!(shared.contains("There's no groupadd"), "{shared}");
+        let neither = both(Err("one".into()), Err("two".into())).unwrap_err();
+        assert!(neither.contains("one") && neither.contains("two"), "{neither}");
+    }
 
     /// H07: the sudoers rule passes `visudo -c`, where there's a visudo.
     #[test]

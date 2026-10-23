@@ -16,6 +16,11 @@
 //!   total_cpu_quota = "800%"
 //!   allow_unsigned = false
 //!
+//!   [toolchains]
+//!   user_install = true
+//!   shared_caches = true
+//!   allowed_rust = ["1.82"]
+//!
 //! It's written a key a line, the administrators on one, which the
 //! connection test's probe reads with sed (H04).
 
@@ -57,6 +62,59 @@ pub struct AdminFile {
     /// this gives each administrator root on the server.
     #[serde(default)]
     pub allow_unsigned: bool,
+    /// The shared toolchains (installer/toolchains.rs): who may install
+    /// one, and whether the package caches are shared. Not limits: they're
+    /// changed with `admin toolchains …`.
+    #[serde(default)]
+    pub toolchains: ToolchainSettings,
+}
+
+/// The shared toolchains' settings: a `[toolchains]` table in
+/// `agentd.toml`. An administrator changes them with `admin toolchains
+/// user-install on|off` and `admin toolchains shared-caches on|off`.
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+pub struct ToolchainSettings {
+    /// A chat may install the version its project asks for, through the
+    /// same sudo rule as `user start`: `rovik-agentd user toolchain …`. An
+    /// administrator's `admin toolchain add` works either way.
+    #[serde(default = "yes")]
+    pub user_install: bool,
+    /// Every daemon shares one npm cache and one store of crates.
+    #[serde(default = "yes")]
+    pub shared_caches: bool,
+    /// The Rust versions a user may install, such as `1.82`: empty takes
+    /// any valid one.
+    #[serde(default)]
+    pub allowed_rust: Vec<String>,
+}
+
+/// The default of the table's two switches.
+fn yes() -> bool {
+    true
+}
+
+impl Default for ToolchainSettings {
+    fn default() -> Self {
+        ToolchainSettings {
+            user_install: true,
+            shared_caches: true,
+            allowed_rust: Vec::new(),
+        }
+    }
+}
+
+impl ToolchainSettings {
+    /// The table as `agentd.toml` writes it.
+    fn to_toml(&self) -> String {
+        let mut text = String::from("\n[toolchains]\n");
+        text.push_str(&format!("user_install = {}\n", self.user_install));
+        text.push_str(&format!("shared_caches = {}\n", self.shared_caches));
+        if !self.allowed_rust.is_empty() {
+            let versions: Vec<String> = self.allowed_rust.iter().map(|v| format!("\"{v}\"")).collect();
+            text.push_str(&format!("allowed_rust = [{}]\n", versions.join(", ")));
+        }
+        text
+    }
 }
 
 /// The keys `admin limits` sets, in the order they're shown.
@@ -140,6 +198,15 @@ impl AdminFile {
                     "{key} is a share of one CPU, such as 200% for two, not {value:?}"
                 ));
             }
+        }
+        // The same check root makes of a version a chat asks it to install
+        // (installer/toolchains.rs): this list goes into a file root reads.
+        for version in &self.toolchains.allowed_rust {
+            crate::installer::toolchains::parse_version(
+                crate::installer::toolchains::Kind::Rust,
+                version,
+            )
+            .map_err(|why| format!("allowed_rust: {why}"))?;
         }
         Ok(())
     }
@@ -226,6 +293,7 @@ impl AdminFile {
         if self.allow_unsigned {
             text.push_str("allow_unsigned = true\n");
         }
+        text.push_str(&self.toolchains.to_toml());
         text
     }
 
@@ -421,6 +489,48 @@ mod tests {
         file.set("cpu_quota", "none").unwrap();
         assert_eq!(file.cpu_quota, None);
         assert_eq!(AdminFile::read(&dir.0.join("missing.toml")).unwrap(), None);
+    }
+
+    #[test]
+    fn the_toolchain_table_round_trips_and_checks_its_versions() {
+        let mut file = AdminFile::sized_for("ann", 8 << 30);
+        // Both switches are on until an administrator turns one off.
+        assert_eq!(file.toolchains, ToolchainSettings::default());
+        assert!(file.toolchains.user_install && file.toolchains.shared_caches);
+        let text = file.to_toml();
+        assert!(
+            text.contains("\n[toolchains]\nuser_install = true\nshared_caches = true\n"),
+            "{text}"
+        );
+        // A file without the table keeps them.
+        let dir = rovik_core::testing::temp_dir();
+        let path = dir.0.join("agentd.toml");
+        std::fs::write(&path, "admins = [\"ann\"]\n").unwrap();
+        let plain = AdminFile::read(&path).unwrap().unwrap();
+        assert_eq!(plain.toolchains, ToolchainSettings::default());
+
+        file.toolchains.user_install = false;
+        file.toolchains.shared_caches = false;
+        file.toolchains.allowed_rust = vec!["1.82".into(), "nightly".into()];
+        let text = file.to_toml();
+        assert!(
+            text.contains(
+                "\n[toolchains]\nuser_install = false\nshared_caches = false\n\
+                 allowed_rust = [\"1.82\", \"nightly\"]\n"
+            ),
+            "{text}"
+        );
+        std::fs::write(&path, &text).unwrap();
+        assert_eq!(AdminFile::read(&path).unwrap(), Some(file.clone()));
+
+        // A version root wouldn't take is refused, as `user toolchain`
+        // refuses it: this list goes into a file root reads.
+        for bad in ["1.82; rm -rf /", "../x", "", "1.82.0.1"] {
+            file.toolchains.allowed_rust = vec![bad.into()];
+            assert!(file.check().is_err(), "{bad:?} was taken");
+        }
+        file.toolchains.allowed_rust = vec!["stable".into(), "1.82.0".into()];
+        assert_eq!(file.check(), Ok(()));
     }
 
     #[test]
