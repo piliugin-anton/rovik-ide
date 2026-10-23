@@ -24,6 +24,9 @@
 //! the settings say; the token or key travels as the profile's `api_key`,
 //! kept where providers' keys are.
 
+use super::harness::{
+    self, expand_home, pump, split_args, Lines, Process, Stop, TempFile, MIN_FIRST_LINE,
+};
 use super::mcp::{McpCall, McpReply, McpServer, SERVER_NAME, TOOL_PREFIX};
 use super::{
     harness_error, trimmed_text, trimmed_value, usage_value, Answers, Connector, ConnectorAuth,
@@ -37,25 +40,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// Where a step's input is cut, per field, and its result.
 const STEP_INPUT_CHARS: usize = 400;
 const STEP_RESULT_CHARS: usize = 1_200;
-/// The program's first line is due within this, however slow the start.
-const MIN_FIRST_LINE: Duration = Duration::from_secs(120);
-/// Between lines once it runs: a long command of its own prints nothing.
-const IDLE: Duration = Duration::from_secs(20 * 60);
-/// After a Stop, how long the program gets to end before it's killed.
-const STOP_GRACE: Duration = Duration::from_secs(5);
-/// Of its stderr, kept for an error's details.
-const STDERR_KEPT: usize = 16 * 1024;
-/// Claude Code's exit status after SIGTERM.
-const EXIT_TERMINATED: i32 = 143;
 /// Where a replacement system prompt splits: what's above is the same on
 /// every run, and stays cached; what's below (the project's section)
 /// changes (code.claude.com/docs/en/cli-reference, system prompt flags).
@@ -247,77 +238,8 @@ fn well_known_places() -> Vec<PathBuf> {
 /// first `claude` found on the PATH the IDE's programs get, else one of
 /// the places it's installed to. An error says how to install it.
 pub fn resolve_program(program: &str) -> Result<String, String> {
-    let program = program.trim();
-    let program = if program.is_empty() {
-        "claude"
-    } else {
-        program
-    };
-    if program.contains('/') || program.contains('\\') {
-        let path = expand_home(program);
-        return if path.is_file() {
-            Ok(path.to_string_lossy().into_owned())
-        } else {
-            Err(format!("{}: no such program.", path.display()))
-        };
-    }
-    if crate::process::on_path(program) {
-        return Ok(program.to_string());
-    }
-    if program == "claude" {
-        if let Some(found) = well_known_places().into_iter().find(|p| p.is_file()) {
-            return Ok(found.to_string_lossy().into_owned());
-        }
-    }
-    Err(format!(
-        "{program} isn't installed, or isn't on the PATH. Install Claude Code \
-         (curl -fsSL https://claude.ai/install.sh | bash, or your package manager), \
-         or name the program's path in the connector's settings."
-    ))
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(path)
-}
-
-/// Splits extra arguments as a shell would, with quotes and backslashes.
-pub fn split_args(text: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut any = false;
-    for c in text.chars() {
-        if escaped {
-            current.push(c);
-            escaped = false;
-            continue;
-        }
-        match (quote, c) {
-            (None, '\\') | (Some('"'), '\\') => escaped = true,
-            (None, '"') | (None, '\'') => {
-                quote = Some(c);
-                any = true;
-            }
-            (Some(q), c) if q == c => quote = None,
-            (None, c) if c.is_whitespace() => {
-                if any || !current.is_empty() {
-                    args.push(std::mem::take(&mut current));
-                    any = false;
-                }
-            }
-            (_, c) => current.push(c),
-        }
-    }
-    if any || !current.is_empty() {
-        args.push(current);
-    }
-    args
+    let install = format!("Install Claude Code ({INSTALL}, or your package manager)");
+    harness::resolve_program(program, "claude", &well_known_places(), &install)
 }
 
 /// `--allowedTools` rules from the settings' text: one per line, or comma-separated.
@@ -1102,237 +1024,13 @@ impl Parser {
 
 /// A `claude` command, as the IDE starts programs, in `cwd`, with the
 /// turn's environment and its stdio piped.
-fn command(program: &str, cwd: Option<&Path>, env: &[(String, String)]) -> std::process::Command {
-    let mut cmd = crate::process::command(program);
-    crate::process::no_window(&mut cmd);
-    if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
-        // A server's shared toolchains, as the agent's own commands get them.
-        for (key, value) in crate::toolchains::env_for(cwd) {
-            cmd.env(key, value);
-        }
-    }
-    for (key, value) in env {
-        cmd.env(key, value);
-    }
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // Its own process group: a Stop ends what it started too.
-    crate::process::own_group(&mut cmd);
-    cmd
-}
-
-/// The tail of stderr, for an error's details.
-async fn read_stderr(stderr: Option<tokio::process::ChildStderr>) -> String {
-    let Some(mut stderr) = stderr else {
-        return String::new();
-    };
-    let mut buf = Vec::new();
-    let _ = stderr.read_to_end(&mut buf).await;
-    let text = String::from_utf8_lossy(&buf);
-    let kept: String = text
-        .chars()
-        .rev()
-        .take(STDERR_KEPT)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    kept.trim().to_string()
-}
-
-/// A private temporary file (a system prompt, an MCP configuration with
-/// its token), gone with the run it's for.
-struct TempFile(PathBuf);
-
-impl TempFile {
-    fn write(what: &str, extension: &str, text: &str) -> Result<TempFile, String> {
-        let path = std::env::temp_dir().join(format!(
-            "rovik-claude-{what}-{}.{extension}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        crate::atomic_file::write_atomic_private(&path, text.as_bytes())
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(TempFile(path))
+impl Lines for Parser {
+    fn on_line(&mut self, line: &str, emit: &mut dyn FnMut(ChatStreamEvent)) {
+        self.line(line, emit);
     }
 
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-/// A `claude` run: its output's lines as they come, its stderr, and the
-/// files it reads, which go with it. Dropped while it runs, it's killed
-/// with everything it started.
-struct Process {
-    child: tokio::process::Child,
-    pid: Option<u32>,
-    lines: mpsc::UnboundedReceiver<String>,
-    stderr: Option<tokio::task::JoinHandle<String>>,
-    got_line: bool,
-    first_line_within: Duration,
-    _files: Vec<TempFile>,
-}
-
-impl Process {
-    /// Starts `program`, the turn's message on its stdin.
-    fn spawn(
-        program: &str,
-        args: &[String],
-        env: &[(String, String)],
-        cwd: Option<&Path>,
-        prompt: String,
-        first_line_within: Duration,
-        files: Vec<TempFile>,
-    ) -> Result<Process, String> {
-        let mut cmd = tokio::process::Command::from(command(program, cwd, env));
-        cmd.args(args).kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Couldn't start {program}: {e}"))?;
-        // The message on stdin, which closes once written.
-        if let Some(mut stdin) = child.stdin.take() {
-            tokio::spawn(async move {
-                let _ = stdin.write_all(prompt.as_bytes()).await;
-                let _ = stdin.shutdown().await;
-            });
-        }
-        let stderr = Some(tokio::spawn(read_stderr(child.stderr.take())));
-        let Some(stdout) = child.stdout.take() else {
-            return Err("Claude Code's output couldn't be read.".into());
-        };
-        let (sender, lines) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            loop {
-                match reader.next_line().await {
-                    Ok(Some(line)) => {
-                        if sender.send(line).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        eprintln!("claude code: reading its output: {e}");
-                        break;
-                    }
-                }
-            }
-        });
-        Ok(Process {
-            pid: child.id(),
-            child,
-            lines,
-            stderr,
-            got_line: false,
-            first_line_within,
-            _files: files,
-        })
-    }
-
-    fn kill(&mut self, force: bool) {
-        crate::process::kill_group(self.pid, &mut self.child, force);
-    }
-
-    /// How it ended: its exit code (none when killed) and its stderr's end.
-    /// What it left running is ended.
-    async fn finish(&mut self) -> (Option<i32>, String) {
-        let status = tokio::time::timeout(STOP_GRACE, self.child.wait()).await;
-        let code = match status {
-            Ok(Ok(status)) => status.code(),
-            _ => None,
-        };
-        // Anything of the group still running, and its hold on stderr.
-        crate::process::kill_group(self.pid, &mut self.child, true);
-        let stderr = match self.stderr.take() {
-            Some(task) => tokio::time::timeout(STOP_GRACE, task)
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .unwrap_or_default(),
-            None => String::new(),
-        };
-        (code, stderr)
-    }
-}
-
-impl Drop for Process {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            self.kill(true);
-        }
-    }
-}
-
-/// Why `pump` returned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Stop {
-    /// The output ended: the program is done.
-    Ended,
-    /// Rovik's tools mode: a message made calls to them, which Rovik runs.
-    Yielded,
-    /// Stop: it was ended.
-    Stopped,
-    /// It printed nothing for too long, and was ended.
-    Stalled,
-}
-
-/// Reads the run's lines into events until it ends, makes Rovik's tool
-/// calls, is stopped or stalls; the MCP calls that come meanwhile go to
-/// `on_call`.
-async fn pump(
-    process: &mut Process,
-    parser: &mut Parser,
-    mut calls: Option<&mut mpsc::UnboundedReceiver<McpCall>>,
-    on_call: &mut (dyn FnMut(McpCall) + Send),
-    cancel: &mut watch::Receiver<bool>,
-    emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
-) -> Stop {
-    let mut stopping = false;
-    loop {
-        let timeout = if process.got_line {
-            IDLE
-        } else {
-            process.first_line_within
-        };
-        let call = async {
-            match calls.as_deref_mut() {
-                Some(calls) => calls.recv().await,
-                None => std::future::pending().await,
-            }
-        };
-        tokio::select! {
-            line = process.lines.recv() => match line {
-                Some(line) => {
-                    process.got_line = true;
-                    parser.line(&line, emit);
-                    if parser.yielded.is_some() && !stopping {
-                        return Stop::Yielded;
-                    }
-                }
-                None => return if stopping { Stop::Stopped } else { Stop::Ended },
-            },
-            Some(call) = call => on_call(call),
-            _ = crate::chat_request::cancelled(cancel), if !stopping => {
-                stopping = true;
-                process.kill(false);
-            }
-            _ = tokio::time::sleep(STOP_GRACE), if stopping => {
-                process.kill(true);
-                return Stop::Stopped;
-            }
-            _ = tokio::time::sleep(timeout), if !stopping => {
-                process.kill(true);
-                return Stop::Stalled;
-            }
-        }
+    fn yielded(&self) -> bool {
+        self.yielded.is_some()
     }
 }
 
@@ -1354,7 +1052,7 @@ async fn conclude(
     resumed: bool,
     emit: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> Outcome {
-    let (code, stderr_text) = process.finish().await;
+    let (code, stderr) = process.finish().await;
     if parser.finished {
         return if parser.session_gone && resumed {
             Outcome::SessionGone
@@ -1363,46 +1061,11 @@ async fn conclude(
         };
     }
     // No `result` line: the program ended, was stopped, or stalled.
-    if stop == Stop::Stopped {
-        emit(ChatStreamEvent::Error {
-            error: ChatError::stopped(),
-        });
-        return Outcome::Done;
-    }
-    if resumed && stderr_text.contains("No conversation found") {
+    if stop != Stop::Stopped && resumed && stderr.contains("No conversation found") {
         return Outcome::SessionGone;
     }
-    let mut error = if stop == Stop::Stalled {
-        let mut e = ChatError::new(
-            ErrorKind::Stalled,
-            format!(
-                "Claude Code printed nothing for {} s.",
-                if process.got_line {
-                    IDLE.as_secs()
-                } else {
-                    process.first_line_within.as_secs()
-                }
-            ),
-        );
-        e.retryable = false;
-        e
-    } else if code == Some(EXIT_TERMINATED) {
-        ChatError::stopped()
-    } else {
-        let what = if stderr_text.is_empty() {
-            match code {
-                Some(code) => format!("the program ended with exit code {code} before it answered"),
-                None => "the program ended before it answered".to_string(),
-            }
-        } else {
-            stderr_text.lines().last().unwrap_or("").to_string()
-        };
-        harness_error(ConnectorKind::ClaudeCode, what, Some(stderr_text.clone()))
-    };
-    error.partial = parser.shown();
-    if error.details.is_none() && !stderr_text.is_empty() {
-        error = error.with_details(&stderr_text);
-    }
+    let (kind, partial) = (ConnectorKind::ClaudeCode, parser.shown());
+    let error = harness::ended_error(kind, process, stop, code, &stderr, partial);
     emit(ChatStreamEvent::Error { error });
     Outcome::Done
 }
@@ -1813,19 +1476,8 @@ async fn check_auth(
     env: &[(String, String)],
     api_key: &str,
 ) -> Result<ConnectorAuth, String> {
-    let mut cmd = tokio::process::Command::from(command(program, None, env));
-    cmd.args(["auth", "status", "--json"])
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
-    let out = tokio::time::timeout(AUTH_STATUS_WITHIN, cmd.output())
-        .await
-        .map_err(|_| {
-            format!(
-                "`{program} auth status` didn't answer in {} s.",
-                AUTH_STATUS_WITHIN.as_secs()
-            )
-        })?
-        .map_err(|e| format!("Couldn't run {program}: {e}"))?;
+    let args = ["auth", "status", "--json"].map(String::from);
+    let out = harness::output(program, &args, env, "", AUTH_STATUS_WITHIN).await?;
     parse_auth_status(
         &String::from_utf8_lossy(&out.stdout),
         &String::from_utf8_lossy(&out.stderr),
@@ -1848,25 +1500,7 @@ impl Connector for ClaudeCode {
             let settings = Settings::from_value(&args.settings);
             let program = resolve_program(&settings.program)?;
             let env = env_for(&settings, &args.api_key);
-            let mut version_cmd = tokio::process::Command::from(command(&program, None, &env));
-            version_cmd.arg("--version").stdin(Stdio::null());
-            let out = tokio::time::timeout(Duration::from_secs(30), version_cmd.output())
-                .await
-                .map_err(|_| format!("{program} --version didn't answer in 30 s."))?
-                .map_err(|e| format!("Couldn't run {program}: {e}"))?;
-            if !out.status.success() {
-                let err = String::from_utf8_lossy(&out.stderr);
-                return Err(format!(
-                    "{program} --version failed: {}",
-                    err.lines().last().unwrap_or("no output")
-                ));
-            }
-            let version = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let version = harness::version(&program, &env).await?;
             let mut probe = ConnectorProbe {
                 program: program.clone(),
                 version,
@@ -1937,6 +1571,14 @@ impl Connector for ClaudeCode {
         }))
     }
 
+    fn end_live(&self, dialog_id: &str) {
+        end_live(dialog_id);
+    }
+
+    fn end_all(&self) {
+        end_all();
+    }
+
     fn run<'a>(
         &'a self,
         turn: Turn,
@@ -1982,8 +1624,7 @@ async fn test_request(
     settings: &Settings,
     env: &[(String, String)],
 ) -> Result<ProbeRequest, String> {
-    let mut cmd = tokio::process::Command::from(command(program, None, env));
-    cmd.args([
+    let mut args: Vec<String> = [
         "-p",
         "--output-format",
         "json",
@@ -1994,23 +1635,16 @@ async fn test_request(
         "--no-session-persistence",
         "--permission-prompts",
         "none",
-    ]);
+    ]
+    .map(String::from)
+    .into();
     if settings.bare {
-        cmd.arg("--bare");
+        args.push("--bare".into());
     }
-    cmd.args(split_args(&settings.extra_args));
+    args.extend(split_args(&settings.extra_args));
     let started = Instant::now();
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Couldn't run {program}: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(b"Reply with the single word: pong").await;
-        let _ = stdin.shutdown().await;
-    }
-    let out = tokio::time::timeout(Duration::from_secs(180), child.wait_with_output())
-        .await
-        .map_err(|_| "The test request didn't answer in 3 minutes.".to_string())?
-        .map_err(|e| e.to_string())?;
+    let prompt = "Reply with the single word: pong";
+    let out = harness::output(program, &args, env, prompt, Duration::from_secs(180)).await?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let value: Value = stdout

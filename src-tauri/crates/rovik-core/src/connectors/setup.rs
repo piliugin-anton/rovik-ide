@@ -13,7 +13,7 @@
 use super::{connector, ConnectorKind, ProbeRequestArgs, SetupAction, SetupJob, SetupOp};
 use crate::agent_run::command_output::clean_output;
 use std::collections::HashMap;
-use std::process::{ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -173,15 +173,9 @@ fn start(
     action: SetupAction,
     command: SetupCommand,
 ) -> Result<SetupJob, String> {
-    let mut cmd = tokio::process::Command::from(crate::process::command(&command.program));
-    crate::process::no_window(cmd.as_std_mut());
-    crate::process::own_group(cmd.as_std_mut());
-    cmd.args(&command.args)
-        .envs(command.env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    let cmd = super::harness::command(&command.program, None, &command.env);
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.args(&command.args).kill_on_drop(true);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Couldn't run {}: {e}", command.program))?;

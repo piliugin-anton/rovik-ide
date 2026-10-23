@@ -51,8 +51,7 @@ export const SOURCE_FILTERS: { value: SourceFilter; label: string; title: string
 export function pickerItems(providers: Provider[]): PickerItem[] {
   const items = providers.flatMap((p) => {
     const connector = isConnector(p);
-    const name =
-      p.name || (connector ? connectorTitle(kindOfProvider(p) ?? 'claude-code') : p.baseUrl);
+    const name = p.name || (connector ? connectorTitle(kindOfProvider(p)) : p.baseUrl);
     return p.models
       .filter((m) => m.enabled)
       .map((m) => ({

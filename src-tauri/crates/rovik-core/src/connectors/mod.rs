@@ -23,6 +23,7 @@
 //! (Codex, say) is one more module here and one more `ConnectorKind`.
 
 mod claude_code;
+mod harness;
 pub mod mcp;
 pub mod sessions;
 mod setup;
@@ -125,12 +126,16 @@ pub struct Answers {
 /// Ends the chat's harness run waiting on Rovik's results, if any: its
 /// run is over (agent_run's `Run` drops).
 pub fn end_live(dialog_id: &str) {
-    claude_code::end_live(dialog_id);
+    for kind in ConnectorKind::ALL {
+        connector(kind).end_live(dialog_id);
+    }
 }
 
 /// Ends every waiting harness run, as the process exits.
 pub fn end_all() {
-    claude_code::end_all();
+    for kind in ConnectorKind::ALL {
+        connector(kind).end_all();
+    }
 }
 
 /// What a connector reports as its turn runs, besides the reply's text.
@@ -175,6 +180,15 @@ pub trait Connector: Send + Sync {
         let _ = (action, args);
         Ok(None)
     }
+
+    /// Ends the chat's run left waiting between Rovik's turns (Rovik's
+    /// tools mode), if it keeps one.
+    fn end_live(&self, dialog_id: &str) {
+        let _ = dialog_id;
+    }
+
+    /// Ends every run left waiting, as the process exits.
+    fn end_all(&self) {}
 }
 
 /// The connector of a kind.

@@ -7,37 +7,39 @@
 // lists its models as the Model providers page does
 // (ProviderModelsTable.tsx). The models enabled here show in the chat's
 // model picker, marked as a connector's.
-import { createResource, createSignal, For, Show } from 'solid-js';
+import { createResource, createSignal, For, Show, type Component } from 'solid-js';
+import { Dynamic } from 'solid-js/web';
 import type { ConnectorKind, Provider } from '../types';
 import { mergeRemoteModels } from '../lib/aiSettings';
 import {
   authLine,
   authStateOf,
-  AUTH_KINDS,
   cantRun,
   checkConnectorAuth,
   connectorAuthState,
   setConnectorAuthState,
-  claudeCodeSettings,
   CONNECTOR_CATALOG,
   connectorTitle,
   isConnector,
   kindOfProvider,
   newConnector,
-  PERMISSION_MODES,
-  TOOLS_MODES,
   probeConnector,
   probeModels,
   probeSummary,
   errorText,
-  type ClaudeCodeSettings,
+  specOf,
   type ConnectorProbe,
 } from '../lib/connectors';
+import ClaudeCodeFields, { type ConnectorFieldsProps } from './ClaudeCodeFields';
 import { confirmDialog } from './ConfirmDialog';
 import ConnectorSetup from './ConnectorSetup';
 import ProviderModelsTable, { CONNECTOR_COLUMNS } from './ProviderModelsTable';
-import { SettingRow } from './SettingsControls';
 import { listHosts } from '../lib/hosts';
+
+/** Each kind's settings fields, in its form: one entry per kind. */
+const CONNECTOR_FIELDS: Record<ConnectorKind, Component<ConnectorFieldsProps>> = {
+  'claude-code': ClaudeCodeFields,
+};
 
 /** Lets the settings modal show the open form's name and close it with Back. */
 export interface ConnectorsSettingsController {
@@ -86,9 +88,9 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     const d = draft();
     if (d) setDraft({ ...d, ...changes });
   };
-  const settings = () => claudeCodeSettings(draft() ?? {});
-  const patchSettings = (changes: Partial<ClaudeCodeSettings>) => {
-    patch({ settings: { ...settings(), ...changes } });
+  /** A change to what its runs use (settings, key): the last test no longer says. */
+  const update = (changes: Partial<Provider>) => {
+    patch(changes);
     testRun++;
     setTest({ kind: 'idle' });
   };
@@ -166,7 +168,8 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
       setFormError('A name is required.');
       return;
     }
-    const clean: Provider = { ...d, name, settings: { ...settings() } };
+    const settings = specOf(d)?.settings(d.settings ?? {}) ?? d.settings;
+    const clean: Provider = { ...d, name, settings };
     setConnectors((prev) =>
       prev.some((p) => p.id === clean.id)
         ? prev.map((p) => (p.id === clean.id ? clean : p))
@@ -207,12 +210,6 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
     closeDraft,
   });
 
-  const numberValue = (raw: string, min: number, max: number): number | undefined => {
-    const n = Number(raw.replace(/[^\d.]/g, ''));
-    if (!raw.trim() || !Number.isFinite(n)) return undefined;
-    return Math.min(max, Math.max(min, n));
-  };
-
   return (
     <Show
       when={draft()}
@@ -240,13 +237,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                 <div class="profile-row-info">
                   <span class="profile-row-label">{c.name}</span>
                   <span class="profile-row-sub">
-                    {connectorTitle(kindOfProvider(c) ?? 'claude-code')} ·{' '}
-                    {claudeCodeSettings(c).program} ·{' '}
-                    {claudeCodeSettings(c).tools === 'rovik'
-                      ? 'Rovik’s tools'
-                      : (PERMISSION_MODES.find(
-                          (m) => m.value === claudeCodeSettings(c).permissionMode
-                        )?.label ?? claudeCodeSettings(c).permissionMode)}
+                    {connectorTitle(kindOfProvider(c))} · {specOf(c)?.summary(c.settings ?? {})}
                   </span>
                   <span class="profile-row-sub">
                     {c.models.filter((m) => m.enabled).length} of {c.models.length} models enabled
@@ -320,227 +311,15 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             <input
               value={d().name}
               onInput={(e) => patch({ name: e.currentTarget.value })}
-              placeholder={connectorTitle(kindOfProvider(d()) ?? 'claude-code')}
+              placeholder={connectorTitle(kindOfProvider(d()))}
             />
           </label>
 
-          <label>
-            Program
-            <input
-              value={settings().program}
-              onInput={(e) => patchSettings({ program: e.currentTarget.value })}
-              placeholder="claude"
-              spellcheck={false}
-            />
-            <span class="setting-explain">
-              `claude` as the shell finds it, or the path to it. Set up below installs it if it’s
-              missing; or install it with <code>{CONNECTOR_CATALOG[0].install}</code>, or a package
-              manager on a server.
-            </span>
-          </label>
-
-          <SettingRow label="Signs in with">
-            <select
-              class="settings-select"
-              value={settings().auth}
-              onChange={(e) =>
-                patchSettings({ auth: e.currentTarget.value as ClaudeCodeSettings['auth'] })
-              }
-            >
-              <For each={AUTH_KINDS}>
-                {(a) => (
-                  <option value={a.value} title={a.hint}>
-                    {a.label}
-                  </option>
-                )}
-              </For>
-            </select>
-          </SettingRow>
-          <p class="settings-hint setting-explain">
-            {AUTH_KINDS.find((a) => a.value === settings().auth)?.hint}
-          </p>
-          <Show when={settings().auth !== 'login'}>
-            <label>
-              {settings().auth === 'token' ? 'Token' : 'API key'}
-              <input
-                type="password"
-                value={d().apiKey}
-                onInput={(e) => {
-                  patch({ apiKey: e.currentTarget.value });
-                  testRun++;
-                  setTest({ kind: 'idle' });
-                }}
-                placeholder={settings().auth === 'token' ? 'from `claude setup-token`' : 'sk-ant-…'}
-                spellcheck={false}
-              />
-            </label>
+          <Show when={kindOfProvider(d())}>
+            {(kind) => (
+              <Dynamic component={CONNECTOR_FIELDS[kind()]} connector={d()} update={update} />
+            )}
           </Show>
-
-          <SettingRow label="Tools">
-            <select
-              class="settings-select"
-              value={settings().tools}
-              onChange={(e) => {
-                const tools = e.currentTarget.value as ClaudeCodeSettings['tools'];
-                // Rovik's prompt in place of Claude Code's, whose tools are
-                // off then; after it, with them.
-                patchSettings({ tools, systemPrompt: tools === 'rovik' ? 'replace' : 'append' });
-              }}
-            >
-              <For each={TOOLS_MODES}>
-                {(m) => (
-                  <option value={m.value} title={m.hint}>
-                    {m.label}
-                  </option>
-                )}
-              </For>
-            </select>
-          </SettingRow>
-          <p class="settings-hint setting-explain">
-            {TOOLS_MODES.find((m) => m.value === settings().tools)?.hint}
-          </p>
-
-          <Show when={settings().tools === 'own'}>
-            <SettingRow label="Permission mode">
-              <select
-                class="settings-select"
-                value={settings().permissionMode}
-                onChange={(e) =>
-                  patchSettings({
-                    permissionMode: e.currentTarget.value as ClaudeCodeSettings['permissionMode'],
-                  })
-                }
-              >
-                <For each={PERMISSION_MODES}>
-                  {(m) => (
-                    <option value={m.value} title={m.hint}>
-                      {m.label}
-                    </option>
-                  )}
-                </For>
-              </select>
-            </SettingRow>
-            <p class="settings-hint setting-explain">
-              {PERMISSION_MODES.find((m) => m.value === settings().permissionMode)?.hint}. Nothing
-              waits for a prompt: what the mode and the rules below don’t allow is denied.
-            </p>
-
-            <label>
-              Allowed tools
-              <textarea
-                class="settings-textarea"
-                rows={2}
-                value={settings().allowedTools}
-                onInput={(e) => patchSettings({ allowedTools: e.currentTarget.value })}
-                placeholder={'Bash(npm test *)\nBash(git diff *)'}
-                spellcheck={false}
-              />
-              <span class="setting-explain">
-                Permission rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
-              </span>
-            </label>
-            <label>
-              Denied tools
-              <textarea
-                class="settings-textarea"
-                rows={1}
-                value={settings().disallowedTools}
-                onInput={(e) => patchSettings({ disallowedTools: e.currentTarget.value })}
-                placeholder="Bash(rm *)"
-                spellcheck={false}
-              />
-            </label>
-          </Show>
-
-          <div class="connector-limits">
-            <label class="setting-number-field">
-              <span>Turns per message</span>
-              <input
-                type="number"
-                class="settings-input setting-number"
-                min={1}
-                max={1000}
-                value={settings().maxTurns ?? ''}
-                placeholder="no limit"
-                onChange={(e) => {
-                  const value = numberValue(e.currentTarget.value, 1, 1000);
-                  e.currentTarget.value = value === undefined ? '' : String(Math.round(value));
-                  patchSettings({ maxTurns: value === undefined ? undefined : Math.round(value) });
-                }}
-              />
-            </label>
-            <label class="setting-number-field">
-              <span>Budget per message, $</span>
-              <input
-                type="number"
-                class="settings-input setting-number"
-                min={0.01}
-                max={1000}
-                step={0.5}
-                value={settings().maxBudgetUsd ?? ''}
-                placeholder="no limit"
-                onChange={(e) => {
-                  const value = numberValue(e.currentTarget.value, 0.01, 1000);
-                  e.currentTarget.value = value === undefined ? '' : String(value);
-                  patchSettings({ maxBudgetUsd: value });
-                }}
-              />
-            </label>
-          </div>
-          <p class="settings-hint setting-explain">
-            A message’s run stops at either limit (the cost is Claude Code’s own estimate); what it
-            did so far stays. Each reply shows the tokens and the cost it took.
-          </p>
-
-          <SettingRow label="System prompt">
-            <select
-              class="settings-select"
-              value={settings().systemPrompt}
-              onChange={(e) =>
-                patchSettings({
-                  systemPrompt: e.currentTarget.value as ClaudeCodeSettings['systemPrompt'],
-                })
-              }
-            >
-              <option value="append">Rovik’s after Claude Code’s own</option>
-              <option value="replace">Rovik’s alone</option>
-            </select>
-          </SettingRow>
-
-          <details class="connector-advanced">
-            <summary>Advanced</summary>
-            <label>
-              Settings folder (CLAUDE_CONFIG_DIR)
-              <input
-                value={settings().configDir}
-                onInput={(e) => patchSettings({ configDir: e.currentTarget.value })}
-                placeholder="~/.claude (its own)"
-                spellcheck={false}
-              />
-              <span class="setting-explain">
-                Another login and settings folder: a work account, or one shared on a server.
-              </span>
-            </label>
-            <label>
-              Extra arguments
-              <input
-                value={settings().extraArgs}
-                onInput={(e) => patchSettings({ extraArgs: e.currentTarget.value })}
-                placeholder="--add-dir ../lib --mcp-config ./mcp.json"
-                spellcheck={false}
-              />
-              <span class="setting-explain">Passed to every run, as typed on a command line.</span>
-            </label>
-            <label class="checkbox-row">
-              <input
-                type="checkbox"
-                checked={settings().bare}
-                onChange={(e) => patchSettings({ bare: e.currentTarget.checked })}
-              />
-              Bare mode: none of the user’s hooks, skills, plugins, MCP servers or CLAUDE.md (needs
-              an API key)
-            </label>
-          </details>
 
           <div class="provider-test-row connector-test-row">
             <button onClick={() => void runTest()} disabled={test().kind === 'testing'}>
@@ -601,7 +380,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
           </Show>
           <ConnectorSetup
             connector={d()}
-            title={connectorTitle(kindOfProvider(d()) ?? 'claude-code')}
+            title={connectorTitle(kindOfProvider(d()))}
             host={testHost() || null}
             where={testWhere()}
             probe={testNow}

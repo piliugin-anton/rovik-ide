@@ -24,7 +24,7 @@ import { notify } from './notifications';
 export const CONNECTOR_SCHEME = 'connector://';
 
 /** Claude Code's settings (claude_code.rs `Settings`, the same fields and defaults). */
-export interface ClaudeCodeSettings {
+export type ClaudeCodeSettings = {
   /** The program: `claude`, found on the PATH, or a path to it. */
   program: string;
   /** How it signs in: this computer's login, a `claude setup-token` token, or an API key. */
@@ -51,7 +51,7 @@ export interface ClaudeCodeSettings {
    * agent loop and Rovik runs every call under its own permissions.
    */
   tools: 'own' | 'rovik';
-}
+};
 
 export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
   program: 'claude',
@@ -81,7 +81,7 @@ export const TOOLS_MODES: { value: ClaudeCodeSettings['tools']; label: string; h
 
 /** Whether the entry is a connector that runs Rovik's tools. */
 export function usesRovikTools(p: Pick<Provider, 'baseUrl' | 'connector' | 'settings'>): boolean {
-  return isConnector(p) && claudeCodeSettings(p).tools === 'rovik';
+  return specOf(p)?.usesRovikTools(p.settings ?? {}) ?? false;
 }
 
 export const PERMISSION_MODES: {
@@ -126,24 +126,65 @@ export const AUTH_KINDS: { value: ClaudeCodeSettings['auth']; label: string; hin
   },
 ];
 
-/** What can be connected: each kind, for the "Add connector" menu. */
-export const CONNECTOR_CATALOG: {
+/**
+ * What Rovik knows of a kind of connector, the same for every kind: a new
+ * harness is one more entry here (and its settings fields, in
+ * ConnectorsSettings.tsx), besides its module in the core.
+ */
+export interface ConnectorSpec {
   kind: ConnectorKind;
   title: string;
   about: string;
+  /** The command that installs it, for the user. */
   install: string;
-}[] = [
+  /** Its settings with the defaults for what isn't set: `{}` gives a new one's. */
+  settings: (raw: Record<string, unknown>) => Record<string, unknown>;
+  /** Whether its runs get Rovik's tools (over MCP), as its settings say. */
+  usesRovikTools: (settings: Record<string, unknown>) => boolean;
+  /** For its row in the list: the program and how it runs. */
+  summary: (settings: Record<string, unknown>) => string;
+  /** The model its chats' titles are asked of; none: the chat's own. */
+  titleModel?: string;
+}
+
+/**
+ * The model a Claude Code chat's title is asked of: Claude Code's small,
+ * fast one, as Claude Code titles its own sessions. A title needs no more,
+ * and the chat's model may be Opus or Fable.
+ */
+export const CLAUDE_CODE_TITLE_MODEL = 'haiku';
+
+/** What can be connected: each kind, for the "Add connector" menu. */
+export const CONNECTOR_CATALOG: ConnectorSpec[] = [
   {
     kind: 'claude-code',
     title: 'Claude Code',
     about:
       'Anthropic’s coding agent, run headless in the project folder with its own tools. Chats that pick one of its models hand it the task; its steps, tokens and cost show with the reply.',
     install: 'curl -fsSL https://claude.ai/install.sh | bash',
+    settings: (raw) => claudeCodeSettings({ settings: raw }),
+    usesRovikTools: (raw) => claudeCodeSettings({ settings: raw }).tools === 'rovik',
+    summary: (raw) => {
+      const s = claudeCodeSettings({ settings: raw });
+      const mode = PERMISSION_MODES.find((m) => m.value === s.permissionMode)?.label;
+      return `${s.program} · ${s.tools === 'rovik' ? 'Rovik’s tools' : (mode ?? s.permissionMode)}`;
+    },
+    titleModel: CLAUDE_CODE_TITLE_MODEL,
   },
 ];
 
-export function connectorTitle(kind: ConnectorKind): string {
-  return CONNECTOR_CATALOG.find((c) => c.kind === kind)?.title ?? kind;
+export function connectorSpec(kind: ConnectorKind | undefined): ConnectorSpec | undefined {
+  return CONNECTOR_CATALOG.find((c) => c.kind === kind);
+}
+
+/** The spec of the connector `p` is; none for a provider. */
+export function specOf(p: Pick<Provider, 'baseUrl' | 'connector'>): ConnectorSpec | undefined {
+  return connectorSpec(kindOfProvider(p));
+}
+
+/** For the user: `Claude Code`. */
+export function connectorTitle(kind: ConnectorKind | undefined): string {
+  return connectorSpec(kind)?.title ?? kind ?? 'Connector';
 }
 
 export function connectorBaseUrl(kind: ConnectorKind): string {
@@ -190,7 +231,7 @@ export function newConnector(kind: ConnectorKind): Provider {
     stream: true,
     models: [],
     connector: kind,
-    settings: { ...CLAUDE_CODE_DEFAULTS },
+    settings: connectorSpec(kind)?.settings({}) ?? {},
   };
 }
 
@@ -477,19 +518,13 @@ export async function checkConnectorsOnStart(
 }
 
 /**
- * The model a Claude Code chat's title is asked of: Claude Code's small,
- * fast one, as Claude Code titles its own sessions. A title needs no more,
- * and the chat's model may be Opus or Fable.
- */
-export const CLAUDE_CODE_TITLE_MODEL = 'haiku';
-
-/**
- * The profile a chat's title is asked with: a Claude Code chat's on Haiku,
- * any other (a provider's, another connector's) as it is.
+ * The profile a chat's title is asked with: a connector's on the model its
+ * spec names for titles (a Claude Code chat's on Haiku), any other (a
+ * provider's, another connector's) as it is.
  */
 export function titleProfile(profile: ModelProfile): ModelProfile {
-  if (connectorKindOf(profile.baseUrl) !== 'claude-code') return profile;
-  const model = CLAUDE_CODE_TITLE_MODEL;
+  const model = connectorSpec(connectorKindOf(profile.baseUrl))?.titleModel;
+  if (!model) return profile;
   return { ...profile, model, label: profile.label.replace(/[^/]*$/, model) };
 }
 

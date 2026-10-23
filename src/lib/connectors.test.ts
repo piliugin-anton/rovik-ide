@@ -27,6 +27,7 @@ import {
   splitSources,
   stepLabel,
   titleProfile,
+  specOf,
   CLAUDE_CODE_TITLE_MODEL,
 } from './connectors';
 import { providersSummary, resolveProfile } from './aiSettings';
@@ -105,6 +106,19 @@ test('a Claude Code chat is titled by Haiku; any other by its own model', () => 
   // Another connector kind keeps its model.
   const other = { ...profile, baseUrl: 'connector://codex' };
   assert.equal(titleProfile(other), other);
+});
+
+test('a kind’s spec gives a new connector its settings and its row its summary', () => {
+  const claude = newConnector('claude-code');
+  const spec = specOf(claude);
+  assert.ok(spec);
+  assert.deepEqual(claude.settings, CLAUDE_CODE_DEFAULTS);
+  assert.equal(spec.summary(claude.settings ?? {}), 'claude · Accept edits');
+  assert.equal(
+    spec.summary({ tools: 'rovik', program: '/opt/claude' }),
+    '/opt/claude · Rovik’s tools'
+  );
+  assert.equal(specOf(openai), undefined);
 });
 
 test('settings take the defaults for what isn’t set', () => {
