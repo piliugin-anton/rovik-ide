@@ -1,5 +1,6 @@
 //! Branches: the list, switching to one, and creating and deleting them.
 
+use super::hooks::Hooks;
 use super::{head_commit, open_repo, ErrText};
 use crate::util::{blocking, rewriting};
 use git2::{BranchType, Repository};
@@ -47,9 +48,25 @@ pub async fn git_checkout(path: String, branch: String) -> Result<(), String> {
     rewriting(&path, move || git_checkout_blocking(repo, branch)).await
 }
 
+/// Switches to `branch`, then runs the repository's post-checkout hook, as
+/// git does after a switch: with the commits HEAD was and is at.
 pub fn git_checkout_blocking(path: String, branch: String) -> Result<(), String> {
     let repo = open_repo(&path)?;
+    let head_id = |repo: &Repository| {
+        repo.head()
+            .ok()
+            .and_then(|h| h.target())
+            .unwrap_or(git2::Oid::ZERO_SHA1)
+            .to_string()
+    };
+    let before = head_id(&repo);
+    switch(&repo, branch)?;
+    let after = head_id(&repo);
+    Hooks::of(&repo).run_after("post-checkout", &[&before, &after, "1"], None);
+    Ok(())
+}
 
+fn switch(repo: &Repository, branch: String) -> Result<(), String> {
     // Switches to a local branch: its tree into the working folder (safely:
     // uncommitted changes to files that differ between the branches stop
     // it, like `git checkout` does), then HEAD onto it.

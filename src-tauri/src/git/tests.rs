@@ -1280,3 +1280,277 @@ mod identity_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+/// The repository's git hooks, run around the panel's commit, push and
+/// switch as git runs them (hooks.rs). Unix only: they're executable files.
+#[cfg(unix)]
+mod hook_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "git-hooks-{tag}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn p(dir: &Path) -> String {
+        dir.to_string_lossy().into_owned()
+    }
+
+    /// A repository on `main` with one commit, and a.txt changed since.
+    fn repo(tag: &str) -> (PathBuf, Repository) {
+        let dir = temp_dir(tag);
+        let repo = Repository::init(&dir).unwrap();
+        {
+            let mut c = repo.config().unwrap();
+            c.set_str("user.name", "t").unwrap();
+            c.set_str("user.email", "t@t").unwrap();
+            // Whatever the machine's global config says.
+            c.set_str("core.hooksPath", ".git/hooks").unwrap();
+        }
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_commit_blocking(p(&dir), "start".into()).unwrap();
+        if repo.head().unwrap().shorthand().ok() != Some("main") {
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch("main", &head, true).unwrap();
+            repo.set_head("refs/heads/main").unwrap();
+        }
+        fs::write(dir.join("a.txt"), "two\n").unwrap();
+        (dir, repo)
+    }
+
+    /// Hook `name` in `folder`, a shell script running `body`.
+    fn hook_in(folder: &Path, name: &str, body: &str) {
+        fs::create_dir_all(folder).unwrap();
+        let file = folder.join(name);
+        fs::write(&file, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn hook(dir: &Path, name: &str, body: &str) {
+        hook_in(&dir.join(".git/hooks"), name, body);
+    }
+
+    fn head_message(repo: &Repository) -> String {
+        head_commit(repo).unwrap().message().unwrap().to_string()
+    }
+
+    #[test]
+    fn a_failing_pre_commit_stops_the_commit_and_says_why() {
+        let (dir, repo) = repo("pre-commit-fails");
+        let before = head_commit(&repo).unwrap().id();
+        hook(
+            &dir,
+            "pre-commit",
+            "echo checking\necho 'lint: 2 errors' >&2\nexit 1",
+        );
+        let err = git_commit_blocking(p(&dir), "change".into()).unwrap_err();
+        assert_eq!(
+            err,
+            "Not committed: the pre-commit hook failed (exit code 1):\nchecking\nlint: 2 errors"
+        );
+        assert_eq!(head_commit(&repo).unwrap().id(), before);
+    }
+
+    #[test]
+    fn what_pre_commit_stages_is_committed() {
+        let (dir, repo) = repo("pre-commit-stages");
+        // A formatter's fix, staged as lint-staged stages it.
+        hook(
+            &dir,
+            "pre-commit",
+            "echo formatted > a.txt && git add a.txt",
+        );
+        git_commit_blocking(p(&dir), "change".into()).unwrap();
+        let tree = head_commit(&repo).unwrap().tree().unwrap();
+        let blob = tree_blob(Some(&tree), Path::new("a.txt")).unwrap();
+        assert_eq!(blob_text(&repo, blob, "a.txt").unwrap(), "formatted\n");
+        assert!(git_status_blocking(p(&dir)).unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn the_message_hooks_get_the_message_and_can_change_it() {
+        let (dir, repo) = repo("message-hooks");
+        hook(
+            &dir,
+            "prepare-commit-msg",
+            "echo \"$1 $2\" > prepare-args\nprintf '[T-1] %s' \"$(cat \"$1\")\" > \"$1\"",
+        );
+        hook(&dir, "commit-msg", "grep -q '^\\[T-' \"$1\"");
+        git_commit_blocking(p(&dir), "fix it".into()).unwrap();
+        assert_eq!(head_message(&repo), "[T-1] fix it\n");
+        assert_eq!(
+            fs::read_to_string(dir.join("prepare-args")).unwrap(),
+            ".git/COMMIT_EDITMSG message\n"
+        );
+    }
+
+    #[test]
+    fn a_commit_msg_that_refuses_the_message_stops_the_commit() {
+        let (dir, repo) = repo("commit-msg-refuses");
+        let before = head_commit(&repo).unwrap().id();
+        hook(
+            &dir,
+            "commit-msg",
+            "grep -qE '^(feat|fix): ' \"$1\" || { echo 'use feat: or fix:'; exit 1; }",
+        );
+        let err = git_commit_blocking(p(&dir), "stuff".into()).unwrap_err();
+        assert!(err.contains("commit-msg hook failed") && err.ends_with("use feat: or fix:"));
+        assert_eq!(head_commit(&repo).unwrap().id(), before);
+        git_commit_blocking(p(&dir), "fix: stuff".into()).unwrap();
+        assert_eq!(head_message(&repo), "fix: stuff\n");
+    }
+
+    #[test]
+    fn post_commit_runs_after_and_its_failure_changes_nothing() {
+        let (dir, repo) = repo("post-commit");
+        hook(
+            &dir,
+            "post-commit",
+            "git log -1 --format=%s > after\nexit 1",
+        );
+        git_commit_blocking(p(&dir), "change".into()).unwrap();
+        assert_eq!(head_message(&repo), "change");
+        assert_eq!(fs::read_to_string(dir.join("after")).unwrap(), "change\n");
+    }
+
+    #[test]
+    fn a_hook_that_isnt_executable_is_skipped_as_git_skips_it() {
+        let (dir, _repo) = repo("not-executable");
+        hook(&dir, "pre-commit", "exit 1");
+        let file = dir.join(".git/hooks/pre-commit");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        git_commit_blocking(p(&dir), "change".into()).unwrap();
+    }
+
+    #[test]
+    fn a_script_without_a_shebang_runs_with_sh() {
+        let (dir, _repo) = repo("no-shebang");
+        let file = dir.join(".git/hooks/pre-commit");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "echo no shebang; exit 3\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        let err = git_commit_blocking(p(&dir), "change".into()).unwrap_err();
+        assert!(err.ends_with("(exit code 3):\nno shebang"), "{err}");
+    }
+
+    #[test]
+    fn core_hooks_path_is_where_the_hooks_are() {
+        let (dir, repo) = repo("hooks-path");
+        // Relative: from the working folder, as husky sets it.
+        repo.config()
+            .unwrap()
+            .set_str("core.hooksPath", ".husky/_")
+            .unwrap();
+        hook(&dir, "pre-commit", "exit 0");
+        hook_in(
+            &dir.join(".husky/_"),
+            "pre-commit",
+            "echo from husky; exit 1",
+        );
+        let err = git_commit_blocking(p(&dir), "change".into()).unwrap_err();
+        assert!(err.ends_with("from husky"), "{err}");
+    }
+
+    #[test]
+    fn pre_push_gets_the_remote_and_the_refs_and_can_stop_the_push() {
+        let (dir, repo) = repo("pre-push");
+        let remote = temp_dir("pre-push-origin");
+        Repository::init_bare(&remote).unwrap();
+        repo.remote("origin", &p(&remote)).unwrap();
+        let first = head_commit(&repo).unwrap().id();
+        hook(
+            &dir,
+            "pre-push",
+            "echo \"$1 $2\" > push-args\ncat > push-refs",
+        );
+        assert_eq!(git_push_blocking(p(&dir)).unwrap().result, "pushed");
+        assert_eq!(
+            fs::read_to_string(dir.join("push-args")).unwrap(),
+            format!("origin {}\n", p(&remote))
+        );
+        let zero = git2::Oid::ZERO_SHA1;
+        assert_eq!(
+            fs::read_to_string(dir.join("push-refs")).unwrap(),
+            format!("refs/heads/main {first} refs/heads/main {zero}\n")
+        );
+
+        hook(&dir, "pre-push", "echo 'tests failed' >&2; exit 1");
+        git_commit_blocking(p(&dir), "second".into()).unwrap();
+        let err = git_push_blocking(p(&dir)).unwrap_err();
+        assert_eq!(
+            err,
+            "Not pushed: the pre-push hook failed (exit code 1):\ntests failed"
+        );
+        let remote_tip = Repository::open_bare(&remote)
+            .unwrap()
+            .refname_to_id("refs/heads/main")
+            .unwrap();
+        assert_eq!(remote_tip, first, "nothing was sent");
+    }
+
+    #[test]
+    fn no_verify_skips_the_checks_and_runs_the_other_hooks() {
+        let (dir, repo) = repo("no-verify-commit");
+        hook(&dir, "pre-commit", "exit 1");
+        hook(&dir, "commit-msg", "exit 1");
+        hook(&dir, "prepare-commit-msg", "echo prepare >> .git/ran");
+        hook(&dir, "post-commit", "echo post >> .git/ran");
+        assert!(git_commit_blocking(p(&dir), "wip".into()).is_err());
+        git_commit_blocking_with(p(&dir), "wip".into(), true).unwrap();
+        assert_eq!(head_message(&repo), "wip\n");
+        assert_eq!(
+            fs::read_to_string(dir.join(".git/ran")).unwrap(),
+            "prepare\npost\n",
+            "the refused try stopped at pre-commit, before the message hooks"
+        );
+    }
+
+    #[test]
+    fn no_verify_pushes_past_a_failing_pre_push() {
+        let (dir, repo) = repo("no-verify-push");
+        let remote = temp_dir("no-verify-push-origin");
+        Repository::init_bare(&remote).unwrap();
+        repo.remote("origin", &p(&remote)).unwrap();
+        hook(&dir, "pre-push", "exit 1");
+        assert!(git_push_blocking(p(&dir)).is_err());
+        assert_eq!(
+            git_push_blocking_with(p(&dir), true).unwrap().result,
+            "pushed"
+        );
+        let remote_tip = Repository::open_bare(&remote)
+            .unwrap()
+            .refname_to_id("refs/heads/main")
+            .unwrap();
+        assert_eq!(remote_tip, head_commit(&repo).unwrap().id());
+    }
+
+    #[test]
+    fn post_checkout_runs_after_a_switch() {
+        let (dir, repo) = repo("post-checkout");
+        git_commit_blocking(p(&dir), "two".into()).unwrap();
+        let main = head_commit(&repo).unwrap().id();
+        git_create_branch_blocking(p(&dir), "old".into(), false, Some("main~1".into())).unwrap();
+        let old = repo.refname_to_id("refs/heads/old").unwrap();
+        hook(
+            &dir,
+            "post-checkout",
+            "echo \"$@\" > .git/post-checkout-args",
+        );
+        git_checkout_blocking(p(&dir), "old".into()).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join(".git/post-checkout-args")).unwrap(),
+            format!("{main} {old} 1\n")
+        );
+    }
+}

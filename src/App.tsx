@@ -2179,6 +2179,7 @@ export default function App() {
                 onChanged={refreshGitBases}
                 onStashChanged={closeStashTabs}
                 onFilesChangedOnDisk={() => void reloadOpenFiles()}
+                onOpenPath={(abs) => void openInEditor({ path: abs, focus: true, marks: 'none' })}
               />
             </Match>
             <Match when={!rootPath()}>

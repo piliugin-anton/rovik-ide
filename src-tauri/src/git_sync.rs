@@ -10,7 +10,12 @@
 //
 // Merges and rebases are libgit2's on-disk ones: the state lives in .git
 // (MERGE_HEAD, rebase-merge/) like git's own, so a terminal sees it too.
+// The repository's hooks run as git runs them (crate::git::hooks): a pull
+// that merges runs pre-merge-commit, the message hooks and post-merge, one
+// that fast-forwards post-merge, a rebase pre-rebase and post-rewrite, and
+// the commit that finishes a merge the commit hooks.
 
+use crate::git::hooks::{not_committed, Hooks};
 use crate::git::{
     git_fetch_blocking, head_commit, inside_repo, open_repo, signature, tree_blob, workdir,
 };
@@ -308,6 +313,7 @@ pub fn integrate_upstream(
             .and_then(|mut r| r.set_target(upstream_oid, "pull: Fast-forward"))
             .err_text()?;
         repo.set_head(&refname).err_text()?;
+        Hooks::of(repo).run_after("post-merge", &["0"], None);
         return Ok(PullOutcome::done("fast-forward"));
     }
 
@@ -329,7 +335,12 @@ pub fn integrate_upstream(
                     conflicts,
                 });
             }
-            commit_merge(repo, None)?;
+            commit_merge(repo, None, true, false).map_err(|e| {
+                format!(
+                    "{e}\nThe merge is still in progress: once that's fixed, continue it \
+                     (or abort it)."
+                )
+            })?;
             Ok(PullOutcome::done("merged"))
         }
         Some(PullStrategy::Rebase) => {
@@ -458,10 +469,34 @@ fn merge_heads(repo: &Repository) -> Result<Vec<Oid>, String> {
     Ok(ids)
 }
 
-fn commit_merge(repo: &Repository, message: Option<String>) -> Result<(), String> {
+/// Commits the merge in progress. `pulled`: a pull's merge, which runs the
+/// hooks `git merge` does (pre-merge-commit, then post-merge); otherwise the
+/// commit that finishes one, which runs `git commit`'s (pre-commit, then
+/// post-commit). Both run prepare-commit-msg and commit-msg. `no_verify`:
+/// as git's `--no-verify`, without pre-merge-commit / pre-commit and
+/// commit-msg.
+fn commit_merge(
+    repo: &Repository,
+    message: Option<String>,
+    pulled: bool,
+    no_verify: bool,
+) -> Result<(), String> {
     let mut index = repo.index().err_text()?;
     if index.has_conflicts() {
         return Err("Resolve the remaining conflicts first.".to_string());
+    }
+    let hooks = Hooks::of(repo).no_verify(no_verify);
+    let pre = if pulled {
+        "pre-merge-commit"
+    } else {
+        "pre-commit"
+    };
+    if hooks.has(pre) {
+        hooks.run(pre, &[], None).map_err(not_committed)?;
+        index.read(true).err_text()?;
+        if index.has_conflicts() {
+            return Err("Resolve the remaining conflicts first.".to_string());
+        }
     }
     let tree = repo.find_tree(index.write_tree().err_text()?).err_text()?;
     let sig = signature(repo)?;
@@ -474,9 +509,18 @@ fn commit_merge(repo: &Repository, message: Option<String>) -> Result<(), String
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| merge_message(repo));
+    let message = hooks
+        .commit_message(repo, &message, "merge")
+        .map_err(not_committed)?;
     repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
         .err_text()?;
-    repo.cleanup_state().err_text()
+    repo.cleanup_state().err_text()?;
+    if pulled {
+        hooks.run_after("post-merge", &["0"], None);
+    } else {
+        hooks.run_after("post-commit", &[], None);
+    }
+    Ok(())
 }
 
 /// Commits the rebase step just applied. A step whose change is upstream
@@ -492,8 +536,22 @@ fn commit_rebase_step(
     }
 }
 
-/// Rebases the current branch onto `incoming`, and applies the steps.
+/// Rebases the current branch onto `incoming`, and applies the steps. The
+/// pre-rebase hook can refuse it first: it's given the upstream, as git
+/// gives it ("origin/main").
 fn start_rebase(repo: &Repository, incoming: &AnnotatedCommit<'_>) -> Result<PullOutcome, String> {
+    // Both of the callers' come from a branch, so they have its name.
+    let upstream = match incoming.refname() {
+        Ok(name) if !name.is_empty() => name
+            .strip_prefix("refs/heads/")
+            .or_else(|| name.strip_prefix("refs/remotes/"))
+            .unwrap_or(name)
+            .to_string(),
+        _ => incoming.id().to_string(),
+    };
+    Hooks::of(repo)
+        .run("pre-rebase", &[&upstream], None)
+        .map_err(|e| format!("Not rebased: {e}"))?;
     let mut opts = rebase_options(repo);
     let mut rebase = repo
         .rebase(None, Some(incoming), None, Some(&mut opts))
@@ -515,9 +573,15 @@ fn drive_rebase(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<Pull
         }
         commit_rebase_step(rebase, &sig)?;
     }
+    // libgit2 notes each step's `<old id> <new id>` there, as git does, and
+    // finishing removes it: what post-rewrite is given.
+    let rewritten = std::fs::read(repo.path().join("rebase-merge/rewritten")).unwrap_or_default();
     rebase
         .finish(Some(&sig))
         .map_err(|e| format!("Couldn't finish the rebase: {e}"))?;
+    if !rewritten.is_empty() {
+        Hooks::of(repo).run_after("post-rewrite", &["rebase"], Some(&rewritten));
+    }
     Ok(PullOutcome::done("rebased"))
 }
 
@@ -525,19 +589,33 @@ fn drive_rebase(repo: &Repository, rebase: &mut git2::Rebase<'_>) -> Result<Pull
 pub async fn git_operation_continue(
     path: String,
     message: Option<String>,
+    no_verify: Option<bool>,
 ) -> Result<PullOutcome, String> {
     let repo = path.clone();
+    let no_verify = no_verify.unwrap_or(false);
     rewriting(&path, move || {
-        git_operation_continue_blocking(repo, message)
+        git_operation_continue_blocking_with(repo, message, no_verify)
     })
     .await
 }
 
-/// After the conflicts are resolved: commits the merge, or commits the
-/// rebase step and goes on with the next ones (which may conflict again).
+/// With the hooks, as the tests run it.
+#[cfg(test)]
 pub fn git_operation_continue_blocking(
     path: String,
     message: Option<String>,
+) -> Result<PullOutcome, String> {
+    git_operation_continue_blocking_with(path, message, false)
+}
+
+/// After the conflicts are resolved: commits the merge, or commits the
+/// rebase step and goes on with the next ones (which may conflict again).
+/// `no_verify`: the merge's commit as git's `--no-verify` makes it, without
+/// pre-commit and commit-msg (a rebase's steps run neither).
+pub fn git_operation_continue_blocking_with(
+    path: String,
+    message: Option<String>,
+    no_verify: bool,
 ) -> Result<PullOutcome, String> {
     let repo = open_repo(&path)?;
     let remaining = conflicted_paths(&repo)?;
@@ -549,7 +627,7 @@ pub fn git_operation_continue_blocking(
     }
     match repo.state() {
         RepositoryState::Merge => {
-            commit_merge(&repo, message)?;
+            commit_merge(&repo, message, false, no_verify)?;
             Ok(PullOutcome::done("merged"))
         }
         RepositoryState::RebaseMerge

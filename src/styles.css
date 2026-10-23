@@ -4636,6 +4636,25 @@ body.is-resizing * {
   font-weight: 600;
 }
 
+/* Git hooks (GitHooksView): a row per hook the panel runs, its state
+   after its name; one that isn't there is muted until it's made. */
+.git-hook-absent .git-more-row-label {
+  color: var(--fg-muted);
+}
+
+.git-hook-state {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.git-hook-active {
+  color: var(--success);
+}
+
+.git-hook-not-executable {
+  color: var(--warning);
+}
+
 /* Expandable stash entries: the files a stash touched (git_stash_show).
    Clicking a file opens its stashed content in a read-only editor tab. */
 .git-stash-entry {
@@ -4798,13 +4817,34 @@ body.is-resizing * {
 
 .git-inline-error {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 6px 8px;
   color: var(--error);
   background: color-mix(in srgb, var(--error) 12%, transparent);
   border-bottom: 1px solid var(--border);
   font-size: 11px;
+}
+
+.git-inline-error-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* A git hook's output: its lines as it printed them, scrolled when long. */
+.git-inline-error-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.git-skip-hooks {
+  font-size: 11px;
+  padding: 2px 8px;
 }
 
 .git-inline-error svg {
