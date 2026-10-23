@@ -22,6 +22,7 @@
 //! and one more `ConnectorKind`.
 
 mod claude_code;
+pub mod mcp;
 pub mod sessions;
 
 use crate::agent::{ChatParams, ChatStreamEvent, ReasoningEffort};
@@ -35,6 +36,7 @@ pub use rovik_protocol::connectors::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -75,6 +77,9 @@ pub struct Turn {
     /// The model the harness is told, as its model list names it.
     pub model: String,
     pub system_prompt: String,
+    /// The project's section of the system prompt, when it's apart from
+    /// `system_prompt`: it changes between runs, the rest doesn't.
+    pub system_context: Option<String>,
     /// The message for the harness: the user's request, the IDE's notes
     /// since the last reply, or a recap and the request for a new session.
     pub prompt: String,
@@ -89,6 +94,40 @@ pub struct Turn {
     pub one_shot: bool,
     pub effort: Option<ReasoningEffort>,
     pub first_byte_timeout: Duration,
+    /// The chat it's for.
+    pub dialog_id: Option<String>,
+    /// The tools of the run's request (OpenAI function schemas): what a
+    /// harness offers the model as Rovik's, in that mode.
+    pub tools: Vec<Value>,
+    /// Rovik's tools mode: the calls of the chat's last reply and their
+    /// stored results, which a harness waiting on them is given.
+    pub answers: Option<Answers>,
+    /// Continue an interrupted reply.
+    pub continue_reply: bool,
+}
+
+/// The tool calls of the chat's last reply, as Rovik ran them: what a
+/// harness that made them (Rovik's tools mode) is answered with.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Answers {
+    /// The calls, in order: id and name.
+    pub calls: Vec<(String, String)>,
+    /// Their results as Rovik stored them, by call id.
+    pub results: HashMap<String, String>,
+    /// What came after them for the model: Rovik's notes (a check that
+    /// failed), a message the user sent while it worked.
+    pub notes: String,
+}
+
+/// Ends the chat's harness run waiting on Rovik's results, if any: its
+/// run is over (agent_run's `Run` drops).
+pub fn end_live(dialog_id: &str) {
+    claude_code::end_live(dialog_id);
+}
+
+/// Ends every waiting harness run, as the process exits.
+pub fn end_all() {
+    claude_code::end_all();
 }
 
 /// What a connector reports as its turn runs, besides the reply's text.
@@ -157,30 +196,53 @@ pub async fn run_chat(
         }
         None => (None, None),
     };
-    let system_prompt = messages_system
-        .or_else(|| params.system_prompt.clone())
-        .unwrap_or_else(|| {
-            crate::agent::lead_system_prompt(false, params.project_context.as_deref(), false)
-        });
+    let settings = params.connector.clone().unwrap_or(Value::Null);
+    let tools = params.tools.clone().unwrap_or_default();
+    // Rovik's tools mode: the harness takes the run's tools over MCP.
+    let rovik_tools =
+        has_history && settings.get("tools").and_then(|t| t.as_str()) == Some("rovik");
+    // The system prompt: a one-off request's own, the run's (a subagent's,
+    // Autopilot's), or the coding agent's with the project's section apart.
+    let (system_prompt, system_context) = match (messages_system, params.system_prompt.clone()) {
+        (Some(system), _) | (None, Some(system)) => (system, None),
+        (None, None) => (
+            crate::agent::lead_system_prompt(rovik_tools && !tools.is_empty(), None, false),
+            params
+                .project_context
+                .clone()
+                .filter(|c| !c.trim().is_empty()),
+        ),
+    };
     let effort = params.options.as_ref().and_then(|o| o.reasoning_effort);
     let first_byte_timeout = Duration::from_millis(params.first_byte_timeout_ms.unwrap_or(60_000));
-    let settings = params.connector.clone().unwrap_or(Value::Null);
-    let (prompt, session, recap) = match (messages_prompt, &params.dialog_id) {
-        (Some(prompt), _) => (prompt, None, None),
+    let continuing = params.continue_reply.unwrap_or(false);
+    let (prompt, session, recap, answers) = match (messages_prompt, &params.dialog_id) {
+        (Some(prompt), _) => (prompt, None, None, None),
         (None, Some(dialog_id)) => {
             let id = dialog_id.clone();
             let rows = db
                 .read(move |c| crate::chat_db::store::get_messages(c, &id, None, RECENT_MESSAGES))
                 .await
                 .map(|page| page.messages)?;
+            let answers = match rovik_tools {
+                true => tool_answers(db, &rows).await?,
+                false => None,
+            };
             let session = sessions::get(&data_dir, kind, dialog_id);
-            let continuing = params.continue_reply.unwrap_or(false);
             let current = params.current_user_content.as_deref();
-            let prompt = prompt_for(&rows, current, continuing, session.is_none());
-            let recap = session
-                .is_some()
-                .then(|| prompt_for(&rows, current, continuing, true));
-            (prompt, session, recap)
+            let ask = |new_session| {
+                prompt_for(
+                    &rows,
+                    current,
+                    continuing,
+                    new_session,
+                    rovik_tools,
+                    answers.as_ref(),
+                )
+            };
+            let prompt = ask(session.is_none());
+            let recap = session.is_some().then(|| ask(true));
+            (prompt, session, recap, answers)
         }
         (None, None) => return Err("send_chat_message needs messages or a dialogId".into()),
     };
@@ -192,6 +254,7 @@ pub async fn run_chat(
         api_key: params.api_key.clone(),
         model: params.model.clone(),
         system_prompt,
+        system_context,
         prompt,
         cwd: params.cwd.clone(),
         session,
@@ -199,6 +262,10 @@ pub async fn run_chat(
         one_shot: !has_history,
         effort,
         first_byte_timeout,
+        dialog_id: params.dialog_id.clone(),
+        tools,
+        answers,
+        continue_reply: continuing,
     };
     // The session the harness opens or continues is kept for the chat's
     // next turn, as the events say it.
@@ -268,11 +335,18 @@ fn sent_text(m: &MessageRow) -> String {
 /// one as sent. `continue_reply` asks it to go on with an interrupted one.
 /// A `new_session` with earlier turns gets a recap of them first, since
 /// the harness has none of its own.
+///
+/// In Rovik's tools mode (`rovik_tools`) every message of the harness's is
+/// a reply, its tool calls' too, and when the last one made calls whose
+/// results its session never got (`answers`: the run ended while it
+/// waited), they're given first.
 pub fn prompt_for(
     rows: &[MessageRow],
     current_user_content: Option<&str>,
     continue_reply: bool,
     new_session: bool,
+    rovik_tools: bool,
+    answers: Option<&Answers>,
 ) -> String {
     // Rows up to the pending reply this turn fills (unfinished, at the end).
     let settled: Vec<&MessageRow> = rows
@@ -281,7 +355,7 @@ pub fn prompt_for(
         .collect();
     // The last reply the harness gave: what came after it is this turn's.
     let last_reply = settled.iter().rposition(|m| {
-        m.role == "assistant" && (!m.content.trim().is_empty() || m.error.is_some())
+        m.role == "assistant" && (rovik_tools || !m.content.trim().is_empty() || m.error.is_some())
     });
     let since = match last_reply {
         Some(i) => &settled[i + 1..],
@@ -318,6 +392,12 @@ pub fn prompt_for(
             parts.push(current.to_string());
         }
     }
+    if let Some(answers) = answers.filter(|a| !a.calls.is_empty()) {
+        if parts.is_empty() {
+            parts.push("Go on with the task.".into());
+        }
+        parts.insert(0, results_block(answers));
+    }
     let mut prompt = parts.join("\n\n");
     if new_session {
         let earlier = match last_reply {
@@ -332,6 +412,77 @@ pub fn prompt_for(
         }
     }
     prompt
+}
+
+/// The most of one result a new session is told.
+const RESULT_CHARS: usize = 20_000;
+
+/// The results of the last calls, for a session that never got them.
+fn results_block(answers: &Answers) -> String {
+    let mut block = String::from(
+        "Your previous run ended while you waited for the results of your last tool calls. Rovik ran them; here are their results:",
+    );
+    for (id, name) in &answers.calls {
+        let result = answers
+            .results
+            .get(id)
+            .map(|r| trimmed_text(r, RESULT_CHARS))
+            .unwrap_or_else(|| "[Rovik didn't run this call.]".into());
+        block.push_str(&format!("\n\n### {name} ({id})\n{result}"));
+    }
+    block
+}
+
+/// The calls of the chat's last reply and Rovik's results for them, when
+/// it made any (Rovik's tools mode): large results read whole.
+async fn tool_answers(db: &DbState, rows: &[MessageRow]) -> Result<Option<Answers>, String> {
+    let settled: Vec<&MessageRow> = rows
+        .iter()
+        .filter(|m| m.finalized || m.role != "assistant")
+        .collect();
+    let Some(last) = settled.iter().rposition(|m| m.role == "assistant") else {
+        return Ok(None);
+    };
+    let calls: Vec<(String, String)> = settled[last]
+        .tool_calls
+        .iter()
+        .flatten()
+        .map(|c| (c.id.clone(), c.name.clone()))
+        .collect();
+    if calls.is_empty() {
+        return Ok(None);
+    }
+    let after = &settled[last + 1..];
+    let mut results = HashMap::new();
+    for m in after.iter().filter(|m| m.role == "tool") {
+        let Some(call) = m
+            .tool_call_id
+            .as_ref()
+            .filter(|id| calls.iter().any(|(c, _)| c == *id))
+        else {
+            continue;
+        };
+        let text = if m.body_external {
+            let id = m.id.clone();
+            db.read(move |c| crate::chat_db::store::get_message_body(c, &id))
+                .await?
+        } else {
+            m.content.clone()
+        };
+        results.insert(call.clone(), text);
+    }
+    let notes = after
+        .iter()
+        .filter(|m| m.role == "user" && !m.failed)
+        .map(|m| sent_text(m))
+        .filter(|t| !t.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(Some(Answers {
+        calls,
+        results,
+        notes,
+    }))
 }
 
 /// The chat's earlier turns, in words: the user's requests and the
@@ -473,6 +624,63 @@ pub fn trimmed_text(text: &str, max: usize) -> String {
     text.chars().take(max).collect::<String>() + "…"
 }
 
+/// A stand-in for `claude` in Rovik's tools mode: Python, speaking MCP
+/// to Rovik's server as Claude Code does, printing what a run prints.
+#[cfg(all(test, unix))]
+pub(crate) fn fake_claude_with_mcp(dir: &std::path::Path, read_path: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !crate::process::on_path("python3") {
+        return None;
+    }
+    let script = r#"#!/usr/bin/env python3
+import json, os, sys, urllib.request
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+open(os.path.join(here, 'args.txt'), 'w').write(' '.join(args))
+prompt = sys.stdin.read()
+open(os.path.join(here, 'prompt.txt'), 'w').write(prompt)
+flag = '--system-prompt-file' if '--system-prompt-file' in args else '--append-system-prompt-file'
+open(os.path.join(here, 'system.txt'), 'w').write(open(args[args.index(flag) + 1]).read())
+server = json.load(open(args[args.index('--mcp-config') + 1]))['mcpServers']['rovik']
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def post(body):
+    headers = dict(server['headers'])
+    headers.update({'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'})
+    request = urllib.request.Request(server['url'], data=json.dumps(body).encode(), headers=headers)
+    with opener.open(request) as response:
+        text = response.read().decode()
+    if text.startswith('{'):
+        return json.loads(text)
+    for line in text.splitlines():
+        if line.startswith('data: '):
+            return json.loads(line[6:])
+def out(value):
+    print(json.dumps(value), flush=True)
+def event(e):
+    out({'type': 'stream_event', 'event': e, 'parent_tool_use_id': None})
+post({'jsonrpc': '2.0', 'id': 0, 'method': 'initialize', 'params': {'protocolVersion': '2025-11-25'}})
+tools = post({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})['result']['tools']
+out({'type': 'system', 'subtype': 'init', 'session_id': 's-9', 'model': 'claude-sonnet-5', 'tools': ['mcp__rovik__' + t['name'] for t in tools]})
+event({'type': 'message_start', 'message': {'id': 'm1', 'usage': {'input_tokens': 4}}})
+event({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'tool_use', 'id': 'toolu_1', 'name': 'mcp__rovik__read', 'input': {}}})
+event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': '{"path": "READ_PATH"}'}})
+event({'type': 'content_block_stop', 'index': 0})
+event({'type': 'message_delta', 'delta': {'stop_reason': 'tool_use'}, 'usage': {'output_tokens': 9}})
+event({'type': 'message_stop'})
+result = post({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'read', 'arguments': {'path': 'READ_PATH'}, '_meta': {'claudecode/toolUseId': 'toolu_1'}}})
+text = result['result']['content'][0]['text']
+event({'type': 'message_start', 'message': {'id': 'm2'}})
+event({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': 'Got: ' + text}})
+event({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'input_tokens': 6, 'output_tokens': 2}})
+event({'type': 'message_stop'})
+out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Got: ' + text, 'usage': {}, 'total_cost_usd': 0.01, 'num_turns': 2})
+"#;
+    let path = dir.join("claude");
+    std::fs::write(&path, script.replace("READ_PATH", read_path)).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Some(path.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,12 +724,19 @@ mod tests {
             ),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, false);
+        let prompt = prompt_for(&rows, None, false, false, false, None);
         assert_eq!(
             prompt,
             "Checks failed:\n- lint\n\nAlso rename it\n\n[editor: foo.rs]"
         );
-        let prompt = prompt_for(&rows, Some("Also rename it (sent)"), false, false);
+        let prompt = prompt_for(
+            &rows,
+            Some("Also rename it (sent)"),
+            false,
+            false,
+            false,
+            None,
+        );
         assert!(prompt.ends_with("Also rename it (sent)"), "{prompt}");
         assert!(
             !prompt.contains("First ask"),
@@ -537,7 +752,7 @@ mod tests {
             row("user", "Next", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, false, true);
+        let prompt = prompt_for(&rows, None, false, true, false, None);
         assert!(
             prompt.starts_with("Earlier in this conversation"),
             "{prompt}"
@@ -550,7 +765,7 @@ mod tests {
             row("user", "Hello", None, true),
             row("assistant", "", None, false),
         ];
-        assert_eq!(prompt_for(&first, None, false, true), "Hello");
+        assert_eq!(prompt_for(&first, None, false, true, false, None), "Hello");
     }
 
     #[test]
@@ -560,7 +775,7 @@ mod tests {
             row("assistant", "Half a re", None, true),
             row("assistant", "", None, false),
         ];
-        let prompt = prompt_for(&rows, None, true, false);
+        let prompt = prompt_for(&rows, None, true, false, false, None);
         assert!(prompt.contains("interrupted"), "{prompt}");
     }
 
@@ -574,7 +789,7 @@ mod tests {
             row("assistant", "recent reply", None, true),
             row("user", "Now", None, true),
         ];
-        let prompt = prompt_for(&rows, None, false, true);
+        let prompt = prompt_for(&rows, None, false, true, false, None);
         assert!(prompt.contains("[earlier turns left out]"));
         assert!(prompt.contains("recent reply"));
         assert!(!prompt.contains(&long));

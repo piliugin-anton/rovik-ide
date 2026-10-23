@@ -1084,6 +1084,8 @@ impl Run {
         // Its time starts now, not when it was prepared (it may have waited
         // for a free place).
         self.started_at = Instant::now();
+        // A harness waiting on its tool calls ends with it (connectors).
+        let _harness = super::run::HarnessGuard::new(&self.dialog_id);
         #[cfg(test)]
         if self.sub().is_some_and(|s| {
             PANIC_SUB

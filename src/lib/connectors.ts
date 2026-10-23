@@ -45,6 +45,12 @@ export interface ClaudeCodeSettings {
   extraArgs: string;
   /** `--bare`: none of the user's hooks, skills, plugins or CLAUDE.md. */
   bare: boolean;
+  /**
+   * Whose tools a run uses: Claude Code's own, under its permission mode,
+   * or Rovik's over MCP, where Claude Code is the model behind Rovik's
+   * agent loop and Rovik runs every call under its own permissions.
+   */
+  tools: 'own' | 'rovik';
 }
 
 export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
@@ -57,7 +63,26 @@ export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
   configDir: '',
   extraArgs: '',
   bare: false,
+  tools: 'own',
 };
+
+export const TOOLS_MODES: { value: ClaudeCodeSettings['tools']; label: string; hint: string }[] = [
+  {
+    value: 'own',
+    label: 'Claude Code’s own',
+    hint: 'Claude Code runs its own tools (Read, Edit, Bash…) under the permission mode below; Rovik shows each step it took.',
+  },
+  {
+    value: 'rovik',
+    label: 'Rovik’s (via MCP)',
+    hint: 'Claude Code is the model behind Rovik’s agent: it gets Rovik’s tools over MCP, and Rovik runs each call under Permissions & approval, in the chat’s copy of the project, with its checks, checklist, plans and subagents.',
+  },
+];
+
+/** Whether the entry is a connector that runs Rovik's tools. */
+export function usesRovikTools(p: Pick<Provider, 'baseUrl' | 'connector' | 'settings'>): boolean {
+  return isConnector(p) && claudeCodeSettings(p).tools === 'rovik';
+}
 
 export const PERMISSION_MODES: {
   value: ClaudeCodeSettings['permissionMode'];
@@ -440,8 +465,9 @@ export function connectorProfile(
     vision: false,
     pdf: false,
     contextTokens: model.contextOverride ?? model.contextLength,
-    // The harness runs its own tools: the IDE offers it none.
-    noTools: true,
+    // With its own tools, the IDE offers it none; with Rovik's, the run's
+    // tools go to it over MCP.
+    noTools: !usesRovikTools(provider),
     firstByteTimeoutMs: model.firstTokenTimeoutSec ? model.firstTokenTimeoutSec * 1000 : undefined,
     reasoning: model.reasoning ?? { choice: 'auto' },
     connector: provider.settings ?? {},
@@ -476,6 +502,8 @@ export interface ConnectorUsage {
     model?: string | null;
     version?: string | null;
     subtype?: string;
+    /** `harnessTurn`: the cost is the whole run's, over several replies. */
+    costCovers?: string;
     permissionDenials?: number;
   };
 }
@@ -487,6 +515,8 @@ export interface ConnectorMeta {
   version?: string | null;
   steps?: HarnessStep[];
   usage?: ConnectorUsage;
+  /** It ran Rovik's tools: its calls are the reply's own tool calls. */
+  rovikTools?: boolean;
 }
 
 /** "Read src/a.rs", "Bash npm test", "Edit foo.ts": a step in a few words. */
@@ -522,15 +552,20 @@ export function connectorHeadline(meta: ConnectorMeta, running: boolean): string
   const model = meta.usage?.connector?.model ?? meta.model;
   if (model) parts.push(model);
   const steps = meta.steps?.length ?? 0;
-  if (steps || running) parts.push(running && !steps ? 'working…' : plural(steps, 'step'));
+  if (steps) parts.push(plural(steps, 'step'));
+  else if (running && !meta.rovikTools) parts.push('working…');
   const u = meta.usage;
   if (u) {
     const tokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
     const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
     if (tokens)
       parts.push(`${compact(tokens)} tokens${cached ? ` (${compact(cached)} cached)` : ''}`);
-    if (u.cost !== undefined)
-      parts.push(`$${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}`);
+    if (u.cost !== undefined) {
+      const cost = `$${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}`;
+      // With Rovik's tools, a run of Claude Code's spans several replies:
+      // its cost comes with the last.
+      parts.push(u.connector?.costCovers === 'harnessTurn' ? `${cost} for its run` : cost);
+    }
     const turns = u.connector?.numTurns;
     if (turns && turns > 1) parts.push(plural(turns, 'turn'));
   }

@@ -95,6 +95,10 @@ pub enum ChatStreamEvent {
         session: String,
         model: Option<String>,
         version: Option<String>,
+        /// It runs Rovik's tools (over MCP), not its own: its calls are
+        /// the reply's tool calls.
+        #[serde(default)]
+        rovik_tools: bool,
     },
     ToolCallComplete {
         id: String,

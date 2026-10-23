@@ -15,6 +15,16 @@ import {
 } from '../lib/connectors';
 
 export default function ConnectorRecord(props: { meta: ConnectorMeta; running: boolean }) {
+  // With Rovik's tools, the reply's calls show as Rovik's own: the record
+  // only says what it used, once it's known.
+  return (
+    <Show when={!props.meta.rovikTools || props.meta.usage}>
+      <Record meta={props.meta} running={props.running} />
+    </Show>
+  );
+}
+
+function Record(props: { meta: ConnectorMeta; running: boolean }) {
   const [open, setOpen] = createSignal(false);
   const steps = () => props.meta.steps ?? [];
   const working = () => props.running && !props.meta.usage;

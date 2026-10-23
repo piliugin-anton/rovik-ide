@@ -24,6 +24,7 @@ import {
   kindOfProvider,
   newConnector,
   PERMISSION_MODES,
+  TOOLS_MODES,
   probeConnector,
   probeModels,
   probeSummary,
@@ -204,10 +205,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
           <p class="settings-hint">
             A connector is a coding harness installed on the computer a chat runs on, used in place
             of a model provider: the chat hands it the task and its system prompt, picks one of its
-            models, and shows what it did, its tokens and its cost with the reply. The harness runs
-            its own tools in the project folder, under the permission mode set here, so the IDE’s
-            approval settings don’t apply to it. On a cloud host, the host needs its own
-            installation.
+            models, and shows what it did, its tokens and its cost with the reply. With its own
+            tools, the harness works in the project folder under the permission mode set here, and
+            Rovik’s approval settings don’t apply to it. With Rovik’s tools (via MCP), it’s the
+            model behind Rovik’s agent: Rovik runs each call, under Permissions & approval. On a
+            cloud host, the host needs its own installation.
           </p>
           <For
             each={connectors()}
@@ -224,8 +226,11 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                   <span class="profile-row-sub">
                     {connectorTitle(kindOfProvider(c) ?? 'claude-code')} ·{' '}
                     {claudeCodeSettings(c).program} ·{' '}
-                    {PERMISSION_MODES.find((m) => m.value === claudeCodeSettings(c).permissionMode)
-                      ?.label ?? claudeCodeSettings(c).permissionMode}
+                    {claudeCodeSettings(c).tools === 'rovik'
+                      ? 'Rovik’s tools'
+                      : (PERMISSION_MODES.find(
+                          (m) => m.value === claudeCodeSettings(c).permissionMode
+                        )?.label ?? claudeCodeSettings(c).permissionMode)}
                   </span>
                   <span class="profile-row-sub">
                     {c.models.filter((m) => m.enabled).length} of {c.models.length} models enabled
@@ -345,17 +350,18 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             </label>
           </Show>
 
-          <SettingRow label="Permission mode">
+          <SettingRow label="Tools">
             <select
               class="settings-select"
-              value={settings().permissionMode}
-              onChange={(e) =>
-                patchSettings({
-                  permissionMode: e.currentTarget.value as ClaudeCodeSettings['permissionMode'],
-                })
-              }
+              value={settings().tools}
+              onChange={(e) => {
+                const tools = e.currentTarget.value as ClaudeCodeSettings['tools'];
+                // Rovik's prompt in place of Claude Code's, whose tools are
+                // off then; after it, with them.
+                patchSettings({ tools, systemPrompt: tools === 'rovik' ? 'replace' : 'append' });
+              }}
             >
-              <For each={PERMISSION_MODES}>
+              <For each={TOOLS_MODES}>
                 {(m) => (
                   <option value={m.value} title={m.hint}>
                     {m.label}
@@ -365,35 +371,60 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             </select>
           </SettingRow>
           <p class="settings-hint setting-explain">
-            {PERMISSION_MODES.find((m) => m.value === settings().permissionMode)?.hint}. Nothing
-            waits for a prompt: what the mode and the rules below don’t allow is denied.
+            {TOOLS_MODES.find((m) => m.value === settings().tools)?.hint}
           </p>
 
-          <label>
-            Allowed tools
-            <textarea
-              class="settings-textarea"
-              rows={2}
-              value={settings().allowedTools}
-              onInput={(e) => patchSettings({ allowedTools: e.currentTarget.value })}
-              placeholder={'Bash(npm test *)\nBash(git diff *)'}
-              spellcheck={false}
-            />
-            <span class="setting-explain">
-              Permission rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
-            </span>
-          </label>
-          <label>
-            Denied tools
-            <textarea
-              class="settings-textarea"
-              rows={1}
-              value={settings().disallowedTools}
-              onInput={(e) => patchSettings({ disallowedTools: e.currentTarget.value })}
-              placeholder="Bash(rm *)"
-              spellcheck={false}
-            />
-          </label>
+          <Show when={settings().tools === 'own'}>
+            <SettingRow label="Permission mode">
+              <select
+                class="settings-select"
+                value={settings().permissionMode}
+                onChange={(e) =>
+                  patchSettings({
+                    permissionMode: e.currentTarget.value as ClaudeCodeSettings['permissionMode'],
+                  })
+                }
+              >
+                <For each={PERMISSION_MODES}>
+                  {(m) => (
+                    <option value={m.value} title={m.hint}>
+                      {m.label}
+                    </option>
+                  )}
+                </For>
+              </select>
+            </SettingRow>
+            <p class="settings-hint setting-explain">
+              {PERMISSION_MODES.find((m) => m.value === settings().permissionMode)?.hint}. Nothing
+              waits for a prompt: what the mode and the rules below don’t allow is denied.
+            </p>
+
+            <label>
+              Allowed tools
+              <textarea
+                class="settings-textarea"
+                rows={2}
+                value={settings().allowedTools}
+                onInput={(e) => patchSettings({ allowedTools: e.currentTarget.value })}
+                placeholder={'Bash(npm test *)\nBash(git diff *)'}
+                spellcheck={false}
+              />
+              <span class="setting-explain">
+                Permission rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
+              </span>
+            </label>
+            <label>
+              Denied tools
+              <textarea
+                class="settings-textarea"
+                rows={1}
+                value={settings().disallowedTools}
+                onInput={(e) => patchSettings({ disallowedTools: e.currentTarget.value })}
+                placeholder="Bash(rm *)"
+                spellcheck={false}
+              />
+            </label>
+          </Show>
 
           <div class="connector-limits">
             <label class="setting-number-field">

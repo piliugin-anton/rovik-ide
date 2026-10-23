@@ -11,7 +11,7 @@ import { createMemo, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import { formatModelLabel } from '../lib/aiSettings';
 import { sameModel } from '../lib/permissions';
-import { isConnector } from '../lib/connectors';
+import { isConnector, usesRovikTools } from '../lib/connectors';
 
 /** Below this context window, a warning shows: subagents read a lot. */
 export const SMALL_CONTEXT_TOKENS = 32_000;
@@ -29,8 +29,8 @@ const keyOf = (sel: ModelSelection) => `model:${sel.providerId}::${sel.modelId}`
 
 /**
  * The models a subagent can use: enabled ones that take tools, by
- * provider. A connector's models (lib/connectors.ts) aren't among them:
- * the harness runs its own tools, not the subagent's.
+ * provider. A connector's models (lib/connectors.ts) are among them only
+ * when it runs Rovik's tools: with its own, it has none of the subagent's.
  */
 export function modelOptions(providers: Provider[]): ModelOption[] {
   return providers.flatMap((provider) =>
@@ -41,7 +41,8 @@ export function modelOptions(providers: Provider[]): ModelOption[] {
       provider: isConnector(provider)
         ? `Connector · ${provider.name}`
         : provider.name || provider.baseUrl,
-      usable: model.enabled && !model.noTools && !isConnector(provider),
+      usable:
+        model.enabled && !model.noTools && (!isConnector(provider) || usesRovikTools(provider)),
       contextTokens: model.contextOverride ?? model.contextLength,
     }))
   );

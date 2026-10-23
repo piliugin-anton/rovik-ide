@@ -79,6 +79,24 @@ impl Drop for RunningGuard {
     }
 }
 
+/// A run that ends, however it ends (done, stopped, paused, failed, its
+/// task aborted), takes with it the harness waiting on its tool calls
+/// (connectors, Rovik's tools mode). Held for a run's length, a lead's or
+/// a subagent's.
+pub(super) struct HarnessGuard(String);
+
+impl HarnessGuard {
+    pub(super) fn new(dialog_id: &str) -> Self {
+        HarnessGuard(dialog_id.to_string())
+    }
+}
+
+impl Drop for HarnessGuard {
+    fn drop(&mut self) {
+        crate::connectors::end_live(&self.0);
+    }
+}
+
 pub(super) const IDE_NOTE: &str = "[Automatic check by the IDE, not written by the user]\n";
 /// End-of-run checklist reminders before the run ends as unfinished-checklist.
 const MAX_CHECKLIST_NUDGES: u32 = 2;
@@ -1431,6 +1449,7 @@ impl Run {
         // back, and any hold on writing commands, however the run ends,
         // a panic included.
         let _running = RunningGuard::new(&self.dialog_id, !self.plan_mode);
+        let _harness = HarnessGuard::new(&self.dialog_id);
         let outcome = self.drive(entry).await;
         // Whatever ended it, the run takes no more messages from here, and
         // what it holds unread goes back to the user (D9, D15).
@@ -3306,10 +3325,14 @@ impl Stream {
                 session,
                 model,
                 version,
+                rovik_tools,
             } => {
                 let harness = self.harness.get_or_insert_with(|| json!({}));
                 harness["kind"] = json!(kind);
                 harness["session"] = json!(session);
+                if rovik_tools {
+                    harness["rovikTools"] = json!(true);
+                }
                 if model.is_some() {
                     harness["model"] = json!(model);
                 }

@@ -13,6 +13,7 @@ import {
   connectorAuthState,
   resetStartCheck,
   type ConnectorAuth,
+  usesRovikTools,
   claudeCodeSettings,
   CLAUDE_CODE_DEFAULTS,
   connectorHeadline,
@@ -290,4 +291,39 @@ test('sign-in lines for the rows', () => {
     text: 'Sign-in unknown: timed out',
     warning: false,
   });
+});
+
+test('with Rovik’s tools, a connector’s model is offered the run’s tools', () => {
+  const claude = { ...newConnector('claude-code'), id: 'c1' };
+  claude.models = [{ id: 'sonnet', enabled: true }];
+  assert.equal(claudeCodeSettings(claude).tools, 'own', 'its own tools by default');
+  assert.equal(resolveProfile([claude], { providerId: 'c1', modelId: 'sonnet' })?.noTools, true);
+  assert.ok(!usesRovikTools(claude));
+  claude.settings = { ...CLAUDE_CODE_DEFAULTS, tools: 'rovik', systemPrompt: 'replace' };
+  assert.ok(usesRovikTools(claude));
+  const profile = resolveProfile([claude], { providerId: 'c1', modelId: 'sonnet' });
+  assert.equal(profile?.noTools, false, 'the run offers its tools');
+  assert.equal((profile?.connector as { tools?: string }).tools, 'rovik');
+  assert.ok(!usesRovikTools(openai), 'a provider is no connector');
+});
+
+test('with Rovik’s tools, a reply’s record says what it used, its run’s cost on the last', () => {
+  assert.equal(connectorHeadline({ kind: 'claude-code', rovikTools: true }, true), 'Claude Code');
+  assert.equal(
+    connectorHeadline(
+      {
+        kind: 'claude-code',
+        rovikTools: true,
+        usage: {
+          prompt_tokens: 2035,
+          completion_tokens: 5,
+          prompt_tokens_details: { cached_tokens: 1936 },
+          cost: 0.00045,
+          connector: { model: 'claude-haiku-5-5', costCovers: 'harnessTurn', numTurns: 2 },
+        },
+      },
+      false
+    ),
+    'Claude Code · claude-haiku-5-5 · 2.0k tokens (1.9k cached) · $0.0004 for its run · 2 turns'
+  );
 });

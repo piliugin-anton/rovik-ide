@@ -322,15 +322,32 @@ asks again. The check trusts a token Claude Code has; one that expired or
 was revoked shows as the chat's error at its first message.
 
 A chat on a connector's model hands the harness the task: Rovik's system
-prompt (after Claude Code's own, or in its place), the model, the effort
-and the message, in the project folder. The harness runs its own tools
-there, under its permission mode (Rovik's approval settings don't apply
-to it), and keeps its own conversation for the chat, continued on each
-message. Its reply shows a record above the text: each tool it ran with
-its result, then the tokens it used (cached ones apart), what it cost by
-its own estimate, and how many turns it took. Connector models take no
-images or PDFs from the chat, and the subagents don't use them; the AI
-reviewer can.
+prompt, the model, the effort and the message, in the project folder. The
+system prompt goes in a file (`--system-prompt-file`, or
+`--append-system-prompt-file` after Claude Code's own), rebuilt on every
+run (`--system-prompt-snapshot off`), its project section split off so the
+rest stays cached. The harness keeps its own conversation for the chat,
+continued on each message. A connector's **Tools** setting picks how it
+works:
+
+- **Claude Code's own.** It runs its own tools (Read, Edit, Bash…) in the
+  project folder, under the permission mode and tool rules of the
+  connector's settings; Rovik's approval settings don't apply to it. Its
+  reply shows a record above the text: each tool it ran with its result.
+- **Rovik's (via MCP).** Claude Code is the model behind Rovik's agent.
+  Rovik serves the run's tools to it over MCP (a server on 127.0.0.1 for
+  that run alone, behind a token only it has), with Claude Code's own
+  tools off. Each message of Claude Code's that calls them is a reply of
+  Rovik's: Rovik runs the calls under Permissions & approval, in the
+  chat's copy of the project, and gives Claude Code the results while it
+  waits, however long an approval takes. Rovik's checks, checklist, plans
+  and subagents work as with any model, and such a model can be a
+  subagent's too.
+
+Either way, the reply shows the tokens it used (cached ones apart) and
+what it cost by Claude Code's own estimate; with Rovik's tools, the cost
+of a run of several replies comes with its last. Connector models take no
+images or PDFs from the chat.
 
 On a cloud host, the host needs its own installation: an administrator
 runs `sudo /opt/rovik/bin/rovik-agentd admin claude-code` once, which
