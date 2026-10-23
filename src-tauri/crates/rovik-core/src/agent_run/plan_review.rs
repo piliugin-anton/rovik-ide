@@ -463,6 +463,22 @@ pub fn reviewer_time_left(minutes_left: f64, max_minutes: f64, waited: Duration)
     minutes(minutes_left).min(minutes(max_minutes).saturating_sub(waited))
 }
 
+/// The task's Plan stage records that count toward its time and budget
+/// share: all of them, or those from `from` (a person's Retry) on.
+pub(super) fn plan_records<'a>(
+    all: &'a [super::autopilot::Recorded],
+    task: &'a str,
+    from: Option<i64>,
+) -> impl Iterator<Item = &'a super::autopilot::StageRecord> {
+    all.iter()
+        .filter(move |r| {
+            r.record.task == task
+                && r.record.name == super::autopilot::Stage::Plan
+                && from.is_none_or(|from| r.seq >= from)
+        })
+        .map(|r| &r.record)
+}
+
 /// A plan-stage stop reason (`review["stop"]`) in words.
 pub fn stop_words(stop: &str) -> &'static str {
     match stop {
@@ -1682,9 +1698,7 @@ impl Run {
     pub(super) async fn plan_spent(&self) -> Option<super::budget::Spent> {
         let stage = self.stage.as_ref()?;
         let all = super::autopilot::load(&self.core, &self.dialog_id).await.ok()?;
-        let plan = all.iter().map(|r| &r.record).filter(|r| {
-            r.task == stage.task && r.name == super::autopilot::Stage::Plan
-        });
+        let plan = plan_records(&all, &stage.task, self.plan_spent_from);
         Some(super::autopilot::total_spent(plan))
     }
 
@@ -2375,22 +2389,6 @@ impl Run {
         };
         let from = plans.first().map_or(previous, |r| r.seq);
         let id = self.dialog_id.clone();
-        let rows = self
-            .core
-            .db
-            .read(move |c| crate::chat_db::store::messages_with_meta(c, &id, "review", Some(from)))
-            .await?;
-        let Some(review) = rows
-            .iter()
-            .rev()
-            .filter(|m| m.seq < upto)
-            .filter_map(|m| m.meta.as_ref()?.get("review"))
-            .find(|r| r["kind"] == "plan" && r.get("planState").is_some())
-            .cloned()
-        else {
-            return Ok(());
-        };
-        let id = self.dialog_id.clone();
         let notes = self
             .core
             .db
@@ -2406,6 +2404,27 @@ impl Run {
                     .and_then(Value::as_str)
                     == Some(PLAN_RETRY)
         });
+        // A person's Retry starts the plan's time and budget share again;
+        // an automatic one goes on counting them.
+        if !automatic {
+            self.plan_spent_from = Some(upto);
+        }
+        let id = self.dialog_id.clone();
+        let rows = self
+            .core
+            .db
+            .read(move |c| crate::chat_db::store::messages_with_meta(c, &id, "review", Some(from)))
+            .await?;
+        let Some(review) = rows
+            .iter()
+            .rev()
+            .filter(|m| m.seq < upto)
+            .filter_map(|m| m.meta.as_ref()?.get("review"))
+            .find(|r| r["kind"] == "plan" && r.get("planState").is_some())
+            .cloned()
+        else {
+            return Ok(());
+        };
         self.plan_ledger = serde_json::from_value(review["ledger"].clone()).unwrap_or_default();
         let state = &review["planState"];
         let held = state["held"].as_str().map(str::to_string);
@@ -3389,6 +3408,32 @@ mod tests {
         let short = OUTAGE_WAIT / 2;
         assert_eq!(reviewer_wait(3, short), Some(short));
         assert_eq!(reviewer_wait(0, Duration::ZERO), None);
+    }
+
+    /// A person's Retry counts the plan's time from its own record on;
+    /// otherwise every Plan record of the task counts, and no other.
+    #[test]
+    fn a_persons_retry_counts_the_plans_time_from_its_record() {
+        use super::super::autopilot::{Effort, Recorded, Stage, StageRecord};
+        let rec = |seq: i64, task: &str, name: Stage| Recorded {
+            id: format!("r{seq}"),
+            seq,
+            record: StageRecord::running(task, name, 1, Effort::Balanced),
+        };
+        let all = [
+            rec(1, "t", Stage::Plan),
+            rec(2, "t", Stage::PlanReview),
+            rec(3, "other", Stage::Plan),
+            rec(5, "t", Stage::Plan),
+            rec(7, "t", Stage::Plan),
+        ];
+        let seqs = |from| {
+            plan_records(&all, "t", from)
+                .map(|r| all.iter().find(|a| std::ptr::eq(&a.record, r)).unwrap().seq)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(seqs(None), [1, 5, 7]);
+        assert_eq!(seqs(Some(5)), [5, 7]);
     }
 
     /// The waits so far are in the plan's minutes already: not taken off
