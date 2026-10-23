@@ -323,8 +323,8 @@ pub fn install(
     if !file.admins.contains(&account.name) {
         file.admins.push(account.name.clone());
     }
-    write_settings(sys, &file)?;
     admin_group(sys, &file.admins)?;
+    write_settings(sys, &file)?;
     write_sudoers(sys)?;
     // The shared toolchains and caches, and the unit that puts each
     // daemon in their group: before the daemon starts, which systemd
@@ -609,11 +609,12 @@ fn upgrade(
         Ok(said) => print!("{said}"),
         Err(why) => println!("{}", bubblewrap::not_installed(&why)),
     }
-    // The shared toolchains, caches and unit, for the upgrades after the
-    // one that first ships them (the arm above does it for the daemons
-    // that restart now).
-    if let Err(why) = toolchains::setup(sys) {
-        println!("{}", toolchains::not_set_up(&why));
+    // The shared toolchains, caches and unit, as the new build has them:
+    // this build's own `setup` would write its older unit back over the
+    // one the new build's `admin bubblewrap` just wrote.
+    match sys.run(INSTALLED, &["admin", "toolchains", "setup"]) {
+        Ok(said) => print!("{said}"),
+        Err(why) => println!("{}", toolchains::not_set_up(&why)),
     }
     if sys.systemd() {
         sys.run("systemctl", &["try-restart", "rovik-agentd@*.service"])?;
@@ -740,10 +741,14 @@ fn install_build(sys: &System, bytes: &[u8], version: &str) -> Result<(), String
     sys.link(INSTALLED, &name)
 }
 
-/// `agentd.toml`, and the units made from it.
+/// `agentd.toml`, and the units made from it. The unit names the `rovik`
+/// group, which is made first: systemd won't start a daemon whose unit
+/// names a group that isn't there (a server upgraded from a build that
+/// never made it).
 fn write_settings(sys: &System, file: &AdminFile) -> Result<(), String> {
     file.check()?;
     sys.write(ADMIN_FILE, file.to_toml().as_bytes(), 0o644)?;
+    toolchains::group(sys)?;
     sys.write(UNIT, unit().as_bytes(), 0o644)?;
     sys.write(DROP_IN, drop_in(file).as_bytes(), 0o644)?;
     sys.write(SLICE, slice(file).as_bytes(), 0o644)

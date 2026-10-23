@@ -878,7 +878,7 @@ pub(super) fn not_set_up(why: &str) -> String {
 }
 
 /// The `rovik` group, which creates nothing when it's there.
-fn group(sys: &System) -> Result<(), String> {
+pub(super) fn group(sys: &System) -> Result<(), String> {
     let exists = sys.live()
         && Command::new("getent")
             .args(["group", SHARE_GROUP])
