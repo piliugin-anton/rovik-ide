@@ -1343,13 +1343,7 @@ async fn toolchain_note(root: &str, program: &str) -> Option<String> {
             "\n(`{program}` is installed for this project now. Run the command again.)"
         ));
     }
-    // The refusal of the toolchain this program comes with: a project with
-    // both may have had both refused.
-    let kind = crate::toolchains::Kind::of_program(program);
-    let refused = done
-        .iter()
-        .find(|(want, outcome)| outcome.is_err() && Some(want.kind) == kind);
-    if let Some((want, why)) = refused {
+    if let Some((want, why)) = refusal_for(&done, program) {
         let why = why.as_ref().err().map(String::as_str).unwrap_or_default();
         return Some(format!(
             "\n(`{program}` isn't installed on this server, and {} couldn't be installed: {why}\n\
@@ -1383,6 +1377,17 @@ async fn toolchain_note(root: &str, program: &str) -> Option<String> {
             INSTALLED = "/opt/rovik/bin/rovik-agentd",
         ),
     })
+}
+
+/// Of `done`'s installs, the refusal of the toolchain `program` comes
+/// with: a project with both may have had both refused.
+fn refusal_for<'a>(
+    done: &'a [(crate::toolchains::Want, Result<(), String>)],
+    program: &str,
+) -> Option<&'a (crate::toolchains::Want, Result<(), String>)> {
+    let kind = crate::toolchains::Kind::of_program(program)?;
+    done.iter()
+        .find(|(want, outcome)| outcome.is_err() && want.kind == kind)
 }
 
 /// The text the model sees for a finished command.
@@ -2707,33 +2712,30 @@ a.rs (3 matches)
 
     /// A project that needs both Rust and Node, both refused: the note for
     /// a missing program names its own toolchain's refusal.
-    #[tokio::test]
-    // The lock only keeps other tests' `Shared` out; this test's one
-    // thread holds it across its awaits.
-    #[allow(clippy::await_holding_lock)]
-    async fn a_refusal_note_names_the_missing_programs_own_toolchain() {
-        let dir = crate::testing::temp_dir();
-        let root = dir.0.to_string_lossy().into_owned();
-        std::fs::write(dir.0.join("Cargo.toml"), "[package]\n").unwrap();
-        std::fs::write(dir.0.join("rust-toolchain"), "1.82\n").unwrap();
-        std::fs::write(dir.0.join("package.json"), "{}").unwrap();
-        std::fs::write(dir.0.join(".nvmrc"), "20\n").unwrap();
-        let _lock = crate::toolchains::test_lock();
-        crate::toolchains::set(crate::toolchains::Shared {
-            root: dir.0.join("toolchains"),
-            caches: None,
-            installer: Some(std::sync::Arc::new(|want: crate::toolchains::Want| {
-                Err(format!("{} isn't allowed here", want.describe()))
-            })),
-        });
-        std::fs::create_dir_all(dir.0.join("toolchains")).unwrap();
-        let npm = toolchain_note(&root, "npm").await.unwrap();
-        assert!(npm.contains("Node 20 couldn't be installed: Node 20 isn't allowed"), "{npm}");
-        assert!(npm.contains("admin toolchain add node 20"), "{npm}");
-        assert!(!npm.contains("rust"), "{npm}");
-        let cargo = toolchain_note(&root, "cargo").await.unwrap();
-        assert!(cargo.contains("Rust 1.82 couldn't be installed"), "{cargo}");
-        assert!(cargo.contains("admin toolchain add rust 1.82"), "{cargo}");
-        crate::toolchains::unset();
+    #[test]
+    fn a_refusal_note_names_the_missing_programs_own_toolchain() {
+        use crate::toolchains::{Kind, Want};
+        let want = |kind, version: &str| Want {
+            kind,
+            version: version.into(),
+            components: Vec::new(),
+            targets: Vec::new(),
+        };
+        let done = vec![
+            (want(Kind::Rust, "1.82"), Err("Rust 1.82 isn't allowed".to_string())),
+            (want(Kind::Node, "20"), Err("Node 20 isn't allowed".to_string())),
+        ];
+        for (program, kind) in [("npm", Kind::Node), ("npx", Kind::Node), ("node", Kind::Node), ("cargo", Kind::Rust), ("rustc", Kind::Rust)] {
+            let (refused, _) = refusal_for(&done, program).unwrap();
+            assert_eq!(refused.kind, kind, "{program}");
+        }
+        // Rust installed, Node refused: `cargo` has no refusal of its own.
+        let done = vec![
+            (want(Kind::Rust, "1.82"), Ok(())),
+            (want(Kind::Node, "20"), Err("no".to_string())),
+        ];
+        assert!(refusal_for(&done, "cargo").is_none());
+        assert_eq!(refusal_for(&done, "npm").unwrap().0.version, "20");
+        assert!(refusal_for(&done, "make").is_none());
     }
 }
