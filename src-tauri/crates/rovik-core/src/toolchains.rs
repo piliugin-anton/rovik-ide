@@ -54,6 +54,15 @@ impl Kind {
             Kind::Node => "Node",
         }
     }
+
+    /// The toolchain `program` comes with: `cargo` is Rust's, `npm` Node's.
+    pub fn of_program(program: &str) -> Option<Kind> {
+        match program {
+            "cargo" | "rustc" | "rustup" => Some(Kind::Rust),
+            "node" | "npm" | "npx" => Some(Kind::Node),
+            _ => None,
+        }
+    }
 }
 
 /// A version a project asks for: what the root command installs, and what
@@ -447,10 +456,7 @@ pub fn env_for(project: &Path) -> Vec<(&'static str, OsString)> {
 /// whose missing version a host installs, rather than one its setup script
 /// does.
 pub fn toolchain_program(program: &str) -> bool {
-    matches!(
-        program,
-        "cargo" | "rustc" | "rustup" | "node" | "npm" | "npx"
-    )
+    Kind::of_program(program).is_some()
 }
 
 /// Whether `program` is in the environment [`env_for`] gives a command run

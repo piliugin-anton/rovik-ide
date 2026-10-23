@@ -1343,7 +1343,13 @@ async fn toolchain_note(root: &str, program: &str) -> Option<String> {
             "\n(`{program}` is installed for this project now. Run the command again.)"
         ));
     }
-    if let Some((want, why)) = done.iter().find(|(_, outcome)| outcome.is_err()) {
+    // The refusal of the toolchain this program comes with: a project with
+    // both may have had both refused.
+    let kind = crate::toolchains::Kind::of_program(program);
+    let refused = done
+        .iter()
+        .find(|(want, outcome)| outcome.is_err() && Some(want.kind) == kind);
+    if let Some((want, why)) = refused {
         let why = why.as_ref().err().map(String::as_str).unwrap_or_default();
         return Some(format!(
             "\n(`{program}` isn't installed on this server, and {} couldn't be installed: {why}\n\
@@ -2696,6 +2702,38 @@ a.rs (3 matches)
         };
         let note = missing_program_note(true, &root, &rustup).await.unwrap();
         assert!(note.contains("Rust 1.82 is installed for this project now"), "{note}");
+        crate::toolchains::unset();
+    }
+
+    /// A project that needs both Rust and Node, both refused: the note for
+    /// a missing program names its own toolchain's refusal.
+    #[tokio::test]
+    // The lock only keeps other tests' `Shared` out; this test's one
+    // thread holds it across its awaits.
+    #[allow(clippy::await_holding_lock)]
+    async fn a_refusal_note_names_the_missing_programs_own_toolchain() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.to_string_lossy().into_owned();
+        std::fs::write(dir.0.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(dir.0.join("rust-toolchain"), "1.82\n").unwrap();
+        std::fs::write(dir.0.join("package.json"), "{}").unwrap();
+        std::fs::write(dir.0.join(".nvmrc"), "20\n").unwrap();
+        let _lock = crate::toolchains::test_lock();
+        crate::toolchains::set(crate::toolchains::Shared {
+            root: dir.0.join("toolchains"),
+            caches: None,
+            installer: Some(std::sync::Arc::new(|want: crate::toolchains::Want| {
+                Err(format!("{} isn't allowed here", want.describe()))
+            })),
+        });
+        std::fs::create_dir_all(dir.0.join("toolchains")).unwrap();
+        let npm = toolchain_note(&root, "npm").await.unwrap();
+        assert!(npm.contains("Node 20 couldn't be installed: Node 20 isn't allowed"), "{npm}");
+        assert!(npm.contains("admin toolchain add node 20"), "{npm}");
+        assert!(!npm.contains("rust"), "{npm}");
+        let cargo = toolchain_note(&root, "cargo").await.unwrap();
+        assert!(cargo.contains("Rust 1.82 couldn't be installed"), "{cargo}");
+        assert!(cargo.contains("admin toolchain add rust 1.82"), "{cargo}");
         crate::toolchains::unset();
     }
 }
