@@ -281,6 +281,46 @@ pub(super) fn installs_line(
 
 /// The toolchains this round installed, or couldn't, as the start of
 /// `installs_line`'s sentence: empty when the project asked for none.
+/// The toolchain outcomes for a record's metadata: each version, with
+/// the root command's error when it wasn't installed.
+fn toolchains_meta(toolchains: &[(Want, Result<(), String>)]) -> Vec<Value> {
+    toolchains
+        .iter()
+        .map(|(want, outcome)| json!({ "toolchain": want.describe(), "error": outcome.as_ref().err() }))
+        .collect()
+}
+
+/// An environment round's outcome: true ("repaired") when an install ran
+/// or a toolchain was installed, so the checks run again at once.
+fn environment_outcome(done: &[InstallResult], toolchains: &[(Want, Result<(), String>)]) -> bool {
+    !done.is_empty() || toolchains.iter().any(|(_, outcome)| outcome.is_ok())
+}
+
+/// What the agent is told when an environment round repaired nothing.
+/// A version the host couldn't install is the server's to add, never the
+/// agent's.
+fn environment_note(failure: &str, toolchains: &[(Want, Result<(), String>)]) -> String {
+    let refused: Vec<String> = toolchains
+        .iter()
+        .filter(|(_, outcome)| outcome.is_err())
+        .map(|(want, _)| want.describe())
+        .collect();
+    if refused.is_empty() {
+        return format!(
+            "This attempt isn't counted: the checks failed on the environment, not on your change (`{failure}`), \
+             and the IDE found nothing to install for it. If the project says how to install what's missing (its \
+             manifest, lockfile or README), install it; otherwise work around it. Then finish: the checks run again."
+        );
+    }
+    format!(
+        "{}This attempt isn't counted: the checks failed on the environment, not on your change (`{failure}`). \
+         The version the project needs ({}) couldn't be installed on this server, and an administrator can add it. \
+         Don't install a toolchain yourself: tell the user, then finish: the checks run again.",
+        toolchains_line(toolchains),
+        refused.join(", ")
+    )
+}
+
 fn toolchains_line(toolchains: &[(Want, Result<(), String>)]) -> String {
     if toolchains.is_empty() {
         return String::new();
@@ -502,36 +542,47 @@ impl Run {
         failure: String,
         command: String,
     ) -> Result<String, String> {
-        let installs = if self.config().autopilot.prepare {
+        let prepare = self.config().autopilot.prepare;
+        let installs = if prepare {
             needed(Path::new(root))
         } else {
             Vec::new()
         };
         let mut done: Vec<InstallResult> = installs.iter().map(InstallResult::pending).collect();
-        let meta = |done: &[InstallResult]| {
+        let meta = |done: &[InstallResult], toolchains: &[(Want, Result<(), String>)]| {
             verify::with(
                 verify::record("failed", round, results, changed, None),
                 json!({
-                    "environment": { "failure": failure, "command": command, "installs": done },
+                    "environment": {
+                        "failure": failure,
+                        "command": command,
+                        "installs": done,
+                        "toolchains": toolchains_meta(toolchains),
+                    },
                     "counted": false,
                 }),
             )
         };
-        self.update_meta(record_id, meta(&done)).await?;
+        self.update_meta(record_id, meta(&done, &[])).await?;
         // A version the project needs that the host lacks installs first;
         // the round's record says how the installs went, and this one is
-        // counted again if they don't fix it.
-        let _toolchains = find_programs(root, &installs).await;
+        // counted again if they don't fix it. Prepare off: nothing is
+        // installed, the host's toolchains included.
+        let toolchains = match prepare {
+            true => find_programs(root, &installs).await,
+            false => Vec::new(),
+        };
+        self.update_meta(record_id, meta(&done, &toolchains)).await?;
         for (i, install) in installs.iter().enumerate() {
             if self.stopped() {
                 done[i].status = "skipped";
                 continue;
             }
             done[i].status = "running";
-            self.update_meta(record_id, meta(&done)).await?;
+            self.update_meta(record_id, meta(&done, &toolchains)).await?;
             // Its own names: the Prepare stage's output stays as it was.
             done[i] = self.install(root, install, i, "prepare-again").await;
-            self.update_meta(record_id, meta(&done)).await?;
+            self.update_meta(record_id, meta(&done, &toolchains)).await?;
         }
         log::write(
             &self.core,
@@ -554,16 +605,12 @@ impl Run {
         if self.stopped() {
             return Ok("verify-stopped".into());
         }
-        if !done.is_empty() {
+        if environment_outcome(&done, &toolchains) {
             // The same code: the checks run again on it now.
             self.writes_since_verify = true;
             return Ok("repaired".into());
         }
-        let note = format!(
-            "This attempt isn't counted: the checks failed on the environment, not on your change (`{failure}`), \
-             and the IDE found nothing to install for it. If the project says how to install what's missing (its \
-             manifest, lockfile or README), install it; otherwise work around it. Then finish: the checks run again."
-        );
+        let note = environment_note(&failure, &toolchains);
         let report = verify::failure_report(results, changed, round, None, &[note]);
         self.add_harness(report, "verification").await?;
         self.last_verify_failed = true;
@@ -1055,6 +1102,46 @@ mod tests {
                 command: "uv sync".into(),
             })], false, &[]),
             "Installed: `uv sync`"
+        );
+    }
+
+    /// An environment round repairs when an install ran or a toolchain was
+    /// installed; a refusal alone doesn't, and the agent is told it's the
+    /// server's to add.
+    #[test]
+    fn an_environment_round_counts_a_new_toolchain_and_names_a_refused_one() {
+        use crate::toolchains::{Kind, Want};
+        let rust = Want {
+            kind: Kind::Rust,
+            version: "1.82".into(),
+            components: Vec::new(),
+            targets: Vec::new(),
+        };
+        let installed = [(rust.clone(), Ok(()))];
+        let refused = [(rust, Err("not allowed".to_string()))];
+        let npm = InstallResult::pending(&Install {
+            folder: String::new(),
+            command: "npm ci".into(),
+        });
+        assert!(environment_outcome(&[], &installed));
+        assert!(!environment_outcome(&[], &refused));
+        assert!(!environment_outcome(&[], &[]));
+        assert!(environment_outcome(std::slice::from_ref(&npm), &refused));
+
+        let note = environment_note("cargo: not found", &refused);
+        assert!(note.starts_with("Toolchains: Rust 1.82 couldn't be installed (not allowed). "), "{note}");
+        assert!(note.contains("The version the project needs (Rust 1.82)"), "{note}");
+        let plain = environment_note("cargo: not found", &[]);
+        assert!(plain.contains("the IDE found nothing to install for it"), "{plain}");
+        assert_eq!(plain, environment_note("cargo: not found", &installed));
+
+        assert_eq!(
+            toolchains_meta(&refused),
+            [json!({ "toolchain": "Rust 1.82", "error": "not allowed" })]
+        );
+        assert_eq!(
+            toolchains_meta(&installed),
+            [json!({ "toolchain": "Rust 1.82", "error": null })]
         );
     }
 
