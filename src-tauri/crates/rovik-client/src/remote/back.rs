@@ -34,6 +34,7 @@ use rovik_core::chat_db::moves::{self, CloudMove};
 use rovik_core::chat_db::store;
 use rovik_core::overlay::chats;
 use rovik_core::rt;
+use rovik_protocol::agent::AgentStatus;
 use rovik_protocol::sync::Ownership;
 use rovik_protocol::{Fail, FailCode, Request};
 use std::path::PathBuf;
@@ -105,15 +106,15 @@ impl Remote {
             Ok(Some(owned)) => owned.released,
             // The host doesn't have the chat: what's here is all of it.
             Ok(None) => true,
-            Err(fail) => return Err(self.give_up(&host, dialog_id, fail).await),
+            Err(fail) => return Err(self.give_up(&host, dialog_id, fail, start).await),
         };
         if !released {
             if let Err(fail) = self.fetch_back(&client, dialog_id, &host).await {
-                return Err(self.give_up(&host, dialog_id, fail).await);
+                return Err(self.give_up(&host, dialog_id, fail, start).await);
             }
             self.moving_back(dialog_id, "releasing", None);
             if let Err(fail) = self.release_there(&client, dialog_id).await {
-                return Err(self.give_up(&host, dialog_id, fail).await);
+                return Err(self.give_up(&host, dialog_id, fail, start).await);
             }
         }
         self.finish_back(&client, dialog_id, &host, root, start)
@@ -237,7 +238,13 @@ impl Remote {
     /// host may have released (cut short there and taken up again, or its
     /// release's answer lost) keeps its row, to be settled when the host is
     /// next connected, and says so.
-    async fn give_up(&self, host: &str, dialog_id: &str, fail: Fail) -> Fail {
+    async fn give_up(
+        &self,
+        host: &str,
+        dialog_id: &str,
+        fail: Fail,
+        start: Option<StartRequest>,
+    ) -> Fail {
         let id = dialog_id.to_string();
         let dropped = self.core.db.write(move |c| match moves::of_chat(c, &id)? {
             Some(going) if matches!(going.step.as_str(), moves::RELEASED | moves::RELEASING) => {
@@ -265,7 +272,29 @@ impl Remote {
             _ => "failed",
         };
         self.moving_back(dialog_id, step, Some(fail.message.clone()));
+        if let Some(start) = start {
+            self.pick_up_there(host, dialog_id, start).await;
+        }
         fail
+    }
+
+    /// A move back that didn't happen: the chat's run there, paused or cut
+    /// for it, picks up there, as it would have here. What the host says
+    /// decides: whether a run is at work there, and the chat's rows, pulled
+    /// first. A host that can't answer now leaves it as it is.
+    async fn pick_up_there(&self, host: &str, dialog_id: &str, start: StartRequest) {
+        let Ok(client) = self.client(host) else {
+            return;
+        };
+        let status = client.request::<AgentStatus>(Request::AgentStatus).await;
+        let Ok(status) = status else {
+            return;
+        };
+        let running = status.runs.iter().any(|r| r.dialog_id == dialog_id);
+        if self.pull_now(host, dialog_id).await.is_err() {
+            return;
+        }
+        self.pick_up(dialog_id, start, running, None, "stayed there").await;
     }
 
     /// Steps 5 and 6: the last pull, then the flip back, in the database

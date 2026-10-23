@@ -215,14 +215,15 @@ impl Remote {
                 // (it waited only for the user), picks up here as it would
                 // have there, since the app resumes a chat only once.
                 if let Some(start) = start {
-                    self.pick_up(dialog_id, start, None, "stayed here").await;
+                    let running = self.core.agents.is_running(dialog_id);
+                    self.pick_up(dialog_id, start, running, None, "stayed here").await;
                 }
                 return Err(fail);
             }
         };
         self.moving(dialog_id, "moved", None);
         if let Some(start) = start {
-            self.pick_up(dialog_id, start, Some(paused), "moved").await;
+            self.pick_up(dialog_id, start, false, Some(paused), "moved").await;
         }
         Ok(())
     }
@@ -230,11 +231,19 @@ impl Remote {
     /// A chat's run after its move, where the chat now is (`start`'s how):
     /// one that paused for it continues (`ContinueRun`), and one whose
     /// calls wait for results, cut for the move, resumes. `paused`: whether
-    /// the move saw it pause; None reads it from the chat. Nothing starts
-    /// while a run is at work in the chat: one whose pause a cancelled move
-    /// took back goes on by itself.
-    async fn pick_up(&self, dialog_id: &str, mut start: StartRequest, paused: Option<bool>, done: &str) {
-        if self.core.agents.is_running(dialog_id) {
+    /// the move saw it pause; None reads it from the chat's rows here (a
+    /// remote chat's mirror). Nothing starts while a run is at work in the
+    /// chat (`running`): one whose pause a cancelled move took back goes on
+    /// by itself.
+    pub(super) async fn pick_up(
+        &self,
+        dialog_id: &str,
+        mut start: StartRequest,
+        running: bool,
+        paused: Option<bool>,
+        done: &str,
+    ) {
+        if running {
             return;
         }
         let paused = match paused {
