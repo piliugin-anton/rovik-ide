@@ -215,6 +215,45 @@ impl Daemon {
         http(self.stream().await, method, path, token, body).await
     }
 
+    /// A request whose head declares a body of `length` bytes, sent without
+    /// it: what the daemon answers from the head alone. A body it refuses
+    /// for its size, before reading it, can't be sent whole to see that:
+    /// the daemon answers and closes while it's still being written, and
+    /// the writer may see a broken pipe instead of the answer.
+    pub async fn http_declared(
+        &self,
+        method: &str,
+        path: &str,
+        token: &str,
+        length: usize,
+    ) -> (StatusCode, Bytes) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = self.stream().await;
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nhost: rovik-agentd\r\n\
+             authorization: Bearer {token}\r\ncontent-length: {length}\r\n\
+             connection: close\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut reply))
+            .await
+            .expect("the daemon answers a head and closes")
+            .unwrap();
+        let split = reply
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("an answer's head");
+        let status_line = String::from_utf8_lossy(&reply[..split]).into_owned();
+        let code: u16 = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .expect("a status");
+        let body = Bytes::copy_from_slice(&reply[split + 4..]);
+        (StatusCode::from_u16(code).unwrap(), body)
+    }
+
     /// `POST /call` with `COMPUTER`'s token: the reply, as a frame.
     pub async fn post_call(&self, id: u64, req: Request) -> Frame {
         let body = serde_json::to_vec(&Frame::Call { id, req }).unwrap();
