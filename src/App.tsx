@@ -37,7 +37,13 @@ import {
 } from './lib/commands';
 import { loadLastProject, saveLastProject } from './lib/projectHistory';
 import { checkProject, claimProject, openNewWindow, showNoProjectWindow } from './lib/instances';
-import type { FileWatchPayload, GitStashFilePreview, LastProjectOpenFile, OpenFile, TreeRow } from './types';
+import type {
+  FileWatchPayload,
+  GitStashFilePreview,
+  LastProjectOpenFile,
+  OpenFile,
+  TreeRow,
+} from './types';
 import { findEnclosingSymbol } from './lib/activeContext';
 import type { ActiveFileContext, CursorInfo } from './lib/activeContext';
 import Resizable from './components/ResizableDiv';
@@ -876,12 +882,15 @@ export default function App() {
     const file = activeFile();
     // Read-only preview tabs (e.g. stashed content) are never saved.
     if (!file || file.readOnly || (!file.dirty && !file.deleted)) {
-      console.warn('[saveActiveFile] no-op', file && {
-        path: file.path,
-        dirty: file.dirty,
-        readOnly: file.readOnly,
-        deleted: file.deleted,
-      });
+      console.warn(
+        '[saveActiveFile] no-op',
+        file && {
+          path: file.path,
+          dirty: file.dirty,
+          readOnly: file.readOnly,
+          deleted: file.deleted,
+        }
+      );
       return;
     }
     try {
