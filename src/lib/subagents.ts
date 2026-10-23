@@ -13,6 +13,7 @@ import type { ChatMessage } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 import { merged, type MessagePatch } from './chatStore';
 import { isRequestMessage } from './requests';
+import { connectorUsage } from './connectors';
 import { SUBAGENT_KINDS } from './subagentSettings';
 import { plural } from './textUtils';
 
@@ -522,6 +523,8 @@ export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
     const used = [
       m.meta?.subagent?.usage ?? m.meta?.review?.usage,
       m.meta?.verification?.triage?.usage,
+      // A connector's harness says what its turn used (lib/connectors.ts).
+      connectorUsage(m.meta?.connector),
     ];
     for (const u of used) {
       if (!u) continue;

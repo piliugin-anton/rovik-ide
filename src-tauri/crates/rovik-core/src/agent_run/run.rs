@@ -501,6 +501,9 @@ pub(super) struct TurnOutput {
     pub(super) repetition_cut: Option<usize>,
     /// `{ text, ms }`, when the model reasoned.
     pub(super) reasoning: Option<Value>,
+    /// A connector's record of the turn (connectors/mod.rs): the harness's
+    /// steps, its session, its model and what it used.
+    pub(super) connector: Option<Value>,
 }
 
 /// Whether a run goes on with a message waiting where it would end with
@@ -538,6 +541,15 @@ pub(super) fn text_before_cut(text: &str, cut: Option<usize>) -> &str {
 /// A reply's meta from what the model reasoned, if it did.
 pub(super) fn reasoning_meta(reasoning: Option<Value>) -> Option<Value> {
     reasoning.map(|r| json!({ "reasoning": r }))
+}
+
+/// A turn's meta: its reasoning, and a connector's record of it.
+pub(super) fn turn_meta(reasoning: Option<Value>, connector: Option<Value>) -> Option<Value> {
+    let mut meta = reasoning_meta(reasoning);
+    if let Some(connector) = connector {
+        meta.get_or_insert_with(|| json!({}))["connector"] = connector;
+    }
+    meta
 }
 
 impl Run {
@@ -1590,7 +1602,7 @@ impl Run {
                     &turn.message_id,
                     kept,
                     Vec::new(),
-                    turn.reasoning.clone().map(|r| json!({ "reasoning": r })),
+                    turn_meta(turn.reasoning.clone(), turn.connector.clone()),
                     None,
                 )
                 .await?;
@@ -1622,7 +1634,12 @@ impl Run {
 
             if let Some(error) = turn.failure {
                 let kept = self
-                    .store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
+                    .store_failed_turn(
+                        &turn.message_id,
+                        &turn.text,
+                        turn_meta(turn.reasoning, turn.connector),
+                        &error,
+                    )
                     .await?;
                 self.settle(kept).await;
                 return Ok(if error.kind == ErrorKind::Cancelled {
@@ -1637,7 +1654,7 @@ impl Run {
                 &turn.message_id,
                 turn.text.clone(),
                 turn.tool_calls.clone(),
-                reasoning_meta(turn.reasoning),
+                turn_meta(turn.reasoning, turn.connector),
                 None,
             )
             .await?;
@@ -1958,7 +1975,7 @@ impl Run {
         let turn = self.model_turn().await?;
         let Some(error) = turn.failure else {
             // Calls the provider sent anyway aren't run: the run is pausing.
-            let meta = reasoning_meta(turn.reasoning).unwrap_or_else(|| json!({}));
+            let meta = turn_meta(turn.reasoning, turn.connector).unwrap_or_else(|| json!({}));
             self.finalize(&turn.message_id, turn.text, Vec::new(), Some(meta), None)
                 .await?;
             self.settle(true).await;
@@ -1966,7 +1983,12 @@ impl Run {
         };
         // As a failed turn in the run: what arrived is kept, else the error shows.
         let kept = self
-            .store_failed_turn(&turn.message_id, &turn.text, turn.reasoning, &error)
+            .store_failed_turn(
+                        &turn.message_id,
+                        &turn.text,
+                        turn_meta(turn.reasoning, turn.connector),
+                        &error,
+                    )
             .await?;
         self.settle(kept).await;
         Ok(error.kind == ErrorKind::Cancelled || self.stopped())
@@ -1978,17 +2000,10 @@ impl Run {
         &self,
         message_id: &str,
         text: &str,
-        reasoning: Option<Value>,
+        meta: Option<Value>,
         error: &ChatError,
     ) -> Result<bool, String> {
-        settle_failed_turn(
-            &self.core,
-            &self.dialog_id,
-            message_id,
-            text,
-            reasoning,
-            error,
-        )
+        settle_failed_turn(&self.core, &self.dialog_id, message_id, text, meta, error)
         .await
     }
 
@@ -2175,6 +2190,8 @@ impl Run {
                 force_tool: force_tool.clone(),
                 checklist_note: checklist_note.clone(),
                 history_window: self.history_window.clone(),
+                connector: self.profile.connector.clone(),
+                cwd: self.root.clone().map(std::path::PathBuf::from),
             };
 
             let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -2337,15 +2354,17 @@ impl Run {
 
             s.set_status(None);
             let reasoning = s.reasoning_meta(true);
+            let (finish_reason, usage) = (s.finish_reason.take(), s.usage.take());
+            let connector = s.harness_meta(usage.as_ref());
             let output = TurnOutput {
                 message_id,
                 text: std::mem::take(&mut s.text),
                 tool_calls: std::mem::take(&mut s.tool_calls),
                 repetition_cut: s.repetition_cut,
                 reasoning,
+                connector,
                 failure,
             };
-            let (finish_reason, usage) = (s.finish_reason.take(), s.usage.take());
             let (focus_note, clm_reminder) = (s.focus_note, s.clm_reminder.take());
             drop(s);
 
@@ -3130,6 +3149,12 @@ struct Stream {
 
     text: String,
     reasoning: String,
+    /// A connector's harness at work (connectors/mod.rs): its session,
+    /// model and version as it started, and its steps in order, each
+    /// replaced as its result comes.
+    harness: Option<Value>,
+    harness_steps: Vec<crate::connectors::HarnessStep>,
+    dirty_harness: bool,
     /// The reasoning as it is sent back (`reasoning_details`; reasoning_echo.rs).
     reasoning_details: Vec<Value>,
     /// The reasoning came in the reply text, in this tag (`<think>`): it goes
@@ -3188,6 +3213,9 @@ impl Stream {
             stop: run.stop.clone(),
             text: String::new(),
             reasoning: String::new(),
+            harness: None,
+            harness_steps: Vec::new(),
+            dirty_harness: false,
             reasoning_details: Vec::new(),
             reasoning_inline: None,
             model: run.profile.model.clone(),
@@ -3268,10 +3296,37 @@ impl Stream {
                 | ChatStreamEvent::ToolCallStart { .. }
                 | ChatStreamEvent::ToolCallArgumentsDelta { .. }
                 | ChatStreamEvent::ToolCallComplete { .. }
+                | ChatStreamEvent::HarnessStep { .. }
         ) {
             self.note_output();
         }
         match event {
+            ChatStreamEvent::HarnessSession {
+                kind,
+                session,
+                model,
+                version,
+            } => {
+                let harness = self.harness.get_or_insert_with(|| json!({}));
+                harness["kind"] = json!(kind);
+                harness["session"] = json!(session);
+                if model.is_some() {
+                    harness["model"] = json!(model);
+                }
+                if version.is_some() {
+                    harness["version"] = json!(version);
+                }
+                self.dirty_harness = true;
+            }
+            ChatStreamEvent::HarnessStep { step } => {
+                self.mark_output();
+                match self.harness_steps.iter_mut().find(|s| s.id == step.id) {
+                    Some(existing) => *existing = step,
+                    None => self.harness_steps.push(step),
+                }
+                self.harness.get_or_insert_with(|| json!({}));
+                self.dirty_harness = true;
+            }
             ChatStreamEvent::Reasoning { content } => {
                 self.mark_output();
                 if self.reasoning.is_empty() {
@@ -3480,9 +3535,20 @@ impl Stream {
         Some(r)
     }
 
+    /// The connector's record of the turn so far (`meta.connector`): what
+    /// `HarnessSession` said, the steps, and at the end its usage.
+    fn harness_meta(&self, usage: Option<&Value>) -> Option<Value> {
+        let mut meta = self.harness.clone()?;
+        meta["steps"] = json!(self.harness_steps);
+        if let Some(usage) = usage {
+            meta["usage"] = usage.clone();
+        }
+        Some(meta)
+    }
+
     /// Shows what changed since the last update.
     fn show(&mut self) {
-        if !(self.dirty_text || self.dirty_tools || self.dirty_reasoning) {
+        if !(self.dirty_text || self.dirty_tools || self.dirty_reasoning || self.dirty_harness) {
             return;
         }
         let mut patch = Patch::default();
@@ -3492,10 +3558,9 @@ impl Stream {
         if std::mem::take(&mut self.dirty_tools) {
             patch.tool_calls = Some(self.tool_calls.clone());
         }
-        if std::mem::take(&mut self.dirty_reasoning) {
-            patch.meta = self
-                .reasoning_meta(false)
-                .map(|r| json!({ "reasoning": r }));
+        let harness_changed = std::mem::take(&mut self.dirty_harness);
+        if std::mem::take(&mut self.dirty_reasoning) || harness_changed {
+            patch.meta = turn_meta(self.reasoning_meta(false), self.harness_meta(None));
         }
         self.patch(patch);
         self.last_shown = Instant::now();
@@ -3643,18 +3708,19 @@ async fn finalize_message(
 /// A reply that failed, or that the process ended mid-stream (5.4),
 /// settled: what arrived is kept as an interrupted reply (true), which
 /// Continue picks up; else the reply shows the error (false), and Retry
-/// takes the turn again. Its unfinished tool calls go.
+/// takes the turn again. Its unfinished tool calls go. `meta` is the
+/// turn's so far (`turn_meta`), kept with an interrupted reply.
 pub(super) async fn settle_failed_turn(
     core: &Core,
     dialog_id: &str,
     message_id: &str,
     text: &str,
-    reasoning: Option<Value>,
+    meta: Option<Value>,
     error: &ChatError,
 ) -> Result<bool, String> {
     let stored = failure::stored(error);
     if !text.trim().is_empty() {
-        let mut meta = reasoning_meta(reasoning).unwrap_or_else(|| json!({}));
+        let mut meta = meta.unwrap_or_else(|| json!({}));
         meta["interrupted"] = stored;
         finalize_message(
             core,

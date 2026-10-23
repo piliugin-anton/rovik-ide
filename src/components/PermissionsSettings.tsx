@@ -11,6 +11,7 @@ import { createMemo, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import type { SettingsPage } from '../lib/appSettings';
 import { formatModelLabel } from '../lib/aiSettings';
+import { isConnector } from '../lib/connectors';
 import { APPROVE_AT, isJevModel, REJECT_AT } from '../lib/aiApproval';
 import {
   DEFAULT_ALLOWED_COMMANDS,
@@ -138,7 +139,9 @@ export default function PermissionsSettings(props: PermissionsSettingsProps) {
           key: keyOf(selection),
           selection,
           label: formatModelLabel(provider.name, model),
-          provider: provider.name || provider.baseUrl,
+          provider: isConnector(provider)
+            ? `Connector · ${provider.name}`
+            : provider.name || provider.baseUrl,
           enabled: model.enabled,
         };
       })

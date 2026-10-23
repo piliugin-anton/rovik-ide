@@ -417,6 +417,7 @@ async fn keys_are_listed_without_themselves_then_removed() {
         no_tools: false,
         first_byte_timeout_ms: None,
         api_route: None,
+        connector: None,
     };
     let config = AgentConfig {
         approval_profiles: vec![reviewer],

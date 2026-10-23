@@ -278,24 +278,58 @@ Every setting applies as soon as you change it, and the Settings menu
 shows each page's state: what's set, and whether it has an effect on this
 computer right now. The pages:
 
-| Page                   | What it affects                                                                                                       |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Editor                 | How code looks and is formatted in the editor: theme, font, indentation, wrapping, formatters                         |
-| Model providers        | The models chats can use, with your API keys; the AI reviewer and the subagents pick theirs here too                  |
-| Permissions & approval | What the agent may run and change in every chat, and what waits for your approval, or an AI reviewer's, first         |
-| Agent runs             | While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats |
-| Subagents              | The helpers the agent can send, their models and limits                                                               |
-| Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                         |
-| Project checks         | The type-check / lint / test / build commands of the open project, as detected (each off until you tick it) or fixed  |
-| Heavy commands         | How many builds and tests run at once on this computer, so it stays responsive                                        |
-| Virtual files          | Linux and macOS: the driver that isolates chats and lets the agent manage its own context, and its troubleshooting    |
-| WSL                    | Windows: the WSL distribution the agent's commands run in, sandboxed (Rovik's Linux side on this computer)            |
-| Network                | How Rovik connects to model providers, download servers and cloud hosts: connection timeouts and the proxy            |
-| Cloud hosts            | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))                                                       |
-| Updates                | Rovik's version, the looks for a new one every 30 minutes, and installing it (see [Updates](#updates))                |
+| Page                   | What it affects                                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Editor                 | How code looks and is formatted in the editor: theme, font, indentation, wrapping, formatters                               |
+| Model providers        | The models chats can use, with your API keys; the AI reviewer and the subagents pick theirs here too                        |
+| Connectors             | Coding harnesses such as Claude Code, installed where a chat runs, used in place of a model (see [Connectors](#connectors)) |
+| Permissions & approval | What the agent may run and change in every chat, and what waits for your approval, or an AI reviewer's, first               |
+| Agent runs             | While the agent works and when it finishes: pauses, its checklist, the checks on its changes, conflicts between chats       |
+| Subagents              | The helpers the agent can send, their models and limits                                                                     |
+| Autopilot              | Chats that carry out a whole task without asking: effort, budget, the commands they never run                               |
+| Project checks         | The type-check / lint / test / build commands of the open project, as detected (each off until you tick it) or fixed        |
+| Heavy commands         | How many builds and tests run at once on this computer, so it stays responsive                                              |
+| Virtual files          | Linux and macOS: the driver that isolates chats and lets the agent manage its own context, and its troubleshooting          |
+| WSL                    | Windows: the WSL distribution the agent's commands run in, sandboxed (Rovik's Linux side on this computer)                  |
+| Network                | How Rovik connects to model providers, download servers and cloud hosts: connection timeouts and the proxy                  |
+| Cloud hosts            | Servers your chats can run on (see [Cloud hosts](#cloud-hosts))                                                             |
+| Updates                | Rovik's version, the looks for a new one every 30 minutes, and installing it (see [Updates](#updates))                      |
 
 The model, the mode (Agent, Plan or Autopilot), the reasoning effort and
-the context mode are chosen per chat, above its message box.
+the context mode are chosen per chat, above its message box. The model
+picker lists the providers' models and the connectors' together, each
+with its source's icon (a cloud for a provider, a plug for a connector),
+with a switch to see one kind alone and a search.
+
+### Connectors
+
+A connector is a coding harness installed on the computer a chat runs on,
+used in place of a model provider. Claude Code is the first: **Settings →
+Connectors → Add connector**, say how it signs in (the login of this
+computer's user, a long-lived token from `claude setup-token`, or an API
+key), which permission mode its runs get, the tools they may use without
+asking, and a turn and budget limit per message; then **Test & refresh
+models** checks the program runs (with a request, that it's signed in) and
+lists its models: aliases such as `sonnet`, `opus` and `haiku`, and full
+names. The ones you enable show in the chat's model picker, marked as a
+connector's.
+
+A chat on a connector's model hands the harness the task: Rovik's system
+prompt (after Claude Code's own, or in its place), the model, the effort
+and the message, in the project folder. The harness runs its own tools
+there, under its permission mode (Rovik's approval settings don't apply
+to it), and keeps its own conversation for the chat, continued on each
+message. Its reply shows a record above the text: each tool it ran with
+its result, then the tokens it used (cached ones apart), what it cost by
+its own estimate, and how many turns it took. Connector models take no
+images or PDFs from the chat, and the subagents don't use them; the AI
+reviewer can.
+
+On a cloud host, the host needs its own installation: an administrator
+runs `sudo /opt/rovik/bin/rovik-agentd admin claude-code` once, which
+installs Anthropic's package for every user (see
+[docs/cloud-hosts.md](docs/cloud-hosts.md)). Each user's chats sign in
+with the token or key of the connector's settings.
 
 When the agent runs commands from the IDE, they get the same `PATH` as your
 login shell, so tools like `npm`, `cargo` and Homebrew packages are found

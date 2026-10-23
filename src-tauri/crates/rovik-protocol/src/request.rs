@@ -9,6 +9,7 @@ use crate::agent::{
 use crate::autopilot::{AutonomyConfig, ChatTask, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
+use crate::connectors::{ConnectorProbe, ProbeRequestArgs};
 use crate::host::{HostInfo, KeyInfo, Storage};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
@@ -92,6 +93,11 @@ pub enum Request {
     WorkloadFocus {
         dialog_id: Option<String>,
     },
+    /// "Test & refresh models" on a connector (rovik_protocol::connectors):
+    /// whether its program runs on the computer asked, its version and its
+    /// models, served where the chat would run it (here, or on a host). →
+    /// `ConnectorProbe`.
+    ConnectorProbe(ProbeRequestArgs),
 
     // Chat: writes to a chat's rows.
     ChatRename {
@@ -362,6 +368,7 @@ impl Request {
             | Request::TaskStatus
             | Request::AgentSetEffort { .. }
             | Request::WorkloadFocus { .. }
+            | Request::ConnectorProbe(_)
             | Request::BlobsMissing { .. }
             | Request::ProjectEnsure { .. }
             | Request::WorkResults
@@ -420,6 +427,8 @@ pub enum Response {
     DeliveryTested(DeliveryTest),
     /// `TaskStatus`.
     Tasks(Vec<ChatTask>),
+    /// `ConnectorProbe`.
+    ConnectorProbe(ConnectorProbe),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -478,4 +487,5 @@ replies! {
     Storage => Storage,
     DeliveryTested => DeliveryTest,
     Tasks => Vec<ChatTask>,
+    ConnectorProbe => ConnectorProbe,
 }

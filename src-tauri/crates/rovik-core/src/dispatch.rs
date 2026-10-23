@@ -88,6 +88,9 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         } => agent_run::chat_dismiss_checklist(core, dialog_id, message_id)
             .await
             .map(Response::Checklist),
+        Request::ConnectorProbe(args) => crate::connectors::probe(args)
+            .await
+            .map(Response::ConnectorProbe),
         Request::WorkloadFocus { dialog_id } => {
             workload::workload_focus(dialog_id);
             Ok(Response::Done)
@@ -275,6 +278,7 @@ mod tests {
                 no_tools: false,
                 first_byte_timeout_ms: None,
                 api_route: None,
+                connector: None,
             },
             options: None,
             mode: Some("agent".into()),

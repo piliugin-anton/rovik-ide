@@ -158,6 +158,7 @@ fn profile(id: &str) -> ModelProfile {
         no_tools: false,
         first_byte_timeout_ms: Some(30_000),
         api_route: Some("responses".into()),
+        connector: None,
     }
 }
 
@@ -518,6 +519,12 @@ fn every_request_round_trips() {
             Request::WorkloadFocus {
                 dialog_id: Some("d".into()),
             },
+            Request::ConnectorProbe(crate::connectors::ProbeRequestArgs {
+                kind: crate::connectors::ConnectorKind::ClaudeCode,
+                settings: serde_json::json!({ "program": "claude" }),
+                api_key: String::new(),
+                request: false,
+            }),
             Request::ChatRename {
                 dialog_id: "d".into(),
                 title: "New title".into(),
@@ -858,6 +865,18 @@ fn every_response_round_trips() {
                 pull_requests: Some("`gh` is logged in to github.com".into()),
             }),
             Response::DeliveryTested(crate::autopilot::DeliveryTest::default()),
+            Response::ConnectorProbe(crate::connectors::ConnectorProbe {
+                program: "claude".into(),
+                version: "2.1.309 (Claude Code)".into(),
+                models: vec![crate::connectors::ConnectorModel {
+                    id: "sonnet".into(),
+                    owned_by: Some("anthropic".into()),
+                    context_length: Some(200_000),
+                    description: Some("The latest Sonnet".into()),
+                }],
+                request: None,
+                notes: Vec::new(),
+            }),
             Response::Tasks(vec![
                 crate::autopilot::ChatTask {
                     chat: "c1".into(),

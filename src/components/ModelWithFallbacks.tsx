@@ -11,6 +11,7 @@ import { createMemo, For, Show } from 'solid-js';
 import type { ModelSelection, Provider } from '../types';
 import { formatModelLabel } from '../lib/aiSettings';
 import { sameModel } from '../lib/permissions';
+import { isConnector } from '../lib/connectors';
 
 /** Below this context window, a warning shows: subagents read a lot. */
 export const SMALL_CONTEXT_TOKENS = 32_000;
@@ -26,15 +27,21 @@ interface ModelOption {
 
 const keyOf = (sel: ModelSelection) => `model:${sel.providerId}::${sel.modelId}`;
 
-/** The models a subagent can use: enabled ones that take tools, by provider. */
+/**
+ * The models a subagent can use: enabled ones that take tools, by
+ * provider. A connector's models (lib/connectors.ts) aren't among them:
+ * the harness runs its own tools, not the subagent's.
+ */
 export function modelOptions(providers: Provider[]): ModelOption[] {
   return providers.flatMap((provider) =>
     provider.models.map((model) => ({
       key: keyOf({ providerId: provider.id, modelId: model.id }),
       selection: { providerId: provider.id, modelId: model.id },
       label: formatModelLabel(provider.name, model),
-      provider: provider.name || provider.baseUrl,
-      usable: model.enabled && !model.noTools,
+      provider: isConnector(provider)
+        ? `Connector · ${provider.name}`
+        : provider.name || provider.baseUrl,
+      usable: model.enabled && !model.noTools && !isConnector(provider),
       contextTokens: model.contextOverride ?? model.contextLength,
     }))
   );

@@ -82,6 +82,20 @@ pub enum ChatStreamEvent {
     ApiRoute {
         route: String,
     },
+    /// A connector's harness ran a step itself (a tool of its own,
+    /// connectors/mod.rs): shown with the reply as a record, never run by
+    /// the IDE. Sent again, whole, as its result comes (the same `id`).
+    HarnessStep {
+        step: crate::connectors::HarnessStep,
+    },
+    /// The harness's conversation for this chat (`session`, which its next
+    /// turn continues), the model it runs and its version, as it starts.
+    HarnessSession {
+        kind: String,
+        session: String,
+        model: Option<String>,
+        version: Option<String>,
+    },
     ToolCallComplete {
         id: String,
         name: String,
@@ -132,6 +146,14 @@ pub struct WireChatMessage {
 
 impl WireChatMessage {
     /// A plain text message, for one-off requests.
+    pub fn role(&self) -> &str {
+        &self.role
+    }
+
+    pub fn content(&self) -> &serde_json::Value {
+        &self.content
+    }
+
     pub fn text(role: &str, content: impl Into<String>) -> Self {
         WireChatMessage {
             role: role.to_string(),
@@ -851,6 +873,10 @@ pub struct ChatParams {
     // an approval review; a stored chat is `dialog_id` itself. Sessions on
     // opencode.ai follow it (`opencode`).
     pub chat_id: Option<String>,
+    // A connector's model (`connectors`): the harness's settings, as the
+    // profile carries them, and the folder it works in (the run's root).
+    pub connector: Option<serde_json::Value>,
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 /// A request the frontend makes itself, outside any run (a chat's title):
@@ -887,6 +913,10 @@ pub async fn run_chat(
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     on_event: &mut (dyn FnMut(ChatStreamEvent) + Send),
 ) -> Result<(), String> {
+    // A connector's model: the harness runs the turn (connectors/mod.rs).
+    if let Some(kind) = crate::connectors::kind_of(&params.base_url) {
+        return crate::connectors::run_chat(db, kind, params, cancel, on_event).await;
+    }
     let ChatParams {
         base_url,
         api_key,
@@ -914,6 +944,8 @@ pub async fn run_chat(
         force_tool,
         checklist_note,
         history_window,
+        connector: _,
+        cwd: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());
 

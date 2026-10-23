@@ -17,7 +17,7 @@ futures-util.workspace = true
 bytes = "1.12.1"
 ignore.workspace = true
 walkdir.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros", "net", "io-util", "process"] }
 uuid.workspace = true
 git2.workspace = true
 eoka = "0.7.2"

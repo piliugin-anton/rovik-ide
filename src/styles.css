@@ -9946,3 +9946,240 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   height: 100%;
   background: var(--accent);
 }
+
+/* Connectors (lib/connectors.ts): where a model comes from, in the picker
+   and the settings' model lists. */
+
+.model-source-icon {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.model-source-icon.connector {
+  color: var(--accent);
+}
+
+.model-picker-trigger .model-source-icon {
+  margin-right: -2px;
+}
+
+.model-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-picker-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The switch between all models, the providers' and the connectors'. */
+.model-picker-sources {
+  margin: 0 6px 6px;
+}
+
+.model-picker-sources .segmented-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.model-picker-source-count {
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+
+.model-picker-sources .segmented-option.selected .model-picker-source-count,
+.model-picker-sources .segmented-option.selected .model-source-icon {
+  color: inherit;
+}
+
+/* Settings → Connectors */
+
+.connector-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.connector-catalog-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-control);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.connector-catalog-item:hover {
+  background: var(--bg-control-hover);
+}
+
+.connector-catalog-about {
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.connector-form .setting-explain {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.connector-form .setting-explain code {
+  font-size: 11px;
+}
+
+.connector-form .settings-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+}
+
+.connector-limits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.connector-advanced {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+.connector-advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.connector-advanced > label {
+  margin-top: 8px;
+}
+
+.connector-test-row {
+  flex-wrap: wrap;
+}
+
+.connector-test-option {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.connector-test-host {
+  margin-left: auto;
+}
+
+.connector-test-status {
+  white-space: normal;
+}
+
+.connector-test-note {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+/* A connector's models have fewer columns than a provider's. */
+.connector-models .provider-models-list {
+  grid-template-columns: minmax(max-content, 1fr) 136px 68px 60px 22px;
+}
+
+/* A connector's record above its reply (ConnectorRecord.tsx) */
+
+.chat-connector-headline {
+  white-space: nowrap;
+}
+
+.chat-connector-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-connector-empty,
+.chat-connector-session {
+  padding: 2px 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.chat-connector-step-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  background: none;
+  border: 0;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-connector-step-line:hover {
+  color: var(--fg);
+}
+
+.chat-connector-step.sub .chat-connector-step-line {
+  padding-left: 14px;
+}
+
+.chat-connector-step-mark {
+  flex: 0 0 12px;
+  text-align: center;
+  color: var(--fg-dim);
+}
+
+.chat-connector-step.ok .chat-connector-step-mark {
+  color: var(--success);
+}
+
+.chat-connector-step.error .chat-connector-step-mark {
+  color: var(--error);
+}
+
+.chat-connector-step-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-connector-step-body {
+  margin: 2px 0 6px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-connector-step-input,
+.chat-connector-step-result {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 200px;
+  overflow: auto;
+  background: var(--bg-editor);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
