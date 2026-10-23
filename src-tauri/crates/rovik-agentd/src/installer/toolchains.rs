@@ -208,6 +208,14 @@ pub(super) fn ensure(
     targets: &[String],
 ) -> Result<(), String> {
     let version = parse_version(kind, version)?;
+    // What's made here is everyone's to read: sudo keeps the caller's
+    // umask (077 would leave root's folders unreadable to every daemon),
+    // and rustup's tree isn't chmodded after it, as Node's is.
+    // SAFETY: umask only sets this process's mask; this is a one-shot
+    // root command.
+    unsafe {
+        libc::umask(0o022);
+    }
     // `lts` and a major version are the newest of them, once.
     let version = match kind {
         Kind::Node => resolve_node(sys, &version)?,
