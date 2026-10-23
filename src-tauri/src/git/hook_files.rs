@@ -131,6 +131,18 @@ fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// A path as the app names files: libgit2 writes `C:/p/.git/hooks` on
+/// Windows, and joining a name on makes it `C:/p/.git/hooks\pre-commit`;
+/// the app's tabs are `C:\p\…` (as git_status's workdir is).
+fn native(path: &Path) -> String {
+    let path = text(path);
+    if cfg!(windows) {
+        path.replace('/', "\\")
+    } else {
+        path
+    }
+}
+
 impl Place {
     /// The hook's file: `<name>`, or on Windows `<name>.exe`.
     fn file(&self, name: &str) -> Option<PathBuf> {
@@ -156,7 +168,7 @@ impl Place {
             when,
             blocks,
             state,
-            path: path.as_deref().map(text),
+            path: path.as_deref().map(native),
         }
     }
 }
@@ -171,7 +183,7 @@ pub fn git_hooks_blocking(path: &str) -> Result<GitHooks, String> {
     let shown = place.dir.strip_prefix(&place.cwd).unwrap_or(&place.dir);
     let shown = text(shown).replace('\\', "/");
     Ok(GitHooks {
-        dir: text(&place.dir),
+        dir: native(&place.dir),
         shown_dir: if shown.is_empty() { ".".into() } else { shown },
         source: place.source,
         needs_executable: place.needs_executable,
@@ -190,7 +202,7 @@ pub fn git_hook_create_blocking(path: &str, name: &str) -> Result<String, String
     let &(name, when, blocks) = known(name)?;
     let place = place(path)?;
     if let Some(existing) = place.file(name) {
-        return Ok(text(&existing));
+        return Ok(native(&existing));
     }
     std::fs::create_dir_all(&place.dir).map_err(|e| format!("{}: {e}", place.dir.display()))?;
     let file = place.dir.join(name);
@@ -210,7 +222,7 @@ pub fn git_hook_create_blocking(path: &str, name: &str) -> Result<String, String
     );
     std::fs::write(&file, script).map_err(|e| format!("{}: {e}", file.display()))?;
     make_executable(&file)?;
-    Ok(text(&file))
+    Ok(native(&file))
 }
 
 /// Makes hook `name` executable (`chmod +x`): git skips one that isn't.
@@ -290,6 +302,12 @@ mod tests {
         text(dir)
     }
 
+    /// The same file: libgit2 names a folder by its real path (`/private/var`
+    /// on macOS, `C:/Users/runneradmin` for `C:\Users\RUNNER~1` on Windows).
+    fn same(a: impl AsRef<Path>, b: impl AsRef<Path>) -> bool {
+        fs::canonicalize(a).unwrap() == fs::canonicalize(b).unwrap()
+    }
+
     fn state<'a>(hooks: &'a GitHooks, name: &str) -> (&'a str, Option<&'a str>) {
         let hook = hooks.hooks.iter().find(|h| h.name == name).unwrap();
         (hook.state, hook.path.as_deref())
@@ -299,7 +317,7 @@ mod tests {
     fn a_new_hook_runs_at_once_and_is_listed() {
         let (dir, _repo) = repo("create");
         let file = git_hook_create_blocking(&p(&dir), "pre-commit").unwrap();
-        assert_eq!(Path::new(&file), dir.join(".git/hooks/pre-commit"));
+        assert!(same(&file, dir.join(".git/hooks/pre-commit")), "{file}");
         let script = fs::read_to_string(&file).unwrap();
         assert!(script.starts_with("#!/bin/sh\n# pre-commit: Before a commit."));
         assert!(script.ends_with("\nexit 0\n") && !script.contains('\r'));
@@ -396,13 +414,11 @@ mod tests {
         assert_eq!(hooks.source, "husky");
         assert_eq!(hooks.shown_dir, ".husky");
         assert!(!hooks.needs_executable, "husky runs them with sh");
-        let pre_commit = text(&dir.join(".husky/pre-commit"));
-        assert_eq!(
-            state(&hooks, "pre-commit"),
-            ("active", Some(pre_commit.as_str()))
-        );
+        let (pre_commit, path) = state(&hooks, "pre-commit");
+        assert_eq!(pre_commit, "active");
+        assert!(same(path.unwrap(), dir.join(".husky/pre-commit")));
         assert_eq!(state(&hooks, "commit-msg").0, "missing");
         let made = git_hook_create_blocking(&p(&dir), "commit-msg").unwrap();
-        assert_eq!(Path::new(&made), dir.join(".husky/commit-msg"));
+        assert!(same(&made, dir.join(".husky/commit-msg")), "{made}");
     }
 }
