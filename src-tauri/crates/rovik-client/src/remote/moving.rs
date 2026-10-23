@@ -211,36 +211,46 @@ impl Remote {
                     "failed"
                 };
                 self.moving(dialog_id, step, Some(fail.message.clone()));
-                // The run cut to move (it waited only for the user) has its
-                // calls unanswered: it picks up here again, as it would have
-                // there, since the app resumes a chat only once.
-                if let Some(mut start) = start {
-                    if let Ok(true) = agent_run::waits_for_results(&self.core, dialog_id).await {
-                        start.start = StartKind::Resume;
-                        start.dialog_id = dialog_id.to_string();
-                        if let Err(again) = self.start(start).await {
-                            log::warn!("{dialog_id} stayed, but its run didn't pick up here: {again}");
-                        }
-                    }
+                // The chat stays: a run that paused for the move, or was cut
+                // (it waited only for the user), picks up here as it would
+                // have there, since the app resumes a chat only once.
+                if let Some(start) = start {
+                    self.pick_up(dialog_id, start, None, "stayed here").await;
                 }
                 return Err(fail);
             }
         };
         self.moving(dialog_id, "moved", None);
-        let Some(mut start) = start else {
-            return Ok(());
+        if let Some(start) = start {
+            self.pick_up(dialog_id, start, Some(paused), "moved").await;
+        }
+        Ok(())
+    }
+
+    /// A chat's run after its move, where the chat now is (`start`'s how):
+    /// one that paused for it continues (`ContinueRun`), and one whose
+    /// calls wait for results, cut for the move, resumes. `paused`: whether
+    /// the move saw it pause; None reads it from the chat. Nothing starts
+    /// while a run is at work in the chat: one whose pause a cancelled move
+    /// took back goes on by itself.
+    async fn pick_up(&self, dialog_id: &str, mut start: StartRequest, paused: Option<bool>, done: &str) {
+        if self.core.agents.is_running(dialog_id) {
+            return;
+        }
+        let paused = match paused {
+            Some(paused) => paused,
+            None => agent_run::paused_for_move(&self.core, dialog_id).await.unwrap_or(false),
         };
         let waits = agent_run::waits_for_results(&self.core, dialog_id).await;
         start.start = match (paused, waits) {
             (true, _) => StartKind::ContinueRun,
             (false, Ok(true)) => StartKind::Resume,
-            _ => return Ok(()),
+            _ => return,
         };
         start.dialog_id = dialog_id.to_string();
         if let Err(fail) = self.start(start).await {
-            log::warn!("{dialog_id} moved, but its run didn't pick up there: {fail}");
+            log::warn!("{dialog_id} {done}, but its run didn't pick up: {fail}");
         }
-        Ok(())
     }
 
     /// A local chat moves to the computer's home host before it starts
