@@ -9,21 +9,21 @@ person, and nothing of theirs is shared with the others.
 
 Rovik is installed once per server, by root:
 
-| Path                                                      | What it is                                               |
-| --------------------------------------------------------- | -------------------------------------------------------- |
-| `/opt/rovik/bin/rovik-agentd-<version>`                   | The daemon, owned by root. Users can't replace it.       |
-| `/opt/rovik/bin/rovik-agentd`                             | A link to the current version.                           |
-| `/etc/rovik/agentd.toml`                                  | The administrators and the limits. Everyone can read it. |
-| `/etc/systemd/system/rovik-agentd@.service`               | The unit. Each user's daemon is an instance of it.       |
-| `/etc/systemd/system/rovik-agentd@.service.d/limits.conf` | The memory, task and CPU caps on each daemon.            |
-| `/etc/systemd/system/rovik.slice`                         | The caps on all of Rovik together.                       |
-| `/etc/sudoers.d/rovik`                                    | Lets users run the commands described below.             |
-| `/opt/rovik/browser/<version>/`                           | The browser tools' browser (below), owned by root.       |
-| `/opt/rovik/toolchains/rust/`, `/opt/rovik/toolchains/node/` | The Rust and Node versions every user's chats run (below), owned by root. |
-| `/var/cache/rovik/npm`, `/var/cache/rovik/crates`         | The package caches the daemons share, owned by root and the `rovik` group. |
-| The distro's `bubblewrap` package                         | Confines the chats' commands (see What can read what).   |
-| The `rovik-admin` group                                   | The administrators.                                      |
-| The `rovik` group                                         | Every daemon, which writes the shared caches (below).    |
+| Path                                                         | What it is                                                                 |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `/opt/rovik/bin/rovik-agentd-<version>`                      | The daemon, owned by root. Users can't replace it.                         |
+| `/opt/rovik/bin/rovik-agentd`                                | A link to the current version.                                             |
+| `/etc/rovik/agentd.toml`                                     | The administrators and the limits. Everyone can read it.                   |
+| `/etc/systemd/system/rovik-agentd@.service`                  | The unit. Each user's daemon is an instance of it.                         |
+| `/etc/systemd/system/rovik-agentd@.service.d/limits.conf`    | The memory, task and CPU caps on each daemon.                              |
+| `/etc/systemd/system/rovik.slice`                            | The caps on all of Rovik together.                                         |
+| `/etc/sudoers.d/rovik`                                       | Lets users run the commands described below.                               |
+| `/opt/rovik/browser/<version>/`                              | The browser tools' browser (below), owned by root.                         |
+| `/opt/rovik/toolchains/rust/`, `/opt/rovik/toolchains/node/` | The Rust and Node versions every user's chats run (below), owned by root.  |
+| `/var/cache/rovik/npm`, `/var/cache/rovik/crates`            | The package caches the daemons share, owned by root and the `rovik` group. |
+| The distro's `bubblewrap` package                            | Confines the chats' commands (see What can read what).                     |
+| The `rovik-admin` group                                      | The administrators.                                                        |
+| The `rovik` group                                            | Every daemon, which writes the shared caches (below).                      |
 
 Each user's daemon keeps its files in `~/.rovik` and works in
 `~/.local/share/rovik`. Both folders are the user's own, with mode 0700,

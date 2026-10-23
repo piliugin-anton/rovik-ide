@@ -891,6 +891,8 @@ mod tests {
 
     /// A cloud host's toolchains are in the environment of every command,
     /// confined or not; on a computer nothing changes.
+    // A POSIX shell's `$VAR`s: cloud hosts are Linux.
+    #[cfg(unix)]
     #[test]
     fn a_cloud_hosts_toolchains_are_in_every_commands_environment() {
         let dir = crate::testing::temp_dir();

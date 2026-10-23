@@ -741,7 +741,6 @@ fn write_atomically(to: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     /// A shared root in a temporary folder, with what the daemon sets.
     fn host(dir: &Path) -> (PathBuf, PathBuf) {
@@ -821,6 +820,8 @@ mod tests {
         assert_eq!(wanted(&dir.0)[0].version, "stable");
     }
 
+    // The PATH's `:`: cloud hosts are Linux.
+    #[cfg(unix)]
     #[test]
     fn the_environment_puts_the_shared_ones_in_front_of_the_path() {
         let _guard = Guard::new();
@@ -922,8 +923,12 @@ mod tests {
         publish_crates(&dir.0);
         let published = caches.join("crates/rand-0.8.0.crate");
         assert_eq!(std::fs::read(&published).unwrap(), good);
-        let mode = std::fs::metadata(&published).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o660);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&published).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o660);
+        }
         assert_eq!(
             std::fs::metadata(&published).unwrap().len(),
             good.len() as u64

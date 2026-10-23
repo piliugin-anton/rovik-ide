@@ -448,8 +448,8 @@ function HostForm(props: {
       </label>
       <p class="settings-hint">
         Runs on the server as you, in your home folder, after Rovik is deployed and whenever you
-        ask: install what your projects’ checks or the agent need there (ffmpeg, a database…).
-        Rust and Node versions a project names install on their own, once for the whole server.
+        ask: install what your projects’ checks or the agent need there (ffmpeg, a database…). Rust
+        and Node versions a project names install on their own, once for the whole server.
       </p>
       <Show when={error()}>
         <div class="provider-test-status error">{error()}</div>

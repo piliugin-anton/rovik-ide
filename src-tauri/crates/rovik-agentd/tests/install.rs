@@ -756,6 +756,13 @@ fn administrators_manage_the_shared_toolchains() {
             .unwrap()
             .set_modified(when)
             .unwrap();
+        // Node itself last ran then too: prune reads its access time.
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("bin/node"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_accessed(when).set_modified(when))
+            .unwrap();
     }
     let pruned = server.run(&["admin", "toolchain", "prune", "7"], Some(NOBODY));
     assert!(pruned.status.success(), "{}", said(&pruned));

@@ -2601,6 +2601,9 @@ a.rs (3 matches)
     /// project's version through the root command, and says so; on a host
     /// that installs nothing for a chat, and on a computer, the setup
     /// script's hint stands.
+    // A POSIX shell's "not found", and rustup's host triples: cloud hosts
+    // are Linux.
+    #[cfg(unix)]
     #[tokio::test]
     // The lock only keeps other tests' `Shared` out; this test's one
     // thread holds it across its awaits.
