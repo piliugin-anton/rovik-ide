@@ -606,14 +606,23 @@ body.tree-dragging {
   flex-direction: column;
 }
 
+/*
+ * The Monaco host. Monaco sizes its own editor from this element's
+ * clientWidth/clientHeight, and clientWidth counts CSS padding: padding here
+ * would make the editor box bigger than the pane's content box and the pane
+ * would scroll. So the host carries no padding and never scrolls (the 8px
+ * breathing room is Monaco's own `padding` option, Editor.tsx) — long lines
+ * scroll inside the editor, whose scrollbars then stay visible.
+ */
 .editor {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   border: none;
   outline: none;
   resize: none;
   background: var(--bg-editor);
-  padding: 8px 12px;
-  overflow: auto;
+  overflow: hidden;
   tab-size: 2;
 }
 

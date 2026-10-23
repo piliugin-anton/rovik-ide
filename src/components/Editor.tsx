@@ -167,6 +167,11 @@ export default function Editor(props: EditorProps) {
       model,
       theme: 'vs-dark',
       automaticLayout: true,
+      // The host carries no CSS padding: Monaco measures it with
+      // clientWidth, which counts padding, so CSS padding there would
+      // overflow the pane and hide the editor's own scrollbars. This option
+      // shifts the content inside the editor instead (styles.css .editor).
+      padding: { top: 8, bottom: 8 },
       fontSize: editorSettings().fontSize,
       wordWrap: editorSettings().wordWrap,
       minimap: {
@@ -294,7 +299,10 @@ export default function Editor(props: EditorProps) {
     let saving = false;
     const save = async () => {
       // A second Ctrl+S while the formatter runs would save the text twice.
-      if (saving || !editor) return;
+      if (saving || !editor) {
+        console.warn('[Editor.save] skipped: saving=', saving, 'editor=', !!editor);
+        return;
+      }
       saving = true;
       try {
         await prepareForSave(editor, editorConfig() ?? {}, editorSettings().formatOnSave);
@@ -302,6 +310,7 @@ export default function Editor(props: EditorProps) {
         saving = false;
       }
       if (!disposed) props.onSave();
+      else console.warn('[Editor.save] disposed before onSave');
     };
     saveFile = () => void save();
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
