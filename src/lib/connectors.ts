@@ -448,6 +448,23 @@ export async function checkConnectorsOnStart(
   return found;
 }
 
+/**
+ * The model a Claude Code chat's title is asked of: Claude Code's small,
+ * fast one, as Claude Code titles its own sessions. A title needs no more,
+ * and the chat's model may be Opus or Fable.
+ */
+export const CLAUDE_CODE_TITLE_MODEL = 'haiku';
+
+/**
+ * The profile a chat's title is asked with: a Claude Code chat's on Haiku,
+ * any other (a provider's, another connector's) as it is.
+ */
+export function titleProfile(profile: ModelProfile): ModelProfile {
+  if (connectorKindOf(profile.baseUrl) !== 'claude-code') return profile;
+  const model = CLAUDE_CODE_TITLE_MODEL;
+  return { ...profile, model, label: profile.label.replace(/[^/]*$/, model) };
+}
+
 /** A connector's model, resolved for a request (aiSettings.ts resolveProfile). */
 export function connectorProfile(
   provider: Provider,

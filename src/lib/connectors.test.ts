@@ -26,6 +26,8 @@ import {
   probeSummary,
   splitSources,
   stepLabel,
+  titleProfile,
+  CLAUDE_CODE_TITLE_MODEL,
 } from './connectors';
 import { providersSummary, resolveProfile } from './aiSettings';
 import { dismiss, notifications } from './notifications';
@@ -83,6 +85,26 @@ test('a connector’s model resolves to a profile the harness runs, with no IDE 
   const plain = resolveProfile([openai, claude], { providerId: 'p1', modelId: 'gpt-5' });
   assert.equal(plain?.connector, undefined);
   assert.equal(plain?.noTools, false);
+});
+
+test('a Claude Code chat is titled by Haiku; any other by its own model', () => {
+  const claude = { ...newConnector('claude-code'), id: 'c1' };
+  claude.models = [{ id: 'opus', enabled: true }];
+  const profile = resolveProfile([openai, claude], { providerId: 'c1', modelId: 'opus' });
+  assert.ok(profile);
+  const asked = titleProfile(profile);
+  assert.equal(CLAUDE_CODE_TITLE_MODEL, 'haiku');
+  assert.equal(asked.model, 'haiku');
+  assert.equal(asked.label, 'Claude Code/haiku');
+  assert.equal(asked.baseUrl, profile.baseUrl);
+  assert.deepEqual(asked.connector, profile.connector);
+  assert.equal(profile.model, 'opus', 'the chat’s profile is left as it is');
+  const plain = resolveProfile([openai, claude], { providerId: 'p1', modelId: 'gpt-5' });
+  assert.ok(plain);
+  assert.equal(titleProfile(plain), plain);
+  // Another connector kind keeps its model.
+  const other = { ...profile, baseUrl: 'connector://codex' };
+  assert.equal(titleProfile(other), other);
 });
 
 test('settings take the defaults for what isn’t set', () => {

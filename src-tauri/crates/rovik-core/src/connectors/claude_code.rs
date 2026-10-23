@@ -329,6 +329,18 @@ fn effort_arg(effort: ReasoningEffort) -> &'static str {
     }
 }
 
+/// Where a turn's system prompt goes: as the settings say, but in place of
+/// Claude Code's for a one-off request (a chat's title, a review), which
+/// has no tools for Claude Code's prompt to describe, and costs less
+/// without it.
+fn prompt_mode(settings: &Settings, turn: &Turn) -> SystemPromptMode {
+    if turn.one_shot {
+        SystemPromptMode::Replace
+    } else {
+        settings.system_prompt
+    }
+}
+
 /// The system prompt a turn's run gets: the IDE's, Rovik's tools named
 /// when it has them, then the project's section. Replacing Claude Code's,
 /// the two are split for its prompt cache (`PROMPT_BOUNDARY`).
@@ -346,7 +358,7 @@ pub fn system_text(settings: &Settings, turn: &Turn, rovik_tools: bool) -> Strin
         .map(str::trim)
         .filter(|c| !c.is_empty())
     {
-        Some(context) if settings.system_prompt == SystemPromptMode::Replace => {
+        Some(context) if prompt_mode(settings, turn) == SystemPromptMode::Replace => {
             format!("{text}\n{PROMPT_BOUNDARY}\n{context}")
         }
         Some(context) if text.is_empty() => context.to_string(),
@@ -389,7 +401,7 @@ pub fn args_for(
         args.push(effort_arg(effort).into());
     }
     if let Some(file) = prompt_file {
-        let flag = match settings.system_prompt {
+        let flag = match prompt_mode(settings, turn) {
             SystemPromptMode::Append => "--append-system-prompt-file",
             SystemPromptMode::Replace => "--system-prompt-file",
         };
@@ -2153,14 +2165,20 @@ mod tests {
     fn a_one_shot_request_has_no_tools_and_keeps_nothing() {
         let mut t = turn("Name this chat");
         t.one_shot = true;
+        let file = Path::new("/tmp/p.md");
         let args = args_for(
             &Settings::default(),
             &t,
             &Session::New("s".into()),
-            None,
+            Some(file),
             None,
         );
         let joined = args.join(" ");
+        // Rovik's prompt alone, whatever the settings say for a chat's runs.
+        assert!(
+            joined.contains("--system-prompt-file /tmp/p.md"),
+            "{joined}"
+        );
         assert!(
             joined.contains("--tools  --max-turns 1 --no-session-persistence"),
             "{joined}"
