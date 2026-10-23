@@ -779,7 +779,7 @@ pub fn seed_crates(root: &Path) -> usize {
     let mut copied = 0;
     for (name, version, checksum) in locked_crates(root) {
         let from = crate_file(&caches, &name, &version);
-        let Ok(bytes) = std::fs::read(&from) else {
+        let Some(bytes) = read_store_file(&from) else {
             continue;
         };
         if sha256_hex(&bytes) != checksum.to_ascii_lowercase() {
@@ -803,6 +803,34 @@ pub fn seed_crates(root: &Path) -> usize {
         }
     }
     copied
+}
+
+/// The largest `.crate` file read from the shared store: crates.io takes
+/// none over 10 MiB.
+const MAX_CRATE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A file of the shared store, which any `rovik` group member writes: read
+/// only when it's a regular file of a crate's size. Opened without waiting
+/// (a FIFO planted there would hang the read) and without following a
+/// link, then checked on the open file, so nothing swapped in meanwhile is
+/// read either.
+fn read_store_file(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_CRATE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_CRATE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_CRATE_BYTES).then_some(bytes)
 }
 
 /// This user's checked crates into the shared store, for the others on the
@@ -1132,6 +1160,31 @@ mod tests {
             locked_crates(&dir.0),
             [("serde_json".to_string(), "1.0.0-rc.1+build.5".to_string(), sum)]
         );
+    }
+
+    /// What another group member left in the store that isn't a crate's
+    /// file, a FIFO above all, is passed over at once, never waited on.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_or_link_in_the_store_is_passed_over() {
+        let dir = crate::testing::temp_dir();
+        let fifo = dir.0.join("serde-1.0.0.crate");
+        let path = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: a FIFO made in the test's own folder.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o666) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let at = fifo.clone();
+        std::thread::spawn(move || tx.send(read_store_file(&at)).unwrap());
+        let read = rx.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(read, Ok(None), "a FIFO isn't waited on");
+
+        let real = dir.0.join("real.crate");
+        std::fs::write(&real, b"a crate").unwrap();
+        assert_eq!(read_store_file(&real).as_deref(), Some(&b"a crate"[..]));
+        let link = dir.0.join("rand-0.8.0.crate");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(read_store_file(&link), None, "a link isn't followed");
+        assert_eq!(read_store_file(&dir.0), None, "nor a folder read");
     }
 
     /// Nothing changes on a computer the daemon didn't set anything on.
