@@ -537,7 +537,7 @@ async fn a_task_runs_from_its_plan_to_its_delivery() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
 
     // Each record points at what its stage produced.
@@ -645,7 +645,7 @@ async fn each_stage_starts_fresh_from_the_tasks_artifacts() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let requests = seen.lock().unwrap().clone();
     let text = |r: &Value| r["messages"].to_string();
 
@@ -724,7 +724,7 @@ async fn a_task_has_its_reviewer_with_the_users_subagents_off() {
     request.config.as_mut().unwrap().subagents = Default::default();
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(records[1].summary.as_deref(), Some("Clean"));
     let reviewed = seen
         .lock()
@@ -834,7 +834,7 @@ async fn a_task_cut_between_two_stages_goes_on_once_resumed() {
     // The implementation runs; a second Resume now starts nothing.
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
     // The plan's, the Prepare and Tests stages', the implementation's,
     // the delivery's.
@@ -869,7 +869,7 @@ async fn a_stage_cut_before_its_run_started_is_started_once_resumed() {
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(implement_messages(&h.messages().await).len(), 1);
     // The plan's, the Prepare and Tests stages', the implementation's,
     // the delivery's.
@@ -899,7 +899,7 @@ async fn a_resume_as_a_stage_ends_starts_nothing_more() {
     }
     assert!(h.start(resume_request(&h, &url)).await.is_none());
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     // The plan's, the Prepare and Tests stages', the implementation's,
     // the delivery's.
     assert_eq!(h.events_of("runStarted").len(), 5);
@@ -1617,7 +1617,7 @@ async fn an_autopilot_task_never_pauses_and_refuses_what_its_denylist_names() {
     permissions.allowed_commands = vec!["ls".into()];
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let outcomes: Vec<Value> = h
         .events_of("runEnded")
         .iter()
@@ -1667,7 +1667,7 @@ async fn an_autopilot_run_on_a_server_refuses_the_daemons_folder() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let messages = h.messages().await;
     assert_eq!(
         result_of(&messages, "k1").content,
@@ -1714,7 +1714,7 @@ async fn a_rate_limited_stage_goes_on(on_server: bool) {
         return;
     };
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let waits = log_lines(&h, "rateLimitWait").await;
     assert_eq!(waits.len(), 1, "{waits:?}");
     // Its reset was now: a second's wait, the least.
@@ -1763,7 +1763,7 @@ async fn a_limit_that_resets_now_again_and_again_waits_longer_each_time() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let waits: Vec<Value> = log_lines(&h, "rateLimitWait")
         .await
         .iter()
@@ -1842,7 +1842,7 @@ async fn a_resume_while_a_stage_waits_out_a_rate_limit_starts_nothing() {
     );
     assert!(super::autopilot::rate_limit_armed(&plan, until));
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(log_lines(&h, "rateLimitWait").await.len(), 1);
     // The plan's run: the one the limit ended, and the one after the wait.
     let plan_runs = h
@@ -1926,7 +1926,7 @@ async fn resumes_while_a_task_goes_on_start_none_of_its_stages() {
     for resume in resumes {
         resume.await.unwrap();
     }
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let stopped: Vec<Value> = h
         .events_of("notice")
         .into_iter()
@@ -1969,7 +1969,7 @@ async fn a_start_waits_for_the_drivers_turn() {
     drop(driving);
     start.await.unwrap().unwrap();
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
 
     let _driving = super::autopilot::drive_lock(&h.dialog_id).await;
     let busy = super::autopilot::driver_turn(&h.dialog_id, Duration::from_millis(50)).await;
@@ -2710,7 +2710,7 @@ async fn a_run_keeps_its_spend_in_its_record_as_it_goes() {
     assert_eq!(implement.status, Status::Running);
     assert_eq!(implement.spent, None, "no run of it ended yet");
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let implement = records.iter().find(|r| r.name == Stage::Implement).unwrap();
     assert_eq!(implement.spending, None);
     let spent = implement.spent.expect("the implementation's spend");
@@ -2897,7 +2897,7 @@ async fn autopilots_checks_run_what_the_allowlist_wouldnt() {
     assert!(!allowed.iter().any(|c| c.contains("pytest")), "{allowed:?}");
     h.start(request).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(records[4].outcome.as_deref(), Some("verified"));
     let messages = h.messages().await;
     let verification = messages
@@ -3017,7 +3017,7 @@ async fn with_no_checks_the_plans_validation_commands_are_the_checks() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(records[4].outcome.as_deref(), Some("verified"));
     let messages = h.messages().await;
     let rounds = verifications(&messages);
@@ -3333,7 +3333,7 @@ async fn a_check_that_finds_no_program_prepares_and_runs_again() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     assert_eq!(
         records[2].summary.as_deref(),
         Some("Nothing to install: the dependencies are there")
@@ -4080,7 +4080,7 @@ async fn a_blocked_test_writer_is_recorded_and_the_task_goes_on() {
     .await;
     h.start(task_request(&h, &url)).await;
     let records = stages_until(&h, "the delivery", delivered).await;
-    assert_eq!(names(&records), BALANCED_OK);
+    assert_eq!(names(&records), BALANCED_OK, "{records:#?}");
     let tests = &records[3];
     assert_eq!(
         tests.summary.as_deref(),
