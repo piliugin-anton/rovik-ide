@@ -30,6 +30,7 @@ import {
 import { confirmDialog } from './ConfirmDialog';
 import { SKIP_HINTS, skippableHook } from '../lib/gitHooks';
 import { ConflictResolver } from './ConflictResolver';
+import { GitHooksView } from './GitHooksView';
 import { PullStrategyDialog, type PullStrategyPick } from './PullStrategyDialog';
 import { ChevronIcon, FileIcon, FolderIcon } from './FileIcons';
 import {
@@ -66,6 +67,8 @@ interface GitPanelProps {
   onStashChanged?: () => void;
   /** Files may have changed on disk (pull, merge, rebase): reload open tabs. */
   onFilesChangedOnDisk?: () => void;
+  /** A file to edit that isn't a change (a git hook): open it as it is. */
+  onOpenPath?: (absPath: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,6 +85,14 @@ const iconProps = {
   'stroke-linecap': 'round' as const,
   'stroke-linejoin': 'round' as const,
 };
+
+function IconHook() {
+  return (
+    <svg {...iconProps}>
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </svg>
+  );
+}
 
 function IconBranch() {
   return (
@@ -890,7 +901,8 @@ export function GitPanel(props: GitPanelProps) {
   // branches, reverting one file — stays where it is.
   // -------------------------------------------------------------------------
 
-  type MoreView = 'menu' | 'new-branch' | 'rebase' | 'delete-branch' | 'stash-save' | 'stash-list';
+  type MoreView =
+    'menu' | 'new-branch' | 'rebase' | 'delete-branch' | 'stash-save' | 'stash-list' | 'hooks';
 
   const [moreOpen, setMoreOpen] = createSignal(false);
   const [moreView, setMoreView] = createSignal<MoreView>('menu');
@@ -1518,7 +1530,7 @@ export function GitPanel(props: GitPanelProps) {
   const onOutsideHeader = (e: PointerEvent) => {
     if (headerRoot && !headerRoot.contains(e.target as Node)) {
       setBranchOpen(false);
-      if (moreView() !== 'stash-list') closeMore();
+      if (moreView() !== 'stash-list' && moreView() !== 'hooks') closeMore();
     }
   };
   window.addEventListener('pointerdown', onOutsideHeader, true);
@@ -1849,6 +1861,29 @@ export function GitPanel(props: GitPanelProps) {
                     <span>Discard all changes…</span>
                   </li>
                 </ul>
+                <div class="git-menu-section-label">Repository</div>
+                <ul class="context-menu-list">
+                  <li
+                    class="context-menu-item"
+                    title="The scripts git runs around a commit, a push, a pull…"
+                    onClick={() => openMoreView('hooks')}
+                  >
+                    <IconHook />
+                    <span>Git hooks…</span>
+                  </li>
+                </ul>
+              </Show>
+
+              {/* Git hooks */}
+              <Show when={moreView() === 'hooks'}>
+                <button class="icon-button git-more-back" onClick={() => setMoreView('menu')}>
+                  <IconBack />
+                  <span>Git hooks</span>
+                </button>
+                <GitHooksView
+                  projectPath={props.projectPath}
+                  onOpen={(path) => props.onOpenPath?.(path)}
+                />
               </Show>
 
               {/* New branch */}

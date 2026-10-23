@@ -49,8 +49,18 @@ pub(crate) struct Hooks {
     no_verify: bool,
 }
 
-impl Hooks {
-    pub fn of(repo: &Repository) -> Hooks {
+/// Where a repository's hooks are, and where they run.
+pub(crate) struct HooksDir {
+    /// `core.hooksPath` when it's set, else `hooks/` in the git folder.
+    pub dir: PathBuf,
+    /// Set by `core.hooksPath`.
+    pub configured: bool,
+    /// Where hooks run: the working folder (the git folder, when bare).
+    pub cwd: PathBuf,
+}
+
+impl HooksDir {
+    pub fn of(repo: &Repository) -> HooksDir {
         let cwd = repo.workdir().unwrap_or(repo.path()).to_path_buf();
         // get_path expands `~/`.
         let configured = repo
@@ -58,11 +68,22 @@ impl Hooks {
             .ok()
             .and_then(|c| c.get_path("core.hooksPath").ok())
             .filter(|p| !p.as_os_str().is_empty());
-        let dir = match configured {
+        let dir = match &configured {
             Some(p) if p.is_relative() => cwd.join(p),
-            Some(p) => p,
+            Some(p) => p.clone(),
             None => repo.commondir().join("hooks"),
         };
+        HooksDir {
+            dir,
+            configured: configured.is_some(),
+            cwd,
+        }
+    }
+}
+
+impl Hooks {
+    pub fn of(repo: &Repository) -> Hooks {
+        let HooksDir { dir, cwd, .. } = HooksDir::of(repo);
         Hooks {
             dir,
             cwd,
@@ -320,7 +341,7 @@ fn collect(
 }
 
 #[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
@@ -328,7 +349,7 @@ fn is_executable(path: &Path) -> bool {
 
 /// Windows has no executable bit: every hook file runs, as with Git for Windows.
 #[cfg(not(unix))]
-fn is_executable(_path: &Path) -> bool {
+pub(crate) fn is_executable(_path: &Path) -> bool {
     true
 }
 

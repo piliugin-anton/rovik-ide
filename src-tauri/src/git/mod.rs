@@ -15,6 +15,7 @@
 mod branches;
 mod changes;
 mod history;
+mod hook_files;
 pub(crate) mod hooks;
 mod remote;
 mod stash;
@@ -22,6 +23,7 @@ mod stash;
 pub use branches::*;
 pub use changes::*;
 pub use history::*;
+pub use hook_files::*;
 pub use remote::*;
 pub use stash::*;
 

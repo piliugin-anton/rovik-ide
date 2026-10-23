@@ -4636,6 +4636,25 @@ body.is-resizing * {
   font-weight: 600;
 }
 
+/* Git hooks (GitHooksView): a row per hook the panel runs, its state
+   after its name; one that isn't there is muted until it's made. */
+.git-hook-absent .git-more-row-label {
+  color: var(--fg-muted);
+}
+
+.git-hook-state {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.git-hook-active {
+  color: var(--success);
+}
+
+.git-hook-not-executable {
+  color: var(--warning);
+}
+
 /* Expandable stash entries: the files a stash touched (git_stash_show).
    Clicking a file opens its stashed content in a read-only editor tab. */
 .git-stash-entry {

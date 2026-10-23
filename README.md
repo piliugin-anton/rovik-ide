@@ -756,6 +756,16 @@ pre-push for that one try. prepare-commit-msg and the hooks that come
 after still run, as with git, and a push after such a commit still runs
 pre-push. The panel tells the hook from the error (`src/lib/gitHooks.ts`).
 
+The file tree doesn't show `.git`, so the Git panel's ⋯ menu has
+**Git hooks…** (`src/components/GitHooksView.tsx`,
+`src-tauri/src/git/hook_files.rs`). It lists each of the hooks above with
+its state: on, not executable (skipped), only git's example (`.sample`),
+or not there. A hook opens in the editor. **Create** makes one from a
+small template, executable, and opens it. **Enable** makes one executable
+(`chmod +x`), and the trash button moves one to the trash. With husky 9,
+whose `core.hooksPath` is its generated `.husky/_`, the view shows the
+hooks you write in `.husky/` instead.
+
 Hooks are found as git finds them: in `core.hooksPath` when it's set (a
 relative path is from the working folder), else in `.git/hooks`. So
 husky, lefthook, pre-commit and simple-git-hooks work as they are. Each
