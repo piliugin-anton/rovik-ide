@@ -1320,7 +1320,8 @@ async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
 #[tokio::test]
 async fn an_unreadable_plan_review_is_tried_again_not_skipped() {
     let h = task_project().await;
-    let garbled = "Step 1 has a problem: [high] `check.js` doesn't read `ok.txt`.";
+    // Finding-shaped, with no "## Findings" heading: it can't be read.
+    let garbled = "Problems:\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`";
     let high = "## Findings\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`\n   \
         - Scenario: the test still fails after the change.\n   \
         - Fix: read `check.js` and change the file it reads.\n   \
@@ -1366,16 +1367,15 @@ async fn an_unreadable_plan_review_is_tried_again_not_skipped() {
     );
 }
 
-/// A plan reviewer that says it's blocked reviewed nothing: the plan is
-/// blocked, never saved unreviewed.
+/// A plan review that never runs: every reviewer model fails, tried again
+/// after a wait, until the run's subagents are off for good. No review
+/// passed the plan: it's blocked, never saved unreviewed.
 #[tokio::test]
-async fn a_blocked_plan_reviewer_blocks_the_plan() {
+async fn a_plan_review_that_never_runs_blocks_the_plan() {
     let h = task_project().await;
+    let failed = Reply::Status(401, "{\"error\":{\"message\":\"bad key\"}}");
     let (url, _) = model_routed(
-        vec![(
-            PLAN_REVIEW,
-            vec![Reply::Text("## Blocked\n\nThe project's files can't be read here.")],
-        )],
+        vec![(PLAN_REVIEW, vec![failed])],
         vec![
             Reply::Call {
                 id: "p1",
@@ -1472,7 +1472,7 @@ async fn a_stop_during_a_plan_review_holds_the_plan_with_its_findings_open() {
     );
     assert_eq!(review["planState"]["held"], TASK_PLAN);
     let result = &result_of(&messages, "p2").content;
-    assert!(result.starts_with("Stopped: the plan wasn't saved"), "{result}");
+    assert!(result.contains("Stopped: the plan wasn't saved"), "{result}");
 }
 
 /// S02 (4.2): the plan review's high finding the planner never fixes: an

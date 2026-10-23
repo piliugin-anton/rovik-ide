@@ -480,13 +480,15 @@ pub(super) fn plan_records<'a>(
 }
 
 /// Step 9: whether a plan review gave nothing to go by, so that Balanced
-/// Autopilot tries it again after a wait: every model failed, the reviewer
-/// couldn't start, or its report couldn't be read. One that said it was
-/// blocked, or that wrote no finding at all, is an answer.
+/// Autopilot tries it again after a wait: every model failed, or its
+/// report couldn't be read. One that couldn't start isn't tried again: the
+/// run's subagents are off after their models kept failing, which another
+/// try doesn't change (the review is skipped, and the plan blocked). One
+/// that said it was blocked, or that wrote no finding at all, is an answer.
 pub(super) fn reviewer_unusable(outcome: &Result<(String, Option<subagent::SubResult>), String>) -> bool {
     use subagent::SubStatus;
     match outcome {
-        Err(_) => true,
+        Err(_) => false,
         Ok((_, None)) => false,
         Ok((_, Some(r))) => match r.status {
             SubStatus::Failed => true,
@@ -2017,9 +2019,9 @@ impl Run {
         };
         let started = Instant::now();
         // Step 9, Balanced Autopilot: a review that gave nothing to go by
-        // (every model failed, it couldn't start, its report couldn't be
-        // read) is tried again after a wait, and at a limit the plan is
-        // blocked, never saved unreviewed.
+        // (every model failed, its report couldn't be read) is tried again
+        // after a wait, and at a limit the plan is blocked, never saved
+        // unreviewed.
         let (mut attempt, mut waited) = (0u32, Duration::ZERO);
         let outcome = loop {
             let outcome = self
