@@ -3,6 +3,7 @@
 Each Rust and Node version is installed once per Rovik cloud host, as root, in folders users can read but not change. Any user's chat can ask for a missing version. Package downloads (npm tarballs and crates.io crates) go into shared caches, so the same package is downloaded once for every user on the host. `node_modules` and `target/` stay in each chat's own worktree.
 
 How it works:
+
 - **Installing.** A new root command, `rovik-agentd user toolchain …`, installs a toolchain. The sudo rule already lets every user run `rovik-agentd user *`. The command only accepts strict version formats, downloads only from the official servers, checks what it downloads, and holds a lock while it installs. An administrator can turn this off in `agentd.toml`.
 - **Using the toolchains.** A new `rovik_core::toolchains` module works out which Rust and Node a project needs. It gives every command the agent's runs start (the agent's `bash`, the checks, the installs) the right `PATH` and `RUSTUP_HOME`. Missing versions are installed in two places: before the installs that prepare a project, and when a command fails with "command not found".
 - **Sharing downloads safely.**
@@ -10,6 +11,7 @@ How it works:
   - cargo doesn't check files already in its cache, so Rovik checks them itself. It copies crates from the shared store into the user's own cargo cache only when they match `Cargo.lock`'s checksums. After a fetch, it adds the user's checked crates to the shared store.
 
 ## Steps
+
 1. **Settings in agentd.toml**
    - Files: `src-tauri/crates/rovik-agentd/src/limits.rs`, `src-tauri/crates/rovik-agentd/src/installer.rs`
    - Add `pub toolchains: ToolchainSettings` to `AdminFile` with `#[serde(default)]`. It holds `user_install: bool` (default true), `shared_caches: bool` (default true) and `allowed_rust: Vec<String>` (empty means any valid version).
@@ -43,7 +45,7 @@ How it works:
      1. creates the `rovik` group (`groupadd --system`, as `admin_group` does)
      2. creates `CACHES/npm` and `CACHES/crates` as `root:rovik` with mode 2770, and `TOOLCHAINS` with mode 0755
      3. when `sys.systemd()`, rewrites `UNIT` from `unit()` (step 4) and runs `systemctl daemon-reload`.
-     It changes nothing that's already in place.
+        It changes nothing that's already in place.
 
 3. **CLI and dispatch**
    - Files: `src-tauri/crates/rovik-agentd/src/cli.rs`, `src-tauri/crates/rovik-agentd/src/installer.rs`
@@ -116,7 +118,7 @@ How it works:
    - **Where they're called.** `install_in` checks whether `install.command` starts with `cargo fetch` (the command `installs_in` emits for a `Cargo.lock`). If so, and the crate cache is writable:
      - before `run_command`, it calls `seed_crates(<root>/<install.folder>)` on a blocking thread
      - after a run that exits with code 0, it calls `publish_crates` for the same folder.
-     Cargo commands the agent runs itself (`cargo test` fetching on its own) aren't seeded. After a Prepare install, the crates are already in the user's cache.
+       Cargo commands the agent runs itself (`cargo test` fetching on its own) aren't seeded. After a Prepare install, the crates are already in the user's cache.
 
 9. **Install the toolchain when the agent's command isn't found**
    - Files: `src-tauri/crates/rovik-core/src/agent_run/tools.rs`
@@ -137,6 +139,7 @@ How it works:
     - The setup script's placeholder says that Rust and Node versions install on their own, and that the script is for anything else.
 
 ## Decisions
+
 - **Any user can install on demand (your answer).** This goes through the existing `rovik-agentd user *` sudo rule, so no new sudoers line is needed. An administrator can turn it off with `user_install = false` and add versions with `admin toolchain add`.
 - **Shared runtimes and download caches, but `node_modules` stays per worktree (your answer).**
 - **Rust uses one shared rustup.** All toolchains live under one read-only `RUSTUP_HOME`; cargo keeps a per-user `CARGO_HOME` (the default). Users share the large part (about 1 GB per toolchain), and each keeps the small writable part to themselves. `RUSTUP_AUTO_INSTALL=0` turns off rustup's own install of a missing toolchain, which would fail on the read-only folder.
@@ -151,6 +154,7 @@ How it works:
 - **On the user's own computer nothing changes.** All of this only takes effect when the daemon calls `toolchains::set`.
 
 ## Validation
+
 - `cd src-tauri && cargo test -p rovik-core -p rovik-agentd` and `cargo clippy --workspace --all-targets`.
 - New tests:
   - `installer/toolchains.rs` unit tests: `parse_version` accepts and refuses the right forms (including `1.82; rm -rf /`, `../x`, empty); `prune` keeps recently used versions.
@@ -181,6 +185,7 @@ How it works:
   - Upgrading an existing server leaves the daemons running in the `rovik` group.
 
 ## Risks
+
 - The `index.crates.io-*` folder names come from cargo's internal hashing. If a future cargo version changes them, `seed_crates` copies nothing (no harm, just no reuse) until the table is updated. It uses the existing folders first.
 - npm or pacote could change how they use a cache shared between users (permissions of files written by another group member). Installs fall back to downloading, but this needs testing on a real host.
 - Installing a toolchain takes minutes and a Rust toolchain is about 1 GB on disk. A chat waits while the root command runs, and disk use grows until `admin toolchain prune` runs.

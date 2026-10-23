@@ -1,6 +1,7 @@
 # Fix the five review findings in the shared-toolchains implementation
 
 These are five fixes to the shared-toolchains implementation, found when reviewing plan 2026-10-23.
+
 1. Crate entries read from `Cargo.lock` are checked before they become file names.
 2. A verify round that failed on its environment now reports the toolchain installs it attempted. It reruns the checks when one succeeded.
 3. A refused install is remembered for a while instead of running `sudo` again every round.
@@ -8,6 +9,7 @@ These are five fixes to the shared-toolchains implementation, found when reviewi
 5. The `serve.rs` permission test skips its non-writable case when run as root.
 
 ## Steps
+
 1. **Check crate names and versions before they become paths**
    - Files: `src-tauri/crates/rovik-core/src/toolchains.rs`
    - Add `fn crate_id_ok(name: &str, version: &str) -> bool`.
@@ -61,6 +63,7 @@ These are five fixes to the shared-toolchains implementation, found when reviewi
    - Its comment then says what the code does: root can write anywhere, so that case only holds for other users.
 
 ## Decisions
+
 - Validation lives in `locked_crates`, so the parser never returns anything unsafe to join into a path. Checking at each `join` would repeat the check three times.
 - A refused install is remembered in memory for 15 minutes. That stops the `sudo` run on every round, and still picks up an administrator's fix (sudoers, `user_install`, a new allowed version) without restarting the daemon. Changed settings take effect at the daemon's next start anyway, and `set` clears the memory.
 - The toolchain outcomes go into the verify record's metadata and into the agent's note. The verification record UI (`src/components/VerificationRecord.tsx`) is unchanged, because it only shows `environment.installs`. Showing toolchains there would be a separate UI change.
@@ -68,6 +71,7 @@ These are five fixes to the shared-toolchains implementation, found when reviewi
 - The test lock is a plain `std::sync::Mutex<()>` in `toolchains.rs` under `#[cfg(test)]`, not in `crate::testing`. Only this crate's tests set `SHARED`, and `rovik-agentd`'s tests never do.
 
 ## Validation
+
 - Run `cd src-tauri && cargo test -p rovik-core -p rovik-agentd`, then `cargo clippy --workspace --all-targets`.
 - New and updated tests:
   - `toolchains.rs`:
@@ -87,6 +91,7 @@ These are five fixes to the shared-toolchains implementation, found when reviewi
   - `serve.rs`: the test passes as a normal user and as root (`sudo -E cargo test -p rovik-agentd --bin rovik-agentd the_shared_caches`).
 
 ## Risks
+
 - Other core tests that run commands (any `run_blocking`) don't take the test lock. While a toolchain test holds a host, they get `RUSTUP_HOME` and a `PATH` prefix pointing into that test's temporary folder. None of them runs cargo or rustup, so it's harmless today. A future test that does would need the lock too.
 - Crate names are kept to crates.io's character set. A registry crate with other characters would only miss the shared cache and download as usual.
 - This sandbox currently has no `cargo` or `git`, so the plan was checked by reading the code. The commands above must be run on a machine that has them.
