@@ -11,7 +11,12 @@ import { createResource, createSignal, For, Show } from 'solid-js';
 import type { ConnectorKind, Provider } from '../types';
 import { mergeRemoteModels } from '../lib/aiSettings';
 import {
+  authLine,
+  authStateOf,
   AUTH_KINDS,
+  checkConnectorAuth,
+  connectorAuthState,
+  setConnectorAuthState,
   claudeCodeSettings,
   CONNECTOR_CATALOG,
   connectorTitle,
@@ -114,6 +119,10 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
       const firstFetch = current.models.length === 0;
       const { models, added } = mergeRemoteModels(current.models, probeModels(probe));
       setDraft({ ...current, models });
+      // What it found about the sign-in is this computer's: the rows and
+      // the menu show it (a host's is the host's own).
+      if (probe.auth && !testHost())
+        setConnectorAuthState(current.id, authStateOf({ auth: probe.auth }));
       setTest({ kind: 'ok', probe, added, first: firstFetch });
     } catch (err) {
       if (run !== testRun) return;
@@ -147,6 +156,8 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
         : [...prev, clean]
     );
     closeDraft();
+    // Its sign-in may have changed with its settings (a token, a folder).
+    void checkConnectorAuth(clean);
   }
 
   async function remove(connector: Provider) {
@@ -219,8 +230,26 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                   <span class="profile-row-sub">
                     {c.models.filter((m) => m.enabled).length} of {c.models.length} models enabled
                   </span>
+                  <Show when={authLine(connectorAuthState(c.id))}>
+                    {(line) => (
+                      <span
+                        class="profile-row-sub connector-auth"
+                        classList={{ warning: line().warning }}
+                        title={line().text}
+                      >
+                        {line().text}
+                      </span>
+                    )}
+                  </Show>
                 </div>
                 <div class="profile-row-actions">
+                  <button
+                    onClick={() => void checkConnectorAuth(c)}
+                    disabled={connectorAuthState(c.id)?.state === 'checking'}
+                    title="Whether it's signed in on this computer (asks the program; no request is made)"
+                  >
+                    Check sign-in
+                  </button>
                   <button onClick={() => openDraft(c)}>Edit</button>
                   <button class="danger" onClick={() => void remove(c)}>
                     Remove
@@ -493,6 +522,13 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
               <div class="provider-test-status ok connector-test-status">
                 {probeSummary(ok().probe)}, {ok().probe.models.length} models
                 {!ok().first && ok().added > 0 ? ` (${ok().added} new, not enabled)` : ''}
+                <Show when={ok().probe.auth && authLine(authStateOf({ auth: ok().probe.auth! }))}>
+                  {(line) => (
+                    <div class="connector-auth" classList={{ warning: line().warning }}>
+                      {line().text}
+                    </div>
+                  )}
+                </Show>
                 <For each={ok().probe.notes ?? []}>
                   {(note) => <div class="connector-test-note">{note}</div>}
                 </For>

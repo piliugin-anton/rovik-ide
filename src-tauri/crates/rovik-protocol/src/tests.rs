@@ -525,6 +525,12 @@ fn every_request_round_trips() {
                 api_key: String::new(),
                 request: false,
             }),
+            Request::ConnectorAuthStatus(crate::connectors::ProbeRequestArgs {
+                kind: crate::connectors::ConnectorKind::ClaudeCode,
+                settings: serde_json::json!({ "auth": "token" }),
+                api_key: "tok".into(),
+                request: false,
+            }),
             Request::ChatRename {
                 dialog_id: "d".into(),
                 title: "New title".into(),
@@ -876,6 +882,13 @@ fn every_response_round_trips() {
                 }],
                 request: None,
                 notes: Vec::new(),
+                auth: None,
+            }),
+            Response::ConnectorAuth(crate::connectors::ConnectorAuth {
+                logged_in: true,
+                method: Some("claude.ai".into()),
+                config_dir: Some("/home/ann/.claude".into()),
+                detail: None,
             }),
             Response::Tasks(vec![
                 crate::autopilot::ChatTask {

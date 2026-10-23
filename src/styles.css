@@ -10183,3 +10183,12 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* A connector's sign-in, as its last check found (lib/connectors.ts). */
+.connector-auth {
+  color: var(--success);
+}
+
+.connector-auth.warning {
+  color: var(--warning, var(--error));
+}

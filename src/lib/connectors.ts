@@ -15,9 +15,11 @@
 // AI reviewer and the settings file work as they do for providers; the
 // pages and the picker tell the two apart by `isConnector`.
 import { invoke } from '@tauri-apps/api/core';
+import { createSignal } from 'solid-js';
 import type { ConnectorKind, ModelProfile, Provider, ProviderModel } from '../types';
 import { plural } from './textUtils';
 import type { RemoteModel } from './aiSettings';
+import { notify } from './notifications';
 
 export const CONNECTOR_SCHEME = 'connector://';
 
@@ -195,6 +197,8 @@ export interface ConnectorProbe {
     ms: number;
   } | null;
   notes?: string[];
+  /** Whether it's signed in, when the program could say. */
+  auth?: ConnectorAuth | null;
 }
 
 /**
@@ -238,12 +242,185 @@ export function probeSummary(probe: ConnectorProbe): string {
   return text;
 }
 
-/** One line for the Settings menu: how many connectors and models there are. */
-export function connectorsSummary(providers: Provider[]): string {
+/**
+ * One line for the Settings menu: how many connectors and models there
+ * are, and how many of them can't run now (signed out, not installed), as
+ * their last sign-in check found.
+ */
+export function connectorsSummary(
+  providers: Provider[],
+  states: Record<string, AuthState> = authStates()
+): string {
   const connectors = splitSources(providers).connectors;
   if (connectors.length === 0) return 'None yet: connect Claude Code to use it in place of a model';
   const models = connectors.reduce((n, c) => n + c.models.filter((m) => m.enabled).length, 0);
-  return `${plural(connectors.length, 'connector')}, ${plural(models, 'model')} enabled`;
+  const line = `${plural(connectors.length, 'connector')}, ${plural(models, 'model')} enabled`;
+  const out = connectors.filter((c) => cantRun(states[c.id])).length;
+  return out ? `${line} · ${out} can’t run: not signed in or installed` : line;
+}
+
+/*
+ * Sign-in: whether each connector's program is signed in on this computer
+ * (`claude auth status`, which costs nothing), checked once as a window
+ * starts for the connectors a chat can pick, again when one is saved or
+ * tested, and on demand. The program's own check: a token it has counts
+ * until a request says it expired, which the chat then shows as its error.
+ */
+
+/** What `connector_auth_status` answers (rovik_protocol::connectors). */
+export interface ConnectorAuth {
+  loggedIn: boolean;
+  method?: string | null;
+  configDir?: string | null;
+  detail?: string | null;
+}
+
+export type AuthState =
+  | { state: 'checking' }
+  | { state: 'signedIn'; auth: ConnectorAuth }
+  | { state: 'signedOut'; auth: ConnectorAuth }
+  /** It couldn't say: the program is missing, or too old, or didn't answer. */
+  | { state: 'unknown'; message: string; missing: boolean };
+
+const [authStates, setAuthStates] = createSignal<Record<string, AuthState>>({});
+
+/** The last sign-in check of a connector, by its id; none before one. */
+export function connectorAuthState(id: string): AuthState | undefined {
+  return authStates()[id];
+}
+
+export function setConnectorAuthState(id: string, state: AuthState): void {
+  setAuthStates((all) => ({ ...all, [id]: state }));
+}
+
+/** A state a chat on the connector would fail in. */
+export function cantRun(state: AuthState | undefined): boolean {
+  return state?.state === 'signedOut' || (state?.state === 'unknown' && state.missing);
+}
+
+/** Asks the program whether it's signed in, here or on `host`. */
+export function connectorAuthStatus(p: Provider, host?: string | null): Promise<ConnectorAuth> {
+  const kind = kindOfProvider(p);
+  if (!kind) return Promise.reject(new Error('Not a connector.'));
+  return invoke<ConnectorAuth>('connector_auth_status', {
+    args: { kind, settings: p.settings ?? {}, apiKey: p.apiKey, request: false },
+    host: host ?? null,
+  });
+}
+
+/** An answer, or a failure to get one, as a state. */
+export function authStateOf(result: { auth: ConnectorAuth } | { error: unknown }): AuthState {
+  if ('auth' in result) {
+    return result.auth.loggedIn
+      ? { state: 'signedIn', auth: result.auth }
+      : { state: 'signedOut', auth: result.auth };
+  }
+  const message = String(result.error).replace(/^Error: /, '');
+  return { state: 'unknown', message, missing: /isn't installed|no such program/i.test(message) };
+}
+
+/** Checks one connector on this computer, and keeps what it found. */
+export async function checkConnectorAuth(
+  p: Provider,
+  check: (p: Provider) => Promise<ConnectorAuth> = connectorAuthStatus
+): Promise<AuthState> {
+  setConnectorAuthState(p.id, { state: 'checking' });
+  const state = await check(p).then(
+    (auth) => authStateOf({ auth }),
+    (error) => authStateOf({ error })
+  );
+  setConnectorAuthState(p.id, state);
+  return state;
+}
+
+const METHODS: Record<string, string> = {
+  'claude.ai': 'claude.ai login',
+  oauth_token: 'token',
+  api_key: 'API key',
+  api_key_helper: 'API key helper',
+  third_party: 'cloud provider',
+};
+
+/** "Signed in (claude.ai login)", "Not signed in: …", for a row or a form. */
+export function authLine(state: AuthState | undefined): { text: string; warning: boolean } | null {
+  if (!state) return null;
+  switch (state.state) {
+    case 'checking':
+      return { text: 'Checking sign-in…', warning: false };
+    case 'signedIn': {
+      const how = state.auth.method ? (METHODS[state.auth.method] ?? state.auth.method) : '';
+      const text = `Signed in${how ? ` (${how})` : ''}${state.auth.detail ? `. ${state.auth.detail}` : ''}`;
+      return { text, warning: false };
+    }
+    case 'signedOut':
+      return { text: state.auth.detail || 'Not signed in.', warning: true };
+    case 'unknown':
+      return {
+        text: state.missing ? state.message : `Sign-in unknown: ${state.message}`,
+        warning: state.missing,
+      };
+  }
+}
+
+/** The connectors a chat can pick: those with an enabled model. */
+export function usableConnectors(providers: Provider[]): Provider[] {
+  return splitSources(providers).connectors.filter((c) => c.models.some((m) => m.enabled));
+}
+
+let checkedAtStart = false;
+
+/** Tests: the start's check runs again. */
+export function resetStartCheck(): void {
+  checkedAtStart = false;
+  setAuthStates({});
+}
+
+/** The notification the start's check raises: one, updated in place. */
+export const CONNECTOR_AUTH_NOTE = 'connector-auth';
+
+/**
+ * As a window starts: checks each connector a chat can pick, once, and
+ * says which can't run (signed out, or the program missing), with a way
+ * to Settings → Connectors. Checks that can't say (an old version) are
+ * left for the settings page. Chats on a cloud host run its own
+ * installation: the page checks a host when asked.
+ */
+export async function checkConnectorsOnStart(
+  providers: Provider[],
+  openConnectors: () => void,
+  check: (p: Provider) => Promise<ConnectorAuth> = connectorAuthStatus
+): Promise<Record<string, AuthState>> {
+  if (checkedAtStart) return {};
+  const connectors = usableConnectors(providers);
+  if (connectors.length === 0) return {};
+  checkedAtStart = true;
+  const found: Record<string, AuthState> = {};
+  await Promise.all(
+    connectors.map(async (c) => {
+      found[c.id] = await checkConnectorAuth(c, check);
+    })
+  );
+  const bad = connectors.filter((c) => cantRun(found[c.id]));
+  if (bad.length > 0) {
+    const reason = (c: Provider) => {
+      const state = found[c.id];
+      return state.state === 'unknown' ? state.message : (authLine(state)?.text ?? '');
+    };
+    const one = bad.length === 1 ? bad[0] : null;
+    const state = one ? found[one.id] : null;
+    notify({
+      id: CONNECTOR_AUTH_NOTE,
+      kind: 'warning',
+      title: one
+        ? `${one.name} ${state?.state === 'unknown' ? 'isn’t installed' : 'isn’t signed in'}`
+        : `${bad.length} connectors can’t run`,
+      message: one
+        ? `${reason(one)} Chats using its models will fail until it is.`
+        : bad.map((c) => `${c.name}: ${reason(c)}`).join('\n'),
+      actions: [{ label: 'Open Connectors', primary: true, run: openConnectors }],
+    });
+  }
+  return found;
 }
 
 /** A connector's model, resolved for a request (aiSettings.ts resolveProfile). */

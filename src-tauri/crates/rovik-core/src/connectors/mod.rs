@@ -30,8 +30,8 @@ use crate::chat_db::DbState;
 use crate::chat_request::ChatError;
 use futures_util::future::BoxFuture;
 pub use rovik_protocol::connectors::{
-    is_connector, kind_of, ConnectorKind, ConnectorModel, ConnectorProbe, ProbeRequest,
-    ProbeRequestArgs,
+    is_connector, kind_of, ConnectorAuth, ConnectorKind, ConnectorModel, ConnectorProbe,
+    ProbeRequest, ProbeRequestArgs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -101,6 +101,14 @@ pub trait Connector: Send + Sync {
         args: &'a ProbeRequestArgs,
     ) -> BoxFuture<'a, Result<ConnectorProbe, String>>;
 
+    /// Whether the program is signed in as a chat's run would be, without
+    /// a request: cheap enough for the app's start. `Err` when it can't
+    /// say (not installed, a version without the check).
+    fn auth_status<'a>(
+        &'a self,
+        args: &'a ProbeRequestArgs,
+    ) -> BoxFuture<'a, Result<ConnectorAuth, String>>;
+
     /// Runs one turn, reporting it through `on_event` as a provider's
     /// request would: `Delta`, `Reasoning`, `HarnessStep`, `HarnessSession`,
     /// `Finished` (its usage), `Done`, or `Error`. `Err` is for what fails
@@ -123,6 +131,11 @@ pub fn connector(kind: ConnectorKind) -> &'static dyn Connector {
 /// "Test & refresh models" on `args.kind`, on this computer.
 pub async fn probe(args: ProbeRequestArgs) -> Result<ConnectorProbe, String> {
     connector(args.kind).probe(&args).await
+}
+
+/// Whether `args.kind`'s program is signed in on this computer.
+pub async fn auth_status(args: ProbeRequestArgs) -> Result<ConnectorAuth, String> {
+    connector(args.kind).auth_status(&args).await
 }
 
 /// A chat request on a connector's model (`agent::run_chat` hands it here):

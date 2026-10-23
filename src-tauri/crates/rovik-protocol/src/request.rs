@@ -9,7 +9,7 @@ use crate::agent::{
 use crate::autopilot::{AutonomyConfig, ChatTask, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
-use crate::connectors::{ConnectorProbe, ProbeRequestArgs};
+use crate::connectors::{ConnectorAuth, ConnectorProbe, ProbeRequestArgs};
 use crate::host::{HostInfo, KeyInfo, Storage};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
@@ -98,6 +98,10 @@ pub enum Request {
     /// models, served where the chat would run it (here, or on a host). →
     /// `ConnectorProbe`.
     ConnectorProbe(ProbeRequestArgs),
+    /// Whether a connector's program is signed in on the computer asked,
+    /// without a request (the app's start, Settings → Connectors). The
+    /// args' `request` is ignored. → `ConnectorAuth`.
+    ConnectorAuthStatus(ProbeRequestArgs),
 
     // Chat: writes to a chat's rows.
     ChatRename {
@@ -369,6 +373,7 @@ impl Request {
             | Request::AgentSetEffort { .. }
             | Request::WorkloadFocus { .. }
             | Request::ConnectorProbe(_)
+            | Request::ConnectorAuthStatus(_)
             | Request::BlobsMissing { .. }
             | Request::ProjectEnsure { .. }
             | Request::WorkResults
@@ -429,6 +434,8 @@ pub enum Response {
     Tasks(Vec<ChatTask>),
     /// `ConnectorProbe`.
     ConnectorProbe(ConnectorProbe),
+    /// `ConnectorAuthStatus`.
+    ConnectorAuth(ConnectorAuth),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -488,4 +495,5 @@ replies! {
     DeliveryTested => DeliveryTest,
     Tasks => Vec<ChatTask>,
     ConnectorProbe => ConnectorProbe,
+    ConnectorAuth => ConnectorAuth,
 }

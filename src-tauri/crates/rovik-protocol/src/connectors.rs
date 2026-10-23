@@ -84,6 +84,30 @@ pub struct ConnectorProbe {
     /// a server, a token that will expire.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// Whether it's signed in, as the program says (`ConnectorAuth`);
+    /// none when the program couldn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<ConnectorAuth>,
+}
+
+/// Whether a connector's program is signed in on the computer asked
+/// (`Request::ConnectorAuthStatus`), as it would be for a chat's run: with
+/// the connector's token or key and settings folder. The program's own
+/// check, which makes no request: a token it has is taken as good until a
+/// request says it expired or was revoked.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorAuth {
+    pub logged_in: bool,
+    /// How, as the program names it: `claude.ai`, `oauth_token`, `api_key`…
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// The settings folder its login is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
+    /// For the user: why it isn't signed in and what to do, or a caveat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// A model a connector offers.

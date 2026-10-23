@@ -314,6 +314,13 @@ lists its models: aliases such as `sonnet`, `opus` and `haiku`, and full
 names. The ones you enable show in the chat's model picker, marked as a
 connector's.
 
+When Rovik starts, it asks each connector a chat can pick whether it's
+signed in (`claude auth status`, which costs nothing), and warns about any
+that isn't, or whose program isn't installed, with a way to its settings.
+The connector rows show what the last check found, and **Check sign-in**
+asks again. The check trusts a token Claude Code has; one that expired or
+was revoked shows as the chat's error at its first message.
+
 A chat on a connector's model hands the harness the task: Rovik's system
 prompt (after Claude Code's own, or in its place), the model, the effort
 and the message, in the project folder. The harness runs its own tools

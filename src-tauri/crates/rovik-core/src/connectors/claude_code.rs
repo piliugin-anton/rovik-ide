@@ -25,8 +25,9 @@
 //! kept where providers' keys are.
 
 use super::{
-    harness_error, trimmed_text, trimmed_value, usage_value, Connector, ConnectorKind,
-    ConnectorModel, ConnectorProbe, HarnessStep, ProbeRequest, ProbeRequestArgs, Turn,
+    harness_error, trimmed_text, trimmed_value, usage_value, Connector, ConnectorAuth,
+    ConnectorKind, ConnectorModel, ConnectorProbe, HarnessStep, ProbeRequest, ProbeRequestArgs,
+    Turn,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -989,6 +990,122 @@ async fn run_turn(
     Ok(Outcome::Done)
 }
 
+/// How long `claude auth status` may take: it reads files, and asks nothing.
+const AUTH_STATUS_WITHIN: Duration = Duration::from_secs(20);
+
+/// What `claude auth status --json` said (`{"loggedIn", "authMethod",
+/// "configDirectory", …}`, exit 0 when signed in, 1 when not), as the
+/// connector's settings would see it. `Err` when it said nothing usable:
+/// a version without the command, say, which isn't "signed out".
+pub fn parse_auth_status(
+    stdout: &str,
+    stderr: &str,
+    success: bool,
+    settings: &Settings,
+    api_key: &str,
+) -> Result<ConnectorAuth, String> {
+    let json = stdout
+        .find('{')
+        .and_then(|start| serde_json::from_str::<Value>(stdout[start..].trim()).ok());
+    let Some(json) = json else {
+        let said = [stderr, stdout]
+            .iter()
+            .flat_map(|t| t.lines())
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .unwrap_or("")
+            .to_string();
+        let lower = said.to_lowercase();
+        if lower.contains("unknown command")
+            || lower.contains("unknown option")
+            || lower.contains("too many arguments")
+        {
+            return Err(
+                "This Claude Code can't report its sign-in (`claude auth status` is from v2.1.268): update it."
+                    .into(),
+            );
+        }
+        return Err(if said.is_empty() {
+            "`claude auth status` said nothing.".into()
+        } else {
+            format!("`claude auth status`: {said}")
+        });
+    };
+    let method = json
+        .get("authMethod")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
+    let mut auth = ConnectorAuth {
+        logged_in: json
+            .get("loggedIn")
+            .and_then(|l| l.as_bool())
+            .unwrap_or(success)
+            && method.as_deref() != Some("none"),
+        method,
+        config_dir: json
+            .get("configDirectory")
+            .and_then(|d| d.as_str())
+            .map(str::to_string),
+        detail: None,
+    };
+    let via_key = auth.method.as_deref() == Some("api_key")
+        || json.get("apiKeySource").is_some_and(|s| !s.is_null());
+    if settings.bare && !via_key {
+        // Bare mode reads no login and no token: a run would find none.
+        auth.logged_in = false;
+        auth.detail = Some("Bare mode reads no login or token: give it an API key.".into());
+    } else if !auth.logged_in {
+        auth.detail = Some(match settings.auth {
+            Auth::Login => "Not signed in: run `claude` once on this computer and log in, or use a token from `claude setup-token`.".into(),
+            Auth::Token => "Not signed in: paste a token from `claude setup-token` in the connector's settings.".into(),
+            Auth::ApiKey => "Not signed in: set an Anthropic API key in the connector's settings.".into(),
+        });
+    } else if settings.auth != Auth::Login && api_key.trim().is_empty() {
+        auth.detail = Some(format!(
+            "No {} is set, so runs use this computer's login.",
+            if settings.auth == Auth::Token {
+                "token"
+            } else {
+                "API key"
+            }
+        ));
+    } else if settings.auth != Auth::Login {
+        auth.detail =
+            Some("The token or key is taken as good until a request says otherwise.".into());
+    }
+    Ok(auth)
+}
+
+/// `claude auth status --json`, with the turn's environment: the sign-in
+/// a chat's run would have.
+async fn check_auth(
+    program: &str,
+    settings: &Settings,
+    env: &[(String, String)],
+    api_key: &str,
+) -> Result<ConnectorAuth, String> {
+    let mut cmd = tokio::process::Command::from(command(program, None, env));
+    cmd.args(["auth", "status", "--json"])
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(AUTH_STATUS_WITHIN, cmd.output())
+        .await
+        .map_err(|_| {
+            format!(
+                "`{program} auth status` didn't answer in {} s.",
+                AUTH_STATUS_WITHIN.as_secs()
+            )
+        })?
+        .map_err(|e| format!("Couldn't run {program}: {e}"))?;
+    parse_auth_status(
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+        out.status.success(),
+        settings,
+        api_key,
+    )
+}
+
 impl Connector for ClaudeCode {
     fn kind(&self) -> ConnectorKind {
         ConnectorKind::ClaudeCode
@@ -1027,6 +1144,9 @@ impl Connector for ClaudeCode {
                 models: models(),
                 request: None,
                 notes: Vec::new(),
+                auth: check_auth(&program, &settings, &env, &args.api_key)
+                    .await
+                    .ok(),
             };
             match settings.auth {
                 Auth::Login => probe.notes.push(
@@ -1050,6 +1170,18 @@ impl Connector for ClaudeCode {
                 probe.request = Some(test_request(&program, &settings, &env).await?);
             }
             Ok(probe)
+        })
+    }
+
+    fn auth_status<'a>(
+        &'a self,
+        args: &'a ProbeRequestArgs,
+    ) -> BoxFuture<'a, Result<ConnectorAuth, String>> {
+        Box::pin(async move {
+            let settings = Settings::from_value(&args.settings);
+            let program = resolve_program(&settings.program)?;
+            let env = env_for(&settings, &args.api_key);
+            check_auth(&program, &settings, &env, &args.api_key).await
         })
     }
 
@@ -1413,6 +1545,144 @@ mod tests {
         let mut events = Vec::new();
         p.line(&json!({"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":500,"error":"overloaded"}).to_string(), &mut |e| events.push(e));
         assert_eq!(names(&events), ["retrying:2"]);
+    }
+
+    #[test]
+    fn auth_status_reads_the_programs_answer() {
+        let login = Settings::default();
+        let ok = parse_auth_status(
+            r#"{"loggedIn": true, "authMethod": "claude.ai", "configDirectory": "/home/ann/.claude"}"#,
+            "",
+            true,
+            &login,
+            "",
+        )
+        .unwrap();
+        assert!(ok.logged_in);
+        assert_eq!(ok.method.as_deref(), Some("claude.ai"));
+        assert_eq!(ok.config_dir.as_deref(), Some("/home/ann/.claude"));
+        assert_eq!(ok.detail, None);
+        let out = parse_auth_status(
+            r#"{"loggedIn": false, "authMethod": "none"}"#,
+            "",
+            false,
+            &login,
+            "",
+        )
+        .unwrap();
+        assert!(!out.logged_in);
+        assert!(out.detail.unwrap().contains("run `claude` once"));
+        // `none` is signed out whatever `loggedIn` says.
+        assert!(
+            !parse_auth_status(
+                r#"{"loggedIn": true, "authMethod": "none"}"#,
+                "",
+                true,
+                &login,
+                ""
+            )
+            .unwrap()
+            .logged_in
+        );
+        // Without `loggedIn`, the exit status says.
+        assert!(
+            parse_auth_status("{}", "", true, &login, "")
+                .unwrap()
+                .logged_in
+        );
+        assert!(
+            !parse_auth_status("{}", "", false, &login, "")
+                .unwrap()
+                .logged_in
+        );
+    }
+
+    #[test]
+    fn auth_status_follows_the_connectors_settings() {
+        let token = Settings::from_value(&json!({ "auth": "token" }));
+        let signed = r#"{"loggedIn": true, "authMethod": "oauth_token"}"#;
+        let with = parse_auth_status(signed, "", true, &token, "tok").unwrap();
+        assert!(with.detail.unwrap().contains("taken as good"));
+        let without = parse_auth_status(
+            r#"{"loggedIn": true, "authMethod": "claude.ai"}"#,
+            "",
+            true,
+            &token,
+            "",
+        )
+        .unwrap();
+        assert!(without.detail.unwrap().contains("No token is set"));
+        let out = parse_auth_status(r#"{"loggedIn": false}"#, "", false, &token, "").unwrap();
+        assert!(out.detail.unwrap().contains("setup-token"));
+        // Bare mode reads no login: only a key counts.
+        let bare = Settings::from_value(&json!({ "bare": true }));
+        assert!(
+            !parse_auth_status(signed, "", true, &bare, "")
+                .unwrap()
+                .logged_in
+        );
+        let keyed =
+            r#"{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}"#;
+        assert!(
+            parse_auth_status(keyed, "", true, &bare, "sk")
+                .unwrap()
+                .logged_in
+        );
+    }
+
+    #[test]
+    fn a_version_without_the_check_is_unknown_not_signed_out() {
+        let err = parse_auth_status(
+            "",
+            "error: unknown command 'auth'",
+            false,
+            &Settings::default(),
+            "",
+        )
+        .unwrap_err();
+        assert!(err.contains("update it"), "{err}");
+        let err = parse_auth_status("", "", false, &Settings::default(), "").unwrap_err();
+        assert!(err.contains("said nothing"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auth_status_runs_the_program_with_the_runs_environment() {
+        let dir = crate::testing::temp_dir();
+        let program = fake_claude(
+            &dir.0,
+            r#"
+echo "$@" > "$(dirname "$0")/args.txt"
+if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+  echo '{"loggedIn": true, "authMethod": "oauth_token"}'
+else
+  echo '{"loggedIn": false, "authMethod": "none"}'; exit 1
+fi
+"#,
+        );
+        let args = |key: &str| ProbeRequestArgs {
+            kind: ConnectorKind::ClaudeCode,
+            settings: json!({ "program": program, "auth": "token" }),
+            api_key: key.into(),
+            request: false,
+        };
+        let signed = ClaudeCode.auth_status(&args("tok")).await.unwrap();
+        assert!(signed.logged_in);
+        assert_eq!(signed.method.as_deref(), Some("oauth_token"));
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("args.txt"))
+                .unwrap()
+                .trim(),
+            "auth status --json"
+        );
+        let out = ClaudeCode.auth_status(&args("")).await.unwrap();
+        assert!(!out.logged_in);
+        // Not installed: it can't say.
+        let missing = ProbeRequestArgs {
+            settings: json!({ "program": "/no/such/claude" }),
+            ..args("")
+        };
+        assert!(ClaudeCode.auth_status(&missing).await.is_err());
     }
 
     #[test]

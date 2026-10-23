@@ -5,6 +5,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Provider } from '../types';
 import {
+  authLine,
+  authStateOf,
+  cantRun,
+  checkConnectorsOnStart,
+  CONNECTOR_AUTH_NOTE,
+  connectorAuthState,
+  resetStartCheck,
+  type ConnectorAuth,
   claudeCodeSettings,
   CLAUDE_CODE_DEFAULTS,
   connectorHeadline,
@@ -19,6 +27,10 @@ import {
   stepLabel,
 } from './connectors';
 import { providersSummary, resolveProfile } from './aiSettings';
+import { dismiss, notifications } from './notifications';
+
+// The notifications' timers are the window's.
+(globalThis as any).window ??= { setTimeout, clearTimeout };
 
 const openai: Provider = {
   id: 'p1',
@@ -157,4 +169,125 @@ test('a reply’s record: steps in a few words, and a headline with what it used
   assert.equal(connectorHeadline({ kind: 'claude-code' }, true), 'Claude Code · working…');
   assert.deepEqual(connectorUsage(meta), { inputTokens: 12_000, outputTokens: 300, cost: 0.04 });
   assert.equal(connectorUsage({ kind: 'claude-code' }), null);
+});
+
+/*
+ * Sign-in at start (checkConnectorsOnStart)
+ */
+
+const withModel = (id: string, name: string): Provider => ({
+  ...newConnector('claude-code'),
+  id,
+  name,
+  models: [{ id: 'sonnet', enabled: true }],
+});
+
+test('at start, each connector a chat can pick is checked once, and one signed out is said', async () => {
+  resetStartCheck();
+  dismiss(CONNECTOR_AUTH_NOTE);
+  const asked: string[] = [];
+  let opened = 0;
+  const signedIn = withModel('c1', 'Claude Code');
+  const signedOut = withModel('c2', 'Claude Code (work)');
+  const unused = { ...withModel('c3', 'Spare'), models: [{ id: 'opus', enabled: false }] };
+  const check = async (p: Provider): Promise<ConnectorAuth> => {
+    asked.push(p.id);
+    return p.id === 'c1'
+      ? { loggedIn: true, method: 'claude.ai' }
+      : { loggedIn: false, method: 'none', detail: 'Not signed in: run `claude` once.' };
+  };
+  const found = await checkConnectorsOnStart(
+    [openai, signedIn, signedOut, unused],
+    () => opened++,
+    check
+  );
+  assert.deepEqual(asked.sort(), ['c1', 'c2'], 'only connectors with an enabled model');
+  assert.equal(found.c1.state, 'signedIn');
+  assert.equal(found.c2.state, 'signedOut');
+  assert.equal(connectorAuthState('c2')?.state, 'signedOut', 'kept for the pages');
+  const note = notifications().find((n) => n.id === CONNECTOR_AUTH_NOTE);
+  assert.ok(note);
+  assert.equal(note.kind, 'warning');
+  assert.equal(note.title, 'Claude Code (work) isn’t signed in');
+  assert.match(note.message ?? '', /run `claude` once.*fail until it is/);
+  note.actions![0].run();
+  assert.equal(opened, 1);
+  // Once per window: a second call checks nothing.
+  assert.deepEqual(await checkConnectorsOnStart([signedOut], () => opened++, check), {});
+  assert.equal(asked.length, 2);
+  // The menu line says how many can't run.
+  assert.equal(
+    connectorsSummary([openai, signedIn, signedOut]),
+    '2 connectors, 2 models enabled · 1 can’t run: not signed in or installed'
+  );
+  dismiss(CONNECTOR_AUTH_NOTE);
+});
+
+test('at start, a missing program is said; a check that can’t say is left alone', async () => {
+  resetStartCheck();
+  dismiss(CONNECTOR_AUTH_NOTE);
+  const missing = withModel('m1', 'Claude Code');
+  const old = withModel('m2', 'Old Claude');
+  const check = async (p: Provider): Promise<ConnectorAuth> => {
+    throw new Error(
+      p.id === 'm1'
+        ? "claude isn't installed, or isn't on the PATH."
+        : "This Claude Code can't report its sign-in: update it."
+    );
+  };
+  const found = await checkConnectorsOnStart([missing, old], () => {}, check);
+  assert.deepEqual(found.m1, {
+    state: 'unknown',
+    message: "claude isn't installed, or isn't on the PATH.",
+    missing: true,
+  });
+  assert.equal(found.m2.state, 'unknown');
+  assert.ok(!cantRun(found.m2));
+  const note = notifications().find((n) => n.id === CONNECTOR_AUTH_NOTE);
+  assert.equal(note?.title, 'Claude Code isn’t installed');
+  dismiss(CONNECTOR_AUTH_NOTE);
+  // No connector a chat can pick: nothing is checked, nothing said.
+  resetStartCheck();
+  assert.deepEqual(await checkConnectorsOnStart([openai], () => {}, check), {});
+  assert.equal(
+    notifications().find((n) => n.id === CONNECTOR_AUTH_NOTE),
+    undefined
+  );
+});
+
+test('several connectors that can’t run share one notification', async () => {
+  resetStartCheck();
+  dismiss(CONNECTOR_AUTH_NOTE);
+  const out = async (): Promise<ConnectorAuth> => ({ loggedIn: false, detail: 'Not signed in.' });
+  await checkConnectorsOnStart([withModel('a', 'A'), withModel('b', 'B')], () => {}, out);
+  const notes = notifications().filter((n) => n.id === CONNECTOR_AUTH_NOTE);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].title, '2 connectors can’t run');
+  assert.equal(notes[0].message, 'A: Not signed in.\nB: Not signed in.');
+  dismiss(CONNECTOR_AUTH_NOTE);
+  resetStartCheck();
+});
+
+test('sign-in lines for the rows', () => {
+  assert.equal(authLine(undefined), null);
+  assert.deepEqual(authLine({ state: 'checking' }), { text: 'Checking sign-in…', warning: false });
+  assert.deepEqual(authLine({ state: 'signedIn', auth: { loggedIn: true, method: 'claude.ai' } }), {
+    text: 'Signed in (claude.ai login)',
+    warning: false,
+  });
+  assert.deepEqual(
+    authLine({
+      state: 'signedIn',
+      auth: { loggedIn: true, method: 'oauth_token', detail: 'The token is taken as good.' },
+    }),
+    { text: 'Signed in (token). The token is taken as good.', warning: false }
+  );
+  assert.deepEqual(authLine({ state: 'signedOut', auth: { loggedIn: false } }), {
+    text: 'Not signed in.',
+    warning: true,
+  });
+  assert.deepEqual(authLine(authStateOf({ error: new Error('timed out') })), {
+    text: 'Sign-in unknown: timed out',
+    warning: false,
+  });
 });

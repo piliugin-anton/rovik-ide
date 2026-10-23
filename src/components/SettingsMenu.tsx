@@ -18,7 +18,7 @@ import {
 } from '../lib/aiSettingsStore';
 import { editorSettings, editorSummary } from '../lib/editorSettings';
 import { providersSummary } from '../lib/aiSettings';
-import { connectorsSummary, splitSources } from '../lib/connectors';
+import { cantRun, connectorAuthState, connectorsSummary, splitSources } from '../lib/connectors';
 import { agentRunsSummary, permissionsSummary } from '../lib/permissions';
 import { subagentSummary } from '../lib/subagentSettings';
 import { autopilotSummary } from '../lib/autopilotSettings';
@@ -124,7 +124,9 @@ export default function SettingsMenu(props: SettingsMenuProps) {
           state={ai(() => connectorsSummary(aiProviders()))}
           warning={
             aiSettingsLoaded() &&
-            splitSources(aiProviders()).connectors.some((c) => !c.models.some((m) => m.enabled))
+            splitSources(aiProviders()).connectors.some(
+              (c) => !c.models.some((m) => m.enabled) || cantRun(connectorAuthState(c.id))
+            )
           }
         />
         <Item

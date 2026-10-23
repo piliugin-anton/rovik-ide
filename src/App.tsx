@@ -131,7 +131,13 @@ import {
   openAppSettings,
   rereadAiSettingsOnFocus,
 } from './lib/appSettings';
-import { followAiSettingsRevision, reloadAiSettings } from './lib/aiSettingsStore';
+import {
+  aiProviders,
+  aiSettingsLoadFailed,
+  followAiSettingsRevision,
+  reloadAiSettings,
+} from './lib/aiSettingsStore';
+import { checkConnectorsOnStart } from './lib/connectors';
 import { dismissBootSplash } from './lib/bootSplash';
 
 let unlistenFSChanges: (() => void) | undefined;
@@ -225,7 +231,17 @@ export default function App() {
   // now, so the dialog opens on them, again each time it opens, and again
   // when another window may have saved them (this one came to the front:
   // rereadAiSettingsOnFocus, below).
-  onMount(() => void reloadAiSettings().catch((err) => console.error(err)));
+  // Then, once: whether each connector a chat can pick is signed in
+  // (lib/connectors.ts), with a warning for any that can't run.
+  onMount(
+    () =>
+      void reloadAiSettings()
+        .then(() => {
+          if (aiSettingsLoadFailed()) return;
+          return checkConnectorsOnStart(aiProviders(), () => openAppSettings('connectors'));
+        })
+        .catch((err) => console.error(err))
+  );
   followAiSettingsRevision();
   const [cursorInfo, setCursorInfo] = createSignal<CursorInfo | null>(null);
 
