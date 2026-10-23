@@ -373,6 +373,10 @@ pub struct Run {
     pub(super) plan_spent_from: Option<i64>,
     /// The last plan submitted, held or saved: what `edits` apply to.
     pub(super) plan_draft: Option<String>,
+    /// The last plan as the agent sent it, before the IDE fixed its form
+    /// (Balanced Autopilot): what an edit copied from its own submission
+    /// matches when the fixed draft doesn't.
+    pub(super) plan_sent: Option<String>,
     /// Plan steps step workers finished in this run (worker.rs, D03).
     pub(super) worker_steps: Vec<super::worker::DoneStep>,
     /// Files the test writer wrote, those the lead changed after it, and
@@ -1286,6 +1290,7 @@ impl Run {
             plan_format_rejections: 0,
             plan_spent_from: None,
             plan_draft: None,
+            plan_sent: None,
             worker_steps: Vec::new(),
             test_writer_files: Vec::new(),
             tests_changed: Vec::new(),
