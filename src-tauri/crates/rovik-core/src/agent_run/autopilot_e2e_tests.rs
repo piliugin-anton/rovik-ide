@@ -1314,6 +1314,96 @@ async fn a_plan_review_that_cant_report_keeps_its_high_finding_open() {
     );
 }
 
+/// Step 9: a first plan review whose report can't be read (out of format
+/// twice, though it reads as a finding) isn't a pass: it's tried again,
+/// never saved unreviewed, and the review that reads decides.
+#[tokio::test]
+async fn an_unreadable_plan_review_is_tried_again_not_skipped() {
+    let h = task_project().await;
+    let garbled = "Step 1 has a problem: [high] `check.js` doesn't read `ok.txt`.";
+    let high = "## Findings\n\n1. [high] Step 1 — `check.js` doesn't read `ok.txt`\n   \
+        - Scenario: the test still fails after the change.\n   \
+        - Fix: read `check.js` and change the file it reads.\n   \
+        - Confidence: confirmed";
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text(garbled), Reply::Text(garbled), Reply::Text(high)],
+        )],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            Reply::Text("The plan is blocked."),
+        ],
+    )
+    .await;
+    let mut request = task_request(&h, &url);
+    request.config.as_mut().unwrap().autopilot.plan_fix.max_rounds = 1;
+    h.start(request).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ],
+        "{records:#?}"
+    );
+    assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
+    assert_eq!(
+        records[1].summary.as_deref(),
+        Some("Blocked after 1 review (review limit): 1 finding open")
+    );
+    let messages = h.messages().await;
+    assert!(
+        !result_of(&messages, "p1").content.contains("Review skipped"),
+        "{}",
+        result_of(&messages, "p1").content
+    );
+}
+
+/// A plan reviewer that says it's blocked reviewed nothing: the plan is
+/// blocked, never saved unreviewed.
+#[tokio::test]
+async fn a_blocked_plan_reviewer_blocks_the_plan() {
+    let h = task_project().await;
+    let (url, _) = model_routed(
+        vec![(
+            PLAN_REVIEW,
+            vec![Reply::Text("## Blocked\n\nThe project's files can't be read here.")],
+        )],
+        vec![
+            Reply::Call {
+                id: "p1",
+                name: "submit_plan",
+                args: json!({ "plan": TASK_PLAN }),
+            },
+            Reply::Text("The plan is blocked."),
+        ],
+    )
+    .await;
+    h.start(task_request(&h, &url)).await;
+    let records = stages_until(&h, "the delivery", delivered).await;
+    assert_eq!(
+        names(&records),
+        [
+            (Stage::Plan, Status::Done),
+            (Stage::PlanReview, Status::Failed),
+            (Stage::Deliver, Status::Failed),
+        ],
+        "{records:#?}"
+    );
+    assert_eq!(records[1].outcome.as_deref(), Some("plan-blocked"));
+    let messages = h.messages().await;
+    let result = &result_of(&messages, "p1").content;
+    assert!(result.contains("The plan wasn't saved, and won't be"), "{result}");
+    assert!(result.contains("no plan reviewer could run"), "{result}");
+}
+
 /// S02 (4.2): the plan review's high finding the planner never fixes: an
 /// Autopilot task's three reviews, then the plan is blocked: never saved,
 /// never implemented, the task ending `plan-blocked`. A submit after that
