@@ -842,6 +842,21 @@ fn remove_locked(sys: &System, kind: Kind, version: &str) -> Result<(), String> 
 pub(super) fn prune(sys: &System, days: u64) -> Result<(), String> {
     let limit = Duration::from_secs(days.saturating_mul(86400));
     let _lock = lock(sys)?;
+    // A version a chat runs leaves only its programs' access time: chats
+    // don't ask root for a version that's there. Where the filesystem
+    // keeps none, a version in use would look unused, so nothing goes.
+    let root = sys.path(TOOLCHAINS);
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    let real = std::fs::canonicalize(&root).unwrap_or(root);
+    if noatime_in(&mountinfo, &real) {
+        println!(
+            "Nothing pruned: {TOOLCHAINS} is on a filesystem mounted noatime, which keeps no \
+             record of when a version last ran, so one in use would look unused. Remove a \
+             version you know is unused with: sudo {} admin toolchain remove KIND VERSION",
+            super::INSTALLED
+        );
+        return Ok(());
+    }
     let mut pruned = 0usize;
     for kind in [Kind::Rust, Kind::Node] {
         for (version, used) in versions(sys, kind) {
@@ -857,6 +872,29 @@ pub(super) fn prune(sys: &System, days: u64) -> Result<(), String> {
     }
     println!("{pruned} toolchain(s) gone: what no chat used for {days} day(s) is removed.");
     Ok(())
+}
+
+/// Whether `path` is on a mount `/proc/self/mountinfo`'s text says is
+/// `noatime`: the longest mount point it's under, by its own options
+/// (field 6).
+fn noatime_in(mountinfo: &str, path: &Path) -> bool {
+    let unescape = |field: &str| {
+        field
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\")
+    };
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(' ').collect();
+            let point = PathBuf::from(unescape(fields.get(4)?));
+            let options = fields.get(5)?;
+            path.starts_with(&point).then(|| (point, options.split(',').any(|o| o == "noatime")))
+        })
+        .max_by_key(|(point, _)| point.components().count())
+        .is_some_and(|(_, noatime)| noatime)
 }
 
 /// A version's files; under another root too, where the dry run's files
@@ -1104,4 +1142,22 @@ mod tests {
         setup(&sys).unwrap();
         assert_eq!(std::fs::read_to_string(sys.path(UNIT)).unwrap(), unit);
     }
+
+    /// `prune` trusts access times only where the mount keeps them: the
+    /// longest mount point a path is under decides.
+    #[test]
+    fn noatime_is_read_from_the_mount_a_path_is_on() {
+        let info = "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n\
+                    30 22 8:2 / /opt rw,noatime shared:2 - ext4 /dev/sda2 rw\n\
+                    31 30 8:3 / /opt/rovik/toolchains rw,relatime shared:3 - xfs /dev/sda3 rw\n\
+                    32 22 8:4 / /srv/my\\040disk rw,noatime shared:4 - ext4 /dev/sda4 rw\n";
+        assert!(!noatime_in(info, Path::new("/home/me")));
+        assert!(noatime_in(info, Path::new("/opt/other")));
+        assert!(!noatime_in(info, Path::new("/opt/rovik/toolchains/rust")));
+        assert!(noatime_in(info, Path::new("/srv/my disk/toolchains")));
+        // `/opt2` isn't under `/opt`.
+        assert!(!noatime_in(info, Path::new("/opt2/x")));
+        assert!(!noatime_in("", Path::new("/opt")));
+    }
+
 }
