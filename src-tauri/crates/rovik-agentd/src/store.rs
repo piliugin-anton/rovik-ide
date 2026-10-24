@@ -61,6 +61,11 @@ pub struct ProjectState {
     /// server push them (D15, H04): its `origin`, as an SSH address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
+    /// The computer that carried it here: only it changes the project or
+    /// reads its packs. None in a state saved before this was kept: the
+    /// next computer to carry it here takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -372,29 +377,49 @@ impl Store {
         self.lock().check_owner(computer, dialog_id)
     }
 
+    /// Whether `computer` may change project `id` or read its packs: it
+    /// carried it here, or no computer has yet.
+    pub fn check_project_owner(&self, computer: &str, id: &str) -> Result<(), Fail> {
+        self.lock().check_project_owner(computer, id)
+    }
+
     /// The project as its computer last described it (6.4).
     /// A `ProjectEnsure`'s project. A remote it doesn't name stays as it was:
     /// only a computer that has this server push its results names one.
     pub fn ensure_project(
         &self,
         project: &Project,
+        computer: &str,
         settings: Option<Value>,
         remote: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Fail> {
+        // Joined to a chat's worktree: never a way out of it.
+        if !crate::work::plain_subpath(&project.subpath) {
+            return Err(Fail::new(
+                FailCode::BadRequest,
+                format!(
+                    "{:?}: not a folder inside the project's repository",
+                    project.subpath
+                ),
+            ));
+        }
         let _writing = self.writing();
         let mut inner = self.lock();
+        inner.check_project_owner(computer, &project.id)?;
         let known = inner.state.projects.get(&project.id);
         let state = ProjectState {
             name: project.name.clone(),
             subpath: project.subpath.clone(),
             settings,
             remote: remote.or_else(|| known.and_then(|p| p.remote.clone())),
+            computer: Some(computer.to_string()),
         };
         if inner.state.projects.get(&project.id) == Some(&state) {
             return Ok(());
         }
         inner.state.projects.insert(project.id.clone(), state);
         self.save(inner)
+            .map_err(|e| Fail::new(FailCode::Internal, e))
     }
 
     pub fn project(&self, id: &str) -> Option<ProjectState> {
@@ -846,6 +871,21 @@ impl Inner {
             return Err(Fail::new(
                 FailCode::NotOwner,
                 "Another computer moved this chat to the server.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_project_owner(&self, computer: &str, id: &str) -> Result<(), Fail> {
+        let owner = self
+            .state
+            .projects
+            .get(id)
+            .and_then(|p| p.computer.as_deref());
+        if owner.is_some_and(|owner| owner != computer) {
+            return Err(Fail::new(
+                FailCode::NotOwner,
+                "Another computer carried this project to the server.",
             ));
         }
         Ok(())

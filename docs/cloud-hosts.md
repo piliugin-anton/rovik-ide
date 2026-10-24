@@ -35,11 +35,16 @@ and the daemon refuses to start if either is open to anyone else.
 The first person to deploy from the app installs Rovik and becomes its
 administrator. That takes `sudo`. If sudo asks for a password, the app
 asks for it once and doesn't keep it. Without sudo, the app shows the
-command for someone with root to run:
+command for someone with root to run. It boils down to this:
 
 ```sh
 sudo /path/to/rovik-agentd install --admin USER
 ```
+
+The build is uploaded to the user's home, so before root runs it, root
+copies it into a folder of its own and checks the copy's SHA-256 against
+the build's: another process of the user's can't swap the file between
+the app's check and root running it.
 
 The installer copies the binary, writes `agentd.toml` with USER as the
 administrator and with limits sized to the machine, writes the units, adds
@@ -273,6 +278,14 @@ freed.
   with the same folders, but seeing the other processes; with neither,
   they're refused. `rovik-agentd doctor` and the app's connection test
   report which. `admin bubblewrap` adds both again. A command that names `~/.rovik` still needs the user's approval.
+  The sandbox also closes the user's local sockets to them (the SSH and
+  GPG agents', the session bus, everything in `/run/user/<uid>`, the
+  system bus and the container daemons'), and empties single login files
+  (`~/.netrc`, `~/.git-credentials`, `~/.npmrc`, cargo's token).
+- Each of a user's computers sees its own projects on the daemon: the
+  project's repository, packs, refs, settings and remote belong to the
+  computer that carried it there, and another computer of the same
+  account is refused them, as it is another computer's chats.
 - The shared caches are one folder per server: the `rovik` group reads
   and writes them, so every daemon's user can read what another's chat
   downloaded. Nothing private goes in them: npm's only for `npm ci` with a

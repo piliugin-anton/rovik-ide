@@ -79,17 +79,27 @@ impl Update {
     }
 }
 
-/// Whether a client may push to `name`: under `PUSHED_REFS`, in letters,
-/// digits, `-`, `_`, `.` and `/`, with no empty or dotted part.
+/// Whether a client may push to `name`: a chat's snapshot ref
+/// ([`snapshot_ref`]), the only one a client moves (the others under
+/// `PUSHED_REFS` are the daemon's), its chat one part of letters, digits,
+/// `-`, `_` and `.`, not dotted at either end. So every pushed ref names
+/// its chat, whose owner the daemon checks: a malformed one
+/// (`refs/rovik/chats/<chat>` alone) would skip that check and, created,
+/// block every chat's snapshot ref under it.
 pub fn pushable(name: &str) -> bool {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "-_./".contains(c);
-    let parts_fine = name.split('/').all(|part| {
-        !part.is_empty()
-            && !part.starts_with('.')
-            && !part.ends_with('.')
-            && !part.ends_with(".lock")
-    });
-    name.starts_with(PUSHED_REFS) && name.chars().all(plain) && parts_fine
+    let Some(chat) = name
+        .strip_prefix(PUSHED_REFS)
+        .and_then(|rest| rest.strip_prefix("chats/"))
+        .and_then(|rest| rest.strip_suffix("/snapshot"))
+    else {
+        return false;
+    };
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_.".contains(c);
+    !chat.is_empty()
+        && chat.chars().all(plain)
+        && !chat.starts_with('.')
+        && !chat.ends_with('.')
+        && !chat.ends_with(".lock")
 }
 
 /// Whether `id` is a commit id as git writes it: 40 hex digits.

@@ -155,7 +155,7 @@ impl Daemon {
                 settings,
                 excludes,
                 remote,
-            } => work::ensure_project(self, project, settings, excludes, remote).await,
+            } => work::ensure_project(self, computer, project, settings, excludes, remote).await,
             Request::WorkSync {
                 dialog_id,
                 project,
@@ -164,6 +164,8 @@ impl Daemon {
                 changes,
                 mark,
             } => {
+                // A chat's worktree is made of its computer's project only.
+                self.store.check_project_owner(computer, &project)?;
                 let at = (dialog_id.as_str(), project.as_str());
                 work::sync(self, computer, at, &snapshot, excludes, changes, mark).await
             }
@@ -193,7 +195,10 @@ impl Daemon {
                 project,
                 snapshot,
                 excludes,
-            } => work::recheck(self, computer, &dialog_id, &project, &snapshot, excludes).await,
+            } => {
+                self.store.check_project_owner(computer, &project)?;
+                work::recheck(self, computer, &dialog_id, &project, &snapshot, excludes).await
+            }
             Request::WorkLanded {
                 dialog_id,
                 commit,

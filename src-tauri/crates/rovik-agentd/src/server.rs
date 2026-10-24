@@ -296,9 +296,13 @@ async fn put_blob(
 /// The project's refs, which a client builds its pack against (6.4).
 async fn pack_refs(
     State(daemon): State<Arc<Daemon>>,
-    _: Computer,
+    Computer(computer): Computer,
     Path(project): Path<String>,
 ) -> Response {
+    // Another computer's project's refs (its chats') aren't this one's.
+    if let Err(fail) = daemon.store.check_project_owner(&computer, &project) {
+        return failed(fail);
+    }
     let projects = daemon.projects.clone();
     match rt::spawn_blocking(move || projects.refs(&project)).await {
         Ok(Ok(refs)) => json(StatusCode::OK, &refs),
@@ -322,11 +326,20 @@ async fn push_pack(
             "A push names a ref under refs/rovik/, and the commits it moves from and to.",
         ));
     };
-    // A chat's refs move only for the computer whose chat it is.
-    if let Some(chat) = chat_of_ref(&update.name) {
-        if let Err(fail) = daemon.store.check_owner(&computer, chat) {
-            return failed(fail);
-        }
+    // A project's refs move only for the computer that carried it here.
+    if let Err(fail) = daemon.store.check_project_owner(&computer, &project) {
+        return failed(fail);
+    }
+    // A chat's refs move only for the computer whose chat it is, and every
+    // ref a client may push names its chat (`packs::pushable`).
+    let Some(chat) = chat_of_ref(&update.name) else {
+        return failed(Fail::new(
+            FailCode::BadRequest,
+            "A push moves a chat's snapshot ref.",
+        ));
+    };
+    if let Err(fail) = daemon.store.check_owner(&computer, chat) {
+        return failed(fail);
     }
     if let Err(fail) = room_on_disk(&daemon).await {
         return failed(fail);
@@ -371,10 +384,14 @@ fn chat_of_ref(name: &str) -> Option<&str> {
 /// as it's built.
 async fn fetch_pack(
     State(daemon): State<Arc<Daemon>>,
-    _: Computer,
+    Computer(computer): Computer,
     Path(project): Path<String>,
     body: Bytes,
 ) -> Response {
+    // Nor its objects, the code of its chats.
+    if let Err(fail) = daemon.store.check_project_owner(&computer, &project) {
+        return failed(fail);
+    }
     let Ok(fetch) = serde_json::from_slice::<Fetch>(&body) else {
         return failed(Fail::new(FailCode::BadRequest, "The body isn't a fetch."));
     };

@@ -1495,7 +1495,7 @@ fn autopilot_settings_round_trip_and_default_when_missing() {
 /// The bodies of `/packs` (4.4), and the query of a push.
 #[test]
 fn pack_bodies_round_trip() {
-    use crate::packs::{pushable, Fetch, Pushed, Refs, Update};
+    use crate::packs::{pushable, snapshot_ref, Fetch, Pushed, Refs, Update};
     let id = "0123456789abcdef0123456789abcdef01234567";
     let refs = Refs {
         refs: [("refs/rovik/chats/c/snapshot".to_string(), id.to_string())].into(),
@@ -1524,9 +1524,20 @@ fn pack_bodies_round_trip() {
         "refs/rovik/../x",
         "refs/rovik/a b",
         "refs/rovik/x.lock",
+        // Only a chat's snapshot: never a chat's ref without its leaf,
+        // which would skip the owner's check and block every ref under it,
+        // nor one of the daemon's own.
+        "refs/rovik/chats/c",
+        "refs/rovik/chats/c/",
+        "refs/rovik/chats//snapshot",
+        "refs/rovik/chats/a/b/snapshot",
+        "refs/rovik/chats/c/result",
+        "refs/rovik/chats/.c/snapshot",
+        "refs/rovik/snapshots/x",
     ] {
         assert!(!pushable(name), "{name}");
     }
+    assert!(pushable(&snapshot_ref("c-1_2.x")));
     let unsafe_query = format!("ref=refs/rovik/a&b=c&new={id}&ref=refs/heads/main");
     assert_eq!(Update::parse(&unsafe_query), None);
     assert_eq!(Update::parse("ref=refs/rovik/a&new=HEAD"), None);

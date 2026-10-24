@@ -129,11 +129,11 @@ async fn place(
         subpath: project.subpath.clone(),
         settings: bundle.settings.clone(),
         remote: None,
+        computer: Some(computer.to_string()),
     };
     daemon
         .store
-        .ensure_project(&project, bundle.settings.clone(), None)
-        .map_err(internal)?;
+        .ensure_project(&project, computer, bundle.settings.clone(), None)?;
     let at = (project.id.as_str(), &state);
     let (worktree, root) = work::new_worktree(daemon, &chat, at, base, changes, excludes).await?;
 

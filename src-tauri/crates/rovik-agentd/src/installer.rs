@@ -152,17 +152,31 @@ pub fn instance(user: &str) -> String {
     format!("rovik-agentd@{user}.service")
 }
 
+/// Where the installer's helpers (`systemctl`, `chown`, `apt-get`,
+/// `visudo`…) and what they run are found when it changes the system:
+/// root's own folders. It runs as root through sudo's NOPASSWD rule
+/// (`sudoers`), and a sudo without `secure_path` would hand on the
+/// caller's PATH, where a `systemctl` of theirs would run as root.
+pub const SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
 /// The system the commands change: `/`, or a folder in its place.
 pub struct System {
     root: PathBuf,
 }
 
 impl System {
+    /// The system at `root`, `/` when None. The live one's commands find
+    /// their programs on [`SYSTEM_PATH`] only, set here, at the command's
+    /// start, before any thread or program does.
     pub fn new(root: Option<PathBuf>) -> System {
         let root = root.unwrap_or_else(|| PathBuf::from("/"));
         // As the file system has it: `/..` is `/`, and live.
         let root = root.canonicalize().unwrap_or(root);
-        System { root }
+        let system = System { root };
+        if system.live() {
+            std::env::set_var("PATH", SYSTEM_PATH);
+        }
+        system
     }
 
     fn live(&self) -> bool {
@@ -1138,6 +1152,30 @@ fn total_memory() -> u64 {
 mod tests {
     use super::*;
 
+    /// Run live, as root, the installer finds its helpers in the system's
+    /// own folders only; a dry run under another root leaves PATH as it is.
+    #[test]
+    fn the_installers_helpers_are_found_in_the_systems_folders_only() {
+        for dir in SYSTEM_PATH.split(':') {
+            assert!(
+                [
+                    "/usr/local/sbin",
+                    "/usr/local/bin",
+                    "/usr/sbin",
+                    "/usr/bin",
+                    "/sbin",
+                    "/bin"
+                ]
+                .contains(&dir),
+                "{dir}"
+            );
+        }
+        let before = std::env::var_os("PATH");
+        let dir = rovik_core::testing::temp_dir();
+        let _ = System::new(Some(dir.0.clone()));
+        assert_eq!(std::env::var_os("PATH"), before);
+    }
+
     /// An upgrade runs `admin bubblewrap`, which puts the shared parts in
     /// place whether or not bubblewrap's own package can be installed: a
     /// server installed before them gets both on the upgrade that ships
@@ -1151,7 +1189,10 @@ mod tests {
         assert!(shared.contains("admin toolchains setup"), "{shared}");
         assert!(shared.contains("There's no groupadd"), "{shared}");
         let neither = both(Err("one".into()), Err("two".into())).unwrap_err();
-        assert!(neither.contains("one") && neither.contains("two"), "{neither}");
+        assert!(
+            neither.contains("one") && neither.contains("two"),
+            "{neither}"
+        );
     }
 
     /// H07: the sudoers rule passes `visudo -c`, where there's a visudo.
