@@ -399,6 +399,45 @@ pub(super) async fn output(
         .map_err(|e| format!("Couldn't run {program}: {e}"))
 }
 
+/// Runs `program` with `input` and reads its output's lines until `pick`
+/// finds its answer in one: a request of its control protocol (the
+/// commands it takes) answered, without a turn of the model. The program
+/// is ended once it answered, or after `within`.
+pub(super) async fn answer<T>(
+    program: &str,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: &Path,
+    input: String,
+    within: Duration,
+    mut pick: impl FnMut(&str) -> Option<T>,
+) -> Result<T, String> {
+    let mut process = Process::spawn(program, args, env, Some(cwd), input, within, Vec::new())?;
+    let deadline = tokio::time::sleep(within);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            line = process.lines.recv() => match line {
+                Some(line) => {
+                    if let Some(found) = pick(&line) {
+                        process.kill(true);
+                        return Ok(found);
+                    }
+                }
+                None => {
+                    let (_, stderr) = process.finish().await;
+                    let why = stderr.lines().last().unwrap_or("it ended without answering");
+                    return Err(format!("{program}: {why}"));
+                }
+            },
+            _ = &mut deadline => {
+                process.kill(true);
+                return Err(format!("{program} didn't answer in {} s.", within.as_secs()));
+            }
+        }
+    }
+}
+
 /// The program's version, as `--version` prints it first.
 pub(super) async fn version(program: &str, env: &[(String, String)]) -> Result<String, String> {
     let args = ["--version".to_string()];

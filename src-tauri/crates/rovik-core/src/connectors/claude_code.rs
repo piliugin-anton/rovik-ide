@@ -30,8 +30,8 @@ use super::harness::{
 use super::mcp::{McpCall, McpReply, McpServer, SERVER_NAME, TOOL_PREFIX};
 use super::{
     harness_error, trimmed_text, trimmed_value, usage_value, Answers, Connector, ConnectorAuth,
-    ConnectorKind, ConnectorModel, ConnectorProbe, HarnessStep, ProbeRequest, ProbeRequestArgs,
-    SetupAction, SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn,
+    ConnectorCommand, ConnectorKind, ConnectorModel, ConnectorProbe, HarnessStep, ProbeRequest,
+    ProbeRequestArgs, SetupAction, SetupCommand, ToolAnswer, ToolAsk, ToolAsks, Turn,
 };
 use crate::agent::{ChatStreamEvent, ReasoningEffort};
 use crate::chat_request::{ChatError, ErrorKind};
@@ -542,6 +542,21 @@ pub struct Parser {
     /// The calls a message made: Rovik's turn ends with them (id, name,
     /// arguments).
     pub yielded: Option<Vec<(String, String, String)>>,
+    /// Its auto-compaction, as `autocompact_state` says: the window it
+    /// counts against and the tokens at which it compacts.
+    auto_compact: Option<(u64, u64)>,
+    /// The conversation was compacted in this run (`/compact`, or on its
+    /// own): its tokens before and after.
+    compacted: Option<(u64, u64)>,
+}
+
+/// A token count for the user: `35.3k`, `1.2M`, `950`.
+fn thousands(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1_000.0),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
 }
 
 /// A message's token counts as the stream gives them.
@@ -616,8 +631,54 @@ impl Parser {
             "assistant" => self.assistant(&value, parent, emit),
             "user" => self.tool_results(&value, emit),
             "result" => self.result(&value, emit),
+            "autocompact_state" => {
+                let state = value.get("value");
+                let count = |key: &str| state.and_then(|s| s.get(key)).and_then(Value::as_u64);
+                if let (Some(window), Some(threshold)) =
+                    (count("effective_window"), count("threshold"))
+                {
+                    self.auto_compact = Some((window, threshold));
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The conversation's context after the run, as the reply's usage keeps
+    /// it (`usage.connector.context`): what it holds (the last request's
+    /// tokens, or what a compaction left) of the model's window, and where
+    /// Claude Code compacts it. None when the run made no request and
+    /// compacted nothing (`/context`): the chat shows the last it knew.
+    fn context_of(&self, result: &Value) -> Option<Value> {
+        let turns = result.get("num_turns").and_then(Value::as_u64).unwrap_or(0);
+        let last = result
+            .pointer("/usage/iterations")
+            .and_then(Value::as_array)
+            .and_then(|i| i.last());
+        let used = match (turns, self.compacted, last) {
+            (0, Some((_, after)), _) => after,
+            (_, _, Some(request)) => [
+                "input_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+                "output_tokens",
+            ]
+            .iter()
+            .filter_map(|key| request.get(*key).and_then(Value::as_u64))
+            .sum(),
+            _ => return None,
+        };
+        let window = result
+            .get("modelUsage")
+            .and_then(Value::as_object)
+            .and_then(|models| models.values().find_map(|m| m.get("contextWindow")))
+            .and_then(Value::as_u64)
+            .or(self.auto_compact.map(|(window, _)| window))?;
+        let mut context = json!({ "used": used, "window": window });
+        if let Some((_, threshold)) = self.auto_compact {
+            context["compactsAt"] = json!(threshold);
+        }
+        Some(context)
     }
 
     fn system(&mut self, value: &Value, emit: &mut dyn FnMut(ChatStreamEvent)) {
@@ -668,6 +729,16 @@ impl Parser {
                     delay_ms: delay,
                     reason: ChatError::new(ErrorKind::Provider, format!("Claude Code: {why}")),
                 });
+            }
+            "compact_boundary" => {
+                let count = |key: &str| {
+                    value
+                        .pointer(&format!("/compact_metadata/{key}"))
+                        .and_then(Value::as_u64)
+                };
+                if let (Some(before), Some(after)) = (count("pre_tokens"), count("post_tokens")) {
+                    self.compacted = Some((before, after));
+                }
             }
             _ => {}
         }
@@ -968,7 +1039,7 @@ impl Parser {
             .and_then(|d| d.as_array())
             .map(|d| d.len())
             .unwrap_or(0);
-        let extra = json!({
+        let mut extra = json!({
             "numTurns": value.get("num_turns").cloned().unwrap_or(Value::Null),
             "durationMs": value.get("duration_ms").cloned().unwrap_or(Value::Null),
             "durationApiMs": value.get("duration_api_ms").cloned().unwrap_or(Value::Null),
@@ -979,6 +1050,9 @@ impl Parser {
             "steps": self.order.len(),
             "permissionDenials": denials,
         });
+        if let Some(context) = self.context_of(value) {
+            extra["context"] = context;
+        }
         let cost = value.get("total_cost_usd").and_then(|c| c.as_f64());
         let usage_out = if self.rovik_tools {
             // This Rovik turn's tokens; the cost is the whole run's, which
@@ -1016,6 +1090,17 @@ impl Parser {
         // when nothing streamed it (an older version, a run without events).
         if (!is_error || limit.is_some()) && !self.text_shown && !result_text.is_empty() {
             self.text(result_text, emit);
+        }
+        // A compaction says nothing of its own (`/compact`): what it did.
+        if let (false, Some((before, after))) = (self.text_shown, self.compacted) {
+            self.text(
+                &format!(
+                    "_Compacted the conversation: {} → {} tokens._",
+                    thousands(before),
+                    thousands(after)
+                ),
+                emit,
+            );
         }
         if let Some(why) = &limit {
             self.text(&format!("\n\n_[Claude Code stopped here: {why}.]_"), emit);
@@ -1141,6 +1226,145 @@ fn prompt_file(
 /// Whether Rovik's permissions decide on Claude Code's own tools.
 fn follows_rovik(settings: &Settings) -> bool {
     settings.tools == ToolsMode::Own && settings.permission_mode.trim() == ROVIK_PERMISSIONS
+}
+
+/// How long listing the commands may take: the program starts, reads its
+/// settings, skills and plugins, and answers, without a turn of the model.
+const COMMANDS_WITHIN: Duration = Duration::from_secs(30);
+/// The id of the request that asks for them.
+const COMMANDS_REQUEST: &str = "rovik-commands";
+
+/// Claude Code's own commands the chat's picker doesn't offer
+/// (code.claude.com/docs/en/commands): what they change is Rovik's to say,
+/// or they don't work in a run that ends with its reply. Rovik keeps:
+/// - the chat's session (`clear` would start another behind it);
+/// - its model and effort (the picker's, sent with each run; `model`,
+///   `effort`, `fast`, `config` save theirs as Claude Code's defaults);
+/// - its settings and approvals (the connector's settings; `config`,
+///   `update-config`, `fewer-permission-prompts` and `doctor` write
+///   Claude Code's settings or permission rules);
+/// - the sign-in (the connector's Set up).
+///
+/// The others need a terminal, or work on after the run (`loop`, `goal`,
+/// `batch`), or are Claude Code's internals. Only its built-in ones: a
+/// project's or the user's own command of the same name is theirs to run.
+const HIDDEN_COMMANDS: &[&str] = &[
+    // The session.
+    "clear",
+    "resume",
+    "rewind",
+    "branch",
+    "rename",
+    "exit",
+    // The model and effort.
+    "model",
+    "effort",
+    "fast",
+    "advisor",
+    "output-style",
+    // Settings, permissions, plugins, MCP.
+    "config",
+    "permissions",
+    "autocompact",
+    "mcp",
+    "plugin",
+    "reload-plugins",
+    "reload-skills",
+    "import",
+    "hooks",
+    "update-config",
+    "fewer-permission-prompts",
+    "doctor",
+    "sandbox",
+    "add-dir",
+    // The account.
+    "login",
+    "logout",
+    "upgrade",
+    "design-consent",
+    "design-revoke",
+    // A terminal's, or longer than a run.
+    "color",
+    "focus",
+    "theme",
+    "vim",
+    "statusline",
+    "terminal-setup",
+    "keybindings",
+    "ide",
+    "heapdump",
+    "debug",
+    "loop",
+    "goal",
+    "batch",
+    "tasks",
+    "agents",
+    "list-agents",
+    "remote-control",
+    "install-github-app",
+    "workflow-launch-exec",
+];
+
+/// Whether the chat offers `command`: not one of Claude Code's own that
+/// `HIDDEN_COMMANDS` names, nor an internal one (`__remote-workflow`).
+fn offered(command: &ConnectorCommand) -> bool {
+    !command.builtin
+        || !(HIDDEN_COMMANDS.contains(&command.name.as_str()) || command.name.starts_with("__"))
+}
+
+/// The commands of the SDK's `initialize` answer (`supportedCommands()`,
+/// code.claude.com/docs/en/agent-sdk/typescript): None until `line` is
+/// that answer; an error when the program refused the request. Those the
+/// chat doesn't offer are left out (`offered`).
+fn commands_of(line: &str) -> Option<Result<Vec<ConnectorCommand>, String>> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let response = value
+        .get("response")
+        .filter(|_| value.get("type").and_then(Value::as_str) == Some("control_response"))
+        .filter(|r| r.get("request_id").and_then(Value::as_str) == Some(COMMANDS_REQUEST))?;
+    if response.get("subtype").and_then(Value::as_str) == Some("error") {
+        let why = response
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("it refused");
+        return Some(Err(format!(
+            "Claude Code couldn't list its commands: {why}"
+        )));
+    }
+    let listed = response
+        .pointer("/response/commands")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let text = |c: &Value, key: &str| {
+        c.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string()
+    };
+    let commands = listed
+        .iter()
+        .filter(|c| !text(c, "name").is_empty())
+        .map(|c| ConnectorCommand {
+            name: text(c, "name"),
+            description: text(c, "description"),
+            argument_hint: Some(text(c, "argumentHint")).filter(|h| !h.is_empty()),
+            aliases: c
+                .get("aliases")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            builtin: c.get("builtin").and_then(Value::as_bool).unwrap_or(false),
+        })
+        .filter(offered)
+        .collect();
+    Some(Ok(commands))
 }
 
 /// The version the release bucket answered with: one line of numbers and
@@ -1845,6 +2069,51 @@ impl Connector for ClaudeCode {
         }))
     }
 
+    /// Its `initialize` request, as the Agent SDK sends it (stream-json
+    /// input): the commands it takes, with their descriptions and hints,
+    /// answered without a turn of the model, so for no tokens.
+    fn commands<'a>(
+        &'a self,
+        args: &'a ProbeRequestArgs,
+        cwd: &'a Path,
+    ) -> BoxFuture<'a, Result<Vec<ConnectorCommand>, String>> {
+        Box::pin(async move {
+            let settings = Settings::from_value(&args.settings);
+            let program = resolve_program(&settings.program)?;
+            let env = env_for(&settings, &args.api_key);
+            let mut flags: Vec<String> = [
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+            ]
+            .map(String::from)
+            .into();
+            if settings.bare {
+                flags.push("--bare".into());
+            }
+            flags.extend(split_args(&settings.extra_args));
+            let request = json!({
+                "type": "control_request",
+                "request_id": COMMANDS_REQUEST,
+                "request": { "subtype": "initialize" },
+            });
+            let input = format!("{request}\n");
+            harness::answer(
+                &program,
+                &flags,
+                &env,
+                cwd,
+                input,
+                COMMANDS_WITHIN,
+                commands_of,
+            )
+            .await?
+        })
+    }
+
     fn latest_version(&self) -> BoxFuture<'_, Option<String>> {
         Box::pin(async {
             let response = crate::net::client().await.get(LATEST).send().await.ok()?;
@@ -2426,6 +2695,167 @@ mod tests {
             rules("Read, Edit\nBash(git *)"),
             ["Read", "Edit", "Bash(git *)"]
         );
+    }
+
+    /// The usage of the run's `Finished` event.
+    fn finished_usage(events: &[ChatStreamEvent]) -> Value {
+        events
+            .iter()
+            .find_map(|e| match e {
+                ChatStreamEvent::Finished { usage, .. } => usage.clone(),
+                _ => None,
+            })
+            .expect("a Finished event")
+    }
+
+    #[test]
+    fn a_reply_keeps_the_context_it_left() {
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        let mut emit = |e| events.push(e);
+        let lines = [
+            json!({"type":"autocompact_state","value":{"enabled":true,"effective_window":980000,"threshold":784000}}),
+            json!({"type":"system","subtype":"init","session_id":"s-1","model":"claude-haiku-5-5"}),
+            json!({"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"ok"}]},"parent_tool_use_id":null}),
+            json!({"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":1,"usage":{"input_tokens":2,"cache_creation_input_tokens":9202,"cache_read_input_tokens":25989,"output_tokens":4,"iterations":[{"input_tokens":2,"cache_creation_input_tokens":9202,"cache_read_input_tokens":25989,"output_tokens":4}]},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}},"session_id":"s-1"}),
+        ];
+        for line in lines {
+            p.line(&line.to_string(), &mut emit);
+        }
+        // The last request's tokens, of the model's window; where it compacts.
+        assert_eq!(
+            finished_usage(&events)["connector"]["context"],
+            json!({ "used": 35197, "window": 1000000, "compactsAt": 784000 })
+        );
+    }
+
+    #[test]
+    fn a_compaction_says_what_it_did_and_what_it_left() {
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        let mut emit = |e| events.push(e);
+        let lines = [
+            json!({"type":"autocompact_state","value":{"effective_window":980000,"threshold":784000}}),
+            json!({"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":35312,"post_tokens":5422}}),
+            json!({"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"}}),
+            json!({"type":"result","subtype":"success","is_error":false,"result":"","num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{},"session_id":"s-1"}),
+        ];
+        for line in lines {
+            p.line(&line.to_string(), &mut emit);
+        }
+        assert!(
+            names(&events)
+                .contains(&"delta:_Compacted the conversation: 35.3k → 5.4k tokens._".to_string()),
+            "{:?}",
+            names(&events)
+        );
+        assert_eq!(
+            finished_usage(&events)["connector"]["context"],
+            json!({ "used": 5422, "window": 980000, "compactsAt": 784000 })
+        );
+
+        // A command that made no request and compacted nothing (`/context`):
+        // its output is the reply, and the context is the last one known.
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        let mut emit = |e| events.push(e);
+        let result = json!({"type":"result","subtype":"success","is_error":false,"result":"## Context Usage","num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},"session_id":"s-1"});
+        p.line(&result.to_string(), &mut emit);
+        assert!(names(&events).contains(&"delta:## Context Usage".to_string()));
+        assert!(finished_usage(&events)["connector"]
+            .get("context")
+            .is_none());
+    }
+
+    #[test]
+    fn the_commands_are_the_initialize_answer_s_without_those_rovik_keeps() {
+        let answer = json!({"type":"control_response","response":{"subtype":"success","request_id":"rovik-commands","response":{"commands":[
+            {"name":"hello","description":"Says hello to a name (project)","argumentHint":"<name>"},
+            {"name":"clear","description":"Start a new session","argumentHint":"[name]","aliases":["reset","new"],"builtin":true},
+            {"name":"compact","description":"Free up context","builtin":true},
+            {"name":"  ","description":"nameless"},
+            {"name":"model","description":"Set the AI model for Claude Code","builtin":true},
+            {"name":"fewer-permission-prompts","description":"Add an allowlist","builtin":true},
+            {"name":"__remote-workflow","description":"internal","builtin":true},
+            {"name":"model","description":"Pick our model (project)"}
+        ]}}});
+        let commands = commands_of(&answer.to_string()).unwrap().unwrap();
+        assert_eq!(
+            commands,
+            vec![
+                ConnectorCommand {
+                    name: "hello".into(),
+                    description: "Says hello to a name (project)".into(),
+                    argument_hint: Some("<name>".into()),
+                    aliases: Vec::new(),
+                    builtin: false,
+                },
+                ConnectorCommand {
+                    name: "compact".into(),
+                    description: "Free up context".into(),
+                    argument_hint: None,
+                    aliases: Vec::new(),
+                    builtin: true,
+                },
+                // A project's own `/model` is the project's to run.
+                ConnectorCommand {
+                    name: "model".into(),
+                    description: "Pick our model (project)".into(),
+                    argument_hint: None,
+                    aliases: Vec::new(),
+                    builtin: false,
+                },
+            ]
+        );
+        // Other lines aren't its answer; a refusal is an error.
+        assert!(commands_of(r#"{"type":"system","subtype":"init"}"#).is_none());
+        let other = json!({"type":"control_response","response":{"subtype":"success","request_id":"other","response":{}}});
+        assert!(commands_of(&other.to_string()).is_none());
+        let refused = json!({"type":"control_response","response":{"subtype":"error","request_id":"rovik-commands","error":"Unsupported"}});
+        assert!(commands_of(&refused.to_string())
+            .unwrap()
+            .unwrap_err()
+            .contains("Unsupported"));
+    }
+
+    /// The real `claude` lists its commands, the project's own among them,
+    /// without a turn of the model.
+    ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored
+    #[tokio::test]
+    #[ignore = "runs the real claude: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
+    async fn real_claude_lists_its_commands() {
+        if std::env::var("ROVIK_REAL_CLAUDE").is_err() {
+            return;
+        }
+        let dir = crate::testing::temp_dir();
+        let commands = dir.0.join(".claude/commands");
+        std::fs::create_dir_all(&commands).unwrap();
+        std::fs::write(
+            commands.join("hello.md"),
+            "---\ndescription: Says hello to a name\nargument-hint: <name>\n---\nReply with: hello $ARGUMENTS\n",
+        )
+        .unwrap();
+        let args = ProbeRequestArgs {
+            kind: ConnectorKind::ClaudeCode,
+            settings: json!({}),
+            api_key: String::new(),
+            request: false,
+        };
+        let listed = ClaudeCode.commands(&args, &dir.0).await.unwrap();
+        let hello = listed
+            .iter()
+            .find(|c| c.name == "hello")
+            .expect("the project's command");
+        assert_eq!(hello.argument_hint.as_deref(), Some("<name>"));
+        assert!(hello.description.starts_with("Says hello"), "{hello:?}");
+        assert!(listed.iter().any(|c| c.name == "compact" && c.builtin));
+        // Those that would change what Rovik keeps aren't offered.
+        for hidden in ["clear", "model", "effort", "config"] {
+            assert!(
+                listed.iter().all(|c| c.name != hidden),
+                "{hidden} is offered"
+            );
+        }
     }
 
     #[test]

@@ -541,6 +541,15 @@ fn every_request_round_trips() {
                 action: crate::connectors::SetupAction::Install,
             }),
             Request::ConnectorSetup(crate::connectors::SetupOp::Cancel { id: "j".into() }),
+            Request::ConnectorCommands {
+                args: crate::connectors::ProbeRequestArgs {
+                    kind: crate::connectors::ConnectorKind::ClaudeCode,
+                    settings: serde_json::json!({}),
+                    api_key: String::new(),
+                    request: false,
+                },
+                cwd: Some("/work/app".into()),
+            },
             Request::ChatRename {
                 dialog_id: "d".into(),
                 title: "New title".into(),
@@ -901,6 +910,13 @@ fn every_response_round_trips() {
                 config_dir: Some("/home/ann/.claude".into()),
                 detail: None,
             }),
+            Response::ConnectorCommands(vec![crate::connectors::ConnectorCommand {
+                name: "hello".into(),
+                description: "Says hello to a name (project)".into(),
+                argument_hint: Some("<name>".into()),
+                aliases: Vec::new(),
+                builtin: false,
+            }]),
             Response::ConnectorSetup(crate::connectors::SetupJob {
                 id: "j".into(),
                 action: crate::connectors::SetupAction::Login,
