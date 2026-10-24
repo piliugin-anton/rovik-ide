@@ -312,6 +312,18 @@ pub enum Request {
     /// message names, and the repositories' garbage. → `Storage`, what the
     /// folders take after.
     CleanUp,
+    /// How the page a `PageWanted` event asked for went (`id`): forwarded
+    /// from `local_port` on the user's computer (the page's own port where
+    /// it was free there) and ready to open, or `error`, why not, in words
+    /// for the agent. → `Bool`, whether the page is still wanted: the app
+    /// opens it only then.
+    PageOpened {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        local_port: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// The chat a request is about: by its id, or by one of its messages'.
@@ -397,7 +409,8 @@ impl Request {
             | Request::KeysList
             | Request::KeysRemove { .. }
             | Request::Storage
-            | Request::CleanUp => None,
+            | Request::CleanUp
+            | Request::PageOpened { .. } => None,
         }
     }
 }

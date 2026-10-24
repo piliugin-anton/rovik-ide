@@ -636,8 +636,9 @@ fn exec_starts(shown: &str) -> Vec<String> {
 /// else is told whom to ask. The daemons that ran pause their runs and
 /// start again on it (R02). Without systemd only the administrator's own
 /// daemon is started again here; the others' take it at their next start.
-/// The browser the new build pins is installed when it's missing
-/// (`admin browser`).
+/// pasta, required, is installed when it's missing (`admin pasta`), and the
+/// upgrade fails where it can't be; the browser the new build pins is
+/// installed when it's missing (`admin browser`).
 pub async fn upgrade(
     target: &Target<'_>,
     builds: &Builds,
@@ -659,6 +660,12 @@ pub async fn upgrade(
     let upgraded = run(root, &command, b"").await;
     forget_upload(shell, &upload).await;
     upgraded?;
+    // pasta gives each user's commands a network of their own (D20): a
+    // build from before it upgrades without installing it, so the new
+    // build's `admin pasta` runs here, and where it can't be installed the
+    // upgrade fails with why. In WSL it says none is needed.
+    let (root, pasta) = target.as_root(layout, "admin pasta");
+    run(root, &pasta, b"").await?;
     // The browser the new build pins, when it isn't there (D19): a build
     // from before it upgrades without installing one. The browser tools say
     // so when they're used without it, so it's no reason to fail the upgrade.

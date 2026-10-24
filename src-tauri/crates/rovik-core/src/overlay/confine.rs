@@ -27,6 +27,9 @@
 //! - **Tool homes**: a tool that keeps a login in the folder it writes its
 //!   other state to (Expo's CLI) is pointed at a folder of its own, by the
 //!   variable it reads ([`TOOL_HOMES`]), so it runs without the login.
+//! - **The network**: on a team server, the user's private network
+//!   ([`network`], Linux), which the command joins before its sandbox's own
+//!   steps: its servers' ports are this user's alone.
 //!
 //! The policy is the same on every operating system. A [`Mechanism`] is how
 //! one OS enforces it, and each OS module ([`linux`], [`macos`],
@@ -78,6 +81,9 @@ pub struct Confine {
     /// Folders and files inside writable ones that stay read-only: what
     /// runs outside the sandbox later ([`read_only_paths`]).
     pub read_only: Vec<PathBuf>,
+    /// The private network the command starts in: a team server's
+    /// ([`network::current`]); none on a desktop and in WSL.
+    pub network: Option<std::sync::Arc<network::Network>>,
 }
 
 impl Confine {
@@ -92,7 +98,9 @@ impl Confine {
             read_only: read_only_paths(),
             view,
             project,
+            network: None,
         }
+        .in_users_network()
     }
 
     /// A command that already runs in its own copy (a server worktree, or a
@@ -106,7 +114,43 @@ impl Confine {
             read_only: read_only_paths(),
             view: root.clone(),
             project: root,
+            network: None,
         }
+        .in_users_network()
+    }
+
+    /// In the user's private network, where a team server's daemon made
+    /// one: the command joins it.
+    fn in_users_network(self) -> Confine {
+        match network::current() {
+            Some(network) => self.with_network(network),
+            None => self,
+        }
+    }
+
+    /// In `network`, its folder (the pages' shims, its resolv.conf) read
+    /// by the command but not changed: even inside a folder the command
+    /// writes, or one hidden from it, as a daemon's own folder is under
+    /// `--data`.
+    pub fn with_network(mut self, network: std::sync::Arc<network::Network>) -> Confine {
+        let dir = network.dir().to_path_buf();
+        if !self.read_only.contains(&dir) {
+            self.read_only.push(dir);
+        }
+        self.network = Some(network);
+        self
+    }
+
+    /// `program`, to be confined by this policy: made the way every
+    /// program the app starts is, then made to join the policy's network
+    /// first, before a mechanism adds its own steps.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn base_command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = crate::process::command(program);
+        if let Some(network) = &self.network {
+            network.join(&mut cmd);
+        }
+        cmd
     }
 
     /// With `dir` writable too (a chat's build folder).
@@ -492,6 +536,70 @@ trait Mechanism: Sync {
 
 #[cfg(target_os = "linux")]
 mod landlock;
+#[cfg(target_os = "linux")]
+pub mod network;
+pub mod page_url;
+#[cfg(unix)]
+pub mod pages;
+
+/// Off Linux there's no private network: a team server runs Linux (D16),
+/// and none is ever made elsewhere. The type keeps the callers the same.
+#[cfg(not(target_os = "linux"))]
+pub mod network {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    /// Why there's none.
+    const NONE: &str = "a private network for the agent's commands is made on Linux only";
+
+    /// A private network, which never exists here.
+    #[derive(Debug)]
+    pub enum Network {}
+
+    impl Network {
+        pub fn start(_dir: &Path, _opener: &Path) -> Result<Network, String> {
+            Err(NONE.into())
+        }
+
+        pub fn join(&self, _cmd: &mut std::process::Command) {
+            match *self {}
+        }
+
+        pub fn give_browser(&self, _cmd: &mut std::process::Command, _chat: &str) {
+            match *self {}
+        }
+
+        pub fn listen(&self) -> std::io::Result<std::net::TcpListener> {
+            match *self {}
+        }
+
+        pub fn connect(&self, _port: u16) -> std::io::Result<std::net::TcpStream> {
+            match *self {}
+        }
+
+        pub fn listening_ports(&self) -> Vec<u16> {
+            match *self {}
+        }
+
+        pub fn dir(&self) -> &Path {
+            match *self {}
+        }
+
+        pub fn pages_socket(&self) -> PathBuf {
+            match *self {}
+        }
+    }
+
+    /// Never made here: why not.
+    pub fn enable(_dir: &Path, _opener: &Path) -> Result<(), String> {
+        Err(NONE.into())
+    }
+
+    /// None: there's no private network here.
+    pub fn current() -> Option<Arc<Network>> {
+        None
+    }
+}
 
 #[cfg(target_os = "linux")]
 use linux as os;
@@ -781,7 +889,7 @@ mod linux {
             // gone since the policy was made is skipped: bwrap would refuse
             // to start otherwise. The working folder is kept (found again
             // in the namespace).
-            let mut cmd = crate::process::command(PROGRAM);
+            let mut cmd = c.base_command(PROGRAM);
             cmd.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
             for dir in c.writable.iter().filter(|d| d.is_dir()) {
                 cmd.arg("--bind").arg(dir).arg(dir);
@@ -1380,6 +1488,7 @@ mod seatbelt_profile_tests {
             writable: vec![cargo.clone()],
             sockets: Vec::new(),
             read_only: vec![bin.clone(), config.clone(), root.join("gone")],
+            network: None,
         };
         let (profile, params) = seatbelt_profile(&c);
         assert!(params.contains(&("R0".into(), bin.clone())));
@@ -1404,6 +1513,7 @@ mod seatbelt_profile_tests {
             writable: vec![work.clone(), root.join("gone-too")],
             sockets: Vec::new(),
             read_only: Vec::new(),
+            network: None,
         };
         let (profile, params) = seatbelt_profile(&c);
         let names: Vec<(&str, &Path)> = params
@@ -1457,6 +1567,7 @@ mod seatbelt_socket_tests {
             writable: vec![root.clone()],
             sockets: vec![runtime.clone(), agent.clone(), root.join("gone")],
             read_only: Vec::new(),
+            network: None,
         };
         let (profile, params) = seatbelt_profile(&c);
         assert!(params.contains(&("S0".to_string(), runtime.clone())));
@@ -1530,6 +1641,7 @@ mod macos_tests {
             writable: vec![mine.clone()],
             sockets: Vec::new(),
             read_only: Vec::new(),
+            network: None,
         };
         let script = format!(
             "echo ok > {m}/a.txt && echo gone > /dev/null && \
@@ -1570,6 +1682,7 @@ mod macos_tests {
             writable: vec![work.clone(), secret.clone()],
             sockets: Vec::new(),
             read_only: Vec::new(),
+            network: None,
         };
         let script = format!(
             "cat {s}/key {d}/keys.json {w}/.ssh/id 2>/dev/null; \
@@ -1611,6 +1724,7 @@ mod tests {
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
             sockets: Vec::new(),
             read_only: Vec::new(),
+            network: None,
         };
         (root, c)
     }

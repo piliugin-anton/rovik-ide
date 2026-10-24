@@ -320,6 +320,7 @@ impl Remote {
                 state.forget(chat);
             }
         }
+        self.release_pages(&chats);
         self.changed(dialog_id);
         Ok(())
     }

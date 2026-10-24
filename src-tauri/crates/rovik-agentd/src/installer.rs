@@ -21,6 +21,10 @@
 //! for Testing Rovik pins for the browser tools (`installer/browser.rs`),
 //! as `install` does too, and `upgrade` with the new build.
 //!
+//! pasta, which gives each user's commands a network of their own (D20,
+//! `installer/pasta.rs`), is required: `install` and `upgrade` install it
+//! before they change anything, and stop where it can't be installed.
+//!
 //! Without systemd, as in a container, the binary and the settings are
 //! installed, and the app starts the daemon when it connects. `--root DIR`
 //! puts `/` at DIR, and prints each command that would change the system
@@ -39,6 +43,7 @@ mod browser;
 mod bubblewrap;
 mod claude_code;
 mod packages;
+mod pasta;
 /// `user toolchain <kind> <version>` and `admin toolchain …`: the shared
 /// Rust and Node versions, and the caches their packages download into.
 pub(crate) mod toolchains;
@@ -330,6 +335,8 @@ pub fn install(
             (read_build(&this, None)?, VERSION.to_string())
         }
     };
+    // Required, so first: where it can't be installed, nothing has changed.
+    pasta::ensure(sys)?;
     install_build(sys, &bytes, &version)?;
     let mut file = match AdminFile::read(&sys.path(ADMIN_FILE))? {
         Some(file) => file,
@@ -504,8 +511,14 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
         // The shared toolchains and caches go in whether bubblewrap's
         // package does or not: a server installed before this has no
         // `rovik` group and no folder for them yet, and the daemons that
-        // restart after an upgrade must find both.
-        ["bubblewrap"] => both(bubblewrap::ensure(sys), toolchains::setup(sys)),
+        // restart after an upgrade must find both. So does pasta: an
+        // upgrade from a build before it runs this new build's `admin
+        // bubblewrap`, not `admin pasta`.
+        ["bubblewrap"] => both(
+            all_of([bubblewrap::ensure(sys), pasta::ensure(sys)]),
+            toolchains::setup(sys),
+        ),
+        ["pasta"] => pasta::ensure(sys),
         ["toolchain", "list"] => toolchains::list(sys),
         ["toolchain", "add", kind, version, rest @ ..] => {
             let (components, targets) = toolchains::flags(rest)?;
@@ -543,11 +556,20 @@ pub fn admin(sys: &System, args: &[String], allow_downgrade: bool) -> Result<(),
         ["uninstall"] => uninstall(sys),
         _ => Err(
             "admin takes: limits [name=value ...], add USER, remove USER, browser, \
-             bubblewrap, claude-code, toolchain list | add KIND VERSION | remove KIND VERSION | prune DAYS, \
+             bubblewrap, pasta, claude-code, toolchain list | add KIND VERSION | remove KIND VERSION | prune DAYS, \
              toolchains user-install|shared-caches on|off, toolchains setup, upgrade FILE \
              [--allow-downgrade], uninstall"
                 .into(),
         ),
+    }
+}
+
+/// Steps that were each tried, as one outcome: every failure said.
+fn all_of(outcomes: impl IntoIterator<Item = Result<(), String>>) -> Result<(), String> {
+    let failures: Vec<String> = outcomes.into_iter().filter_map(Result::err).collect();
+    match failures.is_empty() {
+        true => Ok(()),
+        false => Err(failures.join("\n")),
     }
 }
 
@@ -609,6 +631,8 @@ fn upgrade(
             return Err(why);
         }
     }
+    // Required, so before anything changes (`install`).
+    pasta::ensure(sys)?;
     install_build(sys, &bytes, &version)?;
     // The new build's browser, before the daemons start on it: its pin may
     // be a newer version. One that can't be installed stops nothing else.

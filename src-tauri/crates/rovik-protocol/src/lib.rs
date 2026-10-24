@@ -50,6 +50,12 @@ pub const MAX_BLOB: usize = 20 << 20;
 /// (6.8), which the daemon holds while it imports them.
 pub const MAX_BUNDLE: usize = 512 << 20;
 
+/// What a client asks `GET /forward/{port}` to become (its `Upgrade`
+/// header): a plain byte stream to that port on the loopback of the user's
+/// private network on a team server (D20), which a port of the user's
+/// computer forwarded for a page carries.
+pub const FORWARD_UPGRADE: &str = "rovik-forward";
+
 /// What a daemon serves beyond what protocol 1 began with, named in its
 /// `Welcome` (4.5). A client checks for one before it relies on it.
 pub mod features {

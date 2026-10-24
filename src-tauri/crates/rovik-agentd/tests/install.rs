@@ -503,6 +503,46 @@ fn the_pinned_browser_comes_with_rovik_and_its_upgrades() {
     );
 }
 
+/// D20: pasta, which gives each user's commands a network of their own, is
+/// required. Install and upgrade put it in place before they change
+/// anything, so where it can't be installed nothing has changed; `admin
+/// pasta` tries again, and so does `admin bubblewrap`, which an upgrade from
+/// an older build runs.
+#[test]
+fn pasta_goes_in_first_on_install_and_upgrade() {
+    let server = Server::new();
+    let build = server.build.to_string_lossy().into_owned();
+    let installed = server.run(&["install", "--admin", "nobody", "--binary", &build], None);
+    let out = said(&installed);
+    assert!(installed.status.success(), "{out}");
+    let pasta = out.find("--no-install-recommends install passt");
+    let first_change = out.find("would run: groupadd");
+    assert!(
+        matches!((pasta, first_change), (Some(p), Some(c)) if p < c),
+        "{out}"
+    );
+
+    for command in ["pasta", "bubblewrap"] {
+        let again = server.run(&["admin", command], Some(NOBODY));
+        assert!(again.status.success(), "{}", said(&again));
+        assert!(said(&again).contains("install passt"), "{}", said(&again));
+    }
+
+    allow_unsigned(&server);
+    let newer = server.dir.0.join("newer");
+    script(&newer, "9.9.9");
+    let newer = newer.to_string_lossy().into_owned();
+    let upgraded = server.run(&["admin", "upgrade", &newer], Some(NOBODY));
+    let out = said(&upgraded);
+    assert!(upgraded.status.success(), "{out}");
+    let pasta = out.find("install passt");
+    let new_build = out.find("would run: /opt/rovik/bin/rovik-agentd admin browser");
+    assert!(
+        matches!((pasta, new_build), (Some(p), Some(b)) if p < b),
+        "{out}"
+    );
+}
+
 /// `agentd.toml` with unsigned builds allowed, for a test's own build. A
 /// top-level key goes before `[toolchains]`, the file's only table.
 fn allow_unsigned(server: &Server) {

@@ -2,15 +2,17 @@
 // `CloudEvent`, rovik-client): a message's files going up to its host, a
 // project being pushed there, a remote chat's changes looking different
 // after its result came in or landed, or its project synced, a chat's
-// move to a host or back, and a host's connection changing. And the moves'
-// commands (6.8).
+// move to a host or back, a host's connection changing, and the ports
+// forwarded for a chat's pages changing (D20). And the moves' commands
+// (6.8).
 //
 // `cloud` keeps what the chats show of it: the hosts' names and
 // connections, and each chat's move as it goes (U02); which hosts have
-// caught up since they connected, and each chat's upload (U04). A host
-// that caught up before the window listened says so in its summary, and
-// `onCaughtUp` tells of each host as it catches up (U06). `initCloud`
-// starts it as the app starts, and keeps the chats' places with it.
+// caught up since they connected, each chat's upload (U04), and each
+// chat's forwarded ports. A host that caught up before the window listened
+// says so in its summary, and `onCaughtUp` tells of each host as it
+// catches up (U06). `initCloud` starts it as the app starts, and keeps the
+// chats' places with it.
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -42,7 +44,21 @@ export type CloudEvent =
   /** A host's connection changed; one that turned this computer away says why. */
   | { type: 'host'; host: string; state: HostState; problem?: string }
   /** The chats mirrored from the host have pulled since it connected (K23). */
-  | { type: 'caughtUp'; host: string };
+  | { type: 'caughtUp'; host: string }
+  /** The ports forwarded for a chat's pages changed: empty once none is (D20). */
+  | { type: 'ports'; dialogId: string; ports: ForwardedPort[] };
+
+/**
+ * A port a remote chat's server opened on its host, which a page of it was
+ * opened from, and the port of this computer that leads to it: the same one
+ * unless that was taken here.
+ */
+export interface ForwardedPort {
+  /** The server's port, on the host. */
+  port: number;
+  /** The port on this computer's loopback that leads to it. */
+  localPort: number;
+}
 
 /** What moving a chat to a host would do, and whether it can (`MovePreflight`). */
 export interface MovePreflight {
@@ -169,6 +185,8 @@ interface CloudState {
   caughtUp: Record<string, true>;
   /** Each chat's upload while its send's files go up. */
   uploads: Record<string, UploadProgress>;
+  /** Each remote chat's forwarded ports, while it has any (D20). */
+  ports: Record<string, ForwardedPort[]>;
 }
 
 const [cloud, setCloud] = createStore<CloudState>({
@@ -176,6 +194,7 @@ const [cloud, setCloud] = createStore<CloudState>({
   moves: {},
   caughtUp: {},
   uploads: {},
+  ports: {},
 });
 
 /** The hosts the chats know of, and the chats' moves. */
@@ -187,9 +206,36 @@ let started: Promise<void> | null = null;
 export function initCloud(): Promise<void> {
   started ??= (async () => {
     await listen<CloudEvent>('cloud-event', (e) => track(e.payload));
-    await refreshHosts();
+    await Promise.all([refreshHosts(), refreshPorts()]);
   })();
   return started;
+}
+
+/** Every remote chat's forwarded ports, by chat (D20). */
+export const forwardedPorts = () =>
+  invoke<Record<string, ForwardedPort[]>>('cloud_forwarded_ports');
+
+/** The ports forwarded before this window listened (a reloaded window). */
+async function refreshPorts(): Promise<void> {
+  try {
+    for (const [dialogId, ports] of Object.entries((await forwardedPorts()) ?? {})) {
+      setPorts(dialogId, ports);
+    }
+  } catch (err) {
+    console.error('Forwarded ports unavailable:', err);
+  }
+}
+
+/** The chat's forwarded ports now; none leaves it out. */
+function setPorts(dialogId: string, ports: ForwardedPort[]) {
+  if (ports.length > 0) setCloud('ports', dialogId, ports);
+  else
+    setCloud(
+      'ports',
+      produce((all) => {
+        delete all[dialogId];
+      })
+    );
 }
 
 /** The hosts' names and connections again, as after the hosts page changed them. */
@@ -276,6 +322,9 @@ function track(event: CloudEvent) {
       if (!moveEnded(cloud.moves[event.dialogId])) {
         setCloud('moves', event.dialogId, 'pushed', event.sent);
       }
+      return;
+    case 'ports':
+      setPorts(event.dialogId, event.ports);
       return;
   }
 }

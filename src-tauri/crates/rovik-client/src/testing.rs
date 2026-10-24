@@ -6,9 +6,16 @@ use crate::connector::{Connecting, Connector, Stream};
 use futures_util::{SinkExt, StreamExt};
 use rovik_protocol::agent::AgentStatus;
 use rovik_protocol::host::{HostInfo, Storage};
-use rovik_protocol::{Frame, Request, Response, Secret, PROTOCOL};
+use rovik_protocol::{Fail, FailCode, Frame, Request, Response, Secret, FORWARD_UPGRADE, PROTOCOL};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
 /// No daemon there.
 pub struct Nowhere;
@@ -44,32 +51,53 @@ pub struct Fake {
     /// What it answers `Storage` with, then `CleanUp` (what's left after
     /// the cleanup), once set.
     pub storage: Arc<Mutex<Option<(Storage, Storage)>>>,
+    /// The user's private network there (D20): the address of what
+    /// listens on each of its ports, a server of the tests' own. `/forward`
+    /// leads to it.
+    pub network: Arc<Mutex<HashMap<u16, SocketAddr>>>,
+    /// It answers `PageOpened` that the page isn't wanted any more (its
+    /// command stopped waiting), once set.
+    pub unwanted_pages: Arc<AtomicBool>,
 }
 
 impl Connector for Fake {
     fn connect(&self) -> Connecting<'_> {
-        let (requests, info) = (self.requests.clone(), self.info.clone());
-        let features = self.features.lock().unwrap().clone();
-        let (status, storage) = (self.status.clone(), self.storage.clone());
+        let fake = self.clone();
         Box::pin(async move {
             let (client, server) = tokio::io::duplex(1 << 16);
-            tokio::spawn(serve(server, requests, info, features, status, storage));
+            tokio::spawn(serve(server, fake));
             Ok(Box::new(client) as Stream)
         })
     }
 }
 
-async fn serve(
-    io: tokio::io::DuplexStream,
-    requests: Arc<Mutex<Vec<Request>>>,
-    info: Arc<Mutex<Option<HostInfo>>>,
-    features: Vec<String>,
-    status: Arc<Mutex<Option<AgentStatus>>>,
-    storage: Arc<Mutex<Option<(Storage, Storage)>>>,
-) {
-    let Ok(mut socket) = tokio_tungstenite::accept_async(io).await else {
+/// One connection: the WebSocket at `/rpc`, or a byte stream into the
+/// private network at `/forward/{port}`.
+async fn serve(mut io: DuplexStream, fake: Fake) {
+    let Some(head) = read_head(&mut io).await else {
         return;
     };
+    let forwarded = head
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("GET /forward/"))
+        .and_then(|rest| rest.split(' ').next()?.parse::<u16>().ok());
+    if let Some(port) = forwarded {
+        return forward(io, &head, port, &fake).await;
+    }
+    let Some(key) = header(&head, "sec-websocket-key") else {
+        return;
+    };
+    let accept = derive_accept_key(key.as_bytes());
+    let switched = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\n\
+         sec-websocket-accept: {accept}\r\n\r\n"
+    );
+    if io.write_all(switched.as_bytes()).await.is_err() {
+        return;
+    }
+    let mut socket = WebSocketStream::from_raw_socket(io, Role::Server, None).await;
+    let features = fake.features.lock().unwrap().clone();
     let send = |frame: &Frame| Message::Text(serde_json::to_string(frame).unwrap().into());
     while let Some(Ok(Message::Text(text))) = socket.next().await {
         let answer = match serde_json::from_str::<Frame>(&text) {
@@ -85,17 +113,20 @@ async fn serve(
                 complete: true,
             },
             Ok(Frame::Call { id, req }) => {
-                let info = info.lock().unwrap().clone();
-                let status = status.lock().unwrap().clone();
-                let measured = storage.lock().unwrap().clone();
+                let info = fake.info.lock().unwrap().clone();
+                let status = fake.status.lock().unwrap().clone();
+                let measured = fake.storage.lock().unwrap().clone();
                 let res = Ok(match (&req, info, status, measured) {
                     (Request::HostInfo, Some(info), _, _) => Response::HostInfo(info),
                     (Request::AgentStatus, _, Some(status), _) => Response::AgentStatus(status),
                     (Request::Storage, _, _, Some((before, _))) => Response::Storage(before),
                     (Request::CleanUp, _, _, Some((_, after))) => Response::Storage(after),
+                    (Request::PageOpened { .. }, ..) => {
+                        Response::Bool(!fake.unwanted_pages.load(Ordering::Relaxed))
+                    }
                     _ => answer(&req),
                 });
-                requests.lock().unwrap().push(req);
+                fake.requests.lock().unwrap().push(req);
                 Frame::Reply { id, res }
             }
             _ => continue,
@@ -104,6 +135,70 @@ async fn serve(
             return;
         }
     }
+}
+
+/// `/forward/{port}`, as the daemon answers it: upgraded to a byte stream
+/// to what listens on `port` in the fake's network, or refused with why.
+async fn forward(mut io: DuplexStream, head: &str, port: u16, fake: &Fake) {
+    let refuse = |status: &str, fail: Fail| {
+        let body = serde_json::to_string(&fail).unwrap();
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    if header(head, "authorization") != Some("Bearer token") {
+        let refused = refuse(
+            "401 Unauthorized",
+            Fail::new(FailCode::BadRequest, "No token."),
+        );
+        let _ = io.write_all(refused.as_bytes()).await;
+        return;
+    }
+    if !header(head, "upgrade").is_some_and(|u| u.eq_ignore_ascii_case(FORWARD_UPGRADE)) {
+        let fail = Fail::new(FailCode::BadRequest, "/forward is a byte stream.");
+        let _ = io
+            .write_all(refuse("400 Bad Request", fail).as_bytes())
+            .await;
+        return;
+    }
+    let listening = fake.network.lock().unwrap().get(&port).copied();
+    let inside = match listening {
+        Some(address) => tokio::net::TcpStream::connect(address).await.ok(),
+        None => None,
+    };
+    let Some(mut inside) = inside else {
+        let why = format!("Nothing listens on port {port} in this user's private network.");
+        let refused = refuse("502 Bad Gateway", Fail::new(FailCode::Unreachable, why));
+        let _ = io.write_all(refused.as_bytes()).await;
+        return;
+    };
+    let switched =
+        format!("HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: {FORWARD_UPGRADE}\r\n\r\n");
+    if io.write_all(switched.as_bytes()).await.is_ok() {
+        let _ = tokio::io::copy_bidirectional(&mut io, &mut inside).await;
+    }
+}
+
+/// A request's head, up to its blank line: none if the link ends first.
+async fn read_head(io: &mut DuplexStream) -> Option<String> {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() > 16 << 10 || io.read(&mut byte).await.ok()? == 0 {
+            return None;
+        }
+        head.push(byte[0]);
+    }
+    String::from_utf8(head).ok()
+}
+
+/// The value of the head's header `name`, whatever its case.
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+    })
 }
 
 fn answer(request: &Request) -> Response {

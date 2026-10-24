@@ -2,6 +2,8 @@
 //
 // Opens a link from the chat in the system's default browser. The webview
 // ignores target="_blank", and navigating it away would replace the IDE.
+// A page a remote chat's command opens on its team server opens the same
+// way, once its port is forwarded here (rovik-client's remote/pages.rs).
 
 use std::process::{Command, Stdio};
 
@@ -16,10 +18,15 @@ fn is_allowed(url: &str) -> bool {
 
 #[tauri::command]
 pub async fn open_url(url: String) -> Result<(), String> {
-    if !is_allowed(&url) {
+    open(&url)
+}
+
+/// Opens `url`, a web or mail link, in the system's default browser.
+pub fn open(url: &str) -> Result<(), String> {
+    if !is_allowed(url) {
         return Err(format!("not a web link: {url}"));
     }
-    let mut cmd = opener(&url);
+    let mut cmd = opener(url);
     rovik_core::process::no_window(&mut cmd);
     let mut child = cmd
         .stdin(Stdio::null())

@@ -22,6 +22,8 @@ mod dispatch;
 pub mod distro;
 mod edit_file;
 pub mod file_guard;
+#[cfg(target_os = "linux")]
+pub mod listening;
 pub mod merge;
 pub mod net;
 mod opencode;

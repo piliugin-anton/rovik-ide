@@ -393,7 +393,7 @@ impl Mechanism for Landlock {
     }
 
     fn command(&self, c: &Confine, program: &str, args: &[&str]) -> Command {
-        let mut cmd = crate::process::command(program);
+        let mut cmd = c.base_command(program);
         cmd.args(args);
         // The score's file is in /proc, which the ruleset makes read-only:
         // set it first (callers that set it again after are then refused,
@@ -482,6 +482,7 @@ mod tests {
             writable: vec![cache.clone(), work.clone()],
             sockets: Vec::new(),
             read_only: Vec::new(),
+            network: None,
         };
         let rules = grants(&c);
         let has = |p: &Path, g: Grant| rules.iter().any(|(q, h)| q == p && *h == g);
@@ -603,6 +604,7 @@ mod tests {
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
             sockets: Vec::new(),
             read_only: Vec::new(),
+            network: None,
         }
     }
 
@@ -726,6 +728,7 @@ mod tests {
             writable: vec![root.clone()],
             sockets: Vec::new(),
             read_only: Vec::new(),
+            network: None,
         };
         let rules = grants(&c);
         assert_eq!(rules[0], (PathBuf::from("/"), Grant::Read));

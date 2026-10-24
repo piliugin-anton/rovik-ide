@@ -48,6 +48,11 @@ pub struct Probe {
     /// Whether the kernel's Landlock can sandbox them instead, more lightly,
     /// where bubblewrap isn't there: None where the probe can't tell.
     pub landlock: Option<bool>,
+    /// `pasta`, which gives each user's commands a network of their own
+    /// (D20). Rovik's install adds it.
+    pub pasta: Option<String>,
+    /// A WSL distribution: one person's computer, which needs no pasta.
+    pub wsl: bool,
     /// `/dev/fuse`, and the helper that mounts without root: the virtual
     /// files need both.
     pub fuse: bool,
@@ -108,6 +113,8 @@ impl Probe {
                 "chrome_headless" => probe.chrome_headless = yes,
                 "userns" => probe.user_namespaces = yes,
                 "bwrap" => probe.bwrap = some(),
+                "pasta" => probe.pasta = some(),
+                "wsl" => probe.wsl = yes,
                 "landlock" => {
                     probe.landlock = match value {
                         "yes" => Some(true),
@@ -317,6 +324,17 @@ impl Probe {
                  bubblewrap)."
             }
         });
+        // Nor is pasta, on a server Rovik is installed on: its install and
+        // upgrades add it, so only an older install lacks it.
+        let no_network = (self.install.is_some() && self.pasta.is_none() && !self.wsl).then_some(
+            "pasta isn't installed, so the agent's commands share the server's ports with other \
+             users' until it is: upgrading Rovik there, or sudo /opt/rovik/bin/rovik-agentd admin \
+             pasta, installs it.",
+        );
+        let required = match (required, no_network) {
+            (Some(one), Some(two)) => Some(format!("{one} {two}")),
+            (one, two) => one.or(two).map(String::from),
+        };
         let optional = (!missing.is_empty()).then(|| format!("Optional: {}.", missing.join("; ")));
         match (required, optional) {
             (None, None) => Step::new(
@@ -325,9 +343,7 @@ impl Probe {
                 "User namespaces, bubblewrap and FUSE are there.".into(),
             ),
             (None, Some(optional)) => Step::new(Check::Isolation, Outcome::Warning, optional),
-            (Some(required), None) => {
-                Step::new(Check::Isolation, Outcome::Warning, required.into())
-            }
+            (Some(required), None) => Step::new(Check::Isolation, Outcome::Warning, required),
             (Some(required), Some(optional)) => Step::new(
                 Check::Isolation,
                 Outcome::Warning,
@@ -510,6 +526,7 @@ chrome=/usr/bin/chromium
 chrome_headless=yes
 userns=yes
 bwrap=/usr/bin/bwrap
+pasta=/usr/bin/pasta
 fuse=no
 fusermount=
 systemd=yes
@@ -667,6 +684,32 @@ socket=no
         assert!(message(&probe, Install).contains("someone with root"));
         assert!(message(&probe, Service).contains("No systemd"));
         assert!(message(&probe, Disk).contains("at least 1.0 GB"));
+    }
+
+    /// An install from before pasta is told its commands share the server's
+    /// ports, and how to install it.
+    #[test]
+    fn an_install_without_pasta_is_told_its_commands_share_the_ports() {
+        let older = Probe::parse(&DEBIAN.replace("pasta=/usr/bin/pasta\n", ""));
+        assert_eq!(older.pasta, None);
+        let step = older.isolation();
+        assert_eq!(step.outcome, Outcome::Warning);
+        assert!(
+            step.message.contains("share the server's ports"),
+            "{}",
+            step.message
+        );
+        assert!(step.message.contains("admin pasta"), "{}", step.message);
+        // WSL is one person's computer, and a server without Rovik gets
+        // pasta with its install.
+        let wsl = Probe::parse(&format!(
+            "{}wsl=yes\n",
+            DEBIAN.replace("pasta=/usr/bin/pasta\n", "")
+        ));
+        assert!(wsl.wsl);
+        assert!(!wsl.isolation().message.contains("pasta"));
+        let fresh = Probe::parse(CONTAINER);
+        assert!(!fresh.isolation().message.contains("pasta"));
     }
 
     /// Without bubblewrap, the commands run under Landlock where the kernel

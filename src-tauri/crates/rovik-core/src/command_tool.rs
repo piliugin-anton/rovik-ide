@@ -485,6 +485,12 @@ fn run_blocking(
         for (key, value) in crate::toolchains::env_for(root) {
             cmd.env(key, value);
         }
+        // In a team server's private network, the network's browser, which
+        // opens the chat's pages on the user's computer (network/pages.rs).
+        if let Some(network) = confine.as_ref().and_then(|c| c.network.as_ref()) {
+            let chat = queued.and_then(|q| q.kind.owner()).unwrap_or_default();
+            network.give_browser(&mut cmd, chat);
+        }
         // Its own process group, so a timeout can take down everything the
         // shell started (a `node server.js`), not just the shell.
         #[cfg(unix)]
@@ -836,6 +842,65 @@ mod tests {
             !String::from_utf8_lossy(&ps.stdout).contains(&marker),
             "the shell's child survived"
         );
+    }
+
+    /// On a team server a command runs in the user's private network: it
+    /// takes a port another user's server holds on the host, and its
+    /// browser asks Rovik, for its chat.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_command_in_the_users_network_takes_a_port_the_host_holds_and_uses_its_browser() {
+        let Some((dir, network)) =
+            crate::overlay::confine::network::for_test(Path::new("/bin/echo"), &[], None)
+        else {
+            return;
+        };
+        if !crate::process::on_path("python3") {
+            eprintln!("python3 isn't installed: skipped");
+            return;
+        }
+        let root = dir.0.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let Some(policy) = crate::overlay::confine::hiding_if_available(&root) else {
+            eprintln!("no sandbox confines commands here: skipped");
+            return;
+        };
+        let host = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = host.local_addr().unwrap().port();
+        let mut queued = Queued::of(
+            crate::workload::JobKind::Agent {
+                owner: "chat-7".into(),
+            },
+            None,
+        );
+        queued.confine = Some(policy.with_network(std::sync::Arc::new(network)));
+        let script = format!(
+            "echo \"chat=$ROVIK_CHAT\"; xdg-open http://localhost:{port}/; \
+             python3 -c 'import socket; s = socket.socket(); s.bind((\"127.0.0.1\", {port})); print(\"took\", {port})'"
+        );
+        let out = run_blocking(
+            root.to_str().unwrap(),
+            &script,
+            Duration::from_secs(60),
+            &|| false,
+            Some(&queued),
+        )
+        .unwrap();
+        assert_eq!(out.exit_code, Some(0), "{}{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains("chat=chat-7\n"), "{}", out.stdout);
+        // The shim ran the opener (here echo) with what it was asked.
+        assert!(
+            out.stdout
+                .contains(&format!("open http://localhost:{port}/\n")),
+            "{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains(&format!("took {port}")),
+            "{}",
+            out.stdout
+        );
+        drop(host);
     }
 
     #[cfg(not(windows))]

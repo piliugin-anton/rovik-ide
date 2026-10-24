@@ -1759,10 +1759,13 @@ async fn run_turn(
     let prompt = prompt_file(&settings, turn, false)?;
     // Rovik's permissions: the server Claude Code asks before a call.
     let asks = turn.asks.clone().filter(|_| rovik_answers(&settings, turn));
+    // On a team server, the user's private network: Claude Code runs in
+    // it, and the servers it starts take their ports there.
+    let network = crate::overlay::confine::network::current();
     let mut approvals = None;
     if asks.is_some() {
         let instructions = "Rovik IDE decides whether Claude Code's tool calls may run.";
-        let (server, calls) = McpServer::start(&[approve_tool()], instructions)
+        let (server, calls) = McpServer::start(&[approve_tool()], instructions, network.as_ref())
             .await
             .map_err(|e| format!("Couldn't start Rovik's approvals for Claude Code: {e}"))?;
         let config = TempFile::write("mcp", "json", &server.config_json())?;
@@ -1777,11 +1780,13 @@ async fn run_turn(
     );
     let env = env_for(&settings, &turn.api_key);
     let cwd = cwd_of(turn);
+    let chat = turn.dialog_id.as_deref().unwrap_or_default();
     let mut process = Process::spawn(
         &program,
         &args,
         &env,
         Some(&cwd),
+        network.as_deref().map(|network| (network, chat)),
         turn.prompt.clone(),
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         prompt.into_iter().collect(),
@@ -1949,7 +1954,9 @@ async fn start_live(
     prompt: String,
 ) -> Result<Live, String> {
     let program = resolve_program(&settings.program)?;
-    let (server, calls) = McpServer::start(&turn.tools, MCP_INSTRUCTIONS)
+    // As in `run_turn`: the user's private network on a team server.
+    let network = crate::overlay::confine::network::current();
+    let (server, calls) = McpServer::start(&turn.tools, MCP_INSTRUCTIONS, network.as_ref())
         .await
         .map_err(|e| format!("Rovik's tools couldn't be served to Claude Code: {e}"))?;
     let config = TempFile::write("mcp", "json", &server.config_json())?;
@@ -1965,11 +1972,13 @@ async fn start_live(
     env.extend(rovik_tools_env());
     let mut files = vec![config];
     files.extend(system);
+    let chat = turn.dialog_id.as_deref().unwrap_or_default();
     let process = Process::spawn(
         &program,
         &args,
         &env,
         Some(&cwd_of(turn)),
+        network.as_deref().map(|network| (network, chat)),
         prompt,
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         files,

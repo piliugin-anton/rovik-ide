@@ -564,6 +564,20 @@ reads the same login files and keeps a long pasted line from being garbled
 (the message of the day, "Last login"). Through **My system ssh** the shell
 starts as your ssh starts it.
 
+### Servers and pages on a cloud host
+
+On a server several people share, the agent's commands run in a network of
+your own there: its dev servers can take any port without clashing with
+another user's, and nobody else can reach them, while the agent tests them
+with `curl localhost:3000` as it would on your computer. When a command
+opens a page of one of them (`vite --open`, `xdg-open
+http://localhost:5173`), Rovik opens it in your browser on this computer,
+through a port of this computer forwarded to it: the same port when it's
+free here, another when it isn't. The chat shows **Opened ports:** under
+its title, each with the server's port and a button that copies the
+address here that leads to it. A page at any other address is refused. See
+[Rovik on a team server](docs/cloud-hosts.md#each-users-own-network).
+
 ---
 
 ## For developers

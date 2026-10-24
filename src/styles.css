@@ -1092,6 +1092,55 @@ body.tree-dragging {
   color: var(--fg-dim);
 }
 
+/* The ports a remote chat's servers opened on its host (OpenedPorts), in a
+   row of their own under the title row. */
+.opened-ports {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.opened-port {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.opened-port-number {
+  font-family: var(--font-mono);
+  color: var(--fg);
+}
+
+.opened-port-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.opened-port-copy:hover,
+.opened-port-copy.copied {
+  background: var(--hover-strong);
+  color: var(--fg);
+}
+
+.opened-port-copy:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
 .chat-messages {
   flex: 1;
   min-height: 0;

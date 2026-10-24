@@ -10,6 +10,7 @@ use super::mcp::McpCall;
 use super::ConnectorKind;
 use crate::agent::ChatStreamEvent;
 use crate::chat_request::{ChatError, ErrorKind};
+use crate::overlay::confine::network::Network;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -206,17 +207,26 @@ pub(super) struct Process {
 }
 
 impl Process {
-    /// Starts `program`, the turn's message on its stdin.
+    /// Starts `program`, the turn's message on its stdin: in `network` for
+    /// a chat when given (a team server's private network, with its
+    /// browser for that chat: overlay/confine/network.rs).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn(
         program: &str,
         args: &[String],
         env: &[(String, String)],
         cwd: Option<&Path>,
+        network: Option<(&Network, &str)>,
         prompt: String,
         first_line_within: Duration,
         files: Vec<TempFile>,
     ) -> Result<Process, String> {
-        let mut cmd = tokio::process::Command::from(command(program, cwd, env));
+        let mut program_cmd = command(program, cwd, env);
+        if let Some((network, chat)) = network {
+            network.join(&mut program_cmd);
+            network.give_browser(&mut program_cmd, chat);
+        }
+        let mut cmd = tokio::process::Command::from(program_cmd);
         cmd.args(args).kill_on_drop(true);
         let mut child = cmd
             .spawn()
@@ -412,7 +422,16 @@ pub(super) async fn answer<T>(
     within: Duration,
     mut pick: impl FnMut(&str) -> Option<T>,
 ) -> Result<T, String> {
-    let mut process = Process::spawn(program, args, env, Some(cwd), input, within, Vec::new())?;
+    let mut process = Process::spawn(
+        program,
+        args,
+        env,
+        Some(cwd),
+        None,
+        input,
+        within,
+        Vec::new(),
+    )?;
     let deadline = tokio::time::sleep(within);
     tokio::pin!(deadline);
     loop {
@@ -509,6 +528,43 @@ pub(super) fn ended_error(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// On a team server a connector's program runs in the user's private
+    /// network, with its browser for the chat.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_harness_runs_in_the_network_it_is_given_with_the_chats_browser() {
+        let Some((_dir, network)) =
+            crate::overlay::confine::network::for_test(Path::new("/bin/echo"), &[], None)
+        else {
+            return;
+        };
+        crate::rt::block_on(async {
+            let script = "readlink /proc/self/ns/net; echo \"chat=$ROVIK_CHAT\"; xdg-open http://localhost:9/";
+            let args = ["-c".to_string(), script.to_string()];
+            let mut process = Process::spawn(
+                "sh",
+                &args,
+                &[],
+                None,
+                Some((&network, "chat-9")),
+                String::new(),
+                Duration::from_secs(30),
+                Vec::new(),
+            )
+            .unwrap();
+            let mut lines = Vec::new();
+            while let Some(line) = process.lines.recv().await {
+                lines.push(line);
+            }
+            let ours = std::fs::read_link("/proc/self/ns/net").unwrap();
+            assert_ne!(lines[0], ours.to_string_lossy(), "{lines:?}");
+            assert_eq!(lines[1], "chat=chat-9");
+            assert_eq!(lines[2], "open http://localhost:9/");
+            let (code, _) = process.finish().await;
+            assert_eq!(code, Some(0));
+        });
+    }
 
     #[test]
     fn a_one_off_run_gets_its_input_and_a_time_limit() {

@@ -31,6 +31,10 @@ usage: rovik-agentd <command>
       --json prints it for scripts.
   version
       Print the daemon's version and protocol.
+  open URL...
+      What a command's browser runs on a team server (D20): asks the daemon
+      to open each page, one of the command's servers', in the browser on
+      the user's computer, and says what came of it.
   token add COMPUTER [--data DIR]
       Let COMPUTER connect: the SHA-256 of its token, in hex, comes on
       stdin and goes in config.toml. A running daemon reads it when it
@@ -49,7 +53,7 @@ usage: rovik-agentd <command>
       nightly-YYYY-MM-DD, 1.N or 1.N.P; node: lts, a major version or
       X.Y.Z). An administrator can turn this off in agentd.toml.
   admin [limits [NAME=VALUE ...] | add USER | remove USER | browser |
-         bubblewrap | claude-code | toolchain list | toolchain add KIND VERSION |
+         bubblewrap | pasta | claude-code | toolchain list | toolchain add KIND VERSION |
          toolchain remove KIND VERSION | toolchain prune DAYS |
          toolchains user-install|shared-caches on|off | toolchains setup |
          upgrade FILE [--allow-downgrade] | uninstall] [--root DIR]
@@ -58,7 +62,9 @@ usage: rovik-agentd <command>
       the browser tools (the Chrome for Testing Rovik pins, which install
       and upgrade put in place too), bubblewrap, which confines the chats'
       commands (install and upgrade put it in place too, from the distro's
-      package), Claude Code for the connector of that name (Anthropic's
+      package, with pasta), pasta, which gives each user's commands a network
+      of their own (install and upgrade require it, from the passt package),
+      Claude Code for the connector of that name (Anthropic's
       package, installed once for every user's chats, or updated), the
       shared Rust and Node versions and the package caches
       the daemons share (toolchain add works whether or not users may
@@ -78,6 +84,10 @@ pub enum Command {
     },
     Doctor(Options),
     Status(Options),
+    /// `open URL...`, as a command's browser runs it.
+    Open {
+        urls: Vec<String>,
+    },
     Version,
     Help,
     AddToken {
@@ -123,6 +133,14 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
     }
     if command == "token" {
         return parse_token(rest);
+    }
+    if command == "open" {
+        return match rest {
+            [] => Err("open takes the address of the page to open".into()),
+            urls => Ok(Command::Open {
+                urls: urls.to_vec(),
+            }),
+        };
     }
     let mut options = Options::default();
     let mut stdio = false;
@@ -252,6 +270,34 @@ fn system(root: Option<PathBuf>) -> Result<System, String> {
     Ok(System::new(root))
 }
 
+/// `open URL...`: each page asked of the daemon, as a command's browser on
+/// a team server asks (D20). What was done goes to stdout; why a page
+/// wasn't opened, to stderr, and the command fails.
+fn open(urls: &[String]) -> Result<(), String> {
+    use rovik_core::overlay::confine::pages;
+    let socket = std::env::var_os(pages::SOCKET_VAR).ok_or(
+        "Rovik's browser opens only the pages of its chats' commands on a team server, and this \
+         program isn't one of them: it opened nothing.",
+    )?;
+    let chat = std::env::var(pages::CHAT_VAR).unwrap_or_default();
+    let refused: Vec<String> = urls
+        .iter()
+        .filter_map(
+            |url| match pages::ask(std::path::Path::new(&socket), &chat, url) {
+                Ok(done) => {
+                    println!("{done}");
+                    None
+                }
+                Err(why) => Some(why),
+            },
+        )
+        .collect();
+    match refused.is_empty() {
+        true => Ok(()),
+        false => Err(refused.join("\n")),
+    }
+}
+
 pub fn run(argv: &[String]) -> i32 {
     let command = match parse(argv) {
         Ok(command) => command,
@@ -265,6 +311,7 @@ pub fn run(argv: &[String]) -> i32 {
         Command::Attach { socket } => attach::attach(socket),
         Command::Doctor(options) => doctor::doctor(options),
         Command::Status(options) => status::status(options),
+        Command::Open { urls } => open(&urls),
         Command::Version => {
             println!("rovik-agentd {VERSION} (protocol {PROTOCOL})");
             Ok(())
@@ -359,6 +406,13 @@ mod tests {
             }))
         );
         assert_eq!(parsed(&["version"]), Ok(Command::Version));
+        // The browser's arguments as they come, whatever they look like.
+        assert_eq!(
+            parsed(&["open", "http://localhost:5173/", "--new-window"]),
+            Ok(Command::Open {
+                urls: vec!["http://localhost:5173/".into(), "--new-window".into()]
+            })
+        );
         assert_eq!(parsed(&[]), Ok(Command::Help));
         assert_eq!(parsed(&["serve", "--help"]), Ok(Command::Help));
     }
@@ -374,6 +428,7 @@ mod tests {
             .contains("needs a value"));
         assert!(parsed(&["launch"]).unwrap_err().contains("unknown command"));
         assert!(parsed(&["install"]).unwrap_err().contains("--admin"));
+        assert!(parsed(&["open"]).unwrap_err().contains("address"));
         assert!(parsed(&["install", "--admin", "ann", "now"]).is_err());
         assert!(parsed(&["user", "start", "--as", "bo"]).is_err());
         assert!(parsed(&["token", "add"]).is_err());

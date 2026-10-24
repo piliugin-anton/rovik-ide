@@ -56,6 +56,9 @@ pub struct Daemon {
     /// One worktree made at a time: the caps are checked, and the worktree
     /// made, under it, so two at once can't both take the last place.
     pub making: tokio::sync::Mutex<()>,
+    /// The pages this user's commands asked to open, waiting for their
+    /// computer's answer (D20).
+    pub pages: crate::pages::Opener,
 }
 
 impl Daemon {
@@ -112,6 +115,18 @@ impl Daemon {
                 .map_err(|e| Fail::new(FailCode::Internal, e)),
             Request::Storage => Ok(Response::Storage(host::storage(self).await)),
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
+            Request::PageOpened {
+                id,
+                local_port,
+                error,
+            } => {
+                let outcome = match (error, local_port) {
+                    (None, Some(local)) => Ok(local),
+                    (Some(why), _) => Err(why),
+                    (None, None) => Err("The user's computer said nothing of the page.".into()),
+                };
+                Ok(Response::Bool(self.pages.answered(&id, outcome)))
+            }
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
             Request::AgentStart(start) => self.start(computer, *start).await,
             // This computer's runs only take the effort it picked (D16).

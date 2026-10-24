@@ -171,6 +171,7 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         | Request::KeysRemove { .. }
         | Request::Storage
         | Request::CleanUp
+        | Request::PageOpened { .. }
         | Request::AutonomyConfigure(_)
         | Request::DeliveryTest { .. }
         | Request::TaskStatus => {
@@ -654,6 +655,11 @@ mod tests {
             Request::KeysList,
             Request::Storage,
             Request::CleanUp,
+            Request::PageOpened {
+                id: "page-1".into(),
+                local_port: Some(5173),
+                error: None,
+            },
             Request::AutonomyConfigure(Default::default()),
         ];
         for request in host {
