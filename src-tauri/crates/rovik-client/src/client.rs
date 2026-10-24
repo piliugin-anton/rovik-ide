@@ -646,13 +646,19 @@ async fn hello(
     let uri: Uri = "ws://rovik-agentd/rpc".parse().expect("a URI");
     let request = ClientRequestBuilder::new(uri)
         .with_header("Authorization", format!("Bearer {}", identity.token.0));
-    let mut socket = match tokio_tungstenite::client_async(request, io).await {
-        Ok((socket, _)) => socket,
-        Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
-            return Err(Unwelcome::TokenRefused)
-        }
-        Err(e) => return Err(Unwelcome::Lost(e.to_string())),
-    };
+    // Frames are at most MAX_FRAME (4.1): a daemon that sends more is
+    // refused, not buffered up to tungstenite's 64 MiB default.
+    let config = tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_FRAME))
+        .max_frame_size(Some(MAX_FRAME));
+    let mut socket =
+        match tokio_tungstenite::client_async_with_config(request, io, Some(config)).await {
+            Ok((socket, _)) => socket,
+            Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
+                return Err(Unwelcome::TokenRefused)
+            }
+            Err(e) => return Err(Unwelcome::Lost(e.to_string())),
+        };
     let hello = Frame::Hello {
         protocol: PROTOCOL,
         client: identity.client.clone(),

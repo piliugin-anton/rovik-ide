@@ -562,7 +562,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
         *TEST_RUN.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((core.clone(), dialog_id.clone()));
     }
-    agent_run::agent_start(&core, request).await?;
+    // None: nothing to do, so no run will end (an Autopilot task's driver
+    // may still go on without one: `task_over` tells).
+    let run_id = agent_run::agent_start(&core, request).await?;
     // The scripted messages, and the lead chat's tool results so far.
     let mut steering: Vec<Steering> = args
         .steers
@@ -591,6 +593,9 @@ pub async fn run(args: &Args) -> Result<Value, String> {
     // it took (the driver may record the last ones without a run).
     let mut task_tick = tokio::time::interval(Duration::from_millis(250));
     let outcome = loop {
+        if run_id.is_none() && !autopilot {
+            break "nothing-to-do".to_string();
+        }
         let next = tokio::select! {
             e = tokio::time::timeout_at(deadline, rx.recv()) => e,
             _ = task_tick.tick(), if autopilot => {

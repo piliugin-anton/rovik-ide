@@ -162,14 +162,26 @@ pub fn frame(message: &str) -> Vec<u8> {
 }
 
 #[tauri::command]
-pub fn lsp_start(
+pub async fn lsp_start(
     app: AppHandle,
-    state: State<'_, LspState>,
     command: String,
     args: Vec<String>,
     cwd: String,
     on_event: Channel<LspEvent>,
 ) -> Result<String, String> {
+    // On a worker thread: finding the server on the PATH and starting it
+    // block, and as a plain command they held the window's main thread.
+    blocking(move || start_server(&app, command, args, cwd, on_event)).await
+}
+
+fn start_server(
+    app: &AppHandle,
+    command: String,
+    args: Vec<String>,
+    cwd: String,
+    on_event: Channel<LspEvent>,
+) -> Result<String, String> {
+    let state = app.state::<LspState>();
     let path = tool_path();
     let mut cmd = rovik_core::process::command(find_program(&command, &path));
     let mut child = rovik_core::process::no_window(&mut cmd)
@@ -235,7 +247,7 @@ pub fn lsp_start(
 
     // Waiter: polls rather than blocking on wait(), so lsp_stop can still
     // take the lock to kill it.
-    let waiter_id = id.clone();
+    let (app, waiter_id) = (app.clone(), id.clone());
     std::thread::Builder::new()
         .name(format!("lsp-wait-{id}"))
         .spawn(move || {

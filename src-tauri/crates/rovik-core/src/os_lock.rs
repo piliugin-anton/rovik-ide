@@ -74,6 +74,35 @@ pub fn try_hold(path: &Path) -> io::Result<Option<Held>> {
     Ok(None)
 }
 
+/// Holds the first lock of `paths` free, with its index; None while
+/// others hold them all. Each is tried once a round, and a round again a
+/// moment later as `try_hold` does, so a caller holding a lock of its own
+/// meanwhile (a queue's) waits as long for many as for one.
+pub fn try_hold_first(paths: &[std::path::PathBuf]) -> io::Result<Option<(usize, Held)>> {
+    let files = paths
+        .iter()
+        .map(|p| open(p))
+        .collect::<io::Result<Vec<File>>>()?;
+    first_unlocked(files, || std::thread::sleep(APART))
+}
+
+/// The first of `files` whose lock is free, held, with its index: each
+/// tried once a round, `pause` between the rounds.
+fn first_unlocked(files: Vec<File>, mut pause: impl FnMut()) -> io::Result<Option<(usize, Held)>> {
+    for attempt in 0..TRIES {
+        if attempt > 0 {
+            pause();
+        }
+        for (i, file) in files.iter().enumerate() {
+            if try_lock(file)? {
+                let file = files.into_iter().nth(i).expect("an index of files");
+                return Ok(Some((i, Held(file))));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Holds the lock at `path`, once whoever has it lets go.
 pub fn hold(path: &Path) -> io::Result<Held> {
     let file = open(path)?;
@@ -230,6 +259,34 @@ mod tests {
         assert!(!held_elsewhere(&path));
         let theirs = try_hold(&path).unwrap().expect("free again");
         drop(theirs);
+    }
+
+    /// The first of several locks free is held, and all taken costs one
+    /// round of waits, not one per lock.
+    #[test]
+    fn the_first_free_of_several_locks_is_held_and_all_taken_waits_once() {
+        let dir = temp_dir("first");
+        let paths: Vec<std::path::PathBuf> = (1..=8)
+            .map(|n| dir.join(format!("slot-{n}.lock")))
+            .collect();
+        let taken: Vec<Held> = paths[..3]
+            .iter()
+            .map(|p| try_hold(p).unwrap().unwrap())
+            .collect();
+        // Held through other open files, as another process would.
+        let (i, _fourth) = try_hold_first(&paths).unwrap().unwrap();
+        assert_eq!(i, 3);
+        let more: Vec<Held> = paths[4..]
+            .iter()
+            .map(|p| try_hold(p).unwrap().unwrap())
+            .collect();
+        // All taken: as many pauses as one lock's tries take, not one
+        // lock's tries for each.
+        let files: Vec<File> = paths.iter().map(|p| open(p).unwrap()).collect();
+        let mut pauses = 0;
+        assert!(first_unlocked(files, || pauses += 1).unwrap().is_none());
+        assert_eq!(pauses, TRIES - 1);
+        drop((taken, more));
     }
 
     #[test]

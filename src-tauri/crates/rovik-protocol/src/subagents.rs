@@ -6,11 +6,13 @@ use crate::agent::{ModelProfile, OpenAIChatOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// A model in a kind's list: a resolved model, or "the chat's model".
+/// A model in a kind's list: a resolved model, or "the chat's model". The
+/// profile is boxed so a list of "the chat's model" stays small; serde
+/// reads and writes it the same.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum ModelChoice {
-    Profile(ModelProfile),
+    Profile(Box<ModelProfile>),
     Chat { chat: bool },
 }
 

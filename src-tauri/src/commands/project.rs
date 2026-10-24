@@ -6,8 +6,9 @@ use rovik_core::Core;
 use tauri::State;
 
 #[tauri::command]
-pub fn project_profile(root: String) -> Result<ProjectProfile, String> {
-    project_profile::project_profile(&root)
+pub async fn project_profile(root: String) -> Result<ProjectProfile, String> {
+    // Off the main thread: it reads the project's manifests and lockfiles.
+    crate::util::blocking(move || project_profile::project_profile(&root)).await
 }
 
 /// The user's settings for one project (e.g. corrected check commands), as

@@ -320,17 +320,14 @@ pub async fn install(distro: Option<&str>) -> Result<Installed, String> {
     if !plain_distro(distro) {
         return Err(format!("{distro:?} isn't a distribution's name."));
     }
-    let dir = std::env::temp_dir();
-    let (script, log) = (
-        dir.join("rovik-wsl-install.cmd"),
-        dir.join("rovik-wsl-install.log"),
-    );
-    std::fs::write(&script, install_script(distro, &log)).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(&log);
+    // What it printed, by a name of its own each time. The script itself
+    // goes inline, in no file: a file of the user's could be swapped
+    // before the permission is given, and run as an administrator.
+    let log = std::env::temp_dir().join(format!("rovik-wsl-install-{}.log", uuid::Uuid::new_v4()));
     let mut command = rovik_core::process::command("powershell.exe");
     rovik_core::process::no_window(&mut command);
     let run = tokio::process::Command::from(command)
-        .args(elevated(&script))
+        .args(elevated(&install_script(distro, &log)))
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();
@@ -339,7 +336,7 @@ pub async fn install(distro: Option<&str>) -> Result<Installed, String> {
         .map_err(|_| "Installing WSL didn't finish in time.".to_string())?
         .map_err(|e| format!("powershell.exe couldn't start: {e}"))?;
     let printed = decode(&std::fs::read(&log).unwrap_or_default());
-    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_file(&log);
     let code = output.status.code().and_then(|c| u32::try_from(c).ok());
     match code {
         Some(0) => Ok(Installed {
@@ -377,34 +374,41 @@ fn plain_distro(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-/// The batch file run as an administrator: WSL's install with its output
-/// in `log` (UTF-16, as `wsl.exe` writes it), or the features turned on
-/// where there's no `wsl.exe` to do it, ending as `dism` does.
+/// The PowerShell script run as an administrator: WSL's install with its
+/// output in `log` (UTF-16, as `wsl.exe` writes it, through cmd's
+/// redirection), or the features turned on where there's no `wsl.exe` to
+/// do it, ending as `dism` does. `distro` is a plain name
+/// (`plain_distro`).
 pub fn install_script(distro: &str, log: &Path) -> String {
-    let log = log.display();
+    let log = log.display().to_string().replace('\'', "''");
     let dism = "dism.exe /online /enable-feature /featurename";
+    // `--%` hands the rest of the line to cmd.exe as it is (the log's
+    // name by a variable, which cmd reads): no PowerShell quoting between.
     let lines = [
-        "@echo off".to_string(),
-        "where wsl.exe >nul 2>&1".to_string(),
-        "if errorlevel 1 (".to_string(),
-        format!("  {dism}:Microsoft-Windows-Subsystem-Linux /all /norestart > \"{log}\" 2>&1"),
-        format!("  {dism}:VirtualMachinePlatform /all /norestart >> \"{log}\" 2>&1"),
-        format!("  exit /b {RESTART_NEEDED}"),
-        ")".to_string(),
-        format!("wsl.exe --install -d {distro} --no-launch > \"{log}\" 2>&1"),
-        "exit /b %ERRORLEVEL%".to_string(),
-        String::new(),
+        format!("$env:ROVIK_WSL_LOG = '{log}'"),
+        "if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {".to_string(),
+        format!("  cmd.exe /c --% wsl.exe --install -d {distro} --no-launch > \"%ROVIK_WSL_LOG%\" 2>&1"),
+        "  exit $LASTEXITCODE".to_string(),
+        "}".to_string(),
+        format!("cmd.exe /c --% {dism}:Microsoft-Windows-Subsystem-Linux /all /norestart > \"%ROVIK_WSL_LOG%\" 2>&1"),
+        format!("cmd.exe /c --% {dism}:VirtualMachinePlatform /all /norestart >> \"%ROVIK_WSL_LOG%\" 2>&1"),
+        format!("exit {RESTART_NEEDED}"),
     ];
-    lines.join("\r\n")
+    lines.join("\n")
 }
 
-/// PowerShell's arguments to run `script` as an administrator and end
-/// with its exit code: `Start-Process -Verb RunAs` is the UAC prompt.
-pub fn elevated(script: &Path) -> Vec<String> {
-    let path = script.display().to_string().replace('\'', "''");
+/// PowerShell's arguments to run `script` (PowerShell) as an administrator
+/// and end with its exit code: `Start-Process -Verb RunAs` is the UAC
+/// prompt, and the script goes to the elevated PowerShell encoded in its
+/// arguments (`-EncodedCommand`, UTF-16 in base64), never through a file.
+pub fn elevated(script: &str) -> Vec<String> {
+    use base64::Engine;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
     let command = format!(
-        "$p = Start-Process -FilePath '{path}' -Verb RunAs -Wait -PassThru -WindowStyle Hidden; \
-         exit $p.ExitCode"
+        "$p = Start-Process -FilePath 'powershell.exe' -ArgumentList \
+         '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}' \
+         -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode"
     );
     vec![
         "-NoProfile".into(),
@@ -515,17 +519,17 @@ mod tests {
 
     #[test]
     fn wsl_is_installed_as_an_administrator_without_launching_the_distribution() {
-        let log = PathBuf::from(r"C:\Users\me\AppData\Local\Temp\rovik-wsl-install.log");
+        let log = PathBuf::from(r"C:\Users\it's\AppData\Local\Temp\rovik-wsl-install-1.log");
         let script = install_script("Ubuntu-24.04", &log);
-        assert!(script.starts_with("@echo off\r\n"));
+        assert!(script.starts_with("$env:ROVIK_WSL_LOG = 'C:\\Users\\it''s\\AppData\\Local\\Temp\\rovik-wsl-install-1.log'\n"));
         assert!(script.contains(
-            "wsl.exe --install -d Ubuntu-24.04 --no-launch > \"C:\\Users\\me\\AppData\\Local\\Temp\\rovik-wsl-install.log\" 2>&1\r\n"
+            "cmd.exe /c --% wsl.exe --install -d Ubuntu-24.04 --no-launch > \"%ROVIK_WSL_LOG%\" 2>&1\n"
         ));
         // Without wsl.exe, the features, and a restart to get it.
-        assert!(script.contains("where wsl.exe >nul"));
+        assert!(script.contains("if (Get-Command wsl.exe"));
         assert!(script.contains("/featurename:VirtualMachinePlatform /all /norestart"));
-        assert!(script.contains("exit /b 3010"));
-        let args = elevated(Path::new(r"C:\Temp\it's.cmd"));
+        assert!(script.ends_with("exit 3010"));
+        let args = elevated(&script);
         assert_eq!(
             args[..5],
             [
@@ -536,7 +540,23 @@ mod tests {
                 "-Command"
             ]
         );
-        assert!(args[5].contains("Start-Process -FilePath 'C:\\Temp\\it''s.cmd' -Verb RunAs -Wait"));
+        // The script goes in the arguments, encoded, not in a file.
+        use base64::Engine;
+        let encoded = args[5]
+            .split("'-EncodedCommand','")
+            .nth(1)
+            .and_then(|rest| rest.split('\'').next())
+            .unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), script);
+        assert!(args[5].contains("Start-Process -FilePath 'powershell.exe'"));
+        assert!(args[5].contains("-Verb RunAs -Wait"));
         assert!(args[5].ends_with("exit $p.ExitCode"));
         assert!(plain_distro("Ubuntu-24.04"));
         assert!(!plain_distro("Ubuntu & calc"));

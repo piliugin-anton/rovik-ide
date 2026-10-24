@@ -405,7 +405,10 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 /// The folders to look in, from the file's up to (and including) the
-/// project root, or the repository root, or the filesystem root.
+/// project root, or the repository root; the file's own folder alone when
+/// it's in neither. Never further up: a `node_modules/.bin` or `.venv` in
+/// `/tmp`, or in a parent folder the project doesn't own, isn't the
+/// project's tool, and it would run.
 fn search_dirs(path: &Path, root: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let Some(parent) = path.parent() else {
@@ -419,9 +422,11 @@ fn search_dirs(path: &Path, root: Option<&Path>) -> Vec<PathBuf> {
             None => dir.join(".git").exists(),
         };
         if at_root {
-            break;
+            return dirs;
         }
     }
+    // No project or repository root on the way up.
+    dirs.truncate(1);
     dirs
 }
 
@@ -745,13 +750,22 @@ fn format_text(
 /// The formatter for a file: the project's own, else the language's
 /// standard one if installed.
 #[tauri::command]
-pub fn formatter_for_file(path: String, language: String, root: Option<String>) -> FormatterLookup {
-    lookup(
-        Path::new(&path),
-        &language,
-        root.as_deref().map(Path::new),
-        &crate::lsp::tool_path(),
-    )
+pub async fn formatter_for_file(
+    path: String,
+    language: String,
+    root: Option<String>,
+) -> Result<FormatterLookup, String> {
+    // Off the main thread: the lookup reads config files up the folders
+    // and probes programs on the PATH.
+    crate::util::blocking(move || {
+        Ok(lookup(
+            Path::new(&path),
+            &language,
+            root.as_deref().map(Path::new),
+            &crate::lsp::tool_path(),
+        ))
+    })
+    .await
 }
 
 /// Formats `content` (the editor's text of `path`) with the file's

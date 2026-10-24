@@ -240,6 +240,55 @@ fn bash(id: &'static str, command: &str) -> Reply {
 /// file goes, its deleted one comes back, its modified one has its old
 /// bytes. A file the round wrote and then deleted, and one the user
 /// created again where the round deleted it, are left as they are.
+/// A failed check's saved output is its whole output, as the reports say:
+/// a line from the middle of a long one is in it, not only the start and
+/// the end the report shows.
+#[tokio::test]
+async fn a_failed_checks_saved_output_is_the_whole_of_it() {
+    if !has_node() {
+        return;
+    }
+    let big = r#"
+const filler = 'x'.repeat(120);
+for (let i = 0; i < 1500; i++) console.log('before ' + i + ' ' + filler);
+console.log('THE-MIDDLE-LINE');
+for (let i = 0; i < 1500; i++) console.log('after ' + i + ' ' + filler);
+// Not process.exit(): it cuts off what's still being written to the pipe.
+process.exitCode = 1;
+"#;
+    let h = harness(&[
+        (
+            "package.json",
+            r#"{ "name": "t", "scripts": { "test": "node big.js" } }"#,
+        ),
+        ("big.js", big),
+    ])
+    .await;
+    let (url, _) = model(vec![
+        write("w1", "notes.txt", "a change\n"),
+        Reply::Text("Done."),
+        Reply::Text("I'll leave it."),
+    ])
+    .await;
+    h.start(h.request(&url, Harness::send("Go"), checks_on()))
+        .await;
+    h.run_end().await;
+    let rounds = records(&h.messages().await);
+    let saved = rounds[0]["checks"][0]["savedOutput"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(saved.starts_with("@checks/"), "{}", rounds[0]);
+    let file = crate::agent_run::check_output::resolve(&h.dialog_id, &saved).unwrap();
+    let text = std::fs::read_to_string(file).unwrap();
+    assert!(text.contains("THE-MIDDLE-LINE"));
+    let start: String = text.chars().take(400).collect();
+    assert!(
+        text.contains("before 0 ") && text.contains("after 1499 "),
+        "{start}"
+    );
+}
+
 #[tokio::test]
 async fn rollback_of_create_delete_modify_direct() {
     if !has_node() {
@@ -503,6 +552,65 @@ async fn rollback_of_create_delete_modify_isolated() {
     assert_eq!(h.file("e.txt").as_deref(), Some("keep me too\n"));
     assert_eq!(h.file("m.txt").as_deref(), Some("old\n"));
     assert_eq!(h.file("n.txt"), None);
+}
+
+/// A fix round's write to a file outside the project is refused, and it
+/// isn't put in the round's checkpoint either: rolled back, the round
+/// doesn't write that file back over what the user has there since.
+#[tokio::test]
+async fn a_rollback_never_writes_a_file_outside_the_project() {
+    if !has_node() || !crate::vfs::mount_works() {
+        return;
+    }
+    let mut h = harness(&[
+        ("package.json", PACKAGE),
+        ("run.js", RUNNER),
+        ("tests/a.test.js", TESTS),
+        ("a.txt", "bad\n"),
+        ("b.txt", "fine\n"),
+    ])
+    .await;
+    h.isolate().await;
+    let outside = h
+        .project
+        .parent()
+        .unwrap()
+        .join(format!("outside-{}.txt", std::process::id()));
+    std::fs::write(&outside, "before\n").unwrap();
+    let outside_path: &'static str =
+        Box::leak(outside.to_string_lossy().into_owned().into_boxed_str());
+    let (url, _) = model(vec![
+        write("w0", "notes.txt", "looking\n"),
+        Reply::Text("Done."),
+        // The fix: a write outside the project, then one that breaks `two`.
+        write("w1", outside_path, "the chat's\n"),
+        write("w2", "b.txt", "broken\n"),
+        Reply::Slow(1500, Box::new(Reply::Text("Done."))),
+        write("w3", "a.txt", "good\n"),
+        Reply::Text("Done."),
+    ])
+    .await;
+    let mut request = h.request(&url, Harness::send("Fix the tests"), checks_on());
+    request.isolate = Some(true);
+    h.start(request).await;
+    // The user changes the file while the round is still going.
+    for _ in 0..500 {
+        let written = h.events_of("fileWritten");
+        if written
+            .iter()
+            .any(|e| e["absPath"].as_str().is_some_and(|p| p.ends_with("b.txt")))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(&outside, "the user's\n").unwrap();
+    let end = h.run_end().await;
+    let rounds = records(&h.messages().await);
+    assert_eq!(end, "verified", "{rounds:#?}");
+    assert_eq!(rounds[1]["status"], "rolled-back", "{}", rounds[1]);
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "the user's\n");
+    let _ = std::fs::remove_file(&outside);
 }
 
 /// Round 2 (§4.2), in an isolated chat: after a restart, what each file

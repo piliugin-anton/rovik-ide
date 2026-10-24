@@ -286,7 +286,7 @@ pub struct Run {
     /// whatever effort is picked.
     refused_formats: Vec<String>,
     /// The sent message waiting for its first answer.
-    pub(super) settle_message: Option<String>,
+    pub(super) settle_message: Unsettled,
     continue_reply: bool,
     /// The chat's lead, or a subagent of a lead (subagent_run.rs).
     pub(super) role: Role,
@@ -1168,7 +1168,7 @@ impl Run {
             verify_rounds,
             force_todo_next,
             plan_context,
-            settle_message,
+            settle_message: Arc::new(Mutex::new(settle_message)),
             continue_reply,
             ..Run::blank(
                 core.clone(),
@@ -1277,7 +1277,7 @@ impl Run {
             pause: controls.pause,
             effort: controls.effort,
             refused_formats: Vec::new(),
-            settle_message: None,
+            settle_message: Unsettled::default(),
             continue_reply: false,
             role,
             ledger: subagent::Ledger::default(),
@@ -1454,6 +1454,14 @@ impl Run {
         // a panic included.
         let _running = RunningGuard::new(&self.dialog_id, !self.plan_mode);
         let _harness = HarnessGuard::new(&self.dialog_id);
+        #[cfg(test)]
+        if PANIC_RUN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&self.dialog_id)
+        {
+            panic!("a test's run panics");
+        }
         let outcome = self.drive(entry).await;
         // Whatever ended it, the run takes no more messages from here, and
         // what it holds unread goes back to the user (D9, D15).
@@ -3099,36 +3107,18 @@ impl Run {
     /// The first answer to a sent message: on none, the message is marked
     /// failed (its draft comes back in the composer).
     pub(super) async fn settle(&mut self, ok: bool) {
-        let Some(message_id) = self.settle_message.take() else {
+        let Some(message_id) = take_unsettled(&self.settle_message) else {
             return;
         };
-        if !ok {
-            let id = message_id.clone();
-            let patch = MessagePatch {
-                failed: Some(true),
-                ..Default::default()
-            };
-            match self
-                .core
-                .db
-                .write(move |c| store::update_message(c, &id, &patch))
-                .await
-            {
-                Ok(()) => self.patch_ui(
-                    &message_id,
-                    Patch {
-                        failed: Some(true),
-                        ..Default::default()
-                    },
-                ),
-                Err(e) => eprintln!("agent: could not mark a message failed: {e}"),
-            }
+        if ok {
+            self.core.emit(AgentEvent::UserMessageSettled {
+                dialog_id: self.dialog_id.clone(),
+                message_id,
+                ok,
+            });
+        } else {
+            settle_failed(&self.core, &self.dialog_id, message_id).await;
         }
-        self.core.emit(AgentEvent::UserMessageSettled {
-            dialog_id: self.dialog_id.clone(),
-            message_id,
-            ok,
-        });
     }
 
     /// The user's latest request in the chat, as sent (for the AI reviewer),
@@ -3693,6 +3683,51 @@ fn effort_label(options: &Option<OpenAIChatOptions>) -> &'static str {
         Some(ReasoningEffort::Medium) => "medium effort",
         Some(ReasoningEffort::High) => "high effort",
     }
+}
+
+/// Tests: the lead's run in this chat panics as it starts.
+#[cfg(test)]
+pub(crate) static PANIC_RUN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// The sent message a run hasn't answered yet, shared with the task that
+/// spawned the run: should the run panic, the message is still settled.
+pub(super) type Unsettled = Arc<Mutex<Option<String>>>;
+
+/// Takes the message still waiting for its answer, if any: it's settled
+/// once, by whoever takes it.
+pub(super) fn take_unsettled(unsettled: &Unsettled) -> Option<String> {
+    unsettled.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+/// A sent message that got no answer: it's marked failed, and its draft
+/// comes back in the composer.
+pub(super) async fn settle_failed(core: &Core, dialog_id: &str, message_id: String) {
+    let id = message_id.clone();
+    let patch = MessagePatch {
+        failed: Some(true),
+        ..Default::default()
+    };
+    match core
+        .db
+        .write(move |c| store::update_message(c, &id, &patch))
+        .await
+    {
+        Ok(()) => core.emit(AgentEvent::MessagePatched {
+            dialog_id: dialog_id.to_string(),
+            message_id: message_id.clone(),
+            patch: Patch {
+                failed: Some(true),
+                ..Default::default()
+            },
+        }),
+        Err(e) => eprintln!("agent: could not mark a message failed: {e}"),
+    }
+    core.emit(AgentEvent::UserMessageSettled {
+        dialog_id: dialog_id.to_string(),
+        message_id,
+        ok: false,
+    });
 }
 
 /// Tests: storing this call's result fails, as with a broken database.

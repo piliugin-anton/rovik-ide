@@ -152,17 +152,31 @@ pub fn instance(user: &str) -> String {
     format!("rovik-agentd@{user}.service")
 }
 
+/// Where the installer's helpers (`systemctl`, `chown`, `apt-get`,
+/// `visudo`…) and what they run are found when it changes the system:
+/// root's own folders. It runs as root through sudo's NOPASSWD rule
+/// (`sudoers`), and a sudo without `secure_path` would hand on the
+/// caller's PATH, where a `systemctl` of theirs would run as root.
+pub const SYSTEM_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
 /// The system the commands change: `/`, or a folder in its place.
 pub struct System {
     root: PathBuf,
 }
 
 impl System {
+    /// The system at `root`, `/` when None. The live one's commands find
+    /// their programs on [`SYSTEM_PATH`] only, set here, at the command's
+    /// start, before any thread or program does.
     pub fn new(root: Option<PathBuf>) -> System {
         let root = root.unwrap_or_else(|| PathBuf::from("/"));
         // As the file system has it: `/..` is `/`, and live.
         let root = root.canonicalize().unwrap_or(root);
-        System { root }
+        let system = System { root };
+        if system.live() {
+            std::env::set_var("PATH", SYSTEM_PATH);
+        }
+        system
     }
 
     fn live(&self) -> bool {
@@ -591,13 +605,8 @@ fn upgrade(
     }
     let version = version_of(&bytes, from, caller)?;
     if !allow_downgrade {
-        if let Some(installed) = installed_version(sys) {
-            if older(&version, &installed) == Some(true) {
-                return Err(format!(
-                    "Rovik {version} is older than the installed {installed}. To install it \
-                     anyway, add --allow-downgrade."
-                ));
-            }
+        if let Some(why) = installed_version(sys).and_then(|i| downgrade(&version, &i)) {
+            return Err(why);
         }
     }
     install_build(sys, &bytes, &version)?;
@@ -671,6 +680,24 @@ fn installed_version(sys: &System) -> Option<String> {
     let target = std::fs::read_link(sys.path(INSTALLED)).ok()?;
     let name = target.file_name()?.to_str()?;
     name.strip_prefix("rovik-agentd-").map(str::to_string)
+}
+
+/// Why installing `version` over `installed` needs `--allow-downgrade`:
+/// it's older, or either isn't a release number, so which is newer can't
+/// be told (a build of one's own, say). None: it's the same or newer.
+fn downgrade(version: &str, installed: &str) -> Option<String> {
+    match older(version, installed) {
+        Some(false) => None,
+        Some(true) => Some(format!(
+            "Rovik {version} is older than the installed {installed}. To install it \
+             anyway, add --allow-downgrade."
+        )),
+        None if version == installed => None,
+        None => Some(format!(
+            "Whether Rovik {version} is newer than the installed {installed} can't be told: \
+             one of them isn't a release number. To install it anyway, add --allow-downgrade."
+        )),
+    }
 }
 
 /// Whether `version` comes before `than`, both numbered as releases are
@@ -1138,6 +1165,30 @@ fn total_memory() -> u64 {
 mod tests {
     use super::*;
 
+    /// Run live, as root, the installer finds its helpers in the system's
+    /// own folders only; a dry run under another root leaves PATH as it is.
+    #[test]
+    fn the_installers_helpers_are_found_in_the_systems_folders_only() {
+        for dir in SYSTEM_PATH.split(':') {
+            assert!(
+                [
+                    "/usr/local/sbin",
+                    "/usr/local/bin",
+                    "/usr/sbin",
+                    "/usr/bin",
+                    "/sbin",
+                    "/bin"
+                ]
+                .contains(&dir),
+                "{dir}"
+            );
+        }
+        let before = std::env::var_os("PATH");
+        let dir = rovik_core::testing::temp_dir();
+        let _ = System::new(Some(dir.0.clone()));
+        assert_eq!(std::env::var_os("PATH"), before);
+    }
+
     /// An upgrade runs `admin bubblewrap`, which puts the shared parts in
     /// place whether or not bubblewrap's own package can be installed: a
     /// server installed before them gets both on the upgrade that ships
@@ -1151,7 +1202,10 @@ mod tests {
         assert!(shared.contains("admin toolchains setup"), "{shared}");
         assert!(shared.contains("There's no groupadd"), "{shared}");
         let neither = both(Err("one".into()), Err("two".into())).unwrap_err();
-        assert!(neither.contains("one") && neither.contains("two"), "{neither}");
+        assert!(
+            neither.contains("one") && neither.contains("two"),
+            "{neither}"
+        );
     }
 
     /// H07: the sudoers rule passes `visudo -c`, where there's a visudo.
@@ -1205,6 +1259,20 @@ mod tests {
             .unwrap();
         let said = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && said.trim().is_empty(), "{said}");
+    }
+
+    /// An upgrade needs --allow-downgrade for an older build, and for one
+    /// whose order against the installed one can't be told.
+    #[test]
+    fn a_build_not_known_to_be_newer_needs_allow_downgrade() {
+        assert_eq!(downgrade("1.2.4", "1.2.3"), None);
+        assert_eq!(downgrade("1.2.3", "1.2.3"), None);
+        assert!(downgrade("1.2.2", "1.2.3").unwrap().contains("older"));
+        for (version, installed) in [("dev", "1.2.3"), ("1.2.3", "dev"), ("1.2", "1.2.3")] {
+            let why = downgrade(version, installed).expect(version);
+            assert!(why.contains("can't be told"), "{why}");
+        }
+        assert_eq!(downgrade("dev", "dev"), None);
     }
 
     #[test]

@@ -128,6 +128,22 @@ impl Kdf {
         iterations: 3,
         parallelism: 1,
     };
+
+    /// The most a file's own settings may ask: well past any this app
+    /// writes, short of a damaged or planted file that makes each unlock
+    /// take gigabytes or minutes.
+    const MAX: Kdf = Kdf {
+        memory_kib: 1024 * 1024,
+        iterations: 16,
+        parallelism: 16,
+    };
+
+    /// Whether these settings are within `MAX`.
+    fn bounded(self) -> bool {
+        self.memory_kib <= Kdf::MAX.memory_kib
+            && self.iterations <= Kdf::MAX.iterations
+            && self.parallelism <= Kdf::MAX.parallelism
+    }
 }
 
 pub struct SecretStore {
@@ -392,6 +408,19 @@ impl FileStore {
                 self.path.display()
             )));
         }
+        let kdf = Kdf {
+            memory_kib: sealed.memory_kib,
+            iterations: sealed.iterations,
+            parallelism: sealed.parallelism,
+        };
+        if !kdf.bounded() {
+            return Err(SecretError::Failed(format!(
+                "{} asks for key settings no Rovik writes ({} MiB, {} passes): it's damaged. Move it aside to start a new one.",
+                self.path.display(),
+                kdf.memory_kib / 1024,
+                kdf.iterations
+            )));
+        }
         Ok(Some(sealed))
     }
 
@@ -543,6 +572,19 @@ mod tests {
             from_keychain.to_string(),
             "No SSH password is saved for this host: enter it again."
         );
+    }
+
+    /// A file whose key settings ask for more than any Rovik writes is
+    /// refused before the key is derived: no unlock takes gigabytes.
+    #[test]
+    fn a_file_with_unbounded_key_settings_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        std::fs::write(&path, r#"{"version":1,"salt":"","memoryKib":4294967295,"iterations":1,"parallelism":1,"nonce":"","data":""}"#).unwrap();
+        let store = SecretStore::file(path.clone(), QUICK);
+        let refused = store.unlock(&secret("pass")).unwrap_err();
+        assert!(refused.to_string().contains("damaged"), "{refused}");
+        assert!(Kdf::DEFAULT.bounded());
     }
 
     #[test]

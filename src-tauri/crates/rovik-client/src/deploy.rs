@@ -276,10 +276,14 @@ pub async fn deploy(
     let binary = builds.for_machine(&probe.arch).await?;
     let upload = upload(shell, &binary).await?;
     let token = new_token();
+    let uploaded = Uploaded {
+        path: &upload,
+        sha256: &binary.sha256,
+    };
     let done = install_and_start(
         target,
         &probe,
-        &upload,
+        &uploaded,
         computer,
         &token,
         sudo_password,
@@ -348,10 +352,17 @@ fn supported(probe: &Probe) -> Result<(), DeployError> {
     Ok(())
 }
 
+/// The build on the server: where it was uploaded, and its SHA-256, which
+/// root checks its own copy against before running it ([`root_install`]).
+struct Uploaded<'a> {
+    path: &'a str,
+    sha256: &'a str,
+}
+
 async fn install_and_start(
     target: &Target<'_>,
     probe: &Probe,
-    upload: &str,
+    uploaded: &Uploaded<'_>,
     computer: &str,
     token: &Secret,
     sudo_password: Option<&Secret>,
@@ -359,6 +370,10 @@ async fn install_and_start(
 ) -> Result<(), DeployError> {
     // The hash goes in config.toml before the daemon starts, as it reads
     // it then.
+    let Uploaded {
+        path: upload,
+        sha256,
+    } = *uploaded;
     let add = format!("{} token add {}", quote(upload), quote(computer));
     let hash = format!("{}\n", sha256_hex(token.0.as_bytes()));
     run(target.shell, &add, hash.as_bytes()).await?;
@@ -367,17 +382,18 @@ async fn install_and_start(
             // Root without sudo (a WSL distribution): the build installs
             // Rovik as it is.
             Some(root) => {
-                let install = format!(
-                    "{} install --admin {}{}",
-                    quote(upload),
-                    quote(&probe.user),
-                    no_browser(target)
-                );
+                let install = root_install(upload, sha256, &probe.user, no_browser(target));
                 run(root, &install, b"").await?;
             }
             None => {
-                let (command, input) =
-                    install_command(probe, upload, sudo_password, layout, no_browser(target))?;
+                let (command, input) = install_command(
+                    probe,
+                    upload,
+                    sha256,
+                    sudo_password,
+                    layout,
+                    no_browser(target),
+                )?;
                 run(target.shell, &command, &input).await?;
             }
         }
@@ -389,20 +405,37 @@ async fn install_and_start(
     start(target, probe, layout).await
 }
 
+/// The command that installs Rovik as root from `upload`, the build in the
+/// user's home: root copies it into a folder of its own, checks the copy
+/// against the build's SHA-256 (`sha256`), and runs only that copy. The
+/// upload is the user's to change, so any process of theirs could swap it
+/// between the user's own check and root running it: root's copy can't be.
+fn root_install(upload: &str, sha256: &str, user: &str, options: &str) -> String {
+    let script = format!(
+        "d=$(mktemp -d) || exit 1; trap 'rm -rf \"$d\"' EXIT; \
+         cp -- {upload} \"$d/rovik-agentd\" && \
+         printf '%s  %s\\n' {sha256} \"$d/rovik-agentd\" | sha256sum -c >/dev/null 2>&1 || \
+         {{ echo 'The build changed on the server after it was checked, so it was not installed. Deploy again.' >&2; exit 1; }}; \
+         chmod 700 \"$d/rovik-agentd\" && \"$d/rovik-agentd\" install --admin {user}{options}",
+        upload = quote(upload),
+        sha256 = quote(sha256),
+        user = quote(user),
+    );
+    format!("sh -c {}", quote(&script))
+}
+
 /// How the build installs Rovik: through sudo, with the password on
-/// stdin when sudo asks for one, or by someone with root.
+/// stdin when sudo asks for one, or by someone with root; checked by root
+/// before it runs ([`root_install`]).
 fn install_command(
     probe: &Probe,
     upload: &str,
+    sha256: &str,
     sudo_password: Option<&Secret>,
     layout: &Layout,
     options: &str,
 ) -> Result<(String, Zeroizing<Vec<u8>>), DeployError> {
-    let install = format!(
-        "{} install --admin {}{options}",
-        quote(upload),
-        quote(&probe.user)
-    );
+    let install = root_install(upload, sha256, &probe.user, options);
     match (probe.sudo, sudo_password) {
         (Sudo::NoPassword, _) => Ok((
             format!("{} -n {install}", layout.sudo),
@@ -484,6 +517,14 @@ pub async fn confirm(
 /// (`known`, their SHA-256) or one of its version's release, as the
 /// release's signed `SHA256SUMS` lists them. Without systemd, only the
 /// binary is checked.
+///
+/// What it catches is a binary or unit changed by mistake, by an install
+/// outside Rovik, or by a command that changed only the daemon's files.
+/// The hash and the unit are what the host's own `sha256sum` and
+/// `systemctl` print, run as the user: code running as that user, or as
+/// root, can make them print what this expects. It makes such tampering
+/// harder to miss, not impossible (cloud-agent-dev-plan.md, "Same-user
+/// tampering").
 pub async fn check_install(
     shell: &dyn HostShell,
     known: &[String],
@@ -912,45 +953,97 @@ mod tests {
     fn sudo_installs_with_the_password_on_stdin_or_someone_with_root_does() {
         let layout = Layout::default();
         let upload = "/home/ann/.rovik-agentd-upload";
+        let hash = "ab".repeat(32);
+        let checked = root_install(upload, &hash, "ann", "");
+        assert!(checked.starts_with("sh -c "), "{checked}");
         let (command, input) =
-            install_command(&probe(Sudo::NoPassword), upload, None, &layout, "").unwrap();
-        assert_eq!(
-            command,
-            "sudo -n '/home/ann/.rovik-agentd-upload' install --admin 'ann'"
-        );
+            install_command(&probe(Sudo::NoPassword), upload, &hash, None, &layout, "").unwrap();
+        assert_eq!(command, format!("sudo -n {checked}"));
         assert!(input.is_empty());
         // Without the browser, as the app installs in a WSL distribution.
         let (command, _) = install_command(
             &probe(Sudo::NoPassword),
             upload,
+            &hash,
             None,
             &layout,
             " --no-browser",
         )
         .unwrap();
         assert!(
-            command.ends_with("install --admin 'ann' --no-browser"),
+            command.contains("install --admin '\\''ann'\\'' --no-browser"),
             "{command}"
         );
-        let asks = install_command(&probe(Sudo::Password), upload, None, &layout, "");
+        let asks = install_command(&probe(Sudo::Password), upload, &hash, None, &layout, "");
         assert_eq!(asks.unwrap_err(), DeployError::SudoPassword);
         let password = Secret("hunter2".into());
-        let (command, input) =
-            install_command(&probe(Sudo::Password), upload, Some(&password), &layout, "").unwrap();
+        let (command, input) = install_command(
+            &probe(Sudo::Password),
+            upload,
+            &hash,
+            Some(&password),
+            &layout,
+            "",
+        )
+        .unwrap();
         assert!(command.starts_with("sudo -S -p '' "), "{command}");
         assert!(!command.contains("hunter2"));
         assert_eq!(input.as_slice(), b"hunter2\n");
         for sudo in [Sudo::Missing, Sudo::Refused] {
-            let root = install_command(&probe(sudo), upload, None, &layout, "").unwrap_err();
+            let root = install_command(&probe(sudo), upload, &hash, None, &layout, "").unwrap_err();
             let DeployError::NeedsRoot { command } = &root else {
                 panic!("{root:?}");
             };
-            assert_eq!(
-                command,
-                "'/home/ann/.rovik-agentd-upload' install --admin 'ann'"
-            );
+            assert_eq!(command, &checked);
             assert!(root.to_string().contains(command.as_str()));
         }
+    }
+
+    /// The install runs a copy of the upload checked against the build's
+    /// hash: the build as uploaded installs; one swapped on the server
+    /// after the user's own check never runs. On Linux, as the servers are:
+    /// the command runs coreutils' `sha256sum`, which macOS doesn't have.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn root_installs_only_a_copy_that_matches_the_builds_hash() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("root-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let upload = dir.join("upload");
+        let build = b"#!/bin/sh\necho \"installed $*\"\n";
+        std::fs::write(&upload, build).unwrap();
+        std::fs::set_permissions(&upload, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let hash = sha256_hex(build);
+        let run = |hash: &str| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(root_install(
+                    &upload.to_string_lossy(),
+                    hash,
+                    "ann",
+                    " --no-browser",
+                ))
+                .output()
+                .unwrap()
+        };
+        let out = run(&hash);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "installed install --admin ann --no-browser\n"
+        );
+        // Swapped after the check: refused, and nothing ran.
+        std::fs::write(&upload, b"#!/bin/sh\necho swapped\n").unwrap();
+        let out = run(&hash);
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("changed on the server"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

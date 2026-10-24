@@ -446,7 +446,9 @@ impl Run {
     }
 
     /// Whether `file`'s tests pass on the change, run alone. None: there's
-    /// no way to run it alone, or it couldn't run.
+    /// no way to run it alone, or it couldn't run, or it ran no test (a
+    /// test file that doesn't compile, a filter that matches nothing: a
+    /// zero exit that says nothing about the change).
     async fn passes_alone(&self, root: &str, file: &str) -> Option<bool> {
         let command = alone(Path::new(root), file)?;
         let stop = self.stop.clone();
@@ -461,10 +463,7 @@ impl Run {
         )
         .await
         .ok()?;
-        if out.timed_out || out.stopped {
-            return None;
-        }
-        Some(out.exit_code == Some(0))
+        super::test_writer::passes_as_it_is(&out)
     }
 
     /// Takes a test file the tester wrote out of the change, as it was
@@ -525,6 +524,37 @@ pub(super) const FINDINGS_NOTE_START: &str = "An adversarial tester tried to bre
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tester's file run alone that ran no test (a Rust test the crate
+    /// never compiles: "running 0 tests", exit 0) isn't a pass: it says
+    /// nothing, so the file isn't taken out as having found nothing.
+    #[test]
+    fn a_run_alone_that_ran_no_test_isnt_a_pass() {
+        let out = |code: i32, stdout: &str| crate::command_tool::CommandOutput {
+            exit_code: Some(code),
+            stdout: stdout.into(),
+            stderr: String::new(),
+            timed_out: false,
+            stopped: false,
+            truncated: false,
+            duration_ms: 1,
+            whole: None,
+            waited: None,
+        };
+        let judged = super::super::test_writer::passes_as_it_is;
+        assert_eq!(
+            judged(&out(0, "running 0 tests\ntest result: ok. 0 passed")),
+            None
+        );
+        assert_eq!(
+            judged(&out(0, "running 2 tests\ntest result: ok. 2 passed")),
+            Some(true)
+        );
+        assert_eq!(
+            judged(&out(101, "running 2 tests\ntest t ... FAILED")),
+            Some(false)
+        );
+    }
 
     #[test]
     fn a_reports_files_are_marked_by_criterion_or_as_speculative() {

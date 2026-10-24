@@ -349,13 +349,39 @@ pub(crate) fn mountpoint(dialog_id: &str) -> PathBuf {
     };
     #[cfg(not(target_os = "linux"))]
     let base = std::env::temp_dir().join("rovik-chats");
+    // macFUSE's FSKit backend mounts nowhere else (macOS 15.4+, macFUSE
+    // 5.1+): a view under the temporary folder never mounted there, and
+    // every isolated chat worked in the project instead.
+    if crate::vfs::mounts_only_under_volumes() {
+        return fskit_view(dialog_id);
+    }
     base.join(dialog_id)
+}
+
+/// Where a chat's view goes with macFUSE's FSKit backend: right under
+/// `/Volumes`, by a name of the characters FSKit takes.
+const FSKIT_VIEW_PREFIX: &str = "/Volumes/RovikChat-";
+
+/// The chat's view with macFUSE's FSKit backend ([`FSKIT_VIEW_PREFIX`]).
+fn fskit_view(dialog_id: &str) -> PathBuf {
+    let name: String = dialog_id
+        .chars()
+        .map(|c| match c {
+            c if c.is_ascii_alphanumeric() || "-_.".contains(c) => c,
+            _ => '-',
+        })
+        .collect();
+    PathBuf::from(format!("{FSKIT_VIEW_PREFIX}{name}"))
 }
 
 /// Whether `path` is a chat's view (a mount made here), not a project.
 pub fn is_chat_view(path: &Path) -> bool {
     let base = mountpoint("x");
-    path.parent().is_some_and(|p| Some(p) == base.parent())
+    let fskit = path
+        .to_str()
+        .and_then(|p| p.strip_prefix(FSKIT_VIEW_PREFIX))
+        .is_some_and(|name| !name.is_empty() && !name.contains('/'));
+    fskit || path.parent().is_some_and(|p| Some(p) == base.parent())
 }
 
 /// The chat's overlay, opened (and mounted) if it isn't yet. `on_warn`:
@@ -416,6 +442,7 @@ pub fn open(
     OPEN.lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(dialog_id.to_string(), overlay.clone());
+    keep_saving();
     // A child's landing into this view that a crash interrupted (F01).
     if let Some(data) = data_dir() {
         let finished = super::land::recover_into(&data, dialog_id, &overlay.view);
@@ -590,6 +617,27 @@ pub fn parent_of(child: &str) -> Option<String> {
         .cloned()
 }
 
+#[cfg(test)]
+mod fskit_view_tests {
+    use super::*;
+
+    /// With macFUSE's FSKit backend a chat's view goes right under
+    /// /Volumes by a name FSKit takes, and is known for a chat's view.
+    #[test]
+    fn an_fskit_view_is_a_plain_name_under_volumes() {
+        let view = fskit_view("d1b2c3-4e5f_6.7");
+        assert_eq!(view, Path::new("/Volumes/RovikChat-d1b2c3-4e5f_6.7"));
+        let odd = fskit_view("a b/c#é");
+        assert!(crate::vfs::problem::fskit_mountpoint_ok(
+            &odd.to_string_lossy()
+        ));
+        assert!(is_chat_view(&view) && is_chat_view(&odd));
+        assert!(!is_chat_view(Path::new("/Volumes/RovikChat-")));
+        assert!(!is_chat_view(Path::new("/Volumes/RovikChat-x/inside")));
+        assert!(!is_chat_view(Path::new("/Volumes/Other")));
+    }
+}
+
 /// F02: opens (and mounts) a child overlay of `parent`'s view. Its changes
 /// count inside the parent's limit: it gets what the parent and its other
 /// open children leave of it.
@@ -725,7 +773,36 @@ fn mount_on(
     OPEN.lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(id.to_string(), overlay.clone());
+    keep_saving();
     Ok(overlay)
+}
+
+/// Saves each open overlay's list of changes once it changed, every
+/// `SAVE_EVERY`, from a thread of its own, started once. A change saves the
+/// list itself only when the last save is that old, so the changes of the
+/// moment after a save waited for a later one; a crash before it lost them
+/// (and the sweep at the next open their files).
+fn keep_saving() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let saver = std::thread::Builder::new()
+            .name("overlay-save".into())
+            .spawn(|| loop {
+                std::thread::sleep(super::fs::SAVE_EVERY);
+                let open: Vec<Arc<ChatOverlay>> = OPEN
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .values()
+                    .cloned()
+                    .collect();
+                for overlay in open {
+                    overlay.fs.flush();
+                }
+            });
+        if let Err(e) = saver {
+            log::warn!("overlays: no thread to save their changes in the background: {e}");
+        }
+    });
 }
 
 /// F02: lands a child's changes into its parent's view (merged three ways,
@@ -4132,6 +4209,35 @@ mod hub_tests {
         init(&data);
         assert!(!scratch.exists(), "swept");
         assert!(store_dir(id).unwrap().exists(), "a chat's store stays");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A change made right after a save is saved within moments, with no
+    /// further change to bring it: a crash then doesn't lose it. Needs FUSE.
+    #[test]
+    fn a_change_right_after_a_save_is_saved_without_another() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("saver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let _data = test_data(&root.join("data"));
+        let o = open("saver-chat", &project, Box::new(|_, _| {})).unwrap();
+        put(&o.fs, "first.txt", "1\n");
+        o.fs.flush();
+        put(&o.fs, "second.txt", "2\n");
+        let manifest = store_dir("saver-chat").unwrap().join("manifest.json");
+        let saved = || std::fs::read_to_string(&manifest).unwrap_or_default();
+        for _ in 0..100 {
+            if saved().contains("second.txt") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(saved().contains("second.txt"), "{}", saved());
+        close("saver-chat");
         let _ = std::fs::remove_dir_all(&root);
     }
 

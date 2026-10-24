@@ -172,10 +172,17 @@ impl Copies for OverlayCopies {
         })
     }
 
-    fn adopt(&self, _main: String, chat: String) -> Copying<Result<Vec<String>, String>> {
+    fn adopt(&self, main: String, chat: String) -> Copying<Result<Vec<String>, String>> {
         Box::pin(async move {
             let landed = crate::rt::spawn_blocking(move || {
                 use crate::overlay::chats;
+                // A restart closed it, kept on disk (a pick a crash cut,
+                // R03): opened again to land.
+                if chats::get(&chat).is_none()
+                    && chats::reopen_child(&main, &chat, LETTERS.len()).is_none()
+                {
+                    return Err("the candidate's copy couldn't be opened again".to_string());
+                }
                 let landed = chats::land_child_except(&chat, &[]).map_err(|e| e.to_string())?;
                 chats::discard_child(&chat);
                 Ok::<_, String>(landed)
@@ -852,6 +859,10 @@ impl Run {
                 started_at: store::now_ms().max(0) as u64,
                 tool_calls: 0,
             };
+            // Stored as running before it's registered and shown: a failed
+            // write leaves no candidate the record doesn't know of.
+            row.candidates[i].status = "running".into();
+            save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
             core.agents.add_candidate(
                 &state.chat,
                 &main,
@@ -867,8 +878,6 @@ impl Run {
                 model: info.model,
                 goal: info.goal,
             });
-            row.candidates[i].status = "running".into();
-            save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
             // D19: its copy's dependencies before it starts: a server's
             // worktree has none of the chat's installs, which git ignores.
             if task_records(&core, &state.chat, &task).await?.is_empty() {
@@ -1670,6 +1679,10 @@ impl Run {
         };
         let copies = copies_here(&core);
         let changed = (pick.candidates.iter()).any(|c| c.letter == letter && c.score.changed);
+        #[cfg(test)]
+        if autopilot::crashes(&main, autopilot::Crash::BeforeAdopt) {
+            std::future::pending::<()>().await;
+        }
         if changed && copies.kept(main.clone(), chat.clone()).await {
             if let Err(why) = copies.adopt(main.clone(), chat.clone()).await {
                 return Ok(PickWork::Failed(format!(
@@ -1691,7 +1704,7 @@ impl Run {
 
     /// Whether `file`'s tests pass alone in a candidate's copy (`root`),
     /// with its chat's environment. None: there's no way to run it alone,
-    /// or it timed out.
+    /// it timed out, or it ran no test.
     async fn passes_in(&self, chat: &str, root: &str, file: &str) -> Option<bool> {
         let command = super::breaker::alone(Path::new(root), file)?;
         let stop = self.stop.clone();
@@ -1706,10 +1719,8 @@ impl Run {
         )
         .await
         .ok()?;
-        if out.timed_out || out.stopped {
-            return None;
-        }
-        Some(out.exit_code == Some(0))
+        // A run of no test says nothing (R03), as for the breaker.
+        super::test_writer::passes_as_it_is(&out)
     }
 
     /// The judge on a tie (D14): the tied candidates' diffs, the criteria,

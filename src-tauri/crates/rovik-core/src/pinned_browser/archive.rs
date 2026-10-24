@@ -98,6 +98,14 @@ pub fn unpack(archive: &Path, to: &Path, folder: &str) -> Result<(), String> {
             continue;
         }
         let path = to.join(&relative);
+        // Never written through a link the archive made before: the links
+        // it may have lead inside, but only once all are made can that be
+        // told (one through another).
+        if through_link(to, &relative) {
+            return Err(format!(
+                "{name}, in the archive, is reached through a link."
+            ));
+        }
         if let Some(parent) = path.parent() {
             make_dirs(parent)?;
         }
@@ -117,7 +125,54 @@ pub fn unpack(archive: &Path, to: &Path, folder: &str) -> Result<(), String> {
         let executable = entry.unix_mode().is_some_and(|mode| mode & 0o111 != 0);
         set_mode(&path, if executable { 0o755 } else { 0o644 })?;
     }
+    links_stay_inside(to)?;
     set_mode(to, 0o755)
+}
+
+/// Whether a folder on the way from `to` to `relative` (not `relative`
+/// itself) is a link.
+fn through_link(to: &Path, relative: &Path) -> bool {
+    let mut at = to.to_path_buf();
+    let parts: Vec<_> = relative.components().collect();
+    parts
+        .iter()
+        .take(parts.len().saturating_sub(1))
+        .any(|part| {
+            at.push(part);
+            std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink())
+        })
+}
+
+/// Every link unpacked in `to` that leads anywhere leads inside it, links
+/// it goes through followed: each one alone stays inside (`link`), but a
+/// link through another (`b -> ..` beside `c -> b/..`) can still lead out.
+fn links_stay_inside(to: &Path) -> Result<(), String> {
+    let inside = std::fs::canonicalize(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    let mut folders = vec![to.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        let entries =
+            std::fs::read_dir(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                folders.push(path);
+            } else if kind.is_symlink() {
+                // One that leads nowhere leads nowhere outside either.
+                if let Ok(real) = std::fs::canonicalize(&path) {
+                    if !real.starts_with(&inside) {
+                        return Err(format!(
+                            "{}, in the archive, is a link that leads outside its folder.",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The link at `path` (`relative` in the folder) to `target`, which must be
@@ -369,6 +424,40 @@ mod tests {
             std::fs::read_to_string(framework.join("Resources/r.pak")).unwrap(),
             "chrome-mac-arm64/A.app/Contents/Frameworks/F.framework/Versions/1.0/Resources/r.pak"
         );
+    }
+
+    /// Links that each stay inside but lead out one through another
+    /// (`b -> ..`, `c -> b/..`) are refused, and so is a file written
+    /// through a link the archive made.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_through_another_that_leads_out_is_refused() {
+        let dir = crate::testing::temp_dir();
+        let zip = archive(
+            &dir.0,
+            &[("chrome-linux64/chrome", 0o755)],
+            &[
+                ("chrome-linux64/deep/b", ".."),
+                ("chrome-linux64/deep/c", "b/.."),
+            ],
+        );
+        let why = unpack(&zip, &dir.0.join("155"), "chrome-linux64").unwrap_err();
+        assert!(why.contains("leads outside its folder"), "{why}");
+
+        let dir = crate::testing::temp_dir();
+        let zip = {
+            let path = dir.0.join("archive.zip");
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.add_symlink("chrome-linux64/up", "deep/..", options)
+                .unwrap();
+            zip.start_file("chrome-linux64/up/x", options).unwrap();
+            zip.write_all(b"x").unwrap();
+            zip.finish().unwrap();
+            path
+        };
+        let why = unpack(&zip, &dir.0.join("155"), "chrome-linux64").unwrap_err();
+        assert!(why.contains("through a link"), "{why}");
     }
 
     #[test]

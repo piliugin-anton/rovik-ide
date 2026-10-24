@@ -2463,6 +2463,50 @@ async fn an_approval_nobody_answers_is_denied_at_the_deadline() {
     agents.unregister("plain", &plain.run_id);
 }
 
+/// U03: an Allow given just as an Autopilot approval's deadline passes
+/// stands: the call runs, and no notice says nobody was there.
+#[tokio::test]
+async fn an_allow_at_the_approval_deadline_stands() {
+    use super::events::ApprovalRequest;
+    let h = harness(&[]).await;
+    let agents = &h.core.agents;
+    agents.set_approval_deadline(Duration::from_millis(50));
+    let chat = "task-at-deadline";
+    let task = agents.register(chat, "m", None).unwrap();
+    agents.set_autopilot(chat, Effort::Balanced, Spent::default());
+    crate::agent_run::ANSWER_AT_DEADLINE
+        .lock()
+        .unwrap()
+        .insert(chat.into());
+    let request = ApprovalRequest {
+        tool_call_id: "c1".into(),
+        dialog_id: chat.into(),
+        tool_name: "bash".into(),
+        summary: "Run `make`".into(),
+        command: Some("make".into()),
+        note: None,
+        edit: None,
+        parent_dialog_id: None,
+        parent_call_id: None,
+        remote: false,
+    };
+    let (decision, unanswered) = agents
+        .wait_for_decision(&h.core, request, &StopSignal::new())
+        .await;
+    crate::agent_run::ANSWER_AT_DEADLINE
+        .lock()
+        .unwrap()
+        .remove(chat);
+    assert_eq!(decision, ApprovalDecision::Allow);
+    assert!(!unanswered);
+    assert!(h
+        .events_of("notice")
+        .iter()
+        .all(|n| n["title"] != "An approval wasn't answered"));
+    assert_eq!(h.events_of("approvalSettled").len(), 1);
+    agents.unregister(chat, &task.run_id);
+}
+
 /*
  * The budget (U04)
  */
@@ -7136,6 +7180,80 @@ async fn a_pick_cut_after_it_took_its_winner_goes_on_with_that_winner() {
         .and_then(|e| e["runId"].as_str().map(str::to_string))
         .expect("the pick's run");
     h.core.agents.unregister(&h.dialog_id, &pick_run);
+    let mut resume = h.request(&url, StartKind::Resume, Permissions::default());
+    resume.mode = Some("autopilot".into());
+    resume.isolate = Some(true);
+    resume.config = None;
+    h.start(resume).await;
+    let records = delivered_slowly(&h).await;
+    let pick = records.iter().find(|r| r.name == Stage::Pick).unwrap();
+    assert_eq!(pick.status, Status::Done, "{records:#?}");
+    let messages = h.messages().await;
+    let row = pick_row(&messages);
+    assert_eq!(
+        (&row["winner"], &row["adopted"]),
+        (&json!("a"), &json!(true))
+    );
+    assert_eq!(h.file("ok.txt").as_deref(), Some("ok"));
+    assert_eq!(h.file("other.txt"), None, "b's change never landed");
+}
+
+/// R03: the process dies after the pick decided on its winner, before it
+/// took its change. After the restart the winner's copy is only on disk:
+/// the resumed pick opens it again and takes it, rather than failing the
+/// task.
+#[tokio::test]
+async fn a_pick_cut_before_it_took_its_winner_takes_it_after_a_restart() {
+    let script = candidates_script(
+        &[("ok.txt", "ok")],
+        &[("ok.txt", "ok"), ("other.txt", "b\n")],
+    );
+    let Some((h, _, url, request)) = candidates_start(Vec::new(), script).await else {
+        return;
+    };
+    crash_at(&h.dialog_id, Crash::BeforeAdopt);
+    h.start(request).await;
+    for _ in 0..3000 {
+        if !super::autopilot::crash_due(&h.dialog_id, Crash::BeforeAdopt) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(!super::autopilot::crash_due(
+        &h.dialog_id,
+        Crash::BeforeAdopt
+    ));
+    // The restart: the run is forgotten, and so are the open copies (their
+    // stores stay on disk).
+    let pick_run = h
+        .events_of("runStarted")
+        .iter()
+        .rev()
+        .find(|e| e["dialogId"] == h.dialog_id.as_str())
+        .and_then(|e| e["runId"].as_str().map(str::to_string))
+        .expect("the pick's run");
+    h.core.agents.unregister(&h.dialog_id, &pick_run);
+    let messages = h.messages().await;
+    let candidates: Vec<String> = messages
+        .iter()
+        .filter_map(|m| m.meta.as_ref()?.get("candidates").cloned())
+        .flat_map(|row| {
+            row["candidates"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|c| c["chat"].as_str().map(str::to_string))
+        })
+        .collect();
+    assert!(!candidates.is_empty());
+    crate::rt::spawn_blocking(move || {
+        for chat in candidates {
+            crate::overlay::chats::forget_child_as_if_restarted(&chat);
+        }
+    })
+    .await
+    .unwrap();
     let mut resume = h.request(&url, StartKind::Resume, Permissions::default());
     resume.mode = Some("autopilot".into());
     resume.isolate = Some(true);

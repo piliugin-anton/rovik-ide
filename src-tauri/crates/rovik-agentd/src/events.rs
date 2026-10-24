@@ -125,6 +125,9 @@ struct Route {
 }
 
 struct Pace {
+    /// The chat its events go with (its lead's, for a subagent's): its
+    /// pace is forgotten when that chat's run ends.
+    chat: Option<String>,
     /// When its last patch went out.
     sent: Instant,
     /// The patches since, merged, waiting for their time.
@@ -249,6 +252,7 @@ impl Events {
         let now = Instant::now();
         let every = self.limits.patch_every;
         let pace = state.paces.entry(message.to_string()).or_insert(Pace {
+            chat: route.chat.clone(),
             sent: now - every,
             held: None,
         });
@@ -348,10 +352,7 @@ impl Events {
 
     /// Where a chat's events go; none when no computer started it here.
     fn route(&self, state: &State, dialog_id: &str) -> Option<Route> {
-        let mut chat = dialog_id;
-        while let Some(lead) = state.leads.get(chat) {
-            chat = lead;
-        }
+        let chat = lead_of(&state.leads, dialog_id);
         let computer = (self.owner)(chat)?;
         Some(Route {
             chat: Some(chat.to_string()),
@@ -432,8 +433,29 @@ impl EventSink for Events {
         }
         if let Some(chat) = chat {
             self.change(&mut state, &chat);
+            // A lead's run is over: what was kept for its messages and its
+            // subagents goes, a reply cut mid-stream's too (it never
+            // finalized), so neither map grows with every run.
+            if matches!(event, AgentEvent::RunEnded { dialog_id, .. } if *dialog_id == chat) {
+                state
+                    .paces
+                    .retain(|_, p| p.chat.as_deref() != Some(chat.as_str()));
+                let leads = state.leads.clone();
+                state
+                    .leads
+                    .retain(|kid, _| lead_of(&leads, kid) != chat.as_str());
+            }
         }
     }
+}
+
+/// The lead at the top of `chat`'s subagent chain: `chat` itself for a lead.
+fn lead_of<'a>(leads: &'a HashMap<String, String>, chat: &'a str) -> &'a str {
+    let mut chat = chat;
+    while let Some(lead) = leads.get(chat) {
+        chat = lead;
+    }
+    chat
 }
 
 /// A `Frame::Event`, or a `Resync` for its chat in place of one too big

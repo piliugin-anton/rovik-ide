@@ -62,6 +62,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   lines ticked from either side, or an edit by hand. The repository's
   [Git hooks](#git-hooks) run as they do with git: a failing pre-commit
   or pre-push stops the commit or push and shows what it printed.
+  A project that is a folder of a larger repository (a monorepo's
+  package, a home folder kept in git) lists, commits and discards only
+  the changes in its own folder; Discard all sends new files, staged or
+  not, to the trash.
 
 **AI agent**
 
@@ -939,10 +943,22 @@ anyway, discard, or undo a landing.
 On Linux, every command the agent runs is sandboxed with bubblewrap
 (`bwrap`): the system is read-only to it but for the chat's own folders
 (its view or worktree, its build folder, `/tmp` and the toolchains' caches
-under your home), the credential stores (`~/.rovik`, `~/.ssh`, `~/.aws`,
-`~/.gnupg`, the cloud CLIs' folders, Expo's login in `~/.expo`) are empty
-to it, it sees no other process, and it has no capabilities, so it can't
-undo any of that. Expo's CLI, which writes its state on every run, gets a
+under your home). Within those caches, what would run outside the sandbox
+later stays read-only: the folders of programs on your PATH (`~/.cargo/bin`,
+`~/.local/bin`, `~/go/bin`, Bun's, Deno's and Yarn's) and the files your
+shell and cargo read (`~/.cargo/config.toml`, `~/.cargo/env`), so the agent
+can't install a tool for you (`cargo install`, `pip install --user`): run
+that in your own terminal. The credential stores (`~/.rovik`, `~/.ssh`, `~/.aws`,
+`~/.gnupg`, the cloud CLIs' folders, Expo's login in `~/.expo`) and the
+single files that hold logins (`~/.netrc`, `~/.git-credentials`,
+`~/.npmrc`, `~/.pypirc`, `~/.Xauthority`, cargo's token in `~/.cargo`) are
+empty to it, it sees no other process, and it has no capabilities, so it can't
+undo any of that. Your local services' sockets are closed to it: the SSH
+and GPG agents', your desktop session's (X11, Wayland, the session bus,
+everything in your runtime folder `/run/user/<uid>`), the system bus's and
+the container daemons' (Docker, Podman), and the variables that name them
+are left out of its environment. From Linux 6.12 the abstract sockets made
+outside it, such as X11's, are closed too. Expo's CLI, which writes its state on every run, gets a
 folder of its own under `~/.cache/rovik-ide` instead of `~/.expo`. An
 isolated chat's commands also see its overlay at the project's own path,
 so one that names the project by its full path still stays in the chat.
@@ -952,7 +968,9 @@ Where bubblewrap can't run (not installed, or user namespaces forbidden,
 as in many containers), the commands run under the kernel's own sandbox,
 Landlock (Linux 6.2 and later, nothing to install), with the same policy
 but lighter: it doesn't hide the other processes or end what a command
-leaves running, and like Seatbelt below it can't redirect a path, and
+leaves running, can't close the agents' and the session's sockets (only the
+abstract ones, from Linux 6.12) or hide a login file inside a folder the
+commands may write to (cargo's token), and like Seatbelt below it can't redirect a path, and
 listing your home folder itself fails; the app then sets bubblewrap up by
 itself once, and offers it again if that fails. With neither, the agent's
 commands are refused. Ubuntu 23.10 and later
@@ -969,8 +987,8 @@ follows the app's updates; a chat without a project, or a computer
 without WSL, is refused its commands. On macOS every command runs under
 Seatbelt (`sandbox-exec`, part of macOS) with the same policy: the system
 read-only but for the chat's own folders, `/tmp` and the caches (including
-`~/Library/Caches`), and the credential stores (with `~/Library/Keychains`)
-out of reach. Seatbelt can't redirect a path, so an isolated chat's commands
+`~/Library/Caches`), the credential stores (with `~/Library/Keychains`)
+out of reach, and the SSH agent's and Docker's sockets closed. Seatbelt can't redirect a path, so an isolated chat's commands
 see the project read-only rather than the chat's view at its path, and a
 command naming the project's full path is refused by text there. Unlike
 bubblewrap it doesn't hide the other processes.

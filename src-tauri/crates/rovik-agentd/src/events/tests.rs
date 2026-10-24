@@ -336,3 +336,34 @@ fn the_ring_keeps_one_patch_per_message() {
     assert_eq!(kept[1]["ev"]["patch"]["status"]["text"], "Writing");
     assert_eq!(kept[1]["seq"], 5, "under the newest patch's seq");
 }
+
+/// A lead's run that ends forgets what was kept for its messages and its
+/// subagents, a reply cut mid-stream's too: nothing grows run after run.
+#[test]
+fn a_runs_end_forgets_its_paces_and_its_subagents() {
+    let events = events(Limits::default());
+    events.agent(&started("chat"));
+    events.agent(&AgentEvent::SubagentStarted {
+        dialog_id: "chat".into(),
+        tool_call_id: "t1".into(),
+        child_dialog_id: "kid".into(),
+        kind: "scout".into(),
+        model: "m".into(),
+        goal: "g".into(),
+    });
+    // Cut mid-stream: never finalized, its subagent never ended.
+    events.agent(&patched("reply", content("Hal")));
+    events.agent(&AgentEvent::MessagePatched {
+        dialog_id: "kid".into(),
+        message_id: "scouting".into(),
+        patch: content("Look"),
+    });
+    assert_eq!(events.lock().paces.len(), 2);
+    // The subagent's own run ending forgets nothing of its lead's.
+    events.agent(&ended("kid"));
+    assert_eq!(events.lock().paces.len(), 2);
+    events.agent(&ended("chat"));
+    let state = events.lock();
+    assert!(state.paces.is_empty(), "paces kept");
+    assert!(state.leads.is_empty(), "leads kept");
+}

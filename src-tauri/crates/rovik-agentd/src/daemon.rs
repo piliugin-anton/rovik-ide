@@ -103,6 +103,8 @@ impl Daemon {
         match request {
             Request::HostInfo => Ok(Response::HostInfo(host::info(self).await)),
             Request::KeysList => Ok(Response::Keys(self.store.keys())),
+            // The server's keys, whichever of the user's computers brought
+            // them: "Remove keys from this server" leaves none.
             Request::KeysRemove { provider } => self
                 .store
                 .remove_keys(provider.as_deref())
@@ -112,6 +114,25 @@ impl Daemon {
             Request::CleanUp => Ok(Response::Storage(gc::now(self).await)),
             Request::AgentStatus => self.status(computer).await.map(Response::AgentStatus),
             Request::AgentStart(start) => self.start(computer, *start).await,
+            // This computer's runs only take the effort it picked (D16).
+            Request::AgentSetEffort {
+                profile_id,
+                options,
+                dialog_id,
+            } => {
+                let mine: std::collections::HashSet<String> = self
+                    .store
+                    .chats_of(computer)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect();
+                let agents = &self.core.agents;
+                let reached =
+                    agents.set_effort_where(&profile_id, options, dialog_id.as_deref(), |chat| {
+                        mine.contains(chat)
+                    });
+                Ok(Response::Count(reached))
+            }
             // Only this computer's configuration changes (D16). How this
             // server connects (Settings → Network's cloud hosts' rows) is
             // the process's: the last computer to say has it.
@@ -155,7 +176,7 @@ impl Daemon {
                 settings,
                 excludes,
                 remote,
-            } => work::ensure_project(self, project, settings, excludes, remote).await,
+            } => work::ensure_project(self, computer, project, settings, excludes, remote).await,
             Request::WorkSync {
                 dialog_id,
                 project,
@@ -164,6 +185,8 @@ impl Daemon {
                 changes,
                 mark,
             } => {
+                // A chat's worktree is made of its computer's project only.
+                self.store.check_project_owner(computer, &project)?;
                 let at = (dialog_id.as_str(), project.as_str());
                 work::sync(self, computer, at, &snapshot, excludes, changes, mark).await
             }
@@ -193,7 +216,10 @@ impl Daemon {
                 project,
                 snapshot,
                 excludes,
-            } => work::recheck(self, computer, &dialog_id, &project, &snapshot, excludes).await,
+            } => {
+                self.store.check_project_owner(computer, &project)?;
+                work::recheck(self, computer, &dialog_id, &project, &snapshot, excludes).await
+            }
             Request::WorkLanded {
                 dialog_id,
                 commit,

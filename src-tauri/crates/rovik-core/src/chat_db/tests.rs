@@ -1589,3 +1589,36 @@ fn the_marker_knows_when_others_still_have_the_database_open() {
     assert!(super::Presence::start(&marker).unclean);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// More messages at once than SQLite takes parameters in one statement
+/// (32766): their attachments are looked up in parts, and all found.
+#[test]
+fn more_messages_than_a_statement_takes_keep_their_attachments() {
+    let mut conn = db();
+    dialog(&mut conn, "d", "many", 0);
+    const MANY: usize = 33_000;
+    let tx = conn.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO attachments (id, mime, bytes, created_at) VALUES ('img', 'image/png', 1, 0)",
+        [],
+    )
+    .unwrap();
+    {
+        let mut message = tx
+            .prepare("INSERT INTO messages (id, dialog_id, seq, role, created_at) VALUES (?1, 'd', ?2, 'user', 0)")
+            .unwrap();
+        let mut attached = tx
+            .prepare("INSERT INTO message_attachments (message_id, position, attachment_id) VALUES (?1, 0, 'img')")
+            .unwrap();
+        for i in 0..MANY {
+            let id = format!("m{i}");
+            message.execute(rusqlite::params![id, i as i64]).unwrap();
+            attached.execute([&id]).unwrap();
+        }
+    }
+    tx.commit().unwrap();
+    let ids: Vec<String> = (0..MANY).map(|i| format!("m{i}")).collect();
+    let rows = messages_by_id(&conn, &ids).unwrap();
+    assert_eq!(rows.len(), MANY);
+    assert!(rows.iter().all(|r| r.attachments == ["img"]));
+}

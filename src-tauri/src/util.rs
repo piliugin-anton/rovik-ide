@@ -90,9 +90,39 @@ impl<T> Registry<T> {
     }
 }
 
+/// `path` as Windows programs show it: `canonicalize` there gives the
+/// verbatim form (`\\?\C:\p`, `\\?\UNC\server\share`), which other
+/// paths and the user's own spelling never match. Any other path as it is.
+pub fn plain_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        // A drive's path only: `\\?\Volume{…}` has no plain form.
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_verbatim_windows_path_is_shown_plain() {
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\C:\Users\me\app")),
+            PathBuf::from(r"C:\Users\me\app")
+        );
+        assert_eq!(
+            plain_path(PathBuf::from(r"\\?\UNC\server\share\app")),
+            PathBuf::from(r"\\server\share\app")
+        );
+        for kept in [r"\\?\Volume{1234}\app", "/home/me/app", r"C:\app"] {
+            assert_eq!(plain_path(PathBuf::from(kept)), PathBuf::from(kept));
+        }
+    }
 
     #[test]
     fn a_registry_hands_out_what_it_holds() {

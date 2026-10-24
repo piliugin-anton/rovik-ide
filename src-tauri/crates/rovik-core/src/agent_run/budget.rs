@@ -46,22 +46,27 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl Spent {
+    /// Both added up. The counts come from providers and stored records:
+    /// they saturate instead of overflowing.
     pub fn plus(self, other: Spent) -> Spent {
         Spent {
-            ms: self.ms + other.ms,
+            ms: self.ms.saturating_add(other.ms),
             cost: self.cost + other.cost,
-            uncosted: self.uncosted + other.uncosted,
-            tokens: self.tokens + other.tokens,
+            uncosted: self.uncosted.saturating_add(other.uncosted),
+            tokens: self.tokens.saturating_add(other.tokens),
         }
     }
 
     /// One reply's usage, as its provider reported it (none: nothing said).
     pub fn note_reply(&mut self, usage: Option<&Value>) {
         let (input, output, cost) = usage.map(usage_counts).unwrap_or_default();
-        self.tokens += input.unwrap_or(0) + output.unwrap_or(0);
+        self.tokens = self
+            .tokens
+            .saturating_add(input.unwrap_or(0))
+            .saturating_add(output.unwrap_or(0));
         match cost {
             Some(cost) if cost.is_finite() && cost >= 0.0 => self.cost += cost,
-            _ => self.uncosted += 1,
+            _ => self.uncosted = self.uncosted.saturating_add(1),
         }
     }
 }
@@ -189,7 +194,10 @@ pub struct Totals {
 
 impl Totals {
     pub fn tokens(&self) -> u64 {
-        self.lead_in + self.lead_out + self.sub_in + self.sub_out
+        self.lead_in
+            .saturating_add(self.lead_out)
+            .saturating_add(self.sub_in)
+            .saturating_add(self.sub_out)
     }
 
     /// One reply line of the run log: the lead's (`dialog_id`) or a
@@ -213,14 +221,14 @@ impl Totals {
         let (i, o, cost) = usage_of(u);
         let cached = crate::prompt_cache::cached_tokens(u).unwrap_or(0);
         if line["dialogId"] == dialog_id {
-            self.lead_in += i;
-            self.lead_out += o;
-            self.lead_cached += cached;
+            self.lead_in = self.lead_in.saturating_add(i);
+            self.lead_out = self.lead_out.saturating_add(o);
+            self.lead_cached = self.lead_cached.saturating_add(cached);
             self.peak_lead_context = self.peak_lead_context.max(i);
         } else {
-            self.sub_in += i;
-            self.sub_out += o;
-            self.sub_cached += cached;
+            self.sub_in = self.sub_in.saturating_add(i);
+            self.sub_out = self.sub_out.saturating_add(o);
+            self.sub_cached = self.sub_cached.saturating_add(cached);
         }
         self.reported_cost = match (self.replies, self.reported_cost, cost) {
             (0, _, c) => c,
@@ -233,7 +241,7 @@ impl Totals {
     /// The share of the lead's prompt tokens served from the provider's
     /// cache, in percent; None before any prompt tokens were counted.
     pub fn cache_hit_percent(&self) -> Option<u64> {
-        (self.lead_in > 0).then(|| self.lead_cached * 100 / self.lead_in)
+        (self.lead_in > 0).then(|| self.lead_cached.saturating_mul(100) / self.lead_in)
     }
 
     /// Its cost: as reported, else by the settings' price; None: unknown.
@@ -281,6 +289,29 @@ mod tests {
         assert!(over(&plan, &spent).is_some(), "past its minutes");
         let cheap = Spent { ms: 60_000, cost: 2.5, ..Spent::default() };
         assert!(over(&plan, &cheap).unwrap().contains("cost"));
+    }
+
+    /// Token counts a provider reports, however large, saturate: they
+    /// never overflow (a panic in a debug build, a wrap to a small count
+    /// that slips under the budget in a release one).
+    #[test]
+    fn huge_token_counts_saturate() {
+        let mut spent = Spent::default();
+        let huge = json!({ "prompt_tokens": u64::MAX, "completion_tokens": 5, "cost": 0.0 });
+        spent.note_reply(Some(&huge));
+        spent.note_reply(Some(&huge));
+        assert_eq!(spent.tokens, u64::MAX);
+        let both = spent.plus(Spent {
+            ms: u64::MAX,
+            tokens: 1,
+            ..Spent::default()
+        });
+        assert_eq!(both.tokens, u64::MAX);
+        let mut totals = Totals::default();
+        let line = json!({ "event": "reply", "dialogId": "d", "usage": huge });
+        totals.add(&line, "d");
+        totals.add(&line, "other");
+        assert_eq!(totals.tokens(), u64::MAX);
     }
 
     #[test]

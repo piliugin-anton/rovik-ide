@@ -42,7 +42,7 @@ fn config(reviewer_key: &str, scout_key: &str) -> AgentConfig {
         KindConfig {
             enabled: true,
             models: vec![
-                ModelChoice::Profile(model("third::mini", THIRD, scout_key)),
+                ModelChoice::Profile(Box::new(model("third::mini", THIRD, scout_key))),
                 ModelChoice::Chat { chat: true },
             ],
             ..Default::default()
@@ -402,4 +402,70 @@ fn results_are_numbered_and_the_same_one_keeps_its_number() {
     let reopened = Store::open(&dir.0).unwrap();
     assert_eq!(reopened.result_of("chat").unwrap().seq, 3);
     assert_eq!(reopened.result_made("chat", result("c3", "done")).seq, 4);
+}
+
+/// A project's folder in its repository is joined to each chat's worktree:
+/// a relative path inside it, or none; never `..` or an absolute path.
+#[test]
+fn a_projects_folder_that_leaves_the_repository_is_refused() {
+    use crate::work::plain_subpath;
+    for fine in ["", "app", "packages/web", "a.b/c-d_e"] {
+        assert!(plain_subpath(fine), "{fine:?}");
+    }
+    for bad in [
+        "..", "../x", "a/../..", "/etc", "a//b", "./a", "a/", "a\\b", "C:x",
+    ] {
+        assert!(!plain_subpath(bad), "{bad:?}");
+    }
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let project = Project {
+        id: "p1".into(),
+        name: "p".into(),
+        subpath: "../../etc".into(),
+    };
+    assert!(store.ensure_project(&project, "c1", None, None).is_err());
+    assert!(store.project("p1").is_none());
+}
+
+/// A project belongs to the computer that carried it here: another one of
+/// the account's computers can't change its settings or remote, nor read
+/// its packs. One saved before this was kept goes to the next to carry it.
+#[test]
+fn a_project_is_its_computers_alone() {
+    let dir = temp_dir();
+    let store = Store::open(&dir.0).unwrap();
+    let project = Project {
+        id: "p1".into(),
+        name: "p".into(),
+        subpath: String::new(),
+    };
+    let settings = Some(serde_json::json!({ "checks": "mine" }));
+    store
+        .ensure_project(&project, "c1", settings.clone(), Some("git@x:me/p".into()))
+        .unwrap();
+    let theirs = store.ensure_project(&project, "c2", None, Some("git@evil:p".into()));
+    assert_eq!(theirs.unwrap_err().code, FailCode::NotOwner);
+    assert!(store.check_project_owner("c2", "p1").is_err());
+    assert!(store.check_project_owner("c1", "p1").is_ok());
+    let kept = store.project("p1").unwrap();
+    assert_eq!(
+        (kept.settings, kept.remote.as_deref()),
+        (settings, Some("git@x:me/p"))
+    );
+    // Unknown here: nothing of anyone's to keep it from.
+    assert!(store.check_project_owner("c2", "p2").is_ok());
+
+    // Saved without its computer: the next to carry it takes it.
+    let old = Project {
+        id: "p3".into(),
+        ..project
+    };
+    store.ensure_project(&old, "c1", None, None).unwrap();
+    {
+        let mut inner = store.lock();
+        inner.state.projects.get_mut("p3").unwrap().computer = None;
+    }
+    store.ensure_project(&old, "c2", None, None).unwrap();
+    assert!(store.check_project_owner("c1", "p3").is_err());
 }

@@ -176,6 +176,54 @@ fn a_moved_folder_keeps_its_files_and_a_replaced_one_is_deleted_first() {
     );
 }
 
+/// A folder the view listed, untouched, leaves it with all it holds when
+/// it leaves the project; a file the project turned into a folder (or the
+/// other way) is seen as it is now. One the chat changed inside stays.
+#[test]
+fn a_listed_folder_that_left_the_project_leaves_the_view_and_kinds_follow_it() {
+    let d = setup(&[("gen/a.txt", "a"), ("keep/b.txt", "b"), ("x", "file")]);
+    let o = overlay(&d);
+    o.readdir_plus(ROOT).unwrap();
+    o.readdir_plus(ino(&o, "gen")).unwrap();
+    o.readdir_plus(ino(&o, "keep")).unwrap();
+    write_all(&o, "keep/b.txt", "the chat's");
+    fs::remove_dir_all(d.project().join("gen")).unwrap();
+    fs::remove_dir_all(d.project().join("keep")).unwrap();
+    fs::remove_file(d.project().join("x")).unwrap();
+    fs::create_dir_all(d.project().join("x")).unwrap();
+    fs::write(d.project().join("x/inside.txt"), "i").unwrap();
+    o.project_changed_everywhere();
+    let mut names: Vec<String> = o
+        .readdir_plus(ROOT)
+        .unwrap()
+        .into_iter()
+        .map(|(e, _)| e.name)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["keep", "x"]);
+    assert_eq!(read_all(&o, "keep/b.txt"), "the chat's");
+    assert_eq!(read_all(&o, "x/inside.txt"), "i");
+}
+
+/// On Unix a backslash is part of a name: a file named `a\b` is that
+/// file, found again by its path after the overlay reopens, not `a/b`.
+#[cfg(unix)]
+#[test]
+fn a_backslash_in_a_name_is_part_of_the_name() {
+    let d = setup(&[("a/b", "the folder's")]);
+    {
+        let o = overlay(&d);
+        let f = o
+            .create(ROOT, "a\\b", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(f.ino, 0, b"the backslash's").unwrap();
+        o.flush();
+    }
+    let o = overlay(&d);
+    assert_eq!(read_all(&o, "a\\b"), "the backslash's");
+    assert_eq!(read_all(&o, "a/b"), "the folder's");
+}
+
 #[test]
 fn files_appearing_in_the_project_show_up_unless_the_chat_removed_them() {
     let d = setup(&[("a.txt", "a")]);
@@ -322,6 +370,26 @@ fn renames_follow_posix_rules() {
     assert_eq!(read_all(&o, "f2.txt"), "G2");
 }
 
+/// Two hard links in one folder: removing or moving one name acts on that
+/// name, not on the one that sorts first (`ln a z; rm z` kept `z`).
+#[test]
+fn removing_or_moving_one_of_two_links_in_a_folder_acts_on_that_name() {
+    let d = setup(&[("a.txt", "A")]);
+    let o = overlay(&d);
+    let a = ino(&o, "a.txt");
+    o.link(a, ROOT, "z.txt").unwrap();
+    o.unlink(ROOT, "z.txt").unwrap();
+    assert_eq!(o.lookup(ROOT, "z.txt").unwrap_err(), VfsError::NotFound);
+    assert_eq!(read_all(&o, "a.txt"), "A");
+
+    o.link(a, ROOT, "z.txt").unwrap();
+    o.rename(ROOT, "z.txt", ROOT, "moved.txt", RenameMode::Replace)
+        .unwrap();
+    assert_eq!(o.lookup(ROOT, "z.txt").unwrap_err(), VfsError::NotFound);
+    assert_eq!(read_all(&o, "a.txt"), "A");
+    assert_eq!(read_all(&o, "moved.txt"), "A");
+}
+
 #[test]
 fn a_file_unlinked_while_open_stays_readable_until_released() {
     let d = setup(&[]);
@@ -439,6 +507,47 @@ fn a_saved_path_outside_the_project_is_left_out() {
     let plan = super::land::plan(&d.project(), &[outside], false);
     let reasons: Vec<&str> = plan.conflicts.iter().map(|c| c.reason.as_str()).collect();
     assert_eq!(reasons, ["it isn't a path inside the project"]);
+}
+
+/// A saved change whose files can't be this overlay's (a list written by
+/// hand) is left out too: its content from outside a store's folders, or
+/// the project's file from outside the project, never lands.
+#[test]
+fn a_saved_change_naming_files_outside_its_store_or_project_is_left_out() {
+    let d = setup(&[("a.txt", "a")]);
+    let secret = d.root.join("secret.txt");
+    fs::write(&secret, b"not the chat's").unwrap();
+    let upper = d.store().join("upper");
+    fs::create_dir_all(&upper).unwrap();
+    fs::write(upper.join("1"), b"the chat's").unwrap();
+    let write =
+        |origin: Option<&str>, upper: PathBuf, base_copy: Option<PathBuf>| OverlayChange::Write {
+            path: "b.txt".into(),
+            kind: Kind::File,
+            origin: origin.map(str::to_string),
+            upper: Some(upper),
+            base_copy,
+            perm: 0o644,
+            perm_changed: false,
+            target: None,
+            by_product: false,
+        };
+    for bad in [
+        write(None, secret.clone(), None),
+        write(None, upper.join("1"), Some(secret.clone())),
+        write(Some("../secret.txt"), upper.join("1"), None),
+        write(None, d.store().join("upper/../../secret.txt"), None),
+    ] {
+        super::fs::write_manifest(&d.store(), 2, vec![bad.clone()]).unwrap();
+        let o = overlay(&d);
+        assert!(o.changes().is_empty(), "{bad:?}: {:?}", o.changes());
+    }
+    // This store's own file is fine; so is one saved where the app's data
+    // folder was before it moved: it's this store's by folder and name.
+    for own in [upper.join("1"), PathBuf::from("/moved/data/store/upper/1")] {
+        super::fs::write_manifest(&d.store(), 2, vec![write(None, own, None)]).unwrap();
+        assert_eq!(read_all(&overlay(&d), "b.txt"), "the chat's");
+    }
 }
 
 mod mounted {
@@ -966,6 +1075,97 @@ mod safety {
             .unwrap()
             .unwrap();
         assert!(project_file(&d, "a.txt").is_none());
+    }
+
+    /// A file the chat made and deleted again leaves nothing to land: the
+    /// user's own file there later is theirs, and stays.
+    #[test]
+    fn a_file_the_chat_made_and_deleted_doesnt_delete_the_users_file_there_later() {
+        let d = setup(&[("a.txt", "a\n")]);
+        let o = overlay(&d);
+        let f = o
+            .create(ROOT, "notes.md", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(f.ino, 0, b"chat's notes\n").unwrap();
+        o.unlink(ROOT, "notes.md").unwrap();
+        fs::write(d.project().join("notes.md"), "user's notes\n").unwrap();
+        assert!(landable(&o).is_empty(), "{:?}", landable(&o));
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
+        assert_eq!(
+            project_file(&d, "notes.md").as_deref(),
+            Some("user's notes\n")
+        );
+    }
+
+    /// A project file already gone from the project when the chat deleted
+    /// it (a branch switched meanwhile) has no record of what it was: when
+    /// the project has one there again, the delete is a conflict, not done
+    /// unasked; landing anyway does it.
+    #[test]
+    fn a_delete_with_nothing_recorded_conflicts_with_what_the_project_has_now() {
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        assert_eq!(read_all(&o, "a.txt"), "one\n");
+        fs::remove_file(d.project().join("a.txt")).unwrap();
+        o.unlink(ROOT, "a.txt").unwrap();
+        fs::write(d.project().join("a.txt"), "back on the branch\n").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert_eq!(
+            plan.conflicts
+                .iter()
+                .map(|c| c.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt"]
+        );
+        assert!(matches!(
+            land::land(&data(&d), "chat", &d.project(), &landable(&o), false),
+            Err(LandError::Conflicts(_))
+        ));
+        assert_eq!(
+            project_file(&d, "a.txt").as_deref(),
+            Some("back on the branch\n")
+        );
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), true)
+            .unwrap()
+            .unwrap();
+        assert!(project_file(&d, "a.txt").is_none());
+    }
+
+    /// `rm -rf node_modules && npm install` in a chat: the project ignores
+    /// `node_modules/` (a folder only), so the delete and the new folder
+    /// are by-products, and landing leaves the project's alone.
+    #[test]
+    fn a_dependency_folder_deleted_and_installed_again_isnt_landed() {
+        let d = setup(&[
+            (".gitignore", "node_modules/\n"),
+            ("node_modules/x/index.js", "old\n"),
+            ("src/a.js", "a\n"),
+        ]);
+        let o = overlay(&d);
+        let x = ino(&o, "node_modules/x");
+        o.unlink(x, "index.js").unwrap();
+        o.rmdir(ino(&o, "node_modules"), "x").unwrap();
+        o.rmdir(ROOT, "node_modules").unwrap();
+        let deleted = o
+            .changes()
+            .into_iter()
+            .find(|c| c.path() == "node_modules")
+            .unwrap();
+        assert!(deleted.by_product(), "{deleted:?}");
+        let nm = o
+            .create(ROOT, "node_modules", Kind::Dir, 0o755, 0, 0, None)
+            .unwrap();
+        let f = o
+            .create(nm.ino, "y.js", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(f.ino, 0, b"new\n").unwrap();
+        assert!(landable(&o).is_empty(), "{:?}", landable(&o));
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
+        assert_eq!(
+            project_file(&d, "node_modules/x/index.js").as_deref(),
+            Some("old\n")
+        );
+        assert!(project_file(&d, "node_modules/y.js").is_none());
     }
 
     #[test]

@@ -2046,6 +2046,54 @@ async fn the_ai_reviewer_decides_and_risky_commands_still_ask() {
     assert!(notes[1]["note"].is_null());
 }
 
+/// Stop pressed while the AI reviewer looks at a command: its "approve",
+/// coming after, doesn't run it.
+#[tokio::test]
+async fn stop_during_an_ai_review_keeps_the_approved_call_from_running() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![Reply::Call {
+        id: "r1",
+        name: "bash",
+        args: json!({ "command": "touch ran.txt" }),
+    }])
+    .await;
+    let (reviewer, _) = model(vec![Reply::Slow(
+        1500,
+        Box::new(Reply::Text(
+            "{\"decision\": \"approve\", \"reason\": \"Harmless.\"}",
+        )),
+    )])
+    .await;
+    let mut request = h.request(
+        &url,
+        Harness::send("Touch it"),
+        Permissions {
+            allow_any_command: true,
+            command_approval: permissions::ApprovalRule {
+                required: true,
+                by: permissions::Approver::Ai,
+            },
+            ..quiet_permissions()
+        },
+    );
+    let mut profile = request.profile.clone();
+    profile.base_url = reviewer;
+    profile.label = "Reviewer".into();
+    request.config.as_mut().unwrap().approval_profiles = vec![profile];
+    h.start(request).await;
+    h.wait_for("toolNote", |e| e["type"] == "toolNote").await;
+
+    assert!(agent_stop(&h.core.clone(), h.dialog_id.clone()).await);
+    assert_eq!(h.run_end().await, "stopped");
+    let messages = h.messages().await;
+    let result = messages.iter().find(|m| m.role == "tool").unwrap();
+    assert_eq!(
+        result.content,
+        "Error: stopped by the user before this ran."
+    );
+    assert!(!h.project.join("ran.txt").exists());
+}
+
 #[tokio::test]
 async fn a_reply_repeating_itself_is_cut_and_the_model_told() {
     let h = harness(&[]).await;
@@ -6018,4 +6066,31 @@ async fn every_finished_tool_call_leaves_a_tool_line() {
     assert_eq!(lines[3]["exitCode"], 3, "the command ran, and failed");
     assert!(lines[4].get("exitCode").is_none(), "it never ran");
     assert!(lines.iter().all(|l| l.get("role").is_none()), "the lead's");
+}
+
+/// A run that panics before it answers settles the user's message as
+/// failed: the composer gets its draft back instead of waiting forever.
+#[tokio::test]
+async fn a_run_that_panics_before_answering_settles_the_message_failed() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![Reply::Text("Not reached.")]).await;
+    crate::agent_run::run::PANIC_RUN
+        .lock()
+        .unwrap()
+        .insert(h.dialog_id.clone());
+    h.start(h.request(&url, Harness::send("Hi"), quiet_permissions()))
+        .await;
+    let end = h.run_end().await;
+    crate::agent_run::run::PANIC_RUN
+        .lock()
+        .unwrap()
+        .remove(&h.dialog_id);
+    assert_eq!(end, "error");
+    let settled = h.events_of("userMessageSettled");
+    assert_eq!(settled.len(), 1, "{settled:?}");
+    assert_eq!(settled[0]["ok"], false);
+    assert!(
+        h.messages().await[0].failed,
+        "the user's message is marked failed"
+    );
 }

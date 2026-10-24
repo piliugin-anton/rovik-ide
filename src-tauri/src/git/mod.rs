@@ -95,13 +95,52 @@ pub(crate) fn blob_text(repo: &Repository, id: git2::Oid, file: &str) -> Result<
     Ok(String::from_utf8_lossy(blob.content()).into_owned())
 }
 
-/// Every change into the index, as `git add -A` does: new and modified
-/// files staged, deleted ones dropped; .gitignore respected by both.
-pub(crate) fn stage_all(index: &mut git2::Index) -> Result<(), String> {
+/// The project's folder within `repo`'s working folder, `/`-separated, with
+/// git's wildcards escaped: "" when the project is the working folder. The
+/// repository is found upward from the project (`open_repo`), so a project
+/// can be a package of a monorepo, or a folder under a home folder kept in
+/// git (dotfiles): the panel's actions on the whole tree (its list of
+/// changes, Commit's staging, Discard all) keep to this folder, and never
+/// list, commit or throw away what's beside the project. "" too where the
+/// two can't be compared (a path that's gone).
+pub(crate) fn project_scope(repo: &Repository, project: &str) -> String {
+    let (Some(workdir), Ok(project)) = (repo.workdir(), Path::new(project).canonicalize()) else {
+        return String::new();
+    };
+    let Ok(workdir) = workdir.canonicalize() else {
+        return String::new();
+    };
+    match project.strip_prefix(&workdir) {
+        Ok(rel) if rel.as_os_str().is_empty() => String::new(),
+        Ok(rel) => {
+            let rel: Vec<String> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            changes::literal_pathspec(Path::new(&rel.join("/")))
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// The pathspec of `scope` ([`project_scope`]): everything in it.
+fn scope_pathspec(scope: &str) -> String {
+    if scope.is_empty() {
+        "*".to_string()
+    } else {
+        scope.to_string()
+    }
+}
+
+/// Every change in `scope` ([`project_scope`]) into the index, as
+/// `git add -A` does: new and modified files staged, deleted ones dropped;
+/// .gitignore respected by both.
+pub(crate) fn stage_all(index: &mut git2::Index, scope: &str) -> Result<(), String> {
+    let spec = [scope_pathspec(scope)];
     index
-        .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+        .add_all(spec.iter(), git2::IndexAddOption::DEFAULT, None)
         .err_text()?;
-    index.update_all(["*"].iter(), None).err_text()?;
+    index.update_all(spec.iter(), None).err_text()?;
     index.write().err_text()
 }
 
@@ -111,6 +150,15 @@ pub(crate) fn status_options() -> StatusOptions {
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .renames_head_to_index(true);
+    opts
+}
+
+/// [`status_options`] for the files in `scope` ([`project_scope`]) only.
+pub(crate) fn status_options_in(scope: &str) -> StatusOptions {
+    let mut opts = status_options();
+    if !scope.is_empty() {
+        opts.pathspec(scope);
+    }
     opts
 }
 
@@ -337,7 +385,10 @@ pub fn git_status_blocking(path: String) -> Result<GitStatus, String> {
 
     let (ahead, behind) = compute_ahead_behind(&repo).unwrap_or((0, 0));
     let (upstream, push_remote) = branch_remotes(&repo);
-    let statuses = repo.statuses(Some(&mut status_options())).err_text()?;
+    let scope = project_scope(&repo, &path);
+    let statuses = repo
+        .statuses(Some(&mut status_options_in(&scope)))
+        .err_text()?;
     let stats = workdir_line_stats(&repo);
 
     let files = statuses

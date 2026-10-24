@@ -140,6 +140,17 @@ fn get_or_build_gitignore(state: &WatcherState, root: &Path) -> Result<Arc<Gitig
     Ok(matcher)
 }
 
+/// Whether `matcher` ignores `path`. Only a path under the matcher's root
+/// is asked: the `ignore` crate asserts that, and the assertion would end
+/// the app (a folder listed by a path outside the project's root, through
+/// a link or a stale root).
+fn ignored_by(matcher: &Gitignore, path: &Path, is_dir: bool) -> bool {
+    path.starts_with(matcher.path())
+        && matcher
+            .matched_path_or_any_parents(path, is_dir)
+            .is_ignore()
+}
+
 const BINARY_SNIFF_BYTES: usize = 8000;
 
 #[derive(Serialize)]
@@ -154,20 +165,32 @@ pub struct DirEntryInfo {
 /// Lists the immediate children of `path` — non-recursive by design. The
 /// frontend calls this again for each folder the user expands, so cost
 /// scales with what's actually opened, not with total project size.
+/// On a worker thread: a big folder, or one on a slow disk or share, would
+/// hold the window's main thread as long.
 #[tauri::command]
-pub fn read_dir_entries(
-    state: State<'_, WatcherState>,
+pub async fn read_dir_entries(
+    app: tauri::AppHandle,
     root_path: String,
     path: String,
 ) -> Result<Vec<DirEntryInfo>, String> {
-    let matcher = get_or_build_gitignore(&state, Path::new(&root_path))?;
+    use tauri::Manager;
+    crate::util::blocking(move || dir_entries(&app.state::<WatcherState>(), &root_path, &path))
+        .await
+}
+
+fn dir_entries(
+    state: &WatcherState,
+    root_path: &str,
+    path: &str,
+) -> Result<Vec<DirEntryInfo>, String> {
+    let matcher = get_or_build_gitignore(state, Path::new(root_path))?;
 
     let dir = Path::new(&path);
     let read = fs::read_dir(dir).map_err(|e| format!("{path}: {e}"))?;
 
     // Remember the directory's own id too, so "new file/folder in this
     // directory" can resolve it even before any of its children are cached.
-    remember_id(&state, &stable_file_id(dir), dir);
+    remember_id(state, &stable_file_id(dir), dir);
 
     let mut entries: Vec<DirEntryInfo> = Vec::new();
     for entry in read {
@@ -183,12 +206,10 @@ pub fn read_dir_entries(
         // A link to a folder opens like one (its contents load only when
         // it's expanded, so a link to a parent can't loop).
         let is_dir = file_type.is_dir() || (file_type.is_symlink() && entry_path.is_dir());
-        let ignored = matcher
-            .matched_path_or_any_parents(&entry_path, is_dir)
-            .is_ignore();
+        let ignored = ignored_by(&matcher, &entry_path, is_dir);
 
         let id = stable_file_id(&entry_path);
-        remember_id(&state, &id, &entry_path);
+        remember_id(state, &id, &entry_path);
 
         entries.push(DirEntryInfo {
             id,
@@ -219,9 +240,15 @@ fn looks_binary(path: &Path) -> Result<bool, String> {
 /// Largest file `read_file_content` opens.
 const MAX_EDITOR_FILE: u64 = 50 << 20;
 
+/// A text file for the editor, read on a worker thread: up to 50 MB of it
+/// would hold the window's main thread as long.
 #[tauri::command]
-pub fn read_file_content(path: String) -> Result<String, String> {
-    let p = Path::new(&path);
+pub async fn read_file_content(path: String) -> Result<String, String> {
+    crate::util::blocking(move || read_text_for_editor(&path)).await
+}
+
+fn read_text_for_editor(path: &str) -> Result<String, String> {
+    let p = Path::new(path);
     // A huge log or dump would be copied whole into the webview and stall
     // (or kill) both sides; the editor can't usefully show it anyway.
     if fs::metadata(p).is_ok_and(|m| m.len() > MAX_EDITOR_FILE) {
@@ -248,8 +275,9 @@ const PREVIEW_IMAGE_EXTENSIONS: &[&str] = &[
 /// An image in a Markdown file, for its preview: the bytes as they are (an
 /// ArrayBuffer in the webview; JSON would send each byte as a number).
 #[tauri::command]
-pub fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
-    read_preview_image(Path::new(&path)).map(tauri::ipc::Response::new)
+pub async fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = crate::util::blocking(move || read_preview_image(Path::new(&path))).await?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// Only image files: the preview asks for whatever a document's image
@@ -352,8 +380,15 @@ const MAX_EDITORCONFIG: u64 = 256 * 1024;
 /// count (`root = true` stops the search) is decided by the frontend's
 /// parser (src/lib/editorconfig.ts), the only place that reads them.
 #[tauri::command]
-pub fn read_editorconfigs(path: String) -> Vec<EditorConfigFile> {
-    let Some(parent) = Path::new(&path).parent() else {
+pub async fn read_editorconfigs(path: String) -> Vec<EditorConfigFile> {
+    // Off the main thread: a folder up the way may be a slow network share.
+    rovik_core::rt::spawn_blocking(move || editorconfigs_for(&path))
+        .await
+        .unwrap_or_default()
+}
+
+fn editorconfigs_for(path: &str) -> Vec<EditorConfigFile> {
+    let Some(parent) = Path::new(path).parent() else {
         return Vec::new();
     };
     parent
@@ -473,6 +508,22 @@ pub fn save_last_project(
 mod tests {
     use super::*;
 
+    /// A path outside the matcher's root (a folder listed through a link,
+    /// or a root that changed) is never ignored, and never asked: the
+    /// `ignore` crate's assertion would end the app.
+    #[test]
+    fn a_path_outside_the_root_is_not_ignored_and_doesnt_panic() {
+        let dir = std::env::temp_dir().join(format!("ignored-by-{}", std::process::id()));
+        let root = dir.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        let matcher = build_gitignore(&root).unwrap();
+        assert!(ignored_by(&matcher, &root.join("build"), true));
+        assert!(!ignored_by(&matcher, &root.join("src"), true));
+        assert!(!ignored_by(&matcher, &dir.join("elsewhere/build"), true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_save_over_a_change_on_disk_is_refused_until_overwritten() {
         let dir = std::env::temp_dir().join(format!("editor-save-{}", std::process::id()));
@@ -527,7 +578,7 @@ mod tests {
         // A folder by that name isn't a config file.
         fs::create_dir_all(dir.join("a/.editorconfig")).unwrap();
 
-        let found = read_editorconfigs(dir.join("a/b/main.rs").to_string_lossy().into_owned());
+        let found = editorconfigs_for(&dir.join("a/b/main.rs").to_string_lossy());
         let ours: Vec<_> = found
             .iter()
             .filter(|f| Path::new(&f.dir).starts_with(&dir))

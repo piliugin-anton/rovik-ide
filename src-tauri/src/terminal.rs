@@ -235,20 +235,33 @@ fn in_home(app: &AppHandle, cmd: &mut CommandBuilder) {
 }
 
 #[tauri::command]
-pub fn spawn_terminal(
+pub async fn spawn_terminal(
     app: AppHandle,
-    state: State<'_, TerminalState>,
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
     on_event: Channel<TerminalEvent>,
 ) -> Result<TerminalInfo, String> {
+    // On a worker thread: starting a shell (and finding it, writing bash's
+    // init file) blocks, and as a plain command it held the window's main
+    // thread.
+    blocking(move || start_local_terminal(&app, cwd, cols, rows, on_event)).await
+}
+
+fn start_local_terminal(
+    app: &AppHandle,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    on_event: Channel<TerminalEvent>,
+) -> Result<TerminalInfo, String> {
+    let state = app.state::<TerminalState>();
     let (shell, args) = default_shell();
     let mut cmd = CommandBuilder::new(&shell);
     // Bash 4.4 to 5.4 reads a file of ours in place of a login shell's
     // (`bash`).
     #[cfg(unix)]
-    let args: Vec<std::ffi::OsString> = match bash::init_file(&app, &shell) {
+    let args: Vec<std::ffi::OsString> = match bash::init_file(app, &shell) {
         Some(file) => vec!["--init-file".into(), file.into()],
         None => args.into_iter().map(Into::into).collect(),
     };
@@ -256,9 +269,9 @@ pub fn spawn_terminal(
     // A project folder that was moved or deleted shouldn't make spawning fail.
     match cwd.as_deref().filter(|dir| Path::new(dir).is_dir()) {
         Some(dir) => cmd.cwd(dir),
-        None => in_home(&app, &mut cmd),
+        None => in_home(app, &mut cmd),
     }
-    let id = spawn_pty(&app, &state, cmd, size(cols, rows), on_event, true)?;
+    let id = spawn_pty(app, &state, cmd, size(cols, rows), on_event, true)?;
     Ok(TerminalInfo {
         id,
         shell: shell_name(&shell),
@@ -403,6 +416,7 @@ fn spawn_pty(
 
     // Reader: pty output -> channel.
     let output = on_event.clone();
+    let (reader_app, reader_id) = (app.clone(), id.clone());
     std::thread::Builder::new()
         .name(format!("pty-read-{id}"))
         .spawn(move || {
@@ -416,7 +430,15 @@ fn spawn_pty(
                             continue;
                         };
                         if output.send(TerminalEvent::Output { data }).is_err() {
-                            break; // the view is gone
+                            // The view is gone: so is its shell, as when
+                            // the terminal is closed, rather than run on
+                            // unseen with nothing reading its output.
+                            if let Some(session) =
+                                reader_app.state::<TerminalState>().remove(&reader_id)
+                            {
+                                session.kill();
+                            }
+                            break;
                         }
                     }
                     Err(e) if e.kind() == ErrorKind::Interrupted => continue,

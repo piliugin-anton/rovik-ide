@@ -24,7 +24,10 @@
 //! other processes, or end what a command leaves running. It does keep a
 //! command from tracing the app or reading its memory (a sandboxed process
 //! can't trace one outside its sandbox), and from changing mounts; the
-//! capabilities a command run by root would have are dropped too.
+//! capabilities a command run by root would have are dropped too. Nor can
+//! it close a socket that has a file (Landlock doesn't check connecting to
+//! one): only abstract sockets, from version 6 (Linux 6.12) on, which
+//! bubblewrap's commands get too ([`close_abstract_sockets`]).
 //!
 //! Used from Landlock's version 3 (Linux 6.2) on: before it, truncating a
 //! file wasn't something it could forbid, so the read-only system wouldn't
@@ -67,9 +70,17 @@ mod sys {
     /// Version 3.
     pub const TRUNCATE: u64 = 1 << 14;
 
+    /// Version 6: no connection to an abstract socket made outside the
+    /// ruleset's domain.
+    pub const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
+
+    /// The attribute as of version 6. An older kernel takes it as long as
+    /// the fields it doesn't know are zero.
     #[repr(C)]
     pub struct RulesetAttr {
         pub handled_access_fs: u64,
+        pub handled_access_net: u64,
+        pub scoped: u64,
     }
 
     #[repr(C, packed)]
@@ -81,6 +92,8 @@ mod sys {
 
 /// The version it needs: the first that can forbid truncating.
 const MIN_ABI: i64 = 3;
+/// The first version with scopes ([`sys::SCOPE_ABSTRACT_UNIX_SOCKET`]).
+const SCOPE_ABI: i64 = 6;
 
 /// What a rule lets a command do beneath its folder.
 const READ: u64 = sys::EXECUTE | sys::READ_FILE | sys::READ_DIR;
@@ -135,19 +148,31 @@ impl Grant {
     }
 }
 
-/// The rules that enforce `c`: everything but the hidden folders to read,
-/// the writable ones (and a few devices) to write. A folder with a hidden
-/// one inside is covered entry by entry instead, down to it; a writable
-/// folder inside a hidden one is covered all the same, being a rule of its
-/// own. Symbolic links get no rule: Landlock checks what a link leads to,
-/// where that is. Folders gone since the policy was made are left out.
+/// The rules that enforce `c`: everything but the hidden folders and files
+/// to read, the writable folders (and a few devices) to write. A folder
+/// with a hidden one inside is covered entry by entry instead, down to it;
+/// a writable folder inside a hidden one is covered all the same, being a
+/// rule of its own. A hidden file inside a writable folder (cargo's token
+/// in `~/.cargo`) isn't hidden: covered entry by entry, the folder would
+/// take no new file, which the tools that write there need (the
+/// bubblewrap and Seatbelt sandboxes hide it). Symbolic links get no rule:
+/// Landlock checks what a link leads to, where that is. Paths gone since
+/// the policy was made are left out.
 pub(super) fn grants(c: &Confine) -> Vec<(PathBuf, Grant)> {
-    let hidden: Vec<PathBuf> = c.hide.iter().filter(|d| d.is_dir()).cloned().collect();
+    let hidden: Vec<PathBuf> = c.hide.iter().filter(|d| d.exists()).cloned().collect();
+    // Writes go around the hidden folders and what stays read-only, which
+    // the read rule above covers all the same.
+    let unwritten: Vec<PathBuf> = hidden
+        .iter()
+        .filter(|d| d.is_dir())
+        .chain(c.read_only.iter().filter(|p| p.exists()))
+        .cloned()
+        .collect();
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     cover(Path::new("/"), Grant::Read, &hidden, &mut seen, &mut out);
     for dir in c.writable.iter().filter(|d| d.is_dir()) {
-        cover(dir, Grant::Write, &hidden, &mut seen, &mut out);
+        cover(dir, Grant::Write, &unwritten, &mut seen, &mut out);
     }
     for device in DEVICES {
         let device = Path::new(device);
@@ -224,6 +249,8 @@ fn ruleset(c: &Confine) -> std::io::Result<OwnedFd> {
     }
     let attr = sys::RulesetAttr {
         handled_access_fs: HANDLED,
+        handled_access_net: 0,
+        scoped: abstract_socket_scope(),
     };
     // SAFETY: `attr` is a valid ruleset attribute of the size passed.
     let fd = unsafe {
@@ -279,6 +306,69 @@ fn ruleset(c: &Confine) -> std::io::Result<OwnedFd> {
         }
     }
     Ok(ruleset)
+}
+
+/// The scope that closes the abstract sockets made outside the command's
+/// sandbox (X11's, an older session bus's), where the kernel has it.
+pub(super) fn abstract_socket_scope() -> u64 {
+    if *ABI >= SCOPE_ABI {
+        sys::SCOPE_ABSTRACT_UNIX_SOCKET
+    } else {
+        0
+    }
+}
+
+/// Makes `cmd` start with the abstract sockets made outside it closed to
+/// it and to what it runs: for bubblewrap's commands, whose mounts close
+/// the sockets that have a file. The ruleset handles no file access, so it
+/// leaves bubblewrap free to mount. Nothing where the kernel has no scopes
+/// (before Linux 6.12).
+pub(super) fn close_abstract_sockets(cmd: &mut Command) {
+    let scoped = abstract_socket_scope();
+    if scoped == 0 {
+        return;
+    }
+    let attr = sys::RulesetAttr {
+        handled_access_fs: 0,
+        handled_access_net: 0,
+        scoped,
+    };
+    // SAFETY: `attr` is a valid ruleset attribute of the size passed.
+    let fd = unsafe {
+        libc::syscall(
+            sys::CREATE_RULESET,
+            &attr as *const sys::RulesetAttr,
+            std::mem::size_of::<sys::RulesetAttr>(),
+            0u32,
+        )
+    };
+    // An error the command then fails to start with: one that can't be
+    // kept from the sockets doesn't start.
+    let ruleset = if fd < 0 {
+        Err(std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::ENOSYS))
+    } else {
+        // SAFETY: the kernel just gave this descriptor (close-on-exec), ours
+        // alone.
+        Ok(Arc::new(unsafe { OwnedFd::from_raw_fd(fd as i32) }))
+    };
+    // SAFETY: between fork and exec it makes only system calls (prctl,
+    // landlock_restrict_self) on a descriptor opened before the fork.
+    unsafe {
+        cmd.pre_exec(move || {
+            let ruleset = ruleset
+                .as_ref()
+                .map_err(|&errno| std::io::Error::from_raw_os_error(errno))?;
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::syscall(sys::RESTRICT_SELF, ruleset.as_raw_fd(), 0u32) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Each command applies the policy's ruleset to itself as it starts,
@@ -380,6 +470,8 @@ mod tests {
             project: work.clone(),
             hide: vec![secret.clone(), root.join("gone")],
             writable: vec![cache.clone(), work.clone()],
+            sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         let rules = grants(&c);
         let has = |p: &Path, g: Grant| rules.iter().any(|(q, h)| q == p && *h == g);
@@ -396,6 +488,51 @@ mod tests {
         // The writable folder inside the hidden one is the command's.
         assert!(has(&work, Grant::Write));
         assert!(has(Path::new("/dev/null"), Grant::Device));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A hidden file is left out of the rules like a hidden folder, but
+    /// inside a writable folder the folder's rule stays whole.
+    #[test]
+    fn a_hidden_file_gets_no_rule_but_inside_a_writable_folder() {
+        let root = fresh("llfiles");
+        let (home, cargo) = (root.join("home"), root.join("home/.cargo"));
+        std::fs::create_dir_all(&cargo).unwrap();
+        let (netrc, token) = (home.join(".netrc"), cargo.join("credentials.toml"));
+        std::fs::write(&netrc, "machine x password y\n").unwrap();
+        std::fs::write(&token, "token = \"t\"\n").unwrap();
+        std::fs::write(home.join(".bashrc"), "").unwrap();
+        let c = policy(&root, &[&netrc, &token], &[&cargo]);
+        let rules = grants(&c);
+        let names = |p: &Path| rules.iter().any(|(q, _)| q == p);
+        assert!(!names(&netrc) && !names(&home));
+        assert!(names(&home.join(".bashrc")));
+        assert!(rules.contains(&(cargo.clone(), Grant::Write)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What stays read-only inside a writable folder gets no write rule:
+    /// the folder is written entry by entry around it, and it's read.
+    #[test]
+    fn a_read_only_path_inside_a_writable_folder_gets_no_write_rule() {
+        let root = fresh("llro");
+        let (cargo, bin, registry) = (
+            root.join(".cargo"),
+            root.join(".cargo/bin"),
+            root.join(".cargo/registry"),
+        );
+        for d in [&bin, &registry] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let config = cargo.join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let mut c = policy(&root, &[], &[&cargo]);
+        c.read_only = vec![bin.clone(), config.clone()];
+        let rules = grants(&c);
+        let has = |p: &Path, g: Grant| rules.iter().any(|(q, h)| q == p && *h == g);
+        assert!(!has(&cargo, Grant::Write), "the folder whole");
+        assert!(!has(&bin, Grant::Write) && !has(&config, Grant::Write));
+        assert!(has(&registry, Grant::Write));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -421,6 +558,8 @@ mod tests {
             project: root.to_path_buf(),
             hide: hide.iter().map(|p| p.to_path_buf()).collect(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
+            sockets: Vec::new(),
+            read_only: Vec::new(),
         }
     }
 
@@ -542,6 +681,8 @@ mod tests {
             project: root.clone(),
             hide: Vec::new(),
             writable: vec![root.clone()],
+            sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         let rules = grants(&c);
         assert_eq!(rules[0], (PathBuf::from("/"), Grant::Read));

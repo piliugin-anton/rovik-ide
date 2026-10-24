@@ -526,7 +526,7 @@ impl SubagentSettings for SubagentConfig {
         let choices = self.kinds.get(kind.id()).map(|k| k.models.as_slice());
         for choice in choices.unwrap_or_default() {
             let profile = match choice {
-                ModelChoice::Profile(p) => p,
+                ModelChoice::Profile(p) => &**p,
                 ModelChoice::Chat { .. } => chat,
             };
             if !profile.no_tools && !out.iter().any(|p| p.id == profile.id) {

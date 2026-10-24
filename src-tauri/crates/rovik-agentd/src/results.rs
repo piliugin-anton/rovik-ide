@@ -337,6 +337,10 @@ impl Results {
     ) -> Result<(), Fail> {
         let landed = Oid::from_str(commit)
             .map_err(|_| Fail::new(FailCode::BadRequest, "Not a commit's id."))?;
+        // The paths go into the base's tree: each one the project's.
+        for path in &paths {
+            crate::changes::check(path)?;
+        }
         {
             let _base = self.base.lock().await;
             let (place, base) = self.worktree(dialog_id)?;
@@ -761,6 +765,28 @@ mod tests {
             results.all_committed("chat"),
         );
         assert!(waited.await.is_ok(), "nothing left to wait for");
+    }
+
+    /// A landing names paths in the project's folder only: one that leads
+    /// out of it is refused before the base moves.
+    #[tokio::test]
+    async fn a_landing_with_a_path_out_of_the_project_is_refused() {
+        let dir = rovik_core::testing::temp_dir();
+        let store = Arc::new(Store::open(&dir.0).unwrap());
+        let events = Events::new("boot".into(), Arc::new(|_: &str| None));
+        let results = Results::new(dir.0.join("results"), dir.0.join("config"), store, events);
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        for path in ["../outside", "/etc/passwd", "a/../../b", ""] {
+            let refused = results
+                .landed("chat", commit, vec![path.to_string()])
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code, FailCode::BadRequest, "{path}");
+            assert!(
+                refused.message.contains("not a path in the project"),
+                "{path}: {refused:?}"
+            );
+        }
     }
 
     #[test]

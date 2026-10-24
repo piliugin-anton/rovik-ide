@@ -3,7 +3,8 @@
 
 use super::hooks::{not_committed, Hooks};
 use super::{
-    head_commit, inside_repo, open_repo, signature, stage_all, status_options, workdir, ErrText,
+    head_commit, inside_repo, open_repo, project_scope, signature, stage_all, status_options,
+    status_options_in, workdir, ErrText,
 };
 use crate::util::{blocking, rewriting};
 use git2::{Repository, ResetType, Status};
@@ -31,7 +32,9 @@ pub fn git_commit_blocking(path: String, message: String) -> Result<(), String> 
     git_commit_blocking_with(path, message, false)
 }
 
-/// Commits every change, as `git add -A && git commit` would, with the
+/// Commits every change in the project's folder (`project_scope`: all of
+/// the repository's when the project is its working folder), as
+/// `git add -A <folder> && git commit` would, with the
 /// repository's commit hooks: pre-commit, prepare-commit-msg and commit-msg
 /// can stop it (or change what's staged, the message), post-commit comes
 /// after. Not in the middle of a merge or a rebase (that's
@@ -49,7 +52,7 @@ pub fn git_commit_blocking_with(
     if index.has_conflicts() {
         return Err("Resolve the conflicts first.".to_string());
     }
-    stage_all(&mut index)?;
+    stage_all(&mut index, &project_scope(&repo, &path))?;
     let hooks = Hooks::of(&repo).no_verify(no_verify);
     if hooks.has("pre-commit") {
         hooks.run("pre-commit", &[], None).map_err(not_committed)?;
@@ -79,9 +82,11 @@ pub fn git_commit_blocking_with(
     Ok(())
 }
 
-/// Throws away every change in the working tree: tracked files go back to
-/// HEAD, and files git doesn't know yet go to the trash (as with reverting
-/// one file, so the action can be undone from there).
+/// Throws away every change in the project's folder (`project_scope`: the
+/// whole working tree when the project is the repository's working
+/// folder): tracked files go back to HEAD, and new files, untracked or
+/// staged, go to the trash (as with reverting one file, so the action can
+/// be undone from there).
 #[tauri::command]
 pub async fn git_discard_all(path: String) -> Result<(), String> {
     let repo = path.clone();
@@ -95,39 +100,55 @@ pub fn git_discard_all_blocking(path: String) -> Result<(), String> {
     // first.
     crate::git_sync::nothing_in_progress(&repo)?;
     let workdir = workdir(&repo)?;
+    let scope = project_scope(&repo, &path);
 
-    // Files git doesn't know go to the trash; a hard reset leaves them (and
-    // previously staged-new files) on disk, so collect them first.
-    let trash_untracked = || -> Result<(), String> {
-        let statuses = repo.statuses(Some(&mut status_options())).err_text()?;
-        for entry in statuses.iter().filter(|e| e.status().is_wt_new()) {
-            let rel = entry.path().unwrap_or_default();
-            let abs = workdir.join(rel);
-            if !rel.is_empty() && abs.is_file() {
-                crate::filesystem::to_trash(&abs)
-                    .map_err(|e| format!("{rel}: couldn't move it to the trash: {e}"))?;
-            }
+    // New files go to the trash first: untracked ones, which a reset leaves
+    // on disk, and staged-new ones, which a hard reset deletes for good
+    // (HEAD doesn't have them).
+    let statuses = repo
+        .statuses(Some(&mut status_options_in(&scope)))
+        .err_text()?;
+    for entry in statuses.iter() {
+        let s = entry.status();
+        if !(s.is_wt_new() || s.is_index_new()) {
+            continue;
         }
-        Ok(())
-    };
-    trash_untracked()?;
+        let rel = entry.path().unwrap_or_default();
+        let abs = workdir.join(rel);
+        if !rel.is_empty() && abs.is_file() {
+            crate::filesystem::to_trash(&abs)
+                .map_err(|e| format!("{rel}: couldn't move it to the trash: {e}"))?;
+        }
+    }
+    drop(statuses);
 
     match head_commit(&repo).ok() {
         // Tracked changes (staged or not) back to the last commit.
-        Some(head) => repo
+        Some(head) if scope.is_empty() => repo
             .reset(head.as_object(), ResetType::Hard, None)
             .err_text()?,
-        // No commits yet: nothing to reset to, so empty the index instead.
+        // Only the project's folder: its index entries back to HEAD's
+        // (`git reset -- <folder>`), then its files back to those.
+        Some(head) => {
+            repo.reset_default(Some(head.as_object()), [scope.as_str()])
+                .err_text()?;
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            checkout.force().path(&scope);
+            repo.checkout_head(Some(&mut checkout)).err_text()?;
+        }
+        // No commits yet: nothing to reset to, so the index is emptied (of
+        // the folder's entries) instead; their files went to the trash.
         None => {
             let mut index = repo.index().err_text()?;
-            index.clear().err_text()?;
+            if scope.is_empty() {
+                index.clear().err_text()?;
+            } else {
+                index.remove_all([scope.as_str()], None).err_text()?;
+            }
             index.write().err_text()?;
         }
     }
-
-    // Staged-new files survived the reset as untracked files; they were part
-    // of "all changes" too.
-    trash_untracked()
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +231,7 @@ fn backup_name(path: &Path) -> PathBuf {
 
 /// `rel` as a pathspec that matches it alone: git's wildcards escaped, so
 /// a file named `pages/[id].tsx` doesn't take `pages/i.tsx` with it.
-fn literal_pathspec(rel: &Path) -> String {
+pub(super) fn literal_pathspec(rel: &Path) -> String {
     let mut spec = String::new();
     for c in rel.to_string_lossy().chars() {
         if matches!(c, '*' | '?' | '[' | ']' | '\\') {

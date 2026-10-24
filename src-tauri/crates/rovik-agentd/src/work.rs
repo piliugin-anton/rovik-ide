@@ -29,11 +29,19 @@ use std::path::{Path, PathBuf};
 /// rules, its row, and its settings for its worktrees.
 pub async fn ensure_project(
     daemon: &Daemon,
+    computer: &str,
     project: Project,
     settings: Option<Value>,
     excludes: Vec<String>,
     remote: Option<String>,
 ) -> Result<Response, Fail> {
+    if !plain_subpath(&project.subpath) {
+        return Err(bad_request(
+            "The project's folder in its repository is a relative path inside it.",
+        ));
+    }
+    // Before its repository is touched: another computer's isn't this one's.
+    daemon.store.check_project_owner(computer, &project.id)?;
     let (projects, id) = (daemon.projects.clone(), project.id.clone());
     let prepared = rt::spawn_blocking(move || {
         let repo = projects.prepare(&id, &excludes)?;
@@ -48,8 +56,7 @@ pub async fn ensure_project(
     row.await.map_err(internal)?;
     daemon
         .store
-        .ensure_project(&project, settings, remote)
-        .map_err(internal)?;
+        .ensure_project(&project, computer, settings, remote)?;
     Ok(Response::Done)
 }
 
@@ -615,6 +622,18 @@ fn branch(chat: &str) -> String {
 }
 
 /// Whether a chat's id can name its folder, worktree and branch as it is.
+/// Whether `subpath`, the project's folder within its repository, stays in
+/// a chat's worktree when joined to it: empty (the repository's root), or
+/// relative parts separated by `/`, none empty, `.` or `..`, with no `\`
+/// or NUL. `..` or an absolute path would put the run's root outside the
+/// worktree.
+pub fn plain_subpath(subpath: &str) -> bool {
+    subpath.is_empty()
+        || subpath.split('/').all(|part| {
+            !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', '\0', ':'])
+        })
+}
+
 pub fn plain(chat: &str) -> bool {
     let fits = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     !chat.is_empty() && chat.len() <= 64 && chat.chars().all(fits)

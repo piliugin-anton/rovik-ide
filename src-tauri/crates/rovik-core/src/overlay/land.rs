@@ -115,6 +115,21 @@ fn snapshot(path: &Path) -> Snapshot {
     }
 }
 
+/// Whether a folder on the way from `project` to `rel` (not `rel` itself)
+/// is a link: writing there would write wherever the link leads, outside
+/// the project perhaps, rather than into the project's folder.
+fn through_link(project: &Path, rel: &str) -> bool {
+    let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+    let mut at = project.to_path_buf();
+    for part in parts.iter().take(parts.len().saturating_sub(1)) {
+        at.push(part);
+        if fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            return true;
+        }
+    }
+    false
+}
+
 fn abs(project: &Path, rel: &str) -> PathBuf {
     let mut p = project.to_path_buf();
     p.extend(rel.split('/').filter(|s| !s.is_empty()));
@@ -142,6 +157,10 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
             _ => None,
         })
         .collect();
+    // Paths whose project entry this landing deletes (each checked against
+    // what the chat deleted): a folder or a link written there may replace
+    // it.
+    let mut deleting: std::collections::HashSet<String> = std::collections::HashSet::new();
     for change in changes.iter().filter(|c| !c.by_product()) {
         let path = change.path().to_string();
         // A change's path is the chat's own: one that isn't (a saved list
@@ -150,6 +169,15 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
             conflicts.push(Conflict {
                 path,
                 reason: "it isn't a path inside the project".into(),
+            });
+            continue;
+        }
+        // A folder on its way that became a link in the project: what the
+        // chat wrote there isn't where it would land.
+        if through_link(project, &path) {
+            conflicts.push(Conflict {
+                path,
+                reason: "a folder on its way is a link in the project now".into(),
             });
             continue;
         }
@@ -162,12 +190,17 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     continue;
                 }
                 // Changed in the project since the chat deleted it: deleting
-                // would lose that change.
-                let changed = base.as_ref().is_some_and(|b| !b.still(&target));
+                // would lose that change. Without a record of what was
+                // deleted (the project had nothing there then, or a list
+                // saved before records were kept), what's there now can't be
+                // shown to be what the chat deleted, so it isn't deleted
+                // unasked.
+                let changed = base.as_ref().is_none_or(|b| !b.still(&target));
                 if changed && !keep_chat && !carried.contains(path.as_str()) {
                     let reason = match base {
+                        None => "the chat deleted this, and Rovik can't tell whether what the project has here now is what it deleted".to_string(),
                         Some(DeletedBase::Dir { complete: false, .. }) => {
-                            "the chat deleted this folder, and it's too large to check for changes in the project".to_string()
+                            "the chat deleted this folder, and it's too large to check for changes in the project".into()
                         }
                         Some(DeletedBase::Dir { .. }) => "the chat deleted this folder, and its contents changed in the project".into(),
                         _ => "the chat deleted it, and it changed in the project".into(),
@@ -175,6 +208,7 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     conflicts.push(Conflict { path, reason });
                     continue;
                 }
+                deleting.insert(path.clone());
                 actions.push(Action {
                     path,
                     new: NewContent::Absent,
@@ -186,15 +220,20 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
             OverlayChange::Write {
                 kind: Kind::Dir, ..
             } => {
-                if now != Snapshot::Dir {
-                    actions.push(Action {
-                        path,
-                        new: NewContent::Dir,
-                        expected: now,
-                        merged: false,
-                        source: Snapshot::Absent,
-                    });
+                if now == Snapshot::Dir {
+                    continue;
                 }
+                if let Some(conflict) = occupied(&path, &now, &deleting, &conflicts, keep_chat) {
+                    conflicts.extend(conflict);
+                    continue;
+                }
+                actions.push(Action {
+                    path,
+                    new: NewContent::Dir,
+                    expected: now,
+                    merged: false,
+                    source: Snapshot::Absent,
+                });
             }
             OverlayChange::Write {
                 kind: Kind::Symlink,
@@ -202,15 +241,20 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                 ..
             } => {
                 let link = link.clone().unwrap_or_default();
-                if now != Snapshot::Symlink(link.clone()) {
-                    actions.push(Action {
-                        path,
-                        new: NewContent::Symlink(link),
-                        expected: now,
-                        merged: false,
-                        source: Snapshot::Absent,
-                    });
+                if now == Snapshot::Symlink(link.clone()) {
+                    continue;
                 }
+                if let Some(conflict) = occupied(&path, &now, &deleting, &conflicts, keep_chat) {
+                    conflicts.extend(conflict);
+                    continue;
+                }
+                actions.push(Action {
+                    path,
+                    new: NewContent::Symlink(link),
+                    expected: now,
+                    merged: false,
+                    source: Snapshot::Absent,
+                });
             }
             OverlayChange::Write {
                 kind: Kind::File,
@@ -319,6 +363,36 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
         conflicts,
         merged,
     }
+}
+
+/// Whether a folder or link the chat made at `path` would replace an entry
+/// the project has there now (`now`) that the chat never saw: one it made
+/// meanwhile (`ln -s cfg.dev config` landing over a `config/` the user
+/// filled). Not when nothing's there, or this landing deletes what's there
+/// (`deleting`, checked against what the chat deleted), or the user lands
+/// anyway. Some(None): stopped already by that path's own conflict.
+fn occupied(
+    path: &str,
+    now: &Snapshot,
+    deleting: &std::collections::HashSet<String>,
+    conflicts: &[Conflict],
+    keep_chat: bool,
+) -> Option<Option<Conflict>> {
+    if *now == Snapshot::Absent || deleting.contains(path) || keep_chat {
+        return None;
+    }
+    if conflicts.iter().any(|c| c.path == path) {
+        return Some(None);
+    }
+    let what = match now {
+        Snapshot::Dir => "a folder",
+        Snapshot::Symlink(_) => "a link",
+        _ => "a file",
+    };
+    Some(Some(Conflict {
+        path: path.to_string(),
+        reason: format!("the project has {what} there now, which the chat didn't replace"),
+    }))
 }
 
 enum Resolved {
@@ -677,6 +751,13 @@ fn write_content(
             return Err(format!("{rel}: injected failure"));
         }
         let _ = content;
+    }
+    // Checked again as it's written: a folder on the way may have become a
+    // link since the plan.
+    if through_link(project, rel) {
+        return Err(format!(
+            "{rel}: a folder on its way is a link in the project now"
+        ));
     }
     let path = abs(project, rel);
     let err = |e: std::io::Error| format!("{rel}: {e}");
@@ -1183,6 +1264,134 @@ mod tests {
         let paths: Vec<&str> = plan.actions.iter().map(|a| a.path.as_str()).collect();
         assert_eq!(paths, ["readme.md", "README.md"]);
         assert!(plan.conflicts.is_empty());
+    }
+
+    fn link_write(path: &str, target: &str) -> OverlayChange {
+        OverlayChange::Write {
+            path: path.into(),
+            kind: Kind::Symlink,
+            origin: None,
+            upper: None,
+            base_copy: None,
+            perm: 0o777,
+            perm_changed: false,
+            target: Some(target.into()),
+            by_product: false,
+        }
+    }
+
+    /// A link the chat made doesn't land over a folder the project made
+    /// there meanwhile, nor a folder over a file; over nothing, or over
+    /// the entry this landing deletes, it does. Landing anyway writes it.
+    #[test]
+    fn a_folder_or_link_doesnt_land_over_an_entry_the_chat_never_saw() {
+        let dir = crate::testing::temp_dir();
+        let project = dir.0.join("project");
+        fs::create_dir_all(project.join("config")).unwrap();
+        fs::write(project.join("config/app.toml"), "the user's\n").unwrap();
+        fs::write(project.join("notes"), "a file\n").unwrap();
+        let dir_write = OverlayChange::Write {
+            path: "notes".into(),
+            kind: Kind::Dir,
+            origin: None,
+            upper: None,
+            base_copy: None,
+            perm: 0o755,
+            perm_changed: false,
+            target: None,
+            by_product: false,
+        };
+        let changes = [
+            link_write("config", "cfg.dev"),
+            dir_write,
+            link_write("fresh", "x"),
+        ];
+
+        let stopped = plan(&project, &changes, false);
+        let mut paths: Vec<&str> = stopped.conflicts.iter().map(|c| c.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["config", "notes"]);
+        assert_eq!(stopped.paths(), ["fresh"]);
+
+        assert_eq!(plan(&project, &changes, true).paths().len(), 3);
+
+        // The chat replaced the project's folder: its delete goes first,
+        // checked against what it deleted, and the link takes its place.
+        let replaced = [
+            OverlayChange::Delete {
+                path: "config".into(),
+                by_product: false,
+                base: crate::overlay::fs::DeletedBase::of(&project.join("config")),
+            },
+            link_write("config", "cfg.dev"),
+        ];
+        let p = plan(&project, &replaced, false);
+        assert!(p.conflicts.is_empty(), "{:?}", p.conflicts);
+        assert_eq!(p.paths(), ["config", "config"]);
+    }
+
+    /// A delete with no record of what was deleted can't be shown to be
+    /// of what the project has there now: a conflict, unless the user
+    /// lands anyway.
+    #[test]
+    fn a_delete_with_no_recorded_base_is_a_conflict() {
+        let dir = crate::testing::temp_dir();
+        let project = dir.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("notes.md"), "the user's\n").unwrap();
+        let changes = [OverlayChange::Delete {
+            path: "notes.md".into(),
+            by_product: false,
+            base: None,
+        }];
+
+        let stopped = plan(&project, &changes, false);
+        assert!(stopped.actions.is_empty());
+        assert_eq!(stopped.conflicts.len(), 1);
+        assert_eq!(stopped.conflicts[0].path, "notes.md");
+
+        let anyway = plan(&project, &changes, true);
+        assert!(anyway.conflicts.is_empty());
+        assert_eq!(anyway.paths(), ["notes.md"]);
+    }
+
+    /// A folder of the project that became a link is never written
+    /// through: what the chat wrote under it is a conflict, and the file
+    /// where the link leads stays as it was.
+    #[cfg(unix)]
+    #[test]
+    fn a_landing_never_writes_through_a_folder_that_became_a_link() {
+        let dir = crate::testing::temp_dir();
+        let (project, elsewhere) = (dir.0.join("project"), dir.0.join("elsewhere"));
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("a.txt"), "not the project's\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, project.join("src")).unwrap();
+        let ours = dir.0.join("ours");
+        fs::write(&ours, "the chat's\n").unwrap();
+        let changes = [OverlayChange::Write {
+            path: "src/a.txt".into(),
+            kind: Kind::File,
+            origin: None,
+            upper: Some(ours),
+            base_copy: None,
+            perm: 0o644,
+            perm_changed: false,
+            target: None,
+            by_product: false,
+        }];
+        let stopped = plan(&project, &changes, true);
+        assert!(stopped.actions.is_empty());
+        assert_eq!(stopped.conflicts[0].path, "src/a.txt");
+        let content = Content::File {
+            file: dir.0.join("ours"),
+            perm: None,
+        };
+        assert!(write_content(&project, "src/a.txt", &content, "chat").is_err());
+        assert_eq!(
+            fs::read_to_string(elsewhere.join("a.txt")).unwrap(),
+            "not the project's\n"
+        );
     }
 
     #[test]

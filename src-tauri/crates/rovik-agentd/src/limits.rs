@@ -357,6 +357,25 @@ impl Caps {
         self.under_disk_cap(false)
     }
 
+    /// The bytes Rovik's folders may still take under the disk cap, as
+    /// measured within `MEASURE_AGAIN`: what a push may bring in. None
+    /// without a cap.
+    pub fn room_left(&self) -> Option<u64> {
+        let most = self.max_disk_gb?.saturating_mul(1 << 30);
+        Some(most.saturating_sub(self.used(false)))
+    }
+
+    /// Why a push that brought `bytes` was cut: past `room_left`.
+    pub fn over_by_push(&self, bytes: u64) -> String {
+        format!(
+            "This push is over {} MB, more than Rovik's folders have left of the {} GB this \
+             server allows you: delete chats you're done with, or ask {} for more.",
+            bytes >> 20,
+            self.max_disk_gb.unwrap_or(0),
+            self.ask()
+        )
+    }
+
     /// The disk cap, against a measure taken now when `fresh`.
     fn under_disk_cap(&self, fresh: bool) -> Result<(), String> {
         let Some(most) = self.max_disk_gb else {
@@ -613,6 +632,28 @@ mod tests {
         );
         // That measure stands for the others, the clones' too.
         assert!(caps.clone().room_on_disk().is_err());
+    }
+
+    /// 5.5: a push may bring in only what's left under the disk cap; with
+    /// no cap, there's no such bound.
+    #[test]
+    fn a_push_may_bring_only_the_room_left_under_the_disk_cap() {
+        let dir = rovik_core::testing::temp_dir();
+        std::fs::write(dir.0.join("taken"), vec![0u8; 1 << 20]).unwrap();
+        let file = AdminFile {
+            admins: vec!["ann".into()],
+            max_disk_gb: Some(1),
+            ..AdminFile::default()
+        };
+        let caps = Caps::new(&file, vec![dir.0.clone()]);
+        assert_eq!(caps.room_left(), Some((1 << 30) - (1 << 20)));
+        let why = caps.over_by_push(2 << 30);
+        assert!(
+            why.contains("over 2048 MB") && why.contains("ask ann"),
+            "{why}"
+        );
+        let uncapped = Caps::new(&AdminFile::default(), vec![dir.0.clone()]);
+        assert_eq!(uncapped.room_left(), None);
     }
 
     /// H07: the administrators' `max_slots` wins over the user's number,

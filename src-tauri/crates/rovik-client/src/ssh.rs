@@ -705,32 +705,35 @@ async fn with_agent(
         .await
         .map_err(dropped)?
         .flatten();
-    let (mut last_error, mut offered) = (None, false);
+    let (mut last_error, mut offered) = (None, 0);
     for identity in identities {
         // Certificates are the user's own ssh's (H03).
         let AgentIdentity::PublicKey { key, .. } = identity else {
             continue;
         };
-        offered = true;
+        offered += 1;
         // A key the agent won't sign with (a security key not touched in
         // time, a confirmation declined) leaves the others to try.
-        let tried = match handle
+        let tried = handle
             .authenticate_publickey_with(user, key, hash, &mut agent)
-            .await
-        {
-            Ok(tried) => tried,
-            Err(e) => {
-                last_error = Some(format!("{e:?}"));
-                continue;
-            }
-        };
-        if tried.success() {
-            return Ok(());
+            .await;
+        // A server that hung up takes no more keys: the rest would only
+        // read as refused, and the host as one that denies this user.
+        if handle.is_closed() || matches!(tried, Err(russh::AgentAuthError::Send(_))) {
+            return Err(SshError::Failed(format!(
+                "The server closed the connection after {offered} of the SSH agent's keys. \
+                 It may take only so many tries: choose the key file to log in with instead."
+            )));
+        }
+        match tried {
+            Ok(tried) if tried.success() => return Ok(()),
+            Ok(_) => {}
+            Err(e) => last_error = Some(format!("{e:?}")),
         }
     }
     // None went to the host: an agent whose keys aren't added yet, which
     // trying again later may find there.
-    if !offered {
+    if offered == 0 {
         return Err(SshError::Key(
             "the SSH agent holds no key to log in with (its certificates are your system \
              ssh's): add yours to it, with ssh-add."
@@ -971,6 +974,73 @@ fn io_error(e: SshError) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An SSH server that takes no key, and hangs up after the first.
+    #[cfg(unix)]
+    struct OneTry;
+
+    #[cfg(unix)]
+    impl russh::server::Handler for OneTry {
+        type Error = russh::Error;
+    }
+
+    /// A server that hangs up mid-login takes no more of the agent's keys:
+    /// the login fails as a dropped connection, not as a host that denies
+    /// the user for good.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_server_that_hangs_up_takes_no_more_agent_keys() {
+        use russh::keys::ssh_key::private::Ed25519Keypair;
+        use russh::keys::PrivateKey;
+        let host = PrivateKey::from(Ed25519Keypair::from_seed(&[9; 32]));
+        let pinned = host.public_key().to_openssh().unwrap();
+        let config = Arc::new(russh::server::Config {
+            keys: vec![host],
+            max_auth_attempts: 1,
+            auth_rejection_time: std::time::Duration::from_millis(10),
+            auth_rejection_time_initial: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        });
+        let sshd = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = sshd.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = sshd.accept().await {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Ok(session) = russh::server::run_stream(config, stream, OneTry).await {
+                        let _ = session.await;
+                    }
+                });
+            }
+        });
+        // An agent with three keys, none of them the server's.
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let incoming = Box::pin(futures_util::stream::unfold(listener, |l| async move {
+            let accepted = l.accept().await.map(|(stream, _)| stream);
+            Some((accepted, l))
+        }));
+        tokio::spawn(russh::keys::agent::server::serve(incoming, ()));
+        let mut agent = AgentClient::connect_uds(&socket).await.unwrap();
+        for seed in 1..=3u8 {
+            let key = PrivateKey::from(Ed25519Keypair::from_seed(&[seed; 32]));
+            agent.add_identity(&key, &[]).await.unwrap();
+        }
+        let target = SshTarget {
+            host: "127.0.0.1".into(),
+            port,
+            user: "tester".into(),
+            auth: SshAuth::Agent {
+                socket: Some(socket.clone()),
+            },
+            host_key: Some(pinned),
+        };
+        match Ssh::connect(&target).await.err().expect("not logged in") {
+            SshError::Failed(why) => assert!(why.contains("closed the connection"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// What the client sees of each failure: the credentials and a key to
     /// pin refuse for good; a changed host key and Rovik's install refuse

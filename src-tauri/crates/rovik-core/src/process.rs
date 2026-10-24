@@ -323,10 +323,6 @@ fn login_shell_path() -> Option<String> {
 /// [`login_shell_path`], giving the shell up to `limit`.
 #[cfg(unix)]
 fn login_shell_path_within(limit: std::time::Duration) -> Option<String> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
     // A POSIX shell prints "$PATH" as it is; fish keeps PATH as a list
     // ("$PATH" joins it with spaces); any other shell has a syntax of its
     // own, so `sh -l` reads the profile files instead.
@@ -353,33 +349,55 @@ fn login_shell_path_within(limit: std::time::Duration) -> Option<String> {
     };
     // Out of the terminal the app may have been started from: an
     // interactive shell would stop the app's process group otherwise.
-    let mut child = own_session(&mut command(&program))
-        .args(&args)
+    let mut cmd = command(&program);
+    own_session(&mut cmd).args(&args);
+    read_marked(cmd, limit)
+}
+
+/// Runs `cmd` and reads what it prints between the markers, giving up after
+/// `limit`. The output is read as it comes, and the wait ends once it holds
+/// the marked text: the pipe stays open after the shell exits while a
+/// program an rc file started in the background keeps it, and waiting for
+/// its end would hang the app's start for as long as that program runs.
+#[cfg(unix)]
+fn read_marked(mut cmd: std::process::Command, limit: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    let deadline = Instant::now() + limit;
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        out
-    });
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < limit => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    // Ends at the pipe's end, or at the next read once nobody listens.
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
             }
         }
-    }
-    let out = String::from_utf8_lossy(&reader.join().ok()?).into_owned();
-    parse_marked(&out)
+    });
+    let mut out = Vec::new();
+    let found = loop {
+        if let Some(path) = parse_marked(&String::from_utf8_lossy(&out)) {
+            break Some(path);
+        }
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(chunk) => out.extend(chunk),
+            // The pipe's end, or out of time.
+            Err(_) => break None,
+        }
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    found
 }
 
 #[cfg(unix)]
@@ -408,6 +426,32 @@ fn merge_paths(login: &str, current: &std::ffi::OsStr) -> Option<std::ffi::OsStr
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    /// A program an rc file starts in the background keeps the output
+    /// pipe open after the shell exits: the PATH is read all the same, and
+    /// the wait doesn't last as long as that program.
+    #[test]
+    fn a_background_program_holding_the_output_doesnt_hold_the_start() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            &format!("sleep 8 & printf '{MARKER}/x/bin:/usr/bin{MARKER}'"),
+        ]);
+        let started = std::time::Instant::now();
+        let path = read_marked(cmd, std::time::Duration::from_secs(10));
+        assert_eq!(path.as_deref(), Some("/x/bin:/usr/bin"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        // Nothing marked, and the pipe held: out of time, PATH left as it was.
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 8 & echo banner"]);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            read_marked(cmd, std::time::Duration::from_millis(500)),
+            None
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     #[test]
     fn finds_path_between_markers_despite_banners() {

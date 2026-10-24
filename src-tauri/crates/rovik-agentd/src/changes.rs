@@ -263,7 +263,7 @@ fn place(daemon: &Daemon, chat: &str) -> Result<(Place, String, String), Fail> {
 }
 
 /// A path in the project's folder, and nowhere else.
-fn check(path: &str) -> Result<(), Fail> {
+pub(crate) fn check(path: &str) -> Result<(), Fail> {
     let escapes = path.split(['/', '\\']).any(|part| part == "..");
     if path.is_empty() || path.starts_with(['/', '\\']) || escapes || path.contains(':') {
         return Err(bad_request(format!("{path}: not a path in the project.")));

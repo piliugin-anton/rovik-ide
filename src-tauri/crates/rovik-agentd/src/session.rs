@@ -6,7 +6,7 @@
 
 use crate::cli::VERSION;
 use crate::daemon::{Daemon, MIN_PROTOCOL};
-use crate::events::Published;
+use crate::events::{Events, Published};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rovik_protocol::{features, Fail, FailCode, Frame, MAX_FRAME, PROTOCOL};
@@ -23,6 +23,9 @@ use tokio_tungstenite::WebSocketStream;
 
 /// How long a new connection has to say `Hello`.
 const HELLO_WAIT: Duration = Duration::from_secs(10);
+/// How long a frame may take to go out: a client that stops reading (a
+/// computer gone to sleep mid-connection) is let go, not waited on.
+const WRITE_WAIT: Duration = Duration::from_secs(30);
 /// What this daemon serves beyond protocol 1's start (4.5).
 const FEATURES: &[&str] = &[
     features::ATTACHMENTS,
@@ -112,20 +115,22 @@ where
         plain(&client)
     );
 
-    let (tx, mut rx) = mpsc::channel::<Out>(QUEUE);
-    let writer = tokio::spawn(async move {
-        while let Some(out) = rx.recv().await {
-            if matches!(out, Out::Behind) {
-                return close(&mut sink, CloseCode::Again, "Fell behind: subscribe again.").await;
-            }
-            if send(&mut sink, &out).await.is_err() {
-                break;
-            }
-        }
-        let _ = sink.close().await;
-    });
+    let (tx, rx) = mpsc::channel::<Out>(QUEUE);
+    let mut writer = tokio::spawn(write_out(sink, rx, WRITE_WAIT));
+    let mut writer_ended = false;
     let mut forwarder: Option<JoinHandle<()>> = None;
-    while let Some(incoming) = read(&mut stream).await {
+    loop {
+        // A writer that let the client go ends the session too.
+        let incoming = tokio::select! {
+            incoming = read(&mut stream) => incoming,
+            _ = &mut writer => {
+                writer_ended = true;
+                None
+            }
+        };
+        let Some(incoming) = incoming else {
+            break;
+        };
         match incoming {
             Incoming::Frame(Frame::Call { id, req }) => {
                 let (daemon, tx, computer) = (daemon.clone(), tx.clone(), computer.clone());
@@ -150,7 +155,7 @@ where
                 if let Some(old) = forwarder.take() {
                     old.abort();
                 }
-                forwarder = Some(subscribe(&daemon, &computer, since, tx.clone()).await);
+                forwarder = Some(subscribe(&daemon.events, &computer, since, tx.clone()));
             }
             Incoming::Frame(Frame::Ping) => {
                 let _ = tx.send(Out::Frame(Box::new(Frame::Pong))).await;
@@ -174,29 +179,59 @@ where
         forwarder.abort();
     }
     drop(tx);
-    let _ = writer.await;
+    if !writer_ended {
+        let _ = writer.await;
+    }
     log::info!("{computer} disconnected");
 }
 
-/// `Subscribed`, the events the client missed, then a task that sends it
-/// its computer's events as they come.
-async fn subscribe(
-    daemon: &Daemon,
+/// Sends what's queued, one frame at a time, until the queue closes; a
+/// frame the client takes none of for `wait` lets it go (it stopped
+/// reading), as one that fell behind is.
+async fn write_out<S>(mut sink: Sink<S>, mut rx: mpsc::Receiver<Out>, wait: Duration)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    while let Some(out) = rx.recv().await {
+        if matches!(out, Out::Behind) {
+            return close(&mut sink, CloseCode::Again, "Fell behind: subscribe again.").await;
+        }
+        match tokio::time::timeout(wait, send(&mut sink, &out)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(())) => break,
+            Err(_) => {
+                log::info!("a client took no frame for {} s: let go", wait.as_secs());
+                return;
+            }
+        }
+    }
+    let _ = sink.close().await;
+}
+
+/// A task that sends `Subscribed`, the events the client missed, then its
+/// computer's events as they come. The subscription starts now; what it
+/// sends waits for the writer in the task, never in the session's reading.
+fn subscribe(
+    events: &Events,
     computer: &str,
     since: Option<(String, u64)>,
     tx: mpsc::Sender<Out>,
 ) -> JoinHandle<()> {
-    let mut subscription = daemon.events.subscribe(computer, since);
+    let mut subscription = events.subscribe(computer, since);
     let subscribed = Frame::Subscribed {
         replayed: subscription.replay.len() as u64,
         complete: subscription.complete,
     };
-    let _ = tx.send(Out::Frame(Box::new(subscribed))).await;
-    for published in subscription.replay.drain(..) {
-        let _ = tx.send(Out::Event(published)).await;
-    }
     let computer = computer.to_string();
     tokio::spawn(async move {
+        if tx.send(Out::Frame(Box::new(subscribed))).await.is_err() {
+            return;
+        }
+        for published in subscription.replay.drain(..) {
+            if tx.send(Out::Event(published)).await.is_err() {
+                return;
+            }
+        }
         loop {
             match subscription.live.recv().await {
                 Ok(published) if published.reaches(&computer) => {
@@ -315,4 +350,65 @@ where
     };
     let _ = sink.send(Message::Close(Some(frame))).await;
     let _ = sink.close().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rovik_core::agent_run::events::AgentEvent;
+    use rovik_core::EventSink;
+
+    /// Subscribing doesn't wait for the replay to go out: a queue with
+    /// room for one frame still gets `Subscribed`, then every missed event
+    /// in order, as the writer takes them.
+    #[tokio::test]
+    async fn a_replay_waits_for_the_writer_in_its_own_task() {
+        let owner: crate::events::Owner =
+            Arc::new(|chat: &str| (chat == "chat").then(|| "laptop".to_string()));
+        let events = Events::new("boot".into(), owner);
+        for n in 0..5 {
+            events.agent(&AgentEvent::RunStarted {
+                dialog_id: "chat".into(),
+                run_id: format!("r{n}"),
+                steerable: false,
+            });
+        }
+        let (tx, mut rx) = mpsc::channel(1);
+        let forwarder = subscribe(&events, "laptop", Some(("boot".into(), 0)), tx);
+        let Some(Out::Frame(first)) = rx.recv().await else {
+            panic!("Subscribed first");
+        };
+        assert!(matches!(*first, Frame::Subscribed { replayed: 5, .. }));
+        let mut seqs = Vec::new();
+        for _ in 0..5 {
+            match rx.recv().await {
+                Some(Out::Event(published)) => seqs.push(published.seq),
+                _ => panic!("an event"),
+            }
+        }
+        assert_eq!(seqs, [1, 2, 3, 4, 5]);
+        forwarder.abort();
+    }
+
+    /// A client that stops reading is let go once a frame has waited for
+    /// it the write timeout, instead of holding its session for good.
+    #[tokio::test]
+    async fn a_client_that_stops_reading_is_let_go() {
+        let (server, _client) = tokio::io::duplex(1024);
+        let socket = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let (sink, _stream) = socket.split();
+        let (tx, rx) = mpsc::channel(4);
+        let big = Frame::Welcome {
+            protocol: PROTOCOL,
+            min_protocol: PROTOCOL,
+            daemon: "x".repeat(64 << 10),
+            boot: "boot".into(),
+            features: Vec::new(),
+        };
+        tx.send(Out::Frame(Box::new(big))).await.unwrap();
+        let writing = write_out(sink, rx, Duration::from_millis(200));
+        let ended = tokio::time::timeout(Duration::from_secs(5), writing).await;
+        assert!(ended.is_ok(), "the writer still waits on the client");
+        drop(tx);
+    }
 }

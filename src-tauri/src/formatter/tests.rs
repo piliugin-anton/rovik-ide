@@ -233,8 +233,9 @@ fn the_project_root_matches_whatever_the_case_where_case_doesnt_count() {
     if cfg!(any(windows, target_os = "macos")) {
         assert_eq!(dirs, vec![p.0.join("a"), p.0.clone()]);
     } else {
-        // Not the project's folder: the search goes on past it.
-        assert!(dirs.len() > 2);
+        // Not the project's folder, and no repository on the way up: the
+        // search stays in the file's own folder.
+        assert_eq!(dirs, vec![p.0.join("a")]);
     }
 }
 
@@ -360,4 +361,21 @@ fn a_child_a_wrapper_left_holding_its_output_is_killed_at_the_timeout() {
     assert!(start.elapsed() < Duration::from_secs(3));
     std::thread::sleep(Duration::from_secs(5));
     assert!(!marker.exists(), "the wrapper's child outlived the timeout");
+}
+
+/// A file in no project and no repository is formatted with tools from its
+/// own folder or the PATH: a `node_modules/.bin` further up (another
+/// user's, in /tmp) isn't the project's, and isn't found.
+#[test]
+fn without_a_root_the_search_stays_in_the_files_folder() {
+    let p = Project::new("rootless");
+    let file = p.file("loose/deeper/a.js", "x");
+    assert_eq!(search_dirs(&file, None), [p.0.join("loose/deeper")]);
+    // Inside a repository, up to its root.
+    p.file("repo/.git/HEAD", "ref: refs/heads/main\n");
+    let inside = p.file("repo/src/a.js", "x");
+    assert_eq!(
+        search_dirs(&inside, None),
+        [p.0.join("repo/src"), p.0.join("repo")]
+    );
 }

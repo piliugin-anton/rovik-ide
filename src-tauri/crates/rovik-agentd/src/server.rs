@@ -296,9 +296,13 @@ async fn put_blob(
 /// The project's refs, which a client builds its pack against (6.4).
 async fn pack_refs(
     State(daemon): State<Arc<Daemon>>,
-    _: Computer,
+    Computer(computer): Computer,
     Path(project): Path<String>,
 ) -> Response {
+    // Another computer's project's refs (its chats') aren't this one's.
+    if let Err(fail) = daemon.store.check_project_owner(&computer, &project) {
+        return failed(fail);
+    }
     let projects = daemon.projects.clone();
     match rt::spawn_blocking(move || projects.refs(&project)).await {
         Ok(Ok(refs)) => json(StatusCode::OK, &refs),
@@ -309,7 +313,8 @@ async fn pack_refs(
 
 /// A pack that moves one of the project's refs (6.4). It's taken in as it
 /// comes, and the ref moves only once it's all here and the commit is
-/// complete. A pack cut short leaves no ref, and is sent again whole.
+/// complete. A pack cut short leaves no ref, and is sent again whole. It
+/// brings in at most the room left under the disk cap (5.5).
 async fn push_pack(
     State(daemon): State<Arc<Daemon>>,
     Computer(computer): Computer,
@@ -322,15 +327,30 @@ async fn push_pack(
             "A push names a ref under refs/rovik/, and the commits it moves from and to.",
         ));
     };
-    // A chat's refs move only for the computer whose chat it is.
-    if let Some(chat) = chat_of_ref(&update.name) {
-        if let Err(fail) = daemon.store.check_owner(&computer, chat) {
-            return failed(fail);
-        }
+    // A project's refs move only for the computer that carried it here.
+    if let Err(fail) = daemon.store.check_project_owner(&computer, &project) {
+        return failed(fail);
+    }
+    // A chat's refs move only for the computer whose chat it is, and every
+    // ref a client may push names its chat (`packs::pushable`).
+    let Some(chat) = chat_of_ref(&update.name) else {
+        return failed(Fail::new(
+            FailCode::BadRequest,
+            "A push moves a chat's snapshot ref.",
+        ));
+    };
+    if let Err(fail) = daemon.store.check_owner(&computer, chat) {
+        return failed(fail);
     }
     if let Err(fail) = room_on_disk(&daemon).await {
         return failed(fail);
     }
+    // What it may bring in: the room left under the disk cap (5.5).
+    let caps = daemon.caps.clone();
+    let room = rt::spawn_blocking(move || caps.room_left())
+        .await
+        .ok()
+        .flatten();
     let (pieces, mut taken) = mpsc::channel::<Vec<u8>>(PIECES);
     let projects = daemon.projects.clone();
     let receiving = rt::spawn_blocking(move || {
@@ -338,13 +358,24 @@ async fn push_pack(
         projects.receive(&project, &update, pieces)
     });
     let mut body = request.into_body().into_data_stream();
+    let (mut brought, mut over) = (0u64, false);
     while let Ok(Some(Ok(piece))) = tokio::time::timeout(IDLE, body.next()).await {
+        brought = brought.saturating_add(piece.len() as u64);
+        // Past the room: cut short, which leaves no ref.
+        if room.is_some_and(|room| brought > room) {
+            over = true;
+            break;
+        }
         if pieces.send(piece.to_vec()).await.is_err() {
             break;
         }
     }
     drop(pieces);
-    match receiving.await {
+    let received = receiving.await;
+    if over {
+        return failed(Fail::new(FailCode::Busy, daemon.caps.over_by_push(brought)));
+    }
+    match received {
         Ok(Ok(objects)) => json(StatusCode::OK, &Pushed { objects }),
         Ok(Err(fail)) => failed(fail),
         Err(e) => failed(Fail::new(FailCode::Internal, e.to_string())),
@@ -371,10 +402,14 @@ fn chat_of_ref(name: &str) -> Option<&str> {
 /// as it's built.
 async fn fetch_pack(
     State(daemon): State<Arc<Daemon>>,
-    _: Computer,
+    Computer(computer): Computer,
     Path(project): Path<String>,
     body: Bytes,
 ) -> Response {
+    // Nor its objects, the code of its chats.
+    if let Err(fail) = daemon.store.check_project_owner(&computer, &project) {
+        return failed(fail);
+    }
     let Ok(fetch) = serde_json::from_slice::<Fetch>(&body) else {
         return failed(Fail::new(FailCode::BadRequest, "The body isn't a fetch."));
     };

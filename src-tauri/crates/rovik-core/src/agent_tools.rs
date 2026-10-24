@@ -7,10 +7,13 @@
 //      A model-supplied path like "../../.ssh/id_rsa" must not escape it.
 //   2. Skips ignored/heavy/sensitive files. `ignore::WalkBuilder` handles
 //      .gitignore, global gitignore, .git/info/exclude, and dotfiles (all
-//      hidden by default) for us. On top of that we apply a small built-in
-//      denylist (`is_denylisted_name`) that applies *regardless* of whether
-//      a .gitignore exists — a repo with no .gitignore yet shouldn't leak
-//      node_modules or a stray .pem into the model's context.
+//      hidden by default) for us. On top of that, listing and searching
+//      apply a small built-in denylist (`is_denylisted_name`) that applies
+//      *regardless* of whether a .gitignore exists — a repo with no
+//      .gitignore yet shouldn't leak node_modules or a stray .pem into the
+//      model's context. Reading and outlining refuse its key files
+//      (`is_key_file`) by name too; writes to them always go to the user
+//      (permissions.rs, `is_secret_path`).
 //   3. Returns errors as `Result<_, String>` rather than panicking, since
 //      these run inside a model-driven loop that should degrade to an error
 //      string the model can see and react to, not crash the app.
@@ -39,13 +42,26 @@ const DENYLIST_DIRS: &[&str] = &[
 const DENYLIST_EXTENSIONS: &[&str] = &["pem", "key", "pfx", "p12"];
 
 pub(crate) fn is_denylisted_name(name: &str) -> bool {
-    if DENYLIST_DIRS.contains(&name) {
-        return true;
-    }
-    // Its extension, not a whole name without one: a folder called `key`
-    // isn't a key.
+    DENYLIST_DIRS.contains(&name) || is_key_file(name)
+}
+
+/// A private key or certificate store by its name: its extension, not a
+/// whole name without one (a folder called `key` isn't a key).
+pub(crate) fn is_key_file(name: &str) -> bool {
     name.rsplit_once('.')
-        .is_some_and(|(_, ext)| DENYLIST_EXTENSIONS.contains(&ext))
+        .is_some_and(|(_, ext)| DENYLIST_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// Refuses `path` when it names a key file ([`is_key_file`]): what's in
+/// one isn't for the model's context.
+fn not_a_key_file(path: &str, target: &Path) -> Result<(), String> {
+    let name = target.file_name().map(|n| n.to_string_lossy());
+    if name.is_some_and(|n| is_key_file(&n)) {
+        return Err(format!(
+            "{path}: a key or certificate file, which isn't read into the conversation"
+        ));
+    }
+    Ok(())
 }
 
 fn canonicalize_or_err(p: &Path) -> Result<PathBuf, String> {
@@ -320,6 +336,7 @@ pub async fn tool_callers(root: String, symbol: String) -> Result<String, String
 /// the repo map. Cheaper than reading a large file to learn its shape.
 pub fn tool_outline(root: String, path: String) -> Result<String, String> {
     let (abs, rel) = resolve_project_file(&root, &path, "outline")?;
+    not_a_key_file(&path, &abs)?;
     let symbols = match crate::outline::outline_of_file(&abs, &rel) {
         Some(s) => s,
         // `.h`/`.m` need content to pick a language; the cache lookup
@@ -755,6 +772,11 @@ pub fn tool_read_file_range(
     read_file_range(&root, &path, start_line, end_line, symbol, None)
 }
 
+/// Largest file the read tool loads: past it (a log, a dump) the file is
+/// refused by its size before it's read, and the model reads parts of it
+/// with a command.
+const READ_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
 /// [`tool_read_file_range`] for a chat's run: the file's content counts as
 /// seen by it (file_guard.rs), so it may write the file whole afterwards.
 pub fn read_file_range(
@@ -773,6 +795,17 @@ pub fn read_file_range(
     let target = resolve_within_root(&root, &path)?;
     if !target.is_file() {
         return Err(format!("{path}: not a file"));
+    }
+    not_a_key_file(&path, &target)?;
+    let size = fs::metadata(&target)
+        .map_err(|e| format!("{path}: {e}"))?
+        .len();
+    if size > READ_MAX_BYTES {
+        return Err(format!(
+            "{path}: {} MB, too large to read (the limit is {} MB). Read the part you need with a command (`sed -n '100,200p' {path}`, `tail`), or find it with search_code.",
+            size >> 20,
+            READ_MAX_BYTES >> 20
+        ));
     }
     if looks_binary(&target)? {
         return Err(format!("{path}: binary file, cannot read"));
@@ -1000,6 +1033,43 @@ pub fn empty_overwrite_error(path: &str, current: &str, content: &str) -> Option
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// A key or certificate file isn't read or outlined into the model's
+    /// context, whatever its case; a folder named like one is no key.
+    #[test]
+    fn a_key_file_is_not_read_or_outlined() {
+        let dir = crate::testing::temp_dir();
+        fs::write(dir.0.join("server.PEM"), "-----BEGIN PRIVATE KEY-----\n").unwrap();
+        let root = dir.0.to_string_lossy().into_owned();
+        let err =
+            tool_read_file_range(root.clone(), "server.PEM".into(), None, None, None).unwrap_err();
+        assert!(err.contains("key or certificate"), "{err}");
+        let err = tool_outline(root, "server.PEM".into()).unwrap_err();
+        assert!(err.contains("key or certificate"), "{err}");
+        assert!(!is_key_file("key") && is_key_file("id.p12") && !is_key_file("notes.txt"));
+    }
+
+    /// A file past the read limit (a log, a dump) is refused by its size,
+    /// without reading it, and the model told how to read a part.
+    #[test]
+    fn a_file_too_large_to_read_is_refused_by_its_size() {
+        let dir = crate::testing::temp_dir();
+        let file = std::fs::File::create(dir.0.join("huge.log")).unwrap();
+        file.set_len(READ_MAX_BYTES + 1).unwrap();
+        let err = tool_read_file_range(
+            dir.0.to_string_lossy().into_owned(),
+            "huge.log".into(),
+            Some(1),
+            Some(10),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("huge.log: 32 MB, too large to read"),
+            "{err}"
+        );
+        assert!(err.contains("sed -n"), "{err}");
+    }
 
     /// A project reached through a symlink, like any project under /tmp on
     /// macOS (/tmp → /private/tmp).

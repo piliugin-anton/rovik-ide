@@ -134,7 +134,7 @@ impl AgentConfig {
         self.approval_profiles
             .iter()
             .chain(kinds.filter_map(|choice| match choice {
-                ModelChoice::Profile(model) => Some(model),
+                ModelChoice::Profile(model) => Some(&**model),
                 ModelChoice::Chat { .. } => None,
             }))
     }
@@ -148,7 +148,7 @@ impl AgentConfig {
         self.approval_profiles
             .iter_mut()
             .chain(kinds.filter_map(|choice| match choice {
-                ModelChoice::Profile(model) => Some(model),
+                ModelChoice::Profile(model) => Some(&mut **model),
                 ModelChoice::Chat { .. } => None,
             }))
     }
