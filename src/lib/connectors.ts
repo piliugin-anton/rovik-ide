@@ -452,6 +452,15 @@ export interface HarnessStep {
   ok?: boolean | null;
   /** A subagent's step: the call that started the subagent. */
   parent?: string | null;
+  /** A stretch of thinking rather than a tool call: its text so far (a summary). */
+  thinking?: string | null;
+  /** How long that thinking took, once it's over (ms). */
+  ms?: number | null;
+}
+
+/** A stretch of the harness's thinking, among its steps but not one it ran. */
+export function isThought(step: HarnessStep): boolean {
+  return typeof step.thinking === 'string';
 }
 
 export interface ConnectorUsage {
@@ -531,7 +540,8 @@ export function connectorHeadline(meta: ConnectorMeta, running: boolean, state?:
   parts.push(kind);
   const model = meta.usage?.connector?.model ?? meta.model;
   if (model) parts.push(model);
-  const steps = meta.steps?.length ?? 0;
+  // The tools it ran: its thoughts show among them, but aren't steps.
+  const steps = meta.steps?.filter((s) => !isThought(s)).length ?? 0;
   if (steps) parts.push(plural(steps, 'step'));
   if (running && state) parts.push(state);
   else if (running && !steps && !meta.rovikTools) parts.push('working…');

@@ -3,19 +3,23 @@
 // What a connector's harness did for a reply (lib/connectors.ts
 // ConnectorMeta), as a line like a tool call's: "Claude Code ·
 // claude-sonnet-5 · 7 steps · 12.3k tokens · $0.04", open to each step
-// (the tool it ran, what with, and the first lines of its result). Updates
-// live while the harness works: the steps arrive as it runs them, the
-// tokens and the cost with its result. A step that waits for the user's
-// approval (its runs follow Rovik's permissions) shows the request under
-// the line, open or not, as a tool call of Rovik's does.
+// (the tool it ran, what with, and the first lines of its result) and,
+// in their places among them, the stretches of its thinking ("Thought for
+// 3 s", open to the text). Updates live while the harness works: the steps
+// and its thinking arrive as it goes, the line showing the latest; the
+// tokens and the cost come with its result. A step that waits for the
+// user's approval (its runs follow Rovik's permissions) shows the request
+// under the line, open or not, as a tool call of Rovik's does.
 import { createSignal, For, Show } from 'solid-js';
 import {
   connectorHeadline,
+  isThought,
   stepLabel,
   type ConnectorMeta,
   type HarnessStep,
 } from '../lib/connectors';
 import { pendingApprovalsOf } from '../lib/approvals';
+import { latestLine, thoughtLabel } from '../lib/thinking';
 import { ApprovalBar } from './ToolCallBlock';
 
 interface RecordProps {
@@ -53,10 +57,15 @@ function Record(props: RecordProps) {
   const state = () => (asking() ? undefined : props.status);
   const failed = () => steps().filter((s) => s.ok === false).length;
   const denied = () => props.meta.usage?.connector?.permissionDenials ?? 0;
+  /** What it's on: its latest step, or the latest line of its thinking. */
   const lastStep = () => {
-    const all = steps();
-    return all.length ? stepLabel(all[all.length - 1]) : '';
+    const last = steps()[steps().length - 1];
+    if (!last) return '';
+    return isThought(last) ? latestLine(last.thinking ?? '') : stepLabel(last);
   };
+  /** The thought it's in: the last step, not over, while it works. */
+  const thinkingNow = (step: HarnessStep) =>
+    working() && step === steps()[steps().length - 1] && step.ms == null;
   return (
     <div class="tool-group chat-connector" classList={{ open: open(), active: working() }}>
       <div class="tool-group-header" onClick={() => setOpen((o) => !o)}>
@@ -109,7 +118,13 @@ function Record(props: RecordProps) {
               {working() ? 'No steps yet.' : 'It answered without running a tool.'}
             </div>
           </Show>
-          <For each={steps()}>{(step) => <StepRow step={step} />}</For>
+          <For each={steps()}>
+            {(step) => (
+              <Show when={isThought(step)} fallback={<StepRow step={step} />}>
+                <ThoughtRow step={step} thinking={thinkingNow(step)} />
+              </Show>
+            )}
+          </For>
           <Show when={props.meta.session}>
             <div
               class="chat-connector-session"
@@ -119,6 +134,31 @@ function Record(props: RecordProps) {
               {props.meta.version ? ` · ${props.meta.version}` : ''}
             </div>
           </Show>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+/** A stretch of its thinking among the steps: "Thought for 3 s", open to its text. */
+function ThoughtRow(props: { step: HarnessStep; thinking: boolean }) {
+  const [open, setOpen] = createSignal(false);
+  return (
+    <div class="chat-connector-step thought" classList={{ open: open() }}>
+      <button
+        type="button"
+        class="chat-connector-step-line"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open()}
+      >
+        <span class="chat-connector-step-mark" aria-hidden="true">
+          {props.thinking ? '…' : '✻'}
+        </span>
+        <span class="chat-connector-step-label">{thoughtLabel(props.thinking, props.step.ms)}</span>
+      </button>
+      <Show when={open()}>
+        <div class="chat-connector-step-body">
+          <div class="chat-thinking-text">{props.step.thinking?.trimEnd()}</div>
         </div>
       </Show>
     </div>

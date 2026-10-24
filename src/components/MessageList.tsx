@@ -60,6 +60,7 @@ import { isSettled, parseTodo } from '../lib/todo';
 import { isRequestMessage } from '../lib/requests';
 import { LATE_LABEL } from '../lib/steering';
 import { groupToolCalls, type ToolRun } from '../lib/toolGroups';
+import { latestLine, thoughtLabel } from '../lib/thinking';
 
 const BOTTOM_TOLERANCE_PX = 8;
 /** A scroll this soon after wheel/touch/key/scrollbar input is the user's. */
@@ -1966,12 +1967,6 @@ function CopyMessageButton(props: { segments: DraftSegment[] }) {
  */
 function ThinkingBlock(props: { text: string; ms?: number; thinking: boolean }) {
   const [open, setOpen] = createSignal(false);
-  const seconds = () => (props.ms ? Math.max(1, Math.round(props.ms / 1000)) : null);
-  const lastLine = () => {
-    const lines = props.text.trimEnd().split('\n');
-    const line = lines[lines.length - 1] ?? '';
-    return line.length > 160 ? `…${line.slice(-160)}` : line;
-  };
   return (
     <div class="tool-group" classList={{ open: open(), active: props.thinking }}>
       <div class="tool-group-header" onClick={() => setOpen((o) => !o)}>
@@ -1991,10 +1986,10 @@ function ThinkingBlock(props: { text: string; ms?: number; thinking: boolean }) 
           >
             <path d="M6 4l4 4-4 4" />
           </svg>
-          {props.thinking ? 'Thinking…' : seconds() ? `Thought for ${seconds()} s` : 'Thought'}
+          {thoughtLabel(props.thinking, props.ms)}
         </button>
         <Show when={props.thinking && !open()}>
-          <span class="tool-group-items chat-thinking-preview">{lastLine()}</span>
+          <span class="tool-group-items chat-thinking-preview">{latestLine(props.text)}</span>
         </Show>
         <Show when={props.thinking}>
           <span class="tool-call-spinner" aria-label="Thinking" />
