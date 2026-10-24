@@ -1,7 +1,7 @@
 {
   "name": "rovik-ide",
   "private": true,
-  "version": "0.1.36",
+  "version": "0.1.37",
   "type": "module",
   "scripts": {
     "start": "tauri dev",
