@@ -365,6 +365,12 @@ pub(crate) fn mountpoint(dialog_id: &str) -> PathBuf {
     if crate::vfs::mounts_only_under_volumes() {
         return fskit_view(dialog_id);
     }
+    // Tests: each process's views in a folder of its own. Tests running at
+    // once in processes of their own (cargo-nextest) name their chats
+    // alike (the daemon's tests' "chat-1"), and would mount on each other's
+    // view.
+    #[cfg(any(test, feature = "testing"))]
+    let base = base.join(format!("test-{}", std::process::id()));
     base.join(dialog_id)
 }
 
@@ -1752,6 +1758,20 @@ pub fn changes(dialog_id: &str) -> Vec<OverlayChange> {
 
 #[cfg(test)]
 mod tests {
+    /// A test process's views are its own: another's, of a chat named the
+    /// same, mounts elsewhere.
+    #[test]
+    fn a_test_processs_views_go_in_a_folder_of_its_own() {
+        if crate::vfs::mounts_only_under_volumes() {
+            return;
+        }
+        let view = super::mountpoint("chat-1");
+        let own = format!("test-{}", std::process::id());
+        let folder = view.parent().and_then(|p| p.file_name());
+        assert_eq!(folder, Some(std::ffi::OsStr::new(&own)), "{view:?}");
+        assert!(super::is_chat_view(&view));
+    }
+
     #[test]
     fn git_commands_that_change_the_repository() {
         let check = |cmd: &str| {
