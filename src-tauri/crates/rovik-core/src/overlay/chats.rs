@@ -349,13 +349,39 @@ pub(crate) fn mountpoint(dialog_id: &str) -> PathBuf {
     };
     #[cfg(not(target_os = "linux"))]
     let base = std::env::temp_dir().join("rovik-chats");
+    // macFUSE's FSKit backend mounts nowhere else (macOS 15.4+, macFUSE
+    // 5.1+): a view under the temporary folder never mounted there, and
+    // every isolated chat worked in the project instead.
+    if crate::vfs::mounts_only_under_volumes() {
+        return fskit_view(dialog_id);
+    }
     base.join(dialog_id)
+}
+
+/// Where a chat's view goes with macFUSE's FSKit backend: right under
+/// `/Volumes`, by a name of the characters FSKit takes.
+const FSKIT_VIEW_PREFIX: &str = "/Volumes/RovikChat-";
+
+/// The chat's view with macFUSE's FSKit backend ([`FSKIT_VIEW_PREFIX`]).
+fn fskit_view(dialog_id: &str) -> PathBuf {
+    let name: String = dialog_id
+        .chars()
+        .map(|c| match c {
+            c if c.is_ascii_alphanumeric() || "-_.".contains(c) => c,
+            _ => '-',
+        })
+        .collect();
+    PathBuf::from(format!("{FSKIT_VIEW_PREFIX}{name}"))
 }
 
 /// Whether `path` is a chat's view (a mount made here), not a project.
 pub fn is_chat_view(path: &Path) -> bool {
     let base = mountpoint("x");
-    path.parent().is_some_and(|p| Some(p) == base.parent())
+    let fskit = path
+        .to_str()
+        .and_then(|p| p.strip_prefix(FSKIT_VIEW_PREFIX))
+        .is_some_and(|name| !name.is_empty() && !name.contains('/'));
+    fskit || path.parent().is_some_and(|p| Some(p) == base.parent())
 }
 
 /// The chat's overlay, opened (and mounted) if it isn't yet. `on_warn`:
@@ -588,6 +614,27 @@ pub fn parent_of(child: &str) -> Option<String> {
         .unwrap_or_else(|e| e.into_inner())
         .get(child)
         .cloned()
+}
+
+#[cfg(test)]
+mod fskit_view_tests {
+    use super::*;
+
+    /// With macFUSE's FSKit backend a chat's view goes right under
+    /// /Volumes by a name FSKit takes, and is known for a chat's view.
+    #[test]
+    fn an_fskit_view_is_a_plain_name_under_volumes() {
+        let view = fskit_view("d1b2c3-4e5f_6.7");
+        assert_eq!(view, Path::new("/Volumes/RovikChat-d1b2c3-4e5f_6.7"));
+        let odd = fskit_view("a b/c#é");
+        assert!(crate::vfs::problem::fskit_mountpoint_ok(
+            &odd.to_string_lossy()
+        ));
+        assert!(is_chat_view(&view) && is_chat_view(&odd));
+        assert!(!is_chat_view(Path::new("/Volumes/RovikChat-")));
+        assert!(!is_chat_view(Path::new("/Volumes/RovikChat-x/inside")));
+        assert!(!is_chat_view(Path::new("/Volumes/Other")));
+    }
 }
 
 /// F02: opens (and mounts) a child overlay of `parent`'s view. Its changes

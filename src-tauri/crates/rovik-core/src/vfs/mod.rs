@@ -120,6 +120,20 @@ pub fn platform_mount(
     }
 }
 
+/// Whether a mount here can only go directly under `/Volumes`: macOS with
+/// macFUSE's FSKit backend ([`problem::fskit_mountpoint_ok`]). False
+/// everywhere else.
+pub fn mounts_only_under_volumes() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macfuse::plan(None).backend == problem::Backend::FsKit
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// Where the volume is mounted unless told otherwise: a per-user folder
 /// without spaces, so paths can be pasted into commands unquoted. Each of
 /// Rovik's processes has its own (`vfs`, `vfs-2`…: os_lock.rs's slots), or
@@ -711,6 +725,42 @@ mod mount_tests {
             String::from_utf8_lossy(&out.stdout).into_owned()
                 + &String::from_utf8_lossy(&out.stderr),
         )
+    }
+
+    /// A volume a program still uses (a dev server left running in a
+    /// chat's view) doesn't keep its unmount waiting: past the wait the
+    /// connection is cut, or the unmount says it's still in use.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unmounting_a_volume_in_use_doesnt_wait_for_its_user() {
+        if !crate::vfs::mount_works() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("busy-mount-{}", std::process::id()));
+        let (base, store, at) = (dir.join("base"), dir.join("store"), dir.join("at"));
+        for d in [&base, &store] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let fs = crate::overlay::fs::OverlayFs::open(&base, &store, 1 << 20).unwrap();
+        let (mount, view) = platform_mount(Arc::new(fs), Some(&at)).unwrap();
+        let mut user = Command::new("sleep")
+            .arg("60")
+            .current_dir(&view)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let result = mount.unmount();
+        let took = started.elapsed();
+        let _ = user.kill();
+        let _ = user.wait();
+        assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+        if let Err(e) = result {
+            assert!(e.contains("still in use"), "{e}");
+        }
+        // Detached at least: the folder no longer shows the volume.
+        let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap();
+        assert!(!mounts.contains(&*view.to_string_lossy()), "{mounts}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

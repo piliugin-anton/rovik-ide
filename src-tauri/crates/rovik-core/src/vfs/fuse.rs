@@ -827,7 +827,6 @@ fn mount_options() -> Config {
 pub struct FuseMount {
     session: Option<BackgroundSession>,
     vfs: Arc<dyn Backend>,
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
     mountpoint: std::path::PathBuf,
     #[cfg(target_os = "macos")]
     mac: Option<super::macfuse::MacMount>,
@@ -863,9 +862,7 @@ impl FuseMount {
         };
         #[cfg(target_os = "linux")]
         {
-            session
-                .umount_and_join()
-                .map_err(|e| format!("unmounting: {e}"))
+            unmount_within(session, &self.mountpoint, UNMOUNT_WAIT)
         }
         #[cfg(target_os = "macos")]
         {
@@ -883,6 +880,99 @@ impl Drop for FuseMount {
     }
 }
 
+/// How long an unmount waits for the volume's last user before it cuts the
+/// connection.
+#[cfg(target_os = "linux")]
+const UNMOUNT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Unmounts `session`, mounted at `mountpoint`, and waits for its thread.
+/// A volume still in use (a dev server a chat's command left running in it,
+/// a shell's current folder) is only detached by the kernel, and its thread
+/// would serve that user until it goes, so Land, Discard, closing a chat
+/// and quitting would wait as long. After `wait` the connection is aborted
+/// instead (fusectl's `abort`, which the volume's owner may write): what
+/// still uses it gets errors, and the thread ends.
+#[cfg(target_os = "linux")]
+fn unmount_within(
+    session: BackgroundSession,
+    mountpoint: &Path,
+    wait: std::time::Duration,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    // The connection's number, while it's still mounted to be asked.
+    let connection = std::fs::metadata(mountpoint)
+        .ok()
+        .map(|m| fuse_connection(m.dev()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(session.umount_and_join());
+    });
+    let still_in_use = || {
+        format!(
+            "{}: still in use by a program, so it was only detached; it goes when that program ends",
+            mountpoint.display()
+        )
+    };
+    match rx.recv_timeout(wait) {
+        // Root's own unmount refuses a busy volume rather than detach it
+        // (the user's, `fusermount -u -z`, detaches): detached here, and its
+        // connection cut, which ends the thread that serves it.
+        Ok(Err(e)) if e.raw_os_error() == Some(libc::EBUSY) => {
+            lazy_unmount(mountpoint);
+            if let Some(connection) = connection {
+                abort_connection(connection, mountpoint);
+            }
+            return Err(still_in_use());
+        }
+        Ok(r) => return r.map_err(|e| format!("unmounting: {e}")),
+        Err(_) => {}
+    }
+    if let Some(connection) = connection {
+        abort_connection(connection, mountpoint);
+    }
+    match rx.recv_timeout(wait) {
+        Ok(r) => r.map_err(|e| format!("unmounting: {e}")),
+        Err(_) => Err(still_in_use()),
+    }
+}
+
+/// Cuts FUSE connection `connection` (fusectl's `abort`, which the
+/// volume's owner may write): what still uses the volume gets errors, and
+/// the thread serving it ends.
+#[cfg(target_os = "linux")]
+fn abort_connection(connection: u64, mountpoint: &Path) {
+    let abort = Path::new("/sys/fs/fuse/connections")
+        .join(connection.to_string())
+        .join("abort");
+    if let Err(e) = std::fs::write(&abort, "1") {
+        log::warn!(
+            "unmounting {}: {}: {e}",
+            mountpoint.display(),
+            abort.display()
+        );
+    }
+}
+
+/// Detaches the volume at `mountpoint` from its folder, lazily: it goes
+/// once nothing uses it. Whether a helper did.
+#[cfg(target_os = "linux")]
+fn lazy_unmount(mountpoint: &Path) -> bool {
+    ["fusermount3", "fusermount"].iter().any(|helper| {
+        crate::process::command(helper)
+            .args(["-u", "-z"])
+            .arg(mountpoint)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// The number fusectl names a FUSE connection by: the kernel's own form of
+/// the volume's device number (major in the bits above 20).
+#[cfg(target_os = "linux")]
+fn fuse_connection(dev: u64) -> u64 {
+    (u64::from(libc::major(dev)) << 20) | u64::from(libc::minor(dev))
+}
+
 /// Clears a mount left by a crashed run ("Transport endpoint is not
 /// connected"), which would make the folder unusable. Each unmount takes
 /// one off: older Rovik processes mounted on one another's folder, and
@@ -894,14 +984,7 @@ fn clear_stale_mount(mountpoint: &Path) {
         if !stale() {
             return;
         }
-        let unmounted = ["fusermount3", "fusermount"].iter().any(|helper| {
-            crate::process::command(helper)
-                .args(["-u", "-z"])
-                .arg(mountpoint)
-                .output()
-                .is_ok_and(|o| o.status.success())
-        });
-        if !unmounted {
+        if !lazy_unmount(mountpoint) {
             return;
         }
     }
