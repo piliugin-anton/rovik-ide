@@ -322,6 +322,26 @@ fn renames_follow_posix_rules() {
     assert_eq!(read_all(&o, "f2.txt"), "G2");
 }
 
+/// Two hard links in one folder: removing or moving one name acts on that
+/// name, not on the one that sorts first (`ln a z; rm z` kept `z`).
+#[test]
+fn removing_or_moving_one_of_two_links_in_a_folder_acts_on_that_name() {
+    let d = setup(&[("a.txt", "A")]);
+    let o = overlay(&d);
+    let a = ino(&o, "a.txt");
+    o.link(a, ROOT, "z.txt").unwrap();
+    o.unlink(ROOT, "z.txt").unwrap();
+    assert_eq!(o.lookup(ROOT, "z.txt").unwrap_err(), VfsError::NotFound);
+    assert_eq!(read_all(&o, "a.txt"), "A");
+
+    o.link(a, ROOT, "z.txt").unwrap();
+    o.rename(ROOT, "z.txt", ROOT, "moved.txt", RenameMode::Replace)
+        .unwrap();
+    assert_eq!(o.lookup(ROOT, "z.txt").unwrap_err(), VfsError::NotFound);
+    assert_eq!(read_all(&o, "a.txt"), "A");
+    assert_eq!(read_all(&o, "moved.txt"), "A");
+}
+
 #[test]
 fn a_file_unlinked_while_open_stays_readable_until_released() {
     let d = setup(&[]);

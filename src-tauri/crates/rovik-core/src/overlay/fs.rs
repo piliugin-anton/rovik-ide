@@ -841,6 +841,26 @@ impl OverlayFs {
         lookup(inner).ok_or(VfsError::NotFound)
     }
 
+    /// The name folder `dir` stores node `ino` under, for the `asked` name
+    /// that found it: `asked` itself where the folder has it for that node
+    /// (one of two hard links in a folder is the one asked for, not the
+    /// first in order), else the node's name that differs by case alone (a
+    /// lookup that ignores case, on macOS and Windows), else any of its
+    /// names there.
+    fn stored_name(inner: &Inner, dir: Ino, ino: Ino, asked: &str) -> Option<String> {
+        let children = inner.nodes.get(&dir)?.children.as_ref()?;
+        if children.get(asked) == Some(&ino) {
+            return Some(asked.to_string());
+        }
+        let lower = asked.to_lowercase();
+        let mut names = children.iter().filter(|(_, i)| **i == ino);
+        let first = names.clone().next().map(|(n, _)| n.clone());
+        names
+            .find(|(n, _)| n.to_lowercase() == lower)
+            .map(|(n, _)| n.clone())
+            .or(first)
+    }
+
     /// Makes a file the chat's own before it changes: its content copied
     /// into the overlay, and kept as it was for landing to merge against.
     /// `keep_content`: false when it's about to be emptied anyway.
@@ -1932,12 +1952,7 @@ impl Backend for OverlayFs {
         if inner.nodes[&ino].is_dir() {
             return Err(VfsError::IsDir);
         }
-        let real = inner.nodes[&parent]
-            .children
-            .as_ref()
-            .and_then(|c| c.iter().find(|(_, i)| **i == ino))
-            .map(|(n, _)| n.clone());
-        let real = real.as_deref().unwrap_or(name).to_string();
+        let real = Self::stored_name(&inner, parent, ino, name).unwrap_or_else(|| name.to_string());
         self.remember_deleted(&mut inner, parent, &real, ino);
         Self::detach(&mut inner, parent, &real);
         self.collect(&mut inner, ino);
@@ -1960,12 +1975,7 @@ impl Backend for OverlayFs {
         {
             return Err(VfsError::NotEmpty);
         }
-        let real = inner.nodes[&parent]
-            .children
-            .as_ref()
-            .and_then(|c| c.iter().find(|(_, i)| **i == ino))
-            .map(|(n, _)| n.clone());
-        let real = real.as_deref().unwrap_or(name).to_string();
+        let real = Self::stored_name(&inner, parent, ino, name).unwrap_or_else(|| name.to_string());
         self.remember_deleted(&mut inner, parent, &real, ino);
         Self::detach(&mut inner, parent, &real);
         self.collect(&mut inner, ino);
@@ -1990,17 +2000,8 @@ impl Backend for OverlayFs {
         let dst = self.find(&mut inner, new_parent, new_name).ok();
         // Names as stored: on macOS and Windows a lookup ignores case, so the
         // name asked for can differ from the entry's.
-        let stored = |inner: &Inner, dir: Ino, ino: Ino| -> Option<String> {
-            inner
-                .nodes
-                .get(&dir)?
-                .children
-                .as_ref()?
-                .iter()
-                .find(|(_, i)| **i == ino)
-                .map(|(n, _)| n.clone())
-        };
-        let src_name = stored(&inner, parent, src).unwrap_or_else(|| name.to_string());
+        let src_name =
+            Self::stored_name(&inner, parent, src, name).unwrap_or_else(|| name.to_string());
         if dst == Some(src) {
             // The same entry. Found by a lookup that ignores case, under a
             // name the folder doesn't have, it's a change of case (`a` →
@@ -2020,7 +2021,7 @@ impl Backend for OverlayFs {
             return Ok(());
         }
         let dst_name = dst
-            .and_then(|d| stored(&inner, new_parent, d))
+            .and_then(|d| Self::stored_name(&inner, new_parent, d, new_name))
             .unwrap_or_else(|| new_name.to_string());
         // A folder can't move into itself; nor, exchanged, can the other
         // folder move into it (`a/b` for `a` would make `a` its own child).
