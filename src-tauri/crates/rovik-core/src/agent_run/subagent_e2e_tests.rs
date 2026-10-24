@@ -4081,9 +4081,10 @@ async fn a_subagents_command_ends_with_its_time_budget() {
     )
     .await;
     let started = std::time::Instant::now();
+    // Three seconds: the command (a minute long) is cut at the budget.
     h.start(h.implement_with(
         &url,
-        workers_on(json!({ "maxMinutes": 0.25 })),
+        workers_on(json!({ "maxMinutes": 0.05 })),
         ChecklistMode::Off,
     ))
     .await;
@@ -8825,9 +8826,9 @@ async fn remaining_calls_in_a_reply_are_refused_once_time_is_up() {
         vec![(
             "MARK-WALL",
             vec![
-                // Past the shortest time budget (0.25 minutes).
+                // Past the time budget (three seconds).
                 Reply::Slow(
-                    16_000,
+                    4_500,
                     Box::new(Reply::Calls(vec![
                         ("r1", "read", json!({ "path": "a.txt" })),
                         ("r2", "read", json!({ "path": "a.txt" })),
@@ -8844,11 +8845,9 @@ async fn remaining_calls_in_a_reply_are_refused_once_time_is_up() {
         &url,
         "Go",
         quiet_permissions(),
-        scouts_on(json!({ "maxMinutes": 0.25 })),
+        scouts_on(json!({ "maxMinutes": 0.05 })),
     ))
     .await;
-    // The reply takes 16 s: longer than run_end waits on its own.
-    tokio::time::sleep(Duration::from_secs(12)).await;
     h.run_end().await;
     assert!(
         started.elapsed() < Duration::from_secs(30),
@@ -8901,15 +8900,15 @@ async fn waiting_for_an_approval_doesnt_spend_the_wall() {
         &url,
         "Go",
         permissions,
-        scouts_on(json!({ "maxMinutes": 0.25 })),
+        scouts_on(json!({ "maxMinutes": 0.05 })),
     ))
     .await;
     let asked = h
         .wait_for("approvalRequested", |e| e["type"] == "approvalRequested")
         .await;
     let child = asked["request"]["dialogId"].as_str().unwrap().to_string();
-    // Longer than its whole budget (0.25 minutes).
-    tokio::time::sleep(Duration::from_secs(16)).await;
+    // Longer than its whole budget (three seconds).
+    tokio::time::sleep(Duration::from_secs(4)).await;
     let core = h.core.clone();
     assert!(agent_resolve_approval(&core, child, "s1".into(), ApprovalDecision::Allow).await);
     h.run_end().await;

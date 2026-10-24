@@ -36,6 +36,13 @@ pub const MAX_SAME_BRIEF: usize = 2;
 pub const MAX_GOAL_CHARS: usize = 2_000;
 const MAX_CONTEXT_CHARS: usize = 6_000;
 const MAX_PATHS: usize = 20;
+/// The least time budget the settings give a subagent, in minutes: less
+/// leaves it no time to work. This crate's tests go down to a second, so a
+/// test of what happens once the time is up doesn't wait 15 s for it.
+#[cfg(not(test))]
+const MIN_WALL_MINUTES: f64 = 0.25;
+#[cfg(test)]
+const MIN_WALL_MINUTES: f64 = 1.0 / 60.0;
 
 /*
  * ---------------------------------------------------------------------------
@@ -516,7 +523,7 @@ impl SubagentSettings for SubagentConfig {
         let wall = k
             .and_then(|k| k.max_minutes)
             .filter(|m| m.is_finite() && *m > 0.0)
-            .map(|m| Duration::from_secs_f64(m.clamp(0.25, 120.0) * 60.0))
+            .map(|m| Duration::from_secs_f64(m.clamp(MIN_WALL_MINUTES, 120.0) * 60.0))
             .unwrap_or(default.wall);
         Budget { tool_calls, wall }
     }
@@ -1738,6 +1745,19 @@ mod tests {
         assert_eq!(none.budget(Kind::Scout), Kind::Scout.spec().default_budget);
         assert_eq!(none.max_at_once(), 3);
         assert_eq!(none.max_per_run(), 12);
+    }
+
+    #[test]
+    fn a_time_budget_below_the_least_is_raised_to_it() {
+        let config: SubagentConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "kinds": { "scout": { "enabled": true, "maxMinutes": 0.001 } }
+        }))
+        .unwrap();
+        assert_eq!(
+            config.budget(Kind::Scout).wall,
+            Duration::from_secs_f64(MIN_WALL_MINUTES * 60.0)
+        );
     }
 
     #[test]

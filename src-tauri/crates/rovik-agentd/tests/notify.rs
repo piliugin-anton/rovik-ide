@@ -109,10 +109,9 @@ async fn a_failed_stage_is_told_and_then_the_end() {
 }
 
 /// H06: a call the URL answers with an error is tried again, a second,
-/// then two later; an unreachable URL changes nothing for the task, and
-/// the log says, by the URL's host alone, that the notice didn't go.
+/// then two later.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_notice_is_tried_again_and_never_stops_the_task() {
+async fn a_notice_is_tried_again_after_an_error() {
     if !has_npm() {
         eprintln!("npm isn't installed: skipped");
         return;
@@ -133,7 +132,16 @@ async fn a_notice_is_tried_again_and_never_stops_the_task() {
     let calls = got.lock().unwrap().clone();
     assert_eq!(calls.len(), 3, "two errors, then it went: {calls:?}");
     assert!(calls.iter().all(|(_, b)| b["stage"] == "deliver"));
+}
 
+/// H06: an unreachable URL changes nothing for the task, and the log says,
+/// by the URL's host alone, that the notice didn't go.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notice_that_never_goes_never_stops_the_task() {
+    if !has_npm() {
+        eprintln!("npm isn't installed: skipped");
+        return;
+    }
     // Nothing listens there: the task goes on all the same.
     let daemon = Daemon::start(&["--same-machine"]).await;
     let mut session = daemon.session().await;

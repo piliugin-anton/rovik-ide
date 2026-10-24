@@ -1,0 +1,21 @@
+# How cargo-nextest runs the workspace's tests (`cargo nextest run` from
+# src-tauri/), as CI does. Each test runs in a process of its own, so the
+# locks that serialize tests under `cargo test`, which guard what a
+# process has only one of (the isolated chats' data folder,
+# overlay::chats::TEST_DATA; the heavy-work queue; the headless runner's
+# one run), hold nobody up, and the tests of every binary share one pool.
+# Doctests aren't nextest's: `cargo test --doc` runs them.
+
+[profile.default]
+# Reported as slow past a minute.
+slow-timeout = "60s"
+
+# CI: every test runs whatever fails, and the failures are printed again at
+# the end. Most tests wait (for a scripted model, a timer, a child process)
+# rather than compute, so several run per core (the workflow sets how many
+# for its runners). One that hangs is ended after five minutes instead of
+# holding the job until its timeout.
+[profile.ci]
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 5 }
