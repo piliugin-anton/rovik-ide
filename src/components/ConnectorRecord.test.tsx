@@ -54,3 +54,38 @@ test('a step waiting for approval shows its request, and Allow answers it', asyn
   assert.equal(pendingApproval('d1', 'toolu_1'), undefined);
   dispose();
 });
+
+test('the run’s status shows in the record’s line, with its spinner', () => {
+  const meta = { kind: 'claude-code', steps: [] } as unknown as ConnectorMeta;
+  const root = container();
+  const dispose = render(
+    () => <ConnectorRecord meta={meta} running={true} status="Stopping… 6 s" dialogId="d3" />,
+    root
+  );
+  assert.equal(
+    root.querySelector('.chat-connector-headline')?.textContent,
+    'Claude Code · Stopping… 6 s'
+  );
+  assert.ok(root.querySelector('.tool-call-spinner'));
+  dispose();
+});
+
+test('a step waiting for approval stops the spinner: the request under the line says why', () => {
+  const meta = {
+    kind: 'claude-code',
+    steps: [{ id: 'toolu_7', name: 'Bash', input: { command: 'rm -rf dist' } }],
+  } as unknown as ConnectorMeta;
+  registerApproval({
+    toolCallId: 'toolu_7',
+    dialogId: 'd4',
+    toolName: 'bash',
+    summary: 'Run `rm -rf dist`',
+    command: 'rm -rf dist',
+  } as any);
+  const root = container();
+  const dispose = render(() => <ConnectorRecord meta={meta} running={true} dialogId="d4" />, root);
+  assert.equal(root.querySelector('.chat-connector-headline')?.textContent, 'Claude Code · 1 step');
+  assert.equal(root.querySelector('.tool-call-spinner'), null);
+  assert.match(root.textContent ?? '', /Waiting for your approval/);
+  dispose();
+});

@@ -657,8 +657,11 @@ function compact(n: number): string {
   return String(n);
 }
 
-/** "Claude Code · claude-sonnet-5 · 7 steps · 12.3k tokens (8.1k cached) · $0.04 · 3 turns" */
-export function connectorHeadline(meta: ConnectorMeta, running: boolean): string {
+/**
+ * "Claude Code · claude-sonnet-5 · 7 steps · 12.3k tokens (8.1k cached) · $0.04 · 3 turns";
+ * while it runs, `state` (`Stopping…`, `waiting for your approval`), else "working…" until a step.
+ */
+export function connectorHeadline(meta: ConnectorMeta, running: boolean, state?: string): string {
   const parts: string[] = [];
   const kind = meta.kind ? connectorTitle(meta.kind as ConnectorKind) : 'Connector';
   parts.push(kind);
@@ -666,7 +669,8 @@ export function connectorHeadline(meta: ConnectorMeta, running: boolean): string
   if (model) parts.push(model);
   const steps = meta.steps?.length ?? 0;
   if (steps) parts.push(plural(steps, 'step'));
-  else if (running && !meta.rovikTools) parts.push('working…');
+  if (running && state) parts.push(state);
+  else if (running && !steps && !meta.rovikTools) parts.push('working…');
   const u = meta.usage;
   if (u) {
     const tokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);

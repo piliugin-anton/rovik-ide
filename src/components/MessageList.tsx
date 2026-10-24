@@ -116,6 +116,11 @@ export default function MessageList(props: {
   chat: OpenChat | undefined;
   sending: boolean;
   /**
+   * The chat runs on this connector (`Claude Code`): a reply it hasn't
+   * started says so, instead of the IDE's own "Roviking…".
+   */
+  connectorTitle?: string;
+  /**
    * The record of the stage the task's run carries out now, from the task
    * as stored: the page held may not be the newest (R03). Without it, the
    * newest page's latest record, while the chat runs.
@@ -190,6 +195,12 @@ export default function MessageList(props: {
     const at = list.findIndex((x) => x.id === m.id);
     return at >= 0 && list.slice(at + 1).every((x) => !!x.meta?.planner);
   };
+  /**
+   * A connector's record shows the reply's state itself (what it's doing,
+   * a status, an approval it waits for): no other "working" line beside it.
+   * With Rovik's tools its calls show as Rovik's, and the lines stay.
+   */
+  const recordShowsState = (m: ChatMessage) => !!m.meta?.connector && !m.meta.connector.rovikTools;
   const requestUndelivered = () => {
     const list = messages();
     for (let i = list.length - 1; i >= 0; i--) {
@@ -201,7 +212,7 @@ export default function MessageList(props: {
   const statusText = (m: ChatMessage) => {
     const status = m.status;
     // Sent, nothing back yet: not "Thinking", the model hasn't started.
-    if (!status) return 'Roviking…';
+    if (!status) return props.connectorTitle ? `Starting ${props.connectorTitle}…` : 'Roviking…';
     if (status.since) {
       const elapsed = now() - status.since;
       return elapsed >= 1000 ? `${status.text}… ${formatDuration(elapsed)}` : `${status.text}…`;
@@ -1351,7 +1362,8 @@ export default function MessageList(props: {
                     m.pending &&
                     m.content.length === 0 &&
                     !m.toolCalls?.length &&
-                    !m.meta?.reasoning
+                    !m.meta?.reasoning &&
+                    !recordShowsState(m)
                   }
                 >
                   <div class="tool-group active chat-waiting" role="status">
@@ -1360,6 +1372,26 @@ export default function MessageList(props: {
                       <span class="tool-group-verb">{statusText(m)}</span>
                     </div>
                   </div>
+                </Show>
+
+                {/* A connector's harness at work: its steps, then what it used;
+                    before an error, what led to it. A failed reply that ran
+                    nothing has nothing to show but the error. */}
+                <Show
+                  when={
+                    m.role === 'assistant' &&
+                    !(m.error && !m.meta?.connector?.steps?.length) &&
+                    m.meta?.connector
+                  }
+                >
+                  {(meta) => (
+                    <ConnectorRecord
+                      meta={meta()}
+                      running={!!m.pending}
+                      status={m.pending && m.status ? statusText(m) : undefined}
+                      dialogId={props.dialogId}
+                    />
+                  )}
                 </Show>
 
                 <Show when={m.error}>
@@ -1406,16 +1438,6 @@ export default function MessageList(props: {
 
                 {/* The IDE's messages to the model (check failures) show as the
                   verification record instead. */}
-                {/* A connector's harness at work: its steps, then what it used. */}
-                <Show when={m.role === 'assistant' && m.meta?.connector}>
-                  {(meta) => (
-                    <ConnectorRecord
-                      meta={meta()}
-                      running={!!m.pending}
-                      dialogId={props.dialogId}
-                    />
-                  )}
-                </Show>
                 {/* The model's thinking, apart from the reply. */}
                 <Show when={m.role === 'assistant' && m.meta?.reasoning?.text}>
                   {(text) => (
@@ -1506,7 +1528,14 @@ export default function MessageList(props: {
                 </Show>
 
                 {/* The reply stopped arriving but isn't over (see REPLY_IDLE_MS). */}
-                <Show when={m.pending && m.status && (m.content.length > 0 || m.toolCalls?.length)}>
+                <Show
+                  when={
+                    m.pending &&
+                    m.status &&
+                    (m.content.length > 0 || m.toolCalls?.length) &&
+                    !recordShowsState(m)
+                  }
+                >
                   <span
                     class="chat-pending status chat-working"
                     role="status"

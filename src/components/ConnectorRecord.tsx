@@ -21,6 +21,8 @@ import { ApprovalBar } from './ToolCallBlock';
 interface RecordProps {
   meta: ConnectorMeta;
   running: boolean;
+  /** The run's status while it works (`Stopping…`), in place of "working…". */
+  status?: string;
   /** The chat it's in: its steps' approvals wait there. */
   dialogId?: string | null;
 }
@@ -46,6 +48,9 @@ function Record(props: RecordProps) {
       : [];
   };
   const working = () => props.running && !props.meta.usage;
+  /** Waiting on the user, not working: the request under the line says so; no spinner. */
+  const asking = () => working() && waiting().length > 0;
+  const state = () => (asking() ? undefined : props.status);
   const failed = () => steps().filter((s) => s.ok === false).length;
   const denied = () => props.meta.usage?.connector?.permissionDenials ?? 0;
   const lastStep = () => {
@@ -71,9 +76,11 @@ function Record(props: RecordProps) {
           >
             <path d="M6 4l4 4-4 4" />
           </svg>
-          <span class="chat-connector-headline">{connectorHeadline(props.meta, working())}</span>
+          <span class="chat-connector-headline">
+            {connectorHeadline(props.meta, working(), state())}
+          </span>
         </button>
-        <Show when={working() && !open() && lastStep()}>
+        <Show when={working() && !asking() && !open() && lastStep()}>
           <span class="tool-group-items chat-thinking-preview">{lastStep()}</span>
         </Show>
         <Show when={failed() || denied()}>
@@ -83,7 +90,7 @@ function Record(props: RecordProps) {
               .join(' · ')}
           </span>
         </Show>
-        <Show when={working()}>
+        <Show when={working() && !asking()}>
           <span class="tool-call-spinner" aria-label="Working" />
         </Show>
       </div>

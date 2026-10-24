@@ -53,7 +53,12 @@ import ModeSelector from './ModeSelector';
 import EffortSelector from './EffortSelector';
 import ContextControls from './ContextControls';
 import CommandSuggestions from './CommandSuggestions';
-import { connectorKindOf, errorText, latestConnectorContext } from '../lib/connectors';
+import {
+  connectorKindOf,
+  connectorTitle,
+  errorText,
+  latestConnectorContext,
+} from '../lib/connectors';
 import {
   commandQuery,
   connectorCommands,
@@ -162,7 +167,14 @@ import {
 } from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
-import { runsSubagents, runUsage, transcript, transcriptHold, usageLabel } from '../lib/subagents';
+import {
+  runsSubagents,
+  runUsage,
+  runUsageSource,
+  transcript,
+  transcriptHold,
+  usageLabel,
+} from '../lib/subagents';
 import { chatsWaitingOnApprovals } from '../lib/approvals';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
@@ -4474,6 +4486,9 @@ export default function ChatPanel(props: ChatProps) {
         queued={queuedNow()}
         queuedLabel={queuedLabelNow()}
         onUnsteer={(id) => void takeBackSteer(id)}
+        connectorTitle={
+          onConnector() ? connectorTitle(connectorKindOf(activeProfile()!.baseUrl)) : undefined
+        }
       />
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
@@ -4522,14 +4537,14 @@ export default function ChatPanel(props: ChatProps) {
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
       </Show>
-      {/* What this request's subagents used, as their providers reported it. */}
+      {/* What this request's subagents and connectors used, as they reported it. */}
       <Show when={usageLabel(runUsage(messages()))}>
         {(label) => (
           <div
             class="subagent-run-usage"
             title="Tokens used for the latest request by subagents and connectors"
           >
-            Subagents: {label()}
+            {runUsageSource(messages())}: {label()}
           </div>
         )}
       </Show>

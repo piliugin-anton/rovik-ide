@@ -401,3 +401,23 @@ test('the context shown is the one the latest connector reply reported', () => {
   );
   assert.equal(latestConnectorContext([reply({ used: 1, window: 0 })]), null);
 });
+
+test('while it runs, a reply’s record says its state in place of “working…”', () => {
+  const meta = { kind: 'claude-code', model: 'claude-sonnet-5' };
+  assert.equal(connectorHeadline(meta, true), 'Claude Code · claude-sonnet-5 · working…');
+  assert.equal(
+    connectorHeadline(meta, true, 'Still waiting for a response… 6 s'),
+    'Claude Code · claude-sonnet-5 · Still waiting for a response… 6 s'
+  );
+  const stepped = { ...meta, steps: [{ id: 't1', name: 'Read', input: {} }] };
+  assert.equal(connectorHeadline(stepped, true), 'Claude Code · claude-sonnet-5 · 1 step');
+  assert.equal(
+    connectorHeadline(stepped, true, 'Stopping…'),
+    'Claude Code · claude-sonnet-5 · 1 step · Stopping…'
+  );
+  // Ended: no state.
+  assert.equal(
+    connectorHeadline(stepped, false, 'Stopping…'),
+    'Claude Code · claude-sonnet-5 · 1 step'
+  );
+});
