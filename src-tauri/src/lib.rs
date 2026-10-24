@@ -516,7 +516,9 @@ fn startup_folder() -> Option<std::path::PathBuf> {
         .filter(|a| !a.to_string_lossy().starts_with('-'))
         .map(std::path::PathBuf::from)
         .find(|p| p.is_dir())
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        // As the file system has it, but not in Windows' verbatim form,
+        // which the project's other paths never match.
+        .map(|p| std::fs::canonicalize(&p).map_or(p, util::plain_path))
 }
 
 #[derive(serde::Serialize)]

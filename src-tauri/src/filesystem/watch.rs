@@ -449,7 +449,14 @@ pub async fn start_file_watch(
         return Ok(());
     }
     println!("Watching: {:?}", root);
-    tauri::async_runtime::spawn(Watch::new(app_handle, root, generation, rx).run());
+    // A thread of its own: what it does with each change (a new folder's
+    // listing and watches, the isolated chats' conflict checks) is disk
+    // work, which would hold up the async threads every other command
+    // and run shares.
+    std::thread::Builder::new()
+        .name("file-watch".into())
+        .spawn(move || Watch::new(app_handle, root, generation, rx).run())
+        .err_text()?;
     Ok(())
 }
 
@@ -497,7 +504,7 @@ impl Watch {
         });
     }
 
-    async fn run(mut self) {
+    fn run(mut self) {
         loop {
             // Another project's watch replaced this one: stop.
             if watch_replaced(self.generation) {
@@ -512,7 +519,7 @@ impl Watch {
                 break;
             }
             // A short pause to rest the CPU before polling again.
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
