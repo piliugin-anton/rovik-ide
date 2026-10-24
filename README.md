@@ -332,12 +332,17 @@ shows. **Sign out** signs the program out. A test also finds out whether
 a newer version is published (Anthropic's release channel, `latest`), and
 **Update to …** then runs the program's own updater (`claude update`).
 
-A chat on a connector's model hands the harness the task: Rovik's system
-prompt, the model, the effort and the message, in the project folder. The
-system prompt goes in a file (`--system-prompt-file`, or
-`--append-system-prompt-file` after Claude Code's own), rebuilt on every
-run (`--system-prompt-snapshot off`), its project section split off so the
-rest stays cached. The harness keeps its own conversation for the chat,
+A chat on a connector's model hands the harness the task: the model, the
+effort and the message, in the project folder. Its **System prompt**
+setting says whose prompt goes with them: Claude Code's own, unchanged
+(the default: Rovik sends none, and the project's instructions are the
+CLAUDE.md Claude Code reads), Rovik's after Claude Code's own
+(`--append-system-prompt-file`), or Rovik's alone (`--system-prompt-file`),
+which Rovik's tools mode and one-off requests such as a chat's title
+always use. Rovik's goes in a file with the project's section split off,
+so the rest stays cached, and the prompt is rebuilt on every run
+(`--system-prompt-snapshot off`), so a changed setting applies to a
+chat's next message. The harness keeps its own conversation for the chat,
 continued on each message. A connector's **Tools** setting picks how it
 works:
 

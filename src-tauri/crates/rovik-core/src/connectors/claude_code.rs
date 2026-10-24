@@ -102,9 +102,13 @@ pub enum Auth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum SystemPromptMode {
+    /// Claude Code's own, unchanged: Rovik's isn't sent (none of the
+    /// system prompt flags), and the project's instructions are what
+    /// Claude Code reads itself (its CLAUDE.md).
+    #[default]
+    Own,
     /// After Claude Code's own (`--append-system-prompt`): its tool
     /// guidance and conventions stay.
-    #[default]
     Append,
     /// In place of it (`--system-prompt`).
     Replace,
@@ -164,7 +168,7 @@ impl Default for Settings {
             disallowed_tools: String::new(),
             max_turns: None,
             max_budget_usd: None,
-            system_prompt: SystemPromptMode::Append,
+            system_prompt: SystemPromptMode::Own,
             config_dir: String::new(),
             extra_args: String::new(),
             bare: false,
@@ -275,15 +279,18 @@ fn effort_arg(effort: ReasoningEffort) -> &'static str {
     }
 }
 
-/// Where a turn's system prompt goes: as the settings say, but in place of
-/// Claude Code's for a one-off request (a chat's title, a review), which
-/// has no tools for Claude Code's prompt to describe, and costs less
-/// without it.
+/// Where a turn's system prompt goes: as the settings say, but Rovik's in
+/// place of Claude Code's where Claude Code has no tools of its own for
+/// its prompt to describe: a one-off request (a chat's title, a review,
+/// which costs less without it), and Rovik's tools mode.
 fn prompt_mode(settings: &Settings, turn: &Turn) -> SystemPromptMode {
-    if turn.one_shot {
-        SystemPromptMode::Replace
-    } else {
-        settings.system_prompt
+    match settings.system_prompt {
+        _ if turn.one_shot => SystemPromptMode::Replace,
+        // With Rovik's tools, Claude Code is the model behind Rovik's agent,
+        // without tools of its own for its prompt to describe: Rovik's is
+        // the prompt, its tools named.
+        SystemPromptMode::Own if settings.tools == ToolsMode::Rovik => SystemPromptMode::Replace,
+        mode => mode,
     }
 }
 
@@ -349,18 +356,20 @@ pub fn args_for(
         args.push("--effort".into());
         args.push(effort_arg(effort).into());
     }
-    if let Some(file) = prompt_file {
-        let flag = match prompt_mode(settings, turn) {
-            SystemPromptMode::Append => "--append-system-prompt-file",
-            SystemPromptMode::Replace => "--system-prompt-file",
-        };
+    let flag = match prompt_mode(settings, turn) {
+        SystemPromptMode::Own => None,
+        SystemPromptMode::Append => Some("--append-system-prompt-file"),
+        SystemPromptMode::Replace => Some("--system-prompt-file"),
+    };
+    if let (Some(flag), Some(file)) = (flag, prompt_file) {
         args.push(flag.into());
         args.push(file.to_string_lossy().into_owned());
-        // A resumed session takes the prompt as it is now, not as it was
-        // at the session's first request: the project's section changes.
-        args.push("--system-prompt-snapshot".into());
-        args.push("off".into());
     }
+    // A resumed session takes the prompt as the settings make it now, not
+    // as it was at the session's first request: the project's section
+    // changes, and so may the setting (Claude Code's own after Rovik's).
+    args.push("--system-prompt-snapshot".into());
+    args.push("off".into());
     if turn.one_shot {
         // A chat's title, a review: an answer in words, nothing kept.
         args.push("--tools".into());
@@ -1119,6 +1128,9 @@ fn prompt_file(
     turn: &Turn,
     rovik_tools: bool,
 ) -> Result<Option<TempFile>, String> {
+    if prompt_mode(settings, turn) == SystemPromptMode::Own {
+        return Ok(None);
+    }
     let text = system_text(settings, turn, rovik_tools);
     if text.trim().is_empty() {
         return Ok(None);
@@ -2031,6 +2043,7 @@ mod tests {
     #[test]
     fn the_arguments_of_a_turn() {
         let settings = Settings::from_value(&json!({
+            "systemPrompt": "append",
             "permissionMode": "acceptEdits",
             "allowedTools": "Bash(npm test *)\nRead",
             "maxTurns": 30,
@@ -2071,9 +2084,10 @@ mod tests {
             joined.contains("--system-prompt-file /tmp/prompt.md"),
             "{joined}"
         );
-        // No prompt: no prompt flags.
+        // No prompt: no prompt's flag; the snapshot is still rebuilt.
         let none = args_for(&settings, &t, &Session::Resume("s-0".into()), None, None).join(" ");
-        assert!(!none.contains("system-prompt"), "{none}");
+        assert!(!none.contains("system-prompt-file"), "{none}");
+        assert!(none.contains("--system-prompt-snapshot off"), "{none}");
         assert!(!joined.contains("--permission-mode"), "{joined}");
         assert!(joined.ends_with("--resume s-0"), "{joined}");
     }
@@ -2347,6 +2361,40 @@ mod tests {
         }
         let latest = ClaudeCode.latest_version().await.expect("a version");
         assert!(crate::connectors::is_newer(&latest, "0.0.1"), "{latest}");
+    }
+
+    #[test]
+    fn claude_code_s_own_prompt_is_left_as_it_is() {
+        let settings = Settings::from_value(&json!({}));
+        assert_eq!(settings.system_prompt, SystemPromptMode::Own, "the default");
+        let t = turn("Fix it");
+        // No file to read, and none of the system prompt flags.
+        assert!(prompt_file(&settings, &t, false).unwrap().is_none());
+        let file = Path::new("/tmp/prompt.md");
+        let joined = args_for(&settings, &t, &Session::New("s".into()), Some(file), None).join(" ");
+        assert!(!joined.contains("system-prompt-file"), "{joined}");
+        // A session that began with Rovik's prompt takes its own from now on.
+        assert!(joined.contains("--system-prompt-snapshot off"), "{joined}");
+        // With Rovik's tools, Claude Code has none for its prompt to describe.
+        let rovik = Settings::from_value(&json!({ "tools": "rovik" }));
+        assert_eq!(prompt_mode(&rovik, &t), SystemPromptMode::Replace);
+
+        // A one-off request's system prompt is the request (a title's
+        // instructions): it's sent in place of Claude Code's.
+        let mut one = turn("Name this chat");
+        one.one_shot = true;
+        let written = prompt_file(&settings, &one, false)
+            .unwrap()
+            .expect("a file");
+        let joined = args_for(
+            &settings,
+            &one,
+            &Session::New("s".into()),
+            Some(written.path()),
+            None,
+        )
+        .join(" ");
+        assert!(joined.contains("--system-prompt-file"), "{joined}");
     }
 
     #[test]
@@ -3155,7 +3203,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Hi there",
 "#,
         );
         let mut t = turn("Say hi");
-        t.settings = json!({ "program": program, "auth": "token" });
+        t.settings = json!({ "program": program, "auth": "token", "systemPrompt": "append" });
         t.api_key = "tok".into();
         t.cwd = Some(dir.0.clone());
         let (_tx, mut cancel) = watch::channel(false);

@@ -44,7 +44,7 @@ export type ClaudeCodeSettings = {
   /** The most one message may cost (estimated, USD); empty: no limit. */
   maxBudgetUsd?: number;
   /** The IDE's system prompt after Claude Code's own, or in its place. */
-  systemPrompt: 'append' | 'replace';
+  systemPrompt: 'own' | 'append' | 'replace';
   /** `CLAUDE_CONFIG_DIR`: another login and settings folder; empty: its own. */
   configDir: string;
   /** More arguments, as typed on a command line. */
@@ -65,7 +65,7 @@ export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
   permissionMode: 'rovik',
   allowedTools: '',
   disallowedTools: '',
-  systemPrompt: 'append',
+  systemPrompt: 'own',
   configDir: '',
   extraArgs: '',
   bare: false,
