@@ -11018,3 +11018,106 @@ async fn two_members_landing_the_same_path_without_a_line_conflict() {
     h.run_end().await;
     assert_eq!(h.file("src/shared.rs").as_deref(), Some("// shared\n"));
 }
+
+/// A subagent of a batch the IDE starts itself (Thorough's planners) that
+/// can't be launched leaves no child chat behind; the others run.
+#[tokio::test]
+async fn a_batch_member_that_cant_launch_leaves_no_chat() {
+    let h = harness(&[("a.txt", "a\n")]).await;
+    let (url, _) = model_routed(vec![("MARK-BL", vec![Reply::Text(REPORT)])], vec![]).await;
+    let core = h.core.clone();
+    let state = core.agents.clone();
+    let request = h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({})));
+    state.set_config(request.config.clone().unwrap());
+    let controls = state.register(&h.dialog_id, "p::m", None).unwrap();
+    let _registered = state.registered(&h.dialog_id, &controls.run_id);
+    let (mut run, _entry) = crate::agent_run::run::Run::prepare(&core, request, controls)
+        .await
+        .unwrap()
+        .unwrap();
+    crate::agent_run::subagent_run::FAIL_LAUNCH
+        .lock()
+        .unwrap()
+        .insert("bl1".into());
+    let jobs = ["bl1", "bl2"]
+        .iter()
+        .enumerate()
+        .map(|(i, call)| crate::agent_run::subagent_run::IdeJob {
+            call_id: call.to_string(),
+            goal: format!("Job {call}"),
+            message: "MARK-BL: where?".into(),
+            models_from: i,
+        })
+        .collect();
+    let results = run
+        .run_ide_subagents(crate::agent_run::subagent::Kind::Scout, jobs)
+        .await;
+    crate::agent_run::subagent_run::FAIL_LAUNCH
+        .lock()
+        .unwrap()
+        .remove("bl1");
+    assert!(
+        results[0].is_err(),
+        "{:?}",
+        results[0].as_ref().map(|r| &r.0)
+    );
+    assert!(results[1].is_ok());
+    let child = |call: &'static str| {
+        let (id, db) = (h.dialog_id.clone(), h.core.db.clone());
+        async move {
+            db.read(move |c| store::child_for_call(c, &id, call, None))
+                .await
+                .unwrap()
+        }
+    };
+    assert!(
+        child("bl1").await.is_none(),
+        "no chat for the one that failed"
+    );
+    assert!(child("bl2").await.is_some());
+    assert_eq!(h.core.agents.running_children(&h.dialog_id), 0);
+    drop(run);
+}
+
+/// A lead that panics while its subagents work stops them: they're tasks
+/// of their own, and none is left running for a run that's gone.
+#[tokio::test]
+async fn a_lead_that_panics_stops_its_subagents() {
+    let h = harness(&[("a.txt", "x\n")]).await;
+    let (url, _) = model_routed(
+        vec![
+            ("MARK-QUICK", vec![Reply::Text(REPORT)]),
+            (
+                "MARK-LONG",
+                vec![Reply::Slow(10_000, Box::new(Reply::Text(REPORT)))],
+            ),
+        ],
+        vec![
+            Reply::Calls(vec![
+                task_call("lp1", "MARK-QUICK: one"),
+                task_call("lp2", "MARK-LONG: two"),
+            ]),
+            Reply::Text("Done."),
+        ],
+    )
+    .await;
+    *crate::agent_run::subagent_run::PANIC_LEAD_AT
+        .lock()
+        .unwrap() = Some("lp1".into());
+    h.start(h.with_subagents(&url, "Go", quiet_permissions(), scouts_on(json!({}))))
+        .await;
+    let end = h.run_end().await;
+    *crate::agent_run::subagent_run::PANIC_LEAD_AT
+        .lock()
+        .unwrap() = None;
+    assert_eq!(end, "error");
+    // Stopped well before its slow reply would have come.
+    let waited = std::time::Instant::now();
+    while h.core.agents.running_children(&h.dialog_id) > 0 {
+        assert!(
+            waited.elapsed() < Duration::from_secs(5),
+            "the subagent is still running"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}

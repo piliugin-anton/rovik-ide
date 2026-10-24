@@ -859,6 +859,10 @@ impl Run {
                 started_at: store::now_ms().max(0) as u64,
                 tool_calls: 0,
             };
+            // Stored as running before it's registered and shown: a failed
+            // write leaves no candidate the record doesn't know of.
+            row.candidates[i].status = "running".into();
+            save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
             core.agents.add_candidate(
                 &state.chat,
                 &main,
@@ -874,8 +878,6 @@ impl Run {
                 model: info.model,
                 goal: info.goal,
             });
-            row.candidates[i].status = "running".into();
-            save_row(&core, &main, &row_id, "candidates", json!(row)).await?;
             // D19: its copy's dependencies before it starts: a server's
             // worktree has none of the chat's installs, which git ignores.
             if task_records(&core, &state.chat, &task).await?.is_empty() {

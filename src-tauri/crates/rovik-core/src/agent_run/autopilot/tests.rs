@@ -2,7 +2,7 @@
 
 use super::artifacts::{tests_line, TaskTests};
 use super::config::{needed_kinds, permissions_for, run_config, subagent_config};
-use super::inside::{checks_record, review_record};
+use super::inside::{break_record, checks_record, review_record};
 use super::outcome::{failure_of, failure_summary, finished, reopens, task_outcome, undelivered};
 use super::stage::{
     next_stage, pipeline, record_of, Carrier, Next, RateLimitWait, Recorded, Stage, StageRecord,
@@ -862,4 +862,32 @@ fn a_plan_retry_is_due_only_within_its_limits() {
     assert!(!due(0, &f, false, Some(&json!({ "round": 1, "blocked": true }))));
     assert!(!plan_retry_due("stopped", Effort::Balanced, 0, &f, false, None));
     assert!(!plan_retry_due("error", Effort::Thorough, 0, &f, false, None));
+}
+
+/// The Break stage is Done only once a check round ran the tester's tests:
+/// a run that ended before that leaves it skipped, saying so.
+#[test]
+fn a_break_whose_tests_never_ran_isnt_done() {
+    let base = rec(Stage::Break, Status::Skipped);
+    let tester = |found: Option<bool>| {
+        let mut t = json!({ "status": "done", "files": ["tests/edge.rs"] });
+        if let Some(found) = found {
+            t["found"] = json!(found);
+        }
+        row("b", json!({ "breaker": t }))
+    };
+    let unrun = break_record(base.clone(), Some(&tester(None)));
+    assert_eq!(unrun.status, Status::Skipped);
+    assert_eq!(
+        unrun.summary.as_deref(),
+        Some("1 test file written; the run ended before they ran")
+    );
+    let passed = break_record(base.clone(), Some(&tester(Some(false))));
+    assert_eq!(passed.status, Status::Done);
+    assert_eq!(
+        passed.summary.as_deref(),
+        Some("1 test file pass, kept as regression tests")
+    );
+    let found = break_record(base, Some(&tester(Some(true))));
+    assert_eq!(found.status, Status::Done);
 }

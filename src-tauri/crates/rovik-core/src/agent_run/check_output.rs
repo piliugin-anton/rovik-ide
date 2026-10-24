@@ -50,13 +50,14 @@ pub fn save(dialog_id: &str, stem: &str, kind: &str, text: &str) -> Option<Strin
 }
 
 /// The file behind `@checks/<name>`: a plain name in the chat's folder,
-/// never a way out of it.
+/// never a way out of it. ':' is refused too: on Windows `C:x` would
+/// replace the folder when joined, and `name:stream` opens a hidden stream.
 pub fn resolve(dialog_id: &str, path: &str) -> Result<PathBuf, String> {
     let name = path
         .trim()
         .strip_prefix(PREFIX)
         .ok_or_else(|| format!("{path}: not a saved check output"))?;
-    if name.is_empty() || name.contains(['/', '\\', '\0']) || name == "." || name == ".." {
+    if name.is_empty() || name.contains(['/', '\\', '\0', ':']) || name == "." || name == ".." {
         return Err(format!("{path}: not a saved check output"));
     }
     let file = dir(dialog_id)
@@ -153,12 +154,20 @@ mod tests {
             "@checks/../x",
             "@checks/",
             "@checks/a/b",
+            "@checks/C:x",
+            "@checks/round-2-test.log:hidden",
             "src/a.rs",
             "@checks/missing.log",
         ] {
             assert!(resolve(&chat, bad).is_err(), "{bad}");
         }
         assert!(resolve("other-chat", &path).is_err());
+        // Even where a name with ':' is a plain file, it isn't one of ours.
+        #[cfg(unix)]
+        {
+            std::fs::write(dir(&chat).unwrap().join("x:y.log"), "x").unwrap();
+            assert!(resolve(&chat, "@checks/x:y.log").is_err());
+        }
 
         clean(&chat);
         assert!(resolve(&chat, &path).is_err());

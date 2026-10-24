@@ -102,7 +102,9 @@ pub(super) fn break_record(base: StageRecord, last: Option<&MessageRow>) -> Stag
             None => "It wrote no test that stays".into(),
         },
         (n, Some(true)) => format!("{} found a fault; a repair round followed", files(n)),
-        (n, _) => format!("{} pass, kept as regression tests", files(n)),
+        (n, Some(false)) => format!("{} pass, kept as regression tests", files(n)),
+        // No check round ran its tests (`found`): the run ended first.
+        (n, None) => format!("{} written; the run ended before they ran", files(n)),
     };
     if removed > 0 {
         summary.push_str(&format!(
@@ -110,8 +112,10 @@ pub(super) fn break_record(base: StageRecord, last: Option<&MessageRow>) -> Stag
             plural(removed)
         ));
     }
+    let unrun = kept > 0 && tester["found"].as_bool().is_none();
     let status = match (kept, removed, tester["status"].as_str()) {
         (0, 0, _) | (_, _, Some("running")) => Status::Skipped,
+        _ if unrun => Status::Skipped,
         _ => Status::Done,
     };
     let summary = match tester["status"].as_str() {

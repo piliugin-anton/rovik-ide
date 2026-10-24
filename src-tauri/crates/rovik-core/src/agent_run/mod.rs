@@ -564,7 +564,9 @@ impl AgentState {
         self.lock().config = config;
     }
 
-    /// Registers a run for the chat; None when one is already going there.
+    /// Registers a run for the chat; None when one is already going there,
+    /// or a drain is under way (checked under the lock `drain` sets it in,
+    /// so no lead's run starts after the drain has asked the others to pause).
     fn register(
         &self,
         dialog_id: &str,
@@ -603,7 +605,10 @@ impl AgentState {
         // Held first: another process at work on the chat keeps it.
         let hold = crate::chat_hold::take(dialog_id)?;
         let mut inner = self.lock();
-        if inner.runs.contains_key(dialog_id) || inner.files_held.contains_key(dialog_id) {
+        if inner.runs.contains_key(dialog_id)
+            || inner.files_held.contains_key(dialog_id)
+            || (parent.is_none() && inner.draining)
+        {
             return None;
         }
         let run_id = uuid::Uuid::new_v4().to_string();
@@ -693,12 +698,24 @@ impl AgentState {
         options: Option<OpenAIChatOptions>,
         dialog_id: Option<&str>,
     ) -> usize {
+        self.set_effort_where(profile_id, options, dialog_id, |_| true)
+    }
+
+    /// `set_effort`, for the runs of the chats `reaches` takes only: a
+    /// server's, one computer's chats (D16).
+    pub fn set_effort_where(
+        &self,
+        profile_id: &str,
+        options: Option<OpenAIChatOptions>,
+        dialog_id: Option<&str>,
+        reaches: impl Fn(&str) -> bool,
+    ) -> usize {
         let inner = self.lock();
         let mut reached = 0;
         for (dialog, run) in inner
             .runs
             .iter()
-            .filter(|(_, r)| r.profile_id == profile_id && r.parent.is_none())
+            .filter(|(chat, r)| r.profile_id == profile_id && r.parent.is_none() && reaches(chat))
         {
             let here = dialog_id == Some(dialog.as_str());
             run.effort.send_replace(EffortPick {
@@ -1140,11 +1157,24 @@ impl AgentState {
         let Some(limit) = deadline else {
             return (rx.await.unwrap_or(ApprovalDecision::Deny), false);
         };
-        match tokio::time::timeout(limit, rx).await {
+        let mut rx = rx;
+        match tokio::time::timeout(limit, &mut rx).await {
             Ok(decision) => (decision.unwrap_or(ApprovalDecision::Deny), false),
             Err(_) => {
-                // Nobody answered: denied, and the request goes from the chat.
-                self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Deny);
+                #[cfg(test)]
+                if ANSWER_AT_DEADLINE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&key.0)
+                {
+                    self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Allow);
+                }
+                // An answer given as the deadline passed took the request
+                // first: it stands. Else nobody answered: denied, and the
+                // request goes from the chat.
+                if !self.resolve_approval(core, &key.0, &key.1, ApprovalDecision::Deny) {
+                    return (rx.await.unwrap_or(ApprovalDecision::Deny), false);
+                }
                 log::write(
                     core,
                     serde_json::json!({
@@ -1388,6 +1418,12 @@ pub(super) fn start_run_boxed(core: &Core, request: StartRequest) -> Starting<'_
     Box::pin(start_run(core, request))
 }
 
+/// Tests: the user answers Allow in this chat just as its approval's
+/// deadline passes, before the deadline's Deny.
+#[cfg(test)]
+pub(crate) static ANSWER_AT_DEADLINE: Mutex<std::collections::BTreeSet<String>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
 /// `agent_start`'s run, which the Autopilot driver starts its stages with.
 pub(super) async fn start_run(
     core: &Core,
@@ -1426,6 +1462,8 @@ pub(super) async fn start_run(
         }
         match state.register(&dialog_id, &request.profile.id, request.options.clone()) {
             Some(controls) => break controls,
+            // A drain began since the check above.
+            None if state.draining() => return Err(RESTARTING.into()),
             // Held again since the wait: wait again.
             None if state.files_held(&dialog_id) => continue,
             None => return Err("The agent is already working in this chat.".into()),
@@ -1478,30 +1516,7 @@ pub(super) async fn start_run(
             drop(registered);
             // The message got no answer: it's marked failed, its draft comes back.
             if let Some(message_id) = sent {
-                let id = message_id.clone();
-                let patch = store::MessagePatch {
-                    failed: Some(true),
-                    ..Default::default()
-                };
-                if db
-                    .write(move |c| store::update_message(c, &id, &patch))
-                    .await
-                    .is_ok()
-                {
-                    core.emit(AgentEvent::MessagePatched {
-                        dialog_id: dialog_id.clone(),
-                        message_id: message_id.clone(),
-                        patch: events::Patch {
-                            failed: Some(true),
-                            ..Default::default()
-                        },
-                    });
-                }
-                core.emit(AgentEvent::UserMessageSettled {
-                    dialog_id,
-                    message_id,
-                    ok: false,
-                });
+                run::settle_failed(core, &dialog_id, message_id).await;
             }
             return Err(e);
         }
@@ -1527,6 +1542,7 @@ pub(super) async fn start_run(
     });
     let id = run_id.clone();
     let core = core.clone();
+    let unsettled = prepared.0.settle_message.clone();
     crate::rt::spawn(async move {
         let (mut run, entry) = prepared;
         let stage = run.stage.clone();
@@ -1547,9 +1563,15 @@ pub(super) async fn start_run(
             }
             Err(e) => {
                 eprintln!("agent: run {id} in chat {dialog_id} ended abnormally: {e}");
-                // What the user sent it that it didn't read goes back.
+                // Its subagents are tasks of their own: they stop with it.
+                core.agents.stop_children(&core, &dialog_id);
+                // What the user sent it that it didn't read goes back, and
+                // a message it never answered is settled as failed.
                 let left = steering.close_and_take();
                 hand_back_steering(&core, &dialog_id, left, "error");
+                if let Some(message_id) = run::take_unsettled(&unsettled) {
+                    run::settle_failed(&core, &dialog_id, message_id).await;
+                }
                 "error".to_string()
             }
         };
@@ -2057,6 +2079,31 @@ mod run_control_tests {
             .unwrap();
         assert_eq!(state.config_for("kid"), desk, "the lead's");
         assert_eq!(state.config_for("other"), state.config());
+    }
+
+    /// An effort picked on one computer reaches its own chats' runs only.
+    #[test]
+    fn an_effort_reaches_only_the_chats_it_is_for() {
+        let state = super::AgentState::default();
+        let mine = state.register("effort-mine", "m", None).unwrap();
+        let theirs = state.register("effort-theirs", "m", None).unwrap();
+        let reached = state.set_effort_where("m", None, None, |chat| chat == "effort-mine");
+        assert_eq!(reached, 1);
+        assert!(mine.effort.has_changed().unwrap());
+        assert!(!theirs.effort.has_changed().unwrap());
+    }
+
+    /// No lead's run registers once a drain has begun, whenever its start
+    /// checked; a subagent of a run still going does (its lead finishes).
+    #[test]
+    fn no_run_registers_once_a_drain_began() {
+        let state = super::AgentState::default();
+        state.register("drain-lead", "m", None).unwrap();
+        state.drain();
+        assert!(state.register("drain-late", "m", None).is_none());
+        assert!(state
+            .register_child("drain-kid", "drain-lead", "t1", "m", None)
+            .is_some());
     }
 
     #[test]

@@ -238,6 +238,10 @@ pub(super) fn none_future() -> SubFuture {
 /// Tests: the subagent answering this `task` call panics as it starts.
 #[cfg(test)]
 pub static PANIC_SUB: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Tests: the lead panics as it takes this `task` call's result (its
+/// batch's other subagents still at work).
+#[cfg(test)]
+pub static PANIC_LEAD_AT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// Tests: the subagent for this `task` call can't be launched.
 #[cfg(test)]
 pub static FAIL_LAUNCH: std::sync::Mutex<std::collections::BTreeSet<String>> =
@@ -364,6 +368,15 @@ impl Run {
         let mut results = stream::iter(futures).buffered(limit);
         for ((tc, refusal), kept) in calls.iter().zip(answered).zip(kept) {
             let result = results.next().await.flatten();
+            #[cfg(test)]
+            if PANIC_LEAD_AT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_deref()
+                == Some(tc.id.as_str())
+            {
+                panic!("a test's lead panics");
+            }
             let (content, meta): (String, Option<Value>) = match (refusal, result) {
                 (Some((text, meta)), _) => (text, meta),
                 (None, Some(mut result)) => {
@@ -920,10 +933,18 @@ impl Run {
                 let child_id = uuid::Uuid::new_v4().to_string();
                 self.store_child(&child_id, &job.call_id, kind, &job.goal, job.message)
                     .await?;
-                let child = self.launch_child(child_id.clone(), &job.call_id, &job.goal, sub)?;
-                Ok((child_id, child))
+                let child = self.launch_child(child_id.clone(), &job.call_id, &job.goal, sub);
+                Ok::<_, String>((child_id, child))
             };
-            started.push(launched.await);
+            // One that couldn't launch leaves no chat behind (`launched`).
+            let started_one = match launched.await {
+                Ok((child_id, child)) => self
+                    .launched(child, &child_id, false)
+                    .await
+                    .map(|child| (child_id, child)),
+                Err(e) => Err(e),
+            };
+            started.push(started_one);
         }
         type Ran =
             Pin<Box<dyn Future<Output = Result<(String, Option<SubResult>), String>> + Send>>;

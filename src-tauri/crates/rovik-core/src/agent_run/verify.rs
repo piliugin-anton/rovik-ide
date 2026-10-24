@@ -1501,7 +1501,9 @@ impl Run {
         } else {
             "unverified"
         };
-        let _ = self
+        // The agent still gets the results; a record that couldn't be
+        // stored only stays "running" in the chat, so say why in the log.
+        if let Err(e) = self
             .update_meta(
                 &record_id,
                 with(
@@ -1509,7 +1511,13 @@ impl Run {
                     json!({ "midRun": true, "attribution": attribution }),
                 ),
             )
-            .await;
+            .await
+        {
+            eprintln!(
+                "agent: could not store the mid-run checks' record in {}: {e}",
+                self.dialog_id
+            );
+        }
         // The checks run again when the run finishes.
         self.writes_since_verify = true;
         Some(match status {

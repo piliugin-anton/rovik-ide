@@ -2463,6 +2463,50 @@ async fn an_approval_nobody_answers_is_denied_at_the_deadline() {
     agents.unregister("plain", &plain.run_id);
 }
 
+/// U03: an Allow given just as an Autopilot approval's deadline passes
+/// stands: the call runs, and no notice says nobody was there.
+#[tokio::test]
+async fn an_allow_at_the_approval_deadline_stands() {
+    use super::events::ApprovalRequest;
+    let h = harness(&[]).await;
+    let agents = &h.core.agents;
+    agents.set_approval_deadline(Duration::from_millis(50));
+    let chat = "task-at-deadline";
+    let task = agents.register(chat, "m", None).unwrap();
+    agents.set_autopilot(chat, Effort::Balanced, Spent::default());
+    crate::agent_run::ANSWER_AT_DEADLINE
+        .lock()
+        .unwrap()
+        .insert(chat.into());
+    let request = ApprovalRequest {
+        tool_call_id: "c1".into(),
+        dialog_id: chat.into(),
+        tool_name: "bash".into(),
+        summary: "Run `make`".into(),
+        command: Some("make".into()),
+        note: None,
+        edit: None,
+        parent_dialog_id: None,
+        parent_call_id: None,
+        remote: false,
+    };
+    let (decision, unanswered) = agents
+        .wait_for_decision(&h.core, request, &StopSignal::new())
+        .await;
+    crate::agent_run::ANSWER_AT_DEADLINE
+        .lock()
+        .unwrap()
+        .remove(chat);
+    assert_eq!(decision, ApprovalDecision::Allow);
+    assert!(!unanswered);
+    assert!(h
+        .events_of("notice")
+        .iter()
+        .all(|n| n["title"] != "An approval wasn't answered"));
+    assert_eq!(h.events_of("approvalSettled").len(), 1);
+    agents.unregister(chat, &task.run_id);
+}
+
 /*
  * The budget (U04)
  */

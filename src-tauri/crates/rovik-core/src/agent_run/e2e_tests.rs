@@ -6067,3 +6067,30 @@ async fn every_finished_tool_call_leaves_a_tool_line() {
     assert!(lines[4].get("exitCode").is_none(), "it never ran");
     assert!(lines.iter().all(|l| l.get("role").is_none()), "the lead's");
 }
+
+/// A run that panics before it answers settles the user's message as
+/// failed: the composer gets its draft back instead of waiting forever.
+#[tokio::test]
+async fn a_run_that_panics_before_answering_settles_the_message_failed() {
+    let h = harness(&[]).await;
+    let (url, _) = model(vec![Reply::Text("Not reached.")]).await;
+    crate::agent_run::run::PANIC_RUN
+        .lock()
+        .unwrap()
+        .insert(h.dialog_id.clone());
+    h.start(h.request(&url, Harness::send("Hi"), quiet_permissions()))
+        .await;
+    let end = h.run_end().await;
+    crate::agent_run::run::PANIC_RUN
+        .lock()
+        .unwrap()
+        .remove(&h.dialog_id);
+    assert_eq!(end, "error");
+    let settled = h.events_of("userMessageSettled");
+    assert_eq!(settled.len(), 1, "{settled:?}");
+    assert_eq!(settled[0]["ok"], false);
+    assert!(
+        h.messages().await[0].failed,
+        "the user's message is marked failed"
+    );
+}
