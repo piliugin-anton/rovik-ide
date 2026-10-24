@@ -84,6 +84,15 @@ impl Host {
                esac\n\
              done\n\
              echo \"$*\" >> '{log}'\n\
+             # The install, from root's checked copy of the upload: the\n\
+             # script ends with the installer's command, --root goes after.\n\
+             if [ \"$1 $2\" = 'sh -c' ]; then\n\
+               sh -c \"$3 --root '{root}'\" >/dev/null || exit 1\n\
+               if [ -d /run/systemd/system ]; then\n\
+                 {start}\n\
+               fi\n\
+               exit 0\n\
+             fi\n\
              case \"$2 $3\" in\n\
                install*) \"$@\" --root '{root}' >/dev/null || exit 1\n\
                  # systemd starts the administrator's daemon; without it, the app.\n\
@@ -247,10 +256,14 @@ async fn a_deploy_installs_rovik_and_the_daemon_answers_this_computers_token() {
     };
     let log = host.sudo_log();
     let upload = host.home.join(".rovik-agentd-upload");
+    // Root ran its own copy of the upload, checked against the build.
+    assert!(log.starts_with("sh -c "), "{log}");
     assert!(
-        log.starts_with(&format!("{} install --admin {user}", upload.display())),
+        log.contains(&format!("cp -- '{}'", upload.display())),
         "{log}"
     );
+    assert!(log.contains(&format!("'{}'", build.sha256)), "{log}");
+    assert!(log.contains(&format!("install --admin '{user}'")), "{log}");
     assert!(!upload.exists(), "the build is gone once installed");
     let settings = std::fs::read_to_string(host.root.join("etc/rovik/agentd.toml")).unwrap();
     assert!(

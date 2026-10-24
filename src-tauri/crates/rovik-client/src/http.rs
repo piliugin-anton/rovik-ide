@@ -171,12 +171,76 @@ where
 {
     let response = send(connector, identity, method, path, content_type, body).await?;
     let status = response.status();
-    let body = tokio::time::timeout(BODY_WAIT, response.into_body().collect())
+    let (body, moved) = Watched::new(response.into_body());
+    let body = while_moving(body.collect(), &moved, STALL_WAIT)
         .await
-        .map_err(|_| unreachable(&identity.host))?
+        .ok_or_else(|| unreachable(&identity.host))?
         .map_err(|_| unreachable(&identity.host))?
         .to_bytes();
     Ok((status, body))
+}
+
+/// A body that notes when it last moved (a frame read or written), for
+/// [`while_moving`].
+struct Watched<B> {
+    inner: Pin<Box<B>>,
+    moved: std::sync::Arc<std::sync::Mutex<std::time::Instant>>,
+}
+
+/// When a [`Watched`] body last moved.
+type Moved = std::sync::Arc<std::sync::Mutex<std::time::Instant>>;
+
+impl<B> Watched<B> {
+    fn new(inner: B) -> (Watched<B>, Moved) {
+        let moved: Moved = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let body = Watched {
+            inner: Box::pin(inner),
+            moved: moved.clone(),
+        };
+        (body, moved)
+    }
+}
+
+impl<B: Body> Body for Watched<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<BodyFrame<Self::Data>, Self::Error>>> {
+        let polled = self.inner.as_mut().poll_frame(cx);
+        if polled.is_ready() {
+            *self.moved.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// `work`'s outcome, unless its body stops moving for `stall` (`moved`):
+/// None then. A body on a slow link takes as long as it takes; one on a
+/// link that died stops.
+async fn while_moving<F: std::future::Future>(
+    work: F,
+    moved: &Moved,
+    stall: std::time::Duration,
+) -> Option<F::Output> {
+    tokio::pin!(work);
+    loop {
+        let since = moved.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
+        let left = stall.checked_sub(since).filter(|l| !l.is_zero())?;
+        if let Ok(done) = tokio::time::timeout(left, &mut work).await {
+            return Some(done);
+        }
+    }
 }
 
 /// How long the daemon has to answer a request's headers once it's sent:
@@ -184,14 +248,12 @@ where
 /// hold the caller, and whatever waits on it, for good.
 const RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// How long a reply's body may take to arrive whole: they're bounded
-/// (`MAX_CALL`, `MAX_BLOB`), on a link that may be slow. A request's body
-/// too: the daemon answers once it has it all.
-const BODY_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
-/// A request body up to this is as good as none: answered in a header's
-/// time, not a body's.
-const SMALL_BODY: u64 = 64 * 1024;
+/// How long a body may go without moving, a request's being sent or a
+/// reply's arriving, before the link counts as dead; and how long the
+/// daemon has to answer once the request's body is all sent (it answers
+/// only then). A first snapshot's pack on a slow uplink takes as long as
+/// it takes, so long as it moves.
+const STALL_WAIT: std::time::Duration = RESPONSE_WAIT;
 
 /// One request with this computer's token, on a connection of its own:
 /// the response, with its body still to come. A body of unknown length
@@ -227,17 +289,15 @@ where
     }
     // The daemon answers once it has the body: a request that carries one
     // (a blob, a pack, a chat's import) is answered in the body's time, on
-    // a link that may be slow, not in a header's.
-    let wait = match body.size_hint().upper() {
-        Some(n) if n <= SMALL_BODY => RESPONSE_WAIT,
-        _ => BODY_WAIT,
-    };
+    // a link that may be slow, so the wait is for the body to move, then
+    // for the answer once it's all sent.
+    let (body, moved) = Watched::new(body);
     let request = request
         .body(body)
         .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
-    tokio::time::timeout(wait, sender.send_request(request))
+    while_moving(sender.send_request(request), &moved, STALL_WAIT)
         .await
-        .map_err(|_| unreachable(&identity.host))?
+        .ok_or_else(|| unreachable(&identity.host))?
         .map_err(|_| unreachable(&identity.host))
 }
 
@@ -358,5 +418,46 @@ impl Body for Upload {
 
     fn size_hint(&self) -> SizeHint {
         SizeHint::with_exact((self.bytes.len() - self.sent) as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A body that keeps moving is waited for however long it takes; one
+    /// that stops is given up once it hasn't moved for the stall time.
+    #[tokio::test]
+    async fn a_body_is_waited_for_while_it_moves_and_not_once_it_stalls() {
+        let stall = Duration::from_millis(200);
+        let moved: Moved = std::sync::Arc::new(std::sync::Mutex::new(Instant::now()));
+        let mover = moved.clone();
+        // Moves every 50 ms for 800 ms: four times the stall time in all.
+        let work = async move {
+            for _ in 0..16 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                *mover.lock().unwrap() = Instant::now();
+            }
+            "sent"
+        };
+        assert_eq!(while_moving(work, &moved, stall).await, Some("sent"));
+
+        let still: Moved = std::sync::Arc::new(std::sync::Mutex::new(Instant::now()));
+        let started = Instant::now();
+        let never = std::future::pending::<()>();
+        assert_eq!(while_moving(never, &still, stall).await, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Reading a watched body moves it.
+    #[tokio::test]
+    async fn a_watched_body_notes_when_it_moves() {
+        let (body, moved) = Watched::new(Full::new(Bytes::from_static(b"pack")));
+        let before = *moved.lock().unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let bytes = body.collect().await.unwrap().to_bytes();
+        assert_eq!(&bytes[..], b"pack");
+        assert!(*moved.lock().unwrap() > before);
     }
 }
