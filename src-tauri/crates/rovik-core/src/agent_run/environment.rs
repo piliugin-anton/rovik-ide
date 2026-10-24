@@ -294,16 +294,20 @@ async fn provide(cx: &Context, program: &str, look: Look) -> Outcome {
 
 /// Reads the login shell's PATH again, for the commands from now on: a
 /// program installed since the app started is found (a server's setup
-/// script runs after its daemon did). Counted on a test's thread.
+/// script runs after its daemon did). Tests only count it, on their
+/// thread: that PATH is the whole process's, which other tests' commands
+/// get, and a login shell can take seconds to start.
 async fn read_login_path() {
     #[cfg(test)]
     LOGIN_PATH_READS.with(|reads| reads.set(reads.get() + 1));
+    #[cfg(not(any(test, feature = "testing")))]
     let _ = crate::rt::spawn_blocking(crate::process::refresh_login_path).await;
 }
 
 #[cfg(test)]
 thread_local! {
-    /// How many times this thread had the login shell's PATH read again.
+    /// How many times this thread asked for the login shell's PATH to be
+    /// read again.
     static LOGIN_PATH_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
