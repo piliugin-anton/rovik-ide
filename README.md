@@ -309,13 +309,22 @@ with a switch to see one kind alone and a search.
 
 A connector is a coding harness installed on the computer a chat runs on,
 used in place of a model provider. Claude Code is the first: **Settings →
-Connectors → Add connector**, say how it signs in (the login of this
-computer's user, a long-lived token from `claude setup-token`, or an API
-key), which permission mode its runs get, the tools they may use without
-asking, and a turn and budget limit per message; then **Test & refresh
-models** checks the program runs (with a request, that it's signed in) and
-lists its models: aliases such as `sonnet`, `opus` and `haiku`, and full
-names. The ones you enable show in the chat's model picker, marked as a
+Connectors → Add connector**. Its page groups its settings:
+
+- **Connection**: how it signs in (the login of this computer's user, a
+  long-lived token from `claude setup-token`, or an API key). **Test &
+  refresh models** checks the program runs (with a request, that it's
+  signed in) and lists its models: aliases such as `sonnet`, `opus` and
+  `haiku`, and full names.
+- **How chats use it**: as Claude Code itself, or as Rovik's agent on
+  Claude Code (below).
+- **Permissions**, with Claude Code's own tools: the permission mode its
+  runs get, and the tools they may or may not use without asking.
+- **Limits**: the turns and the budget one message may take.
+- **Advanced**: the program, its settings folder (`CLAUDE_CONFIG_DIR`),
+  more arguments for every run, and bare mode.
+
+The models you enable show in the chat's model picker, marked as a
 connector's.
 
 When Rovik starts, it asks each connector a chat can pick whether it's
@@ -337,21 +346,13 @@ a newer version is published (Anthropic's release channel, `latest`), and
 **Update to …** then runs the program's own updater (`claude update`).
 
 A chat on a connector's model hands the harness the task: the model, the
-effort and the message, in the project folder. Its **System prompt**
-setting says whose prompt goes with them: Claude Code's own, unchanged
-(the default: Rovik sends none, and the project's instructions are the
-CLAUDE.md Claude Code reads), Rovik's after Claude Code's own
-(`--append-system-prompt-file`), or Rovik's alone (`--system-prompt-file`),
-which Rovik's tools mode and one-off requests such as a chat's title
-always use. Rovik's goes in a file with the project's section split off,
-so the rest stays cached, and the prompt is rebuilt on every run
-(`--system-prompt-snapshot off`), so a changed setting applies to a
-chat's next message. The harness keeps its own conversation for the chat,
-continued on each message. A connector's **Tools** setting picks how it
-works:
+effort and the message, in the project folder. The harness keeps its own
+conversation for the chat, continued on each message. **How chats use
+it** picks how it works:
 
-- **Claude Code's own.** It runs its own tools (Read, Edit, Bash…) in the
-  project folder. With the permission mode **Follow Rovik's permissions**
+- **Claude Code.** It runs as itself: its own tools (Read, Edit, Bash…) in
+  the project folder, its own system prompt and the CLAUDE.md it reads;
+  Rovik sends no prompt. With the permission mode **Follow Rovik's permissions**
   (the default), each call it would ask about goes to **Permissions &
   approval**, as a call of the agent's own tool of the same kind would
   (`--permission-prompt-tool`): its commands are judged by the allowed and
@@ -367,16 +368,25 @@ works:
   `reset`, `commit`, `push`…) are refused in every mode, as they are to
   Rovik's agent: Claude Code is given deny rules for them, and Rovik
   refuses other spellings (`git -C . push`) when Claude Code asks. The
-  chat's changes reach the project when they land.
-- **Rovik's (via MCP).** Claude Code is the model behind Rovik's agent.
-  Rovik serves the run's tools to it over MCP (a server on 127.0.0.1 for
-  that run alone, behind a token only it has), with Claude Code's own
-  tools off. Each message of Claude Code's that calls them is a reply of
+  chat's changes reach the project when they land. In the chat's **Plan**
+  mode it plans in its own plan mode (`--permission-mode plan`), whatever
+  its permission mode: it reads, changes nothing, and replies with its
+  plan, which you carry out in Agent mode. Autopilot needs Rovik's tools:
+  with Claude Code's own, the chat says so and doesn't send.
+- **Rovik's agent on Claude Code.** Claude Code is the model behind
+  Rovik's agent, with Rovik's system prompt in place of its own. Rovik
+  serves the run's tools to it over MCP (a server on 127.0.0.1 for that
+  run alone, behind a token only it has), with Claude Code's own tools
+  off. Each message of Claude Code's that calls them is a reply of
   Rovik's: Rovik runs the calls under Permissions & approval, in the
   chat's copy of the project, and gives Claude Code the results while it
-  waits, however long an approval takes. Rovik's checks, checklist, plans
-  and subagents work as with any model, and such a model can be a
-  subagent's too.
+  waits, however long an approval takes. Rovik's checks, checklist,
+  plans, Autopilot and subagents work as with any model, and such a model
+  can be a subagent's too. The prompt goes in a file
+  (`--system-prompt-file`) with the project's section split off, so the
+  rest stays cached, and is rebuilt on every run
+  (`--system-prompt-snapshot off`), so a changed setting applies to a
+  chat's next message.
 
 Either way, the reply shows the tokens it used (cached ones apart) and
 what it cost by Claude Code's own estimate; with Rovik's tools, the cost
