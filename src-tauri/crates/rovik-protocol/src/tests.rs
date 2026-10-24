@@ -180,7 +180,7 @@ fn config() -> AgentConfig {
         KindConfig {
             enabled: true,
             models: vec![
-                ModelChoice::Profile(profile("p::scout")),
+                ModelChoice::Profile(Box::new(profile("p::scout"))),
                 ModelChoice::Chat { chat: true },
             ],
             options: Some(options()),

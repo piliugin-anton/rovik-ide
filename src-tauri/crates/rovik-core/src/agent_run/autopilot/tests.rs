@@ -651,7 +651,7 @@ fn autopilots_runs_have_the_kinds_they_need_with_the_users_models() {
         }))
         .unwrap()
     };
-    let model = |id: &str| ModelChoice::Profile(profile(id));
+    let model = |id: &str| ModelChoice::Profile(Box::new(profile(id)));
     let row = |enabled: bool, models: Vec<ModelChoice>| KindConfig {
         enabled,
         models,

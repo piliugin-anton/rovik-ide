@@ -42,7 +42,7 @@ fn config(reviewer_key: &str, scout_key: &str) -> AgentConfig {
         KindConfig {
             enabled: true,
             models: vec![
-                ModelChoice::Profile(model("third::mini", THIRD, scout_key)),
+                ModelChoice::Profile(Box::new(model("third::mini", THIRD, scout_key))),
                 ModelChoice::Chat { chat: true },
             ],
             ..Default::default()
