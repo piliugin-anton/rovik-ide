@@ -22,6 +22,8 @@
 // What Plan mode tells the model and allows is in the backend
 // (src-tauri/src/agent_run/plan.rs).
 import { createSignal } from 'solid-js';
+import type { ModelProfile } from '../types';
+import { connectorKindOf, connectorSpec, connectorTitle } from './connectors';
 
 export type ChatMode = 'agent' | 'plan' | 'autopilot';
 
@@ -75,4 +77,28 @@ export function setChatMode(next: ChatMode) {
 /** The open chat when its host works on its own; null for any other. */
 export function setOwnModeChat(dialogId: string | null) {
   setOwnChat(dialogId);
+}
+
+/**
+ * Why `mode` can't run on `profile`'s model, if it can't; the core refuses
+ * it too (agent_run `mode_refusal`). Autopilot works with Rovik's tools,
+ * which a model marked "no tools" or a connector running its own doesn't
+ * use. Plan mode changes nothing, which a connector running its own tools
+ * promises only with a plan mode of its own (`ConnectorSpec.planMode`).
+ */
+export function modeUnavailable(
+  mode: ChatMode,
+  profile: Pick<ModelProfile, 'baseUrl' | 'noTools'> | null | undefined
+): string | null {
+  if (!profile?.noTools) return null;
+  const kind = connectorKindOf(profile.baseUrl);
+  if (mode === 'autopilot') {
+    return kind
+      ? `Autopilot works with Rovik’s tools: set ${connectorTitle(kind)} to use them (Settings → Connectors).`
+      : 'Autopilot works with Rovik’s tools, which this model doesn’t use: pick one that does.';
+  }
+  if (mode === 'plan' && kind && !connectorSpec(kind)?.planMode) {
+    return `${connectorTitle(kind)} has no plan mode of its own, and its tools would change the project: use Agent mode, or set it to use Rovik’s tools (Settings → Connectors).`;
+  }
+  return null;
 }

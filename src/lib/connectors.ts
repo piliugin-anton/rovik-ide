@@ -163,6 +163,12 @@ export interface ConnectorSpec {
   summary: (settings: Record<string, unknown>) => string;
   /** The model its chats' titles are asked of; none: the chat's own. */
   titleModel?: string;
+  /**
+   * Running its own tools, it plans in a plan mode of its own when the chat
+   * is in Plan mode (the core's `Connector::plan_mode`). Without one, Plan
+   * mode isn't offered with its own tools, which would carry the plan out.
+   */
+  planMode: boolean;
 }
 
 /**
@@ -188,6 +194,7 @@ export const CONNECTOR_CATALOG: ConnectorSpec[] = [
       return `${s.program} · ${s.tools === 'rovik' ? 'Rovik’s tools' : (mode ?? s.permissionMode)}`;
     },
     titleModel: CLAUDE_CODE_TITLE_MODEL,
+    planMode: true,
   },
 ];
 

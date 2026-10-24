@@ -6343,6 +6343,16 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   outline-offset: -1px;
 }
 
+/* A mode the chat's model can't run: its reason is its tooltip. */
+.mode-option.unavailable {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mode-option.unavailable:hover {
+  color: var(--fg-muted);
+}
+
 /* "Implement this plan" under a finished plan */
 
 .chat-plan-actions {

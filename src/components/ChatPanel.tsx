@@ -45,7 +45,13 @@ import { generateChatTitle } from '../lib/chatTitle';
 import { estimateContext } from '../lib/aiChat';
 import { DEFAULT_CONTEXT_TOKENS } from '../lib/contextBudget';
 import ContextMeter, { ConnectorContextMeter, type ContextUsage } from './ContextMeter';
-import { chatMode, setChatMode, setOwnModeChat, type ChatMode } from '../lib/chatMode';
+import {
+  chatMode,
+  modeUnavailable,
+  setChatMode,
+  setOwnModeChat,
+  type ChatMode,
+} from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
 import { formatBytes, plural } from '../lib/textUtils';
@@ -3570,6 +3576,22 @@ export default function ChatPanel(props: ChatProps) {
       notifyNotTaken(notTaken);
       return;
     }
+    // A mode the model can't run (Autopilot without Rovik's tools): the
+    // text stays, and the notice says why.
+    const unavailable = modeUnavailable(chatMode(), profile);
+    if (unavailable) {
+      const connector = connectorKindOf(profile.baseUrl);
+      notify({
+        kind: 'warning',
+        title: `${chatMode() === 'plan' ? 'Plan mode' : 'Autopilot'} isn’t available with this model`,
+        message: unavailable,
+        actions: connector
+          ? [{ label: 'Open Connectors', run: () => openAppSettings('connectors') }]
+          : [],
+        timeout: 15_000,
+      });
+      return;
+    }
     // A Thorough task: the kinds it judges with run only on models chosen
     // for them (T09), so it doesn't start until each has one. The text stays.
     if (chatMode() === 'autopilot') {
@@ -4787,7 +4809,7 @@ export default function ChatPanel(props: ChatProps) {
       </Show>
       <div class="chat-model-select">
         <div class="chat-model-select-row">
-          <ModeSelector />
+          <ModeSelector unavailable={(mode) => modeUnavailable(mode, activeProfile())} />
         </div>
         <div class="chat-model-select-row">
           <ModelPicker
