@@ -159,6 +159,31 @@ pub struct ProbeRequestArgs {
     pub request: bool,
 }
 
+/// A command a connector's program takes as a message, `/name arguments`:
+/// its own (`compact`, `context`), the project's and the user's (custom
+/// commands, skills). Listed for the chat's command picker
+/// (`Request::ConnectorCommands`); a message is sent as a command only when
+/// the user picked one of them there (the frontend marks it,
+/// `meta.command`): typed by hand, `/compact` or `/etc/passwd …` is a
+/// message like any other.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorCommand {
+    /// Without the slash: `compact`, `review`, `anthropic-skills:pdf`.
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// What it takes after its name, for the user: `<name>`, `[focus]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
+    /// Other names it answers to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// The program's own, not the project's or the user's.
+    #[serde(default)]
+    pub builtin: bool,
+}
+
 /// A step of a connector's "Set up" that runs its program, or its
 /// installer, on the computer asked (`Request::ConnectorSetup`). Which
 /// steps a connector has, and what each runs, is its own

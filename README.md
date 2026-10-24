@@ -377,6 +377,31 @@ what it cost by Claude Code's own estimate; with Rovik's tools, the cost
 of a run of several replies comes with its last. Connector models take no
 images or PDFs from the chat.
 
+**Commands.** In a chat on a connector, typing `/` at the start of the
+message lists the commands the harness offers there: Claude Code's own
+(`/compact`, `/context`, `/cost`…), the project's `.claude/commands` and
+the user's, and skills, each with what it takes and what it does. Rovik
+asks Claude Code for the list in the project folder (no request to the
+model) and keeps it a minute. Claude Code's commands that would change
+what Rovik keeps aren't listed: the chat's session (`/clear`), its model
+and effort (`/model`, `/effort`, `/fast`, `/config`, which save theirs as
+Claude Code's defaults), its settings and approvals (`/update-config`,
+`/fewer-permission-prompts`, `/doctor`, `/mcp`), the sign-in, and those
+that need a terminal or work on after the run (`/color`, `/loop`,
+`/goal`, `/batch`). Up and Down move through it, Enter or Tab
+picks one; Escape closes it. A picked command goes to Claude Code as
+typed and alone, without the editor's context before it, and its output
+is the reply (`/compact` says how far it shrank the conversation). Only
+a picked command runs as one: a message typed by hand, `/compact` or
+`/etc/passwd has a typo`, goes as a message, so Claude Code reads it as
+text.
+
+**Context.** The harness keeps the conversation and compacts it itself,
+so a connector's chat has no context mode (Trimming, CLMs) and Rovik
+doesn't estimate it. The bar above the input shows the harness's own
+context after its last reply instead, "Context used: 35k / 1M (4%)", with
+where it compacts on its own in the tooltip.
+
 On a cloud host, the host needs its own installation: an administrator
 runs `sudo /opt/rovik/bin/rovik-agentd admin claude-code` once, which
 installs Anthropic's package for every user (see

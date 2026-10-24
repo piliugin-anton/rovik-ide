@@ -21,6 +21,7 @@ import {
   connectorsSummary,
   connectorUsage,
   isConnector,
+  latestConnectorContext,
   newConnector,
   probeModels,
   probeSummary,
@@ -210,6 +211,14 @@ test('a reply’s record: steps in a few words, and a headline with what it used
   assert.equal(connectorHeadline({ kind: 'claude-code' }, true), 'Claude Code · working…');
   assert.deepEqual(connectorUsage(meta), { inputTokens: 12_000, outputTokens: 300, cost: 0.04 });
   assert.equal(connectorUsage({ kind: 'claude-code' }), null);
+  // A command run without a request to the model (`/context`): no cost, nothing counted.
+  const command = {
+    kind: 'claude-code',
+    model: 'claude-sonnet-5',
+    usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0, connector: { numTurns: 0 } },
+  };
+  assert.equal(connectorHeadline(command, false), 'Claude Code · claude-sonnet-5');
+  assert.equal(connectorUsage(command), null);
 });
 
 /*
@@ -371,4 +380,44 @@ test('with Rovik’s tools, a reply’s record says what it used, its run’s co
 test('the choices’ tooltips have no markup characters, which WebKitGTK can’t show', () => {
   const hints = [...AUTH_KINDS, ...PERMISSION_MODES, ...TOOLS_MODES, ...EFFORTS].map((c) => c.hint);
   for (const hint of hints) assert.doesNotMatch(hint, /[&<>]/, hint);
+});
+
+test('the context shown is the one the latest connector reply reported', () => {
+  const reply = (context?: { used: number; window: number }) => ({
+    role: 'assistant',
+    meta: { connector: { kind: 'claude-code', usage: { connector: context ? { context } : {} } } },
+  });
+  assert.equal(latestConnectorContext([]), null);
+  assert.equal(latestConnectorContext([{ role: 'user' }, reply()]), null);
+  // A later reply that didn't report one (a stopped run) leaves the last one shown.
+  assert.deepEqual(
+    latestConnectorContext([
+      reply({ used: 10, window: 100 }),
+      reply({ used: 40, window: 100 }),
+      { role: 'user' },
+      reply(),
+    ]),
+    { kind: 'claude-code', context: { used: 40, window: 100 } }
+  );
+  assert.equal(latestConnectorContext([reply({ used: 1, window: 0 })]), null);
+});
+
+test('while it runs, a reply’s record says its state in place of “working…”', () => {
+  const meta = { kind: 'claude-code', model: 'claude-sonnet-5' };
+  assert.equal(connectorHeadline(meta, true), 'Claude Code · claude-sonnet-5 · working…');
+  assert.equal(
+    connectorHeadline(meta, true, 'Still waiting for a response… 6 s'),
+    'Claude Code · claude-sonnet-5 · Still waiting for a response… 6 s'
+  );
+  const stepped = { ...meta, steps: [{ id: 't1', name: 'Read', input: {} }] };
+  assert.equal(connectorHeadline(stepped, true), 'Claude Code · claude-sonnet-5 · 1 step');
+  assert.equal(
+    connectorHeadline(stepped, true, 'Stopping…'),
+    'Claude Code · claude-sonnet-5 · 1 step · Stopping…'
+  );
+  // Ended: no state.
+  assert.equal(
+    connectorHeadline(stepped, false, 'Stopping…'),
+    'Claude Code · claude-sonnet-5 · 1 step'
+  );
 });

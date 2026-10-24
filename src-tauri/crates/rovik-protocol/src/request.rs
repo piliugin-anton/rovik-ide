@@ -9,7 +9,9 @@ use crate::agent::{
 use crate::autopilot::{AutonomyConfig, ChatTask, DeliveryTest};
 use crate::chat::{ChatModel, MessagePatch};
 use crate::clm::{ClmStatus, RevisionRow};
-use crate::connectors::{ConnectorAuth, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp};
+use crate::connectors::{
+    ConnectorAuth, ConnectorCommand, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
+};
 use crate::host::{HostInfo, KeyInfo, Storage};
 use crate::plan::{CurrentChecklist, QuestionsOutcome};
 use crate::sync::{ChangesCursor, ChangesPage, Ownership};
@@ -106,6 +108,14 @@ pub enum Request {
     /// computer asked: started, followed, answered or stopped. →
     /// `ConnectorSetup`.
     ConnectorSetup(SetupOp),
+    /// The commands a connector's program takes as a message, for the
+    /// chat's command picker, as it finds them in `cwd` (the chat's project:
+    /// its own commands are there). → `ConnectorCommands`.
+    ConnectorCommands {
+        args: ProbeRequestArgs,
+        #[serde(default)]
+        cwd: Option<String>,
+    },
 
     // Chat: writes to a chat's rows.
     ChatRename {
@@ -379,6 +389,7 @@ impl Request {
             | Request::ConnectorProbe(_)
             | Request::ConnectorAuthStatus(_)
             | Request::ConnectorSetup(_)
+            | Request::ConnectorCommands { .. }
             | Request::BlobsMissing { .. }
             | Request::ProjectEnsure { .. }
             | Request::WorkResults
@@ -443,6 +454,8 @@ pub enum Response {
     ConnectorAuth(ConnectorAuth),
     /// `ConnectorSetup`.
     ConnectorSetup(SetupJob),
+    /// `ConnectorCommands`.
+    ConnectorCommands(Vec<ConnectorCommand>),
 }
 
 /// A reply of another kind than its request's is the other side's fault.
@@ -504,4 +517,5 @@ replies! {
     ConnectorProbe => ConnectorProbe,
     ConnectorAuth => ConnectorAuth,
     ConnectorSetup => SetupJob,
+    ConnectorCommands => Vec<ConnectorCommand>,
 }

@@ -605,7 +605,20 @@ export interface ConnectorUsage {
     /** `harnessTurn`: the cost is the whole run's, over several replies. */
     costCovers?: string;
     permissionDenials?: number;
+    /** The harness's own context after the reply, as it reported it. */
+    context?: ConnectorContext;
   };
+}
+
+/**
+ * A connector's context after a reply (claude_code.rs `context_of`): the
+ * tokens its session holds, of its model's window, and where it compacts
+ * the conversation on its own. The harness keeps the history, not Rovik.
+ */
+export interface ConnectorContext {
+  used: number;
+  window: number;
+  compactsAt?: number;
 }
 
 export interface ConnectorMeta {
@@ -644,8 +657,11 @@ function compact(n: number): string {
   return String(n);
 }
 
-/** "Claude Code · claude-sonnet-5 · 7 steps · 12.3k tokens (8.1k cached) · $0.04 · 3 turns" */
-export function connectorHeadline(meta: ConnectorMeta, running: boolean): string {
+/**
+ * "Claude Code · claude-sonnet-5 · 7 steps · 12.3k tokens (8.1k cached) · $0.04 · 3 turns";
+ * while it runs, `state` (`Stopping…`, `waiting for your approval`), else "working…" until a step.
+ */
+export function connectorHeadline(meta: ConnectorMeta, running: boolean, state?: string): string {
   const parts: string[] = [];
   const kind = meta.kind ? connectorTitle(meta.kind as ConnectorKind) : 'Connector';
   parts.push(kind);
@@ -653,14 +669,16 @@ export function connectorHeadline(meta: ConnectorMeta, running: boolean): string
   if (model) parts.push(model);
   const steps = meta.steps?.length ?? 0;
   if (steps) parts.push(plural(steps, 'step'));
-  else if (running && !meta.rovikTools) parts.push('working…');
+  if (running && state) parts.push(state);
+  else if (running && !steps && !meta.rovikTools) parts.push('working…');
   const u = meta.usage;
   if (u) {
     const tokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
     const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
     if (tokens)
       parts.push(`${compact(tokens)} tokens${cached ? ` (${compact(cached)} cached)` : ''}`);
-    if (u.cost !== undefined) {
+    // A command run without a request to the model (`/context`) cost nothing to say.
+    if (u.cost !== undefined && (u.cost > 0 || tokens > 0)) {
       const cost = `$${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}`;
       // With Rovik's tools, a run of Claude Code's spans several replies:
       // its cost comes with the last.
@@ -678,6 +696,8 @@ export function connectorUsage(
 ): { inputTokens: number; outputTokens: number; cost?: number } | null {
   const u = meta?.usage;
   if (!u) return null;
+  // Nothing used (a command run without a request): nothing to count.
+  if (!u.prompt_tokens && !u.completion_tokens && !u.cost) return null;
   const used = { inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0 } as {
     inputTokens: number;
     outputTokens: number;
@@ -685,4 +705,19 @@ export function connectorUsage(
   };
   if (u.cost !== undefined) used.cost = u.cost;
   return used;
+}
+
+/**
+ * The context the latest connector reply in `messages` reported, and the
+ * connector's kind; none before one has.
+ */
+export function latestConnectorContext(
+  messages: { role: string; meta?: { connector?: ConnectorMeta } | null }[]
+): { kind?: string; context: ConnectorContext } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const meta = messages[i].role === 'assistant' ? messages[i].meta?.connector : undefined;
+    const context = meta?.usage?.connector?.context;
+    if (context && context.window > 0) return { kind: meta?.kind, context };
+  }
+  return null;
 }

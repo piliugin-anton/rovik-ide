@@ -44,7 +44,7 @@ import { highlightTitle } from '../lib/chatSearch';
 import { generateChatTitle } from '../lib/chatTitle';
 import { estimateContext } from '../lib/aiChat';
 import { DEFAULT_CONTEXT_TOKENS } from '../lib/contextBudget';
-import ContextMeter, { type ContextUsage } from './ContextMeter';
+import ContextMeter, { ConnectorContextMeter, type ContextUsage } from './ContextMeter';
 import { chatMode, setChatMode, setOwnModeChat, type ChatMode } from '../lib/chatMode';
 import { answerQuestions, pendingQuestionsIn } from '../lib/questions';
 import { notify } from '../lib/notifications';
@@ -52,6 +52,22 @@ import { formatBytes, plural } from '../lib/textUtils';
 import ModeSelector from './ModeSelector';
 import EffortSelector from './EffortSelector';
 import ContextControls from './ContextControls';
+import CommandSuggestions from './CommandSuggestions';
+import {
+  connectorKindOf,
+  connectorTitle,
+  errorText,
+  latestConnectorContext,
+} from '../lib/connectors';
+import {
+  commandQuery,
+  connectorCommands,
+  startsWithCommand,
+  matchCommands,
+  profileConnectorArgs,
+  type CommandsKey,
+  type ConnectorCommand,
+} from '../lib/connectorCommands';
 import { contextModeFor, ensureContextMode } from '../lib/contextMode';
 import {
   formatsToSend,
@@ -151,7 +167,14 @@ import {
 } from '../lib/composerDraft';
 import { toRelativePath } from '../lib/fileTools';
 import { DEFAULT_PERMISSIONS, sameModel, type AgentPermissions } from '../lib/permissions';
-import { runsSubagents, runUsage, transcript, transcriptHold, usageLabel } from '../lib/subagents';
+import {
+  runsSubagents,
+  runUsage,
+  runUsageSource,
+  transcript,
+  transcriptHold,
+  usageLabel,
+} from '../lib/subagents';
 import { chatsWaitingOnApprovals } from '../lib/approvals';
 import {
   DEFAULT_SUBAGENT_SETTINGS,
@@ -562,11 +585,96 @@ export default function ChatPanel(props: ChatProps) {
   }
 
   const activeDialog = () => store.state.active;
+
+  /*
+   * A connector's commands (lib/connectorCommands.ts): listed for the chat's
+   * connector, in its project folder (a host chat's: on its host), as the
+   * chat opens on one, and again when the `/` picker opens after a minute.
+   */
+  const commandsKey = createMemo<CommandsKey | null>(
+    () => {
+      const args = profileConnectorArgs(activeProfile());
+      if (!args) return null;
+      const place = activeDialog()?.place;
+      return { args, cwd: place ? null : props.rootPath() || null, host: place?.host ?? null };
+    },
+    null,
+    { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) }
+  );
+  const [commandsListing, setCommandsListing] = createSignal<{
+    key: CommandsKey;
+    commands?: ConnectorCommand[];
+    error?: string;
+  } | null>(null);
+  /** The `/` being typed at the start of the composer, while it names no command yet. */
+  const [commandPicker, setCommandPicker] = createSignal<{ query: string; start: number } | null>(
+    null
+  );
+  /** Lists the commands at `key`, for the picker. */
+  function listCommands(key: CommandsKey) {
+    setCommandsListing((l) => (l?.key === key ? l : { key }));
+    connectorCommands(key).then(
+      (commands) => {
+        if (commandsKey() === key) setCommandsListing({ key, commands });
+      },
+      (err) => {
+        if (commandsKey() === key) setCommandsListing({ key, error: errorText(err) });
+      }
+    );
+  }
+  createEffect(
+    on([commandsKey, () => commandPicker() !== null], ([key, picking], prev) => {
+      // As the chat opens on a connector, and as the picker opens.
+      const closed = prev?.[0] === key && prev[1] && !picking;
+      if (key && !closed) listCommands(key);
+    })
+  );
+  const commandSuggestions = createMemo(() => {
+    const picker = commandPicker();
+    const listed = commandsListing();
+    if (!picker || !listed || listed.key !== commandsKey()) return [];
+    return matchCommands(picker.query, listed.commands ?? []);
+  });
+  /** The picker's line above its rows: listing, or why listing failed. */
+  const commandsStatus = (): string | null => {
+    const listed = commandsListing();
+    if (!commandPicker() || !listed) return null;
+    if (listed.error) return `Couldn’t list the commands: ${listed.error}`;
+    return listed.commands ? null : 'Listing commands…';
+  };
+  const commandPickerShown = () =>
+    commandPicker() !== null && (commandSuggestions().length > 0 || commandsStatus() !== null);
+
+  /**
+   * The command picked from the list for the chat's composer. Only a picked
+   * command is sent as one: typed by hand, `/compact` is a message.
+   */
+  let pickedCommand: { dialogId: string; name: string } | null = null;
+
+  /**
+   * Whether `text` goes as a command: a connector's chat, nothing but the
+   * text, and it still starts with the command picked for it.
+   */
+  function sendsAsCommand(dialogId: string, text: string, withMore: boolean): boolean {
+    const picked = pickedCommand;
+    return (
+      !!commandsKey() &&
+      !withMore &&
+      picked?.dialogId === dialogId &&
+      startsWithCommand(text, picked.name)
+    );
+  }
   const activeChat = () => {
     const id = store.state.activeId;
     return id ? store.state.open[id] : undefined;
   };
   const messages = (): ChatMessage[] => activeChat()?.messages ?? [];
+  /** The chat runs on a connector, which keeps its context itself. */
+  const onConnector = () => !!activeProfile() && !!connectorKindOf(activeProfile()!.baseUrl);
+  /** What the connector's latest reply said of its context. */
+  const connectorContext = createMemo(() =>
+    onConnector() ? latestConnectorContext(messages()) : null
+  );
 
   /*
    * Unsent input follows the `input` signal, wherever the change came from
@@ -622,6 +730,8 @@ export default function ChatPanel(props: ChatProps) {
           }
           return;
         }
+        // A connector keeps its own context; its replies report it.
+        if (onConnector()) return;
         // Switching chats/tabs: show the last estimate at once, then refresh.
         const cached = usageCache.get(dialogId);
         if (cached) {
@@ -1158,6 +1268,44 @@ export default function ChatPanel(props: ChatProps) {
    * -----------------------------------------------------------------------
    */
 
+  /** Opens or closes the `@` file list and the `/` command list for what's before the caret. */
+  function updateAutocomplete(value: string, cursorPosition: number) {
+    updateFileAutocomplete(value, cursorPosition);
+    updateCommandPicker(value, cursorPosition);
+  }
+
+  function updateCommandPicker(value: string, cursorPosition: number) {
+    // Edited away from the command picked: a message again.
+    if (pickedCommand && !startsWithCommand(value, pickedCommand.name)) pickedCommand = null;
+    const picker = commandsKey() ? commandQuery(value.slice(0, cursorPosition)) : null;
+    if (picker?.query !== commandPicker()?.query) setSelectedSuggestionIndex(0);
+    setCommandPicker(picker);
+  }
+
+  /**
+   * Puts the picked command in place of the `/` typed: `/compact `, the
+   * caret after it, for what it takes. As typed text, so Ctrl+Z undoes it.
+   */
+  function acceptCommand(command: ConnectorCommand) {
+    const container = inputTextareaRef;
+    const picker = commandPicker();
+    if (!container || !picker) return;
+    container.focus();
+    const start = findTextOffset(container, picker.start);
+    const end = findTextOffset(container, picker.start + 1 + picker.query.length);
+    const selection = window.getSelection();
+    if (!start || !end || !selection) return;
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    insertPlainText(`/${command.name} `);
+    setCommandPicker(null);
+    const dialogId = activeDialogId();
+    pickedCommand = dialogId ? { dialogId, name: command.name } : null;
+  }
+
   function updateFileAutocomplete(value: string, cursorPosition: number) {
     const beforeCursor = value.slice(0, cursorPosition);
 
@@ -1408,6 +1556,8 @@ export default function ChatPanel(props: ChatProps) {
     setInput('');
     setAttachmentCount(0);
     setReferencedFiles([]);
+    setCommandPicker(null);
+    pickedCommand = null;
 
     if (inputTextareaRef) {
       inputTextareaRef.innerHTML = '';
@@ -1435,21 +1585,53 @@ export default function ChatPanel(props: ChatProps) {
     'PageDown',
   ]);
 
+  /**
+   * The list open under the composer, for its keys: the `/` commands', or
+   * the `@` files'. A command list with no match isn't open: `/etc/…` is text.
+   */
+  function openSuggestions(): {
+    count: number;
+    accept: (index: number) => void;
+    close: () => void;
+  } | null {
+    if (commandPickerShown()) {
+      const commands = commandSuggestions();
+      return {
+        count: commands.length,
+        accept: (i) => commands[i] && acceptCommand(commands[i]),
+        close: () => setCommandPicker(null),
+      };
+    }
+    if (fileSuggestionsOpen()) {
+      const files = fileSuggestions();
+      return {
+        count: files.length,
+        accept: (i) => files[i] && acceptFileSuggestion(files[i]),
+        close: () => {
+          setFileSuggestionsOpen(false);
+          setFileTriggerStart(null);
+          setFileQuery('');
+        },
+      };
+    }
+    return null;
+  }
+
   function handleSuggestionKeys(e: KeyboardEvent) {
-    if (!fileSuggestionsOpen() || e.ctrlKey || e.metaKey || e.altKey) return;
-    // Tab completes with the selected file, as in editors and terminals,
+    const list = openSuggestions();
+    if (!list || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Tab completes with the selected row, as in editors and terminals,
     // instead of moving focus out of the input (onto the list).
     if (e.key === 'Tab') {
       e.preventDefault();
       e.stopPropagation();
-      const suggestion = fileSuggestions()[selectedSuggestionIndex()];
-      if (suggestion && !e.shiftKey) acceptFileSuggestion(suggestion);
+      if (!e.shiftKey) list.accept(selectedSuggestionIndex());
       return;
     }
     if (!CARET_KEYS.has(e.key)) return;
     e.preventDefault();
     e.stopPropagation();
-    const count = fileSuggestions().length;
+    const count = list.count;
     if (count > 0) {
       const last = count - 1;
       const move: Record<string, (i: number) => number> = {
@@ -1779,7 +1961,7 @@ export default function ChatPanel(props: ChatProps) {
     const caretOffset =
       sel && sel.focusNode ? getTextOffset(target, sel.focusNode, sel.focusOffset) : raw.length;
 
-    updateFileAutocomplete(raw, caretOffset);
+    updateAutocomplete(raw, caretOffset);
   }
 
   /**
@@ -3236,6 +3418,8 @@ export default function ChatPanel(props: ChatProps) {
       // nor are the user's sent while a run worked (lib/requests.ts).
       if (!isRequestMessage(m) || m.failed) continue;
       if (m.meta?.sentContent) return m.meta.sentContent;
+      // A connector's command goes again as typed.
+      if (m.meta?.command) return m.content;
       // Sent before the wire copy was stored: rebuild it from the current editor.
       return buildWireContent(m.content, []);
     }
@@ -3411,13 +3595,16 @@ export default function ChatPanel(props: ChatProps) {
      * the same thing instead of the bare text. Images and PDFs go as
      * attachments, the PDFs named in the meta.
      */
-    const wireContent = buildWireContent(text, selectedFiles);
+    // A connector's command (`/compact`) goes as typed, alone.
+    const command = sendsAsCommand(dialog.id, text, selectedFiles.length + attachments.length > 0);
+    const wireContent = command ? text : buildWireContent(text, selectedFiles);
     const pdfs = pdfsOf(segments);
     const message = {
       id: crypto.randomUUID(),
       content: text,
       meta: {
         mode: chatMode(),
+        ...(command ? { command: true } : {}),
         ...(wireContent && wireContent !== text ? { sentContent: wireContent } : {}),
         ...(pdfs.length > 0 ? { pdfs } : {}),
       },
@@ -4123,7 +4310,7 @@ export default function ChatPanel(props: ChatProps) {
       s?.focusNode && container.contains(s.focusNode)
         ? getTextOffset(container, s.focusNode, s.focusOffset)
         : raw.length;
-    updateFileAutocomplete(raw, caret);
+    updateAutocomplete(raw, caret);
   }
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -4142,32 +4329,19 @@ export default function ChatPanel(props: ChatProps) {
       return;
     }
 
-    // Arrow keys etc. while the list is open: handleSuggestionKeys.
-    if (fileSuggestionsOpen()) {
-      const suggestions = fileSuggestions();
-
-      if (e.key === 'Enter' && !e.shiftKey) {
-        if (suggestions.length > 0) {
-          e.preventDefault();
-
-          const suggestion = suggestions[selectedSuggestionIndex()];
-
-          if (suggestion) {
-            acceptFileSuggestion(suggestion);
-          }
-
-          return;
-        }
+    // Arrow keys etc. while a list is open: handleSuggestionKeys.
+    const list = openSuggestions();
+    if (list) {
+      if (e.key === 'Enter' && !e.shiftKey && list.count > 0) {
+        e.preventDefault();
+        list.accept(selectedSuggestionIndex());
+        return;
       }
 
       if (e.key === 'Escape') {
         e.preventDefault();
-
-        setFileSuggestionsOpen(false);
-        setFileTriggerStart(null);
-        setFileQuery('');
+        list.close();
         setSelectedSuggestionIndex(0);
-
         return;
       }
     }
@@ -4312,6 +4486,9 @@ export default function ChatPanel(props: ChatProps) {
         queued={queuedNow()}
         queuedLabel={queuedLabelNow()}
         onUnsteer={(id) => void takeBackSteer(id)}
+        connectorTitle={
+          onConnector() ? connectorTitle(connectorKindOf(activeProfile()!.baseUrl)) : undefined
+        }
       />
       {/* The agent's checklist while it works (read-only). */}
       <Show when={sending() && !waitingQuestion() && runChecklist()}>
@@ -4360,20 +4537,23 @@ export default function ChatPanel(props: ChatProps) {
       <Show when={waitingQuestion()} keyed>
         {(pending) => <QuestionPanel pending={pending} />}
       </Show>
-      {/* What this request's subagents used, as their providers reported it. */}
+      {/* What this request's subagents and connectors used, as they reported it. */}
       <Show when={usageLabel(runUsage(messages()))}>
         {(label) => (
           <div
             class="subagent-run-usage"
             title="Tokens used for the latest request by subagents and connectors"
           >
-            Subagents: {label()}
+            {runUsageSource(messages())}: {label()}
           </div>
         )}
       </Show>
       {/* In CLM mode the context row shows the size of the agent's own context. */}
-      <Show when={contextModeFor(activeDialogId()) !== 'clm' && contextUsage()}>
+      <Show when={!onConnector() && contextModeFor(activeDialogId()) !== 'clm' && contextUsage()}>
         {(usage) => <ContextMeter usage={usage()} />}
+      </Show>
+      <Show when={connectorContext()}>
+        {(c) => <ConnectorContextMeter kind={c().kind} context={c().context} />}
       </Show>
       {/* A remote send's files going up before its message (6.11). */}
       <UploadProgress dialogId={activeDialogId()} />
@@ -4442,6 +4622,15 @@ export default function ChatPanel(props: ChatProps) {
                 onSelectAll={selectAllInComposer}
               />
             )}
+          </Show>
+
+          <Show when={commandPickerShown()}>
+            <CommandSuggestions
+              commands={commandSuggestions()}
+              selected={selectedSuggestionIndex()}
+              status={commandsStatus()}
+              onPick={acceptCommand}
+            />
           </Show>
 
           <Show when={fileSuggestionsOpen() && fileSuggestions().length > 0}>
@@ -4611,13 +4800,16 @@ export default function ChatPanel(props: ChatProps) {
             <EffortSelector value={effortFor(activeProfile()?.id)} onChange={setEffort} />
           </Show>
         </div>
-        <ContextControls
-          dialogId={activeDialogId()}
-          budget={clmBudget()?.dialogId === activeDialogId() ? clmBudget()!.budget : null}
-          sending={sending()}
-          movesToWsl={onWindows() && !store.summaryOf(activeDialogId() ?? '')?.place}
-          onOpenVirtualFiles={() => openAppSettings(onWindows() ? 'wsl' : 'vfs')}
-        />
+        {/* A connector keeps the conversation itself: Rovik's modes don't apply. */}
+        <Show when={!onConnector()}>
+          <ContextControls
+            dialogId={activeDialogId()}
+            budget={clmBudget()?.dialogId === activeDialogId() ? clmBudget()!.budget : null}
+            sending={sending()}
+            movesToWsl={onWindows() && !store.summaryOf(activeDialogId() ?? '')?.place}
+            onOpenVirtualFiles={() => openAppSettings(onWindows() ? 'wsl' : 'vfs')}
+          />
+        </Show>
       </div>
     </div>
   );

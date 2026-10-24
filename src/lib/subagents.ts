@@ -9,11 +9,11 @@
 // subagent's chat never shows up as a chat or as unread.
 import { batch } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
-import type { ChatMessage } from '../types';
+import type { ChatMessage, ConnectorKind } from '../types';
 import { chatApi, fromRow, type MessageRow } from './chatApi';
 import { merged, type MessagePatch } from './chatStore';
 import { isRequestMessage } from './requests';
-import { connectorUsage } from './connectors';
+import { connectorTitle, connectorUsage } from './connectors';
 import { SUBAGENT_KINDS } from './subagentSettings';
 import { plural } from './textUtils';
 
@@ -504,21 +504,22 @@ export function usageLabel(u: SubagentUsage | null | undefined): string | null {
   return `${short} tokens${cost}`;
 }
 
-/**
- * What the subagents of the chat's latest request used (its `task` results
- * and reviews), when their providers reported it; null for none.
- */
-export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
-  let from = 0;
+/** The chat's messages from its latest request on (a failed one doesn't count). */
+function latestRequest(messages: ChatMessage[]): ChatMessage[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (isRequestMessage(m) && !m.failed) {
-      from = i;
-      break;
-    }
+    if (isRequestMessage(m) && !m.failed) return messages.slice(i);
   }
+  return messages;
+}
+
+/**
+ * What the subagents of the chat's latest request used (its `task` results
+ * and reviews), and a connector's harness, when they reported it; null for none.
+ */
+export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
   let total: SubagentUsage | null = null;
-  for (const m of messages.slice(from)) {
+  for (const m of latestRequest(messages)) {
     // P5.3: a check round's triage counts too.
     const used = [
       m.meta?.subagent?.usage ?? m.meta?.review?.usage,
@@ -535,6 +536,27 @@ export function runUsage(messages: ChatMessage[]): SubagentUsage | null {
     }
   }
   return total;
+}
+
+/**
+ * Who `runUsage` counted, for its row's label: "Subagents", "Claude Code",
+ * or "Subagents and Claude Code". A connector's chat has no subagents of
+ * its own, and its usage isn't theirs.
+ */
+export function runUsageSource(messages: ChatMessage[]): string {
+  let subagents = false;
+  const connectors = new Set<string>();
+  for (const m of latestRequest(messages)) {
+    if (m.meta?.subagent?.usage ?? m.meta?.review?.usage ?? m.meta?.verification?.triage?.usage)
+      subagents = true;
+    if (connectorUsage(m.meta?.connector)) {
+      connectors.add(connectorTitle(m.meta?.connector?.kind as ConnectorKind | undefined));
+    }
+  }
+  const names = [...(subagents ? ['Subagents'] : []), ...connectors];
+  return names.length > 1
+    ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+    : (names[0] ?? 'Subagents');
 }
 
 /** The report, without the framing line the lead reads (subagent.rs `for_lead`). */

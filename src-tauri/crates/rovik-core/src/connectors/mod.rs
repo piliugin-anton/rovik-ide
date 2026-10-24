@@ -33,6 +33,7 @@ use crate::chat_db::store::MessageRow;
 use crate::chat_db::DbState;
 use crate::chat_request::ChatError;
 use futures_util::future::BoxFuture;
+pub use rovik_protocol::connectors::ConnectorCommand;
 pub use rovik_protocol::connectors::{
     is_connector, kind_of, ConnectorAuth, ConnectorKind, ConnectorModel, ConnectorProbe,
     ProbeRequest, ProbeRequestArgs, SetupAction, SetupJob, SetupOp,
@@ -221,6 +222,18 @@ pub trait Connector: Send + Sync {
     /// Ends every run left waiting, as the process exits.
     fn end_all(&self) {}
 
+    /// The commands the program takes as a message (`/name arguments`), as
+    /// it finds them working in `cwd`: for the chat's command picker. The
+    /// default: none, and a connector without commands shows no picker.
+    fn commands<'a>(
+        &'a self,
+        args: &'a ProbeRequestArgs,
+        cwd: &'a std::path::Path,
+    ) -> BoxFuture<'a, Result<Vec<ConnectorCommand>, String>> {
+        let _ = (args, cwd);
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
     /// The newest version of the program its makers publish, when it can
     /// be found out: a probe says when the installed one is older, and
     /// "Set up" offers to update it (`SetupAction::Update`). None: unknown.
@@ -252,6 +265,19 @@ pub async fn probe(args: ProbeRequestArgs) -> Result<ConnectorProbe, String> {
         .flatten()
         .filter(|latest| is_newer(latest, &probe.version));
     Ok(probe)
+}
+
+/// The commands `args.kind`'s program takes, found in `cwd` (the chat's
+/// project, where its own commands are), on this computer.
+pub async fn commands(
+    args: ProbeRequestArgs,
+    cwd: Option<String>,
+) -> Result<Vec<ConnectorCommand>, String> {
+    let cwd = cwd
+        .map(PathBuf::from)
+        .filter(|c| c.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    connector(args.kind).commands(&args, &cwd).await
 }
 
 /// Whether version `candidate` is newer than `installed`, each read from
@@ -465,14 +491,20 @@ pub fn prompt_for(
         Some(i) => &settled[i + 1..],
         None => &settled[..],
     };
+    // A command of the harness's (`/compact`, a skill): the frontend marks a
+    // message the user picked a listed command for (`meta.command`). It
+    // goes as typed, alone, since the harness reads a command only at the
+    // start of the message: no editor context, no recap before it.
+    let request = since
+        .iter()
+        .find(|m| m.role == "user" && !m.failed && is_request(m));
+    if let Some(command) = request.filter(|m| is_command(m)) {
+        return command.content.trim().to_string();
+    }
     let mut parts: Vec<String> = Vec::new();
     let mut found_current = false;
     for m in since.iter().filter(|m| m.role == "user" && !m.failed) {
-        let is_request = m
-            .meta
-            .as_ref()
-            .is_none_or(|meta| meta.get("harness").is_none() && meta.get("steer").is_none());
-        let text = if is_request && !found_current {
+        let text = if is_request(m) && !found_current {
             found_current = true;
             current_user_content
                 .map(str::to_string)
@@ -515,7 +547,30 @@ pub fn prompt_for(
             );
         }
     }
+    // Not a command the user picked, but it starts like one: a harness runs
+    // a message that starts with `/name` as its command (`/compact` typed by
+    // hand would compact). After a space it reads it as text.
+    if prompt.starts_with('/') {
+        prompt.insert(0, ' ');
+    }
     prompt
+}
+
+/// The user's own request, not the IDE's notes (`harness`) or what the
+/// user added while a run worked (`steer`).
+fn is_request(m: &MessageRow) -> bool {
+    m.meta
+        .as_ref()
+        .is_none_or(|meta| meta.get("harness").is_none() && meta.get("steer").is_none())
+}
+
+/// A request the frontend marked as a command of the harness's.
+fn is_command(m: &MessageRow) -> bool {
+    m.meta
+        .as_ref()
+        .and_then(|meta| meta.get("command"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// The most of one result a new session is told.
@@ -912,6 +967,39 @@ mod tests {
             !prompt.contains("First ask"),
             "earlier turns are the session's own"
         );
+    }
+
+    #[test]
+    fn only_a_picked_command_goes_as_one_typed_and_alone() {
+        let command = Some(json!({ "command": true, "sentContent": "/compact keep the API" }));
+        let rows = vec![
+            row("user", "First ask", None, true),
+            row("assistant", "Did it.", None, true),
+            row("user", " /compact keep the API ", command, true),
+            row("assistant", "", None, false),
+        ];
+        // No editor context before it, and no recap even for a new session.
+        let sent = Some("[editor: foo.rs]\n\n/compact keep the API");
+        let prompt = prompt_for(&rows, sent, false, true, false, None);
+        assert_eq!(prompt, "/compact keep the API");
+
+        // Not one of the harness's commands: a message like any other.
+        let rows = vec![
+            row("user", "/etc/passwd has a typo", None, true),
+            row("assistant", "", None, false),
+        ];
+        let sent = Some("[editor: foo.rs]\n\n/etc/passwd has a typo");
+        let prompt = prompt_for(&rows, sent, false, false, false, None);
+        assert_eq!(prompt, "[editor: foo.rs]\n\n/etc/passwd has a typo");
+
+        // Typed by hand, not picked: a message, though nothing comes before
+        // it. After a space, the harness doesn't run it as its command.
+        let rows = vec![
+            row("user", "/compact keep the API", None, true),
+            row("assistant", "", None, false),
+        ];
+        let prompt = prompt_for(&rows, None, false, false, false, None);
+        assert_eq!(prompt, " /compact keep the API");
     }
 
     #[test]

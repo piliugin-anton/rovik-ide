@@ -361,6 +361,7 @@ pub fn run() {
             commands::agent::connector_probe,
             commands::agent::connector_auth_status,
             commands::agent::connector_setup,
+            commands::agent::connector_commands,
             commands::browser::web_search,
             commands::browser::browse_url,
             commands::browser::browser_screenshot,

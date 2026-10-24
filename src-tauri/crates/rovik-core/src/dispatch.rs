@@ -97,6 +97,9 @@ pub async fn dispatch(core: &Core, request: Request) -> Result<Response, Fail> {
         Request::ConnectorSetup(op) => crate::connectors::setup(op)
             .await
             .map(Response::ConnectorSetup),
+        Request::ConnectorCommands { args, cwd } => crate::connectors::commands(args, cwd)
+            .await
+            .map(Response::ConnectorCommands),
         Request::WorkloadFocus { dialog_id } => {
             workload::workload_focus(dialog_id);
             Ok(Response::Done)

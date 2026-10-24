@@ -13,6 +13,7 @@ import {
   isSubagentChat,
   seedRunningSubagent,
   runUsage,
+  runUsageSource,
   usageLabel,
   kindLabel,
   liveLabel,
@@ -525,4 +526,33 @@ test('a transcript is kept while any block holds it (P5.9)', async () => {
   } finally {
     api.getMessages = original;
   }
+});
+
+test('the usage row names who it counted: subagents, a connector, or both', () => {
+  const msg = (role: ChatMessage['role'], meta?: ChatMessage['meta']): ChatMessage => ({
+    id: Math.random().toString(),
+    role,
+    content: role === 'user' ? 'go' : '',
+    meta,
+  });
+  const connector = msg('assistant', {
+    connector: { kind: 'claude-code', usage: { prompt_tokens: 100, completion_tokens: 5 } },
+  });
+  const subagent = msg('tool', {
+    subagent: {
+      kind: 'scout',
+      status: 'done',
+      childDialogId: null,
+      model: null,
+      modelsTried: [],
+      toolCalls: 1,
+      ms: 1,
+      usage: { inputTokens: 10, outputTokens: 1 },
+    },
+  });
+  assert.equal(runUsageSource([msg('user'), connector]), 'Claude Code');
+  assert.equal(runUsageSource([msg('user'), subagent]), 'Subagents');
+  assert.equal(runUsageSource([msg('user'), subagent, connector]), 'Subagents and Claude Code');
+  // An earlier request's connector isn't this one's.
+  assert.equal(runUsageSource([msg('user'), connector, msg('user'), subagent]), 'Subagents');
 });

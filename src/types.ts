@@ -254,6 +254,11 @@ export interface ToolMeta {
    */
   sentContent?: string;
   /**
+   * User messages to a connector: the text runs one of its commands
+   * (`/compact`), so it goes as typed and alone (lib/connectorCommands.ts).
+   */
+  command?: boolean;
+  /**
    * An empty assistant message marking where a run paused (never sent to the
    * model): after a number of tool calls, because it looked stuck, or for a
    * move or an upgrade (lib/runPause.ts).

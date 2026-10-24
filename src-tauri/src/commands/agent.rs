@@ -14,7 +14,7 @@ use rovik_core::agent_run::{
 use rovik_core::chat_request::ChatRequests;
 use rovik_core::Core;
 use rovik_protocol::connectors::{
-    ConnectorAuth, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
+    ConnectorAuth, ConnectorCommand, ConnectorProbe, ProbeRequestArgs, SetupJob, SetupOp,
 };
 use rovik_protocol::Request;
 use std::sync::Arc;
@@ -304,6 +304,23 @@ pub async fn connector_setup(
     match host.filter(|h| !h.is_empty()) {
         Some(host) => answer(remote.host_call(&host, Request::ConnectorSetup(op)).await),
         None => call(&core, Request::ConnectorSetup(op)).await,
+    }
+}
+
+/// The commands a connector's program offers in the chat's project folder
+/// (`cwd`), here or on `host`: what the composer's `/` picker lists.
+#[tauri::command]
+pub async fn connector_commands(
+    core: State<'_, Core>,
+    remote: State<'_, Arc<Remote>>,
+    args: ProbeRequestArgs,
+    cwd: Option<String>,
+    host: Option<String>,
+) -> Result<Vec<ConnectorCommand>, String> {
+    let request = Request::ConnectorCommands { args, cwd };
+    match host.filter(|h| !h.is_empty()) {
+        Some(host) => answer(remote.host_call(&host, request).await),
+        None => call(&core, request).await,
     }
 }
 
