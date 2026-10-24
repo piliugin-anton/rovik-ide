@@ -1104,11 +1104,23 @@ impl OverlayFs {
         }
     }
 
-    /// Takes `name` out of folder `parent`; returns the node.
+    /// Takes `name` out of folder `parent`; returns the node. The project's
+    /// entry there (the node itself, or one it replaced before) stays out of
+    /// the view, as `removed`. One the chat made or moved there leaves no
+    /// project entry to hide: one the project gets there later is the
+    /// user's, shown, and never landed as a delete.
     fn detach(inner: &mut Inner, parent: Ino, name: &str) -> Option<Ino> {
+        let path = Self::path_in(inner, parent).map(|p| join(&p, name));
         let dir = inner.nodes.get_mut(&parent)?;
         let ino = dir.children.as_mut()?.remove(name)?;
-        dir.removed.insert(name.to_string());
+        // Where its path can't be told, kept out all the same.
+        let from_project = path.is_none()
+            || inner.nodes.get(&ino).and_then(|n| n.origin.as_deref()) == path.as_deref();
+        if from_project {
+            if let Some(dir) = inner.nodes.get_mut(&parent) {
+                dir.removed.insert(name.to_string());
+            }
+        }
         if let Some(node) = inner.nodes.get_mut(&ino) {
             if let Some(i) = node
                 .links
@@ -1500,9 +1512,15 @@ impl OverlayFs {
                 .get(&name)
                 .is_some_and(|c| inner.nodes[c].origin.as_deref() != Some(p.as_str()));
             let gone = !children.contains_key(&name);
-            if (gone || replaced) && fs::symlink_metadata(self.abs(&p)).is_ok() {
+            if !(gone || replaced) {
+                continue;
+            }
+            // The project's entry there is what landing would delete: a
+            // by-product by its own kind (`node_modules/` ignores only a
+            // folder).
+            if let Ok(m) = fs::symlink_metadata(self.abs(&p)) {
                 out.push(OverlayChange::Delete {
-                    by_product: self.tiers.is_by_product(&p, false),
+                    by_product: self.tiers.is_by_product(&p, m.is_dir()),
                     base: inner.deleted.get(&p).cloned(),
                     path: p,
                 });

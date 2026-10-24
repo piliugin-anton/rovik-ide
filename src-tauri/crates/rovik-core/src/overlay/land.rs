@@ -162,12 +162,17 @@ pub fn plan(project: &Path, changes: &[OverlayChange], keep_chat: bool) -> Plan 
                     continue;
                 }
                 // Changed in the project since the chat deleted it: deleting
-                // would lose that change.
-                let changed = base.as_ref().is_some_and(|b| !b.still(&target));
+                // would lose that change. Without a record of what was
+                // deleted (the project had nothing there then, or a list
+                // saved before records were kept), what's there now can't be
+                // shown to be what the chat deleted, so it isn't deleted
+                // unasked.
+                let changed = base.as_ref().is_none_or(|b| !b.still(&target));
                 if changed && !keep_chat && !carried.contains(path.as_str()) {
                     let reason = match base {
+                        None => "the chat deleted this, and Rovik can't tell whether what the project has here now is what it deleted".to_string(),
                         Some(DeletedBase::Dir { complete: false, .. }) => {
-                            "the chat deleted this folder, and it's too large to check for changes in the project".to_string()
+                            "the chat deleted this folder, and it's too large to check for changes in the project".into()
                         }
                         Some(DeletedBase::Dir { .. }) => "the chat deleted this folder, and its contents changed in the project".into(),
                         _ => "the chat deleted it, and it changed in the project".into(),
@@ -1183,6 +1188,31 @@ mod tests {
         let paths: Vec<&str> = plan.actions.iter().map(|a| a.path.as_str()).collect();
         assert_eq!(paths, ["readme.md", "README.md"]);
         assert!(plan.conflicts.is_empty());
+    }
+
+    /// A delete with no record of what was deleted can't be shown to be
+    /// of what the project has there now: a conflict, unless the user
+    /// lands anyway.
+    #[test]
+    fn a_delete_with_no_recorded_base_is_a_conflict() {
+        let dir = crate::testing::temp_dir();
+        let project = dir.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("notes.md"), "the user's\n").unwrap();
+        let changes = [OverlayChange::Delete {
+            path: "notes.md".into(),
+            by_product: false,
+            base: None,
+        }];
+
+        let stopped = plan(&project, &changes, false);
+        assert!(stopped.actions.is_empty());
+        assert_eq!(stopped.conflicts.len(), 1);
+        assert_eq!(stopped.conflicts[0].path, "notes.md");
+
+        let anyway = plan(&project, &changes, true);
+        assert!(anyway.conflicts.is_empty());
+        assert_eq!(anyway.paths(), ["notes.md"]);
     }
 
     #[test]

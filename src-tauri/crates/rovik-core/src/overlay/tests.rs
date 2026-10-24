@@ -968,6 +968,97 @@ mod safety {
         assert!(project_file(&d, "a.txt").is_none());
     }
 
+    /// A file the chat made and deleted again leaves nothing to land: the
+    /// user's own file there later is theirs, and stays.
+    #[test]
+    fn a_file_the_chat_made_and_deleted_doesnt_delete_the_users_file_there_later() {
+        let d = setup(&[("a.txt", "a\n")]);
+        let o = overlay(&d);
+        let f = o
+            .create(ROOT, "notes.md", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(f.ino, 0, b"chat's notes\n").unwrap();
+        o.unlink(ROOT, "notes.md").unwrap();
+        fs::write(d.project().join("notes.md"), "user's notes\n").unwrap();
+        assert!(landable(&o).is_empty(), "{:?}", landable(&o));
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
+        assert_eq!(
+            project_file(&d, "notes.md").as_deref(),
+            Some("user's notes\n")
+        );
+    }
+
+    /// A project file already gone from the project when the chat deleted
+    /// it (a branch switched meanwhile) has no record of what it was: when
+    /// the project has one there again, the delete is a conflict, not done
+    /// unasked; landing anyway does it.
+    #[test]
+    fn a_delete_with_nothing_recorded_conflicts_with_what_the_project_has_now() {
+        let d = setup(&[("a.txt", "one\n")]);
+        let o = overlay(&d);
+        assert_eq!(read_all(&o, "a.txt"), "one\n");
+        fs::remove_file(d.project().join("a.txt")).unwrap();
+        o.unlink(ROOT, "a.txt").unwrap();
+        fs::write(d.project().join("a.txt"), "back on the branch\n").unwrap();
+        let plan = land::plan(&d.project(), &landable(&o), false);
+        assert_eq!(
+            plan.conflicts
+                .iter()
+                .map(|c| c.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt"]
+        );
+        assert!(matches!(
+            land::land(&data(&d), "chat", &d.project(), &landable(&o), false),
+            Err(LandError::Conflicts(_))
+        ));
+        assert_eq!(
+            project_file(&d, "a.txt").as_deref(),
+            Some("back on the branch\n")
+        );
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), true)
+            .unwrap()
+            .unwrap();
+        assert!(project_file(&d, "a.txt").is_none());
+    }
+
+    /// `rm -rf node_modules && npm install` in a chat: the project ignores
+    /// `node_modules/` (a folder only), so the delete and the new folder
+    /// are by-products, and landing leaves the project's alone.
+    #[test]
+    fn a_dependency_folder_deleted_and_installed_again_isnt_landed() {
+        let d = setup(&[
+            (".gitignore", "node_modules/\n"),
+            ("node_modules/x/index.js", "old\n"),
+            ("src/a.js", "a\n"),
+        ]);
+        let o = overlay(&d);
+        let x = ino(&o, "node_modules/x");
+        o.unlink(x, "index.js").unwrap();
+        o.rmdir(ino(&o, "node_modules"), "x").unwrap();
+        o.rmdir(ROOT, "node_modules").unwrap();
+        let deleted = o
+            .changes()
+            .into_iter()
+            .find(|c| c.path() == "node_modules")
+            .unwrap();
+        assert!(deleted.by_product(), "{deleted:?}");
+        let nm = o
+            .create(ROOT, "node_modules", Kind::Dir, 0o755, 0, 0, None)
+            .unwrap();
+        let f = o
+            .create(nm.ino, "y.js", Kind::File, 0o644, 0, 0, None)
+            .unwrap();
+        o.write(f.ino, 0, b"new\n").unwrap();
+        assert!(landable(&o).is_empty(), "{:?}", landable(&o));
+        land::land(&data(&d), "chat", &d.project(), &landable(&o), false).unwrap();
+        assert_eq!(
+            project_file(&d, "node_modules/x/index.js").as_deref(),
+            Some("old\n")
+        );
+        assert!(project_file(&d, "node_modules/y.js").is_none());
+    }
+
     #[test]
     fn a_delete_already_done_in_the_project_is_nothing_to_land() {
         let d = setup(&[("a.txt", "one\n")]);
