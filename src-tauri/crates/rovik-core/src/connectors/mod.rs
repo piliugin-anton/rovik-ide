@@ -55,7 +55,8 @@ const RECAP_CHARS: usize = 24_000;
 /// How many stored messages are read to build a turn.
 const RECENT_MESSAGES: usize = 400;
 
-/// A step the harness ran itself (a tool of its own), as the chat shows it.
+/// A step the harness ran itself (a tool of its own), or a stretch of its
+/// thinking between them (`thinking`), as the chat shows it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessStep {
@@ -73,6 +74,14 @@ pub struct HarnessStep {
     /// A subagent's step: the harness's call that started the subagent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// A stretch of thinking rather than a tool call: its text so far (a
+    /// summary, as the model's API gives it), in its place among the
+    /// steps. Its `name` and `input` are empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    /// How long that thinking took, once it's over (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
 }
 
 /// One turn for a harness: what `run_chat` makes of a chat request.
@@ -858,6 +867,17 @@ out({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Got: 
     std::fs::write(&path, script.replace("READ_PATH", read_path)).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     Some(path.to_string_lossy().into_owned())
+}
+
+/// A stand-in for `claude` (tests): a shell script, `script`, that prints
+/// the lines a run would, as its arguments say.
+#[cfg(all(test, unix))]
+pub(crate) fn fake_claude(dir: &std::path::Path, script: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("claude");
+    std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_string_lossy().into_owned()
 }
 
 /// A stand-in for `claude` with its own tools under Rovik's permissions

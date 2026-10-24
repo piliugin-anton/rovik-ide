@@ -49,6 +49,13 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// Where a step's input is cut, per field, and its result.
 const STEP_INPUT_CHARS: usize = 400;
 const STEP_RESULT_CHARS: usize = 1_200;
+/// What of its model's thinking Claude Code asks the API to return: a
+/// readable summary (`--thinking-display`), where current models return
+/// none unless asked. The chat shows it: among the steps with Claude Code's
+/// own tools, as the reply's reasoning with Rovik's. The thinking costs the
+/// same either way. The flag is from v2.1.94, older than flags every run
+/// already passes (`--permission-prompts`, v2.1.259).
+const THINKING_DISPLAY: &str = "summarized";
 /// Where a replacement system prompt splits: what's above is the same on
 /// every run, and stays cached; what's below (the project's section)
 /// changes (code.claude.com/docs/en/cli-reference, system prompt flags).
@@ -387,6 +394,11 @@ pub fn args_for(
         args.push("--effort".into());
         args.push(effort_arg(effort).into());
     }
+    // Its thinking, for the chat to show; a one-off request's isn't shown.
+    if !turn.one_shot {
+        args.push("--thinking-display".into());
+        args.push(THINKING_DISPLAY.into());
+    }
     if let Some(file) = prompt_file.filter(|_| sends_rovik_prompt(settings, turn)) {
         args.push("--system-prompt-file".into());
         args.push(file.to_string_lossy().into_owned());
@@ -566,6 +578,36 @@ pub struct Parser {
     /// The conversation was compacted in this run (`/compact`, or on its
     /// own): its tokens before and after.
     compacted: Option<(u64, u64)>,
+    /// With its own tools, the thinking being streamed: a step of its own
+    /// (`HarnessStep::thinking`), in its place among the tool calls.
+    thought: Option<Thought>,
+    /// The thoughts of this run so far, which number their steps' ids.
+    thoughts: usize,
+}
+
+/// A stretch of thinking as it streams, with Claude Code's own tools.
+struct Thought {
+    /// Its step, numbered once it says anything (`thought_id`).
+    step: HarnessStep,
+    started: Instant,
+}
+
+impl Thought {
+    /// A thought beginning now.
+    fn new() -> Thought {
+        Thought {
+            step: HarnessStep {
+                thinking: Some(String::new()),
+                ..HarnessStep::default()
+            },
+            started: Instant::now(),
+        }
+    }
+}
+
+/// The step id of a run's `n`th thought shown.
+fn thought_id(n: usize) -> String {
+    format!("thinking-{n}")
 }
 
 /// A token count for the user: `35.3k`, `1.2M`, `950`.
@@ -818,6 +860,15 @@ impl Parser {
                     });
                 }
             }
+            // With its own tools: a block of thinking begins a thought, and
+            // any block ends the one before (blocks stream one at a time).
+            "content_block_start" => {
+                self.end_thought(emit);
+                if event.pointer("/content_block/type").and_then(Value::as_str) == Some("thinking")
+                {
+                    self.thought = Some(Thought::new());
+                }
+            }
             "content_block_stop" if self.rovik_tools => {
                 if let Some((id, name, arguments)) = index.and_then(|i| self.open_calls.remove(&i))
                 {
@@ -835,6 +886,7 @@ impl Parser {
                     self.message_calls.push((id, name, arguments));
                 }
             }
+            "content_block_stop" => self.end_thought(emit),
             "message_delta" => {
                 if let Some(usage) = event.get("usage") {
                     let counts = usage_counts(usage);
@@ -860,6 +912,7 @@ impl Parser {
                     self.yielded = Some(std::mem::take(&mut self.message_calls));
                 }
             }
+            "message_stop" => self.end_thought(emit),
             "content_block_delta" => {
                 if let Some(id) = api_message {
                     self.streamed.insert(id);
@@ -887,14 +940,15 @@ impl Parser {
                     }
                     "text_delta" => {
                         if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                            // Text after thinking: the thought is over, even
+                            // where the stream didn't say so.
+                            self.end_thought(emit);
                             self.text(text, emit);
                         }
                     }
                     "thinking_delta" => {
                         if let Some(text) = delta.get("thinking").and_then(|t| t.as_str()) {
-                            emit(ChatStreamEvent::Reasoning {
-                                content: text.into(),
-                            });
+                            self.thinking(text, emit);
                         }
                     }
                     _ => {}
@@ -915,6 +969,43 @@ impl Parser {
         content.push_str(text);
         self.text_shown = true;
         emit(ChatStreamEvent::Delta { content });
+    }
+
+    /// Thinking streamed: with Rovik's tools, the reply's reasoning; with
+    /// its own, the step of the thought it's part of, shown once there's
+    /// text (thinking comes back empty where its text isn't asked for).
+    fn thinking(&mut self, text: &str, emit: &mut dyn FnMut(ChatStreamEvent)) {
+        if self.rovik_tools {
+            emit(ChatStreamEvent::Reasoning {
+                content: text.into(),
+            });
+            return;
+        }
+        let thought = self.thought.get_or_insert_with(Thought::new);
+        let so_far = thought.step.thinking.get_or_insert_with(String::new);
+        so_far.push_str(text);
+        if so_far.is_empty() {
+            return;
+        }
+        if thought.step.id.is_empty() {
+            self.thoughts += 1;
+            thought.step.id = thought_id(self.thoughts);
+        }
+        emit(ChatStreamEvent::HarnessStep {
+            step: thought.step.clone(),
+        });
+    }
+
+    /// The thought being streamed is over: shown with its time, when it
+    /// said anything.
+    fn end_thought(&mut self, emit: &mut dyn FnMut(ChatStreamEvent)) {
+        let Some(Thought { mut step, started }) = self.thought.take() else {
+            return;
+        };
+        if !step.id.is_empty() {
+            step.ms = Some(started.elapsed().as_millis() as u64);
+            emit(ChatStreamEvent::HarnessStep { step });
+        }
     }
 
     fn assistant(
@@ -943,11 +1034,23 @@ impl Parser {
                         self.text(text, emit);
                     }
                 }
+                // A message that wasn't streamed: its thinking whole, a
+                // thought of its own before its tool calls (no time known).
                 "thinking" if parent.is_none() && !streamed => {
                     if let Some(text) = block.get("thinking").and_then(|t| t.as_str()) {
-                        emit(ChatStreamEvent::Reasoning {
-                            content: text.into(),
-                        });
+                        if self.rovik_tools {
+                            emit(ChatStreamEvent::Reasoning {
+                                content: text.into(),
+                            });
+                        } else if !text.is_empty() {
+                            self.thoughts += 1;
+                            let step = HarnessStep {
+                                id: thought_id(self.thoughts),
+                                thinking: Some(text.into()),
+                                ..HarnessStep::default()
+                            };
+                            emit(ChatStreamEvent::HarnessStep { step });
+                        }
                     }
                 }
                 // Rovik's tools: the reply's own tool calls, from the stream.
@@ -977,9 +1080,8 @@ impl Parser {
                             block.get("input").unwrap_or(&Value::Null),
                             STEP_INPUT_CHARS,
                         ),
-                        result: None,
-                        ok: None,
                         parent: parent.clone(),
+                        ..HarnessStep::default()
                     };
                     if !self.steps.contains_key(&id) {
                         self.order.push(id.clone());
@@ -1029,6 +1131,7 @@ impl Parser {
 
     fn result(&mut self, value: &Value, emit: &mut dyn FnMut(ChatStreamEvent)) {
         self.finished = true;
+        self.end_thought(emit);
         let subtype = value.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
         let is_error = value
             .get("is_error")
@@ -2340,12 +2443,19 @@ mod tests {
                 ChatStreamEvent::HarnessSession { session, model, .. } => {
                     format!("session:{session}:{}", model.clone().unwrap_or_default())
                 }
-                ChatStreamEvent::HarnessStep { step } => format!(
-                    "step:{}:{}:{}",
-                    step.name,
-                    step.result.clone().unwrap_or_default(),
-                    step.ok.map(|ok| ok.to_string()).unwrap_or_default()
-                ),
+                ChatStreamEvent::HarnessStep { step } => match &step.thinking {
+                    Some(text) => format!(
+                        "thought:{}:{text}:{}",
+                        step.id,
+                        if step.ms.is_some() { "done" } else { "…" }
+                    ),
+                    None => format!(
+                        "step:{}:{}:{}",
+                        step.name,
+                        step.result.clone().unwrap_or_default(),
+                        step.ok.map(|ok| ok.to_string()).unwrap_or_default()
+                    ),
+                },
                 ChatStreamEvent::Finished {
                     finish_reason,
                     usage,
@@ -2384,7 +2494,9 @@ mod tests {
         assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages --permission-prompts none"), "{joined}");
         // Its own tools: its own prompt, whatever file there is.
         assert!(
-            joined.contains("--model sonnet --effort high --system-prompt-snapshot off"),
+            joined.contains(
+                "--model sonnet --effort high --thinking-display summarized --system-prompt-snapshot off"
+            ),
             "{joined}"
         );
         assert!(!joined.contains("system-prompt-file"), "{joined}");
@@ -3205,7 +3317,9 @@ mod tests {
             names(&events),
             [
                 "session:s-1:claude-sonnet-5",
-                "reasoning:hmm",
+                // Its thinking, a step; its text ends it.
+                "thought:thinking-1:hmm:…",
+                "thought:thinking-1:hmm:done",
                 "delta:Let me look.",
                 "step:Read::",
                 "step:Read:fn a() {}:true",
@@ -3217,7 +3331,7 @@ mod tests {
         );
         let ChatStreamEvent::Finished {
             usage: Some(usage), ..
-        } = &events[7]
+        } = &events[8]
         else {
             panic!()
         };
@@ -3225,12 +3339,155 @@ mod tests {
         assert_eq!(usage["connector"]["numTurns"], 2);
         assert_eq!(usage["connector"]["model"], "claude-sonnet-5");
         assert_eq!(usage["connector"]["version"], "2.1.309");
-        assert_eq!(usage["connector"]["steps"], 2);
-        let ChatStreamEvent::HarnessStep { step } = &events[5] else {
+        assert_eq!(
+            usage["connector"]["steps"], 2,
+            "its tool calls, not its thinking"
+        );
+        let ChatStreamEvent::HarnessStep { step } = &events[6] else {
             panic!()
         };
         assert_eq!(step.parent.as_deref(), Some("t9"));
         assert!(p.finished && p.failure.is_none());
+    }
+
+    /// With its own tools, each stretch of its thinking is a step of its
+    /// own, in its place among its tool calls, timed once it's over;
+    /// thinking that came back empty (its text not asked for) is none.
+    #[test]
+    fn with_its_own_tools_each_stretch_of_thinking_is_a_step_in_its_place() {
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        let mut emit = |e| events.push(e);
+        let event = |message: &str, e: Value| json!({"type":"stream_event","event":e,"parent_tool_use_id":null,"api_message_id":message});
+        let think = |index: u64, text: &str| json!({"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":text}});
+        let lines = [
+            event("m1", json!({"type":"message_start","message":{"id":"m1"}})),
+            event(
+                "m1",
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+            ),
+            event(
+                "m1",
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"s"}}),
+            ),
+            event("m1", json!({"type":"content_block_stop","index":0})),
+            event(
+                "m1",
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":""}}),
+            ),
+            event("m1", think(1, "Read the file")),
+            event("m1", think(1, " first.")),
+            event("m1", json!({"type":"content_block_stop","index":1})),
+            event(
+                "m1",
+                json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"t1","name":"Read","input":{}}}),
+            ),
+            event("m1", json!({"type":"content_block_stop","index":2})),
+            event("m1", json!({"type":"message_stop"})),
+            // The whole message repeats its thinking: not shown again.
+            json!({"type":"assistant","message":{"id":"m1","content":[{"type":"thinking","thinking":"Read the file first."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.rs"}}]},"parent_tool_use_id":null}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"42","is_error":false}]},"parent_tool_use_id":null}),
+            event("m2", json!({"type":"message_start","message":{"id":"m2"}})),
+            event(
+                "m2",
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+            ),
+            event("m2", think(0, "It returns 42.")),
+            event("m2", json!({"type":"content_block_stop","index":0})),
+            event(
+                "m2",
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
+            ),
+            event(
+                "m2",
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"It's 42."}}),
+            ),
+            event("m2", json!({"type":"content_block_stop","index":1})),
+            event("m2", json!({"type":"message_stop"})),
+            json!({"type":"result","subtype":"success","is_error":false,"result":"It's 42.","usage":{},"num_turns":2}),
+        ];
+        for line in lines {
+            p.line(&line.to_string(), &mut emit);
+        }
+        assert_eq!(
+            names(&events),
+            [
+                "thought:thinking-1:Read the file:…",
+                "thought:thinking-1:Read the file first.:…",
+                "thought:thinking-1:Read the file first.:done",
+                "step:Read::",
+                "step:Read:42:true",
+                "thought:thinking-2:It returns 42.:…",
+                "thought:thinking-2:It returns 42.:done",
+                "delta:It's 42.",
+                "finished:success:0",
+                "done",
+            ]
+        );
+        let ChatStreamEvent::HarnessStep { step } = &events[2] else {
+            panic!()
+        };
+        assert!(step.name.is_empty() && step.input.is_null(), "{step:?}");
+    }
+
+    #[test]
+    fn a_message_not_streamed_shows_its_thinking_whole_before_its_tool_calls() {
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        let message = json!({"type":"assistant","message":{"id":"m1","content":[
+            {"type":"thinking","thinking":""},
+            {"type":"thinking","thinking":"Check a.rs."},
+            {"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.rs"}},
+        ]},"parent_tool_use_id":null});
+        p.line(&message.to_string(), &mut |e| events.push(e));
+        assert_eq!(
+            names(&events),
+            ["thought:thinking-1:Check a.rs.:…", "step:Read::"]
+        );
+    }
+
+    /// With Rovik's tools, a reply is one message of Claude Code's: its
+    /// thinking is the reply's reasoning, as any model's is.
+    #[test]
+    fn with_rovik_tools_thinking_is_the_replys_reasoning() {
+        let mut p = Parser::with_rovik_tools();
+        let mut events = Vec::new();
+        let mut emit = |e| events.push(e);
+        let event = |e: Value| json!({"type":"stream_event","event":e,"parent_tool_use_id":null,"api_message_id":"m1"});
+        for line in [
+            event(json!({"type":"message_start","message":{"id":"m1"}})),
+            event(
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+            ),
+            event(
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Look first."}}),
+            ),
+            event(json!({"type":"content_block_stop","index":0})),
+            json!({"type":"assistant","message":{"id":"m2","content":[{"type":"thinking","thinking":"Then answer."}]},"parent_tool_use_id":null}),
+        ] {
+            p.line(&line.to_string(), &mut emit);
+        }
+        assert_eq!(
+            names(&events),
+            ["reasoning:Look first.", "reasoning:Then answer."]
+        );
+    }
+
+    /// Its thinking is asked for on a chat's turns, whichever tools it
+    /// runs, for the chat to show; a one-off request's isn't shown.
+    #[test]
+    fn its_thinking_is_asked_for_on_a_chats_turns_not_one_off_requests() {
+        let session = Session::New("s-1".into());
+        let asks = |settings: Value, one_shot: bool| {
+            let mut t = turn("Hi");
+            t.one_shot = one_shot;
+            args_for(&Settings::from_value(&settings), &t, &session, None, None)
+                .join(" ")
+                .contains("--thinking-display summarized")
+        };
+        assert!(asks(json!({}), false), "its own tools");
+        assert!(asks(json!({ "tools": "rovik" }), false), "Rovik's tools");
+        assert!(!asks(json!({}), true), "a chat's title");
     }
 
     #[test]
@@ -3921,16 +4178,8 @@ fi
         assert!(err.contains("no such program"), "{err}");
     }
 
-    /// A stand-in for `claude`: a script that prints the lines a run would,
-    /// as its arguments say (unix: it's a shell script).
     #[cfg(unix)]
-    fn fake_claude(dir: &Path, script: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
-        let path = dir.join("claude");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path.to_string_lossy().into_owned()
-    }
+    use crate::connectors::fake_claude;
 
     #[cfg(unix)]
     #[tokio::test]
