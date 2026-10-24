@@ -25,8 +25,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::{JoinHandle, JoinSet};
 
 /// How long a port of this computer's loopback has to answer before it
-/// counts as free: one that something listens on answers at once.
-const ANSWER_WITHIN: Duration = Duration::from_millis(500);
+/// counts as free: the system answers at once for whatever listens there,
+/// while a closed port can take seconds to be refused (on Windows).
+const ANSWER_WITHIN: Duration = Duration::from_millis(250);
 
 /// How many ports the system picks are tried, when the page's own port is
 /// taken here.
@@ -381,15 +382,16 @@ async fn listen(wanted: u16) -> io::Result<Vec<TcpListener>> {
 /// Listeners on `port` of 127.0.0.1 and of ::1 (0: one the system picks);
 /// AddrInUse when something listens there already.
 async fn listen_on(port: u16) -> io::Result<Vec<TcpListener>> {
-    if port != 0 && answers(Ipv4Addr::LOCALHOST.into(), port).await {
+    if port != 0 && answers(port).await {
         return Err(io::ErrorKind::AddrInUse.into());
     }
     let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
-    let port = v4.local_addr()?.port();
-    if answers(Ipv6Addr::LOCALHOST.into(), port).await {
+    let picked = v4.local_addr()?.port();
+    // The system picked a port free on 127.0.0.1: ::1 is asked now.
+    if port == 0 && answers_at(Ipv6Addr::LOCALHOST.into(), picked).await {
         return Err(io::ErrorKind::AddrInUse.into());
     }
-    match TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
+    match TcpListener::bind((Ipv6Addr::LOCALHOST, picked)).await {
         Ok(v6) => Ok(vec![v4, v6]),
         Err(e) if e.kind() == io::ErrorKind::AddrInUse => Err(e),
         // No IPv6 here: 127.0.0.1 alone.
@@ -397,10 +399,20 @@ async fn listen_on(port: u16) -> io::Result<Vec<TcpListener>> {
     }
 }
 
+/// Whether something answers on `port` of 127.0.0.1 or ::1: both asked at
+/// once, so a closed port's wait comes once.
+async fn answers(port: u16) -> bool {
+    let (v4, v6) = tokio::join!(
+        answers_at(Ipv4Addr::LOCALHOST.into(), port),
+        answers_at(Ipv6Addr::LOCALHOST.into(), port)
+    );
+    v4 || v6
+}
+
 /// Whether something answers on `port` of `ip`: then it's taken, even where
 /// the system would let another listener in beside it (one on a single
 /// address beside one on every address, as macOS and Windows allow).
-async fn answers(ip: IpAddr, port: u16) -> bool {
+async fn answers_at(ip: IpAddr, port: u16) -> bool {
     let connecting = TcpStream::connect((ip, port));
     matches!(
         tokio::time::timeout(ANSWER_WITHIN, connecting).await,
