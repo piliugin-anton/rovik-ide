@@ -5,7 +5,8 @@ description = "The agent and everything it calls, without Tauri"
 edition.workspace = true
 
 [features]
-# Test support for other crates' tests (src/testing.rs).
+# Test support for other crates' tests: src/testing.rs, and the short
+# waits this crate's own tests have (a request's retries, "still waiting").
 testing = []
 
 [dependencies]

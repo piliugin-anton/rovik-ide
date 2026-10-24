@@ -37,12 +37,16 @@ second pass. Read the code you change, its callers and its tests before editing.
 - Name tests as sentences that state the behaviour.
 - Never skip, disable or weaken a test to get green. Fix a flaky test by removing its race.
 - Tests that call real CLIs or the network are `#[ignore]` and gated by env (`ROVIK_REAL_CLAUDE=1`).
+- Tests pass under cargo-nextest (a process per test, as CI runs them) and `cargo test` (threads
+  of one process): a test that changes process-wide state still takes that state's lock.
+- Don't wait out a product's delay in a test: give the delay a test value
+  (`#[cfg(any(test, feature = "testing"))]`, as `chat_request::BACKOFF_MS`).
 
 ## Before every commit (all must pass)
 
 - `npm test`, `npm run typecheck`, `npm run format:check` (fix with `npx prettier --write <files>`).
-- From `src-tauri/`: `cargo test -p <each crate you changed>`; `cargo clippy -p <crate> --tests`
-  must add no warnings.
+- From `src-tauri/`: `cargo nextest run -p <each crate you changed>` (or `cargo test -p <crate>`,
+  slower); `cargo clippy -p <crate> --tests` must add no warnings.
 - Format Rust with `rustfmt --edition 2021 <files you changed>`, not `cargo fmt --all`: other files
   are not rustfmt-clean, and reformatting them buries your change.
 - The app crate (`src-tauri/src`) needs GTK/WebKit to build; CI builds it on Linux, macOS, Windows.

@@ -601,19 +601,20 @@ stops it, answers its approvals and shows its progress.
 
 ### Commands
 
-| Command                                       | What it does                                                                        |
-| --------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `npm run tauri dev`                           | Run the app with hot reload (same as `./dev.sh`)                                    |
-| `npm run tauri build`                         | Build a release package (same as `./build.sh`)                                      |
-| `npm test`                                    | Frontend unit tests (`src/**/*.test.ts`)                                            |
-| `npm run typecheck`                           | TypeScript type check of the app, its tests and its build config                    |
-| `npm run test:scripts`, `npm run test:eval`   | Tests of the release scripts and of the evaluation harness                          |
-| `cd src-tauri && cargo test --workspace`      | Backend tests, every crate (as CI runs them)                                        |
-| `cd src-tauri && cargo test vfs -- --ignored` | Mounts a real virtual volume (Linux) and runs shell tools and Git on it             |
-| `npm run format`                              | Format with Prettier (`format:check` to verify)                                     |
-| `scripts/build-agentd.sh`                     | Static builds of the daemon for Linux servers (x86_64 and aarch64)                  |
-| `node scripts/e2e/run.mjs`                    | End-to-end runs of a built app ([scripts/e2e](scripts/e2e/README.md))               |
-| `node scripts/eval/eval.mjs`                  | The agent's evaluation on a fixed task set ([scripts/eval](scripts/eval/README.md)) |
+| Command                                         | What it does                                                                        |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `npm run tauri dev`                             | Run the app with hot reload (same as `./dev.sh`)                                    |
+| `npm run tauri build`                           | Build a release package (same as `./build.sh`)                                      |
+| `npm test`                                      | Frontend unit tests (`src/**/*.test.ts`)                                            |
+| `npm run typecheck`                             | TypeScript type check of the app, its tests and its build config                    |
+| `npm run test:scripts`, `npm run test:eval`     | Tests of the release scripts and of the evaluation harness                          |
+| `cd src-tauri && cargo nextest run --workspace` | Backend tests, every crate, as CI runs them ([cargo-nextest](https://nexte.st))     |
+| `cd src-tauri && cargo test --workspace`        | The same with cargo's own runner: slower, doctests included                         |
+| `cd src-tauri && cargo test vfs -- --ignored`   | Mounts a real virtual volume (Linux) and runs shell tools and Git on it             |
+| `npm run format`                                | Format with Prettier (`format:check` to verify)                                     |
+| `scripts/build-agentd.sh`                       | Static builds of the daemon for Linux servers (x86_64 and aarch64)                  |
+| `node scripts/e2e/run.mjs`                      | End-to-end runs of a built app ([scripts/e2e](scripts/e2e/README.md))               |
+| `node scripts/eval/eval.mjs`                    | The agent's evaluation on a fixed task set ([scripts/eval](scripts/eval/README.md)) |
 
 `scripts/build-agentd.sh` needs zig and cargo-zigbuild:
 `pip install cargo-zigbuild` brings both. Each build is a single file that
@@ -700,11 +701,13 @@ branch ruleset**:
 3. Under **Target branches**, choose **Add target → Include default
    branch**.
 4. Tick **Require a pull request before merging** and **Require status
-   checks to pass**. Under **Add checks**, add the four checks (GitHub
+   checks to pass**. Under **Add checks**, add the six checks (GitHub
    suggests a check once it has run in the past week):
    - `Rust tests (Linux)`
+   - `Rust tests (Linux, Landlock)`
    - `Rust tests (macOS)`
    - `Rust tests (Windows)`
+   - `Evaluation dry run`
    - `Frontend tests, types and formatting`
 
    Leave **Require branches to be up to date before merging** off: the

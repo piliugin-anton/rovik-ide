@@ -30,10 +30,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 pub const MAX_ATTEMPTS: u32 = 4;
-/// Waits before attempts 2, 3 and 4.
-#[cfg(not(test))]
+/// Waits before attempts 2, 3 and 4. Tests wait much less: this crate's,
+/// and through the `testing` feature the daemon's and the headless
+/// runner's, which run the real retries against a scripted model.
+#[cfg(not(any(test, feature = "testing")))]
 const BACKOFF_MS: [u64; 3] = [1_000, 3_000, 8_000];
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 const BACKOFF_MS: [u64; 3] = [10, 20, 40];
 /// Longer waits aren't retried: the user is told when to try again.
 pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(60);

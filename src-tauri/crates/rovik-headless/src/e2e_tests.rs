@@ -395,6 +395,9 @@ async fn a_data_folder_it_made_goes_after_the_report() {
         .unwrap()
         .iter()
         .any(|l| l["event"] == "run"));
+    // Every other test's run has its `--data` folder: a folder of theirs,
+    // made meanwhile by a test in a process of its own (nextest), would
+    // count here.
     let left: Vec<_> = ours().into_iter().filter(|p| !before.contains(p)).collect();
     assert!(left.is_empty(), "left behind: {left:?}");
 }
@@ -872,6 +875,8 @@ async fn a_scripted_steer_is_read_and_reported() {
         "Look at a.txt",
         "--out",
         out.to_str().unwrap(),
+        "--data",
+        dir.0.join("data").to_str().unwrap(),
         "--timeout",
         "60",
         "--steer",

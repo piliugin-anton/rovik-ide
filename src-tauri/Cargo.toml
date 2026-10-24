@@ -120,6 +120,14 @@ tauri-plugin-window-state = "2"
 # aren't made here.
 tauri-plugin-updater = { version = "~2.14", default-features = false, features = ["system-proxy"] }
 
+# Dependencies optimized in dev builds (the tests', `tauri dev`): the tests
+# spent half their CPU in them (hashing, Git, SQLite, tree-sitter, images)
+# unoptimized, and they're built once, then cached. The workspace's own
+# crates stay unoptimized, for quick rebuilds. Level 1 keeps nearly all of
+# level 2's speed and builds faster.
+[profile.dev.package."*"]
+opt-level = 1
+
 # Keep release builds small and light — matters for a "low memory" tool.
 [profile.release]
 panic = "abort"

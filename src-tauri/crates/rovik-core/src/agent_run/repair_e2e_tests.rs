@@ -1017,7 +1017,8 @@ async fn when_the_rest_still_breaks_it_everything_goes_back() {
     .await;
     h.start(h.request(&url, Harness::send("Fix the checks"), checks_on()))
         .await;
-    h.run_end().await;
+    // Four rounds of three checks each: a busy runner takes past 15 s.
+    h.run_end_within(Duration::from_secs(60)).await;
     for (file, was) in [
         ("users.txt", "bad\n"),
         ("posts.txt", "bad\n"),

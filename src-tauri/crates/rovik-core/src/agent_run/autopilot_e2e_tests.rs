@@ -3695,10 +3695,12 @@ async fn a_suite_that_times_out_runs_the_changed_files_tests_instead() {
         eprintln!("npm ci failed: skipped");
         return;
     };
+    // The whole suite never ends; the changed file's tests, under the same
+    // limit, take npx's start (over 2 s on a runner busy with other tests).
     super::verify::CHECK_TIMEOUTS
         .lock()
         .unwrap()
-        .insert(h.dialog_id.clone(), 2000);
+        .insert(h.dialog_id.clone(), 5000);
     let mut script = script_with_plan(plan_reading("src/ok.test.js"));
     script[3] = Reply::Call {
         id: "w1",
@@ -3730,7 +3732,7 @@ async fn a_suite_that_times_out_runs_the_changed_files_tests_instead() {
     assert_eq!(checks[0]["status"], "slow");
     assert_eq!(
         checks[0]["reason"],
-        "timed out after 2 s; the tests of the changed files ran instead"
+        "timed out after 5 s; the tests of the changed files ran instead"
     );
     assert_eq!(checks[1]["command"], "npx vitest run src/ok.test.js");
     assert_eq!(checks[1]["status"], "passed");

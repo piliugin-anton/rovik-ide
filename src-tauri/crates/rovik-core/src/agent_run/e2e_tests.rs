@@ -1360,10 +1360,13 @@ async fn a_paused_run_continues_where_it_stopped() {
 }
 
 /// A command that runs until the test lets it end: it writes `started` in
-/// the project, then waits for `go` there.
+/// the project, then waits for `go` there. On Windows, in cmd alone: a
+/// PowerShell started for the wait could take longer to start than the
+/// test waits for the run, on a runner busy with other tests (CI's first
+/// minute).
 fn until_go() -> &'static str {
     if cfg!(windows) {
-        r#"echo ran> started && %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "while (!(Test-Path go)) { Start-Sleep -Milliseconds 50 }""#
+        "echo ran> started && for /L %i in (0,0,1) do @if exist go exit 0"
     } else {
         "echo ran > started; while [ ! -e go ]; do sleep 0.05; done"
     }
@@ -1640,15 +1643,10 @@ async fn a_drain_pauses_every_run_for_the_next_binary_to_continue() {
     // Each command goes on until the test lets it end, once the drain was
     // asked of both runs. Each chat works in a folder of its own: in the
     // same one, only one chat at a time runs commands that write.
-    let wait_for_go = if cfg!(windows) {
-        r#"echo ran> started && %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "while (!(Test-Path go)) { Start-Sleep -Milliseconds 50 }""#
-    } else {
-        "echo ran > started; while [ ! -e go ]; do sleep 0.05; done"
-    };
     let (url, seen) = model(vec![Reply::Call {
         id: "r1",
         name: "bash",
-        args: json!({ "command": wait_for_go }),
+        args: json!({ "command": until_go() }),
     }])
     .await;
     let unattended = || Permissions {
