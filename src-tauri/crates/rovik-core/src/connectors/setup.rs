@@ -127,6 +127,7 @@ fn command_for(args: &ProbeRequestArgs, action: SetupAction) -> Result<SetupComm
                 SetupAction::Install => "be installed",
                 SetupAction::Login => "be signed in",
                 SetupAction::Logout => "be signed out",
+                SetupAction::Update => "be updated",
             };
             format!("{} can't {what} from Rovik.", args.kind.title())
         })

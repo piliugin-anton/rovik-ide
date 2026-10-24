@@ -366,6 +366,13 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
                     </div>
                   )}
                 </Show>
+                <Show when={ok().probe.update}>
+                  {(version) => (
+                    <div class="connector-test-note">
+                      Version {version()} is available: Update below.
+                    </div>
+                  )}
+                </Show>
                 <For each={ok().probe.notes ?? []}>
                   {(note) => <div class="connector-test-note">{note}</div>}
                 </For>
@@ -386,6 +393,7 @@ export default function ConnectorsSettings(props: ConnectorsSettingsProps) {
             where={testWhere()}
             probe={testNow}
             signedIn={okState()?.probe.auth?.loggedIn === true}
+            update={okState()?.probe.update}
             autoStart={setUpOnOpen()}
           />
 

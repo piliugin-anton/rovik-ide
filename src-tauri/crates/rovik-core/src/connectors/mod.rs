@@ -220,6 +220,13 @@ pub trait Connector: Send + Sync {
 
     /// Ends every run left waiting, as the process exits.
     fn end_all(&self) {}
+
+    /// The newest version of the program its makers publish, when it can
+    /// be found out: a probe says when the installed one is older, and
+    /// "Set up" offers to update it (`SetupAction::Update`). None: unknown.
+    fn latest_version(&self) -> BoxFuture<'_, Option<String>> {
+        Box::pin(async { None })
+    }
 }
 
 /// The connector of a kind.
@@ -229,9 +236,43 @@ pub fn connector(kind: ConnectorKind) -> &'static dyn Connector {
     }
 }
 
-/// "Test & refresh models" on `args.kind`, on this computer.
+/// How long finding out the newest version may take: it's the probe's
+/// extra, never what holds it up.
+const LATEST_WITHIN: Duration = Duration::from_secs(5);
+
+/// "Test & refresh models" on `args.kind`, on this computer: the program,
+/// its models, and the newer version published, if there is one.
 pub async fn probe(args: ProbeRequestArgs) -> Result<ConnectorProbe, String> {
-    connector(args.kind).probe(&args).await
+    let connector = connector(args.kind);
+    let latest = tokio::time::timeout(LATEST_WITHIN, connector.latest_version());
+    let (probe, latest) = tokio::join!(connector.probe(&args), latest);
+    let mut probe = probe?;
+    probe.update = latest
+        .ok()
+        .flatten()
+        .filter(|latest| is_newer(latest, &probe.version));
+    Ok(probe)
+}
+
+/// Whether version `candidate` is newer than `installed`, each read from
+/// its first run of numbers and dots (`2.1.309 (Claude Code)`). False when
+/// either has none: unknown isn't newer.
+pub fn is_newer(candidate: &str, installed: &str) -> bool {
+    fn numbers(version: &str) -> Option<Vec<u64>> {
+        let start = version.find(|c: char| c.is_ascii_digit())?;
+        let run: String = version[start..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        run.split('.')
+            .filter(|n| !n.is_empty())
+            .map(|n| n.parse().ok())
+            .collect()
+    }
+    match (numbers(candidate), numbers(installed)) {
+        (Some(candidate), Some(installed)) => candidate > installed,
+        _ => false,
+    }
 }
 
 /// Whether `args.kind`'s program is signed in on this computer.
@@ -970,6 +1011,17 @@ mod tests {
         let (system, prompt) = split_messages(&messages);
         assert_eq!(system.as_deref(), Some("sys"));
         assert_eq!(prompt, "Name this chat\n\n[assistant]\nSure");
+    }
+
+    #[test]
+    fn versions_compare_by_their_numbers() {
+        assert!(is_newer("2.1.310", "2.1.309 (Claude Code)"));
+        assert!(is_newer("2.10.0", "2.9.9"));
+        assert!(is_newer("2.1.0.1", "2.1.0"));
+        assert!(!is_newer("2.1.309", "2.1.309 (Claude Code)"));
+        assert!(!is_newer("2.1.308", "2.1.309"));
+        assert!(!is_newer("2.1.310", ""), "an unknown version isn't older");
+        assert!(!is_newer("", "2.1.309"));
     }
 
     #[test]

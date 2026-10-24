@@ -88,6 +88,10 @@ pub struct ConnectorProbe {
     /// none when the program couldn't say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ConnectorAuth>,
+    /// A newer version than `version` is published: this one. None when
+    /// it's the newest, or the newest couldn't be found out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<String>,
 }
 
 /// Whether a connector's program is signed in on the computer asked
@@ -168,6 +172,8 @@ pub enum SetupAction {
     Login,
     /// Signs it out.
     Logout,
+    /// Updates it to the newest version (`ConnectorProbe::update`).
+    Update,
 }
 
 /// What `Request::ConnectorSetup` does with a setup step: each answers with

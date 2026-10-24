@@ -893,6 +893,7 @@ fn every_response_round_trips() {
                 request: None,
                 notes: Vec::new(),
                 auth: None,
+                update: Some("2.1.310".into()),
             }),
             Response::ConnectorAuth(crate::connectors::ConnectorAuth {
                 logged_in: true,

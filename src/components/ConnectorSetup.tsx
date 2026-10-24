@@ -34,6 +34,8 @@ interface ConnectorSetupProps {
   probe: () => Promise<ConnectorProbe>;
   /** Signed in, as the last test found: Sign out is offered. */
   signedIn: boolean;
+  /** A newer version, as the last test found: Update is offered. */
+  update?: string | null;
   /** Starts at once (the list's "Set up"). */
   autoStart?: boolean;
 }
@@ -99,6 +101,16 @@ export default function ConnectorSetup(props: ConnectorSetupProps) {
         : `${props.title} is ready ${props.where}.`;
     });
 
+  const update = () =>
+    run(async () => {
+      await step('update');
+      setStage('Checking…');
+      const probe = await props.probe();
+      return probe.update
+        ? `Still ${probe.version}: ${props.title} didn’t update to ${probe.update}.`
+        : `Updated: ${probe.version}.`;
+    });
+
   const signOut = () =>
     run(async () => {
       await step('logout');
@@ -143,6 +155,16 @@ export default function ConnectorSetup(props: ConnectorSetupProps) {
               >
                 Set up
               </button>
+              <Show when={props.update}>
+                {(version) => (
+                  <button
+                    onClick={() => void update()}
+                    title={`Updates ${props.title} ${props.where} with its own updater`}
+                  >
+                    Update to {version()}
+                  </button>
+                )}
+              </Show>
               <Show when={props.signedIn}>
                 <button onClick={() => void signOut()}>Sign out</button>
               </Show>

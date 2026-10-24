@@ -276,6 +276,8 @@ export interface ConnectorProbe {
   notes?: string[];
   /** Whether it's signed in, when the program could say. */
   auth?: ConnectorAuth | null;
+  /** A newer version than `version` is published: this one. */
+  update?: string | null;
 }
 
 /** What the core's connector calls are asked with (`ProbeRequestArgs`). */

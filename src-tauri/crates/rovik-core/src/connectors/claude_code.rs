@@ -76,6 +76,12 @@ pub const ROVIK_PERMISSIONS: &str = "rovik";
 /// The tool on Rovik's MCP server that Claude Code asks, in that mode.
 const APPROVE_TOOL: &str = "approve";
 
+/// Where the newest version is published: Anthropic's release bucket, as
+/// the native installer reads it, on its default channel, `latest`
+/// (code.claude.com/docs/en/setup, "Configure release channel"). Its answer
+/// is the version alone, as text.
+const LATEST: &str = "https://downloads.claude.ai/claude-code-releases/latest";
+
 /// The connector.
 pub struct ClaudeCode;
 
@@ -1125,6 +1131,19 @@ fn follows_rovik(settings: &Settings) -> bool {
     settings.tools == ToolsMode::Own && settings.permission_mode.trim() == ROVIK_PERMISSIONS
 }
 
+/// The version the release bucket answered with: one line of numbers and
+/// dots (`2.1.310`); anything else (a page of an error) isn't one.
+fn latest_of(text: &str) -> Option<String> {
+    let version = text.trim();
+    let is_version = !version.is_empty()
+        && version.len() <= 32
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    is_version.then(|| version.to_string())
+}
+
 /// The tool Claude Code asks before a call, as `--permission-prompt-tool`
 /// calls it: the tool, its input, and the tool use.
 fn approve_tool() -> Value {
@@ -1745,6 +1764,8 @@ impl Connector for ClaudeCode {
                 auth: check_auth(&program, &settings, &env, &args.api_key)
                     .await
                     .ok(),
+                // The newest version is the connector module's to add.
+                update: None,
             };
             match settings.auth {
                 Auth::Login => probe.notes.push(
@@ -1803,7 +1824,20 @@ impl Connector for ClaudeCode {
             SetupAction::Login if settings.auth == Auth::ApiKey => auth("login")?.arg("--console"),
             SetupAction::Login => auth("login")?,
             SetupAction::Logout => auth("logout")?,
+            // Its own updater: the native installation's, or the package
+            // manager's (which on a server needs the administrator).
+            SetupAction::Update => {
+                SetupCommand::program(resolve_program(&settings.program)?, &["update"])
+                    .with_env(env_for(&settings, &args.api_key))
+            }
         }))
+    }
+
+    fn latest_version(&self) -> BoxFuture<'_, Option<String>> {
+        Box::pin(async {
+            let response = crate::net::client().await.get(LATEST).send().await.ok()?;
+            latest_of(&response.error_for_status().ok()?.text().await.ok()?)
+        })
     }
 
     fn end_live(&self, dialog_id: &str) {
@@ -2104,8 +2138,12 @@ mod tests {
         assert!(login
             .env
             .contains(&("CLAUDE_CONFIG_DIR".into(), "/tmp/claude-work".into())));
-        let logout = step(SetupAction::Logout, settings).unwrap().unwrap();
+        let logout = step(SetupAction::Logout, settings.clone())
+            .unwrap()
+            .unwrap();
         assert_eq!(logout.args, ["auth", "logout"]);
+        let update = step(SetupAction::Update, settings).unwrap().unwrap();
+        assert_eq!(update.args, ["update"]);
         let plain = json!({ "program": program.to_string_lossy() });
         let login = step(SetupAction::Login, plain).unwrap().unwrap();
         assert_eq!(login.args, ["auth", "login"]);
@@ -2289,6 +2327,26 @@ mod tests {
             assert!(arguments.contains("out.txt"), "{arguments}");
             assert_eq!(dir.0.join("out.txt").exists(), allow, "{events:#?}");
         }
+    }
+
+    #[test]
+    fn the_newest_version_is_the_release_bucket_s_answer() {
+        assert_eq!(latest_of("2.1.310\n").as_deref(), Some("2.1.310"));
+        assert_eq!(latest_of(" "), None);
+        assert_eq!(latest_of("<html><body>Not found</body></html>"), None);
+        assert_eq!(latest_of("v2"), None);
+    }
+
+    /// The real release bucket answers with a version.
+    ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored
+    #[tokio::test]
+    #[ignore = "asks downloads.claude.ai: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
+    async fn real_claude_latest_version_is_published() {
+        if std::env::var("ROVIK_REAL_CLAUDE").is_err() {
+            return;
+        }
+        let latest = ClaudeCode.latest_version().await.expect("a version");
+        assert!(crate::connectors::is_newer(&latest, "0.0.1"), "{latest}");
     }
 
     #[test]

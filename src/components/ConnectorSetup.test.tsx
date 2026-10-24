@@ -18,6 +18,16 @@ let code = '';
   invoke: async (cmd: string, args: any) => {
     sent.push({ cmd, args });
     if (cmd !== 'connector_setup') return null;
+    // An update is done as soon as it starts.
+    if (args.op.op === 'start' && args.op.action === 'update') {
+      return {
+        id: 'u1',
+        action: 'update',
+        command: 'claude update',
+        output: 'Updated',
+        done: true,
+      };
+    }
     const job = (done: boolean): SetupJob => ({
       id: 'j1',
       action: 'login',
@@ -87,5 +97,36 @@ test('signing in on a host opens its page here and sends the pasted code', async
   assert.equal(code, 'abc#xyz');
   assert.deepEqual(probes, ['out', 'in']);
   assert.equal(sent.filter((s) => s.cmd === 'open_url').length, 1);
+  dispose();
+});
+
+test('a newer version is offered, updated to, and tested again', async () => {
+  let version = '2.1.309';
+  const probe = async (): Promise<ConnectorProbe> => {
+    const probed = { program: 'claude', version, models: [], update: null };
+    version = '2.1.310';
+    return probed;
+  };
+  const root = container();
+  const dispose = render(
+    () => (
+      <ConnectorSetup
+        connector={{ ...newConnector('claude-code'), id: 'c2' }}
+        title="Claude Code"
+        host={null}
+        where="on this computer"
+        probe={probe}
+        signedIn={true}
+        update="2.1.310"
+      />
+    ),
+    root
+  );
+  version = '2.1.310';
+  button(root, 'Update to 2.1.310').click();
+  await until(() => /Updated: 2\.1\.310\./.test(root.textContent ?? ''));
+  const start = sent.filter((s) => s.cmd === 'connector_setup').at(-1)!;
+  assert.equal(start.args.op.action, 'update');
+  assert.equal(start.args.host, null);
   dispose();
 });

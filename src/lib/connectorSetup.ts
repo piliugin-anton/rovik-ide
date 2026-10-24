@@ -17,7 +17,7 @@ import {
   type ConnectorProbe,
 } from './connectors';
 
-export type SetupAction = 'install' | 'login' | 'logout';
+export type SetupAction = 'install' | 'login' | 'logout' | 'update';
 
 /** A step, as the computer running it reports it (rovik_protocol `SetupJob`). */
 export interface SetupJob {
@@ -122,5 +122,7 @@ export function stepTitle(action: SetupAction): string {
       return 'Signing in';
     case 'logout':
       return 'Signing out';
+    case 'update':
+      return 'Updating';
   }
 }

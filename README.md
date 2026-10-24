@@ -328,7 +328,9 @@ Anthropic's own installer for your user (`claude` in `~/.local/bin`, no
 admin rights); and signs it in if it isn't (`claude auth login`), showing
 what each step prints. Here the browser opens to sign in; for a host,
 Rovik opens the sign-in page in your browser and you paste the code it
-shows. **Sign out** signs the program out.
+shows. **Sign out** signs the program out. A test also finds out whether
+a newer version is published (Anthropic's release channel, `latest`), and
+**Update to …** then runs the program's own updater (`claude update`).
 
 A chat on a connector's model hands the harness the task: Rovik's system
 prompt, the model, the effort and the message, in the project folder. The

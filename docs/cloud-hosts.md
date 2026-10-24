@@ -381,7 +381,10 @@ or name the program's path in the connector's settings. A user can also
 install it for themselves alone: **Set up** in Settings → Connectors, with
 the host chosen, runs Anthropic's installer as that user, which puts
 `claude` in their `~/.local/bin` (it needs `curl` and `bash` on the
-server).
+server). **Update to …**, offered there when a newer version is out, runs
+`claude update` as that user: it updates their own installation, while
+the shared package is updated by the administrator with `admin
+claude-code`.
 
 Each user signs in as their own. The token or key of the connector's
 settings travels with the chat's model and reaches the program as
