@@ -938,7 +938,12 @@ anyway, discard, or undo a landing.
 On Linux, every command the agent runs is sandboxed with bubblewrap
 (`bwrap`): the system is read-only to it but for the chat's own folders
 (its view or worktree, its build folder, `/tmp` and the toolchains' caches
-under your home), the credential stores (`~/.rovik`, `~/.ssh`, `~/.aws`,
+under your home). Within those caches, what would run outside the sandbox
+later stays read-only: the folders of programs on your PATH (`~/.cargo/bin`,
+`~/.local/bin`, `~/go/bin`, Bun's, Deno's and Yarn's) and the files your
+shell and cargo read (`~/.cargo/config.toml`, `~/.cargo/env`), so the agent
+can't install a tool for you (`cargo install`, `pip install --user`): run
+that in your own terminal. The credential stores (`~/.rovik`, `~/.ssh`, `~/.aws`,
 `~/.gnupg`, the cloud CLIs' folders, Expo's login in `~/.expo`) and the
 single files that hold logins (`~/.netrc`, `~/.git-credentials`,
 `~/.npmrc`, `~/.pypirc`, `~/.Xauthority`, cargo's token in `~/.cargo`) are

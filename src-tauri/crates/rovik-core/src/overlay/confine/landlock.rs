@@ -160,12 +160,19 @@ impl Grant {
 /// the policy was made are left out.
 pub(super) fn grants(c: &Confine) -> Vec<(PathBuf, Grant)> {
     let hidden: Vec<PathBuf> = c.hide.iter().filter(|d| d.exists()).cloned().collect();
-    let hidden_dirs: Vec<PathBuf> = hidden.iter().filter(|d| d.is_dir()).cloned().collect();
+    // Writes go around the hidden folders and what stays read-only, which
+    // the read rule above covers all the same.
+    let unwritten: Vec<PathBuf> = hidden
+        .iter()
+        .filter(|d| d.is_dir())
+        .chain(c.read_only.iter().filter(|p| p.exists()))
+        .cloned()
+        .collect();
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     cover(Path::new("/"), Grant::Read, &hidden, &mut seen, &mut out);
     for dir in c.writable.iter().filter(|d| d.is_dir()) {
-        cover(dir, Grant::Write, &hidden_dirs, &mut seen, &mut out);
+        cover(dir, Grant::Write, &unwritten, &mut seen, &mut out);
     }
     for device in DEVICES {
         let device = Path::new(device);
@@ -464,6 +471,7 @@ mod tests {
             hide: vec![secret.clone(), root.join("gone")],
             writable: vec![cache.clone(), work.clone()],
             sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         let rules = grants(&c);
         let has = |p: &Path, g: Grant| rules.iter().any(|(q, h)| q == p && *h == g);
@@ -503,6 +511,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// What stays read-only inside a writable folder gets no write rule:
+    /// the folder is written entry by entry around it, and it's read.
+    #[test]
+    fn a_read_only_path_inside_a_writable_folder_gets_no_write_rule() {
+        let root = fresh("llro");
+        let (cargo, bin, registry) = (
+            root.join(".cargo"),
+            root.join(".cargo/bin"),
+            root.join(".cargo/registry"),
+        );
+        for d in [&bin, &registry] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let config = cargo.join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let mut c = policy(&root, &[], &[&cargo]);
+        c.read_only = vec![bin.clone(), config.clone()];
+        let rules = grants(&c);
+        let has = |p: &Path, g: Grant| rules.iter().any(|(q, h)| q == p && *h == g);
+        assert!(!has(&cargo, Grant::Write), "the folder whole");
+        assert!(!has(&bin, Grant::Write) && !has(&config, Grant::Write));
+        assert!(has(&registry, Grant::Write));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Runs `script` under `c` in `cwd`: its output, or None where this
     /// kernel has no Landlock to use (the test is then skipped).
     fn run(c: &Confine, cwd: &Path, script: &str) -> Option<std::process::Output> {
@@ -526,6 +559,7 @@ mod tests {
             hide: hide.iter().map(|p| p.to_path_buf()).collect(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
             sockets: Vec::new(),
+            read_only: Vec::new(),
         }
     }
 
@@ -648,6 +682,7 @@ mod tests {
             hide: Vec::new(),
             writable: vec![root.clone()],
             sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         let rules = grants(&c);
         assert_eq!(rules[0], (PathBuf::from("/"), Grant::Read));

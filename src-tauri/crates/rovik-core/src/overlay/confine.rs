@@ -7,7 +7,9 @@
 //!
 //! - **The system is read-only** but for the command's own folders
 //!   (`writable`): the chat's view or worktree, its build folder, `/tmp`
-//!   and the toolchains' caches under the home folder.
+//!   and the toolchains' caches under the home folder; inside those, what
+//!   runs outside the sandbox later stays read-only (`read_only`: the
+//!   PATH's bin folders, cargo's config, [`read_only_paths`]).
 //! - **The credential stores are empty** (`hide`): the provider keys
 //!   (`~/.rovik`, keys.json on a server) and the user's SSH, cloud and
 //!   signing credentials, folders and single files (`~/.netrc`, cargo's
@@ -73,6 +75,9 @@ pub struct Confine {
     /// The user's local services' sockets, and folders of them, closed to
     /// the command ([`local_sockets`]).
     pub sockets: Vec<PathBuf>,
+    /// Folders and files inside writable ones that stay read-only: what
+    /// runs outside the sandbox later ([`read_only_paths`]).
+    pub read_only: Vec<PathBuf>,
 }
 
 impl Confine {
@@ -84,6 +89,7 @@ impl Confine {
             sockets: local_sockets(&writable),
             writable,
             hide: secret_paths(),
+            read_only: read_only_paths(),
             view,
             project,
         }
@@ -97,6 +103,7 @@ impl Confine {
             sockets: local_sockets(&writable),
             writable,
             hide: secret_paths(),
+            read_only: read_only_paths(),
             view: root.clone(),
             project: root,
         }
@@ -224,6 +231,31 @@ pub fn secret_paths() -> Vec<PathBuf> {
     existing(under_home.chain(registered))
 }
 
+/// What a confined command may read but not change though it's inside a
+/// folder it writes ([`TOOL_DIRS`]): the folders of programs on the user's
+/// PATH and the files their shells and cargo read. A program put there, a
+/// `build.rustc-wrapper` in cargo's config, or a line in `~/.cargo/env`
+/// would run outside the sandbox, in the user's own terminal, later.
+/// Installing a tool for the user (`cargo install`, `pip install --user`)
+/// is theirs to do. Only those that exist right now.
+pub fn read_only_paths() -> Vec<PathBuf> {
+    const UNDER_HOME: &[&str] = &[
+        ".cargo/bin",
+        ".cargo/config.toml",
+        ".cargo/config",
+        ".cargo/env",
+        ".local/bin",
+        ".bun/bin",
+        ".deno/bin",
+        ".yarn/bin",
+        "go/bin",
+    ];
+    let paths = home()
+        .into_iter()
+        .flat_map(|home| UNDER_HOME.iter().map(move |rel| home.join(rel)));
+    existing(paths)
+}
+
 /// The variables that tell a program where the session's services are:
 /// left out of a confined command's environment, whose sockets are closed
 /// to it anyway ([`local_sockets`]), so a tool doesn't try them.
@@ -348,6 +380,21 @@ fn make_missing(home: &Path, installed: impl Fn(&str) -> bool) {
         };
         if wanted && !dir.exists() {
             let _ = std::fs::create_dir_all(&dir);
+        }
+    }
+    // Landlock writes a folder with a read-only entry entry by entry
+    // (`~/.cargo`, around `bin`), so it takes nothing new at its top: what
+    // cargo makes there on first use is made now (its locks are empty).
+    let cargo = home.join(".cargo");
+    if cargo.is_dir() {
+        for dir in ["registry", "git"] {
+            let _ = std::fs::create_dir_all(cargo.join(dir));
+        }
+        for lock in [".package-cache", ".package-cache-mutate"] {
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(cargo.join(lock));
         }
     }
 }
@@ -686,6 +733,11 @@ mod linux {
             if c.redirects() {
                 cmd.arg("--bind").arg(&c.view).arg(&c.project);
             }
+            // What runs outside the sandbox later, back to read-only over
+            // the writable folder it's in.
+            for path in c.read_only.iter().filter(|p| p.exists()) {
+                cmd.arg("--ro-bind").arg(path).arg(path);
+            }
             for dir in c.hide.iter().filter(|d| d.is_dir()) {
                 cmd.arg("--tmpfs").arg(dir);
             }
@@ -963,6 +1015,16 @@ fn seatbelt_profile(c: &Confine) -> (String, Vec<(String, PathBuf)>) {
         .collect();
     writes.extend(SEATBELT_DEVICES.iter().map(|d| d.to_string()));
     profile += &format!("(deny file-write* (require-not {}))\n", any(writes));
+    for (i, path) in c.read_only.iter().filter(|p| p.exists()).enumerate() {
+        let name = format!("R{i}");
+        let filter = if path.is_dir() {
+            under(name.clone())
+        } else {
+            format!(r#"(literal (param "{name}"))"#)
+        };
+        profile += &format!("(deny file-write* {filter})\n");
+        params.push((name, path.to_path_buf()));
+    }
     for (i, dir) in hidden.iter().enumerate() {
         let inside: Vec<String> = writable
             .iter()
@@ -1218,6 +1280,35 @@ mod tool_home_tests {
 mod seatbelt_profile_tests {
     use super::*;
 
+    /// What stays read-only inside a writable folder gets a write deny of
+    /// its own, by parameter: a folder by subpath, a file by literal.
+    #[test]
+    fn the_profile_keeps_the_read_only_paths_from_writes() {
+        let root = std::env::temp_dir().join(format!("sbro-{}", std::process::id()));
+        let (cargo, bin, config) = (
+            root.join(".cargo"),
+            root.join(".cargo/bin"),
+            root.join(".cargo/config.toml"),
+        );
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&config, "").unwrap();
+        let c = Confine {
+            view: root.clone(),
+            project: root.clone(),
+            hide: Vec::new(),
+            writable: vec![cargo.clone()],
+            sockets: Vec::new(),
+            read_only: vec![bin.clone(), config.clone(), root.join("gone")],
+        };
+        let (profile, params) = seatbelt_profile(&c);
+        assert!(params.contains(&("R0".into(), bin.clone())));
+        assert!(params.contains(&("R1".into(), config.clone())));
+        assert!(!params.iter().any(|(n, _)| n == "R2"), "gone: left out");
+        assert!(profile.contains(r#"(deny file-write* (subpath (param "R0")))"#));
+        assert!(profile.contains(r#"(deny file-write* (literal (param "R1")))"#));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn the_profile_names_its_folders_by_parameter_and_lets_the_nested_one_through() {
         let root = std::env::temp_dir().join(format!("sbpl-{}", std::process::id()));
@@ -1231,6 +1322,7 @@ mod seatbelt_profile_tests {
             hide: vec![daemon.clone(), secret.clone(), root.join("gone")],
             writable: vec![work.clone(), root.join("gone-too")],
             sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         let (profile, params) = seatbelt_profile(&c);
         let names: Vec<(&str, &Path)> = params
@@ -1283,6 +1375,7 @@ mod seatbelt_socket_tests {
             hide: vec![netrc.clone()],
             writable: vec![root.clone()],
             sockets: vec![runtime.clone(), agent.clone(), root.join("gone")],
+            read_only: Vec::new(),
         };
         let (profile, params) = seatbelt_profile(&c);
         assert!(params.contains(&("S0".to_string(), runtime.clone())));
@@ -1355,6 +1448,7 @@ mod macos_tests {
             hide: Vec::new(),
             writable: vec![mine.clone()],
             sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         let script = format!(
             "echo ok > {m}/a.txt && echo gone > /dev/null && \
@@ -1394,6 +1488,7 @@ mod macos_tests {
             hide: vec![secret.clone(), daemon.clone(), deep.clone()],
             writable: vec![work.clone(), secret.clone()],
             sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         let script = format!(
             "cat {s}/key {d}/keys.json {w}/.ssh/id 2>/dev/null; \
@@ -1434,6 +1529,7 @@ mod tests {
             hide: Vec::new(),
             writable: writable.iter().map(|p| p.to_path_buf()).collect(),
             sockets: Vec::new(),
+            read_only: Vec::new(),
         };
         (root, c)
     }
@@ -1456,6 +1552,42 @@ mod tests {
 
     fn stdout(out: &std::process::Output) -> String {
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Inside a writable folder, what stays read-only can't be changed: no
+    /// program put in a bin folder, no config file rewritten; the folder's
+    /// other entries are written as before.
+    #[test]
+    fn read_only_paths_inside_a_writable_folder_stay_read_only() {
+        let (root, mut c) = fresh("confinero", &[]);
+        let (cargo, bin, config) = (
+            root.join(".cargo"),
+            root.join(".cargo/bin"),
+            root.join(".cargo/config.toml"),
+        );
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&config, "old\n").unwrap();
+        c.writable = vec![cargo.clone()];
+        c.read_only = vec![bin.clone(), config.clone()];
+        let script = format!(
+            "(echo planted > {b}/git) 2>/dev/null; (echo new > {f}) 2>/dev/null; \
+             echo cached > {c}/cache.txt && cat {c}/cache.txt",
+            b = bin.display(),
+            f = config.display(),
+            c = cargo.display()
+        );
+        let Some(out) = run(&c, &root, &script) else {
+            return;
+        };
+        assert_eq!(
+            stdout(&out),
+            "cached\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!bin.join("git").exists(), "a program planted on the PATH");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "old\n");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A command that writes to the project's path writes to the view, in
