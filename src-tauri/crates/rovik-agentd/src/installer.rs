@@ -605,13 +605,8 @@ fn upgrade(
     }
     let version = version_of(&bytes, from, caller)?;
     if !allow_downgrade {
-        if let Some(installed) = installed_version(sys) {
-            if older(&version, &installed) == Some(true) {
-                return Err(format!(
-                    "Rovik {version} is older than the installed {installed}. To install it \
-                     anyway, add --allow-downgrade."
-                ));
-            }
+        if let Some(why) = installed_version(sys).and_then(|i| downgrade(&version, &i)) {
+            return Err(why);
         }
     }
     install_build(sys, &bytes, &version)?;
@@ -685,6 +680,24 @@ fn installed_version(sys: &System) -> Option<String> {
     let target = std::fs::read_link(sys.path(INSTALLED)).ok()?;
     let name = target.file_name()?.to_str()?;
     name.strip_prefix("rovik-agentd-").map(str::to_string)
+}
+
+/// Why installing `version` over `installed` needs `--allow-downgrade`:
+/// it's older, or either isn't a release number, so which is newer can't
+/// be told (a build of one's own, say). None: it's the same or newer.
+fn downgrade(version: &str, installed: &str) -> Option<String> {
+    match older(version, installed) {
+        Some(false) => None,
+        Some(true) => Some(format!(
+            "Rovik {version} is older than the installed {installed}. To install it \
+             anyway, add --allow-downgrade."
+        )),
+        None if version == installed => None,
+        None => Some(format!(
+            "Whether Rovik {version} is newer than the installed {installed} can't be told: \
+             one of them isn't a release number. To install it anyway, add --allow-downgrade."
+        )),
+    }
 }
 
 /// Whether `version` comes before `than`, both numbered as releases are
@@ -1246,6 +1259,20 @@ mod tests {
             .unwrap();
         let said = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success() && said.trim().is_empty(), "{said}");
+    }
+
+    /// An upgrade needs --allow-downgrade for an older build, and for one
+    /// whose order against the installed one can't be told.
+    #[test]
+    fn a_build_not_known_to_be_newer_needs_allow_downgrade() {
+        assert_eq!(downgrade("1.2.4", "1.2.3"), None);
+        assert_eq!(downgrade("1.2.3", "1.2.3"), None);
+        assert!(downgrade("1.2.2", "1.2.3").unwrap().contains("older"));
+        for (version, installed) in [("dev", "1.2.3"), ("1.2.3", "dev"), ("1.2", "1.2.3")] {
+            let why = downgrade(version, installed).expect(version);
+            assert!(why.contains("can't be told"), "{why}");
+        }
+        assert_eq!(downgrade("dev", "dev"), None);
     }
 
     #[test]

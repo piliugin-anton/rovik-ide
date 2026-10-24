@@ -20,6 +20,7 @@ use crate::daemon::Daemon;
 use crate::fail::{bad_request, internal};
 use crate::store::{Moved, Place, ProjectState};
 use crate::work;
+use rovik_core::agent_run::NotHeld;
 use rovik_core::chat_db::location::{self, Location};
 use rovik_core::chat_db::{api, attachments, projects, store, sync};
 use rovik_protocol::sync::{ChatBundle, Imported};
@@ -58,12 +59,20 @@ pub async fn import(
             already: true,
         });
     }
-    if daemon.core.agents.is_running(&chat) {
-        return Err(Fail::new(
+    // The chat's files are the import's until it's done: a run that starts
+    // meanwhile (an `AgentStart` sent at once) waits for them, instead of
+    // starting on a chat half imported.
+    let _files = daemon.core.agents.hold_files(&chat).map_err(|why| {
+        Fail::new(
             FailCode::Busy,
-            "This chat's run is still going on the server.",
-        ));
-    }
+            match why {
+                NotHeld::Running => "This chat's run is still going on the server.",
+                NotHeld::Held => {
+                    "This chat's files are changing on the server: try again in a moment."
+                }
+            },
+        )
+    })?;
     // Room for its worktree, and Rovik's folders under the disk cap (5.5),
     // measured now: before anything is written, the project's repository
     // either. A move sent again was answered above, whatever the disk.
