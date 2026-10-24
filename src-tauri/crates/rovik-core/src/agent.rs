@@ -884,6 +884,9 @@ pub struct ChatParams {
     // `cwd` is the chat's copy of the project (its overlay, or a server's
     // worktree): git that changes the repository isn't the harness's to run.
     pub isolated: bool,
+    // The run is in Plan mode: a harness running its own tools plans in its
+    // own plan mode (Rovik's plan instructions describe Rovik's tools).
+    pub plan_mode: bool,
     // A connector's model whose harness runs its own tools under Rovik's
     // permissions: where it asks before a call (the run answers each as
     // it would a call of its own tool, `agent_run` `answer_tool_ask`).
@@ -958,6 +961,7 @@ pub async fn run_chat(
         connector: _,
         cwd: _,
         isolated: _,
+        plan_mode: _,
         tool_asks: _,
     } = params;
     let chat_id = chat_id.or_else(|| dialog_id.clone());

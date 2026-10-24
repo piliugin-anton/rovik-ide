@@ -3,13 +3,15 @@
 //! with its stream of JSON lines read as it works.
 //!
 //! One turn is one `claude -p` run in the project folder, told the model
-//! (`--model`), the effort, the IDE's system prompt (appended to its own,
-//! or in its place) and the chat's message on stdin. Its conversation for
-//! the chat is kept with `--session-id` and continued with `--resume`, so
-//! it keeps its own context between turns. It runs unattended: the
-//! permission mode of the settings decides what it may do, nothing waits
-//! for a prompt (`--permission-prompts none`), and a turn is bounded by the
-//! settings' turns and budget (`--max-turns`, `--max-budget-usd`).
+//! (`--model`), the effort and the chat's message on stdin. Its system
+//! prompt goes with its tools: its own with its own, Rovik's in its place
+//! with Rovik's (`--system-prompt-file`). Its conversation for the chat is
+//! kept with `--session-id` and continued with `--resume`, so it keeps its
+//! own context between turns. It runs unattended: what it would ask about,
+//! Rovik answers (under Rovik's permissions, and in Plan mode) or its
+//! permission mode decides, without a prompt in a terminal; a turn is
+//! bounded by the settings' turns and budget (`--max-turns`,
+//! `--max-budget-usd`).
 //!
 //! What it does comes back as the IDE shows a reply: its text as it streams
 //! (`--include-partial-messages`), its thinking as reasoning, each tool it
@@ -98,22 +100,6 @@ pub enum Auth {
     ApiKey,
 }
 
-/// Where the IDE's system prompt goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum SystemPromptMode {
-    /// Claude Code's own, unchanged: Rovik's isn't sent (none of the
-    /// system prompt flags), and the project's instructions are what
-    /// Claude Code reads itself (its CLAUDE.md).
-    #[default]
-    Own,
-    /// After Claude Code's own (`--append-system-prompt`): its tool
-    /// guidance and conventions stay.
-    Append,
-    /// In place of it (`--system-prompt`).
-    Replace,
-}
-
 /// Whose tools a run uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -145,7 +131,6 @@ pub struct Settings {
     pub disallowed_tools: String,
     pub max_turns: Option<u32>,
     pub max_budget_usd: Option<f64>,
-    pub system_prompt: SystemPromptMode,
     /// `CLAUDE_CONFIG_DIR`: another login and settings folder, such as one
     /// shared on a server. Empty: the program's own (`~/.claude`).
     pub config_dir: String,
@@ -168,7 +153,6 @@ impl Default for Settings {
             disallowed_tools: String::new(),
             max_turns: None,
             max_budget_usd: None,
-            system_prompt: SystemPromptMode::Own,
             config_dir: String::new(),
             extra_args: String::new(),
             bare: false,
@@ -279,25 +263,21 @@ fn effort_arg(effort: ReasoningEffort) -> &'static str {
     }
 }
 
-/// Where a turn's system prompt goes: as the settings say, but Rovik's in
-/// place of Claude Code's where Claude Code has no tools of its own for
-/// its prompt to describe: a one-off request (a chat's title, a review,
-/// which costs less without it), and Rovik's tools mode.
-fn prompt_mode(settings: &Settings, turn: &Turn) -> SystemPromptMode {
-    match settings.system_prompt {
-        _ if turn.one_shot => SystemPromptMode::Replace,
-        // With Rovik's tools, Claude Code is the model behind Rovik's agent,
-        // without tools of its own for its prompt to describe: Rovik's is
-        // the prompt, its tools named.
-        SystemPromptMode::Own if settings.tools == ToolsMode::Rovik => SystemPromptMode::Replace,
-        mode => mode,
-    }
+/// Whether Rovik's system prompt goes, in place of Claude Code's
+/// (`--system-prompt-file`): where Claude Code has no tools of its own for
+/// its prompt to describe, with Rovik's tools (Claude Code is the model
+/// behind Rovik's agent) and in a one-off request (a chat's title, a
+/// review, which costs less without it). With its own tools, Claude Code's
+/// prompt goes unchanged, and the project's instructions are what it reads
+/// itself (its CLAUDE.md).
+fn sends_rovik_prompt(settings: &Settings, turn: &Turn) -> bool {
+    turn.one_shot || settings.tools == ToolsMode::Rovik
 }
 
-/// The system prompt a turn's run gets: the IDE's, Rovik's tools named
-/// when it has them, then the project's section. Replacing Claude Code's,
-/// the two are split for its prompt cache (`PROMPT_BOUNDARY`).
-pub fn system_text(settings: &Settings, turn: &Turn, rovik_tools: bool) -> String {
+/// The system prompt a turn's run gets, in place of Claude Code's: the
+/// IDE's, Rovik's tools named when it has them, then the project's section,
+/// split from it for Claude Code's prompt cache (`PROMPT_BOUNDARY`).
+pub fn system_text(turn: &Turn, rovik_tools: bool) -> String {
     let mut text = turn.system_prompt.trim_end().to_string();
     if rovik_tools && !turn.tools.is_empty() {
         if !text.is_empty() {
@@ -311,11 +291,7 @@ pub fn system_text(settings: &Settings, turn: &Turn, rovik_tools: bool) -> Strin
         .map(str::trim)
         .filter(|c| !c.is_empty())
     {
-        Some(context) if prompt_mode(settings, turn) == SystemPromptMode::Replace => {
-            format!("{text}\n{PROMPT_BOUNDARY}\n{context}")
-        }
-        Some(context) if text.is_empty() => context.to_string(),
-        Some(context) => format!("{text}\n\n{context}"),
+        Some(context) => format!("{text}\n{PROMPT_BOUNDARY}\n{context}"),
         None => text,
     }
 }
@@ -389,7 +365,7 @@ pub fn args_for(
 ) -> Vec<String> {
     // Rovik answers what would ask, through its server; otherwise nobody
     // is there to, and it's denied.
-    let rovik_decides = follows_rovik(settings) && mcp_config.is_some() && !turn.one_shot;
+    let rovik_decides = rovik_answers(settings, turn) && mcp_config.is_some();
     let mut args: Vec<String> = vec![
         "-p".into(),
         "--output-format".into(),
@@ -411,18 +387,13 @@ pub fn args_for(
         args.push("--effort".into());
         args.push(effort_arg(effort).into());
     }
-    let flag = match prompt_mode(settings, turn) {
-        SystemPromptMode::Own => None,
-        SystemPromptMode::Append => Some("--append-system-prompt-file"),
-        SystemPromptMode::Replace => Some("--system-prompt-file"),
-    };
-    if let (Some(flag), Some(file)) = (flag, prompt_file) {
-        args.push(flag.into());
+    if let Some(file) = prompt_file.filter(|_| sends_rovik_prompt(settings, turn)) {
+        args.push("--system-prompt-file".into());
         args.push(file.to_string_lossy().into_owned());
     }
-    // A resumed session takes the prompt as the settings make it now, not
-    // as it was at the session's first request: the project's section
-    // changes, and so may the setting (Claude Code's own after Rovik's).
+    // A resumed session takes the prompt as it is now, not as it was at
+    // the session's first request: the project's section changes, and so
+    // may whose prompt it is (the tools setting's).
     args.push("--system-prompt-snapshot".into());
     args.push("off".into());
     if turn.one_shot {
@@ -432,12 +403,12 @@ pub fn args_for(
         args.push("--max-turns".into());
         args.push("1".into());
         args.push("--no-session-persistence".into());
-    } else if follows_rovik(settings) {
+    } else if rovik_answers(settings, turn) {
         // Claude Code's own tools, as in its manual mode: what it would ask
         // about, Rovik decides (none of the settings' allowed tools, which
-        // would pass it by).
+        // would pass it by). In Plan mode, its own plan mode.
         args.push("--permission-mode".into());
-        args.push("default".into());
+        args.push(if turn.plan_mode { "plan" } else { "default" }.into());
         if let Some(config) = mcp_config {
             args.push("--mcp-config".into());
             args.push(config.to_string_lossy().into_owned());
@@ -1081,10 +1052,16 @@ impl Parser {
             .and_then(|m| m.as_object())
             .and_then(|m| m.keys().next().cloned())
             .or_else(|| self.kind_model.clone());
+        // Its way out of plan mode, refused in Plan mode (`ask_rovik`), is
+        // how a plan ends here, not a call the user would want told of.
         let denials = value
             .get("permission_denials")
             .and_then(|d| d.as_array())
-            .map(|d| d.len())
+            .map(|d| {
+                d.iter()
+                    .filter(|x| x.get("tool_name").and_then(Value::as_str) != Some(EXIT_PLAN_MODE))
+                    .count()
+            })
             .unwrap_or(0);
         let mut extra = json!({
             "numTurns": value.get("num_turns").cloned().unwrap_or(Value::Null),
@@ -1260,10 +1237,10 @@ fn prompt_file(
     turn: &Turn,
     rovik_tools: bool,
 ) -> Result<Option<TempFile>, String> {
-    if prompt_mode(settings, turn) == SystemPromptMode::Own {
+    if !sends_rovik_prompt(settings, turn) {
         return Ok(None);
     }
-    let text = system_text(settings, turn, rovik_tools);
+    let text = system_text(turn, rovik_tools);
     if text.trim().is_empty() {
         return Ok(None);
     }
@@ -1273,6 +1250,16 @@ fn prompt_file(
 /// Whether Rovik's permissions decide on Claude Code's own tools.
 fn follows_rovik(settings: &Settings) -> bool {
     settings.tools == ToolsMode::Own && settings.permission_mode.trim() == ROVIK_PERMISSIONS
+}
+
+/// Whether Rovik answers what Claude Code's own tools would ask about: under
+/// Rovik's permissions, and in Plan mode whatever the connector's mode, so
+/// that nothing changes the project and the plan stays the reply (Claude
+/// Code runs in its own plan mode then, `args_for`).
+fn rovik_answers(settings: &Settings, turn: &Turn) -> bool {
+    settings.tools == ToolsMode::Own
+        && !turn.one_shot
+        && (follows_rovik(settings) || turn.plan_mode)
 }
 
 /// How long listing the commands may take: the program starts, reads its
@@ -1581,6 +1568,17 @@ fn ask_rovik(call: McpCall, asks: &ToolAsks, root: Option<PathBuf>) {
         .unwrap_or("")
         .to_string();
     let input = call.arguments.get("input").cloned().unwrap_or(json!({}));
+    // Its way out of plan mode, into carrying the plan out: in Rovik, the
+    // plan is the reply, and the user carries it out in Agent mode.
+    if tool == EXIT_PLAN_MODE {
+        let answer = ToolAnswer::Deny {
+            reason: PLAN_IS_THE_REPLY.into(),
+        };
+        let asked = asked_call(&tool, &input, root.as_deref());
+        let result = permission_result(&tool, &input, &asked, answer);
+        let _ = call.reply.send(McpReply::text(result.to_string()));
+        return;
+    }
     let call_id = call
         .arguments
         .get("tool_use_id")
@@ -1608,6 +1606,13 @@ fn ask_rovik(call: McpCall, asks: &ToolAsks, root: Option<PathBuf>) {
     });
 }
 
+/// The tool Claude Code leaves its plan mode with, once the user approves
+/// its plan; it then carries the plan out.
+const EXIT_PLAN_MODE: &str = "ExitPlanMode";
+
+/// Why Rovik doesn't approve `EXIT_PLAN_MODE`: what Claude Code does instead.
+const PLAN_IS_THE_REPLY: &str = "Not approved here: in Rovik IDE your plan is your reply. Reply with the complete plan and change nothing; the user carries it out in Agent mode.";
+
 /// Runs one `claude` turn with its own tools, reporting it through `emit`.
 async fn run_turn(
     turn: &Turn,
@@ -1619,10 +1624,7 @@ async fn run_turn(
     let program = resolve_program(&settings.program)?;
     let prompt = prompt_file(&settings, turn, false)?;
     // Rovik's permissions: the server Claude Code asks before a call.
-    let asks = turn
-        .asks
-        .clone()
-        .filter(|_| follows_rovik(&settings) && !turn.one_shot);
+    let asks = turn.asks.clone().filter(|_| rovik_answers(&settings, turn));
     let mut approvals = None;
     if asks.is_some() {
         let instructions = "Rovik IDE decides whether Claude Code's tool calls may run.";
@@ -2161,6 +2163,13 @@ impl Connector for ClaudeCode {
         })
     }
 
+    /// `--permission-mode plan`, with Rovik answering what it asks
+    /// (`rovik_answers`): its way out of plan mode refused, its plan the
+    /// reply.
+    fn plan_mode(&self) -> bool {
+        true
+    }
+
     fn latest_version(&self) -> BoxFuture<'_, Option<String>> {
         Box::pin(async {
             let response = crate::net::client().await.get(LATEST).send().await.ok()?;
@@ -2307,6 +2316,7 @@ mod tests {
             prompt: prompt.into(),
             cwd: None,
             isolated: false,
+            plan_mode: false,
             session: None,
             recap: None,
             one_shot: false,
@@ -2360,7 +2370,6 @@ mod tests {
     #[test]
     fn the_arguments_of_a_turn() {
         let settings = Settings::from_value(&json!({
-            "systemPrompt": "append",
             "permissionMode": "acceptEdits",
             "allowedTools": "Bash(npm test *)\nRead",
             "maxTurns": 30,
@@ -2373,18 +2382,29 @@ mod tests {
         let args = args_for(&settings, &t, &Session::New("s-1".into()), Some(file), None);
         let joined = args.join(" ");
         assert!(joined.starts_with("-p --output-format stream-json --verbose --include-partial-messages --permission-prompts none"), "{joined}");
+        // Its own tools: its own prompt, whatever file there is.
         assert!(
-            joined.contains("--model sonnet --effort high --append-system-prompt-file /tmp/prompt.md --system-prompt-snapshot off"),
+            joined.contains("--model sonnet --effort high --system-prompt-snapshot off"),
             "{joined}"
+        );
+        assert!(!joined.contains("system-prompt-file"), "{joined}");
+        // A stored choice of the prompt, from before there was none, is
+        // read as nothing.
+        let stored = Settings::from_value(&json!({ "systemPrompt": "append" }));
+        let joined_stored =
+            args_for(&stored, &t, &Session::New("s-1".into()), Some(file), None).join(" ");
+        assert!(
+            !joined_stored.contains("system-prompt-file"),
+            "{joined_stored}"
         );
         assert!(joined.contains("--permission-mode acceptEdits --allowedTools Bash(npm test *) Read --max-turns 30 --max-budget-usd 2.5 --session-id s-1"), "{joined}");
         assert_eq!(
             &args[args.len() - 3..],
             ["--add-dir", "../lib dir", "--debug"]
         );
-        // Continuing the chat's session; the prompt replaced; no model override.
-        let settings =
-            Settings::from_value(&json!({ "systemPrompt": "replace", "permissionMode": "" }));
+        // Continuing the chat's session; Rovik's tools, so Rovik's prompt in
+        // place of Claude Code's; no model override.
+        let settings = Settings::from_value(&json!({ "tools": "rovik", "permissionMode": "" }));
         let mut t = turn("Go on");
         t.model = "default".into();
         t.session = Some("s-0".into());
@@ -2607,6 +2627,112 @@ mod tests {
     }
 
     #[test]
+    fn in_plan_mode_claude_code_plans_in_its_own_and_rovik_answers_whatever_its_mode() {
+        let config = Path::new("/tmp/mcp.json");
+        let session = Session::New("s".into());
+        let mut t = turn("Plan it");
+        t.plan_mode = true;
+        for mode in [
+            "rovik",
+            "bypassPermissions",
+            "acceptEdits",
+            "auto",
+            "default",
+        ] {
+            let settings = Settings::from_value(&json!({
+                "permissionMode": mode,
+                "allowedTools": "Bash(*)",
+            }));
+            assert!(rovik_answers(&settings, &t), "{mode}");
+            let joined = args_for(&settings, &t, &session, None, Some(config)).join(" ");
+            assert!(
+                joined.contains("--permission-prompts host"),
+                "{mode}: {joined}"
+            );
+            assert!(
+                joined.contains(
+                    "--permission-mode plan --mcp-config /tmp/mcp.json \
+                     --permission-prompt-tool mcp__rovik__approve"
+                ),
+                "{mode}: {joined}"
+            );
+            // Nothing that would let a change by: no allowed-tools rule, not
+            // the mode's own.
+            assert!(!joined.contains("--allowedTools"), "{mode}: {joined}");
+            assert_eq!(joined.matches("--permission-mode").count(), 1, "{joined}");
+        }
+        // With Rovik's tools, Rovik's own Plan mode: its tools over MCP, none
+        // of Claude Code's, nothing for Rovik to answer.
+        let rovik = Settings::from_value(&json!({ "tools": "rovik" }));
+        assert!(!rovik_answers(&rovik, &t));
+        let joined = args_for(&rovik, &t, &session, None, Some(config)).join(" ");
+        assert!(joined.contains("--permission-mode dontAsk"), "{joined}");
+        assert!(!joined.contains("--permission-mode plan"), "{joined}");
+        // In Agent mode, Claude Code's own modes are its own.
+        t.plan_mode = false;
+        let own = Settings::from_value(&json!({ "permissionMode": "bypassPermissions" }));
+        assert!(!rovik_answers(&own, &t));
+        let joined = args_for(&own, &t, &session, None, None).join(" ");
+        assert!(
+            joined.contains("--permission-mode bypassPermissions"),
+            "{joined}"
+        );
+        // A one-off request has nothing to plan.
+        t.plan_mode = true;
+        t.one_shot = true;
+        assert!(!rovik_answers(&own, &t));
+    }
+
+    #[tokio::test]
+    async fn its_way_out_of_plan_mode_is_refused_and_its_plan_is_the_reply() {
+        let (asks, mut asked) = mpsc::unbounded_channel::<ToolAsk>();
+        let (reply, answer) = oneshot::channel();
+        let call = McpCall {
+            tool_use_id: Some("toolu_9".into()),
+            name: APPROVE_TOOL.into(),
+            arguments: json!({
+                "tool_name": "ExitPlanMode",
+                "input": { "plan": "# Plan" },
+                "tool_use_id": "toolu_9",
+            }),
+            reply,
+        };
+        ask_rovik(call, &asks, None);
+        let result: Value = serde_json::from_str(&answer.await.unwrap().text).unwrap();
+        assert_eq!(result["behavior"], "deny");
+        assert_eq!(result["message"], PLAN_IS_THE_REPLY);
+        assert!(asked.try_recv().is_err(), "the run isn't asked");
+    }
+
+    #[test]
+    fn its_refused_way_out_of_plan_mode_isnt_told_as_a_denied_call() {
+        let result = |denials: Value| {
+            let mut p = Parser::default();
+            let mut events = Vec::new();
+            let mut emit = |e| events.push(e);
+            let line = json!({"type":"result","subtype":"success","is_error":false,"result":"The plan.","num_turns":1,"usage":{},"permission_denials":denials});
+            p.line(&line.to_string(), &mut emit);
+            events
+        };
+        let events = result(json!([{ "tool_name": "ExitPlanMode" }]));
+        assert!(
+            !names(&events).iter().any(|n| n.contains("denied")),
+            "{:?}",
+            names(&events)
+        );
+        assert_eq!(finished_usage(&events)["connector"]["permissionDenials"], 0);
+        let events = result(json!([{ "tool_name": "Bash" }, { "tool_name": "ExitPlanMode" }]));
+        assert!(
+            names(&events)
+                .iter()
+                .any(|n| n.contains("1 tool call was denied")),
+            "{:?}",
+            names(&events)
+        );
+        assert_eq!(finished_usage(&events)["connector"]["permissionDenials"], 1);
+    }
+
+    #[test]
     fn claude_codes_calls_are_asked_as_rovik_s_of_the_same_kind() {
         let dir = crate::testing::temp_dir();
         let root = dir.0.as_path();
@@ -2745,6 +2871,62 @@ mod tests {
         }
     }
 
+    /// The real `claude` in Plan mode, asking Rovik (Follow Rovik's
+    /// permissions), here allowed whatever it asks: its own plan mode
+    /// changes nothing, and its plan is the reply.
+    ///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored
+    #[tokio::test]
+    #[ignore = "runs the real claude: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
+    async fn real_claude_in_plan_mode_changes_nothing_and_replies_with_its_plan() {
+        if std::env::var("ROVIK_REAL_CLAUDE").is_err() {
+            return;
+        }
+        // Under Rovik's permissions, and in a mode of Claude Code's own that
+        // would let it change anything.
+        for mode in ["rovik", "bypassPermissions"] {
+            let dir = crate::testing::temp_dir();
+            let source = "import sys\n\ndef main():\n    print('hello', sys.argv[1:])\n";
+            std::fs::write(dir.0.join("cli.py"), source).unwrap();
+            let mut t = turn("Add a --version flag to cli.py that prints 1.0.");
+            t.settings = json!({ "permissionMode": mode });
+            t.model = "haiku".into();
+            t.cwd = Some(dir.0.clone());
+            t.plan_mode = true;
+            let (asks, mut asked) = mpsc::unbounded_channel::<ToolAsk>();
+            t.asks = Some(asks);
+            let answering = tokio::spawn(async move {
+                let mut seen = Vec::new();
+                while let Some(ask) = asked.recv().await {
+                    seen.push(ask.tool.clone());
+                    let _ = ask.reply.send(ToolAnswer::Allow { arguments: None });
+                }
+                seen
+            });
+            let (_tx, mut cancel) = watch::channel(false);
+            let mut events = Vec::new();
+            ClaudeCode
+                .run(t, &mut cancel, &mut |e| events.push(e))
+                .await
+                .unwrap();
+            let asked = answering.await.unwrap();
+            let reply: String = events
+                .iter()
+                .filter_map(|e| match e {
+                    ChatStreamEvent::Delta { content } => Some(content.as_str()),
+                    _ => None,
+                })
+                .collect();
+            eprintln!("{mode}: asked {asked:?}\n{reply}\n----");
+            assert_eq!(
+                std::fs::read_to_string(dir.0.join("cli.py")).unwrap(),
+                source,
+                "{mode}: {:#?}",
+                names(&events)
+            );
+            assert!(reply.contains("--version"), "{mode}: {reply}");
+        }
+    }
+
     #[test]
     fn the_newest_version_is_the_release_bucket_s_answer() {
         assert_eq!(latest_of("2.1.310\n").as_deref(), Some("2.1.310"));
@@ -2768,7 +2950,6 @@ mod tests {
     #[test]
     fn claude_code_s_own_prompt_is_left_as_it_is() {
         let settings = Settings::from_value(&json!({}));
-        assert_eq!(settings.system_prompt, SystemPromptMode::Own, "the default");
         let t = turn("Fix it");
         // No file to read, and none of the system prompt flags.
         assert!(prompt_file(&settings, &t, false).unwrap().is_none());
@@ -2777,9 +2958,15 @@ mod tests {
         assert!(!joined.contains("system-prompt-file"), "{joined}");
         // A session that began with Rovik's prompt takes its own from now on.
         assert!(joined.contains("--system-prompt-snapshot off"), "{joined}");
-        // With Rovik's tools, Claude Code has none for its prompt to describe.
+        // With Rovik's tools, Claude Code has none for its prompt to describe:
+        // Rovik's goes in its place.
         let rovik = Settings::from_value(&json!({ "tools": "rovik" }));
-        assert_eq!(prompt_mode(&rovik, &t), SystemPromptMode::Replace);
+        assert!(sends_rovik_prompt(&rovik, &t));
+        let joined = args_for(&rovik, &t, &Session::New("s".into()), Some(file), None).join(" ");
+        assert!(
+            joined.contains("--system-prompt-file /tmp/prompt.md"),
+            "{joined}"
+        );
 
         // A one-off request's system prompt is the request (a title's
         // instructions): it's sent in place of Claude Code's.
@@ -3239,20 +3426,14 @@ fi
         let mut t = turn("x");
         t.system_prompt = "You are Rovik's agent.".into();
         t.system_context = Some("## This project\nRust.".into());
-        let append = Settings::default();
         assert_eq!(
-            system_text(&append, &t, false),
-            "You are Rovik's agent.\n\n## This project\nRust."
-        );
-        let replace = Settings::from_value(&json!({ "systemPrompt": "replace" }));
-        assert_eq!(
-            system_text(&replace, &t, false),
+            system_text(&t, false),
             "You are Rovik's agent.\n__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__\n## This project\nRust."
         );
         // Rovik's tools named only when there are some.
-        assert!(!system_text(&replace, &t, true).contains("mcp__rovik__"));
+        assert!(!system_text(&t, true).contains("mcp__rovik__"));
         t.tools = vec![read_tool()];
-        let text = system_text(&replace, &t, true);
+        let text = system_text(&t, true);
         assert!(text.contains("`mcp__rovik__read`"), "{text}");
         assert!(text.find("## Your tools").unwrap() < text.find(PROMPT_BOUNDARY).unwrap());
     }
@@ -3465,7 +3646,7 @@ fi
         };
         let dialog = format!("d-{}", uuid::Uuid::new_v4());
         let mut first = turn("Read a.rs");
-        first.settings = json!({ "program": program, "tools": "rovik", "systemPrompt": "replace" });
+        first.settings = json!({ "program": program, "tools": "rovik" });
         first.dialog_id = Some(dialog.clone());
         first.tools = vec![read_tool()];
         first.system_context = Some("## This project".into());
@@ -3643,7 +3824,7 @@ fi
         }
         let dir = crate::testing::temp_dir();
         let dialog = format!("real-{}", uuid::Uuid::new_v4());
-        let settings = json!({ "tools": "rovik", "systemPrompt": "replace" });
+        let settings = json!({ "tools": "rovik" });
         let mut first = turn(
             "Read the file notes.txt with your read tool, then reply with only the secret word it contains.",
         );
@@ -3766,7 +3947,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Hi there",
 "#,
         );
         let mut t = turn("Say hi");
-        t.settings = json!({ "program": program, "auth": "token", "systemPrompt": "append" });
+        t.settings = json!({ "program": program, "auth": "token" });
         t.api_key = "tok".into();
         t.cwd = Some(dir.0.clone());
         let (_tx, mut cancel) = watch::channel(false);
@@ -3786,22 +3967,31 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"Hi there",
         );
         let args = std::fs::read_to_string(dir.0.join("args.txt")).unwrap();
         assert!(args.contains("--session-id"), "a new session: {args}");
+        // Its own tools: its own prompt; Rovik sends none.
         assert!(
-            args.contains("--append-system-prompt-file")
-                && args.contains("--system-prompt-snapshot off"),
+            !args.contains("system-prompt-file") && args.contains("--system-prompt-snapshot off"),
             "{args}"
         );
-        // The prompt's file is gone with the run.
-        let file = args
-            .split_whitespace()
-            .skip_while(|a| *a != "--append-system-prompt-file")
-            .nth(1)
-            .unwrap();
-        assert!(!Path::new(file).exists(), "{file}");
         assert_eq!(
             std::fs::read_to_string(dir.0.join("prompt.txt")).unwrap(),
             "Say hi"
         );
+
+        // A one-off request sends Rovik's prompt in Claude Code's place, in
+        // a file that's gone with the run.
+        let mut one = turn("Name this chat");
+        one.settings = json!({ "program": program, "auth": "token" });
+        one.api_key = "tok".into();
+        one.one_shot = true;
+        one.system_prompt = "Name chats in a few words.".into();
+        ClaudeCode.run(one, &mut cancel, &mut |_| {}).await.unwrap();
+        let args = std::fs::read_to_string(dir.0.join("args.txt")).unwrap();
+        let file = args
+            .split_whitespace()
+            .skip_while(|a| *a != "--system-prompt-file")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{args}"));
+        assert!(!Path::new(file).exists(), "{file}");
     }
 
     #[cfg(unix)]

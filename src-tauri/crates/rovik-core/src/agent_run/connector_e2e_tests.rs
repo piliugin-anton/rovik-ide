@@ -217,3 +217,207 @@ async fn claude_code_in_a_chats_copy_is_refused_git_that_changes_the_repository(
     assert!(args.contains("Bash(git checkout *)"), "{args}");
     assert!(args.contains("Bash(git push *)"), "{args}");
 }
+
+/// A send in `mode` on Claude Code's model with its own tools.
+fn own_tools_send(h: &Harness, program: &str, mode: &str, text: &str) -> StartRequest {
+    let send = StartKind::Send {
+        message: UserMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: text.into(),
+            meta: Some(json!({ "mode": mode })),
+            attachments: Vec::new(),
+        },
+    };
+    let permissions = Permissions {
+        allow_any_command: true,
+        ..quiet_permissions()
+    };
+    let mut request = h.request("connector://claude-code", send, permissions);
+    request.profile.id = "cc::sonnet".into();
+    request.profile.model = "sonnet".into();
+    // As the app resolves a connector running its own tools.
+    request.profile.no_tools = true;
+    // A mode of Claude Code's own that would let anything run.
+    request.profile.connector =
+        Some(json!({ "program": program, "permissionMode": "bypassPermissions" }));
+    request
+}
+
+/// Plan mode with Claude Code's own tools: Claude Code runs in its own plan
+/// mode, whatever its permission mode, and Rovik answers what it asks:
+/// its edit and its command refused as Rovik's own would be in Plan mode,
+/// its way out of plan mode refused with its plan as the reply. Nothing of
+/// Rovik's prompt goes (its plan instructions describe Rovik's tools), and
+/// the run doesn't press it to submit a plan with a tool it doesn't have.
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_code_in_plan_mode_plans_in_its_own_and_changes_nothing() {
+    let h = harness(&[("src/a.txt", "one\n")]).await;
+    let asks = json!([
+        ["Edit", { "file_path": "src/a.txt", "old_string": "one", "new_string": "ONE" }, "toolu_1"],
+        ["Bash", { "command": "rm -rf build" }, "toolu_2"],
+        ["ExitPlanMode", { "plan": "# Plan" }, "toolu_3"],
+    ]);
+    let Some(program) = crate::connectors::fake_claude_asking(&h._dir.0, &asks) else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    h.start(own_tools_send(&h, &program, "plan", "Plan the change"))
+        .await
+        .unwrap();
+    assert_eq!(h.run_end().await, "done");
+
+    let decisions: Value =
+        serde_json::from_str(&std::fs::read_to_string(h._dir.0.join("decisions.json")).unwrap())
+            .unwrap();
+    for (i, tool) in [(0, "write"), (1, "bash")] {
+        assert_eq!(decisions[i]["behavior"], "deny", "{decisions:#?}");
+        let why = decisions[i]["message"].as_str().unwrap();
+        assert!(
+            why.contains(&format!("{tool} isn't available in Plan mode")),
+            "{why}"
+        );
+    }
+    assert_eq!(decisions[2]["behavior"], "deny");
+    assert!(decisions[2]["message"]
+        .as_str()
+        .unwrap()
+        .contains("your plan is your reply"));
+    assert!(h.events_of("approvalRequested").is_empty());
+
+    let args = std::fs::read_to_string(h._dir.0.join("args.txt")).unwrap();
+    assert!(
+        args.contains("--permission-mode plan")
+            && args.contains("--permission-prompt-tool mcp__rovik__approve"),
+        "{args}"
+    );
+    assert!(!args.contains("bypassPermissions"), "{args}");
+    assert!(!args.contains("system-prompt-file"), "{args}");
+    assert_eq!(h.file("src/a.txt").as_deref(), Some("one\n"));
+    // One request, one reply: no note sent it back to submit a plan.
+    let messages = h.messages().await;
+    let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+    assert_eq!(roles, ["user", "assistant"], "{messages:#?}");
+}
+
+/// Autopilot needs Rovik's tools: a send on a connector running its own
+/// is refused with why, before anything is stored.
+#[cfg(unix)]
+#[tokio::test]
+async fn autopilot_is_refused_on_a_connector_running_its_own_tools() {
+    let h = harness(&[("src/a.txt", "one\n")]).await;
+    let refused = agent_start(
+        &h.core,
+        own_tools_send(&h, "claude", "autopilot", "Ship it"),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused.contains("Autopilot works with Rovik's tools"),
+        "{refused}"
+    );
+    assert!(h.messages().await.is_empty());
+}
+
+/// Plan mode refuses a connector running its own tools without a plan mode
+/// of its own: they would carry the plan out. Claude Code has one.
+#[test]
+fn plan_mode_needs_a_connector_s_own_plan_mode() {
+    let request = |mode: &str, no_tools: bool| StartRequest {
+        dialog_id: "d".into(),
+        start: StartKind::Send {
+            message: UserMessage {
+                id: "m".into(),
+                content: "x".into(),
+                meta: Some(json!({ "mode": mode })),
+                attachments: Vec::new(),
+            },
+        },
+        profile: serde_json::from_value(json!({
+            "id": "cc::sonnet", "label": "Claude Code/sonnet", "model": "sonnet",
+            "baseUrl": "connector://claude-code", "noTools": no_tools,
+        }))
+        .unwrap(),
+        options: None,
+        mode: None,
+        context_mode: None,
+        root: None,
+        current_user_content: None,
+        local_date: None,
+        config: None,
+        isolate: None,
+        project_settings: None,
+    };
+    let without = |r: &StartRequest| super::super::mode_refusal_with(r, |_| false);
+    let refused = without(&request("plan", true)).unwrap();
+    assert!(
+        refused.starts_with("Claude Code has no plan mode of its own"),
+        "{refused}"
+    );
+    // Its plan mode, Rovik's tools, or another mode: nothing to refuse.
+    assert_eq!(super::super::mode_refusal(&request("plan", true)), None);
+    assert_eq!(without(&request("plan", false)), None);
+    assert_eq!(without(&request("agent", true)), None);
+}
+
+/// The real Claude Code through whole runs, in both of its setups, in Agent
+/// and in Plan mode: with its own tools (its own prompt; Rovik answers what
+/// it asks) and with Rovik's (Rovik's prompt, its tools over MCP). Plan mode
+/// changes nothing (with Rovik's tools, the plan is saved as Rovik's are);
+/// Agent mode makes the change.
+///   ROVIK_REAL_CLAUDE=1 cargo test -p rovik-core real_claude -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "runs the real claude: set ROVIK_REAL_CLAUDE=1 and pass --ignored"]
+async fn real_claude_code_plans_and_works_with_its_own_tools_and_with_rovik_s() {
+    if std::env::var("ROVIK_REAL_CLAUDE").is_err() {
+        return;
+    }
+    const SOURCE: &str = "import sys\n\n\ndef main():\n    print('hello', sys.argv[1:])\n";
+    for tools in ["own", "rovik"] {
+        for mode in ["plan", "agent"] {
+            let h = harness(&[("cli.py", SOURCE)]).await;
+            let send = StartKind::Send {
+                message: UserMessage {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    content: "Add a --version flag to cli.py that prints 1.0.".into(),
+                    meta: Some(json!({ "mode": mode })),
+                    attachments: Vec::new(),
+                },
+            };
+            let mut request = h.request("connector://claude-code", send, quiet_permissions());
+            request.profile.id = "cc::haiku".into();
+            request.profile.label = "Claude Code/haiku".into();
+            request.profile.model = "haiku".into();
+            // As the app resolves the connector's model in each setup.
+            request.profile.no_tools = tools == "own";
+            request.profile.connector = Some(json!({ "tools": tools }));
+            h.start(request).await;
+            let end = h.run_end_within(Duration::from_secs(600)).await;
+            let messages = h.messages().await;
+            let reply = messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "assistant" && !m.content.trim().is_empty())
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            eprintln!("--- {tools} tools, {mode} mode: {end}\n{reply}\n");
+            let now = h.file("cli.py").unwrap();
+            if mode == "plan" {
+                assert_eq!(now, SOURCE, "{tools} tools: Plan mode changed the project");
+                let plans = h.project.join(super::plan::PLANS_DIR);
+                let saved = std::fs::read_dir(&plans).map(|d| d.count()).unwrap_or(0);
+                if tools == "rovik" {
+                    assert!(saved > 0, "Rovik's tools: the plan is saved as Rovik's are");
+                } else {
+                    assert_eq!(saved, 0, "its own tools: its plan is the reply");
+                    assert!(reply.contains("--version"), "{reply}");
+                }
+            } else {
+                assert!(
+                    now.contains("--version"),
+                    "{tools} tools, Agent mode: {now}"
+                );
+            }
+        }
+    }
+}
