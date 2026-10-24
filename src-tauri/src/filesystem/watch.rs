@@ -367,6 +367,34 @@ fn watch_replaced(generation: u64) -> bool {
     WATCH_GENERATION.load(Ordering::SeqCst) != generation
 }
 
+/// Begins a watch: the watcher before is dropped (its events stop) and the
+/// generation moves on (its task ends once it sees that), both under the
+/// slot's lock. The new watch's generation.
+fn begin_watch<W>(slot: &std::sync::Mutex<Option<W>>, generations: &AtomicU64) -> u64 {
+    let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+    *slot = None;
+    generations.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Keeps `watcher` as the active one, unless a newer watch began while it
+/// was being built: then it's dropped, and false. Two folders opened in
+/// quick succession build their watchers at once, and the older one,
+/// finishing last, must not replace the newer one's (which would leave the
+/// project unwatched).
+fn keep_watcher<W>(
+    slot: &std::sync::Mutex<Option<W>>,
+    generations: &AtomicU64,
+    generation: u64,
+    watcher: W,
+) -> bool {
+    let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if generations.load(Ordering::SeqCst) != generation {
+        return false;
+    }
+    *slot = Some(watcher);
+    true
+}
+
 /// The watcher is gone (`disconnected`) and nothing is left to report: no
 /// event can arrive any more, so the watch's task can end.
 fn watch_finished(disconnected: bool, batch: &WatchBatch, git_touched: Option<Instant>) -> bool {
@@ -387,8 +415,7 @@ pub async fn start_file_watch(
     // task ends on its own once it sees the generation change: dropping
     // the watcher alone only stops new events, and its loop would keep
     // waking every 50 ms forever, one more per project opened.
-    *state.active_watcher.lock().unwrap() = None;
-    let generation = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = begin_watch(&state.active_watcher, &WATCH_GENERATION);
 
     let (tx, rx) = std::sync::mpsc::channel::<NotifyResult<Event>>();
     // Off the main thread: watching a big tree folder by folder takes a
@@ -411,11 +438,18 @@ pub async fn start_file_watch(
         Ok(watcher)
     })
     .await?;
+    // Kept alive until the next switch, unless that came while this one
+    // was being built.
+    if !keep_watcher(
+        &state.active_watcher,
+        &WATCH_GENERATION,
+        generation,
+        watcher,
+    ) {
+        return Ok(());
+    }
     println!("Watching: {:?}", root);
-
     tauri::async_runtime::spawn(Watch::new(app_handle, root, generation, rx).run());
-    // Kept alive until the next switch.
-    *state.active_watcher.lock().unwrap() = Some(watcher);
     Ok(())
 }
 
@@ -658,6 +692,20 @@ mod tests {
             operation: WatchOp::Modify,
             is_dir: false,
         }
+    }
+
+    /// Two watches begun at once: the older one's watcher, built last,
+    /// doesn't replace the newer one's, which stays.
+    #[test]
+    fn an_older_watch_built_last_doesnt_replace_the_newer_one() {
+        let slot = std::sync::Mutex::new(Some("before"));
+        let generations = AtomicU64::new(0);
+        let older = begin_watch(&slot, &generations);
+        assert_eq!(*slot.lock().unwrap(), None, "the one before is dropped");
+        let newer = begin_watch(&slot, &generations);
+        assert!(keep_watcher(&slot, &generations, newer, "newer"));
+        assert!(!keep_watcher(&slot, &generations, older, "older"));
+        assert_eq!(*slot.lock().unwrap(), Some("newer"));
     }
 
     #[test]
