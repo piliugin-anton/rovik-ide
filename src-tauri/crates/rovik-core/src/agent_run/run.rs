@@ -30,17 +30,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
-/// Wait this long without any output before saying so.
-#[cfg(not(test))]
+/// Wait this long without any output before saying so. Tests (this
+/// crate's, and other crates' through the `testing` feature) wait less.
+#[cfg(not(any(test, feature = "testing")))]
 const STILL_WAITING: Duration = Duration::from_secs(15);
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 const STILL_WAITING: Duration = Duration::from_millis(400);
 /// Mid-reply silence before "Still generating" shows.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "testing")))]
 const REPLY_IDLE: Duration = Duration::from_millis(2_500);
 /// Balanced Autopilot: plans written in a reply the IDE submits per run.
 const MAX_REPLY_SUBMITS: u32 = 2;
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 const REPLY_IDLE: Duration = Duration::from_millis(300);
 /// After Stop, how long the request gets to end before it's dropped.
 const STOP_GRACE: Duration = Duration::from_secs(2);
