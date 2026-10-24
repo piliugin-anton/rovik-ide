@@ -62,6 +62,10 @@ Website and downloads: [rovik-ide.dev](https://rovik-ide.dev).
   lines ticked from either side, or an edit by hand. The repository's
   [Git hooks](#git-hooks) run as they do with git: a failing pre-commit
   or pre-push stops the commit or push and shows what it printed.
+  A project that is a folder of a larger repository (a monorepo's
+  package, a home folder kept in git) lists, commits and discards only
+  the changes in its own folder; Discard all sends new files, staged or
+  not, to the trash.
 
 **AI agent**
 

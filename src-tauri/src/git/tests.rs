@@ -125,6 +125,162 @@ mod revert_tests {
         assert!(git_status_blocking(path(&dir)).unwrap().files.is_empty());
     }
 
+    /// What the system trash holds from `dir`, by name: so a test can tell
+    /// a file trashed from one deleted for good. Taken out of the trash.
+    #[cfg(any(
+        target_os = "windows",
+        all(
+            unix,
+            not(target_os = "macos"),
+            not(target_os = "ios"),
+            not(target_os = "android")
+        )
+    ))]
+    fn take_trashed_from(dir: &std::path::Path) -> Vec<String> {
+        let dir = dir.canonicalize().unwrap();
+        let items: Vec<trash::TrashItem> = trash::os_limited::list()
+            .unwrap()
+            .into_iter()
+            .filter(|i| i.original_parent.canonicalize().ok().as_deref() == Some(dir.as_path()))
+            .collect();
+        let mut names: Vec<String> = items
+            .iter()
+            .map(|i| i.name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        trash::os_limited::purge_all(items).unwrap();
+        names
+    }
+
+    /// Discard all sends a new file that was staged but never committed to
+    /// the trash, as it does an untracked one: the hard reset alone deleted
+    /// it for good.
+    #[test]
+    fn discard_all_trashes_a_staged_new_file_rather_than_deleting_it() {
+        let (dir, repo) = repo_with_commit();
+        fs::write(dir.join("added.txt"), "staged, never committed\n").unwrap();
+        fs::write(dir.join("untracked.txt"), "u\n").unwrap();
+        fs::write(dir.join("b.txt"), "changed\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("added.txt")).unwrap();
+        index.write().unwrap();
+
+        git_discard_all_blocking(path(&dir)).unwrap();
+
+        assert!(!dir.join("added.txt").exists() && !dir.join("untracked.txt").exists());
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
+        assert!(git_status_blocking(path(&dir)).unwrap().files.is_empty());
+        #[cfg(any(
+            target_os = "windows",
+            all(
+                unix,
+                not(target_os = "macos"),
+                not(target_os = "ios"),
+                not(target_os = "android")
+            )
+        ))]
+        assert_eq!(take_trashed_from(&dir), ["added.txt", "untracked.txt"]);
+    }
+
+    /// A project that is a folder of a larger repository (a home folder kept
+    /// in git, a monorepo's package): the panel lists, commits and discards
+    /// only what's in the project's folder.
+    #[test]
+    fn a_project_inside_a_larger_repository_keeps_to_its_folder() {
+        let (dir, repo) = repo_with_commit();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "t").unwrap();
+        config.set_str("user.email", "t@t").unwrap();
+        let project = path(&dir.join("src"));
+        fs::write(dir.join("src/a.rs"), "fn a() { changed }\n").unwrap();
+        fs::write(dir.join("src/new.rs"), "new\n").unwrap();
+        fs::write(dir.join("b.txt"), "outside\n").unwrap();
+        fs::write(dir.join("outside.txt"), "o\n").unwrap();
+
+        let listed = |p: &str| -> Vec<String> {
+            let mut files: Vec<String> = git_status_blocking(p.to_string())
+                .unwrap()
+                .files
+                .into_iter()
+                .map(|f| f.path)
+                .collect();
+            files.sort();
+            files
+        };
+        assert_eq!(listed(&project), ["src/a.rs", "src/new.rs"]);
+
+        // Commit takes the project's changes only.
+        git_commit_blocking(project.clone(), "src only".into()).unwrap();
+        assert!(listed(&project).is_empty());
+        assert_eq!(listed(&path(&dir)), ["b.txt", "outside.txt"]);
+        let head = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(head.get_path(std::path::Path::new("src/new.rs")).is_ok());
+        assert!(head.get_path(std::path::Path::new("outside.txt")).is_err());
+
+        // Discard all throws away the project's changes only.
+        fs::write(dir.join("src/a.rs"), "fn a() { again }\n").unwrap();
+        fs::write(dir.join("src/n2.rs"), "n2\n").unwrap();
+        git_discard_all_blocking(project.clone()).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join("src/a.rs")).unwrap(),
+            "fn a() { changed }\n"
+        );
+        assert!(!dir.join("src/n2.rs").exists());
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "outside\n");
+        assert!(dir.join("outside.txt").exists());
+        assert_eq!(listed(&path(&dir)), ["b.txt", "outside.txt"]);
+        #[cfg(any(
+            target_os = "windows",
+            all(
+                unix,
+                not(target_os = "macos"),
+                not(target_os = "ios"),
+                not(target_os = "android")
+            )
+        ))]
+        assert_eq!(take_trashed_from(&dir.join("src")), ["n2.rs"]);
+    }
+
+    /// Without a commit yet, Discard all in a project folder empties the
+    /// index of that folder's files only.
+    #[test]
+    fn discard_all_in_a_folder_of_a_repository_without_commits_keeps_the_rest_staged() {
+        let dir = std::env::temp_dir().join(format!("git-unborn-scope-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("app")).unwrap();
+        fs::write(dir.join("app/x.txt"), "x\n").unwrap();
+        fs::write(dir.join("top.txt"), "t\n").unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+
+        git_discard_all_blocking(path(&dir.join("app"))).unwrap();
+
+        assert!(!dir.join("app/x.txt").exists());
+        assert!(dir.join("top.txt").exists());
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        let staged: Vec<String> = index
+            .iter()
+            .map(|e| String::from_utf8_lossy(&e.path).into_owned())
+            .collect();
+        assert_eq!(staged, ["top.txt"]);
+        #[cfg(any(
+            target_os = "windows",
+            all(
+                unix,
+                not(target_os = "macos"),
+                not(target_os = "ios"),
+                not(target_os = "android")
+            )
+        ))]
+        take_trashed_from(&dir.join("app"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A file whose name is a pattern to libgit2 (`[id]`, `*`, `?`) is
     /// reverted alone: without a literal pathspec, `pages/[id].tsx` took
     /// `pages/i.tsx` with it, by force, with no copy in the trash.
@@ -272,6 +428,7 @@ mod revert_tests {
     #[test]
     fn status_reports_workdir_and_staging() {
         let (dir, _repo) = repo_with_commit();
+        fs::write(dir.join("src/a.rs"), "changed\n").unwrap();
         fs::write(dir.join("b.txt"), "changed\n").unwrap();
         let st = git_status_blocking(path(&dir.join("src"))).unwrap();
         // The repository's folder, however it's spelled there (macOS's /var
@@ -282,8 +439,10 @@ mod revert_tests {
             canonical(&dir)
         );
         assert!(!st.workdir.ends_with(['/', '\\']), "{}", st.workdir);
-        let b = st.files.iter().find(|f| f.path == "b.txt").unwrap();
-        assert!(b.unstaged && !b.staged);
+        // Paths are the repository's; only the project's folder is listed.
+        let a = st.files.iter().find(|f| f.path == "src/a.rs").unwrap();
+        assert!(a.unstaged && !a.staged);
+        assert!(!st.files.iter().any(|f| f.path == "b.txt"), "outside src");
     }
 
     fn stash_repo() -> PathBuf {
