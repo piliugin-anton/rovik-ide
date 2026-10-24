@@ -58,7 +58,8 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    fn owner(&self) -> Option<&str> {
+    /// The chat the job is for, if any.
+    pub fn owner(&self) -> Option<&str> {
         match self {
             JobKind::Agent { owner } | JobKind::Check { owner } | JobKind::Landing { owner } => {
                 Some(owner)

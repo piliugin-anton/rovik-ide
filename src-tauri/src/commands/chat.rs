@@ -14,6 +14,7 @@ use rovik_core::chat_db::store::{
 use rovik_core::chat_db::{api, attachments, projects};
 use rovik_core::Core;
 use rovik_protocol::Request;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::ipc::InvokeBody;
@@ -335,6 +336,16 @@ pub async fn cloud_cancel_move(
         .cancel_move(&dialog_id)
         .await
         .map_err(|fail| fail.message)
+}
+
+/// The ports forwarded for each remote chat's pages (D20): each port its
+/// servers opened on its host, and the port here that leads there. Changes
+/// come on `cloud-event` (`ports`).
+#[tauri::command]
+pub fn cloud_forwarded_ports(
+    remote: State<'_, Arc<Remote>>,
+) -> HashMap<String, Vec<rovik_client::ForwardedPort>> {
+    remote.all_forwarded_ports()
 }
 
 /// "Re-sync this chat" (6.3): a remote chat's rows again from its host, in

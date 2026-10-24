@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod pages;
+
 const HOST: &str = "test-server";
 
 /// The app's core: the events it sends the frontend, and for each row a

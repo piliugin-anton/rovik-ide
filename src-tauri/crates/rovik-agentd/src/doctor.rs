@@ -14,6 +14,7 @@ use crate::daemon::MIN_PROTOCOL;
 use crate::home::{self, Home};
 use crate::host;
 use crate::limits::{size_of, AdminFile, ADMIN_FILE};
+use crate::network;
 use rovik_protocol::host::{Disk, Doctor, Finding, InstallLimits, Level, Storage};
 use rovik_protocol::PROTOCOL;
 use std::ffi::CString;
@@ -65,6 +66,10 @@ pub struct Server {
     pub bwrap: Option<PathBuf>,
     /// The kernel's Landlock confines commands where bubblewrap isn't.
     pub landlock: bool,
+    /// Whether a private network can be made for this user's commands
+    /// (network.rs): None where none is wanted (no install for everyone,
+    /// WSL).
+    pub private_network: Option<Result<(), String>>,
     /// The shared Rust and Node versions (installer/toolchains.rs).
     pub toolchains: PathBuf,
     pub git: Option<String>,
@@ -76,6 +81,8 @@ impl Server {
     fn this(options: Options) -> Result<Server, String> {
         let home = Home::locate(options.data)?;
         let fuse = rovik_core::vfs::driver::status();
+        let installed = Path::new(ADMIN_FILE).is_file();
+        let private_network = network::wanted(installed).then(|| network::check(&home));
         Ok(Server {
             socket: options.socket.unwrap_or_else(|| home.socket()),
             home,
@@ -96,6 +103,7 @@ impl Server {
             chrome: rovik_core::browser_tools::chrome_path(),
             bwrap: crate::installer::find_on_path("bwrap"),
             landlock: rovik_core::overlay::confine::landlock_works(),
+            private_network,
             toolchains: PathBuf::from(crate::installer::TOOLCHAINS),
             git: git_version(),
             disk: free_space,
@@ -171,6 +179,18 @@ pub fn gather(server: &Server) -> Doctor {
         None => findings.warning(format!(
             "no bubblewrap: the agent's commands are refused until it's installed; sudo {} \
              admin bubblewrap installs it",
+            crate::installer::INSTALLED
+        )),
+    }
+    match &server.private_network {
+        None => {}
+        Some(Ok(())) => findings.ok(
+            "a private network for this user's commands: their servers' ports are theirs alone"
+                .into(),
+        ),
+        Some(Err(why)) => findings.warning(format!(
+            "no private network: the agent's commands share the server's ports with other \
+             users' ({why}); sudo {} admin pasta installs pasta",
             crate::installer::INSTALLED
         )),
     }
@@ -516,7 +536,7 @@ mod tests {
         let sys = dir.0.join("sys");
         fs::create_dir_all(sys.join("user")).unwrap();
         fs::write(sys.join("user/max_user_namespaces"), "63000\n").unwrap();
-        let server = Server {
+        let mut server = Server {
             socket: home.socket(),
             home,
             admin_file,
@@ -529,6 +549,7 @@ mod tests {
             chrome: None,
             bwrap: Some("/usr/bin/bwrap".into()),
             landlock: true,
+            private_network: Some(Ok(())),
             toolchains: dir.0.join("toolchains"),
             git: Some("2.43.0".into()),
             disk: |_| Some((12 << 30, 40 << 30)),
@@ -548,6 +569,7 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
   warning  no Chrome or Chromium: the browser tools won't work
   ok       unprivileged user namespaces are allowed
   ok       bubblewrap: /usr/bin/bwrap sandboxes the agent's commands
+  ok       a private network for this user's commands: their servers' ports are theirs alone
   ok       shared toolchains in /home/ann/toolchains: installed: Rust 1.82.0, Node 20.11.0; chats may install a version, the package caches are shared
   git      2.43.0
   storage  projects 3.0 MB, working copies 1.0 MB, chats and attachments 20 KB, temporary files 0 B
@@ -569,6 +591,22 @@ rovik-agentd {VERSION} (protocol {PROTOCOL}, serves apps from protocol {MIN_PROT
         assert_eq!(json["findings"][2]["level"], "warning");
         let back: Doctor = serde_json::from_value(json).unwrap();
         assert_eq!(back, report);
+
+        // Where no private network can be made, the commands share the
+        // server's ports: a warning that says why, and how to fix it.
+        server.private_network = Some(Err("pasta isn't installed".into()));
+        let shown = render(&gather(&server));
+        assert!(
+            shown.contains(
+                "warning  no private network: the agent's commands share the server's ports \
+                 with other users' (pasta isn't installed); sudo /opt/rovik/bin/rovik-agentd \
+                 admin pasta installs pasta"
+            ),
+            "{shown}"
+        );
+        // And where none is wanted (WSL, a daemon in development), nothing.
+        server.private_network = None;
+        assert!(!render(&gather(&server)).contains("private network"));
     }
 
     #[test]

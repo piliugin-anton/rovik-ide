@@ -350,6 +350,13 @@ impl Events {
         self.publish(&mut state, ev, route, None);
     }
 
+    /// The computer a chat's events go to (its lead's, for a subagent's):
+    /// none when no computer started it here.
+    pub fn computer_of(&self, dialog_id: &str) -> Option<String> {
+        let state = self.lock();
+        self.route(&state, dialog_id)?.computer
+    }
+
     /// Where a chat's events go; none when no computer started it here.
     fn route(&self, state: &State, dialog_id: &str) -> Option<Route> {
         let chat = lead_of(&state.leads, dialog_id);

@@ -31,6 +31,8 @@
 //!   attach.rs   `attach --stdio`: a byte bridge to the socket
 //!   doctor.rs   `doctor`: what this server lacks for the daemon
 //!   logfile.rs  logs/agentd.log
+//!   network.rs  this user's private network on a team server (D20)
+//!   pages.rs    the pages its commands open, on this user's computer (D20)
 
 #[cfg(unix)]
 mod attach;
@@ -71,9 +73,13 @@ mod logfile;
 #[cfg(unix)]
 mod moves;
 #[cfg(unix)]
+mod network;
+#[cfg(unix)]
 mod notify;
 #[cfg(unix)]
 mod packs;
+#[cfg(unix)]
+mod pages;
 #[cfg(unix)]
 mod restart;
 #[cfg(unix)]

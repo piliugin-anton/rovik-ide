@@ -718,6 +718,16 @@ fn every_request_round_trips() {
             },
             Request::Storage,
             Request::CleanUp,
+            Request::PageOpened {
+                id: "page-1".into(),
+                local_port: Some(5174),
+                error: None,
+            },
+            Request::PageOpened {
+                id: "page-2".into(),
+                local_port: None,
+                error: Some("The page couldn't be forwarded.".into()),
+            },
         ],
     );
 }
@@ -1049,6 +1059,16 @@ fn every_event_round_trips() {
             },
             Event::Resync {
                 dialog_id: "d".into(),
+            },
+            Event::PageWanted {
+                dialog_id: "d".into(),
+                id: "page-1".into(),
+                url: "http://localhost:5173/".into(),
+                port: 5173,
+            },
+            Event::PageClosed {
+                dialog_id: "d".into(),
+                port: 5173,
             },
         ],
     );

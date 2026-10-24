@@ -23,6 +23,7 @@ Rovik is installed once per server, by root:
 | The distro's `claude-code` package, on request               | Claude Code for the connector of that name (below), once for everyone.     |
 | `/var/cache/rovik/npm`, `/var/cache/rovik/crates`            | The package caches the daemons share, owned by root and the `rovik` group. |
 | The distro's `bubblewrap` package                            | Confines the chats' commands (see What can read what).                     |
+| The distro's `passt` package                                 | Its `pasta` gives each user's commands a network of their own (below).     |
 | The `rovik-admin` group                                      | The administrators.                                                        |
 | The `rovik` group                                            | Every daemon, which writes the shared caches (below).                      |
 
@@ -46,7 +47,10 @@ copies it into a folder of its own and checks the copy's SHA-256 against
 the build's: another process of the user's can't swap the file between
 the app's check and root running it.
 
-The installer copies the binary, writes `agentd.toml` with USER as the
+The installer first installs the distro's `passt` package, which each
+user's network needs ([Each user's own network](#each-users-own-network)),
+and stops before changing anything if it can't. It then copies the binary,
+writes `agentd.toml` with USER as the
 administrator and with limits sized to the machine, writes the units, adds
 USER to `rovik-admin`, installs the sudoers rule once `visudo` accepts it,
 starts USER's daemon, installs the browser for the browser tools
@@ -108,6 +112,7 @@ sudo /opt/rovik/bin/rovik-agentd admin add USER
 sudo /opt/rovik/bin/rovik-agentd admin remove USER
 sudo /opt/rovik/bin/rovik-agentd admin browser                   # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin bubblewrap                # install it if it's missing
+sudo /opt/rovik/bin/rovik-agentd admin pasta                     # install it if it's missing
 sudo /opt/rovik/bin/rovik-agentd admin claude-code               # Claude Code for everyone, or its update
 sudo /opt/rovik/bin/rovik-agentd admin toolchain list            # the versions installed
 sudo /opt/rovik/bin/rovik-agentd admin toolchain add rust 1.82   # for everyone
@@ -235,7 +240,8 @@ nothing of one user's work lands in a shared `/tmp`.
 ## Checking a server
 
 `rovik-agentd doctor`, run by a user, says what their account and the
-server lack for their daemon, then the versions, the free space where
+server lack for their daemon (pasta, and a network of their own that their
+commands can't get without it, among them), then the versions, the free space where
 Rovik's folders are, the install and its limits, the shared Rust and
 Node versions (and whether chats may install one and the caches are
 shared), the heavy commands their daemon runs at once, and what its
@@ -306,13 +312,55 @@ freed.
   administrator has root on the server. Allow unsigned builds only where
   every administrator may have root.
 
-## Ports are shared
+## Each user's own network
 
-A dev server, or anything else the agent's commands open on a port, can be
-reached by every user of the server, and two people's agents can clash on
-one port. The browser tools open none: Rovik drives the agent's Chrome over
-a pipe that only that user's daemon holds, not a DevTools port, so other
-users of the server can't reach the browser, which runs as that user.
+Each user's commands run in a network of their own, as on their own
+computer: every command the agent runs, and every run of a connector's
+program (Claude Code), starts in it. A server there can listen on any port,
+on 127.0.0.1 or 0.0.0.0, without clashing with another user's server on
+the same port, and no one else's process can reach it: nothing comes into
+the network from outside. The agent tests its servers there as it would on
+the user's computer, with `curl localhost:3000` or a test suite. The ports
+are the user's to share among their own servers, from all their chats: one
+that a server holds is busy for the others, and the agent is told which of
+the user's processes holds it (`port 3000 is held by "node server.js" (pid
+4242)`). A connection refused at a local address is explained to it too:
+nothing listens there, or the server was still starting.
+
+Connections out work as they do on the server: pasta, from the distro's
+`passt` package, carries them through ordinary sockets of the user's. DNS
+works where the server's resolver is on its loopback (systemd-resolved)
+too. A proxy that the daemon's environment names on the server's loopback
+(`HTTPS_PROXY=http://127.0.0.1:3128`) is reached at the same address, and
+the server's own services at the network's gateway address. The browser
+tools open no port either: Rovik drives the agent's Chrome over a pipe
+that only that user's daemon holds, not a DevTools port, so other users of
+the server can't reach the browser, which runs as that user.
+
+`install` and `admin upgrade` install `passt` before they change anything,
+and stop where it can't be installed; `admin pasta` tries again. Where the
+network can't be made all the same (user namespaces forbidden), a user's
+commands run in the server's network, whose ports every user shares and
+can clash on: `rovik-agentd doctor`, the app's connection test and the
+daemon's log say why. `ROVIK_PRIVATE_NETWORK=0` in a daemon's environment
+turns the network off, for troubleshooting. A WSL distribution, one
+person's computer, keeps its own network.
+
+### Pages
+
+A command that opens a page of one of its servers, as `vite --open` does,
+or `xdg-open http://localhost:5173`, or a tool that runs `$BROWSER`, opens it in
+the browser on the user's computer that the chat belongs to: Rovik forwards
+a port of that computer's loopback to the server's port in the user's
+network, the same port where it's free there and another where it isn't,
+and opens the page at it. The chat shows the forwarded ports under its
+title, "Opened ports: 5173", each with the server's own port and a button
+that copies the address on the computer that leads to it (`localhost:5174`
+where 5173 was taken there). A port stays forwarded until nothing listens
+on it in the network any more. Only pages of the user's own servers open
+this way, http or https at localhost, 127.0.0.1 or ::1: any other address
+is refused, for the user's safety, and the agent is told why. A chat's
+commands open at most 5 pages a minute.
 
 ## WSL on Windows
 
@@ -434,7 +482,9 @@ to it, so it reads nothing you couldn't, and installs what it read: a file
 in your home is yours to change meanwhile, so it never goes back to it. It
 asks a copy in memory its version, as you rather than as root, and the
 copy under `/opt/rovik/bin` is root's alone until it has passed. Each
-build is named for the version it says it is. Before the daemons start again, the new build installs
+build is named for the version it says it is. Before anything changes, the
+upgrade installs `passt`, and stops where it can't
+([Each user's own network](#each-users-own-network)). Before the daemons start again, the new build installs
 the browser it pins and bubblewrap, whichever is missing, and the browser's
 other versions go. It also puts the `rovik` group, the shared caches and
 the unit that names the group in place, so the daemons that restart run

@@ -14,7 +14,9 @@ use crate::host;
 use crate::installer;
 use crate::limits::{AdminFile, Caps, ADMIN_FILE};
 use crate::logfile;
+use crate::network;
 use crate::packs::Projects;
+use crate::pages;
 use crate::restart;
 use crate::results::{self, Results};
 use crate::server::{self, OwnUser};
@@ -57,7 +59,9 @@ pub fn serve(options: Options) -> Result<(), String> {
     // 4. The computers' token hashes, read only here; and on a team
     //    server, the administrators' limits (5.5).
     let tokens = Tokens::new(&config.tokens)?;
-    let admin = AdminFile::read(Path::new(ADMIN_FILE))?.unwrap_or_default();
+    let admin_file = AdminFile::read(Path::new(ADMIN_FILE))?;
+    let installed = admin_file.is_some();
+    let admin = admin_file.unwrap_or_default();
     let limits = Limits {
         // Each folder once: under `--data DIR` they're one, and a folder
         // counted twice would trip the disk cap at half.
@@ -67,6 +71,7 @@ pub fn serve(options: Options) -> Result<(), String> {
         ),
         admin,
         user_slots: config.max_slots,
+        installed,
     };
 
     // 5. The runtime and the core.
@@ -91,6 +96,8 @@ struct Limits {
     caps: Caps,
     /// The slots the user's config.toml asks for.
     user_slots: Option<usize>,
+    /// Rovik is installed here for everyone (agentd.toml is there).
+    installed: bool,
 }
 
 async fn run(
@@ -160,6 +167,26 @@ async fn run(
     // The heavy-work slots, again whenever other users' daemons start or
     // stop.
     tokio::spawn(apply_slots(limits.admin, limits.user_slots));
+    // On a team server, this user's private network (D20), before any run:
+    // every command of theirs starts in it, so their servers' ports are
+    // theirs alone. Where it can't be made, they share the server's.
+    if network::wanted(limits.installed) {
+        let (dir, opener) = (network::dir(&home), network::opener());
+        let made = rt::spawn_blocking(move || {
+            rovik_core::overlay::confine::network::enable(&dir, &opener)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|made| made);
+        match made {
+            Ok(()) => log::info!("the agent's commands run in this user's private network"),
+            Err(why) => log::error!(
+                "no private network: the agent's commands share the server's network with \
+                 other users' ({why}); sudo {} admin pasta installs pasta",
+                installer::INSTALLED
+            ),
+        }
+    }
 
     // 6. The virtual files, so CLM chats can use them (K15).
     let virtual_files_problem = if no_virtual_files {
@@ -170,6 +197,7 @@ async fn run(
 
     // A stop that gets as far as the end of its drain is a clean one (5.4).
     let stops = store.clone();
+    let opener = pages::Opener::new(events.clone());
     let daemon = Arc::new(Daemon {
         core: core.clone(),
         tokens,
@@ -184,7 +212,17 @@ async fn run(
         imports: tokio::sync::Mutex::new(()),
         caps: limits.caps,
         making: tokio::sync::Mutex::new(()),
+        pages: opener,
     });
+    // The pages this user's commands open, in their network's browser: on
+    // the computer each one's chat belongs to (D20).
+    if let Some(network) = rovik_core::overlay::confine::network::current() {
+        let opener = Arc::new(daemon.pages.clone());
+        if let Err(e) = rovik_core::overlay::confine::pages::serve(&network.pages_socket(), opener)
+        {
+            log::error!("the commands' pages won't open on the user's computer: {e}");
+        }
+    }
 
     // 7. What a killed process left: lock files on the repositories and
     //    the result indexes, which would refuse every later write. Then

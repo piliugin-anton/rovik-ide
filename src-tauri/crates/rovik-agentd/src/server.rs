@@ -1,7 +1,8 @@
 //! HTTP on the daemon's socket (4.4): `/health`, the WebSocket at `/rpc`,
 //! `/call` for a call too big for a frame, the bundle that moves a chat at
-//! `/chats/import`, the attachments' files at `/blobs`, and the projects'
-//! packs at `/packs`. Only the daemon's own user can connect (the socket
+//! `/chats/import`, the attachments' files at `/blobs`, the projects'
+//! packs at `/packs`, and a connection into the user's private network at
+//! `/forward` (D20). Only the daemon's own user can connect (the socket
 //! is 0600 and each peer's uid is checked, D5), and every request but
 //! `/health` names its computer with a token.
 
@@ -25,7 +26,9 @@ use rovik_core::chat_db::attachments;
 use rovik_core::rt;
 use rovik_protocol::packs::{Fetch, Pushed, Update};
 use rovik_protocol::sync::ChatBundle;
-use rovik_protocol::{Fail, FailCode, Frame, MAX_BLOB, MAX_BUNDLE, MAX_CALL, PROTOCOL};
+use rovik_protocol::{
+    Fail, FailCode, Frame, FORWARD_UPGRADE, MAX_BLOB, MAX_BUNDLE, MAX_CALL, PROTOCOL,
+};
 use std::convert::Infallible;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -44,6 +47,7 @@ pub fn router(daemon: Arc<Daemon>) -> Router {
         .route("/packs/{project}/refs", get(pack_refs))
         .route("/packs/{project}", post(push_pack))
         .route("/packs/{project}/fetch", post(fetch_pack))
+        .route("/forward/{port}", get(forward))
         .with_state(daemon)
 }
 
@@ -480,6 +484,82 @@ async fn rpc(
         .header(CONNECTION, "upgrade")
         .header(UPGRADE, "websocket")
         .header(SEC_WEBSOCKET_ACCEPT, derive_accept_key(key.as_bytes()))
+        .body(Body::empty())
+        .unwrap_or_default()
+}
+
+/// A connection from a computer of the user's to `port` on the loopback of
+/// their private network here (D20): what a port the app forwards for a
+/// page carries. Connected first, then upgraded to a plain byte stream
+/// (`Upgrade: rovik-forward`); refused with why when nothing listens there.
+async fn forward(_computer: Computer, Path(port): Path<u16>, mut request: Request) -> Response {
+    let asked = request
+        .headers()
+        .get_all(UPGRADE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.trim().eq_ignore_ascii_case(FORWARD_UPGRADE));
+    if !asked {
+        let why = format!("/forward is a byte stream: ask for it with Upgrade: {FORWARD_UPGRADE}.");
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            Fail::new(FailCode::BadRequest, why),
+        );
+    }
+    let Some(network) = rovik_core::overlay::confine::network::current() else {
+        return refusal(
+            StatusCode::NOT_FOUND,
+            Fail::new(
+                FailCode::BadRequest,
+                "This server gives its commands no private network: nothing of theirs to forward \
+                 to.",
+            ),
+        );
+    };
+    let Some(upgrade) = request
+        .extensions_mut()
+        .remove::<hyper::upgrade::OnUpgrade>()
+    else {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            Fail::new(FailCode::BadRequest, "The connection can't be upgraded."),
+        );
+    };
+    let connected = rt::spawn_blocking(move || network.connect(port)).await;
+    let inside = match connected {
+        Ok(Ok(inside)) => inside,
+        Ok(Err(e)) => {
+            let why = format!(
+                "Nothing listens on port {port} in this user's private network on the server ({e})."
+            );
+            return refusal(
+                StatusCode::BAD_GATEWAY,
+                Fail::new(FailCode::Unreachable, why),
+            );
+        }
+        Err(e) => return failed(Fail::new(FailCode::Internal, e.to_string())),
+    };
+    let inside = match inside
+        .set_nonblocking(true)
+        .and_then(|()| tokio::net::TcpStream::from_std(inside))
+    {
+        Ok(inside) => inside,
+        Err(e) => return failed(Fail::new(FailCode::Internal, e.to_string())),
+    };
+    tokio::spawn(async move {
+        match upgrade.await {
+            Ok(io) => {
+                let mut io = hyper_util::rt::TokioIo::new(io);
+                let mut inside = inside;
+                let _ = tokio::io::copy_bidirectional(&mut io, &mut inside).await;
+            }
+            Err(e) => log::warn!("a forwarded connection's upgrade failed: {e}"),
+        }
+    });
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(CONNECTION, "upgrade")
+        .header(UPGRADE, FORWARD_UPGRADE)
         .body(Body::empty())
         .unwrap_or_default()
 }

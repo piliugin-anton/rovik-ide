@@ -39,11 +39,13 @@ mod back;
 mod bar;
 mod mirror;
 mod moving;
+mod pages;
 mod results;
 mod sync;
 
 pub use bar::LOCAL_ONLY;
 pub use moving::MovePreflight;
+pub use pages::{ForwardedPort, OpenPage};
 pub use sync::HandedSync;
 
 /// The outcome told for a run that ended while its host was away: the
@@ -105,6 +107,14 @@ pub enum CloudEvent {
     /// The chats mirrored from a host have pulled since it connected: only
     /// now can a message sent before a restart be judged unanswered (K23).
     CaughtUp { host: String },
+    /// The ports forwarded for a chat's pages changed (D20, remote/pages.rs):
+    /// each port its servers opened on its host that a page was opened
+    /// from, with the port of this computer that leads there. Empty once
+    /// none is forwarded.
+    Ports {
+        dialog_id: String,
+        ports: Vec<ForwardedPort>,
+    },
 }
 
 /// Where `CloudEvent`s go.
@@ -179,6 +189,8 @@ pub struct Remote {
     /// What brings the hosts' policies up to date before they go to a
     /// host: another window may have changed them (HostsPage::follow).
     refresh: Mutex<Option<Refresh>>,
+    /// The ports forwarded for the chats' pages (remote/pages.rs).
+    pages: pages::Pages,
 }
 
 /// Whether the project with this id is open in another of Rovik's windows:
@@ -278,6 +290,7 @@ impl Remote {
             jobs,
             elsewhere: Mutex::new(None),
             refresh: Mutex::new(None),
+            pages: pages::Pages::default(),
         });
         rovik_core::rt::spawn(results::work_through(Arc::downgrade(&remote), queue));
         remote
@@ -516,6 +529,7 @@ impl Remote {
     /// closes once no call holds it.
     pub fn disconnect(&self, host: &str) {
         self.hosts.disconnect(host);
+        self.stop_forwarding(host);
         let mut state = self.lock();
         state.policies.remove(host);
         state.autonomy.remove(host);
@@ -701,6 +715,7 @@ impl Remote {
                 state.forget(chat);
             }
         }
+        self.release_pages(&chats);
         if let Some(client) = self.hosts.client(&host) {
             self.delete_there(&client, dialog_id).await;
         }
@@ -1251,6 +1266,8 @@ impl Remote {
             Incoming::Subscribed { complete } => {
                 self.configure(host).await;
                 if !complete {
+                    // A `PageClosed` may be among the events missed.
+                    self.stop_forwarding(host);
                     self.catch_up(host).await;
                 }
                 self.after_connecting(host).await;
@@ -1275,6 +1292,13 @@ impl Remote {
                     title: host.to_string(),
                     message,
                 }),
+                Event::PageWanted {
+                    dialog_id,
+                    id,
+                    url,
+                    port,
+                } => self.page_wanted(host, dialog_id, id, url, port),
+                Event::PageClosed { dialog_id, port } => self.page_closed(host, &dialog_id, port),
             },
         }
     }

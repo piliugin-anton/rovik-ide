@@ -1,19 +1,22 @@
 //! HTTP to the daemon, each request on a connection of its own (4.1, K41):
 //! `POST /call` for a call or a reply too big for a frame, the bundle that
 //! moves a chat at `/chats/import` (6.8), the attachments' files at
-//! `/blobs/<sha256>` (6.11), the projects' packs at `/packs` (6.4), and
+//! `/blobs/<sha256>` (6.11), the projects' packs at `/packs` (6.4), a byte
+//! stream into the user's private network at `/forward` (D20), and
 //! `/health`, which needs no token, for the connection test (H04).
 
 use crate::client::{unreachable, Identity};
-use crate::connector::Connector;
+use crate::connector::{Connector, Stream};
 use http_body_util::{BodyExt, Empty, Full, LengthLimitError, Limited};
 use hyper::body::{Body, Bytes, Frame as BodyFrame, Incoming, SizeHint};
-use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
+use hyper::header::{AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, UPGRADE};
 use hyper::{Method, StatusCode};
 use hyper_util::rt::TokioIo;
 use rovik_protocol::packs::{Fetch, Pushed, Refs, Update};
 use rovik_protocol::sync::Imported;
-use rovik_protocol::{Fail, FailCode, Frame, Response, MAX_BLOB, MAX_BUNDLE, MAX_FRAME};
+use rovik_protocol::{
+    Fail, FailCode, Frame, Response, FORWARD_UPGRADE, MAX_BLOB, MAX_BUNDLE, MAX_FRAME,
+};
 use serde::de::DeserializeOwned;
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -346,6 +349,46 @@ where
         .await
         .ok_or_else(|| unreachable(&identity.host))?
         .map_err(|_| unreachable(&identity.host))
+}
+
+/// A byte stream to `port` on the loopback of the user's private network
+/// on the host (D20), on a connection of its own: one connection of a port
+/// this computer forwards for a page. Refused with why when nothing
+/// listens there, or the host gives its commands no private network.
+pub async fn forward(
+    connector: &dyn Connector,
+    identity: &Identity,
+    port: u16,
+) -> Result<Stream, Fail> {
+    let lost = || unreachable(&identity.host);
+    let io = tokio::time::timeout(RESPONSE_WAIT, connector.connect())
+        .await
+        .map_err(|_| lost())?
+        .map_err(|_| lost())?;
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(io))
+        .await
+        .map_err(|_| lost())?;
+    // Upgraded, the connection is the stream's: it ends with the stream.
+    tokio::spawn(connection.with_upgrades());
+    let request = hyper::Request::get(format!("/forward/{port}"))
+        .header(HOST, "rovik-agentd")
+        .header(AUTHORIZATION, format!("Bearer {}", identity.token.0))
+        .header(CONNECTION, "upgrade")
+        .header(UPGRADE, FORWARD_UPGRADE)
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| Fail::new(FailCode::Internal, e.to_string()))?;
+    let response = tokio::time::timeout(RESPONSE_WAIT, sender.send_request(request))
+        .await
+        .map_err(|_| lost())?
+        .map_err(|_| lost())?;
+    let status = response.status();
+    if status != StatusCode::SWITCHING_PROTOCOLS {
+        let body = Limited::new(response.into_body(), ANSWER).collect().await;
+        let body = body.map(|b| b.to_bytes()).unwrap_or_default();
+        return Err(refusal(status, &body));
+    }
+    let upgraded = hyper::upgrade::on(response).await.map_err(|_| lost())?;
+    Ok(Box::new(TokioIo::new(upgraded)))
 }
 
 /// What `/health` answers.

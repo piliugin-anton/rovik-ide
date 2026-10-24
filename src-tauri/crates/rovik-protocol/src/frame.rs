@@ -73,6 +73,21 @@ pub enum Event {
     HostNotice { kind: String, message: String },
     /// In place of an event too big for a frame (4.1): catch this chat up.
     Resync { dialog_id: String },
+    /// A command of the chat's, on a team server, asks to open `url`, a
+    /// page of one of its servers on `port` of the user's private network
+    /// there (D20): the app forwards its own `port` on 127.0.0.1 to that
+    /// one (`/forward/{port}`), opens the page in the default browser, and
+    /// says how it went (`PageOpened` with `id`).
+    PageWanted {
+        dialog_id: String,
+        id: String,
+        url: String,
+        port: u16,
+    },
+    /// Nothing listens on `port` of the user's private network any more,
+    /// which the app forwarded for a page of the chat's (`PageWanted`): it
+    /// stops forwarding its own.
+    PageClosed { dialog_id: String, port: u16 },
 }
 
 /// Why a request failed (4.1). The app turns it into the error text its

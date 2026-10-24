@@ -328,85 +328,15 @@ async fn launch(proxy: Option<crate::net::BrowserProxy>) -> Result<Live, String>
 /// /proc.
 #[cfg(target_os = "linux")]
 fn listening_ports(pid: u32) -> std::io::Result<Vec<u16>> {
-    // Each listening socket, as a descriptor's link names it, and its port.
-    let mut listening = std::collections::HashMap::new();
-    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        let rows = match std::fs::read_to_string(table) {
-            Ok(rows) => rows,
-            // A system without IPv6.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        for row in rows.lines().skip(1) {
-            let columns: Vec<&str> = row.split_whitespace().collect();
-            // The local address (hex ADDRESS:PORT), the state (0A is
-            // LISTEN) and the inode.
-            if let (Some(local), Some(&"0A"), Some(inode)) =
-                (columns.get(1), columns.get(3), columns.get(9))
-            {
-                let port = local.rsplit_once(':').map(|(_, port)| port);
-                if let Some(port) = port.and_then(|port| u16::from_str_radix(port, 16).ok()) {
-                    listening.insert(format!("socket:[{inode}]"), port);
-                }
-            }
-        }
-    }
-    let mut ports = Vec::new();
-    if listening.is_empty() {
-        return Ok(ports);
-    }
-    for process in process_tree(pid)? {
-        // A process that's gone, or one that hides its descriptors, has
-        // none to show.
-        let Ok(descriptors) = std::fs::read_dir(format!("/proc/{process}/fd")) else {
-            continue;
-        };
-        for descriptor in descriptors.flatten() {
-            let Ok(target) = std::fs::read_link(descriptor.path()) else {
-                continue;
-            };
-            if let Some(port) = target.to_str().and_then(|target| listening.get(target)) {
-                ports.push(*port);
-            }
-        }
-    }
+    let sockets = crate::listening::sockets(Path::new("/proc/net"))?;
+    let tree = crate::listening::process_tree(pid)?;
+    let mut ports: Vec<u16> = crate::listening::holders(&sockets, tree)
+        .into_iter()
+        .map(|(_, port)| port)
+        .collect();
     ports.sort_unstable();
     ports.dedup();
     Ok(ports)
-}
-
-/// `pid` and every process descended from it, from /proc.
-#[cfg(target_os = "linux")]
-fn process_tree(pid: u32) -> std::io::Result<Vec<u32>> {
-    let mut children = std::collections::HashMap::<u32, Vec<u32>>::new();
-    for entry in std::fs::read_dir("/proc")?.flatten() {
-        let Some(child) = entry
-            .file_name()
-            .to_str()
-            .and_then(|n| n.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        // The parent is the second field after the command, which ends at
-        // the last parenthesis.
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        let parent = stat
-            .rsplit_once(')')
-            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
-            .and_then(|parent| parent.parse::<u32>().ok());
-        if let Some(parent) = parent {
-            children.entry(parent).or_default().push(child);
-        }
-    }
-    let mut tree = vec![pid];
-    let mut next = 0;
-    while next < tree.len() {
-        tree.extend(children.get(&tree[next]).into_iter().flatten().copied());
-        next += 1;
-    }
-    Ok(tree)
 }
 
 /// The Chromium snap's folders for the browser: its profile, and the parent
@@ -1120,7 +1050,7 @@ mod tests {
             .arg("30")
             .spawn()
             .unwrap();
-        assert!(process_tree(std::process::id())
+        assert!(crate::listening::process_tree(std::process::id())
             .unwrap()
             .contains(&child.id()));
         assert_eq!(listening_ports(child.id()).unwrap(), Vec::<u16>::new());

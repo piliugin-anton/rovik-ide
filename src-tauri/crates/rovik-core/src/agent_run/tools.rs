@@ -1088,6 +1088,21 @@ async fn run(
             {
                 content.push_str(&note);
             }
+            // On a team server, a port the command had trouble with in the
+            // user's private network: who holds it, or why nothing answers.
+            #[cfg(target_os = "linux")]
+            if let Some(network) = crate::overlay::confine::network::current() {
+                let text = out.text();
+                if super::ports::troubled(&text) {
+                    let listening = crate::rt::spawn_blocking(move || network.listening())
+                        .await
+                        .unwrap_or_default();
+                    let ends = crate::overlay::confine::hides_processes();
+                    if let Some(note) = super::ports::note(&text, &listening, ends) {
+                        content.push_str(&note);
+                    }
+                }
+            }
             content
         }
         "list_dir" => {

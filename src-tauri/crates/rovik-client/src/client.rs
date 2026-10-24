@@ -360,6 +360,14 @@ impl Client {
         packs::fetch(connector, identity, shadow, project, wants).await
     }
 
+    /// A byte stream to `port` on the loopback of the user's private
+    /// network on the host (D20): one connection of a port this computer
+    /// forwards for a page.
+    pub async fn forward(&self, port: u16) -> Result<crate::connector::Stream, Fail> {
+        let (connector, identity) = (&*self.shared.connector, &self.shared.identity);
+        http::forward(connector, identity, port).await
+    }
+
     /// A daemon from before `feature` can't take `what` (4.5): chats
     /// before the mirror, projects before their transport (`/packs`).
     fn takes(&self, feature: &str, what: &str) -> Result<(), Fail> {

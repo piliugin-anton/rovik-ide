@@ -64,6 +64,13 @@ pub fn userns_restricted() -> bool {
         .is_ok_and(|v| v.trim() == "1")
 }
 
+/// Whether this Linux is a WSL distribution, on a Windows computer: one
+/// person's own machine, where Rovik's commands keep its network (D20).
+pub fn in_wsl() -> bool {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .is_ok_and(|release| release.to_ascii_lowercase().contains("microsoft"))
+}
+
 /// `text` as one word for `sh`, whatever it holds.
 pub fn sh_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))

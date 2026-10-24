@@ -108,6 +108,7 @@ import {
 } from '../lib/cloud';
 import { draftWaits, recoverDrafts, resumesHere, sendKeepingInput } from '../lib/remoteGuards';
 import ChatLocation from './ChatLocation';
+import OpenedPorts from './OpenedPorts';
 import UploadProgress from './UploadProgress';
 import { waitingChats } from '../lib/chatBadges';
 import { isSettled, latestChecklist } from '../lib/todo';
@@ -4432,6 +4433,8 @@ export default function ChatPanel(props: ChatProps) {
           </button>
         </div>
       </div>
+      {/* The ports a remote chat's servers opened on its host (D20). */}
+      <OpenedPorts dialogId={activeDialogId()} />
       <Show when={historyOpen()}>
         <div class="chat-history">
           <div class="chat-history-header">

@@ -139,6 +139,9 @@ pub fn run() {
                     .try_state::<Instances>()
                     .is_some_and(|i| i.open_elsewhere(Some(project), None).is_some())
             }));
+            // A page a remote chat's command opens on its team server opens
+            // in the default browser here, through a forwarded port (D20).
+            remote.on_open_page(Arc::new(open_url::open));
             // Another window may change the hosts' settings: their policies
             // are read again before one goes to a host.
             let page = Arc::downgrade(&hosts);
@@ -243,6 +246,7 @@ pub fn run() {
             commands::chat::cloud_move_chat,
             commands::chat::cloud_move_back,
             commands::chat::cloud_cancel_move,
+            commands::chat::cloud_forwarded_ports,
             commands::hosts::hosts_list,
             commands::hosts::hosts_summaries,
             commands::hosts::hosts_save,

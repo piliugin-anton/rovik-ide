@@ -7,12 +7,12 @@
 //!
 //!   connector.rs  how a connection reaches the daemon: a stream each time
 //!   client.rs     one host's connection, its calls and its events
-//!   http.rs       `POST /call`, `/blobs` and `/packs`
+//!   http.rs       `POST /call`, `/blobs`, `/packs` and `/forward`
 //!   hosts.rs      each host's client and state
 //!   remote.rs     the app's remote chats: routing, starts and events (6.1),
 //!                 their isolation bar, the project synced before each
-//!                 message (6.7), and their results, imported and landed
-//!                 here (6.5)
+//!                 message (6.7), their results, imported and landed
+//!                 here (6.5), and the pages their commands open (D20)
 //!   shadow.rs     each project's shadow repository and its snapshots (6.4)
 //!   packs.rs      packs between a shadow repository and a host (6.4)
 //!   host_settings.rs  the hosts this computer knows (cloud-hosts.json)
@@ -55,5 +55,6 @@ pub use connector::UnixConnector;
 pub use connector::{Connecting, Connector, Io, Stream};
 pub use hosts::Hosts;
 pub use remote::{
-    ApprovalPolicy, CloudEvent, CloudSink, HandedSync, MovePreflight, Remote, LOCAL_ONLY,
+    ApprovalPolicy, CloudEvent, CloudSink, ForwardedPort, HandedSync, MovePreflight, OpenPage,
+    Remote, LOCAL_ONLY,
 };

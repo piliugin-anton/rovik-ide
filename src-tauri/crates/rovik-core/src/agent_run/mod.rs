@@ -53,6 +53,8 @@ pub mod permissions;
 pub mod plan;
 pub mod plan_review;
 pub mod planning;
+#[cfg(target_os = "linux")]
+mod ports;
 pub mod prepare;
 pub mod project;
 pub mod recovery;

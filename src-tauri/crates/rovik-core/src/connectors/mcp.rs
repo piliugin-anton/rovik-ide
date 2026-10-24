@@ -29,6 +29,7 @@
 //! need its own tools to read (`anthropic/maxResultSizeChars`), and marks
 //! the read-only ones, which it then calls in parallel (`readOnlyHint`).
 
+use crate::overlay::confine::network::Network;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -123,13 +124,26 @@ impl Drop for McpServer {
 
 impl McpServer {
     /// Listens on 127.0.0.1, on a port of the system's choosing, offering
-    /// `tools` (OpenAI function schemas, as the run's request has them).
-    /// The calls come on the receiver.
+    /// `tools` (OpenAI function schemas, as the run's request has them):
+    /// inside `network` when the harness runs there (a team server's
+    /// private network, overlay/confine/network.rs), where other users
+    /// can't reach the port at all. The calls come on the receiver.
     pub async fn start(
         tools: &[Value],
         instructions: &str,
+        network: Option<&Arc<Network>>,
     ) -> std::io::Result<(McpServer, mpsc::UnboundedReceiver<McpCall>)> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let listener = match network {
+            Some(network) => {
+                let network = network.clone();
+                let listener = crate::rt::spawn_blocking(move || network.listen())
+                    .await
+                    .map_err(std::io::Error::other)??;
+                listener.set_nonblocking(true)?;
+                TcpListener::from_std(listener)?
+            }
+            None => TcpListener::bind(("127.0.0.1", 0)).await?,
+        };
         let port = listener.local_addr()?.port();
         let token = format!(
             "{}{}",
@@ -541,7 +555,17 @@ mod tests {
     /// One request on a fresh connection; the response's status, headers
     /// and body, read to the connection's end or the body's length.
     async fn send(port: u16, token: &str, method: &str, body: &str) -> (u16, String, String) {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        send_on(stream, token, method, body).await
+    }
+
+    /// `send`, on `stream`.
+    async fn send_on(
+        mut stream: TcpStream,
+        token: &str,
+        method: &str,
+        body: &str,
+    ) -> (u16, String, String) {
         let request = format!(
             "{method} /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -610,7 +634,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_server_answers_the_handshake_and_lists_the_tools() {
-        let (server, _calls) = McpServer::start(&tools(), "Rovik's tools.").await.unwrap();
+        let (server, _calls) = McpServer::start(&tools(), "Rovik's tools.", None)
+            .await
+            .unwrap();
         let token = token_of(&server);
         let config: Value = serde_json::from_str(&server.config_json()).unwrap();
         assert_eq!(config["mcpServers"]["rovik"]["type"], "http");
@@ -661,9 +687,40 @@ mod tests {
         assert_eq!(send(server.port, &token, "GET", "").await.0, 405);
     }
 
+    /// In a team server's private network the server listens inside it,
+    /// where the harness runs: reached there, not on the host's loopback.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn in_a_private_network_the_server_is_reached_only_inside_it() {
+        let Some((_dir, network)) = crate::overlay::confine::network::for_test(
+            std::path::Path::new("/bin/true"),
+            &[],
+            None,
+        ) else {
+            return;
+        };
+        let network = Arc::new(network);
+        let (server, _calls) = McpServer::start(&tools(), "", Some(&network))
+            .await
+            .unwrap();
+        let token = token_of(&server);
+        let on_host = crate::listening::sockets(std::path::Path::new("/proc/net")).unwrap();
+        if !on_host.values().any(|&port| port == server.port) {
+            assert!(TcpStream::connect(("127.0.0.1", server.port))
+                .await
+                .is_err());
+        }
+        let inside = network.connect(server.port).unwrap();
+        inside.set_nonblocking(true).unwrap();
+        let inside = TcpStream::from_std(inside).unwrap();
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let (status, _, answer) = send_on(inside, &token, "POST", body).await;
+        assert_eq!(status, 200, "{answer}");
+    }
+
     #[tokio::test]
     async fn only_the_token_is_let_in() {
-        let (server, _calls) = McpServer::start(&tools(), "").await.unwrap();
+        let (server, _calls) = McpServer::start(&tools(), "", None).await.unwrap();
         assert_eq!(
             send(
                 server.port,
@@ -692,7 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_call_waits_for_its_result_and_is_answered_as_an_event() {
-        let (server, mut calls) = McpServer::start(&tools(), "").await.unwrap();
+        let (server, mut calls) = McpServer::start(&tools(), "", None).await.unwrap();
         let token = token_of(&server);
         let body = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read","arguments":{"path":"a.rs"},"_meta":{"claudecode/toolUseId":"toolu_1"}}}"#;
         let port = server.port;
@@ -714,7 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_call_whose_run_ended_is_answered_as_an_error() {
-        let (server, calls) = McpServer::start(&tools(), "").await.unwrap();
+        let (server, calls) = McpServer::start(&tools(), "", None).await.unwrap();
         let token = token_of(&server);
         drop(calls);
         let (_, _, body) = send(server.port, &token, "POST", r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bash","arguments":{}}}"#).await;

@@ -45,6 +45,13 @@ else
 fi
 # bubblewrap sandboxes the agent's commands; Rovik's install adds it.
 say bwrap "$(command -v bwrap 2>/dev/null)"
+# pasta gives each user's commands a network of their own on a server
+# several people share; Rovik's install adds it. WSL, one person's
+# computer, needs none.
+say pasta "$(command -v pasta 2>/dev/null)"
+case "$(cat /proc/sys/kernel/osrelease 2>/dev/null)" in
+  *[Mm]icrosoft*) say wsl yes ;;
+esac
 # Where it can't, the kernel's Landlock does, more lightly: Linux 6.2 or
 # later, with Landlock among its security modules (maybe, where the list
 # can't be read). Without either, the commands are refused.
