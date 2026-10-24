@@ -4,7 +4,8 @@
 # against a scripted model, scripts/eval), the frontend's tests and type
 # check, and the formatting. What a contributor runs before a push, run for
 # every push to a pull request, and by the release workflow before it
-# builds a merge (workflow_call).
+# builds a merge (workflow_call). Each check is a job of its own, so they
+# all run at once.
 name: CI
 
 on:
@@ -39,18 +40,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `threads`: tests at once, three per core. Most of them wait (for
+          # a scripted model, a timer, a child process) rather than compute.
           - name: Linux
             runner: ubuntu-latest
-            args: ''
+            threads: 12
+          # Where bubblewrap can't run, Landlock confines the commands: the
+          # core's and the daemon's tests again, under it alone, beside the
+          # others. Its build is Linux's, so it shares that cache.
+          - name: Linux, Landlock
+            runner: ubuntu-latest
+            threads: 12
+            confine: landlock
+            filter: '(package(rovik-core) & kind(lib)) | package(rovik-agentd)'
           # The daemon runs on Linux servers only (D16), and its tests are
           # the server's (sudo, systemd, Linux's users and FUSE): they run on
           # Linux. On macOS it builds, for development, and so do its tests;
           # on Windows it's a stub that says so.
           - name: macOS
             runner: macos-latest
-            args: --exclude rovik-agentd
+            threads: 9
+            filter: 'not package(rovik-agentd)'
           - name: Windows
             runner: windows-latest
+            threads: 12
             args: --exclude rovik-agentd
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -58,20 +71,19 @@ jobs:
     # the environment a developer's have.
     steps:
       # The runner's own toolchains this build doesn't use: room for the
-      # test binaries.
+      # test binaries. In the background, with nothing of the step's left
+      # open: nothing needs the room before the build, a minute later.
       - name: Free disk space
         if: runner.os == 'Linux'
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          df -h /
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            < /dev/null > /dev/null 2>&1 &
       # Windows' git writes CRLF line ends on checkout; the tests read the
       # files as they're committed.
       - name: Keep line ends as committed
         if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
-      # The whole history: the evaluation's tasks on this repository start
-      # from its earlier commits.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -107,6 +119,65 @@ jobs:
           git config --global user.name "Rovik CI"
           git config --global user.email "ci@rovik.invalid"
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9
+      # Both Linux runs build the same, and share a cache: Linux's keeps it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+          save-if: ${{ !matrix.confine }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Every test runs, each in a process of its own
+      # (src-tauri/.config/nextest.toml), so one run shows each that fails.
+      - name: cargo nextest run
+        working-directory: src-tauri
+        env:
+          ROVIK_CONFINE_COMMANDS: ${{ matrix.confine }}
+        run: >-
+          cargo nextest run --workspace --profile ci
+          --test-threads ${{ matrix.threads }} ${{ matrix.args }}
+          -E "${{ matrix.filter || 'all()' }}"
+      # Doctests aren't nextest's. They run no commands: not again under
+      # Landlock.
+      - name: cargo test --doc
+        if: ${{ !matrix.confine && !cancelled() }}
+        working-directory: src-tauri
+        run: cargo test --workspace --doc ${{ matrix.args }}
+
+  eval:
+    name: Evaluation dry run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The whole history: the evaluation's tasks on this repository start
+      # from its earlier commits.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The headless runner's commands, as the app's: in bubblewrap's
+      # sandbox (with the profile Ubuntu 24.04's AppArmor asks for, see
+      # above), in the chat's overlay (fuse3).
+      - name: Install the system's packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev \
+            fuse3 bubblewrap passt
+      - name: Let bubblewrap make its sandbox
+        run: |
+          sudo sh src-tauri/crates/rovik-core/linux/bwrap-apparmor.sh
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-pid \
+            --die-with-parent --cap-drop ALL -- /bin/true
+      - name: Give git a name
+        run: |
+          git config --global user.name "Rovik CI"
+          git config --global user.email "ci@rovik.invalid"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -116,30 +187,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # Every test binary runs, so one run shows each that fails.
-      - name: cargo test --workspace
-        working-directory: src-tauri
-        run: cargo test --workspace --no-fail-fast ${{ matrix.args }}
-      # Where bubblewrap can't run, Landlock confines the commands: the
-      # core's and the daemon's tests again, under it alone.
-      - name: The core's tests under Landlock, bubblewrap's fallback
-        if: runner.os == 'Linux' && !cancelled()
-        working-directory: src-tauri
-        env:
-          ROVIK_CONFINE_COMMANDS: landlock
-        run: cargo test --no-fail-fast -p rovik-core --lib
-      - name: The daemon's tests under Landlock
-        if: runner.os == 'Linux' && !cancelled()
-        working-directory: src-tauri
-        env:
-          ROVIK_CONFINE_COMMANDS: landlock
-        run: cargo test --no-fail-fast -p rovik-agentd
-      - name: The daemon and its tests build
-        if: runner.os == 'macOS' && !cancelled()
-        working-directory: src-tauri
-        run: cargo test -p rovik-agentd --no-run
       - name: The evaluation's dry run
-        if: runner.os == 'Linux'
         run: node scripts/eval/eval.mjs dry-run
 
   frontend:
