@@ -605,7 +605,20 @@ export interface ConnectorUsage {
     /** `harnessTurn`: the cost is the whole run's, over several replies. */
     costCovers?: string;
     permissionDenials?: number;
+    /** The harness's own context after the reply, as it reported it. */
+    context?: ConnectorContext;
   };
+}
+
+/**
+ * A connector's context after a reply (claude_code.rs `context_of`): the
+ * tokens its session holds, of its model's window, and where it compacts
+ * the conversation on its own. The harness keeps the history, not Rovik.
+ */
+export interface ConnectorContext {
+  used: number;
+  window: number;
+  compactsAt?: number;
 }
 
 export interface ConnectorMeta {
@@ -660,7 +673,8 @@ export function connectorHeadline(meta: ConnectorMeta, running: boolean): string
     const cached = u.prompt_tokens_details?.cached_tokens ?? 0;
     if (tokens)
       parts.push(`${compact(tokens)} tokens${cached ? ` (${compact(cached)} cached)` : ''}`);
-    if (u.cost !== undefined) {
+    // A command run without a request to the model (`/context`) cost nothing to say.
+    if (u.cost !== undefined && (u.cost > 0 || tokens > 0)) {
       const cost = `$${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}`;
       // With Rovik's tools, a run of Claude Code's spans several replies:
       // its cost comes with the last.
@@ -678,6 +692,8 @@ export function connectorUsage(
 ): { inputTokens: number; outputTokens: number; cost?: number } | null {
   const u = meta?.usage;
   if (!u) return null;
+  // Nothing used (a command run without a request): nothing to count.
+  if (!u.prompt_tokens && !u.completion_tokens && !u.cost) return null;
   const used = { inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0 } as {
     inputTokens: number;
     outputTokens: number;
@@ -685,4 +701,19 @@ export function connectorUsage(
   };
   if (u.cost !== undefined) used.cost = u.cost;
   return used;
+}
+
+/**
+ * The context the latest connector reply in `messages` reported, and the
+ * connector's kind; none before one has.
+ */
+export function latestConnectorContext(
+  messages: { role: string; meta?: { connector?: ConnectorMeta } | null }[]
+): { kind?: string; context: ConnectorContext } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const meta = messages[i].role === 'assistant' ? messages[i].meta?.connector : undefined;
+    const context = meta?.usage?.connector?.context;
+    if (context && context.window > 0) return { kind: meta?.kind, context };
+  }
+  return null;
 }
