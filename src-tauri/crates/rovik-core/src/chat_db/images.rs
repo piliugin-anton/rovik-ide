@@ -44,8 +44,12 @@ pub fn prepare(bytes: &[u8]) -> Result<Prepared, String> {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_READ_SIDE);
     limits.max_image_height = Some(MAX_READ_SIDE);
-    reader.limits(limits);
+    reader.limits(limits.clone());
     let mut decoder = reader.into_decoder().map_err(read_error)?;
+    // The decoder's buffer, against the allocation limit: `image` checks it
+    // in `decode()` only, not for a decoder read this way, so a small file
+    // claiming 16384² pixels of 16 bits each would take 2 GiB.
+    limits.reserve(decoder.total_bytes()).map_err(read_error)?;
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     let image = DynamicImage::from_decoder(decoder).map_err(read_error)?;
 
@@ -169,6 +173,49 @@ mod tests {
                 Rgb([20, 20, 230])
             }
         })
+    }
+
+    /// A PNG's signature, its header claiming `side`² pixels of 16-bit
+    /// RGBA, and a few bytes of image data: a few dozen bytes asking for
+    /// `side`² × 8 bytes.
+    fn png_claiming(side: u32) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = !0u32;
+            for &b in bytes {
+                crc ^= u32::from(b);
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0xEDB8_8320
+                    } else {
+                        crc >> 1
+                    };
+                }
+            }
+            !crc
+        }
+        fn chunk(png: &mut Vec<u8>, kind: &[u8], data: &[u8]) {
+            png.extend((data.len() as u32).to_be_bytes());
+            let mut body = kind.to_vec();
+            body.extend(data);
+            png.extend(&body);
+            png.extend(crc32(&body).to_be_bytes());
+        }
+        let mut header = side.to_be_bytes().to_vec();
+        header.extend(side.to_be_bytes());
+        header.extend([16, 6, 0, 0, 0]);
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        chunk(&mut png, b"IHDR", &header);
+        chunk(&mut png, b"IDAT", &[0x78, 0x9c, 0x03, 0x00]);
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    /// A small file claiming an image past the allocation limit (16384²
+    /// pixels of 16-bit RGBA: 2 GiB) is refused before it's decoded.
+    #[test]
+    fn an_image_too_big_to_allocate_is_refused_before_decoding() {
+        let err = prepare(&png_claiming(16_384)).unwrap_err();
+        assert_eq!(err, "The image is too large to read.");
     }
 
     #[test]

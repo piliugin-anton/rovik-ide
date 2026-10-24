@@ -121,6 +121,10 @@ pub fn outline_of_file(abs: &std::path::Path, rel: &str) -> Option<Arc<Vec<Symbo
         }
     }
     language_for(rel, "")?; // cheap: no grammar, no read
+                            // Too large to outline: known from its size, without reading it.
+    if size > MAX_BYTES as u64 {
+        return None;
+    }
     let content = std::fs::read_to_string(abs).ok()?;
     let symbols = Arc::new(outline(rel, &content)?);
     let mut cache = FILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());

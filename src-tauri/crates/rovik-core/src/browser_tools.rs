@@ -473,6 +473,54 @@ fn validate_url(raw: &str) -> Result<String, String> {
     }
 }
 
+/// Whether the browser may be pointed at `ip`: not a link-local address
+/// (the cloud's metadata service, `169.254.169.254`), a private network's
+/// (a router's or another machine's admin page), carrier-grade NAT's
+/// (`100.100.100.200`, another cloud's metadata), IPv6's unique local
+/// ones, or the unspecified address. Loopback is: the agent looks at its
+/// own dev server there (`http://localhost:1420`).
+fn reachable_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            let shared = a == 100 && (64..128).contains(&b);
+            !(v4.is_link_local() || v4.is_private() || v4.is_unspecified() || shared)
+        }
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => reachable_ip(IpAddr::V4(v4)),
+            None => !(v6.is_unicast_link_local() || v6.is_unique_local() || v6.is_unspecified()),
+        },
+    }
+}
+
+/// Refuses `url` (checked by `validate_url`) when its host is, or resolves
+/// to, an address the browser isn't pointed at ([`reachable_ip`]): a page
+/// the model opens could otherwise bring the cloud's credentials or a local
+/// admin page into the chat. A name that doesn't resolve is left to the
+/// browser to report.
+async fn check_destination(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL \"{url}\": {e}"))?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let host = parsed.host_str().unwrap_or_default();
+    // An IPv6 address is written in brackets.
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
+    let ips: Vec<std::net::IpAddr> = match literal.parse::<std::net::IpAddr>() {
+        Ok(ip) => vec![ip],
+        Err(_) if host.is_empty() => Vec::new(),
+        Err(_) => match tokio::net::lookup_host((host, port)).await {
+            Ok(addrs) => addrs.map(|a| a.ip()).collect(),
+            Err(_) => Vec::new(),
+        },
+    };
+    match ips.into_iter().find(|ip| !reachable_ip(*ip)) {
+        Some(ip) => Err(format!(
+            "{url} is at {ip}, a link-local or private network address, which the browser tools don't open. A local dev server is on localhost (127.0.0.1)."
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Navigates and waits until the page is usable: DOM parsed, then a short
 /// best-effort wait for network quiet so client-rendered pages have content.
 /// A Cloudflare challenge is solved first (best-effort: if it doesn't
@@ -838,6 +886,7 @@ pub(crate) async fn browse_url_inner(
     stop: Option<&StopSignal>,
 ) -> Result<BrowsedPage, String> {
     let url = validate_url(&url)?;
+    check_destination(&url).await?;
     let max_chars = max_chars.unwrap_or(DEFAULT_MAX_CHARS).clamp(1_000, 60_000);
 
     state
@@ -883,6 +932,9 @@ pub(crate) async fn browser_screenshot_inner(
         .filter(|u| !u.trim().is_empty())
         .map(|u| validate_url(&u))
         .transpose()?;
+    if let Some(url) = &url {
+        check_destination(url).await?;
+    }
 
     let (current, title, bytes) = state
         .with_page(
@@ -961,6 +1013,36 @@ async fn readable(page: &Page, max_chars: usize) -> Result<BrowsedPage, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The browser tools open a local dev server and the web, not the
+    /// cloud's metadata service or a private network's pages.
+    #[tokio::test]
+    async fn the_browser_isnt_pointed_at_link_local_or_private_addresses() {
+        for refused in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/admin",
+            "http://172.16.5.4:8080/",
+            "http://100.100.100.200/latest/meta-data/",
+            "http://[fe80::1]/",
+            "http://[fd00:ec2::254]/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://0.0.0.0:3000/",
+        ] {
+            let url = validate_url(refused).unwrap();
+            let err = check_destination(&url).await.unwrap_err();
+            assert!(err.contains("private network address"), "{refused}: {err}");
+        }
+        for allowed in [
+            "http://127.0.0.1:3000/",
+            "http://localhost:1420/",
+            "http://[::1]:8080/",
+            "https://93.184.215.14/",
+        ] {
+            let url = validate_url(allowed).unwrap();
+            assert_eq!(check_destination(&url).await, Ok(()), "{allowed}");
+        }
+    }
 
     /// Stop before a browser call starts: it ends at once without launching
     /// Chrome (no browser needed for this test).

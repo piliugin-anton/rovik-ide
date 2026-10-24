@@ -755,6 +755,11 @@ pub fn tool_read_file_range(
     read_file_range(&root, &path, start_line, end_line, symbol, None)
 }
 
+/// Largest file the read tool loads: past it (a log, a dump) the file is
+/// refused by its size before it's read, and the model reads parts of it
+/// with a command.
+const READ_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
 /// [`tool_read_file_range`] for a chat's run: the file's content counts as
 /// seen by it (file_guard.rs), so it may write the file whole afterwards.
 pub fn read_file_range(
@@ -773,6 +778,16 @@ pub fn read_file_range(
     let target = resolve_within_root(&root, &path)?;
     if !target.is_file() {
         return Err(format!("{path}: not a file"));
+    }
+    let size = fs::metadata(&target)
+        .map_err(|e| format!("{path}: {e}"))?
+        .len();
+    if size > READ_MAX_BYTES {
+        return Err(format!(
+            "{path}: {} MB, too large to read (the limit is {} MB). Read the part you need with a command (`sed -n '100,200p' {path}`, `tail`), or find it with search_code.",
+            size >> 20,
+            READ_MAX_BYTES >> 20
+        ));
     }
     if looks_binary(&target)? {
         return Err(format!("{path}: binary file, cannot read"));
@@ -1000,6 +1015,28 @@ pub fn empty_overwrite_error(path: &str, current: &str, content: &str) -> Option
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// A file past the read limit (a log, a dump) is refused by its size,
+    /// without reading it, and the model told how to read a part.
+    #[test]
+    fn a_file_too_large_to_read_is_refused_by_its_size() {
+        let dir = crate::testing::temp_dir();
+        let file = std::fs::File::create(dir.0.join("huge.log")).unwrap();
+        file.set_len(READ_MAX_BYTES + 1).unwrap();
+        let err = tool_read_file_range(
+            dir.0.to_string_lossy().into_owned(),
+            "huge.log".into(),
+            Some(1),
+            Some(10),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("huge.log: 32 MB, too large to read"),
+            "{err}"
+        );
+        assert!(err.contains("sed -n"), "{err}");
+    }
 
     /// A project reached through a symlink, like any project under /tmp on
     /// macOS (/tmp → /private/tmp).
