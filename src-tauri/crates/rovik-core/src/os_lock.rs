@@ -83,9 +83,15 @@ pub fn try_hold_first(paths: &[std::path::PathBuf]) -> io::Result<Option<(usize,
         .iter()
         .map(|p| open(p))
         .collect::<io::Result<Vec<File>>>()?;
+    first_unlocked(files, || std::thread::sleep(APART))
+}
+
+/// The first of `files` whose lock is free, held, with its index: each
+/// tried once a round, `pause` between the rounds.
+fn first_unlocked(files: Vec<File>, mut pause: impl FnMut()) -> io::Result<Option<(usize, Held)>> {
     for attempt in 0..TRIES {
         if attempt > 0 {
-            std::thread::sleep(APART);
+            pause();
         }
         for (i, file) in files.iter().enumerate() {
             if try_lock(file)? {
@@ -274,13 +280,12 @@ mod tests {
             .iter()
             .map(|p| try_hold(p).unwrap().unwrap())
             .collect();
-        let started = std::time::Instant::now();
-        assert!(try_hold_first(&paths).unwrap().is_none());
-        assert!(
-            started.elapsed() < APART * TRIES * 3,
-            "{:?}",
-            started.elapsed()
-        );
+        // All taken: as many pauses as one lock's tries take, not one
+        // lock's tries for each.
+        let files: Vec<File> = paths.iter().map(|p| open(p).unwrap()).collect();
+        let mut pauses = 0;
+        assert!(first_unlocked(files, || pauses += 1).unwrap().is_none());
+        assert_eq!(pauses, TRIES - 1);
         drop((taken, more));
     }
 

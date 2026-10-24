@@ -976,8 +976,10 @@ mod tests {
     use super::*;
 
     /// An SSH server that takes no key, and hangs up after the first.
+    #[cfg(unix)]
     struct OneTry;
 
+    #[cfg(unix)]
     impl russh::server::Handler for OneTry {
         type Error = russh::Error;
     }

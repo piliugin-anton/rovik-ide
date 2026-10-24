@@ -1001,8 +1001,9 @@ mod tests {
 
     /// The install runs a copy of the upload checked against the build's
     /// hash: the build as uploaded installs; one swapped on the server
-    /// after the user's own check never runs.
-    #[cfg(unix)]
+    /// after the user's own check never runs. On Linux, as the servers are:
+    /// the command runs coreutils' `sha256sum`, which macOS doesn't have.
+    #[cfg(target_os = "linux")]
     #[test]
     fn root_installs_only_a_copy_that_matches_the_builds_hash() {
         use std::os::unix::fs::PermissionsExt;

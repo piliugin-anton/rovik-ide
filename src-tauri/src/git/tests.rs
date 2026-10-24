@@ -143,9 +143,17 @@ mod revert_tests {
             .into_iter()
             .filter(|i| i.original_parent.canonicalize().ok().as_deref() == Some(dir.as_path()))
             .collect();
+        // By stem: Windows' recycle bin names an item as Explorer shows it,
+        // without a known extension.
         let mut names: Vec<String> = items
             .iter()
-            .map(|i| i.name.to_string_lossy().into_owned())
+            .map(|i| {
+                let name = std::path::Path::new(&i.name);
+                name.file_stem()
+                    .unwrap_or(name.as_os_str())
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         names.sort();
         trash::os_limited::purge_all(items).unwrap();
@@ -179,7 +187,7 @@ mod revert_tests {
                 not(target_os = "android")
             )
         ))]
-        assert_eq!(take_trashed_from(&dir), ["added.txt", "untracked.txt"]);
+        assert_eq!(take_trashed_from(&dir), ["added", "untracked"]);
     }
 
     /// A project that is a folder of a larger repository (a home folder kept
@@ -238,7 +246,7 @@ mod revert_tests {
                 not(target_os = "android")
             )
         ))]
-        assert_eq!(take_trashed_from(&dir.join("src")), ["n2.rs"]);
+        assert_eq!(take_trashed_from(&dir.join("src")), ["n2"]);
     }
 
     /// Without a commit yet, Discard all in a project folder empties the
