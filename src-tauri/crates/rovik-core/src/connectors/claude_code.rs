@@ -583,6 +583,37 @@ pub struct Parser {
     thought: Option<Thought>,
     /// The thoughts of this run so far, which number their steps' ids.
     thoughts: usize,
+    /// The folder the run works in: the paths its steps name are shown
+    /// relative to it (`relative_paths`).
+    root: Option<PathBuf>,
+}
+
+/// A tool's input with the paths it names (`file_path`, `path`,
+/// `notebook_path`) relative to the run's folder where they're in it, as
+/// Rovik's own tools take them: the chat opens them in the project, or in
+/// the chat's copy of it. Others stay as they are.
+fn relative_paths(input: &Value, root: Option<&Path>) -> Value {
+    let mut input = input.clone();
+    let (Some(root), Some(fields)) = (root, input.as_object_mut()) else {
+        return input;
+    };
+    // The folder as given, and as the system resolves it (`/tmp` and
+    // `/private/tmp`): the harness may name it either way.
+    let roots = [Some(root.to_path_buf()), root.canonicalize().ok()];
+    for key in ["file_path", "path", "notebook_path"] {
+        let Some(Value::String(path)) = fields.get_mut(key) else {
+            continue;
+        };
+        let inside = roots
+            .iter()
+            .flatten()
+            .find_map(|root| Path::new(path.as_str()).strip_prefix(root).ok());
+        if let Some(rest) = inside {
+            let rest = rest.to_string_lossy().replace('\\', "/");
+            *path = if rest.is_empty() { ".".into() } else { rest };
+        }
+    }
+    input
 }
 
 /// A stretch of thinking as it streams, with Claude Code's own tools.
@@ -1066,20 +1097,20 @@ impl Parser {
                         .and_then(|i| i.as_str())
                         .unwrap_or("")
                         .to_string();
-                    if id.is_empty() {
+                    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                    // Its way out of plan mode isn't a step: Rovik refuses it
+                    // by design (`ask_rovik`), its plan being the reply.
+                    if id.is_empty() || name == EXIT_PLAN_MODE {
                         continue;
                     }
+                    let input = relative_paths(
+                        block.get("input").unwrap_or(&Value::Null),
+                        self.root.as_deref(),
+                    );
                     let step = HarnessStep {
                         id: id.clone(),
-                        name: block
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("tool")
-                            .to_string(),
-                        input: trimmed_value(
-                            block.get("input").unwrap_or(&Value::Null),
-                            STEP_INPUT_CHARS,
-                        ),
+                        name: name.to_string(),
+                        input: trimmed_value(&input, STEP_INPUT_CHARS),
                         parent: parent.clone(),
                         ..HarnessStep::default()
                     };
@@ -1745,16 +1776,20 @@ async fn run_turn(
         approvals.as_ref().map(|(_, _, config)| config.path()),
     );
     let env = env_for(&settings, &turn.api_key);
+    let cwd = cwd_of(turn);
     let mut process = Process::spawn(
         &program,
         &args,
         &env,
-        Some(&cwd_of(turn)),
+        Some(&cwd),
         turn.prompt.clone(),
         turn.first_byte_timeout.max(MIN_FIRST_LINE),
         prompt.into_iter().collect(),
     )?;
-    let mut parser = Parser::default();
+    let mut parser = Parser {
+        root: Some(cwd),
+        ..Parser::default()
+    };
     let root = turn.cwd.clone();
     let mut on_call = |call: McpCall| match &asks {
         Some(asks) => ask_rovik(call, asks, root.clone()),
@@ -3428,6 +3463,50 @@ mod tests {
             panic!()
         };
         assert!(step.name.is_empty() && step.input.is_null(), "{step:?}");
+    }
+
+    /// The paths its steps name are relative to its folder, as Rovik's own
+    /// tools take them; one outside it stays as it is.
+    #[test]
+    fn the_paths_its_steps_name_are_relative_to_its_folder() {
+        let dir = crate::testing::temp_dir();
+        let root = dir.0.clone();
+        let mut p = Parser {
+            root: Some(root.clone()),
+            ..Parser::default()
+        };
+        let mut events = Vec::new();
+        let message = json!({"type":"assistant","message":{"id":"m1","content":[
+            {"type":"tool_use","id":"t1","name":"Read","input":{"file_path": root.join("src").join("a.rs")}},
+            {"type":"tool_use","id":"t2","name":"Grep","input":{"pattern":"x","path": root}},
+            {"type":"tool_use","id":"t3","name":"Read","input":{"file_path":"/etc/hosts"}},
+        ]},"parent_tool_use_id":null});
+        p.line(&message.to_string(), &mut |e| events.push(e));
+        let inputs: Vec<Value> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatStreamEvent::HarnessStep { step } => Some(step.input.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inputs[0]["file_path"], "src/a.rs");
+        assert_eq!(inputs[1]["path"], ".");
+        assert_eq!(inputs[2]["file_path"], "/etc/hosts");
+    }
+
+    /// Its way out of plan mode, which Rovik refuses by design, isn't one
+    /// of its steps: it would read as a call that failed.
+    #[test]
+    fn its_way_out_of_plan_mode_is_not_a_step() {
+        let mut p = Parser::default();
+        let mut events = Vec::new();
+        for line in [
+            json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"ExitPlanMode","input":{"plan":"# Plan"}}]},"parent_tool_use_id":null}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Not approved here","is_error":true}]},"parent_tool_use_id":null}),
+        ] {
+            p.line(&line.to_string(), &mut |e| events.push(e));
+        }
+        assert!(names(&events).is_empty(), "{:?}", names(&events));
     }
 
     #[test]
