@@ -3,9 +3,9 @@
 // Connectors: coding harnesses a chat can use in place of a model
 // provider (Settings → Connectors). A connector is a program on the
 // computer the chat runs on, Claude Code first: it brings its own model
-// loop and tools, so the IDE hands it the system prompt, the model, the
-// message and the project folder, follows what it does, and shows its
-// steps, its tokens and its cost with the reply
+// loop, tools and prompt, so the IDE hands it the model, the message and
+// the project folder, follows what it does, and shows its steps, its
+// tokens and its cost with the reply
 // (src-tauri/crates/rovik-core/src/connectors).
 //
 // A connector is kept as a `Provider` entry in the AI settings whose
@@ -14,140 +14,31 @@
 // settings in `settings`. So the model picker, a chat's saved model, the
 // AI reviewer and the settings file work as they do for providers; the
 // pages and the picker tell the two apart by `isConnector`.
+//
+// This module is the same for every kind. A kind of connector brings its
+// own: in the core, its `Connector` (connectors/mod.rs); here, its
+// `ConnectorSpec` in `CONNECTOR_CATALOG`, in a module of its own
+// (claudeCode.ts); and its form's `ConnectorFields`
+// (components/connectorFields.ts).
 import { invoke } from '@tauri-apps/api/core';
 import { createSignal } from 'solid-js';
 import type { ConnectorKind, ModelProfile, Provider, ProviderModel } from '../types';
 import { plural } from './textUtils';
 import type { RemoteModel } from './aiSettings';
 import { notify } from './notifications';
+import { CLAUDE_CODE } from './claudeCode';
 
 export const CONNECTOR_SCHEME = 'connector://';
-
-/** Claude Code's settings (claude_code.rs `Settings`, the same fields and defaults). */
-export type ClaudeCodeSettings = {
-  /** The program: `claude`, found on the PATH, or a path to it. */
-  program: string;
-  /** How it signs in: this computer's login, a `claude setup-token` token, or an API key. */
-  auth: 'login' | 'token' | 'apiKey';
-  /**
-   * `rovik`: Rovik's permissions and approvals decide each call Claude Code
-   * would ask about (claude_code.rs `ROVIK_PERMISSIONS`); the others are
-   * Claude Code's own modes.
-   */
-  permissionMode:
-    'rovik' | 'acceptEdits' | 'bypassPermissions' | 'default' | 'plan' | 'dontAsk' | 'auto';
-  /** `--allowedTools` rules, one per line. */
-  allowedTools: string;
-  disallowedTools: string;
-  /** The most agentic turns one message may take; empty: no limit. */
-  maxTurns?: number;
-  /** The most one message may cost (estimated, USD); empty: no limit. */
-  maxBudgetUsd?: number;
-  /** The IDE's system prompt after Claude Code's own, or in its place. */
-  systemPrompt: 'own' | 'append' | 'replace';
-  /** `CLAUDE_CONFIG_DIR`: another login and settings folder; empty: its own. */
-  configDir: string;
-  /** More arguments, as typed on a command line. */
-  extraArgs: string;
-  /** `--bare`: none of the user's hooks, skills, plugins or CLAUDE.md. */
-  bare: boolean;
-  /**
-   * Whose tools a run uses: Claude Code's own, under its permission mode,
-   * or Rovik's over MCP, where Claude Code is the model behind Rovik's
-   * agent loop and Rovik runs every call under its own permissions.
-   */
-  tools: 'own' | 'rovik';
-};
-
-export const CLAUDE_CODE_DEFAULTS: ClaudeCodeSettings = {
-  program: 'claude',
-  auth: 'login',
-  permissionMode: 'rovik',
-  allowedTools: '',
-  disallowedTools: '',
-  systemPrompt: 'own',
-  configDir: '',
-  extraArgs: '',
-  bare: false,
-  tools: 'own',
-};
-
-export const TOOLS_MODES: { value: ClaudeCodeSettings['tools']; label: string; hint: string }[] = [
-  {
-    value: 'own',
-    label: 'Claude Code’s own',
-    hint: 'Claude Code runs its own tools (Read, Edit, Bash…) under the permission mode below; Rovik shows each step it took.',
-  },
-  {
-    value: 'rovik',
-    label: 'Rovik’s (via MCP)',
-    hint: 'Claude Code is the model behind Rovik’s agent: it gets Rovik’s tools over MCP, and Rovik runs each call under Permissions and approval, in the chat’s copy of the project, with its checks, checklist, plans and subagents.',
-  },
-];
 
 /** Whether the entry is a connector that runs Rovik's tools. */
 export function usesRovikTools(p: Pick<Provider, 'baseUrl' | 'connector' | 'settings'>): boolean {
   return specOf(p)?.usesRovikTools(p.settings ?? {}) ?? false;
 }
 
-/*
- * The hints of the settings' choices are their options' tooltips. On Linux,
- * WebKitGTK shows an open <select>'s tooltips as GTK markup, in which `&`,
- * `<` and `>` break the text ("Entity did not end with a semicolon"), so
- * they are written without them (connectors.test.ts checks).
- */
-
-export const PERMISSION_MODES: {
-  value: ClaudeCodeSettings['permissionMode'];
-  label: string;
-  hint: string;
-}[] = [
-  {
-    value: 'rovik',
-    label: 'Follow Rovik’s permissions',
-    hint: 'Each call Claude Code would ask about goes to Permissions and approval, as the agent’s own would: commands by the allowed list, edits reviewed in the editor, approvals by you or the AI reviewer',
-  },
-  {
-    value: 'acceptEdits',
-    label: 'Accept edits',
-    hint: 'Edits files and runs common file commands without asking; other commands need an allowed-tools rule',
-  },
-  {
-    value: 'bypassPermissions',
-    label: 'Everything',
-    hint: 'Runs every tool without asking, like the IDE’s own agent with approval off',
-  },
-  { value: 'auto', label: 'Auto', hint: 'A classifier reviews each action instead of a person' },
-  {
-    value: 'default',
-    label: 'Manual',
-    hint: 'Only the allowed-tools rules run; anything else is denied, since nobody is there to answer',
-  },
-  { value: 'plan', label: 'Plan', hint: 'Reads and plans, changes nothing' },
-];
-
-export const AUTH_KINDS: { value: ClaudeCodeSettings['auth']; label: string; hint: string }[] = [
-  {
-    value: 'login',
-    label: 'This computer’s login',
-    hint: 'The account `claude` is logged in to here (run `claude` once to log in). On a cloud host, the host’s login.',
-  },
-  {
-    value: 'token',
-    label: 'Token',
-    hint: 'A long-lived token from `claude setup-token`: works unattended and on cloud hosts, kept in the keychain',
-  },
-  {
-    value: 'apiKey',
-    label: 'API key',
-    hint: 'An Anthropic API key, billed to the Console account',
-  },
-];
-
 /**
- * What Rovik knows of a kind of connector, the same for every kind: a new
- * harness is one more entry here (and its settings fields, in
- * ConnectorsSettings.tsx), besides its module in the core.
+ * What Rovik knows of a kind of connector, the same for every kind: each
+ * kind's is in a module of its own (claudeCode.ts), one entry of
+ * `CONNECTOR_CATALOG`.
  */
 export interface ConnectorSpec {
   kind: ConnectorKind;
@@ -171,32 +62,8 @@ export interface ConnectorSpec {
   planMode: boolean;
 }
 
-/**
- * The model a Claude Code chat's title is asked of: Claude Code's small,
- * fast one, as Claude Code titles its own sessions. A title needs no more,
- * and the chat's model may be Opus or Fable.
- */
-export const CLAUDE_CODE_TITLE_MODEL = 'haiku';
-
 /** What can be connected: each kind, for the "Add connector" menu. */
-export const CONNECTOR_CATALOG: ConnectorSpec[] = [
-  {
-    kind: 'claude-code',
-    title: 'Claude Code',
-    about:
-      'Anthropic’s coding agent, run headless in the project folder with its own tools. Chats that pick one of its models hand it the task; its steps, tokens and cost show with the reply.',
-    install: 'curl -fsSL https://claude.ai/install.sh | bash',
-    settings: (raw) => claudeCodeSettings({ settings: raw }),
-    usesRovikTools: (raw) => claudeCodeSettings({ settings: raw }).tools === 'rovik',
-    summary: (raw) => {
-      const s = claudeCodeSettings({ settings: raw });
-      const mode = PERMISSION_MODES.find((m) => m.value === s.permissionMode)?.label;
-      return `${s.program} · ${s.tools === 'rovik' ? 'Rovik’s tools' : (mode ?? s.permissionMode)}`;
-    },
-    titleModel: CLAUDE_CODE_TITLE_MODEL,
-    planMode: true,
-  },
-];
+export const CONNECTOR_CATALOG: ConnectorSpec[] = [CLAUDE_CODE];
 
 export function connectorSpec(kind: ConnectorKind | undefined): ConnectorSpec | undefined {
   return CONNECTOR_CATALOG.find((c) => c.kind === kind);
@@ -257,16 +124,6 @@ export function newConnector(kind: ConnectorKind): Provider {
     models: [],
     connector: kind,
     settings: connectorSpec(kind)?.settings({}) ?? {},
-  };
-}
-
-/** A connector's settings with the kind's defaults for what isn't set. */
-export function claudeCodeSettings(p: Pick<Provider, 'settings'>): ClaudeCodeSettings {
-  const s = (p.settings ?? {}) as Partial<ClaudeCodeSettings>;
-  return {
-    ...CLAUDE_CODE_DEFAULTS,
-    ...s,
-    program: typeof s.program === 'string' && s.program.trim() ? s.program : 'claude',
   };
 }
 

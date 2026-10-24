@@ -10094,6 +10094,12 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   font-size: 11px;
 }
 
+/* A field labelled above it explains under itself, not under a row's control. */
+.connector-form .settings-section label > .setting-explain,
+.connector-form .connector-limits + .setting-explain {
+  margin-left: 0;
+}
+
 .connector-form .settings-textarea {
   width: 100%;
   box-sizing: border-box;
@@ -10120,7 +10126,8 @@ details[open] > summary.chat-verify-row .chat-verify-note::after {
   color: var(--fg-dim);
 }
 
-.connector-advanced > label {
+.connector-advanced > label,
+.connector-form .settings-section > label {
   margin-top: 8px;
 }
 

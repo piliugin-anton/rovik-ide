@@ -1,79 +1,78 @@
 // ClaudeCodeFields.tsx
 //
-// Claude Code's settings in a connector's form (ConnectorsSettings.tsx):
-// the program, how it signs in, whose tools its runs use, its permission
-// mode and limits, its system prompt, and the advanced ones. The same
-// fields as claude_code.rs `Settings`. A connector of another kind brings
-// its own fields component, with the same props.
+// Claude Code's part of a connector's form (ConnectorsSettings.tsx), its
+// `ConnectorFields`: how it signs in, in the Connection section; then how
+// chats use it, its permissions (with its own tools), its limits, and the
+// advanced ones (the program, its settings folder, more arguments, bare
+// mode). The same fields as claude_code.rs `Settings` (lib/claudeCode.ts).
 import { For, Show } from 'solid-js';
-import type { Provider } from '../types';
 import {
   AUTH_KINDS,
+  CLAUDE_CODE_INSTALL,
   claudeCodeSettings,
-  CONNECTOR_CATALOG,
   PERMISSION_MODES,
-  TOOLS_MODES,
+  USE_MODES,
+  type Choice,
   type ClaudeCodeSettings,
-} from '../lib/connectors';
+} from '../lib/claudeCode';
 import { SettingRow } from './SettingsControls';
+import type { ConnectorFields, ConnectorFieldsProps } from './connectorFields';
 
-/** What a kind's fields component gets: the same for every kind. */
-export interface ConnectorFieldsProps {
-  /** The connector being edited. */
-  connector: Provider;
-  /** A change to what its runs use: its settings, its key. */
-  update: (changes: Partial<Provider>) => void;
+/** Its settings, as read with the defaults, and a change to some of them. */
+function useSettings(props: ConnectorFieldsProps) {
+  const settings = () => claudeCodeSettings(props.connector);
+  const patch = (changes: Partial<ClaudeCodeSettings>) =>
+    props.update({ settings: { ...settings(), ...changes } });
+  return { settings, patch };
 }
 
-export default function ClaudeCodeFields(props: ConnectorFieldsProps) {
-  const settings = () => claudeCodeSettings(props.connector);
-  /** Rovik's permissions decide: Claude Code's allowed-tools rules would pass them by. */
-  const followsRovik = () => settings().permissionMode === 'rovik';
-  const patchSettings = (changes: Partial<ClaudeCodeSettings>) =>
-    props.update({ settings: { ...settings(), ...changes } });
-  const numberValue = (raw: string, min: number, max: number): number | undefined => {
-    const n = Number(raw.replace(/[^\d.]/g, ''));
-    if (!raw.trim() || !Number.isFinite(n)) return undefined;
-    return Math.min(max, Math.max(min, n));
-  };
-
+/** A select of `choices`; under it, the chosen one's line, all of it as its tooltip. */
+function ChoiceSelect<T extends string>(props: {
+  label: string;
+  choices: Choice<T>[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  const chosen = () => props.choices.find((c) => c.value === props.value);
   return (
     <>
-      <label>
-        Program
-        <input
-          value={settings().program}
-          onInput={(e) => patchSettings({ program: e.currentTarget.value })}
-          placeholder="claude"
-          spellcheck={false}
-        />
-        <span class="setting-explain">
-          `claude` as the shell finds it, or the path to it. Set up below installs it if it’s
-          missing; or install it with <code>{CONNECTOR_CATALOG[0].install}</code>, or a package
-          manager on a server.
-        </span>
-      </label>
-
-      <SettingRow label="Signs in with">
+      <SettingRow label={props.label}>
         <select
           class="settings-select"
-          value={settings().auth}
-          onChange={(e) =>
-            patchSettings({ auth: e.currentTarget.value as ClaudeCodeSettings['auth'] })
-          }
+          value={props.value}
+          onChange={(e) => props.onChange(e.currentTarget.value as T)}
         >
-          <For each={AUTH_KINDS}>
-            {(a) => (
-              <option value={a.value} title={a.hint}>
-                {a.label}
+          <For each={props.choices}>
+            {(c) => (
+              <option value={c.value} title={c.hint}>
+                {c.label}
               </option>
             )}
           </For>
         </select>
       </SettingRow>
-      <p class="settings-hint setting-explain">
-        {AUTH_KINDS.find((a) => a.value === settings().auth)?.hint}
-      </p>
+      <Show when={chosen()}>
+        {(c) => (
+          <p class="settings-hint setting-explain" title={c().detail ?? c().hint}>
+            {c().hint}
+          </p>
+        )}
+      </Show>
+    </>
+  );
+}
+
+/** In the Connection section: how it signs in, and its token or key. */
+function Connection(props: ConnectorFieldsProps) {
+  const { settings, patch } = useSettings(props);
+  return (
+    <>
+      <ChoiceSelect
+        label="Signs in with"
+        choices={AUTH_KINDS}
+        value={settings().auth}
+        onChange={(auth) => patch({ auth })}
+      />
       <Show when={settings().auth !== 'login'}>
         <label>
           {settings().auth === 'token' ? 'Token' : 'API key'}
@@ -86,185 +85,168 @@ export default function ClaudeCodeFields(props: ConnectorFieldsProps) {
           />
         </label>
       </Show>
-
-      <SettingRow label="Tools">
-        <select
-          class="settings-select"
-          value={settings().tools}
-          onChange={(e) => {
-            const tools = e.currentTarget.value as ClaudeCodeSettings['tools'];
-            // Rovik's prompt in place of Claude Code's, whose tools are
-            // off then; after it, with them.
-            patchSettings({ tools, systemPrompt: tools === 'rovik' ? 'replace' : 'own' });
-          }}
-        >
-          <For each={TOOLS_MODES}>
-            {(m) => (
-              <option value={m.value} title={m.hint}>
-                {m.label}
-              </option>
-            )}
-          </For>
-        </select>
-      </SettingRow>
-      <p class="settings-hint setting-explain">
-        {TOOLS_MODES.find((m) => m.value === settings().tools)?.hint}
-      </p>
-
-      <Show when={settings().tools === 'own'}>
-        <SettingRow label="Permission mode">
-          <select
-            class="settings-select"
-            value={settings().permissionMode}
-            onChange={(e) =>
-              patchSettings({
-                permissionMode: e.currentTarget.value as ClaudeCodeSettings['permissionMode'],
-              })
-            }
-          >
-            <For each={PERMISSION_MODES}>
-              {(m) => (
-                <option value={m.value} title={m.hint}>
-                  {m.label}
-                </option>
-              )}
-            </For>
-          </select>
-        </SettingRow>
-        <p class="settings-hint setting-explain">
-          {PERMISSION_MODES.find((m) => m.value === settings().permissionMode)?.hint}.{' '}
-          {followsRovik()
-            ? 'Reads in the project and Claude Code’s read-only commands run without asking.'
-            : 'Nothing waits for a prompt: what the mode and the rules below don’t allow is denied.'}
-        </p>
-
-        <Show when={!followsRovik()}>
-          <label>
-            Allowed tools
-            <textarea
-              class="settings-textarea"
-              rows={2}
-              value={settings().allowedTools}
-              onInput={(e) => patchSettings({ allowedTools: e.currentTarget.value })}
-              placeholder={'Bash(npm test *)\nBash(git diff *)'}
-              spellcheck={false}
-            />
-            <span class="setting-explain">
-              Permission rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
-            </span>
-          </label>
-        </Show>
-        <label>
-          Denied tools
-          <textarea
-            class="settings-textarea"
-            rows={1}
-            value={settings().disallowedTools}
-            onInput={(e) => patchSettings({ disallowedTools: e.currentTarget.value })}
-            placeholder="Bash(rm *)"
-            spellcheck={false}
-          />
-        </label>
-      </Show>
-
-      <div class="connector-limits">
-        <label class="setting-number-field">
-          <span>Turns per message</span>
-          <input
-            type="number"
-            class="settings-input setting-number"
-            min={1}
-            max={1000}
-            value={settings().maxTurns ?? ''}
-            placeholder="no limit"
-            onChange={(e) => {
-              const value = numberValue(e.currentTarget.value, 1, 1000);
-              e.currentTarget.value = value === undefined ? '' : String(Math.round(value));
-              patchSettings({ maxTurns: value === undefined ? undefined : Math.round(value) });
-            }}
-          />
-        </label>
-        <label class="setting-number-field">
-          <span>Budget per message, $</span>
-          <input
-            type="number"
-            class="settings-input setting-number"
-            min={0.01}
-            max={1000}
-            step={0.5}
-            value={settings().maxBudgetUsd ?? ''}
-            placeholder="no limit"
-            onChange={(e) => {
-              const value = numberValue(e.currentTarget.value, 0.01, 1000);
-              e.currentTarget.value = value === undefined ? '' : String(value);
-              patchSettings({ maxBudgetUsd: value });
-            }}
-          />
-        </label>
-      </div>
-      <p class="settings-hint setting-explain">
-        A message’s run stops at either limit (the cost is Claude Code’s own estimate); what it did
-        so far stays. Each reply shows the tokens and the cost it took.
-      </p>
-
-      <SettingRow label="System prompt">
-        <select
-          class="settings-select"
-          value={settings().systemPrompt}
-          onChange={(e) =>
-            patchSettings({
-              systemPrompt: e.currentTarget.value as ClaudeCodeSettings['systemPrompt'],
-            })
-          }
-        >
-          {/* With Rovik's tools, Claude Code has none of its own for its prompt to describe. */}
-          <Show when={settings().tools === 'own'}>
-            <option value="own">Claude Code’s own</option>
-          </Show>
-          <option value="append">Rovik’s after Claude Code’s own</option>
-          <option value="replace">Rovik’s alone</option>
-        </select>
-      </SettingRow>
-      <p class="settings-hint setting-explain">
-        {settings().systemPrompt === 'own' && settings().tools === 'own'
-          ? 'Claude Code’s prompt as it is: Rovik’s isn’t sent, and the project’s instructions are the CLAUDE.md Claude Code reads.'
-          : 'Rovik’s prompt and the project’s section (its stack, checks and agent instructions) go to every run.'}
-      </p>
-
-      <details class="connector-advanced">
-        <summary>Advanced</summary>
-        <label>
-          Settings folder (CLAUDE_CONFIG_DIR)
-          <input
-            value={settings().configDir}
-            onInput={(e) => patchSettings({ configDir: e.currentTarget.value })}
-            placeholder="~/.claude (its own)"
-            spellcheck={false}
-          />
-          <span class="setting-explain">
-            Another login and settings folder: a work account, or one shared on a server.
-          </span>
-        </label>
-        <label>
-          Extra arguments
-          <input
-            value={settings().extraArgs}
-            onInput={(e) => patchSettings({ extraArgs: e.currentTarget.value })}
-            placeholder="--add-dir ../lib --mcp-config ./mcp.json"
-            spellcheck={false}
-          />
-          <span class="setting-explain">Passed to every run, as typed on a command line.</span>
-        </label>
-        <label class="checkbox-row">
-          <input
-            type="checkbox"
-            checked={settings().bare}
-            onChange={(e) => patchSettings({ bare: e.currentTarget.checked })}
-          />
-          Bare mode: none of the user’s hooks, skills, plugins, MCP servers or CLAUDE.md (needs an
-          API key)
-        </label>
-      </details>
     </>
   );
 }
+
+/** How chats use it, its permissions, its limits, and the advanced ones. */
+function Options(props: ConnectorFieldsProps) {
+  const { settings, patch } = useSettings(props);
+  /** Rovik's permissions decide: Claude Code's allowed-tools rules would pass them by. */
+  const followsRovik = () => settings().permissionMode === 'rovik';
+  const numberValue = (raw: string, min: number, max: number): number | undefined => {
+    const n = Number(raw.replace(/[^\d.]/g, ''));
+    if (!raw.trim() || !Number.isFinite(n)) return undefined;
+    return Math.min(max, Math.max(min, n));
+  };
+
+  return (
+    <>
+      <section class="settings-section">
+        <div class="settings-section-title">How chats use it</div>
+        <ChoiceSelect
+          label="Runs as"
+          choices={USE_MODES}
+          value={settings().tools}
+          onChange={(tools) => patch({ tools })}
+        />
+      </section>
+
+      <Show when={settings().tools === 'own'}>
+        <section class="settings-section">
+          <div class="settings-section-title">Permissions</div>
+          <ChoiceSelect
+            label="Mode"
+            choices={PERMISSION_MODES}
+            value={settings().permissionMode}
+            onChange={(permissionMode) => patch({ permissionMode })}
+          />
+          <Show when={!followsRovik()}>
+            <label>
+              Allowed tools
+              <textarea
+                class="settings-textarea"
+                rows={2}
+                value={settings().allowedTools}
+                onInput={(e) => patch({ allowedTools: e.currentTarget.value })}
+                placeholder={'Bash(npm test *)\nBash(git diff *)'}
+                spellcheck={false}
+              />
+              <span class="setting-explain">
+                Rules that run without asking, one per line (`Bash(npm *)`, `WebFetch`).
+              </span>
+            </label>
+          </Show>
+          <label>
+            Denied tools
+            <textarea
+              class="settings-textarea"
+              rows={1}
+              value={settings().disallowedTools}
+              onInput={(e) => patch({ disallowedTools: e.currentTarget.value })}
+              placeholder="Bash(rm *)"
+              spellcheck={false}
+            />
+          </label>
+        </section>
+      </Show>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Limits</div>
+        <div class="connector-limits">
+          <label class="setting-number-field">
+            <span>Turns per message</span>
+            <input
+              type="number"
+              class="settings-input setting-number"
+              min={1}
+              max={1000}
+              value={settings().maxTurns ?? ''}
+              placeholder="no limit"
+              onChange={(e) => {
+                const value = numberValue(e.currentTarget.value, 1, 1000);
+                e.currentTarget.value = value === undefined ? '' : String(Math.round(value));
+                patch({ maxTurns: value === undefined ? undefined : Math.round(value) });
+              }}
+            />
+          </label>
+          <label class="setting-number-field">
+            <span>Budget per message, $</span>
+            <input
+              type="number"
+              class="settings-input setting-number"
+              min={0.01}
+              max={1000}
+              step={0.5}
+              value={settings().maxBudgetUsd ?? ''}
+              placeholder="no limit"
+              onChange={(e) => {
+                const value = numberValue(e.currentTarget.value, 0.01, 1000);
+                e.currentTarget.value = value === undefined ? '' : String(value);
+                patch({ maxBudgetUsd: value });
+              }}
+            />
+          </label>
+        </div>
+        <p
+          class="settings-hint setting-explain"
+          title="A message’s run stops at either limit (the cost is Claude Code’s own estimate); what it did so far stays. Each reply shows the tokens and the cost it took."
+        >
+          A message’s run stops at either limit; what it did so far stays.
+        </p>
+      </section>
+
+      <section class="settings-section">
+        <details class="connector-advanced">
+          <summary>Advanced</summary>
+          <label>
+            Program
+            <input
+              value={settings().program}
+              onInput={(e) => patch({ program: e.currentTarget.value })}
+              placeholder="claude"
+              spellcheck={false}
+            />
+            <span class="setting-explain" title={`Or install it with: ${CLAUDE_CODE_INSTALL}`}>
+              `claude` as the shell finds it, or the path to it. Set up installs it if it’s missing.
+            </span>
+          </label>
+          <label>
+            Settings folder (CLAUDE_CONFIG_DIR)
+            <input
+              value={settings().configDir}
+              onInput={(e) => patch({ configDir: e.currentTarget.value })}
+              placeholder="~/.claude (its own)"
+              spellcheck={false}
+            />
+            <span class="setting-explain">
+              Another login and settings folder: a work account, or one shared on a server.
+            </span>
+          </label>
+          <label>
+            Extra arguments
+            <input
+              value={settings().extraArgs}
+              onInput={(e) => patch({ extraArgs: e.currentTarget.value })}
+              placeholder="--add-dir ../lib --mcp-config ./mcp.json"
+              spellcheck={false}
+            />
+            <span class="setting-explain">Passed to every run, as typed on a command line.</span>
+          </label>
+          <label class="checkbox-row">
+            <input
+              type="checkbox"
+              checked={settings().bare}
+              onChange={(e) => patch({ bare: e.currentTarget.checked })}
+            />
+            Bare mode: none of the user’s hooks, skills, plugins, MCP servers or CLAUDE.md (needs an
+            API key)
+          </label>
+        </details>
+      </section>
+    </>
+  );
+}
+
+/** Claude Code's part of a connector's form. */
+export const CLAUDE_CODE_FIELDS: ConnectorFields = { Connection, Options };
