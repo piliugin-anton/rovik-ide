@@ -95,7 +95,7 @@ export default function ClaudeCodeFields(props: ConnectorFieldsProps) {
             const tools = e.currentTarget.value as ClaudeCodeSettings['tools'];
             // Rovik's prompt in place of Claude Code's, whose tools are
             // off then; after it, with them.
-            patchSettings({ tools, systemPrompt: tools === 'rovik' ? 'replace' : 'append' });
+            patchSettings({ tools, systemPrompt: tools === 'rovik' ? 'replace' : 'own' });
           }}
         >
           <For each={TOOLS_MODES}>
@@ -217,10 +217,19 @@ export default function ClaudeCodeFields(props: ConnectorFieldsProps) {
             })
           }
         >
+          {/* With Rovik's tools, Claude Code has none of its own for its prompt to describe. */}
+          <Show when={settings().tools === 'own'}>
+            <option value="own">Claude Code’s own</option>
+          </Show>
           <option value="append">Rovik’s after Claude Code’s own</option>
           <option value="replace">Rovik’s alone</option>
         </select>
       </SettingRow>
+      <p class="settings-hint setting-explain">
+        {settings().systemPrompt === 'own' && settings().tools === 'own'
+          ? 'Claude Code’s prompt as it is: Rovik’s isn’t sent, and the project’s instructions are the CLAUDE.md Claude Code reads.'
+          : 'Rovik’s prompt and the project’s section (its stack, checks and agent instructions) go to every run.'}
+      </p>
 
       <details class="connector-advanced">
         <summary>Advanced</summary>
