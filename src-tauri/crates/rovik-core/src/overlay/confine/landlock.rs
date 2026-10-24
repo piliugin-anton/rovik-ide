@@ -152,12 +152,13 @@ impl Grant {
 /// to read, the writable folders (and a few devices) to write. A folder
 /// with a hidden one inside is covered entry by entry instead, down to it;
 /// a writable folder inside a hidden one is covered all the same, being a
-/// rule of its own. A hidden file inside a writable folder (cargo's token
-/// in `~/.cargo`) isn't hidden: covered entry by entry, the folder would
-/// take no new file, which the tools that write there need (the
-/// bubblewrap and Seatbelt sandboxes hide it). Symbolic links get no rule:
-/// Landlock checks what a link leads to, where that is. Paths gone since
-/// the policy was made are left out.
+/// rule of its own, and so is what stays read-only inside one, to read. A
+/// hidden file inside a writable folder (cargo's token in `~/.cargo`)
+/// isn't hidden: covered entry by entry, the folder would take no new file,
+/// which the tools that write there need (the bubblewrap and Seatbelt
+/// sandboxes hide it). Symbolic links get no rule: Landlock checks what a
+/// link leads to, where that is. Paths gone since the policy was made are
+/// left out.
 pub(super) fn grants(c: &Confine) -> Vec<(PathBuf, Grant)> {
     let hidden: Vec<PathBuf> = c.hide.iter().filter(|d| d.exists()).cloned().collect();
     // Writes go around the hidden folders and what stays read-only, which
@@ -171,6 +172,15 @@ pub(super) fn grants(c: &Confine) -> Vec<(PathBuf, Grant)> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     cover(Path::new("/"), Grant::Read, &hidden, &mut seen, &mut out);
+    let inside_hidden = |p: &&PathBuf| hidden.iter().any(|h| p.starts_with(h));
+    for path in c
+        .read_only
+        .iter()
+        .filter(|p| p.exists())
+        .filter(inside_hidden)
+    {
+        cover(path, Grant::Read, &hidden, &mut seen, &mut out);
+    }
     for dir in c.writable.iter().filter(|d| d.is_dir()) {
         cover(dir, Grant::Write, &unwritten, &mut seen, &mut out);
     }
@@ -533,6 +543,39 @@ mod tests {
         assert!(!has(&cargo, Grant::Write), "the folder whole");
         assert!(!has(&bin, Grant::Write) && !has(&config, Grant::Write));
         assert!(has(&registry, Grant::Write));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What stays read-only inside a hidden folder (what a daemon's
+    /// commands run, in its own folder) gets a read rule of its own, and is
+    /// read but not written; the rest of the hidden folder gets none.
+    #[test]
+    fn a_read_only_path_inside_a_hidden_folder_is_read() {
+        let root = fresh("llhiddenro");
+        let (daemon, net) = (root.join("daemon"), root.join("daemon/net"));
+        std::fs::create_dir_all(&net).unwrap();
+        std::fs::write(daemon.join("keys.json"), "TOPSECRET\n").unwrap();
+        std::fs::write(net.join("shim"), "shim\n").unwrap();
+        let mut c = policy(&root, &[&daemon], &[]);
+        c.read_only = vec![net.clone()];
+        let rules = grants(&c);
+        let names = |p: &Path| rules.iter().any(|(q, _)| q == p);
+        assert!(rules.contains(&(net.clone(), Grant::Read)));
+        assert!(!names(&daemon) && !names(&daemon.join("keys.json")));
+        let script = format!(
+            "cat {d}/keys.json 2>/dev/null || echo no-keys; cat {n}/shim; \
+             echo x > {n}/planted 2>/dev/null || echo read-only",
+            d = daemon.display(),
+            n = net.display()
+        );
+        if let Some(out) = run(&c, &root, &script) {
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "no-keys\nshim\nread-only\n",
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

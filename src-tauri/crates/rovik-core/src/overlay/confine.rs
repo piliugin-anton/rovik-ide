@@ -799,16 +799,25 @@ mod linux {
             }
             // A writable folder inside a hidden one stays the command's
             // (`--data` puts a daemon's worktrees in its own folder), and
-            // what's hidden inside it stays hidden.
+            // what stays read-only inside one is still the command's to
+            // read; what's hidden inside either stays hidden.
             let inside = |d: &Path, of: &[PathBuf]| of.iter().any(|o| d != o && d.starts_with(o));
-            let back: Vec<PathBuf> = c
+            let mut back: Vec<PathBuf> = Vec::new();
+            for dir in c
                 .writable
                 .iter()
                 .filter(|d| d.is_dir() && inside(d, &c.hide))
-                .cloned()
-                .collect();
-            for dir in &back {
+            {
                 cmd.arg("--bind").arg(dir).arg(dir);
+                back.push(dir.clone());
+            }
+            for path in c
+                .read_only
+                .iter()
+                .filter(|p| p.exists() && inside(p, &c.hide))
+            {
+                cmd.arg("--ro-bind").arg(path).arg(path);
+                back.push(path.clone());
             }
             for dir in c.hide.iter().filter(|d| d.is_dir() && inside(d, &back)) {
                 cmd.arg("--tmpfs").arg(dir);
@@ -1757,6 +1766,47 @@ mod tests {
         };
         assert_eq!(stdout(&out), "moved\n");
         assert!(work.join("new.rs").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What stays read-only inside a hidden folder is the command's to read
+    /// and run still (a daemon started with `--data` keeps what its
+    /// commands run in its own folder), and not to change; the rest of the
+    /// hidden folder, and what's hidden inside the read-only one, stay
+    /// hidden.
+    #[test]
+    fn a_read_only_folder_inside_a_hidden_one_stays_readable_and_read_only() {
+        let (root, mut c) = fresh("nestedro", &[]);
+        let daemon = root.join("daemon");
+        let net = daemon.join("net");
+        let secret = net.join(".secret");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(daemon.join("keys.json"), "TOPSECRET\n").unwrap();
+        std::fs::write(secret.join("token"), "TOKEN\n").unwrap();
+        let shim = net.join("shim");
+        std::fs::write(&shim, "#!/bin/sh\necho shim\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        c.hide = vec![daemon.clone(), secret.clone()];
+        c.writable = vec![daemon.clone()];
+        c.read_only = vec![net.clone()];
+        let script = format!(
+            "cat {d}/keys.json 2>/dev/null; cat {s}/token 2>/dev/null; {n}/shim; \
+             echo planted > {n}/planted 2>/dev/null || echo read-only",
+            d = daemon.display(),
+            s = secret.display(),
+            n = net.display()
+        );
+        let Some(out) = run(&c, &root, &script) else {
+            return;
+        };
+        assert_eq!(
+            stdout(&out),
+            "shim\nread-only\n",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!net.join("planted").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
